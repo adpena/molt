@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 import ast
 from dataclasses import dataclass
-from typing import List, Any
+from typing import Any, TypedDict
 
 
 @dataclass
@@ -12,32 +14,42 @@ class MoltValue:
 @dataclass
 class MoltOp:
     kind: str
-    args: List[Any]
+    args: list[Any]
     result: MoltValue
-    metadata: dict = None
+    metadata: dict[str, Any] | None = None
+
+
+class ClassInfo(TypedDict):
+    fields: dict[str, int]
+    size: int
+
+
+class FuncInfo(TypedDict):
+    params: list[str]
+    ops: list[MoltOp]
 
 
 class SimpleTIRGenerator(ast.NodeVisitor):
-    def __init__(self):
-        self.funcs_map = {"molt_main": {"params": [], "ops": []}}
-        self.current_func_name = "molt_main"
-        self.current_ops = self.funcs_map["molt_main"]["ops"]
-        self.var_count = 0
-        self.state_count = 0
-        self.classes = {}
-        self.locals = {}  # name -> MoltValue
-        self.globals = {}  # name -> MoltValue
-        self.async_locals = {}  # name -> offset
+    def __init__(self) -> None:
+        self.funcs_map: dict[str, FuncInfo] = {"molt_main": {"params": [], "ops": []}}
+        self.current_func_name: str = "molt_main"
+        self.current_ops: list[MoltOp] = self.funcs_map["molt_main"]["ops"]
+        self.var_count: int = 0
+        self.state_count: int = 0
+        self.classes: dict[str, ClassInfo] = {}
+        self.locals: dict[str, MoltValue] = {}
+        self.globals: dict[str, MoltValue] = {}
+        self.async_locals: dict[str, int] = {}
 
     def next_var(self) -> str:
         name = f"v{self.var_count}"
         self.var_count += 1
         return name
 
-    def emit(self, op: MoltOp):
+    def emit(self, op: MoltOp) -> None:
         self.current_ops.append(op)
 
-    def start_function(self, name, params=None):
+    def start_function(self, name: str, params: list[str] | None = None) -> None:
         if name not in self.funcs_map:
             self.funcs_map[name] = {"params": params or [], "ops": []}
         self.current_func_name = name
@@ -45,14 +57,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.locals = {}
         self.async_locals = {}
 
-    def resume_function(self, name):
+    def resume_function(self, name: str) -> None:
         self.current_func_name = name
         self.current_ops = self.funcs_map[name]["ops"]
 
-    def is_async(self):
+    def is_async(self) -> bool:
         return self.current_func_name.endswith("_poll")
 
-    def visit_Name(self, node: ast.Name):
+    def visit_Name(self, node: ast.Name) -> Any:
         if isinstance(node.ctx, ast.Load):
             if self.is_async():
                 if node.id in self.async_locals:
@@ -65,7 +77,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return self.locals.get(node.id)
         return node.id
 
-    def visit_BinOp(self, node: ast.BinOp):
+    def visit_BinOp(self, node: ast.BinOp) -> Any:
         left = self.visit(node.left)
         right = self.visit(node.right)
         res = MoltValue(self.next_var())
@@ -80,7 +92,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind=op_kind, args=[left, right], result=res))
         return res
 
-    def visit_Constant(self, node: ast.Constant):
+    def visit_Constant(self, node: ast.Constant) -> Any:
         if isinstance(node.value, str):
             res = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[node.value], result=res))
@@ -89,8 +101,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="CONST", args=[node.value], result=res))
         return res
 
-    def visit_ClassDef(self, node: ast.ClassDef):
-        fields = {}
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        fields: dict[str, int] = {}
         offset = 0
         for item in node.body:
             if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
@@ -99,7 +111,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.classes[node.name] = {"fields": fields, "size": offset}
         return None
 
-    def visit_Call(self, node: ast.Call):
+    def visit_Call(self, node: ast.Call) -> Any:
         if isinstance(node.func, ast.Attribute):
             # ...
             if (
@@ -200,7 +212,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return res
         return None
 
-    def visit_Attribute(self, node: ast.Attribute):
+    def visit_Attribute(self, node: ast.Attribute) -> Any:
         obj = self.visit(node.value)
         if obj is None:
             obj = MoltValue("unknown_obj", type_hint="Unknown")
@@ -213,7 +225,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         )
         return res
 
-    def visit_Assign(self, node: ast.Assign):
+    def visit_Assign(self, node: ast.Assign) -> None:
         value_node = self.visit(node.value)
         for target in node.targets:
             if isinstance(target, ast.Attribute):
@@ -241,7 +253,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     self.locals[target.id] = value_node
         return None
 
-    def visit_Compare(self, node: ast.Compare):
+    def visit_Compare(self, node: ast.Compare) -> Any:
         left = self.visit(node.left)
         right = self.visit(node.comparators[0])
         res = MoltValue(self.next_var())
@@ -249,7 +261,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind=op_kind, args=[left, right], result=res))
         return res
 
-    def visit_If(self, node: ast.If):
+    def visit_If(self, node: ast.If) -> None:
         cond = self.visit(node.test)
         self.emit(MoltOp(kind="IF_RETURN", args=[cond], result=MoltValue("none")))
         for item in node.body:
@@ -259,7 +271,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.visit(item)
         return None
 
-    def visit_Return(self, node: ast.Return):
+    def visit_Return(self, node: ast.Return) -> None:
         val = self.visit(node.value) if node.value else None
         if val is None:
             val = MoltValue(self.next_var())
@@ -267,7 +279,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="ret", args=[val], result=MoltValue("none")))
         return None
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef):
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         poll_func_name = f"{node.name}_poll"
         prev_func = self.current_func_name
         prev_async_locals = self.async_locals
@@ -295,7 +307,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         )
         return None
 
-    def visit_FunctionDef(self, node: ast.FunctionDef):
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         func_name = node.name
         prev_func = self.current_func_name
         params = [arg.arg for arg in node.args.args]
@@ -314,7 +326,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.resume_function(prev_func)
         return None
 
-    def visit_Await(self, node: ast.Await):
+    def visit_Await(self, node: ast.Await) -> Any:
         coro = self.visit(node.value)
         self.state_count += 1
         res = MoltValue(self.next_var())
@@ -323,8 +335,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         )
         return res
 
-    def map_ops_to_json(self, ops):
-        json_ops = []
+    def map_ops_to_json(self, ops: list[MoltOp]) -> list[dict[str, Any]]:
+        json_ops: list[dict[str, Any]] = []
         for op in ops:
             if op.kind == "CONST":
                 json_ops.append(
@@ -521,8 +533,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             json_ops.append({"kind": "ret_void"})
         return json_ops
 
-    def to_json(self):
-        funcs_json = []
+    def to_json(self) -> dict[str, Any]:
+        funcs_json: list[dict[str, Any]] = []
         for name, data in self.funcs_map.items():
             funcs_json.append(
                 {
@@ -534,7 +546,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return {"functions": funcs_json}
 
 
-def compile_to_tir(source: str):
+def compile_to_tir(source: str) -> dict[str, Any]:
     tree = ast.parse(source)
     gen = SimpleTIRGenerator()
     gen.visit(tree)

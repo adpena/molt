@@ -23,9 +23,6 @@ target-version = "py313"
 python_version = "3.13"
 strict = true
 
-[[tool.mypy.overrides]]
-module = ["molt.frontend", "molt.frontend.*"]
-ignore_errors = true
 
 [dependency-groups]
 dev = [

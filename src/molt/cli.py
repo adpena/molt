@@ -21,9 +21,9 @@ def build(file_path: str, target: Target = "native") -> int:
 
     # 1. Frontend: Python -> JSON IR
     tree = ast.parse(source)
-    gen = SimpleTIRGenerator()  # type: ignore[no-untyped-call]
+    gen = SimpleTIRGenerator()
     gen.visit(tree)
-    ir = gen.to_json()  # type: ignore[no-untyped-call]
+    ir = gen.to_json()
 
     # 2. Backend: JSON IR -> output.o / output.wasm
     cmd = ["cargo", "run", "--quiet", "--package", "molt-backend", "--"]
