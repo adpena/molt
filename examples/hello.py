@@ -2,6 +2,7 @@ class Point:
     x: int
     y: int
 
+
 p = Point()
 p.x = 10
 p.y = 32

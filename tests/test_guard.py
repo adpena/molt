@@ -1,8 +1,9 @@
-class User:
-    id: int
+def test_guarded_attribute_access():
+    class User:
+        id: int
 
-u = User()
-u.id = 123
-# We'll simulate 'uncertain' type by just using the object
-val = u.id 
-print(val)
+    user = User()
+    user.id = 123
+    # Simulate a typed attribute access path.
+    val = user.id
+    assert val == 123

@@ -2,6 +2,7 @@ class Point:
     x: int
     y: int
 
+
 i = 0
 while i < 1000000:
     p = Point()

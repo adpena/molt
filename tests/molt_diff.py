@@ -2,30 +2,37 @@ import subprocess
 import sys
 import os
 
+
 def run_cpython(file_path, python_exe=sys.executable):
     env = os.environ.copy()
     env["PYTHONPATH"] = env.get("PYTHONPATH", "") + ":."
-    result = subprocess.run([python_exe, file_path], capture_output=True, text=True, env=env)
+    result = subprocess.run(
+        [python_exe, file_path], capture_output=True, text=True, env=env
+    )
     return result.stdout, result.stderr, result.returncode
+
 
 def run_molt(file_path):
     # Clean up stale binary
     if os.path.exists("./hello_molt"):
         os.remove("./hello_molt")
-    
+
     # Build
     env = os.environ.copy()
     env["PYTHONPATH"] = "src"
     build_res = subprocess.run(
         ["python3", "-m", "molt.cli", "build", file_path],
-        env=env, capture_output=True, text=True
+        env=env,
+        capture_output=True,
+        text=True,
     )
     if build_res.returncode != 0:
         return None, build_res.stderr, build_res.returncode
-    
+
     # Run
     run_res = subprocess.run(["./hello_molt"], capture_output=True, text=True)
     return run_res.stdout, run_res.stderr, run_res.returncode
+
 
 def diff_test(file_path, python_exe=sys.executable):
     print(f"Testing {file_path} against {python_exe}...")
@@ -46,14 +53,18 @@ def diff_test(file_path, python_exe=sys.executable):
         print(f"  Molt    stdout: {molt_out!r}")
         return False
 
+
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser(description="Molt Differential Test Harness")
     parser.add_argument("file", nargs="?", help="Python file to test")
-    parser.add_argument("--python-version", help="Python version to test against (e.g. 3.13)")
-    
+    parser.add_argument(
+        "--python-version", help="Python version to test against (e.g. 3.13)"
+    )
+
     args = parser.parse_args()
-    
+
     python_exe = sys.executable
     if args.python_version:
         python_exe = f"python{args.python_version}"

@@ -1,1 +1,1 @@
-'''Molt: Python → Native/WASM compiler research project.'''
+"""Molt: Python → Native/WASM compiler research project."""

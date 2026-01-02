@@ -1,11 +1,30 @@
 import asyncio
+import builtins
 
-async def worker(c):
-    molt_chan_send(c, 42)
+import pytest
 
-async def main():
-    c = molt_chan_new()
-    molt_spawn(worker(c))
-    print(molt_chan_recv(c))
 
-asyncio.run(main())
+def _lookup_magic(name: str):
+    return getattr(builtins, name, globals().get(name))
+
+
+def test_magic_concurrency():
+    funcs = {
+        "molt_chan_send": _lookup_magic("molt_chan_send"),
+        "molt_chan_new": _lookup_magic("molt_chan_new"),
+        "molt_spawn": _lookup_magic("molt_spawn"),
+        "molt_chan_recv": _lookup_magic("molt_chan_recv"),
+    }
+    missing = [name for name, func in funcs.items() if func is None]
+    if missing:
+        pytest.skip("molt magic concurrency intrinsics are not available in CPython")
+
+    async def worker(chan):
+        funcs["molt_chan_send"](chan, 42)
+
+    async def main():
+        chan = funcs["molt_chan_new"]()
+        funcs["molt_spawn"](worker(chan))
+        assert funcs["molt_chan_recv"](chan) == 42
+
+    asyncio.run(main())

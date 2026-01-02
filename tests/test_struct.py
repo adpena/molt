@@ -1,8 +1,9 @@
-class Point:
-    x: int
-    y: int
+def test_structified_class_layout():
+    class Point:
+        x: int
+        y: int
 
-p = Point()
-p.x = 10
-p.y = 32
-print(p.x + p.y)
+    point = Point()
+    point.x = 10
+    point.y = 32
+    assert point.x + point.y == 42

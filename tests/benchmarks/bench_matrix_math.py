@@ -10,4 +10,5 @@ def mat_mul():
         i = i + 1
     return res
 
+
 print(mat_mul())

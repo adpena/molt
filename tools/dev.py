@@ -7,8 +7,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+
 def run(*args: str) -> None:
     subprocess.check_call(args, cwd=ROOT)
+
 
 def main() -> None:
     cmd = sys.argv[1:] or ["help"]
@@ -20,6 +22,7 @@ def main() -> None:
         run("pytest", "-q")
     else:
         print("Usage: tools/dev.py [lint|test]")
+
 
 if __name__ == "__main__":
     main()
