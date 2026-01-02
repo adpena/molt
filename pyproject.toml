@@ -1,0 +1,25 @@
+[project]
+name = "molt"
+version = "0.1.0"
+description = "Molt: A verified subset Python to native/WASM compiler."
+readme = "README.md"
+requires-python = ">=3.12, <3.15"
+dependencies = [
+    "click>=8.1.7",
+    "rich>=13.7.0",
+    "ruff>=0.1.14",
+]
+
+[project.scripts]
+molt = "molt.cli:main"
+
+[tool.uv]
+managed = true
+
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+
+[tool.mypy]
+python_version = "3.13"
+strict = true

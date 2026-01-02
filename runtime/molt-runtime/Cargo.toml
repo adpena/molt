@@ -1,0 +1,15 @@
+[package]
+name = "molt-runtime"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+molt-obj-model = { path = "../molt-obj-model" }
+serde_json = "1.0"
+crossbeam-deque = "0.8"
+crossbeam-channel = "0.5"
+num_cpus = "1.16"
+lazy_static = "1.4"
