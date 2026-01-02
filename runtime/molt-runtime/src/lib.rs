@@ -26,7 +26,7 @@ pub extern "C" fn molt_alloc(size: usize) -> *mut u8 {
         let ptr = std::alloc::alloc(layout);
         if ptr.is_null() { return std::ptr::null_mut(); }
         let header = ptr as *mut MoltHeader;
-        (*header).type_id = 100; 
+        (*header).type_id = 100;
         (*header).ref_count = 1;
         (*header).poll_fn = 0;
         (*header).state = 0;
@@ -192,7 +192,7 @@ pub unsafe extern "C" fn molt_async_sleep(_obj_ptr: *mut u8) -> i64 {
         CALLED = true;
         return std::mem::transmute::<u64, i64>(0x7ffc_0000_0000_0000);
     } else {
-        CALLED = false; 
+        CALLED = false;
         return 0;
     }
 }
@@ -237,6 +237,50 @@ pub unsafe extern "C" fn molt_json_parse_int(ptr: *const u8, len: usize) -> i64 
     v.as_i64().unwrap_or(0)
 }
 
+/// # Safety
+/// Dereferences raw pointers. Caller must ensure ptr is valid UTF-8 of at least len bytes.
+#[no_mangle]
+pub unsafe extern "C" fn molt_json_parse_scalar(
+    ptr: *const u8,
+    len: usize,
+    out: *mut u64,
+) -> i32 {
+    if out.is_null() {
+        return 2;
+    }
+
+    let s = {
+        let slice = std::slice::from_raw_parts(ptr, len);
+        match std::str::from_utf8(slice) {
+            Ok(val) => val,
+            Err(_) => return 1,
+        }
+    };
+
+    let v: serde_json::Value = match serde_json::from_str(s) {
+        Ok(val) => val,
+        Err(_) => return 1,
+    };
+
+    let obj = match v {
+        serde_json::Value::Null => MoltObject::none(),
+        serde_json::Value::Bool(b) => MoltObject::from_bool(b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                MoltObject::from_int(i)
+            } else if let Some(f) = n.as_f64() {
+                MoltObject::from_float(f)
+            } else {
+                return 2;
+            }
+        }
+        _ => return 2,
+    };
+
+    *out = obj.bits();
+    0
+}
+
 // --- Generic ---
 
 /// # Safety
@@ -247,5 +291,5 @@ pub unsafe extern "C" fn molt_get_attr_generic(_obj_ptr: *mut u8, attr_name_ptr:
         let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
         std::str::from_utf8(slice).unwrap()
     };
-    0 
+    0
 }

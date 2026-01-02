@@ -93,6 +93,13 @@ def load_runtime() -> ctypes.CDLL | None:
     lib.molt_spawn.restype = None
     lib.molt_json_parse_int.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
     lib.molt_json_parse_int.restype = ctypes.c_longlong
+    if hasattr(lib, "molt_json_parse_scalar"):
+        lib.molt_json_parse_scalar.argtypes = [
+            ctypes.c_char_p,
+            ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_uint64),
+        ]
+        lib.molt_json_parse_scalar.restype = ctypes.c_int
 
     _runtime_lib = lib
     return _runtime_lib

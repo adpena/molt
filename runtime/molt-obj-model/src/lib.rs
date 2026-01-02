@@ -13,6 +13,10 @@ const TAG_PENDING: u64 = 0x0004_0000_0000_0000; // New variant
 const POINTER_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
 
 impl MoltObject {
+    pub fn bits(self) -> u64 {
+        self.0
+    }
+
     pub fn from_float(f: f64) -> Self {
         Self(f.to_bits())
     }
