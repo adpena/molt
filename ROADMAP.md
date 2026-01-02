@@ -4,6 +4,8 @@ Molt compiles a verified subset of Python into extremely fast, single-file nativ
 
 **Ultimate Goal:** A Go-like developer experience for Python, producing binaries that rival C/Rust in performance and safety, suitable for high-concurrency web services, databases, and data pipelines.
 
+**Source of truth:** This file is the canonical status tracker. For near-term sequencing, see `ROADMAP_90_DAYS.md`. For historical milestone framing, see `docs/spec/0006-roadmap.md`.
+
 ---
 
 ## 🚀 Milestone Status
@@ -22,7 +24,7 @@ Molt compiles a verified subset of Python into extremely fast, single-file nativ
 | **9. Closure Conversion** | ✅ Done | 2026-01-02 | Async locals stored in Task objects. |
 | **10. WASM Host Interop** | ✅ Done | 2026-01-02 | Standardized host imports for async/memory. |
 | **11. Garbage Collection** | 📅 Backlog | - | RC + Incremental Cycle Detection. |
-| **11. Profile-Guided Opt (PGO)** | 📅 Backlog | - | Feedback-driven specialization. |
+| **12. Profile-Guided Opt (PGO)** | 📅 Backlog | - | Feedback-driven specialization. |
 | **13. Performance Benchmarking** | ✅ Done | 2026-01-02 | Automated suites vs CPython 3.12. |
 | **14. Multi-Version Compliance** | ✅ Done | 2026-01-02 | CI Matrix for Python 3.12, 3.13, 3.14. |
 | **15. Compliance Scaffolding** | ✅ Done | 2026-01-02 | `tests/compliance/` structure for future specs. |

@@ -25,3 +25,10 @@ Molt leverages Rust's excellent cross-compilation support.
 ## 5. Molt Registry
 A centralized (but cacheable) registry for verified Molt Packages.
 - **Trust**: Only packages signed by the Molt team or trusted vendors are allowed by default in Tier 0.
+
+## 6. Determinism enforcement checklist (implementation)
+- Fail the build if `uv.lock` or `Cargo.lock` is missing or out of date.
+- Record compiler, toolchain, and target triple in build metadata.
+- Embed the build ID (hash of source closure + compiler version) in the binary.
+- Emit an SBOM alongside each release artifact.
+- Gate nondeterministic features (time, randomness, network) behind explicit capabilities.

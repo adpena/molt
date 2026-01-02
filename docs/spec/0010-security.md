@@ -19,3 +19,10 @@ Molt is designed for:
 ## 4. Memory Safety
 - **Rust Spine**: The runtime is written in safe Rust. `unsafe` is used sparingly and only for performance-critical object manipulation, subject to strict audit.
 - **No C-Extensions**: Eliminating the largest source of memory unsafety in the Python ecosystem.
+
+## 5. Operational security checks (implementation)
+- Enforce lockfiles (`uv sync --frozen`) in build pipelines.
+- Verify package checksums for all Molt Packages.
+- Require explicit capability manifests (`molt.toml` or `pyproject.toml`) for I/O, time, and randomness.
+- Deny ambient FS/network access by default for WASM modules and FFI boundaries.
+- Run security scans (e.g., `cargo audit`) for release builds where available.

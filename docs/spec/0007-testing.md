@@ -1,13 +1,13 @@
 # Molt Testing & Verification Strategy
 
 ## 1. Differential Testing: The `molt-diff` Harness
-`molt-diff` is a specialized tool that ensures Molt semantics match CPython.
+`molt-diff` is a specialized tool that ensures Molt semantics match CPython. The current harness lives in `tests/molt_diff.py` and builds + runs binaries via `python3 -m molt.cli build`.
 
 ### 1.1 Methodology
 1.  **Input**: A Python source file `test_case.py`.
 2.  **Execution**:
     - Run `python3 test_case.py` -> Capture `stdout`, `stderr`, `exit_code`.
-    - Run `molt run test_case.py` -> Capture `stdout`, `stderr`, `exit_code`.
+    - Run `python tests/molt_diff.py test_case.py` -> Build with Molt, run the binary, capture outputs.
 3.  **Comparison**: Assert that all captured outputs are identical.
 
 ### 1.2 State Snapshoting
@@ -33,6 +33,7 @@ To test Tier 1:
 - Verify that the runtime correctly switches to the slow path without crashing or losing state.
 
 ## 5. Continuous Integration Gates
-- **Rust**: `cargo test` (unit tests for IR and Runtime).
-- **Python**: `pytest tests/differential` (the `molt-diff` suite).
-- **Benchmarks**: `molt bench --check-regressions`.
+- **Rust**: `cargo test` (runtime + core unit tests).
+- **Python**: `pytest` (unit and integration tests under `tests/`).
+- **Differential**: run `python tests/molt_diff.py <case.py>` for curated parity cases (expand over time).
+- **Benchmarks**: `tools/bench.py` for local validation; add CI regression gates as they stabilize.

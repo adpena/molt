@@ -53,6 +53,11 @@ Artifacts:
 - failing case saved as Arrow IPC + JSON metadata
 - attach to CI artifacts for debugging
 
+### 3.1 Repository anchoring (current)
+- Versioned semantic checks live in `tests/compliance/` today.
+- General Python tests live under `tests/` and are run by CI.
+- DataFrame oracle suites should live under `tests/differential/df/` once the engine lands.
+
 ## 4. CI strategy
 - fast suite on every PR (small tables)
 - nightly suite with heavier randomized workloads
@@ -65,8 +70,8 @@ Oracle testing requires version pinning:
 
 ## 6. Acceptance criteria
 - Each supported API in 0503 has:
-  - at least N golden tests
-  - property tests covering a range of dtypes and sizes
+  - at least 5 golden tests for known tricky behavior
+  - property tests covering core dtypes and size ranges
 - Any divergence is either:
   - a bug (fix)
   - a documented semantic difference with explicit policy flag
