@@ -13,6 +13,10 @@ const TAG_PENDING: u64 = 0x0004_0000_0000_0000; // New variant
 const POINTER_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
 
 impl MoltObject {
+    pub fn from_bits(bits: u64) -> Self {
+        Self(bits)
+    }
+
     pub fn bits(self) -> u64 {
         self.0
     }
@@ -50,8 +54,32 @@ impl MoltObject {
         (self.0 & QNAN) != QNAN
     }
 
+    pub fn as_float(&self) -> Option<f64> {
+        if self.is_float() {
+            Some(f64::from_bits(self.0))
+        } else {
+            None
+        }
+    }
+
     pub fn is_int(&self) -> bool {
         (self.0 & (QNAN | TAG_INT)) == (QNAN | TAG_INT)
+    }
+
+    pub fn is_bool(&self) -> bool {
+        (self.0 & (QNAN | TAG_BOOL)) == (QNAN | TAG_BOOL)
+    }
+
+    pub fn as_bool(&self) -> Option<bool> {
+        if self.is_bool() {
+            Some((self.0 & 0x1) == 1)
+        } else {
+            None
+        }
+    }
+
+    pub fn is_none(&self) -> bool {
+        (self.0 & (QNAN | TAG_NONE)) == (QNAN | TAG_NONE)
     }
 
     pub fn is_pending(&self) -> bool {

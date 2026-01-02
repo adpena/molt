@@ -18,6 +18,46 @@ pub struct MoltHeader {
     pub size: usize,  // Total size of allocation
 }
 
+fn obj_from_bits(bits: u64) -> MoltObject {
+    MoltObject::from_bits(bits)
+}
+
+fn to_i64(obj: MoltObject) -> Option<i64> {
+    if obj.is_int() {
+        return obj.as_int();
+    }
+    if obj.is_bool() {
+        return Some(if obj.as_bool().unwrap_or(false) { 1 } else { 0 });
+    }
+    None
+}
+
+fn to_f64(obj: MoltObject) -> Option<f64> {
+    if let Some(val) = obj.as_float() {
+        return Some(val);
+    }
+    if let Some(i) = to_i64(obj) {
+        return Some(i as f64);
+    }
+    None
+}
+
+fn is_truthy(obj: MoltObject) -> bool {
+    if obj.is_none() {
+        return false;
+    }
+    if let Some(b) = obj.as_bool() {
+        return b;
+    }
+    if let Some(i) = obj.as_int() {
+        return i != 0;
+    }
+    if let Some(f) = obj.as_float() {
+        return f != 0.0;
+    }
+    false
+}
+
 #[no_mangle]
 pub extern "C" fn molt_alloc(size: usize) -> *mut u8 {
     let total_size = size + std::mem::size_of::<MoltHeader>();
@@ -195,6 +235,95 @@ pub unsafe extern "C" fn molt_async_sleep(_obj_ptr: *mut u8) -> i64 {
         CALLED = false;
         return 0;
     }
+}
+
+// --- NaN-boxed ops ---
+
+#[no_mangle]
+pub extern "C" fn molt_add(a: u64, b: u64) -> u64 {
+    let lhs = obj_from_bits(a);
+    let rhs = obj_from_bits(b);
+    if let (Some(li), Some(ri)) = (lhs.as_int(), rhs.as_int()) {
+        return MoltObject::from_int(li + ri).bits();
+    }
+    if let (Some(lf), Some(rf)) = (to_f64(lhs), to_f64(rhs)) {
+        return MoltObject::from_float(lf + rf).bits();
+    }
+    MoltObject::none().bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_sub(a: u64, b: u64) -> u64 {
+    let lhs = obj_from_bits(a);
+    let rhs = obj_from_bits(b);
+    if let (Some(li), Some(ri)) = (lhs.as_int(), rhs.as_int()) {
+        return MoltObject::from_int(li - ri).bits();
+    }
+    if let (Some(lf), Some(rf)) = (to_f64(lhs), to_f64(rhs)) {
+        return MoltObject::from_float(lf - rf).bits();
+    }
+    MoltObject::none().bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_mul(a: u64, b: u64) -> u64 {
+    let lhs = obj_from_bits(a);
+    let rhs = obj_from_bits(b);
+    if let (Some(li), Some(ri)) = (lhs.as_int(), rhs.as_int()) {
+        return MoltObject::from_int(li * ri).bits();
+    }
+    if let (Some(lf), Some(rf)) = (to_f64(lhs), to_f64(rhs)) {
+        return MoltObject::from_float(lf * rf).bits();
+    }
+    MoltObject::none().bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_lt(a: u64, b: u64) -> u64 {
+    let lhs = obj_from_bits(a);
+    let rhs = obj_from_bits(b);
+    if let (Some(li), Some(ri)) = (lhs.as_int(), rhs.as_int()) {
+        return MoltObject::from_bool(li < ri).bits();
+    }
+    if let (Some(lf), Some(rf)) = (to_f64(lhs), to_f64(rhs)) {
+        return MoltObject::from_bool(lf < rf).bits();
+    }
+    MoltObject::from_bool(false).bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_is_truthy(val: u64) -> i64 {
+    if is_truthy(obj_from_bits(val)) {
+        1
+    } else {
+        0
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_print_obj(val: u64) {
+    let obj = obj_from_bits(val);
+    if let Some(i) = obj.as_int() {
+        println!("{i}");
+        return;
+    }
+    if let Some(f) = obj.as_float() {
+        println!("{f}");
+        return;
+    }
+    if let Some(b) = obj.as_bool() {
+        println!("{b}");
+        return;
+    }
+    if obj.is_none() {
+        println!("None");
+        return;
+    }
+    if obj.is_pending() {
+        println!("<pending>");
+        return;
+    }
+    println!("<object>");
 }
 
 // --- Reference Counting ---
