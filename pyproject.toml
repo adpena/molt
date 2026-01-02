@@ -7,7 +7,6 @@ requires-python = ">=3.12, <3.15"
 dependencies = [
     "click>=8.1.7",
     "rich>=13.7.0",
-    "ruff>=0.1.14",
 ]
 
 [project.scripts]
@@ -25,5 +24,13 @@ python_version = "3.13"
 strict = true
 
 [[tool.mypy.overrides]]
-module = ["molt.frontend", "molt.frontend.*", "molt.cli"]
+module = ["molt.frontend", "molt.frontend.*"]
 ignore_errors = true
+
+[dependency-groups]
+dev = [
+    "mypy>=1.19.1",
+    "pre-commit>=4.5.1",
+    "pytest>=9.0.2",
+    "ruff>=0.14.10",
+]
