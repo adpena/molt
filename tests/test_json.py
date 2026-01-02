@@ -1,6 +1,4 @@
-import pytest
-
-molt_json = pytest.importorskip("molt_json")
+import molt_json
 
 
 def test_json_parse():

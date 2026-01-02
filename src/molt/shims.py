@@ -1,8 +1,7 @@
-"""CPython-only shims for Molt intrinsics used in tests.
+"""CPython fallback for Molt intrinsics used in tests.
 
-These helpers provide a minimal, blocking implementation of channels and task
-spawning to keep the Python test suite executable. They are not used by the
-compiled runtime or production builds.
+If a runtime shared library is available, the shims will bind to it. Otherwise
+they fall back to a minimal blocking implementation for local test execution.
 """
 
 from __future__ import annotations
@@ -10,12 +9,18 @@ from __future__ import annotations
 import atexit
 import asyncio
 import builtins
+import ctypes
+import os
 import queue
 import threading
+import time
+from pathlib import Path
 from typing import Any
 
 _loop: asyncio.AbstractEventLoop | None = None
 _thread: threading.Thread | None = None
+_runtime_lib: ctypes.CDLL | None = None
+_PENDING = 0x7FFC_0000_0000_0000
 
 
 def _run_loop(loop: asyncio.AbstractEventLoop) -> None:
@@ -46,7 +51,67 @@ def _shutdown() -> None:
         _thread.join(timeout=1)
 
 
+def _find_runtime_lib() -> Path | None:
+    env_path = os.environ.get("MOLT_RUNTIME_LIB")
+    if env_path:
+        path = Path(env_path)
+        if path.exists():
+            return path
+
+    root = Path(__file__).resolve().parents[2]
+    candidates = [
+        root / "target" / "release" / "libmolt_runtime.dylib",
+        root / "target" / "release" / "libmolt_runtime.so",
+        root / "target" / "release" / "molt_runtime.dll",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def load_runtime() -> ctypes.CDLL | None:
+    global _runtime_lib
+    if _runtime_lib is not None:
+        return _runtime_lib
+
+    lib_path = _find_runtime_lib()
+    if lib_path is None:
+        return None
+
+    try:
+        lib = ctypes.CDLL(str(lib_path))
+    except OSError:
+        return None
+
+    lib.molt_chan_new.restype = ctypes.c_void_p
+    lib.molt_chan_send.argtypes = [ctypes.c_void_p, ctypes.c_longlong]
+    lib.molt_chan_send.restype = ctypes.c_longlong
+    lib.molt_chan_recv.argtypes = [ctypes.c_void_p]
+    lib.molt_chan_recv.restype = ctypes.c_longlong
+    lib.molt_spawn.argtypes = [ctypes.c_void_p]
+    lib.molt_spawn.restype = None
+    lib.molt_json_parse_int.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
+    lib.molt_json_parse_int.restype = ctypes.c_longlong
+
+    _runtime_lib = lib
+    return _runtime_lib
+
+
+def _chan_ptr(chan: Any) -> ctypes.c_void_p | None:
+    if isinstance(chan, ctypes.c_void_p):
+        return chan
+    if isinstance(chan, int):
+        return ctypes.c_void_p(chan)
+    return None
+
+
 def molt_spawn(task: Any) -> None:
+    lib = load_runtime()
+    task_ptr = _chan_ptr(task)
+    if lib is not None and task_ptr is not None:
+        lib.molt_spawn(task_ptr)
+        return
     loop = _ensure_loop()
     if asyncio.iscoroutine(task):
         asyncio.run_coroutine_threadsafe(task, loop)
@@ -57,17 +122,45 @@ def molt_spawn(task: Any) -> None:
     raise TypeError("molt_spawn expects a coroutine or callable")
 
 
-def molt_chan_new() -> queue.Queue[Any]:
+def molt_chan_new() -> Any:
+    lib = load_runtime()
+    if lib is not None:
+        ptr = lib.molt_chan_new()
+        return ctypes.c_void_p(ptr)
     return queue.Queue()
 
 
-def molt_chan_send(chan: queue.Queue[Any], val: Any) -> int:
-    chan.put(val)
-    return 0
+def molt_chan_send(chan: Any, val: Any) -> int:
+    lib = load_runtime()
+    if lib is not None:
+        chan_ptr = _chan_ptr(chan)
+        if chan_ptr is not None:
+            for _ in range(1000):
+                res = int(lib.molt_chan_send(chan_ptr, int(val)))
+                if res != _PENDING:
+                    return res
+                time.sleep(0)
+            raise RuntimeError("molt_chan_send pending")
+    if isinstance(chan, queue.Queue):
+        chan.put(val)
+        return 0
+    raise TypeError("molt_chan_send expected a channel handle")
 
 
-def molt_chan_recv(chan: queue.Queue[Any]) -> Any:
-    return chan.get()
+def molt_chan_recv(chan: Any) -> Any:
+    lib = load_runtime()
+    if lib is not None:
+        chan_ptr = _chan_ptr(chan)
+        if chan_ptr is not None:
+            for _ in range(1000):
+                res = int(lib.molt_chan_recv(chan_ptr))
+                if res != _PENDING:
+                    return res
+                time.sleep(0)
+            raise RuntimeError("molt_chan_recv pending")
+    if isinstance(chan, queue.Queue):
+        return chan.get()
+    raise TypeError("molt_chan_recv expected a channel handle")
 
 
 def install() -> None:
