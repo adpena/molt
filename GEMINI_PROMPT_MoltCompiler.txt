@@ -4,7 +4,7 @@ You have access to:
 - A local repo (you may assume you can write files)
 - Terminal access
 - GitHub CLI (gh), git
-- Standard Python toolchain (ruff/mypy/pytest/hypothesis/pre-commit)
+- Standard Python toolchain (ruff/ty/pytest/hypothesis/pre-commit)
 - CI via GitHub Actions
 - You may propose additional tooling (LLVM/MLIR, Cranelift, Zig, WASI SDK, etc.)
 

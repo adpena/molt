@@ -19,7 +19,7 @@ management and **Rust** (Cargo + rustup) for the runtime, WASM interop, and “M
 - Use uv for:
   - creating/managing venv
   - installing dev dependencies quickly
-  - executing tools (`ruff`, `mypy`, `pytest`) reproducibly
+  - executing tools (`ruff`, `ty`, `pytest`) reproducibly
 
 ### File conventions
 - `pyproject.toml` remains authoritative for Python dependencies.
@@ -32,7 +32,7 @@ management and **Rust** (Cargo + rustup) for the runtime, WASM interop, and “M
 - Local dev:
   - `uv venv` (or `uv sync`)
   - `uv run ruff check .`
-  - `uv run mypy src`
+  - `uv run ty check src`
   - `uv run pytest`
 - CI:
   - Cache uv downloads

@@ -13,13 +13,13 @@
 - `export PYTHONPATH=src`: make the Python package importable from the repo root.
 - `python3 -m molt.cli build examples/hello.py`: compile a Python example to a native binary.
 - `./hello_molt`: run the compiled output from the previous step.
-- `tools/dev.py lint`: run `ruff` checks, `ruff format --check`, and `mypy` on `src`.
+- `tools/dev.py lint`: run `ruff` checks, `ruff format --check`, and `ty check` on `src`.
 - `tools/dev.py test`: run the Python test suite (`pytest -q`).
 - `cargo test`: run Rust unit tests for runtime crates.
 - `uv sync --group bench --python 3.12`: install optional Cython/Numba benchmark deps before running `tools/bench.py` (Numba requires <3.13).
 
 ## Coding Style & Naming Conventions
-- Python: 4-space indentation, `ruff` line length 88, target version 3.13, and strict typing via `mypy`.
+- Python: 4-space indentation, `ruff` line length 88, target version 3.13, and strict typing via `ty`.
 - Rust: format with `cargo fmt` and keep clippy clean (`cargo clippy -- -D warnings`).
 - Tests follow `test_*.py` naming; keep test modules in `tests/` or subdirectories like `tests/differential/`.
 

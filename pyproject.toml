@@ -19,13 +19,6 @@ managed = true
 line-length = 88
 target-version = "py313"
 
-[tool.mypy]
-python_version = "3.13"
-strict = true
-
-[[tool.mypy.overrides]]
-module = ["msgpack", "cbor2"]
-ignore_missing_imports = true
 
 [tool.molt.deps]
 tier_a = ["attrs", "click", "pydantic", "requests", "rich"]
@@ -43,8 +36,8 @@ bench = [
 dev = [
     "cbor2>=5.8.0",
     "msgpack>=1.1.2",
-    "mypy>=1.19.1",
     "pre-commit>=4.5.1",
     "pytest>=9.0.2",
     "ruff>=0.14.10",
+    "ty>=0.0.8",
 ]

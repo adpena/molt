@@ -17,7 +17,7 @@ def main() -> None:
     if cmd[0] == "lint":
         run("ruff", "check", ".")
         run("ruff", "format", "--check", ".")
-        run("mypy", "src")
+        run("ty", "check", "src")
     elif cmd[0] == "test":
         run("pytest", "-q")
     else:

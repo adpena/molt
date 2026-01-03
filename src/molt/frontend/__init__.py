@@ -77,7 +77,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
     def start_function(self, name: str, params: list[str] | None = None) -> None:
         if name not in self.funcs_map:
-            self.funcs_map[name] = {"params": params or [], "ops": []}
+            self.funcs_map[name] = FuncInfo(params=params or [], ops=[])
         self.current_func_name = name
         self.current_ops = self.funcs_map[name]["ops"]
         self.locals = {}
@@ -1022,7 +1022,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
                 fields[item.target.id] = offset
                 offset += 8
-        self.classes[node.name] = {"fields": fields, "size": offset}
+        self.classes[node.name] = ClassInfo(fields=fields, size=offset)
         return None
 
     def visit_Call(self, node: ast.Call) -> Any:

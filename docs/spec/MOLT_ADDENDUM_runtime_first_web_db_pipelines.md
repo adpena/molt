@@ -201,7 +201,7 @@ To be fast for services, Molt needs clear tier policies.
 
 ### uv (dev/CI only)
 - Manage Python dev dependencies and run:
-  - `ruff`, `mypy`, `pytest`, harness scripts
+  - `ruff`, `ty`, `pytest`, harness scripts
 - Provide deterministic lockfile
 - **Not** part of production runtime story
 
