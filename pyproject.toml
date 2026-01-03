@@ -23,6 +23,10 @@ target-version = "py313"
 python_version = "3.13"
 strict = true
 
+[[tool.mypy.overrides]]
+module = ["msgpack", "cbor2"]
+ignore_missing_imports = true
+
 [tool.molt.deps]
 tier_a = ["attrs", "click", "pydantic", "requests", "rich"]
 tier_b = ["orjson", "pydantic-core", "polars", "pyarrow", "ruff"]

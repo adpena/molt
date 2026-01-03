@@ -25,6 +25,10 @@ _runtime_lib: ctypes.CDLL | None = None
 _PENDING = 0x7FFD_0000_0000_0000
 
 
+def _use_runtime_concurrency() -> bool:
+    return os.environ.get("MOLT_SHIMS_RUNTIME_CONCURRENCY") == "1"
+
+
 def _run_loop(loop: asyncio.AbstractEventLoop) -> None:
     asyncio.set_event_loop(loop)
     loop.run_forever()
@@ -187,7 +191,7 @@ def _chan_ptr(chan: Any) -> ctypes.c_void_p | None:
 
 
 def molt_spawn(task: Any) -> None:
-    lib = load_runtime()
+    lib = load_runtime() if _use_runtime_concurrency() else None
     task_ptr = _chan_ptr(task)
     if lib is not None and task_ptr is not None:
         lib.molt_spawn(task_ptr)
@@ -203,7 +207,7 @@ def molt_spawn(task: Any) -> None:
 
 
 def molt_chan_new() -> Any:
-    lib = load_runtime()
+    lib = load_runtime() if _use_runtime_concurrency() else None
     if lib is not None:
         ptr = lib.molt_chan_new()
         return ctypes.c_void_p(ptr)
@@ -211,7 +215,7 @@ def molt_chan_new() -> Any:
 
 
 def molt_chan_send(chan: Any, val: Any) -> int:
-    lib = load_runtime()
+    lib = load_runtime() if _use_runtime_concurrency() else None
     if lib is not None:
         chan_ptr = _chan_ptr(chan)
         if chan_ptr is not None:
@@ -228,7 +232,7 @@ def molt_chan_send(chan: Any, val: Any) -> int:
 
 
 def molt_chan_recv(chan: Any) -> Any:
-    lib = load_runtime()
+    lib = load_runtime() if _use_runtime_concurrency() else None
     if lib is not None:
         chan_ptr = _chan_ptr(chan)
         if chan_ptr is not None:
