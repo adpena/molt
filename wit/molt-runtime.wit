@@ -1,0 +1,91 @@
+package molt:runtime;
+
+interface intrinsics {
+    type molt-object = u64;
+    type molt-ptr = u64;
+
+    print_obj: func(val: molt-object);
+    print_newline: func();
+    alloc: func(size: u64) -> u64;
+    async_sleep: func(obj: u64) -> u64;
+    block_on: func(task: u64) -> u64;
+
+    add: func(a: molt-object, b: molt-object) -> molt-object;
+    vec_sum_int: func(seq: molt-object, acc: molt-object) -> molt-object;
+    sub: func(a: molt-object, b: molt-object) -> molt-object;
+    mul: func(a: molt-object, b: molt-object) -> molt-object;
+    lt: func(a: molt-object, b: molt-object) -> molt-object;
+    eq: func(a: molt-object, b: molt-object) -> molt-object;
+    is_truthy: func(val: molt-object) -> u64;
+
+    json_parse_scalar: func(ptr: molt-ptr, len: u64, out: molt-ptr) -> s32;
+    msgpack_parse_scalar: func(ptr: molt-ptr, len: u64, out: molt-ptr) -> s32;
+    cbor_parse_scalar: func(ptr: molt-ptr, len: u64, out: molt-ptr) -> s32;
+    string_from_bytes: func(ptr: molt-ptr, len: u64, out: molt-ptr) -> s32;
+    bytes_from_bytes: func(ptr: molt-ptr, len: u64, out: molt-ptr) -> s32;
+    str_from_obj: func(val: molt-object) -> molt-object;
+    guard_type: func(val: molt-object, expected: molt-object) -> molt-object;
+    len: func(val: molt-object) -> molt-object;
+    slice: func(obj: molt-object, start: molt-object, end: molt-object) -> molt-object;
+    slice_new: func(start: molt-object, stop: molt-object, step: molt-object) -> molt-object;
+    range_new: func(start: molt-object, stop: molt-object, step: molt-object) -> molt-object;
+    list_builder_new: func(capacity: u64) -> u64;
+    list_builder_append: func(builder: u64, val: molt-object);
+    list_builder_finish: func(builder: u64) -> molt-object;
+    tuple_builder_finish: func(builder: u64) -> molt-object;
+    list_append: func(list: molt-object, val: molt-object) -> molt-object;
+    list_pop: func(list: molt-object, index: molt-object) -> molt-object;
+    list_extend: func(list: molt-object, other: molt-object) -> molt-object;
+    list_insert: func(list: molt-object, index: molt-object, val: molt-object) -> molt-object;
+    list_remove: func(list: molt-object, val: molt-object) -> molt-object;
+    list_count: func(list: molt-object, val: molt-object) -> molt-object;
+    list_index: func(list: molt-object, val: molt-object) -> molt-object;
+    dict_new: func(capacity: u64) -> molt-object;
+    dict_set: func(dict: molt-object, key: molt-object, val: molt-object) -> molt-object;
+    dict_get: func(dict: molt-object, key: molt-object, default: molt-object) -> molt-object;
+    dict_pop: func(dict: molt-object, key: molt-object, default: molt-object, has_default: molt-object) -> molt-object;
+    dict_keys: func(dict: molt-object) -> molt-object;
+    dict_values: func(dict: molt-object) -> molt-object;
+    dict_items: func(dict: molt-object) -> molt-object;
+    tuple_count: func(tuple: molt-object, val: molt-object) -> molt-object;
+    tuple_index: func(tuple: molt-object, val: molt-object) -> molt-object;
+    iter: func(obj: molt-object) -> molt-object;
+    iter_next: func(iter: molt-object) -> molt-object;
+    index: func(obj: molt-object, key: molt-object) -> molt-object;
+    store_index: func(obj: molt-object, key: molt-object, val: molt-object) -> molt-object;
+    bytes_find: func(haystack: molt-object, needle: molt-object) -> molt-object;
+    bytearray_find: func(haystack: molt-object, needle: molt-object) -> molt-object;
+    string_find: func(haystack: molt-object, needle: molt-object) -> molt-object;
+    string_format: func(val: molt-object, spec: molt-object) -> molt-object;
+    string_startswith: func(haystack: molt-object, needle: molt-object) -> molt-object;
+    string_endswith: func(haystack: molt-object, needle: molt-object) -> molt-object;
+    string_count: func(haystack: molt-object, needle: molt-object) -> molt-object;
+    string_join: func(sep: molt-object, items: molt-object) -> molt-object;
+    string_split: func(haystack: molt-object, needle: molt-object) -> molt-object;
+    bytes_split: func(haystack: molt-object, needle: molt-object) -> molt-object;
+    bytearray_split: func(haystack: molt-object, needle: molt-object) -> molt-object;
+    string_replace: func(haystack: molt-object, needle: molt-object, replacement: molt-object) -> molt-object;
+    bytes_replace: func(haystack: molt-object, needle: molt-object, replacement: molt-object) -> molt-object;
+    bytearray_replace: func(haystack: molt-object, needle: molt-object, replacement: molt-object) -> molt-object;
+    bytearray_from_obj: func(obj: molt-object) -> molt-object;
+    buffer2d_new: func(rows: molt-object, cols: molt-object, init: molt-object) -> molt-object;
+    buffer2d_get: func(buf: molt-object, row: molt-object, col: molt-object) -> molt-object;
+    buffer2d_set: func(buf: molt-object, row: molt-object, col: molt-object, val: molt-object) -> molt-object;
+    buffer2d_matmul: func(lhs: molt-object, rhs: molt-object) -> molt-object;
+    dataclass_new: func(name: molt-object, fields: molt-object, values: molt-object, flags: molt-object) -> molt-object;
+    dataclass_get: func(obj: molt-object, index: molt-object) -> molt-object;
+    dataclass_set: func(obj: molt-object, index: molt-object, value: molt-object) -> molt-object;
+    stream_new: func(capacity: u64) -> u64;
+    stream_send: func(handle: u64, ptr: molt-ptr, len: u64) -> u64;
+    stream_recv: func(handle: u64) -> u64;
+    stream_close: func(handle: u64);
+    ws_connect: func(ptr: molt-ptr, len: u64, out: molt-ptr) -> s32;
+    ws_pair: func(capacity: u64, out_left: molt-ptr, out_right: molt-ptr) -> s32;
+    ws_send: func(handle: u64, ptr: molt-ptr, len: u64) -> u64;
+    ws_recv: func(handle: u64) -> u64;
+    ws_close: func(handle: u64);
+}
+
+world molt-runtime {
+    import intrinsics;
+}

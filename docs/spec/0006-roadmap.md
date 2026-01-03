@@ -18,8 +18,8 @@ This document preserves the original milestone definitions for context. Current 
 - Differential test harness vs CPython
 
 ## Milestone 3: The Service/Pipeline Tier (Month 3-4)
-**Goal:** Async, JSON, and basic networking for service workloads.
-- `molt_json` package (Rust-backed)
+**Goal:** Async, structured codecs, and basic networking for service workloads.
+- `molt_msgpack` / `molt_cbor` packages (Rust-backed); JSON retained for compatibility/debug
 - Async/await mapped to a Rust async runtime
 - WASM interop for Rust-in-WASM modules
 - Tier 1 guards + deoptimization

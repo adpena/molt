@@ -11,6 +11,7 @@ This plan sequences near-term work described in `ROADMAP.md` and prioritizes doc
 ## Month 2: Runtime + compiler hardening
 - Implement or scaffold RC + incremental cycle detection per `docs/spec/0003-runtime.md`.
 - Add a minimal tasks/channels runtime skeleton and gated API in `molt`.
+- Promote MsgPack/CBOR parsing as the default structured codec; keep JSON only for compatibility/debug.
 - Wire guard/deopt instrumentation to emit `molt_runtime_feedback.json` (MPA loop).
 - Add `molt run` slow-path execution for parity testing.
 
@@ -18,4 +19,5 @@ This plan sequences near-term work described in `ROADMAP.md` and prioritizes doc
 - Add benchmark regression checks and publish results in CI.
 - Implement SBOM generation and signing hooks in the CLI.
 - Add portable WASM ABI smoke tests (native + wasm32 targets).
+- Draft native WebSocket + streaming I/O plan aligned with tasks/channels and multicore scaling tests.
 - Kick off DataFrame Phase 1 Plan IR scaffolding for Polars/DuckDB delegation.

@@ -26,6 +26,37 @@ jobs:
         run: uv run mypy src
       - name: Run tests
         run: uv run pytest
+      - name: Install Rust
+        if: matrix.python-version == '3.12'
+        uses: dtolnay/rust-toolchain@stable
+      - name: Rust cache
+        if: matrix.python-version == '3.12'
+        uses: swatinem/rust-cache@v2
+      - name: Install clang
+        if: matrix.python-version == '3.12'
+        run: |
+          if ! command -v clang >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y clang
+          fi
+      - name: Build runtime (release)
+        if: matrix.python-version == '3.12'
+        run: cargo build -p molt-runtime --release
+      - name: Run molt-diff basic suite
+        if: matrix.python-version == '3.12'
+        run: uv run python tests/molt_diff.py tests/differential/basic
+      - name: Type coverage TODO sync
+        if: matrix.python-version == '3.12'
+        run: uv run python tools/check_type_coverage_todos.py
+      - name: Perf smoke (microbench)
+        if: matrix.python-version == '3.12'
+        run: uv run python tools/bench.py --smoke --no-pypy --baseline bench/baseline.json --max-regression 0.25 --json-out bench/results/ci_smoke.json
+      - name: Upload benchmark artifact
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-smoke
+          path: bench/results/ci_smoke.json
 
   test-rust:
     runs-on: ubuntu-latest
@@ -35,9 +66,28 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
       - name: Cargo format
         run: cargo fmt -- --check
       - name: Cargo clippy
         run: cargo clippy -- -D warnings
       - name: Cargo test
         run: cargo test
+
+  test-wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        run: curl -LsSf https://astral-sh/uv/install.sh | sh
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+      - name: Install dependencies
+        run: uv sync --frozen --python 3.12
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+      - name: Run wasm parity test
+        run: uv run pytest tests/test_wasm_if_else.py

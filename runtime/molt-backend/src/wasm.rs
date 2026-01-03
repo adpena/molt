@@ -1,10 +1,28 @@
 use wasm_encoder::{
-    CodeSection, ConstExpr, ElementSection, EntityType, ExportKind, ExportSection, Function,
-    FunctionSection, ImportSection, Instruction, MemorySection, MemoryType, Module, RefType,
-    TableSection, TableType, TypeSection, ValType,
+    BlockType, CodeSection, ConstExpr, DataSection, ElementSection, EntityType, ExportKind,
+    ExportSection, Function, FunctionSection, ImportSection, Instruction, MemorySection,
+    MemoryType, Module, RefType, TableSection, TableType, TypeSection, ValType,
 };
 use crate::{SimpleIR, FunctionIR};
 use std::collections::HashMap;
+
+const QNAN: u64 = 0x7ff8_0000_0000_0000;
+const TAG_INT: u64 = 0x0001_0000_0000_0000;
+const TAG_NONE: u64 = 0x0003_0000_0000_0000;
+const POINTER_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
+
+fn box_int(val: i64) -> i64 {
+    let masked = (val as u64) & POINTER_MASK;
+    (QNAN | TAG_INT | masked) as i64
+}
+
+fn box_float(val: f64) -> i64 {
+    val.to_bits() as i64
+}
+
+fn box_none() -> i64 {
+    (QNAN | TAG_NONE) as i64
+}
 
 pub struct WasmBackend {
     module: Module,
@@ -14,9 +32,12 @@ pub struct WasmBackend {
     exports: ExportSection,
     imports: ImportSection,
     memories: MemorySection,
+    data: DataSection,
     tables: TableSection,
     elements: ElementSection,
     func_count: u32,
+    import_ids: HashMap<String, u32>,
+    data_offset: u32,
 }
 
 impl Default for WasmBackend {
@@ -35,27 +56,139 @@ impl WasmBackend {
             exports: ExportSection::new(),
             imports: ImportSection::new(),
             memories: MemorySection::new(),
+            data: DataSection::new(),
             tables: TableSection::new(),
             elements: ElementSection::new(),
             func_count: 0,
+            import_ids: HashMap::new(),
+            data_offset: 0,
         }
     }
 
     pub fn compile(mut self, ir: SimpleIR) -> Vec<u8> {
         // Type 0: () -> i64 (User functions)
-        self.types.function(std::iter::empty::<ValType>(), std::iter::once(ValType::I64));
-        // Type 1: (i64) -> () (print_int)
-        self.types.function(std::iter::once(ValType::I64), std::iter::empty::<ValType>());
-        // Type 2: (i64) -> i64 (alloc, sleep, poll)
-        self.types.function(std::iter::once(ValType::I64), std::iter::once(ValType::I64));
-        
-        // Host Imports
-        self.imports.import("molt", "print_int", EntityType::Function(1));
-        self.imports.import("molt", "alloc", EntityType::Function(2));
-        self.imports.import("molt", "async_sleep", EntityType::Function(2));
-        self.imports.import("molt", "block_on", EntityType::Function(2));
-        
-        self.func_count = 4; 
+        self.types
+            .function(std::iter::empty::<ValType>(), std::iter::once(ValType::I64));
+        // Type 1: (i64) -> () (print_obj)
+        self.types
+            .function(std::iter::once(ValType::I64), std::iter::empty::<ValType>());
+        // Type 2: (i64) -> i64 (alloc, sleep, block_on, is_truthy)
+        self.types
+            .function(std::iter::once(ValType::I64), std::iter::once(ValType::I64));
+        // Type 3: (i64, i64) -> i64 (add/sub/mul/lt/list_append/list_pop)
+        self.types
+            .function(std::iter::repeat(ValType::I64).take(2), std::iter::once(ValType::I64));
+        // Type 4: (i64, i64, i64) -> i32 (parse_scalar)
+        self.types.function(
+            std::iter::repeat(ValType::I64).take(3),
+            std::iter::once(ValType::I32),
+        );
+        // Type 5: (i64, i64, i64) -> i64 (stream_send, ws_send, slice, slice_new, dict_get)
+        self.types.function(
+            std::iter::repeat(ValType::I64).take(3),
+            std::iter::once(ValType::I64),
+        );
+        // Type 6: (i64, i64) -> () (list_builder_append)
+        self.types
+            .function(std::iter::repeat(ValType::I64).take(2), std::iter::empty());
+        // Type 7: (i64, i64, i64, i64) -> i64 (dict_pop)
+        self.types.function(
+            std::iter::repeat(ValType::I64).take(4),
+            std::iter::once(ValType::I64),
+        );
+        // Type 8: () -> () (print_newline)
+        self.types
+            .function(std::iter::empty::<ValType>(), std::iter::empty());
+
+        let mut import_idx = 0;
+        let mut add_import = |name: &str, ty: u32, ids: &mut HashMap<String, u32>| {
+            self.imports
+                .import("molt_runtime", name, EntityType::Function(ty));
+            ids.insert(name.to_string(), import_idx);
+            import_idx += 1;
+        };
+
+        // Host Imports (aligned with wit/molt-runtime.wit)
+        add_import("print_obj", 1, &mut self.import_ids);
+        add_import("print_newline", 8, &mut self.import_ids);
+        add_import("alloc", 2, &mut self.import_ids);
+        add_import("async_sleep", 2, &mut self.import_ids);
+        add_import("block_on", 2, &mut self.import_ids);
+        add_import("add", 3, &mut self.import_ids);
+        add_import("vec_sum_int", 3, &mut self.import_ids);
+        add_import("sub", 3, &mut self.import_ids);
+        add_import("mul", 3, &mut self.import_ids);
+        add_import("lt", 3, &mut self.import_ids);
+        add_import("eq", 3, &mut self.import_ids);
+        add_import("guard_type", 3, &mut self.import_ids);
+        add_import("is_truthy", 2, &mut self.import_ids);
+        add_import("json_parse_scalar", 4, &mut self.import_ids);
+        add_import("msgpack_parse_scalar", 4, &mut self.import_ids);
+        add_import("cbor_parse_scalar", 4, &mut self.import_ids);
+        add_import("string_from_bytes", 4, &mut self.import_ids);
+        add_import("bytes_from_bytes", 4, &mut self.import_ids);
+        add_import("str_from_obj", 2, &mut self.import_ids);
+        add_import("len", 2, &mut self.import_ids);
+        add_import("slice", 5, &mut self.import_ids);
+        add_import("slice_new", 5, &mut self.import_ids);
+        add_import("range_new", 5, &mut self.import_ids);
+        add_import("list_builder_new", 2, &mut self.import_ids);
+        add_import("list_builder_append", 6, &mut self.import_ids);
+        add_import("list_builder_finish", 2, &mut self.import_ids);
+        add_import("tuple_builder_finish", 2, &mut self.import_ids);
+        add_import("list_append", 3, &mut self.import_ids);
+        add_import("list_pop", 3, &mut self.import_ids);
+        add_import("list_extend", 3, &mut self.import_ids);
+        add_import("list_insert", 5, &mut self.import_ids);
+        add_import("list_remove", 3, &mut self.import_ids);
+        add_import("list_count", 3, &mut self.import_ids);
+        add_import("list_index", 3, &mut self.import_ids);
+        add_import("dict_new", 2, &mut self.import_ids);
+        add_import("dict_set", 5, &mut self.import_ids);
+        add_import("dict_get", 5, &mut self.import_ids);
+        add_import("dict_pop", 7, &mut self.import_ids);
+        add_import("dict_keys", 2, &mut self.import_ids);
+        add_import("dict_values", 2, &mut self.import_ids);
+        add_import("dict_items", 2, &mut self.import_ids);
+        add_import("tuple_count", 3, &mut self.import_ids);
+        add_import("tuple_index", 3, &mut self.import_ids);
+        add_import("iter", 2, &mut self.import_ids);
+        add_import("iter_next", 2, &mut self.import_ids);
+        add_import("index", 3, &mut self.import_ids);
+        add_import("store_index", 5, &mut self.import_ids);
+        add_import("bytes_find", 3, &mut self.import_ids);
+        add_import("bytearray_find", 3, &mut self.import_ids);
+        add_import("string_find", 3, &mut self.import_ids);
+        add_import("string_format", 3, &mut self.import_ids);
+        add_import("string_startswith", 3, &mut self.import_ids);
+        add_import("string_endswith", 3, &mut self.import_ids);
+        add_import("string_count", 3, &mut self.import_ids);
+        add_import("string_join", 3, &mut self.import_ids);
+        add_import("string_split", 3, &mut self.import_ids);
+        add_import("bytes_split", 3, &mut self.import_ids);
+        add_import("bytearray_split", 3, &mut self.import_ids);
+        add_import("string_replace", 5, &mut self.import_ids);
+        add_import("bytes_replace", 5, &mut self.import_ids);
+        add_import("bytearray_replace", 5, &mut self.import_ids);
+        add_import("bytearray_from_obj", 2, &mut self.import_ids);
+        add_import("buffer2d_new", 5, &mut self.import_ids);
+        add_import("buffer2d_get", 5, &mut self.import_ids);
+        add_import("buffer2d_set", 7, &mut self.import_ids);
+        add_import("buffer2d_matmul", 3, &mut self.import_ids);
+        add_import("dataclass_new", 7, &mut self.import_ids);
+        add_import("dataclass_get", 3, &mut self.import_ids);
+        add_import("dataclass_set", 5, &mut self.import_ids);
+        add_import("stream_new", 2, &mut self.import_ids);
+        add_import("stream_send", 5, &mut self.import_ids);
+        add_import("stream_recv", 2, &mut self.import_ids);
+        add_import("stream_close", 1, &mut self.import_ids);
+        add_import("ws_connect", 4, &mut self.import_ids);
+        add_import("ws_pair", 4, &mut self.import_ids);
+        add_import("ws_send", 5, &mut self.import_ids);
+        add_import("ws_recv", 2, &mut self.import_ids);
+        add_import("ws_close", 1, &mut self.import_ids);
+
+        self.func_count = import_idx;
 
         // Memory & Table
         self.memories.memory(MemoryType {
@@ -65,7 +198,7 @@ impl WasmBackend {
             shared: false,
         });
         self.exports.export("molt_memory", ExportKind::Memory, 0);
-        
+
         self.tables.table(TableType {
             element_type: RefType::FUNCREF,
             minimum: 20,
@@ -74,26 +207,27 @@ impl WasmBackend {
         self.exports.export("molt_table", ExportKind::Table, 0);
 
         // Function indices for table
-        let mut table_indices = vec![2]; // async_sleep at index 0 of table
+        let mut table_indices = vec![self.import_ids["async_sleep"]]; // async_sleep at index 0 of table
         let mut func_to_table_idx = HashMap::new();
         func_to_table_idx.insert("molt_async_sleep".to_string(), 0);
-        
+
         let user_func_start = self.func_count;
         for (i, func_ir) in ir.functions.iter().enumerate() {
-            let idx = (i + 1) as u32; 
+            let idx = (i + 1) as u32;
             func_to_table_idx.insert(func_ir.name.clone(), idx);
             table_indices.push(user_func_start + i as u32);
         }
-        
+
         self.elements.active(
             None,
             &ConstExpr::i32_const(0),
             wasm_encoder::Elements::Functions(&table_indices),
         );
 
+        let import_ids = self.import_ids.clone();
         for func_ir in ir.functions {
             let type_idx = if func_ir.name.ends_with("_poll") { 2 } else { 0 };
-            self.compile_func(func_ir, type_idx, &func_to_table_idx); 
+            self.compile_func(func_ir, type_idx, &func_to_table_idx, &import_ids);
         }
 
         self.module.section(&self.types);
@@ -104,16 +238,23 @@ impl WasmBackend {
         self.module.section(&self.exports);
         self.module.section(&self.elements);
         self.module.section(&self.codes);
-        
+        self.module.section(&self.data);
+
         self.module.finish()
     }
 
-    fn compile_func(&mut self, func_ir: FunctionIR, type_idx: u32, func_map: &HashMap<String, u32>) {
+    fn compile_func(
+        &mut self,
+        func_ir: FunctionIR,
+        type_idx: u32,
+        func_map: &HashMap<String, u32>,
+        import_ids: &HashMap<String, u32>,
+    ) {
         self.funcs.function(type_idx);
         self.exports.export(&func_ir.name, ExportKind::Func, self.func_count);
         self.func_count += 1;
 
-        let mut locals = HashMap::new(); 
+        let mut locals = HashMap::new();
         let mut local_count = 0;
         let mut local_types = Vec::new();
 
@@ -129,6 +270,20 @@ impl WasmBackend {
                     local_types.push(ValType::I64);
                     local_count += 1;
                 }
+                if op.kind == "const_str" || op.kind == "const_bytes" {
+                    let ptr_name = format!("{out}_ptr");
+                    if !locals.contains_key(&ptr_name) {
+                        locals.insert(ptr_name, local_count);
+                        local_types.push(ValType::I64);
+                        local_count += 1;
+                    }
+                    let len_name = format!("{out}_len");
+                    if !locals.contains_key(&len_name) {
+                        locals.insert(len_name, local_count);
+                        local_types.push(ValType::I64);
+                        local_count += 1;
+                    }
+                }
             }
         }
 
@@ -138,9 +293,97 @@ impl WasmBackend {
             match op.kind.as_str() {
                 "const" => {
                     let val = op.value.unwrap();
-                    func.instruction(&Instruction::I64Const(val));
+                    func.instruction(&Instruction::I64Const(box_int(val)));
                     let local_idx = locals[op.out.as_ref().unwrap()];
                     func.instruction(&Instruction::LocalSet(local_idx));
+                }
+                "const_float" => {
+                    let val = op.f_value.expect("Float value not found");
+                    func.instruction(&Instruction::I64Const(box_float(val)));
+                    let local_idx = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(local_idx));
+                }
+                "const_none" => {
+                    func.instruction(&Instruction::I64Const(box_none()));
+                    let local_idx = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(local_idx));
+                }
+                "const_str" => {
+                    let s = op.s_value.as_ref().unwrap();
+                    let out_name = op.out.as_ref().unwrap();
+                    let bytes = s.as_bytes();
+                    let offset = self.data_offset;
+                    self.data.active(
+                        0,
+                        &ConstExpr::i32_const(offset as i32),
+                        bytes.iter().copied(),
+                    );
+                    self.data_offset = (self.data_offset + bytes.len() as u32 + 7) & !7;
+
+                    let ptr_local = locals[&format!("{out_name}_ptr")];
+                    let len_local = locals[&format!("{out_name}_len")];
+                    func.instruction(&Instruction::I64Const(offset as i64));
+                    func.instruction(&Instruction::LocalSet(ptr_local));
+                    func.instruction(&Instruction::I64Const(bytes.len() as i64));
+                    func.instruction(&Instruction::LocalSet(len_local));
+
+                    func.instruction(&Instruction::I64Const(8));
+                    func.instruction(&Instruction::Call(import_ids["alloc"]));
+                    let out_local = locals[out_name];
+                    func.instruction(&Instruction::LocalSet(out_local));
+
+                    func.instruction(&Instruction::LocalGet(ptr_local));
+                    func.instruction(&Instruction::LocalGet(len_local));
+                    func.instruction(&Instruction::LocalGet(out_local));
+                    func.instruction(&Instruction::Call(import_ids["string_from_bytes"]));
+                    func.instruction(&Instruction::Drop);
+
+                    func.instruction(&Instruction::LocalGet(out_local));
+                    func.instruction(&Instruction::I32WrapI64);
+                    func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                        align: 3,
+                        offset: 0,
+                        memory_index: 0,
+                    }));
+                    func.instruction(&Instruction::LocalSet(out_local));
+                }
+                "const_bytes" => {
+                    let bytes = op.bytes.as_ref().expect("Bytes not found");
+                    let out_name = op.out.as_ref().unwrap();
+                    let offset = self.data_offset;
+                    self.data.active(
+                        0,
+                        &ConstExpr::i32_const(offset as i32),
+                        bytes.iter().copied(),
+                    );
+                    self.data_offset = (self.data_offset + bytes.len() as u32 + 7) & !7;
+
+                    let ptr_local = locals[&format!("{out_name}_ptr")];
+                    let len_local = locals[&format!("{out_name}_len")];
+                    func.instruction(&Instruction::I64Const(offset as i64));
+                    func.instruction(&Instruction::LocalSet(ptr_local));
+                    func.instruction(&Instruction::I64Const(bytes.len() as i64));
+                    func.instruction(&Instruction::LocalSet(len_local));
+
+                    func.instruction(&Instruction::I64Const(8));
+                    func.instruction(&Instruction::Call(import_ids["alloc"]));
+                    let out_local = locals[out_name];
+                    func.instruction(&Instruction::LocalSet(out_local));
+
+                    func.instruction(&Instruction::LocalGet(ptr_local));
+                    func.instruction(&Instruction::LocalGet(len_local));
+                    func.instruction(&Instruction::LocalGet(out_local));
+                    func.instruction(&Instruction::Call(import_ids["bytes_from_bytes"]));
+                    func.instruction(&Instruction::Drop);
+
+                    func.instruction(&Instruction::LocalGet(out_local));
+                    func.instruction(&Instruction::I32WrapI64);
+                    func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                        align: 3,
+                        offset: 0,
+                        memory_index: 0,
+                    }));
+                    func.instruction(&Instruction::LocalSet(out_local));
                 }
                 "add" => {
                     let args = op.args.as_ref().unwrap();
@@ -148,21 +391,697 @@ impl WasmBackend {
                     let rhs = locals[&args[1]];
                     func.instruction(&Instruction::LocalGet(lhs));
                     func.instruction(&Instruction::LocalGet(rhs));
-                    func.instruction(&Instruction::I64Add);
+                    func.instruction(&Instruction::Call(import_ids["add"]));
                     let res = locals[op.out.as_ref().unwrap()];
                     func.instruction(&Instruction::LocalSet(res));
+                }
+                "vec_sum_int" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = locals[&args[0]];
+                    let acc = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(seq));
+                    func.instruction(&Instruction::LocalGet(acc));
+                    func.instruction(&Instruction::Call(import_ids["vec_sum_int"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "sub" => {
+                    let args = op.args.as_ref().unwrap();
+                    let lhs = locals[&args[0]];
+                    let rhs = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(lhs));
+                    func.instruction(&Instruction::LocalGet(rhs));
+                    func.instruction(&Instruction::Call(import_ids["sub"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "mul" => {
+                    let args = op.args.as_ref().unwrap();
+                    let lhs = locals[&args[0]];
+                    let rhs = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(lhs));
+                    func.instruction(&Instruction::LocalGet(rhs));
+                    func.instruction(&Instruction::Call(import_ids["mul"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "lt" => {
+                    let args = op.args.as_ref().unwrap();
+                    let lhs = locals[&args[0]];
+                    let rhs = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(lhs));
+                    func.instruction(&Instruction::LocalGet(rhs));
+                    func.instruction(&Instruction::Call(import_ids["lt"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "eq" => {
+                    let args = op.args.as_ref().unwrap();
+                    let lhs = locals[&args[0]];
+                    let rhs = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(lhs));
+                    func.instruction(&Instruction::LocalGet(rhs));
+                    func.instruction(&Instruction::Call(import_ids["eq"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "guard_type" => {
+                    let args = op.args.as_ref().unwrap();
+                    let val = locals[&args[0]];
+                    let expected = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(val));
+                    func.instruction(&Instruction::LocalGet(expected));
+                    func.instruction(&Instruction::Call(import_ids["guard_type"]));
+                    if let Some(out) = op.out.as_ref() {
+                        let res = locals[out];
+                        func.instruction(&Instruction::LocalSet(res));
+                    } else {
+                        func.instruction(&Instruction::Drop);
+                    }
                 }
                 "print" => {
                     let args = op.args.as_ref().unwrap();
                     if let Some(&idx) = locals.get(&args[0]) {
                         func.instruction(&Instruction::LocalGet(idx));
-                        func.instruction(&Instruction::Call(0)); 
+                        func.instruction(&Instruction::Call(import_ids["print_obj"]));
                     }
+                }
+                "print_newline" => {
+                    func.instruction(&Instruction::Call(import_ids["print_newline"]));
                 }
                 "alloc" => {
                     func.instruction(&Instruction::I64Const(op.value.unwrap()));
-                    func.instruction(&Instruction::Call(1)); 
+                    func.instruction(&Instruction::Call(import_ids["alloc"]));
                     func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                }
+                "json_parse" => {
+                    let args = op.args.as_ref().unwrap();
+                    let arg_name = &args[0];
+                    let ptr = locals
+                        .get(&format!("{arg_name}_ptr"))
+                        .copied()
+                        .unwrap_or(locals[arg_name]);
+                    let len = locals[&format!("{arg_name}_len")];
+
+                    func.instruction(&Instruction::I64Const(8));
+                    func.instruction(&Instruction::Call(import_ids["alloc"]));
+                    let out_ptr = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(out_ptr));
+
+                    func.instruction(&Instruction::LocalGet(ptr));
+                    func.instruction(&Instruction::LocalGet(len));
+                    func.instruction(&Instruction::LocalGet(out_ptr));
+                    func.instruction(&Instruction::Call(import_ids["json_parse_scalar"]));
+                    func.instruction(&Instruction::Drop);
+
+                    func.instruction(&Instruction::LocalGet(out_ptr));
+                    func.instruction(&Instruction::I32WrapI64);
+                    func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                        align: 3,
+                        offset: 0,
+                        memory_index: 0,
+                    }));
+                    func.instruction(&Instruction::LocalSet(out_ptr));
+                }
+                "msgpack_parse" => {
+                    let args = op.args.as_ref().unwrap();
+                    let arg_name = &args[0];
+                    let ptr = locals
+                        .get(&format!("{arg_name}_ptr"))
+                        .copied()
+                        .unwrap_or(locals[arg_name]);
+                    let len = locals[&format!("{arg_name}_len")];
+
+                    func.instruction(&Instruction::I64Const(8));
+                    func.instruction(&Instruction::Call(import_ids["alloc"]));
+                    let out_ptr = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(out_ptr));
+
+                    func.instruction(&Instruction::LocalGet(ptr));
+                    func.instruction(&Instruction::LocalGet(len));
+                    func.instruction(&Instruction::LocalGet(out_ptr));
+                    func.instruction(&Instruction::Call(import_ids["msgpack_parse_scalar"]));
+                    func.instruction(&Instruction::Drop);
+
+                    func.instruction(&Instruction::LocalGet(out_ptr));
+                    func.instruction(&Instruction::I32WrapI64);
+                    func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                        align: 3,
+                        offset: 0,
+                        memory_index: 0,
+                    }));
+                    func.instruction(&Instruction::LocalSet(out_ptr));
+                }
+                "cbor_parse" => {
+                    let args = op.args.as_ref().unwrap();
+                    let arg_name = &args[0];
+                    let ptr = locals
+                        .get(&format!("{arg_name}_ptr"))
+                        .copied()
+                        .unwrap_or(locals[arg_name]);
+                    let len = locals[&format!("{arg_name}_len")];
+
+                    func.instruction(&Instruction::I64Const(8));
+                    func.instruction(&Instruction::Call(import_ids["alloc"]));
+                    let out_ptr = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(out_ptr));
+
+                    func.instruction(&Instruction::LocalGet(ptr));
+                    func.instruction(&Instruction::LocalGet(len));
+                    func.instruction(&Instruction::LocalGet(out_ptr));
+                    func.instruction(&Instruction::Call(import_ids["cbor_parse_scalar"]));
+                    func.instruction(&Instruction::Drop);
+
+                    func.instruction(&Instruction::LocalGet(out_ptr));
+                    func.instruction(&Instruction::I32WrapI64);
+                    func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                        align: 3,
+                        offset: 0,
+                        memory_index: 0,
+                    }));
+                    func.instruction(&Instruction::LocalSet(out_ptr));
+                }
+                "len" => {
+                    let args = op.args.as_ref().unwrap();
+                    let arg = locals[&args[0]];
+                    func.instruction(&Instruction::LocalGet(arg));
+                    func.instruction(&Instruction::Call(import_ids["len"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "list_new" => {
+                    let args = op.args.as_ref().unwrap();
+                    let out = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::I64Const(args.len() as i64));
+                    func.instruction(&Instruction::Call(import_ids["list_builder_new"]));
+                    func.instruction(&Instruction::LocalSet(out));
+                    for name in args {
+                        let val = locals[name];
+                        func.instruction(&Instruction::LocalGet(out));
+                        func.instruction(&Instruction::LocalGet(val));
+                        func.instruction(&Instruction::Call(import_ids["list_builder_append"]));
+                    }
+                    func.instruction(&Instruction::LocalGet(out));
+                    func.instruction(&Instruction::Call(import_ids["list_builder_finish"]));
+                    func.instruction(&Instruction::LocalSet(out));
+                }
+                "range_new" => {
+                    let args = op.args.as_ref().unwrap();
+                    let out = locals[op.out.as_ref().unwrap()];
+                    let start = locals[&args[0]];
+                    let stop = locals[&args[1]];
+                    let step = locals[&args[2]];
+                    func.instruction(&Instruction::LocalGet(start));
+                    func.instruction(&Instruction::LocalGet(stop));
+                    func.instruction(&Instruction::LocalGet(step));
+                    func.instruction(&Instruction::Call(import_ids["range_new"]));
+                    func.instruction(&Instruction::LocalSet(out));
+                }
+                "tuple_new" => {
+                    let args = op.args.as_ref().unwrap();
+                    let out = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::I64Const(args.len() as i64));
+                    func.instruction(&Instruction::Call(import_ids["list_builder_new"]));
+                    func.instruction(&Instruction::LocalSet(out));
+                    for name in args {
+                        let val = locals[name];
+                        func.instruction(&Instruction::LocalGet(out));
+                        func.instruction(&Instruction::LocalGet(val));
+                        func.instruction(&Instruction::Call(import_ids["list_builder_append"]));
+                    }
+                    func.instruction(&Instruction::LocalGet(out));
+                    func.instruction(&Instruction::Call(import_ids["tuple_builder_finish"]));
+                    func.instruction(&Instruction::LocalSet(out));
+                }
+                "list_append" => {
+                    let args = op.args.as_ref().unwrap();
+                    let list = locals[&args[0]];
+                    let val = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(list));
+                    func.instruction(&Instruction::LocalGet(val));
+                    func.instruction(&Instruction::Call(import_ids["list_append"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "list_pop" => {
+                    let args = op.args.as_ref().unwrap();
+                    let list = locals[&args[0]];
+                    let idx = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(list));
+                    func.instruction(&Instruction::LocalGet(idx));
+                    func.instruction(&Instruction::Call(import_ids["list_pop"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "list_extend" => {
+                    let args = op.args.as_ref().unwrap();
+                    let list = locals[&args[0]];
+                    let other = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(list));
+                    func.instruction(&Instruction::LocalGet(other));
+                    func.instruction(&Instruction::Call(import_ids["list_extend"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "list_insert" => {
+                    let args = op.args.as_ref().unwrap();
+                    let list = locals[&args[0]];
+                    let idx = locals[&args[1]];
+                    let val = locals[&args[2]];
+                    func.instruction(&Instruction::LocalGet(list));
+                    func.instruction(&Instruction::LocalGet(idx));
+                    func.instruction(&Instruction::LocalGet(val));
+                    func.instruction(&Instruction::Call(import_ids["list_insert"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "list_remove" => {
+                    let args = op.args.as_ref().unwrap();
+                    let list = locals[&args[0]];
+                    let val = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(list));
+                    func.instruction(&Instruction::LocalGet(val));
+                    func.instruction(&Instruction::Call(import_ids["list_remove"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "list_count" => {
+                    let args = op.args.as_ref().unwrap();
+                    let list = locals[&args[0]];
+                    let val = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(list));
+                    func.instruction(&Instruction::LocalGet(val));
+                    func.instruction(&Instruction::Call(import_ids["list_count"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "list_index" => {
+                    let args = op.args.as_ref().unwrap();
+                    let list = locals[&args[0]];
+                    let val = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(list));
+                    func.instruction(&Instruction::LocalGet(val));
+                    func.instruction(&Instruction::Call(import_ids["list_index"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "dict_new" => {
+                    let args = op.args.as_ref().unwrap();
+                    let out = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::I64Const((args.len() / 2) as i64));
+                    func.instruction(&Instruction::Call(import_ids["dict_new"]));
+                    func.instruction(&Instruction::LocalSet(out));
+                    for pair in args.chunks(2) {
+                        let key = locals[&pair[0]];
+                        let val = locals[&pair[1]];
+                        func.instruction(&Instruction::LocalGet(out));
+                        func.instruction(&Instruction::LocalGet(key));
+                        func.instruction(&Instruction::LocalGet(val));
+                        func.instruction(&Instruction::Call(import_ids["dict_set"]));
+                        func.instruction(&Instruction::LocalSet(out));
+                    }
+                }
+                "dict_get" => {
+                    let args = op.args.as_ref().unwrap();
+                    let dict = locals[&args[0]];
+                    let key = locals[&args[1]];
+                    let default = locals[&args[2]];
+                    func.instruction(&Instruction::LocalGet(dict));
+                    func.instruction(&Instruction::LocalGet(key));
+                    func.instruction(&Instruction::LocalGet(default));
+                    func.instruction(&Instruction::Call(import_ids["dict_get"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "dict_pop" => {
+                    let args = op.args.as_ref().unwrap();
+                    let dict = locals[&args[0]];
+                    let key = locals[&args[1]];
+                    let default = locals[&args[2]];
+                    let has_default = locals[&args[3]];
+                    func.instruction(&Instruction::LocalGet(dict));
+                    func.instruction(&Instruction::LocalGet(key));
+                    func.instruction(&Instruction::LocalGet(default));
+                    func.instruction(&Instruction::LocalGet(has_default));
+                    func.instruction(&Instruction::Call(import_ids["dict_pop"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "dict_keys" => {
+                    let args = op.args.as_ref().unwrap();
+                    let dict = locals[&args[0]];
+                    func.instruction(&Instruction::LocalGet(dict));
+                    func.instruction(&Instruction::Call(import_ids["dict_keys"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "dict_values" => {
+                    let args = op.args.as_ref().unwrap();
+                    let dict = locals[&args[0]];
+                    func.instruction(&Instruction::LocalGet(dict));
+                    func.instruction(&Instruction::Call(import_ids["dict_values"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "dict_items" => {
+                    let args = op.args.as_ref().unwrap();
+                    let dict = locals[&args[0]];
+                    func.instruction(&Instruction::LocalGet(dict));
+                    func.instruction(&Instruction::Call(import_ids["dict_items"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "tuple_count" => {
+                    let args = op.args.as_ref().unwrap();
+                    let tuple = locals[&args[0]];
+                    let val = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(tuple));
+                    func.instruction(&Instruction::LocalGet(val));
+                    func.instruction(&Instruction::Call(import_ids["tuple_count"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "tuple_index" => {
+                    let args = op.args.as_ref().unwrap();
+                    let tuple = locals[&args[0]];
+                    let val = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(tuple));
+                    func.instruction(&Instruction::LocalGet(val));
+                    func.instruction(&Instruction::Call(import_ids["tuple_index"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "iter" => {
+                    let args = op.args.as_ref().unwrap();
+                    let obj = locals[&args[0]];
+                    func.instruction(&Instruction::LocalGet(obj));
+                    func.instruction(&Instruction::Call(import_ids["iter"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "iter_next" => {
+                    let args = op.args.as_ref().unwrap();
+                    let iter = locals[&args[0]];
+                    func.instruction(&Instruction::LocalGet(iter));
+                    func.instruction(&Instruction::Call(import_ids["iter_next"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "index" => {
+                    let args = op.args.as_ref().unwrap();
+                    let obj = locals[&args[0]];
+                    let idx = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(obj));
+                    func.instruction(&Instruction::LocalGet(idx));
+                    func.instruction(&Instruction::Call(import_ids["index"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "store_index" => {
+                    let args = op.args.as_ref().unwrap();
+                    let obj = locals[&args[0]];
+                    let idx = locals[&args[1]];
+                    let val = locals[&args[2]];
+                    func.instruction(&Instruction::LocalGet(obj));
+                    func.instruction(&Instruction::LocalGet(idx));
+                    func.instruction(&Instruction::LocalGet(val));
+                    func.instruction(&Instruction::Call(import_ids["store_index"]));
+                    if let Some(out) = op.out.as_ref() {
+                        let res = locals[out];
+                        func.instruction(&Instruction::LocalSet(res));
+                    } else {
+                        func.instruction(&Instruction::Drop);
+                    }
+                }
+                "slice" => {
+                    let args = op.args.as_ref().unwrap();
+                    let obj = locals[&args[0]];
+                    let start = locals[&args[1]];
+                    let end = locals[&args[2]];
+                    func.instruction(&Instruction::LocalGet(obj));
+                    func.instruction(&Instruction::LocalGet(start));
+                    func.instruction(&Instruction::LocalGet(end));
+                    func.instruction(&Instruction::Call(import_ids["slice"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "slice_new" => {
+                    let args = op.args.as_ref().unwrap();
+                    let start = locals[&args[0]];
+                    let stop = locals[&args[1]];
+                    let step = locals[&args[2]];
+                    func.instruction(&Instruction::LocalGet(start));
+                    func.instruction(&Instruction::LocalGet(stop));
+                    func.instruction(&Instruction::LocalGet(step));
+                    func.instruction(&Instruction::Call(import_ids["slice_new"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "bytes_find" => {
+                    let args = op.args.as_ref().unwrap();
+                    let hay = locals[&args[0]];
+                    let needle = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(hay));
+                    func.instruction(&Instruction::LocalGet(needle));
+                    func.instruction(&Instruction::Call(import_ids["bytes_find"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "bytearray_find" => {
+                    let args = op.args.as_ref().unwrap();
+                    let hay = locals[&args[0]];
+                    let needle = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(hay));
+                    func.instruction(&Instruction::LocalGet(needle));
+                    func.instruction(&Instruction::Call(import_ids["bytearray_find"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "string_find" => {
+                    let args = op.args.as_ref().unwrap();
+                    let hay = locals[&args[0]];
+                    let needle = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(hay));
+                    func.instruction(&Instruction::LocalGet(needle));
+                    func.instruction(&Instruction::Call(import_ids["string_find"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "string_format" => {
+                    let args = op.args.as_ref().unwrap();
+                    let val = locals[&args[0]];
+                    let spec = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(val));
+                    func.instruction(&Instruction::LocalGet(spec));
+                    func.instruction(&Instruction::Call(import_ids["string_format"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "string_startswith" => {
+                    let args = op.args.as_ref().unwrap();
+                    let hay = locals[&args[0]];
+                    let needle = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(hay));
+                    func.instruction(&Instruction::LocalGet(needle));
+                    func.instruction(&Instruction::Call(import_ids["string_startswith"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "string_endswith" => {
+                    let args = op.args.as_ref().unwrap();
+                    let hay = locals[&args[0]];
+                    let needle = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(hay));
+                    func.instruction(&Instruction::LocalGet(needle));
+                    func.instruction(&Instruction::Call(import_ids["string_endswith"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "string_count" => {
+                    let args = op.args.as_ref().unwrap();
+                    let hay = locals[&args[0]];
+                    let needle = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(hay));
+                    func.instruction(&Instruction::LocalGet(needle));
+                    func.instruction(&Instruction::Call(import_ids["string_count"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "string_join" => {
+                    let args = op.args.as_ref().unwrap();
+                    let sep = locals[&args[0]];
+                    let items = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(sep));
+                    func.instruction(&Instruction::LocalGet(items));
+                    func.instruction(&Instruction::Call(import_ids["string_join"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "string_split" => {
+                    let args = op.args.as_ref().unwrap();
+                    let hay = locals[&args[0]];
+                    let needle = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(hay));
+                    func.instruction(&Instruction::LocalGet(needle));
+                    func.instruction(&Instruction::Call(import_ids["string_split"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "bytes_split" => {
+                    let args = op.args.as_ref().unwrap();
+                    let hay = locals[&args[0]];
+                    let needle = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(hay));
+                    func.instruction(&Instruction::LocalGet(needle));
+                    func.instruction(&Instruction::Call(import_ids["bytes_split"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "bytearray_split" => {
+                    let args = op.args.as_ref().unwrap();
+                    let hay = locals[&args[0]];
+                    let needle = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(hay));
+                    func.instruction(&Instruction::LocalGet(needle));
+                    func.instruction(&Instruction::Call(import_ids["bytearray_split"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "bytes_replace" => {
+                    let args = op.args.as_ref().unwrap();
+                    let hay = locals[&args[0]];
+                    let needle = locals[&args[1]];
+                    let replacement = locals[&args[2]];
+                    func.instruction(&Instruction::LocalGet(hay));
+                    func.instruction(&Instruction::LocalGet(needle));
+                    func.instruction(&Instruction::LocalGet(replacement));
+                    func.instruction(&Instruction::Call(import_ids["bytes_replace"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "string_replace" => {
+                    let args = op.args.as_ref().unwrap();
+                    let hay = locals[&args[0]];
+                    let needle = locals[&args[1]];
+                    let replacement = locals[&args[2]];
+                    func.instruction(&Instruction::LocalGet(hay));
+                    func.instruction(&Instruction::LocalGet(needle));
+                    func.instruction(&Instruction::LocalGet(replacement));
+                    func.instruction(&Instruction::Call(import_ids["string_replace"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "bytearray_replace" => {
+                    let args = op.args.as_ref().unwrap();
+                    let hay = locals[&args[0]];
+                    let needle = locals[&args[1]];
+                    let replacement = locals[&args[2]];
+                    func.instruction(&Instruction::LocalGet(hay));
+                    func.instruction(&Instruction::LocalGet(needle));
+                    func.instruction(&Instruction::LocalGet(replacement));
+                    func.instruction(&Instruction::Call(import_ids["bytearray_replace"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "bytearray_from_obj" => {
+                    let args = op.args.as_ref().unwrap();
+                    let src = locals[&args[0]];
+                    func.instruction(&Instruction::LocalGet(src));
+                    func.instruction(&Instruction::Call(import_ids["bytearray_from_obj"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "buffer2d_new" => {
+                    let args = op.args.as_ref().unwrap();
+                    let rows = locals[&args[0]];
+                    let cols = locals[&args[1]];
+                    let init = locals[&args[2]];
+                    func.instruction(&Instruction::LocalGet(rows));
+                    func.instruction(&Instruction::LocalGet(cols));
+                    func.instruction(&Instruction::LocalGet(init));
+                    func.instruction(&Instruction::Call(import_ids["buffer2d_new"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "buffer2d_get" => {
+                    let args = op.args.as_ref().unwrap();
+                    let buf = locals[&args[0]];
+                    let row = locals[&args[1]];
+                    let col = locals[&args[2]];
+                    func.instruction(&Instruction::LocalGet(buf));
+                    func.instruction(&Instruction::LocalGet(row));
+                    func.instruction(&Instruction::LocalGet(col));
+                    func.instruction(&Instruction::Call(import_ids["buffer2d_get"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "buffer2d_set" => {
+                    let args = op.args.as_ref().unwrap();
+                    let buf = locals[&args[0]];
+                    let row = locals[&args[1]];
+                    let col = locals[&args[2]];
+                    let val = locals[&args[3]];
+                    func.instruction(&Instruction::LocalGet(buf));
+                    func.instruction(&Instruction::LocalGet(row));
+                    func.instruction(&Instruction::LocalGet(col));
+                    func.instruction(&Instruction::LocalGet(val));
+                    func.instruction(&Instruction::Call(import_ids["buffer2d_set"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "buffer2d_matmul" => {
+                    let args = op.args.as_ref().unwrap();
+                    let lhs = locals[&args[0]];
+                    let rhs = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(lhs));
+                    func.instruction(&Instruction::LocalGet(rhs));
+                    func.instruction(&Instruction::Call(import_ids["buffer2d_matmul"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "str_from_obj" => {
+                    let args = op.args.as_ref().unwrap();
+                    let src = locals[&args[0]];
+                    func.instruction(&Instruction::LocalGet(src));
+                    func.instruction(&Instruction::Call(import_ids["str_from_obj"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "dataclass_new" => {
+                    let args = op.args.as_ref().unwrap();
+                    let name = locals[&args[0]];
+                    let fields = locals[&args[1]];
+                    let values = locals[&args[2]];
+                    let flags = locals[&args[3]];
+                    func.instruction(&Instruction::LocalGet(name));
+                    func.instruction(&Instruction::LocalGet(fields));
+                    func.instruction(&Instruction::LocalGet(values));
+                    func.instruction(&Instruction::LocalGet(flags));
+                    func.instruction(&Instruction::Call(import_ids["dataclass_new"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "dataclass_get" => {
+                    let args = op.args.as_ref().unwrap();
+                    let obj = locals[&args[0]];
+                    let idx = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(obj));
+                    func.instruction(&Instruction::LocalGet(idx));
+                    func.instruction(&Instruction::Call(import_ids["dataclass_get"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "dataclass_set" => {
+                    let args = op.args.as_ref().unwrap();
+                    let obj = locals[&args[0]];
+                    let idx = locals[&args[1]];
+                    let val = locals[&args[2]];
+                    func.instruction(&Instruction::LocalGet(obj));
+                    func.instruction(&Instruction::LocalGet(idx));
+                    func.instruction(&Instruction::LocalGet(val));
+                    func.instruction(&Instruction::Call(import_ids["dataclass_set"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
                 }
                 "store" => {
                     let args = op.args.as_ref().unwrap();
@@ -201,7 +1120,7 @@ impl WasmBackend {
                 "state_transition" => {
                     let args = op.args.as_ref().unwrap();
                     let future = locals[&args[0]];
-                    func.instruction(&Instruction::LocalGet(0)); 
+                    func.instruction(&Instruction::LocalGet(0));
                     func.instruction(&Instruction::I32WrapI64);
                     func.instruction(&Instruction::I32Const(op.value.unwrap() as i32));
                     func.instruction(&Instruction::I32Store(wasm_encoder::MemArg {
@@ -214,7 +1133,7 @@ impl WasmBackend {
                     func.instruction(&Instruction::I32WrapI64);
                     func.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
                         align: 2,
-                        offset: 8, 
+                        offset: 8,
                         memory_index: 0,
                     }));
                     func.instruction(&Instruction::CallIndirect { ty: 2, table: 0 });
@@ -222,7 +1141,7 @@ impl WasmBackend {
                 }
                 "call_async" => {
                     func.instruction(&Instruction::I64Const(0));
-                    func.instruction(&Instruction::Call(1)); 
+                    func.instruction(&Instruction::Call(import_ids["alloc"]));
                     let res = locals[op.out.as_ref().unwrap()];
                     func.instruction(&Instruction::LocalSet(res));
                     func.instruction(&Instruction::LocalGet(res));
@@ -237,13 +1156,13 @@ impl WasmBackend {
                 }
                 "alloc_future" => {
                     func.instruction(&Instruction::I64Const(0));
-                    func.instruction(&Instruction::Call(1)); 
+                    func.instruction(&Instruction::Call(import_ids["alloc"]));
                     let res = locals[op.out.as_ref().unwrap()];
                     func.instruction(&Instruction::LocalSet(res));
                     func.instruction(&Instruction::LocalGet(res));
                     func.instruction(&Instruction::I32WrapI64);
                     let table_idx = func_map[op.s_value.as_ref().unwrap()];
-                    func.instruction(&Instruction::I32Const(table_idx as i32)); 
+                    func.instruction(&Instruction::I32Const(table_idx as i32));
                     func.instruction(&Instruction::I32Store(wasm_encoder::MemArg {
                         align: 2,
                         offset: 8,
@@ -253,7 +1172,7 @@ impl WasmBackend {
                 "block_on" => {
                     let args = op.args.as_ref().unwrap();
                     func.instruction(&Instruction::LocalGet(locals[&args[0]]));
-                    func.instruction(&Instruction::Call(3)); 
+                    func.instruction(&Instruction::Call(import_ids["block_on"]));
                     func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                 }
                 "ret" => {
@@ -264,6 +1183,66 @@ impl WasmBackend {
                     if type_idx == 0 || type_idx == 2 {
                         func.instruction(&Instruction::I64Const(0));
                     }
+                    func.instruction(&Instruction::End);
+                }
+                "if" => {
+                    let args = op.args.as_ref().unwrap();
+                    let cond = locals[&args[0]];
+                    func.instruction(&Instruction::LocalGet(cond));
+                    func.instruction(&Instruction::Call(import_ids["is_truthy"]));
+                    func.instruction(&Instruction::I64Const(0));
+                    func.instruction(&Instruction::I64Ne);
+                    func.instruction(&Instruction::If(BlockType::Empty));
+                }
+                "else" => {
+                    func.instruction(&Instruction::Else);
+                }
+                "end_if" => {
+                    func.instruction(&Instruction::End);
+                }
+                "loop_start" => {
+                    func.instruction(&Instruction::Block(BlockType::Empty));
+                    func.instruction(&Instruction::Loop(BlockType::Empty));
+                }
+                "loop_index_start" => {
+                    let args = op.args.as_ref().unwrap();
+                    let start = locals[&args[0]];
+                    let out = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalGet(start));
+                    func.instruction(&Instruction::LocalSet(out));
+                    func.instruction(&Instruction::Block(BlockType::Empty));
+                    func.instruction(&Instruction::Loop(BlockType::Empty));
+                }
+                "loop_index_next" => {
+                    let args = op.args.as_ref().unwrap();
+                    let next_idx = locals[&args[0]];
+                    let out = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalGet(next_idx));
+                    func.instruction(&Instruction::LocalSet(out));
+                }
+                "loop_break_if_true" => {
+                    let args = op.args.as_ref().unwrap();
+                    let cond = locals[&args[0]];
+                    func.instruction(&Instruction::LocalGet(cond));
+                    func.instruction(&Instruction::Call(import_ids["is_truthy"]));
+                    func.instruction(&Instruction::I64Const(0));
+                    func.instruction(&Instruction::I64Ne);
+                    func.instruction(&Instruction::BrIf(1));
+                }
+                "loop_break_if_false" => {
+                    let args = op.args.as_ref().unwrap();
+                    let cond = locals[&args[0]];
+                    func.instruction(&Instruction::LocalGet(cond));
+                    func.instruction(&Instruction::Call(import_ids["is_truthy"]));
+                    func.instruction(&Instruction::I64Const(0));
+                    func.instruction(&Instruction::I64Eq);
+                    func.instruction(&Instruction::BrIf(1));
+                }
+                "loop_continue" => {
+                    func.instruction(&Instruction::Br(0));
+                }
+                "loop_end" => {
+                    func.instruction(&Instruction::End);
                     func.instruction(&Instruction::End);
                 }
                 _ => {}

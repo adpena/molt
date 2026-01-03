@@ -9,7 +9,10 @@ crate-type = ["staticlib", "rlib", "cdylib"]
 [dependencies]
 molt-obj-model = { path = "../molt-obj-model" }
 serde_json = "1.0"
+rmpv = "1.0"
+serde_cbor = "0.11"
 crossbeam-deque = "0.8"
 crossbeam-channel = "0.5"
 num_cpus = "1.16"
 lazy_static = "1.4"
+memchr = "2.7"

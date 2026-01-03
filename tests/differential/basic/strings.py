@@ -1,0 +1,13 @@
+s = "hi" + " there"
+print(s)
+print(len(s))
+print(s[1:4])
+print(s.find("there"))
+print(s.find("missing"))
+print(s.split("e"))
+print(s.replace("e", "E"))
+print("hëllo".find("ë"))
+print(s.startswith("hi"))
+print(s.endswith("there"))
+print(s.count("e"))
+print("-".join(["a", "b", "c"]))

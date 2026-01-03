@@ -23,9 +23,22 @@ target-version = "py313"
 python_version = "3.13"
 strict = true
 
+[tool.molt.deps]
+tier_a = ["attrs", "click", "pydantic", "requests", "rich"]
+tier_b = ["orjson", "pydantic-core", "polars", "pyarrow", "ruff"]
+tier_c = ["numpy", "pandas", "scipy", "tensorflow", "torch"]
+native_wheels = ["cbor2", "cryptography", "msgpack"]
+
 
 [dependency-groups]
+bench = [
+    "cython>=3.2.3",
+    "numba>=0.63.1 ; python_full_version < '3.13'",
+    "setuptools>=80.9.0",
+]
 dev = [
+    "cbor2>=5.8.0",
+    "msgpack>=1.1.2",
     "mypy>=1.19.1",
     "pre-commit>=4.5.1",
     "pytest>=9.0.2",

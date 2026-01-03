@@ -1,11 +1,13 @@
 import subprocess
 import sys
 import os
+from pathlib import Path
 
 
 def run_cpython(file_path, python_exe=sys.executable):
     env = os.environ.copy()
-    env["PYTHONPATH"] = env.get("PYTHONPATH", "") + ":."
+    paths = [env.get("PYTHONPATH", ""), ".", "src"]
+    env["PYTHONPATH"] = os.pathsep.join(p for p in paths if p)
     result = subprocess.run(
         [python_exe, file_path], capture_output=True, text=True, env=env
     )
@@ -70,6 +72,12 @@ if __name__ == "__main__":
         python_exe = f"python{args.python_version}"
 
     if args.file:
+        target = Path(args.file)
+        if target.is_dir():
+            ok = True
+            for file_path in sorted(target.glob("*.py")):
+                ok = diff_test(str(file_path), python_exe) and ok
+            sys.exit(0 if ok else 1)
         diff_test(args.file, python_exe)
     else:
         # Default test

@@ -1,5 +1,7 @@
 # Molt Testing & Verification Strategy
 
+See `README.md` for quick-start testing commands and CI parity job summaries.
+
 ## 1. Differential Testing: The `molt-diff` Harness
 `molt-diff` is a specialized tool that ensures Molt semantics match CPython. The current harness lives in `tests/molt_diff.py` and builds + runs binaries via `python3 -m molt.cli build`.
 
@@ -12,6 +14,12 @@
 
 ### 1.2 State Snapshoting
 For complex tests, we use `molt.dump_state()` to export a JSON representation of global variables and compare the JSON output between runs.
+
+### 1.3 Curated Parity Suite
+Basic parity cases live in `tests/differential/basic/`. Run the full suite via:
+```
+python tests/molt_diff.py tests/differential/basic
+```
 
 ## 2. Automated Test Generation (Hypothesis)
 We use `Hypothesis` to generate random Python ASTs that fall within the Molt Tier 0 subset.

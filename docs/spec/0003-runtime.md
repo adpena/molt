@@ -19,36 +19,56 @@ pub enum MoltObject {
     Float(f64),
     Boolean(bool),
     None,
-    Pointer(*mut MoltHeader),
+    Pointer(*mut MoltHeader), // Strings, bytes, lists, dicts, etc.
 }
 ```
 
 ## 3. Memory Management
 
-### 3.1 RC + Incremental GC
+### 3.1 RC + Incremental GC (Baseline)
 - **Reference Counting (RC)**: The primary mechanism. Every heap object has a 32-bit RC in its header.
 - **Biased RC**: Objects that are predominantly owned by one thread use biased RC to avoid atomic overhead.
 - **Cycle Detection**: An incremental, non-blocking mark-and-sweep collector runs in the background. It only scans objects that have been "decremented but not freed" and are potentially part of a cycle.
 
-### 3.2 Header Layout (16 bytes)
+### 3.2 Memory Management Roadmap
+RC is predictable but adds per-write overhead. We plan to evaluate:
+- **Generational tracing GC** for short-lived objects (lower average overhead, better cache locality).
+- **Hybrid RC + tracing** (RC for deterministic release of FFI buffers; tracing for graph-heavy Python objects).
+- **Region/arena allocation** for compiler-internal short-lived objects.
+
+Determinism constraints: GC triggers must be driven by explicit byte/epoch budgets (not wall-clock), and we avoid user-visible finalizers.
+
+See `docs/spec/0009_GC_DESIGN.md` for the concrete hybrid design and targets.
+
+### 3.3 Header Layout (runtime-relevant)
 ```rust
 struct MoltHeader {
     type_id: u32,
-    rc: u32,
-    gc_flags: u32,
-    vtable_ptr: u32, // Offset into a global vtable array
+    ref_count: u32,
+    poll_fn: u64,
+    state: i64,
+    size: usize,
 }
 ```
 
 ## 4. Collections
-- **Lists**: `MoltList` - A contiguous array of `MoltObject` (64-bit values).
-- **Dicts**:
+- **Lists**: `MoltList` - Heap-managed `Vec<MoltObject>` storage with explicit length + capacity (growth supported).
+- **Tuples**: `MoltTuple` - Immutable sequence stored as a `Vec<MoltObject>` and hashable for composite keys.
+- **Bytes/Bytearray**: contiguous byte buffers stored inline after a length header. Bytearray methods return bytearray objects; bytes methods return bytes.
+- **Strings**: UTF-8 buffers stored inline; `find/split/replace/startswith/endswith/count/join` use ASCII fast paths with codepoint indexing for non-ASCII.
+- **Dicts**: `MoltDict` - Insertion-ordered key/value pairs plus a deterministic, open-addressing hash table for lookups.
+    - Table uses stable hashing (no randomized seeds) to keep binaries deterministic.
+    - `dict_keys`/`dict_values`/`dict_items` return view objects backed by the dict (not materialized lists).
+    - Iteration uses an explicit iterator object that tracks the target collection and index.
+    - Hot-path methods are exposed as intrinsics (e.g., `list.count/index`, `tuple.count/index`, `bytes/str.find`).
     - **Tier 0 (Structified)**: Objects of stable classes are lowered to a struct with no `__dict__`. Access is `*(base + offset)`.
     - **Tier 1 (Shape Dict)**: Uses a "Shape" pointer + a value array. If keys match the shape, access is indexed.
+- **Ranges**: `MoltRange` - Lazy sequence storing `start/stop/step` inline. `len`, `iter`, and `index` are computed without materializing lists.
+- **Slices**: `MoltSlice` - Inline `start/stop/step` object used by indexing and slicing ops.
 
 ## 5. Concurrency: No GIL
 Molt does not have a Global Interpreter Lock.
-- **Thread Safety**: 
+- **Thread Safety**:
     - Primitives and immutable objects (Strings, Tuples) are safe to share.
     - Mutable objects (Lists, Dicts) use fine-grained locking or are restricted to a single thread by default (requiring explicit `MoltThread` boundaries).
 - **Async**: Built on top of Rust's `Future` and `tokio`. Python `async/await` is lowered to Rust futures.

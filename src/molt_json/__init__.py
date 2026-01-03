@@ -19,8 +19,34 @@ _QNAN = 0x7FF8_0000_0000_0000
 _TAG_INT = 0x0001_0000_0000_0000
 _TAG_BOOL = 0x0002_0000_0000_0000
 _TAG_NONE = 0x0003_0000_0000_0000
-_TAG_PENDING = 0x0004_0000_0000_0000
+_TAG_PTR = 0x0004_0000_0000_0000
+_TAG_PENDING = 0x0005_0000_0000_0000
+_TAG_MASK = 0x0007_0000_0000_0000
 _POINTER_MASK = 0x0000_FFFF_FFFF_FFFF
+
+_TYPE_STRING = 200
+_TYPE_LIST = 201
+_TYPE_BYTES = 202
+_TYPE_DICT = 204
+_TYPE_TUPLE = 206
+
+
+class MoltHeader(ctypes.Structure):
+    _fields_ = [
+        ("type_id", ctypes.c_uint32),
+        ("ref_count", ctypes.c_uint32),
+        ("poll_fn", ctypes.c_uint64),
+        ("state", ctypes.c_int64),
+        ("size", ctypes.c_size_t),
+    ]
+
+
+class RustVec(ctypes.Structure):
+    _fields_ = [
+        ("data", ctypes.c_void_p),
+        ("len", ctypes.c_size_t),
+        ("cap", ctypes.c_size_t),
+    ]
 
 
 def _parse_int_runtime(data: str) -> int:
@@ -35,18 +61,71 @@ def _decode_molt_object(bits: int) -> Any:
     if (bits & _QNAN) != _QNAN:
         packed = bits.to_bytes(8, byteorder="little", signed=False)
         return struct.unpack("d", packed)[0]
-    if (bits & (_QNAN | _TAG_INT)) == (_QNAN | _TAG_INT):
+    if (bits & (_QNAN | _TAG_MASK)) == (_QNAN | _TAG_INT):
         raw = bits & _POINTER_MASK
         sign_bit = 1 << 46
         if raw & sign_bit:
             raw = raw - (1 << 47)
         return int(raw)
-    if (bits & (_QNAN | _TAG_BOOL)) == (_QNAN | _TAG_BOOL):
+    if (bits & (_QNAN | _TAG_MASK)) == (_QNAN | _TAG_BOOL):
         return bool(bits & 0x1)
-    if (bits & (_QNAN | _TAG_NONE)) == (_QNAN | _TAG_NONE):
+    if (bits & (_QNAN | _TAG_MASK)) == (_QNAN | _TAG_NONE):
         return None
-    if (bits & (_QNAN | _TAG_PENDING)) == (_QNAN | _TAG_PENDING):
+    if (bits & (_QNAN | _TAG_MASK)) == (_QNAN | _TAG_PENDING):
         raise RuntimeError("molt_json parse returned pending")
+    if (bits & (_QNAN | _TAG_MASK)) == (_QNAN | _TAG_PTR):
+        ptr = bits & _POINTER_MASK
+        header_ptr = ptr - ctypes.sizeof(MoltHeader)
+        header = MoltHeader.from_address(header_ptr)
+        if header.type_id == _TYPE_STRING:
+            length = ctypes.c_size_t.from_address(ptr).value
+            data_ptr = ptr + ctypes.sizeof(ctypes.c_size_t)
+            data = ctypes.string_at(data_ptr, length)
+            return data.decode("utf-8")
+        if header.type_id == _TYPE_BYTES:
+            length = ctypes.c_size_t.from_address(ptr).value
+            data_ptr = ptr + ctypes.sizeof(ctypes.c_size_t)
+            return ctypes.string_at(data_ptr, length)
+        if header.type_id == _TYPE_LIST:
+            vec_ptr = ctypes.c_void_p.from_address(ptr).value
+            if not vec_ptr:
+                return []
+            vec = RustVec.from_address(vec_ptr)
+            list_out: list[Any] = []
+            for idx in range(vec.len):
+                elem_bits = ctypes.c_uint64.from_address(
+                    vec.data + idx * ctypes.sizeof(ctypes.c_uint64)
+                ).value
+                list_out.append(_decode_molt_object(elem_bits))
+            return list_out
+        if header.type_id == _TYPE_DICT:
+            order_ptr = ctypes.c_void_p.from_address(ptr).value
+            if not order_ptr:
+                return {}
+            vec = RustVec.from_address(order_ptr)
+            dict_out: dict[Any, Any] = {}
+            for idx in range(0, vec.len, 2):
+                key_bits = ctypes.c_uint64.from_address(
+                    vec.data + idx * ctypes.sizeof(ctypes.c_uint64)
+                ).value
+                val_bits = ctypes.c_uint64.from_address(
+                    vec.data + (idx + 1) * ctypes.sizeof(ctypes.c_uint64)
+                ).value
+                dict_out[_decode_molt_object(key_bits)] = _decode_molt_object(val_bits)
+            return dict_out
+        if header.type_id == _TYPE_TUPLE:
+            vec_ptr = ctypes.c_void_p.from_address(ptr).value
+            if not vec_ptr:
+                return ()
+            vec = RustVec.from_address(vec_ptr)
+            items: list[Any] = []
+            for idx in range(vec.len):
+                elem_bits = ctypes.c_uint64.from_address(
+                    vec.data + idx * ctypes.sizeof(ctypes.c_uint64)
+                ).value
+                items.append(_decode_molt_object(elem_bits))
+            return tuple(items)
+        raise RuntimeError(f"Unsupported MoltObject type_id {header.type_id}")
     raise RuntimeError("Unsupported MoltObject encoding")
 
 

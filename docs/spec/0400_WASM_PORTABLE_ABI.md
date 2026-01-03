@@ -1,8 +1,8 @@
 # Molt Portable WASM ABI (Browser ↔ Server Symmetry)
-**Spec ID:** 0400  
-**Status:** Draft (implementation-targeting)  
-**Priority:** P0/P1 (P0 for core “shared logic”, P1 for broader ecosystem)  
-**Audience:** runtime engineers, compiler engineers, client/runtime integrators, AI coding agents  
+**Spec ID:** 0400
+**Status:** Draft (implementation-targeting)
+**Priority:** P0/P1 (P0 for core “shared logic”, P1 for broader ecosystem)
+**Audience:** runtime engineers, compiler engineers, client/runtime integrators, AI coding agents
 **Goal:** Make Molt-compiled WASM modules run in **both**:
 - the browser (WASM32-unknown-unknown)
 - the server (native host, optionally WASI)
@@ -33,7 +33,7 @@ This spec defines the minimal stable ABI and host surface needed for:
 - Deterministic execution by default
 - Host-provided I/O via explicit capabilities (opt-in)
 - Efficient data exchange for:
-  - JSON/MsgPack/CBOR
+  - MsgPack/CBOR (preferred), JSON (compatibility/debug)
   - Arrow IPC for tabular data (where supported)
 
 ### 1.2 Non-goals (v0.1)
@@ -167,14 +167,14 @@ Example:
   "module_name": "shared_rules",
   "exports": [
     {"name": "validate_order", "input": "msgpack", "output": "msgpack", "deterministic": true},
-    {"name": "price_cart", "input": "json", "output": "json", "deterministic": true}
+    {"name": "price_cart", "input": "cbor", "output": "cbor", "deterministic": true}
   ]
 }
 ```
 
 ### 6.2 Encoding recommendations
-- For small structured payloads: MsgPack (fast, compact)
-- For interoperability: JSON
+- For small structured payloads: MsgPack/CBOR (fast, compact, typed)
+- For interoperability/debug: JSON
 - For tabular payloads: Arrow IPC (see §7)
 
 ---

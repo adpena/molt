@@ -1,7 +1,7 @@
 # I/O, Async, and Connectors (CSV/Parquet/DB) for Molt DataFrame
-**Spec ID:** 0505  
-**Status:** Draft  
-**Audience:** runtime engineers, connector authors, AI coding agents  
+**Spec ID:** 0505
+**Status:** Draft
+**Audience:** runtime engineers, connector authors, AI coding agents
 **Goal:** Make Molt DataFrame useful for production pipelines by providing fast I/O and async-friendly connectors.
 
 ## 0. Core philosophy
@@ -49,6 +49,7 @@ Async is primarily for:
 - reading/writing streams
 - DB fetch
 - network storage (S3-like) where supported
+- WebSocket/HTTP streaming sources feeding Arrow batches
 
 Compute remains parallel and vectorized; async wraps I/O boundaries.
 

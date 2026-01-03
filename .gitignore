@@ -17,3 +17,7 @@ target/
 *.dll
 *.rlib
 *.d
+hello_molt
+bench/results/
+bench/cython/
+bench/numba/

@@ -14,6 +14,15 @@ Molt aims to bridge the gap between Python's developer productivity and C/Rust's
 - **Tight Loops:** Molt achieves near-native speed by lowering Python loops to machine-code jumps and unboxed integer arithmetic.
 - **Recursion:** Efficient function call ABI and minimal stack frame overhead result in significant gains.
 - **Structification:** By using fixed-offset memory layouts instead of dynamic `__dict__` lookups, Molt eliminates the most expensive part of Python's object model.
+- **Vectorization Targets:** Upcoming SIMD kernels focus on integer reductions and byte/str scans.
+
+## 🎯 2026 Targets (Loop-Heavy)
+
+| Benchmark | Target Speedup | Notes |
+| :--- | :--- | :--- |
+| `sum_ints(10M)` | 300x+ | SIMD reductions with guard+fallback. |
+| `dot_ints(10M)` | 200x+ | Vectorized elementwise + reduction. |
+| `bytes_find(100MB)` | 50x+ | SIMD scan + memchr fast path. |
 
 ## 📦 Binary Size & Startup
 

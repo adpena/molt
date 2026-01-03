@@ -1,6 +1,6 @@
 # Molt Tasks, Channels, and Native Concurrency
-**Status:** Priority / Core Feature  
-**Audience:** Compiler engineers, runtime engineers, AI coding agents  
+**Status:** Priority / Core Feature
+**Audience:** Compiler engineers, runtime engineers, AI coding agents
 
 ## Executive Summary
 Native concurrency is foundational to Molt. This document defines a goroutine-class task model with channels, designed for Python ergonomics and Go-like performance.
@@ -11,25 +11,31 @@ Native concurrency is foundational to Molt. This document defines a goroutine-cl
 - M:N scheduling
 - Structured cancellation
 - Typed channels
+- Native streaming I/O (HTTP streaming, WebSockets)
 - Production-grade semantics
 
 ## User Model
 ```python
-from molt import task, spawn, chan
+from molt import Channel, channel, spawn
 
-@task
-def worker(jobs, results):
-    for j in jobs:
-        results.send(process(j))
+async def worker(jobs, results):
+    while True:
+        value = jobs.recv()
+        results.send(value)
 
 def main():
-    jobs = chan[int](buffer=1024)
-    results = chan[int]()
-    spawn(worker, jobs, results)
+    jobs: Channel[int] = channel()
+    results: Channel[int] = channel()
+    spawn(worker())
 ```
 
+### Current API Surface (CPython fallback)
+- `molt.channel()` and `molt.Channel` wrap `molt_chan_*` intrinsics via shims.
+- `molt.spawn()` dispatches to `molt_spawn` or falls back to a background event loop.
+- Async-friendly helpers: `Channel.send_async()` / `Channel.recv_async()` for event-loop usage.
+
 ## Runtime
-- Work-stealing scheduler
+- Work-stealing scheduler (multicore scaling)
 - OS threads
 - Cooperative yields at channel and I/O ops
 
@@ -41,6 +47,9 @@ def main():
 ## I/O
 - epoll / kqueue integration
 - One task per connection/request
+- WebSocket streams map to bounded channels with backpressure
+
+See `docs/spec/0600_STREAMING_AND_WEBSOCKETS.md` for the streaming/WebSocket API and capability model.
 
 ## Partner Library
 `molt_accel` provides CPython integration via a Molt worker binary and IPC.

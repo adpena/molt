@@ -21,6 +21,7 @@ Molt leverages Rust's excellent cross-compilation support.
     - All Python dependencies (from `uv.lock`).
     - All Molt Packages (WASM or Native).
     - The Rust toolchain version.
+    - Dependency tier classification (see `docs/spec/0013_PYTHON_DEPENDENCIES.md`).
 
 ## 5. Molt Registry
 A centralized (but cacheable) registry for verified Molt Packages.

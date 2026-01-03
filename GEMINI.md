@@ -5,7 +5,7 @@ Molt leverages Artificial Intelligence as a **development-time accelerator** and
 ## 🤖 AI Components (Dev-Time Only)
 
 ### 1. Invariant Mining & Trace Analysis
-Instead of relying solely on static analysis, Molt uses AI to analyze application execution traces. 
+Instead of relying solely on static analysis, Molt uses AI to analyze application execution traces.
 - **Goal:** Identify "Stable Class Layouts" and "Monomorphic Call Sites" that are likely to remain constant.
 - **Outcome:** Suggests Tier 0 optimizations to the compiler core that might be missed by conservative static solvers.
 
@@ -27,6 +27,22 @@ The Molt compiler itself is designed to be "AI-friendly". Its modular IR and cle
 1. **Deterministic Binaries:** The AI's role ends before the final binary is linked. Every instruction in a Molt executable can be traced back to a specific IR lowering pass and verified against the Technical Specification.
 2. **No Hallucinations at Runtime:** There is no "probabilistic execution". All AI-suggested optimizations are validated by the compiler's **Soundness Model** before being committed to native code.
 3. **Reproducibility:** Given the same source and the same AI-generated "Optimization Manifest" (JSON), the compiler produces bit-identical binaries.
+
+## ✅ Engineering Expectations
+- Default to production-first implementations; avoid short-term hacks unless explicitly approved.
+- Aggressively and proactively update `ROADMAP.md` and the specs in `docs/spec/` when scope or behavior changes.
+- Proactively and aggressively plan for native support of popular and growing Python packages written in Rust.
+- The project vision is full Python compatibility: all types, syntax, and dependencies.
+- Prioritize extending features and refactor current implementations when required to meet roadmap/spec goals.
+- For major changes, ensure tight integration and compatibility across the project.
+- Document partial or interim implementations with grepable `TODO(type-coverage, ...)` or `TODO(stdlib-compat, ...)` tags and record follow-ups in `ROADMAP.md`.
+- When major features or optimizations land, run benchmarks with JSON output (`python3 tools/bench.py --json`) and update the Performance & Comparisons section in `README.md` with summarized results.
+- Install optional benchmark deps with `uv sync --group bench --python 3.12` before recording Cython/Numba baselines (Numba requires <3.13).
+- Treat `docs/spec/0015_STDLIB_COMPATIBILITY_MATRIX.md` as the source of truth for stdlib scope, tiering, and promotion rules.
+- Keep stdlib modules import-only by default; promote to core only with spec + roadmap updates.
+- Capability-gate any OS, I/O, network, or process modules and record the policy in specs.
+- Use `AGENT_LOCKS.md` for multi-agent coordination and keep communication explicit about scope, touched files, and tests.
+- Agents may use `gh` and git over SSH; proactively commit and merge after extensive linting/testing.
 
 ---
 

@@ -1,0 +1,240 @@
+from molt.frontend import compile_to_tir
+
+
+def _op_kinds(ir: dict, func_name: str = "molt_main") -> list[str]:
+    for func in ir["functions"]:
+        if func["name"] == func_name:
+            return [op["kind"] for op in func["ops"]]
+    raise AssertionError(f"Missing function {func_name}")
+
+
+def test_default_codec_is_msgpack():
+    src = """
+import molt_json
+x = molt_json.parse(42)
+"""
+    ir = compile_to_tir(src)
+    assert "msgpack_parse" in _op_kinds(ir)
+    assert "json_parse" not in _op_kinds(ir)
+
+
+def test_json_codec_flag():
+    src = """
+import molt_json
+x = molt_json.parse(42)
+"""
+    ir = compile_to_tir(src, parse_codec="json")
+    assert "json_parse" in _op_kinds(ir)
+    assert "msgpack_parse" not in _op_kinds(ir)
+
+
+def test_explicit_msgpack_parse():
+    src = """
+import molt_msgpack
+x = molt_msgpack.parse(42)
+"""
+    ir = compile_to_tir(src, parse_codec="json")
+    assert "msgpack_parse" in _op_kinds(ir)
+
+
+def test_explicit_cbor_parse():
+    src = """
+import molt_cbor
+x = molt_cbor.parse(42)
+"""
+    ir = compile_to_tir(src)
+    assert "cbor_parse" in _op_kinds(ir)
+
+
+def test_const_bytes_lowering():
+    src = "x = b'hi'"
+    ir = compile_to_tir(src)
+    assert "const_bytes" in _op_kinds(ir)
+
+
+def test_len_lowering():
+    src = "x = len(b'hello')"
+    ir = compile_to_tir(src)
+    assert "len" in _op_kinds(ir)
+
+
+def test_slice_lowering():
+    src = "x = b'hello'[1:4]\ny = b'world'[:2]\nz = b'world'[2:]"
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "slice" in kinds
+    assert "const_none" in kinds
+
+
+def test_slice_object_lowering():
+    src = "x = slice(1, 4, 2)\ny = b'hello'[1:4:2]"
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "slice_new" in kinds
+
+
+def test_list_dict_lowering():
+    src = "x = [1, 2]\ny = {'a': 3}\nz = x[0]\ny['b'] = 4"
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "list_new" in kinds
+    assert "dict_new" in kinds
+    assert "index" in kinds
+    assert "store_index" in kinds
+
+
+def test_list_dict_method_lowering():
+    src = """
+lst = [1]
+lst.append(2)
+lst.extend([3])
+lst.insert(0, 4)
+lst.remove(2)
+lst.count(2)
+lst.index(2)
+lst.pop()
+d = {"a": 1}
+d.get("a")
+d.get("b", 2)
+d.pop("a", 3)
+d.keys()
+d.values()
+d.items()
+t = (1, 2, 3)
+t.count(1)
+t.index(2)
+s = "hello"
+s.find("ell")
+s.split("e")
+s.replace("e", "x")
+s.startswith("he")
+s.endswith("lo")
+s.count("l")
+s.join(["a", "b"])
+b = b"hello"
+b.find(b"lo")
+b.split(b"e")
+b.replace(b"e", b"x")
+ba = bytearray(b"hello")
+ba.find(b"lo")
+ba.split(b"e")
+ba.replace(b"e", b"x")
+"""
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "list_append" in kinds
+    assert "list_extend" in kinds
+    assert "list_insert" in kinds
+    assert "list_remove" in kinds
+    assert "list_count" in kinds
+    assert "list_index" in kinds
+    assert "list_pop" in kinds
+    assert "dict_get" in kinds
+    assert "dict_pop" in kinds
+    assert "dict_keys" in kinds
+    assert "dict_values" in kinds
+    assert "dict_items" in kinds
+    assert "tuple_count" in kinds
+    assert "tuple_index" in kinds
+    assert "string_find" in kinds
+    assert "string_startswith" in kinds
+    assert "string_endswith" in kinds
+    assert "string_count" in kinds
+    assert "string_join" in kinds
+    assert "string_split" in kinds
+    assert "string_replace" in kinds
+    assert "bytes_find" in kinds
+    assert "bytes_split" in kinds
+    assert "bytes_replace" in kinds
+    assert "bytearray_from_obj" in kinds
+    assert "bytearray_find" in kinds
+    assert "bytearray_split" in kinds
+    assert "bytearray_replace" in kinds
+
+
+def test_for_loop_lowering():
+    src = """
+total = 0
+for x in [1, 2]:
+    total = total + x
+"""
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "vec_sum_int" in kinds
+    assert "loop_index_start" in kinds
+    assert "loop_index_next" in kinds
+    assert "loop_break_if_false" in kinds
+    assert "loop_continue" in kinds
+    assert "loop_end" in kinds
+
+
+def test_fstring_lowering():
+    src = 'x = f"hi {1}"'
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "str_from_obj" in kinds
+    assert "string_join" in kinds
+
+
+def test_format_spec_lowering():
+    src = 'x = "hi {name:>4}".format(name="a")'
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "string_format" in kinds
+
+
+def test_type_hint_check_lowering():
+    src = "x: int = 1"
+    ir = compile_to_tir(src, type_hint_policy="check")
+    kinds = _op_kinds(ir)
+    assert "guard_type" in kinds
+
+
+def test_tuple_lowering():
+    src = "t = (1, 2, 3)"
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "tuple_new" in kinds
+
+
+def test_buffer2d_lowering():
+    src = """
+import molt_buffer
+a = molt_buffer.new(2, 2, 0)
+molt_buffer.set(a, 0, 1, 3)
+x = molt_buffer.get(a, 0, 1)
+b = molt_buffer.new(2, 2, 0)
+c = molt_buffer.matmul(a, b)
+"""
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "buffer2d_new" in kinds
+    assert "buffer2d_set" in kinds
+    assert "buffer2d_get" in kinds
+    assert "buffer2d_matmul" in kinds
+
+
+def test_buffer2d_matmul_loop_lowering():
+    src = """
+import molt_buffer
+a = molt_buffer.new(2, 2, 0)
+b = molt_buffer.new(2, 2, 0)
+out = molt_buffer.new(2, 2, 0)
+for i in range(2):
+    for j in range(2):
+        acc = 0
+        for k in range(2):
+            acc = acc + molt_buffer.get(a, i, k) * molt_buffer.get(b, k, j)
+        molt_buffer.set(out, i, j, acc)
+"""
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "buffer2d_matmul" in kinds
+
+
+def test_range_lowering():
+    src = "r = range(5)\nitems = list(range(1, 4, 2))"
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "range_new" in kinds
+    assert "iter" in kinds
