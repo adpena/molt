@@ -82,6 +82,9 @@ Stdlib compatibility TODOs tracked here for CI parity:
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2): `dataclasses` transform (default_factory, kw-only, order, slots) + `__annotations__` propagation.
 - TODO(stdlib-compat, owner:runtime, milestone:SL2): `hashlib` deterministic hashing policy.
 - TODO(stdlib-compat, owner:runtime, milestone:SL3): CPython bridge contract (IPC/ABI, capability gating, deterministic fallback for C extensions).
+- TODO(stdlib-compat, owner:runtime, milestone:SL3): PyO3 bridge phase 1 (dev-only embedded CPython; capability gate; no production).
+- TODO(stdlib-compat, owner:runtime, milestone:SL3): PyO3 bridge phase 2 (embedded CPython feature flag + deterministic denylist + effect contracts).
+- TODO(stdlib-compat, owner:runtime, milestone:SL3): PyO3 bridge phase 3 (worker-process default; Arrow IPC/MsgPack/CBOR batching; profiling warnings).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3): capability-gated I/O (`io`, `os`, `sys`, `pathlib`).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3): network/process gating (`socket`, `ssl`, `subprocess`, `asyncio`).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3): `typing` runtime helpers + `__annotations__` preservation.

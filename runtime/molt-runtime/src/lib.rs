@@ -1,17 +1,16 @@
 //! Molt Runtime Core
 //! Handles memory management, task scheduling, channels, and FFI boundaries.
 
-use molt_obj_model::MoltObject;
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
 use crossbeam_deque::{Injector, Stealer, Worker};
 use memchr::{memchr, memmem};
+use molt_obj_model::MoltObject;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-
 
 #[repr(C)]
 pub struct MoltHeader {
@@ -611,15 +610,25 @@ fn dict_find_entry(order: &[u64], table: &[usize], key_bits: u64) -> Option<usiz
     }
 }
 
-fn alloc_string(bytes: &[u8]) -> *mut u8 {
-    let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<usize>() + bytes.len();
-    let ptr = alloc_object(total, TYPE_ID_STRING);
+fn alloc_bytes_like_with_len(len: usize, type_id: u32) -> *mut u8 {
+    let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<usize>() + len;
+    let ptr = alloc_object(total, type_id);
     if ptr.is_null() {
         return ptr;
     }
     unsafe {
         let len_ptr = ptr as *mut usize;
-        *len_ptr = bytes.len();
+        *len_ptr = len;
+    }
+    ptr
+}
+
+fn alloc_string(bytes: &[u8]) -> *mut u8 {
+    let ptr = alloc_bytes_like_with_len(bytes.len(), TYPE_ID_STRING);
+    if ptr.is_null() {
+        return ptr;
+    }
+    unsafe {
         let data_ptr = ptr.add(std::mem::size_of::<usize>());
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, bytes.len());
     }
@@ -627,14 +636,11 @@ fn alloc_string(bytes: &[u8]) -> *mut u8 {
 }
 
 fn alloc_bytes_like(bytes: &[u8], type_id: u32) -> *mut u8 {
-    let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<usize>() + bytes.len();
-    let ptr = alloc_object(total, type_id);
+    let ptr = alloc_bytes_like_with_len(bytes.len(), type_id);
     if ptr.is_null() {
         return ptr;
     }
     unsafe {
-        let len_ptr = ptr as *mut usize;
-        *len_ptr = bytes.len();
         let data_ptr = ptr.add(std::mem::size_of::<usize>());
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, bytes.len());
     }
@@ -647,6 +653,24 @@ fn alloc_bytes(bytes: &[u8]) -> *mut u8 {
 
 fn alloc_bytearray(bytes: &[u8]) -> *mut u8 {
     alloc_bytes_like(bytes, TYPE_ID_BYTEARRAY)
+}
+
+fn fill_repeated_bytes(dst: &mut [u8], pattern: &[u8]) {
+    if pattern.is_empty() {
+        return;
+    }
+    if pattern.len() == 1 {
+        dst.fill(pattern[0]);
+        return;
+    }
+    let mut filled = pattern.len().min(dst.len());
+    dst[..filled].copy_from_slice(&pattern[..filled]);
+    while filled < dst.len() {
+        let copy_len = std::cmp::min(filled, dst.len() - filled);
+        let (head, tail) = dst.split_at_mut(filled);
+        tail[..copy_len].copy_from_slice(&head[..copy_len]);
+        filled += copy_len;
+    }
 }
 
 unsafe fn dict_set_in_place(ptr: *mut u8, key_bits: u64, val_bits: u64) {
@@ -792,8 +816,7 @@ fn alloc_exception(kind: &str, message: &str) -> *mut u8 {
     }
     unsafe {
         *(ptr as *mut u64) = MoltObject::from_ptr(kind_ptr).bits();
-        *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) =
-            MoltObject::from_ptr(msg_ptr).bits();
+        *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = MoltObject::from_ptr(msg_ptr).bits();
     }
     ptr
 }
@@ -843,7 +866,9 @@ pub extern "C" fn molt_alloc(size: usize) -> *mut u8 {
     let layout = std::alloc::Layout::from_size_align(total_size, 8).unwrap();
     unsafe {
         let ptr = std::alloc::alloc(layout);
-        if ptr.is_null() { return std::ptr::null_mut(); }
+        if ptr.is_null() {
+            return std::ptr::null_mut();
+        }
         let header = ptr as *mut MoltHeader;
         (*header).type_id = 100;
         (*header).ref_count = 1;
@@ -859,8 +884,7 @@ pub extern "C" fn molt_alloc(size: usize) -> *mut u8 {
 #[no_mangle]
 pub extern "C" fn molt_list_builder_new(capacity_hint: usize) -> *mut u8 {
     // Allocate wrapper object
-    let total =
-        std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut Vec<u64>>(); // Store pointer to Vec
+    let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut Vec<u64>>(); // Store pointer to Vec
     let ptr = alloc_object(total, TYPE_ID_LIST_BUILDER);
     if ptr.is_null() {
         return ptr;
@@ -875,9 +899,13 @@ pub extern "C" fn molt_list_builder_new(capacity_hint: usize) -> *mut u8 {
 
 #[no_mangle]
 pub unsafe extern "C" fn molt_list_builder_append(builder_ptr: *mut u8, val: u64) {
-    if builder_ptr.is_null() { return; }
+    if builder_ptr.is_null() {
+        return;
+    }
     let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
-    if vec_ptr.is_null() { return; }
+    if vec_ptr.is_null() {
+        return;
+    }
     let vec = &mut *vec_ptr;
     vec.push(val);
 }
@@ -983,7 +1011,12 @@ pub extern "C" fn molt_dataclass_new(
     let field_names_obj = obj_from_bits(field_names_bits);
     let field_names = match decode_string_list(field_names_obj) {
         Some(val) => val,
-        None => return raise_exception("TypeError", "dataclass field names must be a list/tuple of str"),
+        None => {
+            return raise_exception(
+                "TypeError",
+                "dataclass field names must be a list/tuple of str",
+            )
+        }
     };
     let values_obj = obj_from_bits(values_bits);
     let values = match decode_value_list(values_obj) {
@@ -1083,11 +1116,7 @@ pub extern "C" fn molt_dataclass_set(obj_bits: u64, index_bits: u64, val_bits: u
 }
 
 #[no_mangle]
-pub extern "C" fn molt_buffer2d_new(
-    rows_bits: u64,
-    cols_bits: u64,
-    init_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_buffer2d_new(rows_bits: u64, cols_bits: u64, init_bits: u64) -> u64 {
     let rows = match to_i64(obj_from_bits(rows_bits)) {
         Some(val) if val >= 0 => val as usize,
         _ => return raise_exception("TypeError", "rows must be a non-negative int"),
@@ -1184,7 +1213,7 @@ pub extern "C" fn molt_buffer2d_set(
             }
             let idx = row * buf.cols + col;
             buf.data[idx] = val;
-            return obj_bits;
+            return MoltObject::none().bits();
         }
     }
     MoltObject::none().bits()
@@ -1279,9 +1308,13 @@ pub extern "C" fn molt_dict_builder_new(capacity_hint: usize) -> *mut u8 {
 
 #[no_mangle]
 pub unsafe extern "C" fn molt_dict_builder_append(builder_ptr: *mut u8, key: u64, val: u64) {
-    if builder_ptr.is_null() { return; }
+    if builder_ptr.is_null() {
+        return;
+    }
     let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
-    if vec_ptr.is_null() { return; }
+    if vec_ptr.is_null() {
+        return;
+    }
     let vec = &mut *vec_ptr;
     vec.push(key);
     vec.push(val);
@@ -1331,7 +1364,10 @@ pub struct MoltWebSocket {
 #[no_mangle]
 pub extern "C" fn molt_chan_new() -> *mut u8 {
     let (s, r) = unbounded();
-    let chan = Box::new(MoltChannel { sender: s, receiver: r });
+    let chan = Box::new(MoltChannel {
+        sender: s,
+        receiver: r,
+    });
     Box::into_raw(chan) as *mut u8
 }
 
@@ -1339,7 +1375,7 @@ pub extern "C" fn molt_chan_new() -> *mut u8 {
 pub unsafe extern "C" fn molt_chan_send(chan_ptr: *mut u8, val: i64) -> i64 {
     let chan = &*(chan_ptr as *mut MoltChannel);
     match chan.sender.try_send(val) {
-        Ok(_) => 0, // Ready(None)
+        Ok(_) => 0,                   // Ready(None)
         Err(_) => pending_bits_i64(), // PENDING
     }
 }
@@ -1373,7 +1409,11 @@ pub extern "C" fn molt_stream_new(capacity: usize) -> *mut u8 {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn molt_stream_send(stream_ptr: *mut u8, data_ptr: *const u8, len: usize) -> i64 {
+pub unsafe extern "C" fn molt_stream_send(
+    stream_ptr: *mut u8,
+    data_ptr: *const u8,
+    len: usize,
+) -> i64 {
     if stream_ptr.is_null() || (data_ptr.is_null() && len != 0) {
         return pending_bits_i64();
     }
@@ -1420,7 +1460,11 @@ pub unsafe extern "C" fn molt_stream_close(stream_ptr: *mut u8) {
 }
 
 #[no_mangle]
-pub extern "C" fn molt_ws_pair(capacity: usize, out_left: *mut *mut u8, out_right: *mut *mut u8) -> i32 {
+pub extern "C" fn molt_ws_pair(
+    capacity: usize,
+    out_left: *mut *mut u8,
+    out_right: *mut *mut u8,
+) -> i32 {
     if out_left.is_null() || out_right.is_null() {
         return 2;
     }
@@ -1631,37 +1675,41 @@ impl MoltScheduler {
             let stealers_clone = stealers.clone();
             let running_clone = Arc::clone(&running);
 
-            thread::spawn(move || {
-                loop {
-                    if !running_clone.load(Ordering::Relaxed) { break; }
+            thread::spawn(move || loop {
+                if !running_clone.load(Ordering::Relaxed) {
+                    break;
+                }
 
-                    if let Some(task) = worker.pop() {
+                if let Some(task) = worker.pop() {
+                    Self::execute_task(task, &injector_clone);
+                    continue;
+                }
+
+                match injector_clone.steal_batch_and_pop(&worker) {
+                    crossbeam_deque::Steal::Success(task) => {
                         Self::execute_task(task, &injector_clone);
                         continue;
                     }
+                    crossbeam_deque::Steal::Retry => continue,
+                    crossbeam_deque::Steal::Empty => {}
+                }
 
-                    match injector_clone.steal_batch_and_pop(&worker) {
-                        crossbeam_deque::Steal::Success(task) => {
-                            Self::execute_task(task, &injector_clone);
-                            continue;
-                        }
-                        crossbeam_deque::Steal::Retry => continue,
-                        crossbeam_deque::Steal::Empty => {}
+                let mut stolen = false;
+                for (j, stealer) in stealers_clone.iter().enumerate() {
+                    if i == j {
+                        continue;
                     }
+                    if let crossbeam_deque::Steal::Success(task) =
+                        stealer.steal_batch_and_pop(&worker)
+                    {
+                        Self::execute_task(task, &injector_clone);
+                        stolen = true;
+                        break;
+                    }
+                }
 
-                    let mut stolen = false;
-                    for (j, stealer) in stealers_clone.iter().enumerate() {
-                        if i == j { continue; }
-                        if let crossbeam_deque::Steal::Success(task) = stealer.steal_batch_and_pop(&worker) {
-                            Self::execute_task(task, &injector_clone);
-                            stolen = true;
-                            break;
-                        }
-                    }
-
-                    if !stolen {
-                        thread::yield_now();
-                    }
+                if !stolen {
+                    thread::yield_now();
                 }
             });
         }
@@ -1690,7 +1738,8 @@ impl MoltScheduler {
             let header = task_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
             let poll_fn_addr = (*header).poll_fn;
             if poll_fn_addr != 0 {
-                let poll_fn: extern "C" fn(*mut u8) -> i64 = std::mem::transmute(poll_fn_addr as usize);
+                let poll_fn: extern "C" fn(*mut u8) -> i64 =
+                    std::mem::transmute(poll_fn_addr as usize);
                 let res = poll_fn(task_ptr);
                 if res == pending_bits_i64() {
                     injector.push(task);
@@ -1706,20 +1755,24 @@ lazy_static::lazy_static! {
 
 #[no_mangle]
 pub unsafe extern "C" fn molt_spawn(task_ptr: *mut u8) {
-    SCHEDULER.enqueue(MoltTask { future_ptr: task_ptr });
+    SCHEDULER.enqueue(MoltTask {
+        future_ptr: task_ptr,
+    });
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn molt_block_on(task_ptr: *mut u8) -> i64 {
     let header = task_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
     let poll_fn_addr = (*header).poll_fn;
-    if poll_fn_addr == 0 { return 0; }
+    if poll_fn_addr == 0 {
+        return 0;
+    }
     let poll_fn: extern "C" fn(*mut u8) -> i64 = std::mem::transmute(poll_fn_addr as usize);
     loop {
         let res = poll_fn(task_ptr);
         if res == pending_bits_i64() {
-             std::thread::yield_now();
-             continue;
+            std::thread::yield_now();
+            continue;
         }
         return res;
     }
@@ -1827,12 +1880,116 @@ pub extern "C" fn molt_sub(a: u64, b: u64) -> u64 {
     MoltObject::none().bits()
 }
 
+fn repeat_sequence(ptr: *mut u8, count: i64) -> Option<u64> {
+    unsafe {
+        let type_id = object_type_id(ptr);
+        if count <= 0 {
+            let out_ptr = match type_id {
+                TYPE_ID_LIST => alloc_list(&[]),
+                TYPE_ID_TUPLE => alloc_tuple(&[]),
+                TYPE_ID_STRING => alloc_string(&[]),
+                TYPE_ID_BYTES => alloc_bytes(&[]),
+                TYPE_ID_BYTEARRAY => alloc_bytearray(&[]),
+                _ => return None,
+            };
+            if out_ptr.is_null() {
+                return None;
+            }
+            return Some(MoltObject::from_ptr(out_ptr).bits());
+        }
+
+        let times = count as usize;
+        match type_id {
+            TYPE_ID_LIST => {
+                let elems = seq_vec_ref(ptr);
+                let total = elems.len().checked_mul(times)?;
+                let mut combined = Vec::with_capacity(total);
+                for _ in 0..times {
+                    combined.extend_from_slice(elems);
+                }
+                let out_ptr = alloc_list(&combined);
+                if out_ptr.is_null() {
+                    return None;
+                }
+                Some(MoltObject::from_ptr(out_ptr).bits())
+            }
+            TYPE_ID_TUPLE => {
+                let elems = seq_vec_ref(ptr);
+                let total = elems.len().checked_mul(times)?;
+                let mut combined = Vec::with_capacity(total);
+                for _ in 0..times {
+                    combined.extend_from_slice(elems);
+                }
+                let out_ptr = alloc_tuple(&combined);
+                if out_ptr.is_null() {
+                    return None;
+                }
+                Some(MoltObject::from_ptr(out_ptr).bits())
+            }
+            TYPE_ID_STRING => {
+                let len = string_len(ptr);
+                let bytes = std::slice::from_raw_parts(string_bytes(ptr), len);
+                let total = len.checked_mul(times)?;
+                let out_ptr = alloc_bytes_like_with_len(total, TYPE_ID_STRING);
+                if out_ptr.is_null() {
+                    return None;
+                }
+                let data_ptr = out_ptr.add(std::mem::size_of::<usize>());
+                let out_slice = std::slice::from_raw_parts_mut(data_ptr, total);
+                fill_repeated_bytes(out_slice, bytes);
+                Some(MoltObject::from_ptr(out_ptr).bits())
+            }
+            TYPE_ID_BYTES => {
+                let len = bytes_len(ptr);
+                let bytes = std::slice::from_raw_parts(bytes_data(ptr), len);
+                let total = len.checked_mul(times)?;
+                let out_ptr = alloc_bytes_like_with_len(total, TYPE_ID_BYTES);
+                if out_ptr.is_null() {
+                    return None;
+                }
+                let data_ptr = out_ptr.add(std::mem::size_of::<usize>());
+                let out_slice = std::slice::from_raw_parts_mut(data_ptr, total);
+                fill_repeated_bytes(out_slice, bytes);
+                Some(MoltObject::from_ptr(out_ptr).bits())
+            }
+            TYPE_ID_BYTEARRAY => {
+                let len = bytes_len(ptr);
+                let bytes = std::slice::from_raw_parts(bytes_data(ptr), len);
+                let total = len.checked_mul(times)?;
+                let out_ptr = alloc_bytes_like_with_len(total, TYPE_ID_BYTEARRAY);
+                if out_ptr.is_null() {
+                    return None;
+                }
+                let data_ptr = out_ptr.add(std::mem::size_of::<usize>());
+                let out_slice = std::slice::from_raw_parts_mut(data_ptr, total);
+                fill_repeated_bytes(out_slice, bytes);
+                Some(MoltObject::from_ptr(out_ptr).bits())
+            }
+            _ => None,
+        }
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn molt_mul(a: u64, b: u64) -> u64 {
     let lhs = obj_from_bits(a);
     let rhs = obj_from_bits(b);
     if let (Some(li), Some(ri)) = (lhs.as_int(), rhs.as_int()) {
         return MoltObject::from_int(li * ri).bits();
+    }
+    if let Some(count) = to_i64(lhs) {
+        if let Some(ptr) = rhs.as_ptr() {
+            if let Some(bits) = repeat_sequence(ptr, count) {
+                return bits;
+            }
+        }
+    }
+    if let Some(count) = to_i64(rhs) {
+        if let Some(ptr) = lhs.as_ptr() {
+            if let Some(bits) = repeat_sequence(ptr, count) {
+                return bits;
+            }
+        }
     }
     if let (Some(lf), Some(rf)) = (to_f64(lhs), to_f64(rhs)) {
         return MoltObject::from_float(lf * rf).bits();
@@ -1897,27 +2054,27 @@ pub extern "C" fn molt_guard_type(val_bits: u64, expected_bits: u64) -> u64 {
         TYPE_TAG_STR => obj.as_ptr().map_or(false, |ptr| unsafe {
             object_type_id(ptr) == TYPE_ID_STRING
         }),
-        TYPE_TAG_BYTES => obj.as_ptr().map_or(false, |ptr| unsafe {
-            object_type_id(ptr) == TYPE_ID_BYTES
-        }),
+        TYPE_TAG_BYTES => obj
+            .as_ptr()
+            .map_or(false, |ptr| unsafe { object_type_id(ptr) == TYPE_ID_BYTES }),
         TYPE_TAG_BYTEARRAY => obj.as_ptr().map_or(false, |ptr| unsafe {
             object_type_id(ptr) == TYPE_ID_BYTEARRAY
         }),
-        TYPE_TAG_LIST => obj.as_ptr().map_or(false, |ptr| unsafe {
-            object_type_id(ptr) == TYPE_ID_LIST
-        }),
-        TYPE_TAG_TUPLE => obj.as_ptr().map_or(false, |ptr| unsafe {
-            object_type_id(ptr) == TYPE_ID_TUPLE
-        }),
-        TYPE_TAG_DICT => obj.as_ptr().map_or(false, |ptr| unsafe {
-            object_type_id(ptr) == TYPE_ID_DICT
-        }),
-        TYPE_TAG_RANGE => obj.as_ptr().map_or(false, |ptr| unsafe {
-            object_type_id(ptr) == TYPE_ID_RANGE
-        }),
-        TYPE_TAG_SLICE => obj.as_ptr().map_or(false, |ptr| unsafe {
-            object_type_id(ptr) == TYPE_ID_SLICE
-        }),
+        TYPE_TAG_LIST => obj
+            .as_ptr()
+            .map_or(false, |ptr| unsafe { object_type_id(ptr) == TYPE_ID_LIST }),
+        TYPE_TAG_TUPLE => obj
+            .as_ptr()
+            .map_or(false, |ptr| unsafe { object_type_id(ptr) == TYPE_ID_TUPLE }),
+        TYPE_TAG_DICT => obj
+            .as_ptr()
+            .map_or(false, |ptr| unsafe { object_type_id(ptr) == TYPE_ID_DICT }),
+        TYPE_TAG_RANGE => obj
+            .as_ptr()
+            .map_or(false, |ptr| unsafe { object_type_id(ptr) == TYPE_ID_RANGE }),
+        TYPE_TAG_SLICE => obj
+            .as_ptr()
+            .map_or(false, |ptr| unsafe { object_type_id(ptr) == TYPE_ID_SLICE }),
         TYPE_TAG_DATACLASS => obj.as_ptr().map_or(false, |ptr| unsafe {
             object_type_id(ptr) == TYPE_ID_DATACLASS
         }),
@@ -2594,10 +2751,7 @@ fn bytes_count_impl(hay_bytes: &[u8], needle_bytes: &[u8]) -> i64 {
         return hay_bytes.len() as i64 + 1;
     }
     if needle_bytes.len() == 1 {
-        return hay_bytes
-            .iter()
-            .filter(|b| **b == needle_bytes[0])
-            .count() as i64;
+        return hay_bytes.iter().filter(|b| **b == needle_bytes[0]).count() as i64;
     }
     let finder = memmem::Finder::new(needle_bytes);
     let mut count = 0i64;
@@ -2784,7 +2938,8 @@ pub extern "C" fn molt_string_replace(
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
             let needle_bytes =
                 std::slice::from_raw_parts(string_bytes(needle_ptr), string_len(needle_ptr));
-            let repl_bytes = std::slice::from_raw_parts(string_bytes(repl_ptr), string_len(repl_ptr));
+            let repl_bytes =
+                std::slice::from_raw_parts(string_bytes(repl_ptr), string_len(repl_ptr));
             let out = match replace_string_impl(hay_bytes, needle_bytes, repl_bytes) {
                 Some(out) => out,
                 None => return MoltObject::none().bits(),
@@ -2997,7 +3152,8 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
     if let Some(ptr) = obj.as_ptr() {
         unsafe {
             let type_id = object_type_id(ptr);
-            if type_id == TYPE_ID_STRING || type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
+            if type_id == TYPE_ID_STRING || type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY
+            {
                 if let Some(slice_ptr) = key.as_ptr() {
                     if object_type_id(slice_ptr) == TYPE_ID_SLICE {
                         let bytes = if type_id == TYPE_ID_STRING {
@@ -3359,8 +3515,9 @@ pub extern "C" fn molt_iter(iter_bits: u64) -> u64 {
                 || type_id == TYPE_ID_DICT_ITEMS_VIEW
                 || type_id == TYPE_ID_RANGE
             {
-                let total =
-                    std::mem::size_of::<MoltHeader>() + std::mem::size_of::<u64>() + std::mem::size_of::<usize>();
+                let total = std::mem::size_of::<MoltHeader>()
+                    + std::mem::size_of::<u64>()
+                    + std::mem::size_of::<usize>();
                 let iter_ptr = alloc_object(total, TYPE_ID_ITER);
                 if iter_ptr.is_null() {
                     return MoltObject::none().bits();
@@ -3649,7 +3806,11 @@ pub extern "C" fn molt_list_insert(list_bits: u64, index_bits: u64, val_bits: u6
         unsafe {
             if object_type_id(list_ptr) == TYPE_ID_LIST {
                 let len = list_len(list_ptr) as i64;
-                let mut idx = if let Some(i) = index_obj.as_int() { i } else { 0 };
+                let mut idx = if let Some(i) = index_obj.as_int() {
+                    i
+                } else {
+                    0
+                };
                 if idx < 0 {
                     idx += len;
                 }
@@ -3676,9 +3837,10 @@ pub extern "C" fn molt_list_remove(list_bits: u64, val_bits: u64) -> u64 {
         unsafe {
             if object_type_id(list_ptr) == TYPE_ID_LIST {
                 let elems = seq_vec(list_ptr);
-                if let Some(pos) = elems.iter().position(|bits| {
-                    obj_eq(obj_from_bits(*bits), obj_from_bits(val_bits))
-                }) {
+                if let Some(pos) = elems
+                    .iter()
+                    .position(|bits| obj_eq(obj_from_bits(*bits), obj_from_bits(val_bits)))
+                {
                     let removed = elems.remove(pos);
                     dec_ref_bits(removed);
                     return MoltObject::none().bits();
@@ -4055,7 +4217,10 @@ fn format_dataclass(ptr: *mut u8) -> String {
             }
             out.push_str(name);
             out.push('=');
-            let val = fields.get(idx).copied().unwrap_or(MoltObject::none().bits());
+            let val = fields
+                .get(idx)
+                .copied()
+                .unwrap_or(MoltObject::none().bits());
             out.push_str(&format_obj(obj_from_bits(val)));
         }
         out.push(')');
@@ -4084,7 +4249,11 @@ fn format_obj(obj: MoltObject) -> String {
         return format_float(f);
     }
     if let Some(b) = obj.as_bool() {
-        return if b { "True".to_string() } else { "False".to_string() };
+        return if b {
+            "True".to_string()
+        } else {
+            "False".to_string()
+        };
     }
     if obj.is_none() {
         return "None".to_string();
@@ -4377,14 +4546,21 @@ fn parse_format_spec(spec: &str) -> Result<FormatSpec, &'static str> {
     })
 }
 
-fn format_with_spec(obj: MoltObject, spec: &FormatSpec) -> Result<String, (&'static str, &'static str)> {
+fn format_with_spec(
+    obj: MoltObject,
+    spec: &FormatSpec,
+) -> Result<String, (&'static str, &'static str)> {
     let mut text = match spec.ty {
         Some('s') => format_obj_str(obj),
         Some('d') => {
             if let Some(i) = obj.as_int() {
                 i.to_string()
             } else if let Some(b) = obj.as_bool() {
-                if b { "1".to_string() } else { "0".to_string() }
+                if b {
+                    "1".to_string()
+                } else {
+                    "0".to_string()
+                }
             } else {
                 return Err(("TypeError", "format d requires int"));
             }
@@ -4395,7 +4571,11 @@ fn format_with_spec(obj: MoltObject, spec: &FormatSpec) -> Result<String, (&'sta
             } else if let Some(i) = obj.as_int() {
                 i as f64
             } else if let Some(b) = obj.as_bool() {
-                if b { 1.0 } else { 0.0 }
+                if b {
+                    1.0
+                } else {
+                    0.0
+                }
             } else {
                 return Err(("TypeError", "format f requires float"));
             };
@@ -4446,7 +4626,12 @@ fn format_with_spec(obj: MoltObject, spec: &FormatSpec) -> Result<String, (&'sta
         '^' => {
             let left = pad_len / 2;
             let right = pad_len - left;
-            format!("{}{}{}", fill.to_string().repeat(left), text, fill.to_string().repeat(right))
+            format!(
+                "{}{}{}",
+                fill.to_string().repeat(left),
+                text,
+                fill.to_string().repeat(right)
+            )
         }
         _ => return Err(("ValueError", "invalid alignment")),
     };
@@ -4459,7 +4644,9 @@ fn format_with_spec(obj: MoltObject, spec: &FormatSpec) -> Result<String, (&'sta
 /// Dereferences raw pointer to increment ref count.
 #[no_mangle]
 pub unsafe extern "C" fn molt_inc_ref(ptr: *mut u8) {
-    if ptr.is_null() { return; }
+    if ptr.is_null() {
+        return;
+    }
     let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
     (*header_ptr).ref_count += 1;
 }
@@ -4468,7 +4655,9 @@ pub unsafe extern "C" fn molt_inc_ref(ptr: *mut u8) {
 /// Dereferences raw pointer to decrement ref count. Frees memory if count reaches 0.
 #[no_mangle]
 pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
-    if ptr.is_null() { return; }
+    if ptr.is_null() {
+        return;
+    }
     let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
     let header = &mut *header_ptr;
     header.ref_count -= 1;
@@ -4822,7 +5011,10 @@ fn msgpack_key_to_object(value: rmpv::Value) -> Result<MoltObject, i32> {
     }
 }
 
-fn cbor_value_to_object(value: serde_cbor::Value, arena: &mut TempArena) -> Result<MoltObject, i32> {
+fn cbor_value_to_object(
+    value: serde_cbor::Value,
+    arena: &mut TempArena,
+) -> Result<MoltObject, i32> {
     match value {
         serde_cbor::Value::Null => Ok(MoltObject::none()),
         serde_cbor::Value::Bool(b) => Ok(MoltObject::from_bool(b)),
@@ -4961,11 +5153,7 @@ unsafe fn parse_json_scalar(
 /// # Safety
 /// Caller must ensure ptr is valid for len bytes.
 #[no_mangle]
-pub unsafe extern "C" fn molt_string_from_bytes(
-    ptr: *const u8,
-    len: usize,
-    out: *mut u64,
-) -> i32 {
+pub unsafe extern "C" fn molt_string_from_bytes(ptr: *const u8, len: usize, out: *mut u64) -> i32 {
     if out.is_null() {
         return 2;
     }
@@ -4984,11 +5172,7 @@ pub unsafe extern "C" fn molt_string_from_bytes(
 /// # Safety
 /// Caller must ensure ptr is valid for len bytes.
 #[no_mangle]
-pub unsafe extern "C" fn molt_bytes_from_bytes(
-    ptr: *const u8,
-    len: usize,
-    out: *mut u64,
-) -> i32 {
+pub unsafe extern "C" fn molt_bytes_from_bytes(ptr: *const u8, len: usize, out: *mut u64) -> i32 {
     if out.is_null() {
         return 2;
     }
@@ -5007,11 +5191,7 @@ pub unsafe extern "C" fn molt_bytes_from_bytes(
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure ptr is valid UTF-8 of at least len bytes.
 #[no_mangle]
-pub unsafe extern "C" fn molt_json_parse_scalar(
-    ptr: *const u8,
-    len: usize,
-    out: *mut u64,
-) -> i32 {
+pub unsafe extern "C" fn molt_json_parse_scalar(ptr: *const u8, len: usize, out: *mut u64) -> i32 {
     if out.is_null() {
         return 2;
     }
@@ -5069,11 +5249,7 @@ pub unsafe extern "C" fn molt_msgpack_parse_scalar(
 /// # Safety
 /// Caller must ensure ptr is valid for len bytes.
 #[no_mangle]
-pub unsafe extern "C" fn molt_cbor_parse_scalar(
-    ptr: *const u8,
-    len: usize,
-    out: *mut u64,
-) -> i32 {
+pub unsafe extern "C" fn molt_cbor_parse_scalar(ptr: *const u8, len: usize, out: *mut u64) -> i32 {
     if out.is_null() {
         return 2;
     }
@@ -5104,7 +5280,11 @@ pub unsafe extern "C" fn molt_cbor_parse_scalar(
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
 #[no_mangle]
-pub unsafe extern "C" fn molt_get_attr_generic(_obj_ptr: *mut u8, attr_name_ptr: *const u8, attr_name_len: usize) -> i64 {
+pub unsafe extern "C" fn molt_get_attr_generic(
+    _obj_ptr: *mut u8,
+    attr_name_ptr: *const u8,
+    attr_name_len: usize,
+) -> i64 {
     let _s = {
         let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
         std::str::from_utf8(slice).unwrap()

@@ -63,6 +63,18 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def emit(self, op: MoltOp) -> None:
         self.current_ops.append(op)
 
+    def _fast_int_enabled(self) -> bool:
+        return self.type_hint_policy in {"trust", "check"}
+
+    def _should_fast_int(self, op: MoltOp) -> bool:
+        if not self._fast_int_enabled():
+            return False
+        if op.kind not in {"ADD", "SUB", "MUL", "LT", "EQ"}:
+            return False
+        return all(
+            isinstance(arg, MoltValue) and arg.type_hint == "int" for arg in op.args
+        )
+
     def start_function(self, name: str, params: list[str] | None = None) -> None:
         if name not in self.funcs_map:
             self.funcs_map[name] = {"params": params or [], "ops": []}
@@ -533,6 +545,95 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self._emit_index_loop(node, iterable)
         else:
             self._emit_iter_loop(node, iterable)
+
+    def _match_counted_while(
+        self, node: ast.While
+    ) -> tuple[str, int, list[ast.stmt]] | None:
+        if node.orelse:
+            return None
+        if not isinstance(node.test, ast.Compare):
+            return None
+        if len(node.test.ops) != 1 or not isinstance(node.test.ops[0], ast.Lt):
+            return None
+        if not isinstance(node.test.left, ast.Name):
+            return None
+        if len(node.test.comparators) != 1:
+            return None
+        bound = node.test.comparators[0]
+        if not (isinstance(bound, ast.Constant) and isinstance(bound.value, int)):
+            return None
+        if not node.body:
+            return None
+        index_name = node.test.left.id
+        incr_stmt = node.body[-1]
+        if not self._is_unit_increment(incr_stmt, index_name):
+            return None
+        if index_name in self._collect_assigned_names(node.body[:-1]):
+            return None
+        return index_name, bound.value, node.body[:-1]
+
+    def _is_unit_increment(self, stmt: ast.stmt, name: str) -> bool:
+        if isinstance(stmt, ast.AugAssign):
+            if isinstance(stmt.target, ast.Name) and stmt.target.id == name:
+                return (
+                    isinstance(stmt.op, ast.Add)
+                    and isinstance(stmt.value, ast.Constant)
+                    and stmt.value.value == 1
+                )
+            return False
+        if isinstance(stmt, ast.Assign):
+            if len(stmt.targets) != 1 or not isinstance(stmt.targets[0], ast.Name):
+                return False
+            if stmt.targets[0].id != name:
+                return False
+            if not isinstance(stmt.value, ast.BinOp) or not isinstance(
+                stmt.value.op, ast.Add
+            ):
+                return False
+            left = stmt.value.left
+            right = stmt.value.right
+            if (
+                isinstance(left, ast.Name)
+                and left.id == name
+                and isinstance(right, ast.Constant)
+                and right.value == 1
+            ):
+                return True
+            if (
+                isinstance(right, ast.Name)
+                and right.id == name
+                and isinstance(left, ast.Constant)
+                and left.value == 1
+            ):
+                return True
+        return False
+
+    def _emit_counted_while(
+        self, index_name: str, bound: int, body: list[ast.stmt]
+    ) -> None:
+        start = self._load_local_value(index_name)
+        if start is None:
+            start = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[0], result=start))
+        one = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[1], result=one))
+        stop = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[bound], result=stop))
+        idx = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx))
+        cond = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="LT", args=[idx, stop], result=cond))
+        self.emit(
+            MoltOp(kind="LOOP_BREAK_IF_FALSE", args=[cond], result=MoltValue("none"))
+        )
+        self._store_local_value(index_name, idx)
+        for stmt in body:
+            self.visit(stmt)
+        next_idx = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="ADD", args=[idx, one], result=next_idx))
+        self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
+        self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+        self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
 
     def visit_BinOp(self, node: ast.BinOp) -> Any:
         left = self.visit(node.left)
@@ -1827,7 +1928,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def visit_Compare(self, node: ast.Compare) -> Any:
         left = self.visit(node.left)
         right = self.visit(node.comparators[0])
-        res = MoltValue(self.next_var())
+        res = MoltValue(self.next_var(), type_hint="bool")
         if isinstance(node.ops[0], ast.Lt):
             op_kind = "LT"
         elif isinstance(node.ops[0], ast.Eq):
@@ -1928,6 +2029,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         for name in sorted(assigned):
             if not self.is_async():
                 self._box_local(name)
+        counted = self._match_counted_while(node)
+        if counted is not None and not self.is_async():
+            index_name, bound, body = counted
+            self._emit_counted_while(index_name, bound, body)
+            return None
         self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
         cond = self.visit(node.test)
         self.emit(
@@ -2062,45 +2168,50 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             elif op.kind == "CONST_NONE":
                 json_ops.append({"kind": "const_none", "out": op.result.name})
             elif op.kind == "ADD":
-                json_ops.append(
-                    {
-                        "kind": "add",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                    }
-                )
+                add_entry: dict[str, Any] = {
+                    "kind": "add",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                if self._should_fast_int(op):
+                    add_entry["fast_int"] = True
+                json_ops.append(add_entry)
             elif op.kind == "SUB":
-                json_ops.append(
-                    {
-                        "kind": "sub",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                    }
-                )
+                sub_entry: dict[str, Any] = {
+                    "kind": "sub",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                if self._should_fast_int(op):
+                    sub_entry["fast_int"] = True
+                json_ops.append(sub_entry)
             elif op.kind == "MUL":
-                json_ops.append(
-                    {
-                        "kind": "mul",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                    }
-                )
+                mul_entry: dict[str, Any] = {
+                    "kind": "mul",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                if self._should_fast_int(op):
+                    mul_entry["fast_int"] = True
+                json_ops.append(mul_entry)
             elif op.kind == "LT":
-                json_ops.append(
-                    {
-                        "kind": "lt",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                    }
-                )
+                lt_entry: dict[str, Any] = {
+                    "kind": "lt",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                if self._should_fast_int(op):
+                    lt_entry["fast_int"] = True
+                json_ops.append(lt_entry)
             elif op.kind == "EQ":
-                json_ops.append(
-                    {
-                        "kind": "eq",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                    }
-                )
+                eq_entry: dict[str, Any] = {
+                    "kind": "eq",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                if self._should_fast_int(op):
+                    eq_entry["fast_int"] = True
+                json_ops.append(eq_entry)
             elif op.kind == "IF":
                 json_ops.append({"kind": "if", "args": [op.args[0].name]})
             elif op.kind == "ELSE":

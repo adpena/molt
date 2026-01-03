@@ -30,6 +30,8 @@ _TYPE_BYTES = 202
 _TYPE_DICT = 204
 _TYPE_TUPLE = 206
 
+_ITER_READY = False
+
 
 class MoltHeader(ctypes.Structure):
     _fields_ = [
@@ -55,6 +57,85 @@ def _parse_int_runtime(data: str) -> int:
         raise RuntimeError("Molt runtime library not available")
     buf = data.encode("utf-8")
     return int(lib.molt_json_parse_int(buf, len(buf)))
+
+
+def _is_none_bits(bits: int) -> bool:
+    return (bits & (_QNAN | _TAG_MASK)) == (_QNAN | _TAG_NONE)
+
+
+def _prepare_iter_runtime(lib: ctypes.CDLL) -> None:
+    global _ITER_READY
+    if _ITER_READY:
+        return
+    if hasattr(lib, "molt_iter"):
+        lib.molt_iter.argtypes = [ctypes.c_uint64]
+        lib.molt_iter.restype = ctypes.c_uint64
+    if hasattr(lib, "molt_iter_next"):
+        lib.molt_iter_next.argtypes = [ctypes.c_uint64]
+        lib.molt_iter_next.restype = ctypes.c_uint64
+    if hasattr(lib, "molt_dict_items"):
+        lib.molt_dict_items.argtypes = [ctypes.c_uint64]
+        lib.molt_dict_items.restype = ctypes.c_uint64
+    if hasattr(lib, "molt_dec_ref_obj"):
+        lib.molt_dec_ref_obj.argtypes = [ctypes.c_uint64]
+        lib.molt_dec_ref_obj.restype = None
+    _ITER_READY = True
+
+
+def _decode_iterable_runtime(bits: int, kind: str) -> Any | None:
+    lib = shims.load_runtime()
+    if (
+        lib is None
+        or not hasattr(lib, "molt_iter")
+        or not hasattr(lib, "molt_iter_next")
+    ):
+        return None
+    if kind == "dict" and not hasattr(lib, "molt_dict_items"):
+        return None
+    _prepare_iter_runtime(lib)
+    view_bits = None
+    if kind == "dict":
+        view_bits = lib.molt_dict_items(bits)
+        if _is_none_bits(view_bits):
+            return None
+        iter_bits = lib.molt_iter(view_bits)
+    else:
+        iter_bits = lib.molt_iter(bits)
+    if _is_none_bits(iter_bits):
+        if view_bits is not None and hasattr(lib, "molt_dec_ref_obj"):
+            lib.molt_dec_ref_obj(view_bits)
+        return None
+
+    items: list[Any] = []
+    dict_out: dict[Any, Any] = {}
+    try:
+        while True:
+            pair_bits = lib.molt_iter_next(iter_bits)
+            pair = _decode_molt_object(pair_bits)
+            if hasattr(lib, "molt_dec_ref_obj"):
+                lib.molt_dec_ref_obj(pair_bits)
+            if not isinstance(pair, tuple) or len(pair) != 2:
+                return None
+            value, done = pair
+            if done:
+                break
+            if kind == "dict":
+                if not isinstance(value, tuple) or len(value) != 2:
+                    return None
+                key, val = value
+                dict_out[key] = val
+            else:
+                items.append(value)
+    finally:
+        if hasattr(lib, "molt_dec_ref_obj"):
+            lib.molt_dec_ref_obj(iter_bits)
+            if view_bits is not None:
+                lib.molt_dec_ref_obj(view_bits)
+    if kind == "tuple":
+        return tuple(items)
+    if kind == "dict":
+        return dict_out
+    return items
 
 
 def _decode_molt_object(bits: int) -> Any:
@@ -87,6 +168,9 @@ def _decode_molt_object(bits: int) -> Any:
             data_ptr = ptr + ctypes.sizeof(ctypes.c_size_t)
             return ctypes.string_at(data_ptr, length)
         if header.type_id == _TYPE_LIST:
+            decoded = _decode_iterable_runtime(bits, "list")
+            if decoded is not None:
+                return decoded
             vec_ptr = ctypes.c_void_p.from_address(ptr).value
             if not vec_ptr:
                 return []
@@ -99,6 +183,9 @@ def _decode_molt_object(bits: int) -> Any:
                 list_out.append(_decode_molt_object(elem_bits))
             return list_out
         if header.type_id == _TYPE_DICT:
+            decoded = _decode_iterable_runtime(bits, "dict")
+            if decoded is not None:
+                return decoded
             order_ptr = ctypes.c_void_p.from_address(ptr).value
             if not order_ptr:
                 return {}
@@ -114,6 +201,9 @@ def _decode_molt_object(bits: int) -> Any:
                 dict_out[_decode_molt_object(key_bits)] = _decode_molt_object(val_bits)
             return dict_out
         if header.type_id == _TYPE_TUPLE:
+            decoded = _decode_iterable_runtime(bits, "tuple")
+            if decoded is not None:
+                return decoded
             vec_ptr = ctypes.c_void_p.from_address(ptr).value
             if not vec_ptr:
                 return ()

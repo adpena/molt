@@ -1,10 +1,10 @@
+use crate::{FunctionIR, SimpleIR};
+use std::collections::HashMap;
 use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, DataSection, ElementSection, EntityType, ExportKind,
     ExportSection, Function, FunctionSection, ImportSection, Instruction, MemorySection,
     MemoryType, Module, RefType, TableSection, TableType, TypeSection, ValType,
 };
-use crate::{SimpleIR, FunctionIR};
-use std::collections::HashMap;
 
 const QNAN: u64 = 0x7ff8_0000_0000_0000;
 const TAG_INT: u64 = 0x0001_0000_0000_0000;
@@ -76,8 +76,10 @@ impl WasmBackend {
         self.types
             .function(std::iter::once(ValType::I64), std::iter::once(ValType::I64));
         // Type 3: (i64, i64) -> i64 (add/sub/mul/lt/list_append/list_pop)
-        self.types
-            .function(std::iter::repeat(ValType::I64).take(2), std::iter::once(ValType::I64));
+        self.types.function(
+            std::iter::repeat(ValType::I64).take(2),
+            std::iter::once(ValType::I64),
+        );
         // Type 4: (i64, i64, i64) -> i32 (parse_scalar)
         self.types.function(
             std::iter::repeat(ValType::I64).take(3),
@@ -226,7 +228,11 @@ impl WasmBackend {
 
         let import_ids = self.import_ids.clone();
         for func_ir in ir.functions {
-            let type_idx = if func_ir.name.ends_with("_poll") { 2 } else { 0 };
+            let type_idx = if func_ir.name.ends_with("_poll") {
+                2
+            } else {
+                0
+            };
             self.compile_func(func_ir, type_idx, &func_to_table_idx, &import_ids);
         }
 
@@ -251,7 +257,8 @@ impl WasmBackend {
         import_ids: &HashMap<String, u32>,
     ) {
         self.funcs.function(type_idx);
-        self.exports.export(&func_ir.name, ExportKind::Func, self.func_count);
+        self.exports
+            .export(&func_ir.name, ExportKind::Func, self.func_count);
         self.func_count += 1;
 
         let mut locals = HashMap::new();

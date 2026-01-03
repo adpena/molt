@@ -59,18 +59,17 @@ Install optional baselines with `uv sync --group bench --python 3.12` to enable 
 columns. PyPy baselines are skipped until a PyPy release satisfies `requires-python`.
 
 Latest run: 2026-01-03 (macOS arm64, CPython 3.12.12).
-Top speedups: `bench_str_split.py` 10.80x, `bench_str_count.py` 5.73x,
-`bench_bytes_find.py` 5.61x, `bench_str_find.py` 5.57x, `bench_str_endswith.py` 5.34x.
-Regressions: none vs CPython among successful runs.
-Build/run failures: `bench_fib.py`, `bench_matrix_math.py`, `bench_str_join.py`.
+Top speedups: `bench_matrix_math.py` 9.06x, `bench_str_count.py` 3.49x,
+`bench_str_endswith.py` 3.39x, `bench_fib.py` 3.07x, `bench_sum.py` 2.95x.
+Regressions: `bench_str_split.py` 0.64x, `bench_str_replace.py` 0.73x.
+Build/run failures: none.
 
 | Benchmark | Molt vs CPython | Notes |
 | --- | --- | --- |
-| bench_str_split.py | 10.80x | string split fast path |
-| bench_str_count.py | 5.73x | string count fast path |
-| bench_bytes_find.py | 5.61x | bytes find fast path |
-| bench_str_find.py | 5.57x | string find fast path |
-| bench_str_endswith.py | 5.34x | string endswith fast path |
-| bench_fib.py | n/a | Molt build/run failed |
-| bench_matrix_math.py | n/a | Molt build/run failed |
-| bench_str_join.py | n/a | Molt build/run failed |
+| bench_matrix_math.py | 9.06x | buffer2d matmul lowering |
+| bench_str_count.py | 3.49x | string count fast path |
+| bench_str_endswith.py | 3.39x | string endswith fast path |
+| bench_fib.py | 3.07x | recursive call path |
+| bench_sum.py | 2.95x | tight int loop |
+| bench_str_split.py | 0.64x | regression vs CPython |
+| bench_str_replace.py | 0.73x | regression vs CPython |

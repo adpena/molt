@@ -1,9 +1,9 @@
-use std::io::{self, Read};
-use molt_backend::{SimpleBackend, SimpleIR};
 use molt_backend::wasm::WasmBackend;
+use molt_backend::{SimpleBackend, SimpleIR};
+use std::env;
 use std::fs::File;
 use std::io::Write;
-use std::env;
+use std::io::{self, Read};
 
 fn main() -> io::Result<()> {
     let args: Vec<String> = env::args().collect();
@@ -13,7 +13,7 @@ fn main() -> io::Result<()> {
     io::stdin().read_to_string(&mut buffer)?;
 
     let ir: SimpleIR = serde_json::from_str(&buffer).expect("Invalid IR JSON");
-    
+
     let output_file = if is_wasm { "output.wasm" } else { "output.o" };
     let mut file = File::create(output_file)?;
 
@@ -28,6 +28,6 @@ fn main() -> io::Result<()> {
         file.write_all(&obj_bytes)?;
         println!("Successfully compiled to output.o");
     }
-    
+
     Ok(())
 }

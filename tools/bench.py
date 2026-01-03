@@ -21,6 +21,7 @@ BENCHMARKS = [
     "tests/benchmarks/bench_deeply_nested_loop.py",
     "tests/benchmarks/bench_matrix_math.py",
     "tests/benchmarks/bench_bytes_find.py",
+    "tests/benchmarks/bench_bytes_find_only.py",
     "tests/benchmarks/bench_str_find.py",
     "tests/benchmarks/bench_str_split.py",
     "tests/benchmarks/bench_str_replace.py",

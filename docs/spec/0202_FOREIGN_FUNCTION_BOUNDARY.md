@@ -1,14 +1,16 @@
 # Molt Foreign Function Boundary (FFB) v0.1
-**Status:** Draft  
+**Status:** Draft
 **Goal:** Define safe, performant interop with non-Molt code while preserving correctness.
 
 Molt’s long-term stance:
 - Tier 0: no CPython C-extension loading.
 - Tier 1: optional bridge mode with strict constraints.
+- See `docs/spec/0210_CPYTHON_BRIDGE_PYO3.md` for the PyO3 bridge spec and
+  capability-gated CPython fallback design.
 
 ## Interop modes
-A) Molt Packages (preferred): Rust/WASM components with declared effects + ABI  
-B) WASM modules: portable sandbox + capability boundary  
+A) Molt Packages (preferred): Rust/WASM components with declared effects + ABI
+B) WASM modules: portable sandbox + capability boundary
 C) Legacy native extensions: bridge-only; opaque calls with conservative assumptions
 
 ## Core contract: Effects + Ownership
@@ -34,8 +36,8 @@ Ownership:
 Reality: pandas depends heavily on native vectorized kernels (numpy/Cython). Molt cannot reliably “introspect compiled C” and safely optimize through it.
 
 Molt strategies that *do* make it useful for pandas-like workloads:
-1) Molt-native columnar stack (Arrow-like) + Rust kernels + pandas-subset API  
-2) WASM analytics kernels (portable) called from Molt-compiled orchestration  
+1) Molt-native columnar stack (Arrow-like) + Rust kernels + pandas-subset API
+2) WASM analytics kernels (portable) called from Molt-compiled orchestration
 3) Bridge via process boundary: call CPython/pandas worker over Arrow IPC (migration path)
 
 Recommendation: implement (3) early for practicality; (1) as the long-term win.

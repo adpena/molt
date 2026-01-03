@@ -21,6 +21,8 @@
 - For C-extension heavy dependencies, run in a CPython worker process.
 - Communication via Arrow IPC and structured codecs.
 - Deterministic mode restricts nondeterministic APIs unless explicitly allowed.
+ - See `docs/spec/0210_CPYTHON_BRIDGE_PYO3.md` for the PyO3 bridge modes,
+   capability rules, and performance guardrails.
 
 ---
 
