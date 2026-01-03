@@ -75,6 +75,10 @@ interface intrinsics {
     dataclass_new: func(name: molt-object, fields: molt-object, values: molt-object, flags: molt-object) -> molt-object;
     dataclass_get: func(obj: molt-object, index: molt-object) -> molt-object;
     dataclass_set: func(obj: molt-object, index: molt-object, value: molt-object) -> molt-object;
+    context_null: func(payload: molt-object) -> molt-object;
+    context_enter: func(ctx: molt-object) -> molt-object;
+    context_exit: func(ctx: molt-object, exc: molt-object) -> molt-object;
+    bridge_unavailable: func(msg: molt-object) -> molt-object;
     stream_new: func(capacity: u64) -> u64;
     stream_send: func(handle: u64, ptr: molt-ptr, len: u64) -> u64;
     stream_recv: func(handle: u64) -> u64;

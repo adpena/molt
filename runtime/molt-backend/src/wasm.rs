@@ -189,6 +189,10 @@ impl WasmBackend {
         add_import("ws_send", 5, &mut self.import_ids);
         add_import("ws_recv", 2, &mut self.import_ids);
         add_import("ws_close", 1, &mut self.import_ids);
+        add_import("context_null", 2, &mut self.import_ids);
+        add_import("context_enter", 2, &mut self.import_ids);
+        add_import("context_exit", 3, &mut self.import_ids);
+        add_import("bridge_unavailable", 2, &mut self.import_ids);
 
         self.func_count = import_idx;
 
@@ -1178,6 +1182,36 @@ impl WasmBackend {
                         offset: 8,
                         memory_index: 0,
                     }));
+                }
+                "context_null" => {
+                    let args = op.args.as_ref().unwrap();
+                    let payload = locals[&args[0]];
+                    func.instruction(&Instruction::LocalGet(payload));
+                    func.instruction(&Instruction::Call(import_ids["context_null"]));
+                    func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                }
+                "context_enter" => {
+                    let args = op.args.as_ref().unwrap();
+                    let ctx = locals[&args[0]];
+                    func.instruction(&Instruction::LocalGet(ctx));
+                    func.instruction(&Instruction::Call(import_ids["context_enter"]));
+                    func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                }
+                "context_exit" => {
+                    let args = op.args.as_ref().unwrap();
+                    let ctx = locals[&args[0]];
+                    let exc = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(ctx));
+                    func.instruction(&Instruction::LocalGet(exc));
+                    func.instruction(&Instruction::Call(import_ids["context_exit"]));
+                    func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                }
+                "bridge_unavailable" => {
+                    let args = op.args.as_ref().unwrap();
+                    let msg = locals[&args[0]];
+                    func.instruction(&Instruction::LocalGet(msg));
+                    func.instruction(&Instruction::Call(import_ids["bridge_unavailable"]));
+                    func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                 }
                 "block_on" => {
                     let args = op.args.as_ref().unwrap();

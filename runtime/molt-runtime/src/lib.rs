@@ -161,6 +161,9 @@ fn is_truthy(obj: MoltObject) -> bool {
             if type_id == TYPE_ID_DATACLASS {
                 return true;
             }
+            if type_id == TYPE_ID_CONTEXT_MANAGER {
+                return true;
+            }
         }
     }
     false
@@ -864,6 +867,15 @@ fn alloc_context_manager(enter_fn: u64, exit_fn: u64, payload_bits: u64) -> *mut
     ptr
 }
 
+extern "C" fn context_null_enter(payload_bits: u64) -> u64 {
+    inc_ref_bits(payload_bits);
+    payload_bits
+}
+
+extern "C" fn context_null_exit(_payload_bits: u64, _exc_bits: u64) -> u64 {
+    MoltObject::from_bool(false).bits()
+}
+
 fn record_exception(ptr: *mut u8) {
     let cell = LAST_EXCEPTION.get_or_init(|| Mutex::new(None));
     let mut guard = cell.lock().unwrap();
@@ -1308,6 +1320,25 @@ pub extern "C" fn molt_context_exit(ctx_bits: u64, exc_bits: u64) -> u64 {
             std::mem::transmute::<usize, extern "C" fn(u64, u64) -> u64>(exit_fn_addr as usize);
         exit_fn(context_payload_bits(ptr), exc_bits)
     }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_context_null(payload_bits: u64) -> u64 {
+    let enter_fn = context_null_enter as usize as u64;
+    let exit_fn = context_null_exit as usize as u64;
+    let ptr = alloc_context_manager(enter_fn, exit_fn, payload_bits);
+    if ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(ptr).bits()
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_bridge_unavailable(msg_bits: u64) -> u64 {
+    let msg = format_obj_str(obj_from_bits(msg_bits));
+    eprintln!("Molt bridge unavailable: {msg}");
+    std::process::exit(1);
 }
 
 #[no_mangle]

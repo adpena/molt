@@ -4,6 +4,8 @@ import ast
 from dataclasses import dataclass
 from typing import Any, Literal, TypedDict, cast
 
+from molt.compat import CompatibilityError, CompatibilityReporter, FallbackPolicy
+
 
 @dataclass
 class MoltValue:
@@ -40,6 +42,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self,
         parse_codec: Literal["msgpack", "cbor", "json"] = "msgpack",
         type_hint_policy: Literal["ignore", "trust", "check"] = "ignore",
+        fallback_policy: FallbackPolicy = "error",
+        source_path: str | None = None,
     ) -> None:
         self.funcs_map: dict[str, FuncInfo] = {"molt_main": {"params": [], "ops": []}}
         self.current_func_name: str = "molt_main"
@@ -54,6 +58,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.parse_codec = parse_codec
         self.type_hint_policy = type_hint_policy
         self.explicit_type_hints: dict[str, str] = {}
+        self.fallback_policy = fallback_policy
+        self.compat = CompatibilityReporter(fallback_policy, source_path)
+
+    def visit(self, node: ast.AST) -> Any:
+        try:
+            return super().visit(node)
+        except CompatibilityError:
+            raise
+        except NotImplementedError as exc:
+            raise self.compat.unsupported(
+                node,
+                feature=str(exc),
+                tier="bridge",
+                impact="high",
+            ) from exc
 
     def next_var(self) -> str:
         name = f"v{self.var_count}"
@@ -74,6 +93,34 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return all(
             isinstance(arg, MoltValue) and arg.type_hint == "int" for arg in op.args
         )
+
+    def _emit_bridge_unavailable(self, message: str) -> MoltValue:
+        msg_val = MoltValue(self.next_var(), type_hint="str")
+        self.emit(MoltOp(kind="CONST_STR", args=[message], result=msg_val))
+        res = MoltValue(self.next_var(), type_hint="Any")
+        self.emit(MoltOp(kind="BRIDGE_UNAVAILABLE", args=[msg_val], result=res))
+        return res
+
+    def _bridge_fallback(
+        self,
+        node: ast.AST,
+        feature: str,
+        *,
+        impact: Literal["low", "medium", "high"] = "high",
+        alternative: str | None = None,
+        detail: str | None = None,
+    ) -> MoltValue:
+        issue = self.compat.bridge_unavailable(
+            node, feature, impact=impact, alternative=alternative, detail=detail
+        )
+        if self.fallback_policy != "bridge":
+            raise self.compat.error(issue)
+        return self._emit_bridge_unavailable(issue.runtime_message())
+
+    def _emit_nullcontext(self, payload: MoltValue) -> MoltValue:
+        res = MoltValue(self.next_var(), type_hint="context_manager")
+        self.emit(MoltOp(kind="CONTEXT_NULL", args=[payload], result=res))
+        return res
 
     def start_function(self, name: str, params: list[str] | None = None) -> None:
         if name not in self.funcs_map:
@@ -1030,6 +1077,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             # ...
             if (
                 isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "contextlib"
+                and node.func.attr == "nullcontext"
+            ):
+                if len(node.args) > 1:
+                    raise NotImplementedError("nullcontext expects 0 or 1 argument")
+                if node.args:
+                    payload = self.visit(node.args[0])
+                else:
+                    payload = MoltValue(self.next_var(), type_hint="None")
+                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=payload))
+                return self._emit_nullcontext(payload)
+            if (
+                isinstance(node.func.value, ast.Name)
                 and node.func.value.id == "molt_json"
             ):
                 if node.func.attr == "parse":
@@ -1467,6 +1527,23 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
         if isinstance(node.func, ast.Name):
             func_id = node.func.id
+            if func_id == "open":
+                return self._bridge_fallback(
+                    node,
+                    "open()",
+                    impact="high",
+                    alternative="use molt.stdlib.io.open or molt.stdlib.io.stream",
+                    detail="file I/O is capability-gated and not yet native",
+                )
+            if func_id == "nullcontext":
+                if len(node.args) > 1:
+                    raise NotImplementedError("nullcontext expects 0 or 1 argument")
+                if node.args:
+                    payload = self.visit(node.args[0])
+                else:
+                    payload = MoltValue(self.next_var(), type_hint="None")
+                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=payload))
+                return self._emit_nullcontext(payload)
             if func_id == "print":
                 if len(node.args) == 0:
                     self.emit(
@@ -1962,6 +2039,64 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         return None
 
+    def visit_With(self, node: ast.With) -> None:
+        if self.is_async():
+            self._bridge_fallback(
+                node,
+                "async with",
+                impact="high",
+                alternative="avoid async context managers or use explicit try/finally",
+                detail="async with lowering is not implemented yet",
+            )
+            return None
+        if len(node.items) != 1:
+            self._bridge_fallback(
+                node,
+                "with (multiple context managers)",
+                impact="high",
+                alternative="nest with blocks",
+                detail="only a single context manager is supported",
+            )
+            return None
+
+        item = node.items[0]
+        ctx_val = self.visit(item.context_expr)
+        if ctx_val is None:
+            self._bridge_fallback(
+                node,
+                "with",
+                impact="high",
+                alternative="use contextlib.nullcontext for now",
+                detail="context expression did not lower",
+            )
+            return None
+
+        enter_val = MoltValue(self.next_var(), type_hint="Any")
+        self.emit(MoltOp(kind="CONTEXT_ENTER", args=[ctx_val], result=enter_val))
+        if item.optional_vars is not None:
+            if not isinstance(item.optional_vars, ast.Name):
+                self._bridge_fallback(
+                    item.optional_vars,
+                    "with (destructuring targets)",
+                    impact="high",
+                    alternative="bind to a single name",
+                    detail="only simple name targets are supported",
+                )
+                return None
+            self._store_local_value(item.optional_vars.id, enter_val)
+
+        for stmt in node.body:
+            self.visit(stmt)
+
+        exc_val = MoltValue(self.next_var(), type_hint="None")
+        self.emit(MoltOp(kind="CONST_NONE", args=[], result=exc_val))
+        self.emit(
+            MoltOp(
+                kind="CONTEXT_EXIT", args=[ctx_val, exc_val], result=MoltValue("none")
+            )
+        )
+        return None
+
     def visit_For(self, node: ast.For) -> None:
         if node.orelse:
             raise NotImplementedError("for-else is not supported")
@@ -2225,6 +2360,30 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "kind": "call",
                         "s_value": target,
                         "args": [arg.name for arg in op.args[1:]],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "CONTEXT_NULL":
+                json_ops.append(
+                    {
+                        "kind": "context_null",
+                        "args": [op.args[0].name],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "CONTEXT_ENTER":
+                json_ops.append(
+                    {
+                        "kind": "context_enter",
+                        "args": [op.args[0].name],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "CONTEXT_EXIT":
+                json_ops.append(
+                    {
+                        "kind": "context_exit",
+                        "args": [op.args[0].name, op.args[1].name],
                         "out": op.result.name,
                     }
                 )
@@ -2760,6 +2919,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             elif op.kind == "CALL_DUMMY":
                 json_ops.append({"kind": "const", "value": 0, "out": op.result.name})
+            elif op.kind == "BRIDGE_UNAVAILABLE":
+                json_ops.append(
+                    {
+                        "kind": "bridge_unavailable",
+                        "args": [op.args[0].name],
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "ret":
                 json_ops.append({"kind": "ret", "var": op.args[0].name})
             elif op.kind == "ALLOC_FUTURE":
@@ -2842,8 +3009,13 @@ def compile_to_tir(
     source: str,
     parse_codec: Literal["msgpack", "cbor", "json"] = "msgpack",
     type_hint_policy: Literal["ignore", "trust", "check"] = "ignore",
+    fallback_policy: FallbackPolicy = "error",
 ) -> dict[str, Any]:
     tree = ast.parse(source)
-    gen = SimpleTIRGenerator(parse_codec=parse_codec, type_hint_policy=type_hint_policy)
+    gen = SimpleTIRGenerator(
+        parse_codec=parse_codec,
+        type_hint_policy=type_hint_policy,
+        fallback_policy=fallback_policy,
+    )
     gen.visit(tree)
     return gen.to_json()

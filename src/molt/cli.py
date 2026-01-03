@@ -11,11 +11,13 @@ import tomllib
 from pathlib import Path
 from typing import Any, Literal
 
+from molt.compat import CompatibilityError
 from molt.frontend import SimpleTIRGenerator
 
 Target = Literal["native", "wasm"]
 ParseCodec = Literal["msgpack", "cbor", "json"]
 TypeHintPolicy = Literal["ignore", "trust", "check"]
+FallbackPolicy = Literal["error", "bridge"]
 
 
 def _latest_mtime(paths: list[Path]) -> float:
@@ -85,6 +87,7 @@ def build(
     target: Target = "native",
     parse_codec: ParseCodec = "msgpack",
     type_hint_policy: TypeHintPolicy = "ignore",
+    fallback_policy: FallbackPolicy = "error",
 ) -> int:
     source_path = Path(file_path)
     if not source_path.exists():
@@ -95,8 +98,17 @@ def build(
 
     # 1. Frontend: Python -> JSON IR
     tree = ast.parse(source)
-    gen = SimpleTIRGenerator(parse_codec=parse_codec, type_hint_policy=type_hint_policy)
-    gen.visit(tree)
+    gen = SimpleTIRGenerator(
+        parse_codec=parse_codec,
+        type_hint_policy=type_hint_policy,
+        fallback_policy=fallback_policy,
+        source_path=str(source_path),
+    )
+    try:
+        gen.visit(tree)
+    except CompatibilityError as exc:
+        print(exc, file=sys.stderr)
+        return 2
     ir = gen.to_json()
 
     # 2. Backend: JSON IR -> output.o / output.wasm
@@ -224,6 +236,12 @@ def main() -> int:
         default="ignore",
         help="Apply type annotations to guide lowering and specialization.",
     )
+    build_parser.add_argument(
+        "--fallback",
+        choices=["error", "bridge"],
+        default="error",
+        help="Fallback policy for unsupported constructs.",
+    )
 
     deps_parser = subparsers.add_parser(
         "deps", help="Show dependency compatibility info"
@@ -241,7 +259,13 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.command == "build":
-        return build(args.file, args.target, args.codec, args.type_hints)
+        return build(
+            args.file,
+            args.target,
+            args.codec,
+            args.type_hints,
+            args.fallback,
+        )
     if args.command == "deps":
         return deps(args.include_dev)
     if args.command == "vendor":
