@@ -77,25 +77,25 @@ impl WasmBackend {
             .function(std::iter::once(ValType::I64), std::iter::once(ValType::I64));
         // Type 3: (i64, i64) -> i64 (add/sub/mul/lt/list_append/list_pop)
         self.types.function(
-            std::iter::repeat(ValType::I64).take(2),
+            std::iter::repeat_n(ValType::I64, 2),
             std::iter::once(ValType::I64),
         );
         // Type 4: (i64, i64, i64) -> i32 (parse_scalar)
         self.types.function(
-            std::iter::repeat(ValType::I64).take(3),
+            std::iter::repeat_n(ValType::I64, 3),
             std::iter::once(ValType::I32),
         );
         // Type 5: (i64, i64, i64) -> i64 (stream_send, ws_send, slice, slice_new, dict_get)
         self.types.function(
-            std::iter::repeat(ValType::I64).take(3),
+            std::iter::repeat_n(ValType::I64, 3),
             std::iter::once(ValType::I64),
         );
         // Type 6: (i64, i64) -> () (list_builder_append)
         self.types
-            .function(std::iter::repeat(ValType::I64).take(2), std::iter::empty());
+            .function(std::iter::repeat_n(ValType::I64, 2), std::iter::empty());
         // Type 7: (i64, i64, i64, i64) -> i64 (dict_pop)
         self.types.function(
-            std::iter::repeat(ValType::I64).take(4),
+            std::iter::repeat_n(ValType::I64, 4),
             std::iter::once(ValType::I64),
         );
         // Type 8: () -> () (print_newline)
@@ -272,21 +272,24 @@ impl WasmBackend {
 
         for op in &func_ir.ops {
             if let Some(out) = &op.out {
-                if !locals.contains_key(out) {
-                    locals.insert(out.clone(), local_count);
+                if let std::collections::hash_map::Entry::Vacant(entry) = locals.entry(out.clone())
+                {
+                    entry.insert(local_count);
                     local_types.push(ValType::I64);
                     local_count += 1;
                 }
                 if op.kind == "const_str" || op.kind == "const_bytes" {
                     let ptr_name = format!("{out}_ptr");
-                    if !locals.contains_key(&ptr_name) {
-                        locals.insert(ptr_name, local_count);
+                    if let std::collections::hash_map::Entry::Vacant(entry) = locals.entry(ptr_name)
+                    {
+                        entry.insert(local_count);
                         local_types.push(ValType::I64);
                         local_count += 1;
                     }
                     let len_name = format!("{out}_len");
-                    if !locals.contains_key(&len_name) {
-                        locals.insert(len_name, local_count);
+                    if let std::collections::hash_map::Entry::Vacant(entry) = locals.entry(len_name)
+                    {
+                        entry.insert(local_count);
                         local_types.push(ValType::I64);
                         local_count += 1;
                     }

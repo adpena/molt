@@ -898,6 +898,8 @@ pub extern "C" fn molt_list_builder_new(capacity_hint: usize) -> *mut u8 {
 }
 
 #[no_mangle]
+/// # Safety
+/// Caller must ensure `builder_ptr` is valid and points to a list builder.
 pub unsafe extern "C" fn molt_list_builder_append(builder_ptr: *mut u8, val: u64) {
     if builder_ptr.is_null() {
         return;
@@ -911,6 +913,8 @@ pub unsafe extern "C" fn molt_list_builder_append(builder_ptr: *mut u8, val: u64
 }
 
 #[no_mangle]
+/// # Safety
+/// Caller must ensure `builder_ptr` is valid and points to a list builder.
 pub unsafe extern "C" fn molt_list_builder_finish(builder_ptr: *mut u8) -> u64 {
     if builder_ptr.is_null() {
         return MoltObject::none().bits();
@@ -939,6 +943,8 @@ pub unsafe extern "C" fn molt_list_builder_finish(builder_ptr: *mut u8) -> u64 {
 }
 
 #[no_mangle]
+/// # Safety
+/// Caller must ensure `builder_ptr` is valid and points to a tuple builder.
 pub unsafe extern "C" fn molt_tuple_builder_finish(builder_ptr: *mut u8) -> u64 {
     if builder_ptr.is_null() {
         return MoltObject::none().bits();
@@ -976,7 +982,7 @@ pub extern "C" fn molt_range_new(start_bits: u64, stop_bits: u64, step_bits: u64
         None => return MoltObject::none().bits(),
     };
     if step == 0 {
-        return raise_exception("ValueError", "range() arg 3 must not be zero");
+        raise_exception("ValueError", "range() arg 3 must not be zero");
     }
     let ptr = alloc_range(start, stop, step);
     if ptr.is_null() {
@@ -1006,25 +1012,23 @@ pub extern "C" fn molt_dataclass_new(
     let name_obj = obj_from_bits(name_bits);
     let name = match string_obj_to_owned(name_obj) {
         Some(val) => val,
-        None => return raise_exception("TypeError", "dataclass name must be a str"),
+        None => raise_exception("TypeError", "dataclass name must be a str"),
     };
     let field_names_obj = obj_from_bits(field_names_bits);
     let field_names = match decode_string_list(field_names_obj) {
         Some(val) => val,
-        None => {
-            return raise_exception(
-                "TypeError",
-                "dataclass field names must be a list/tuple of str",
-            )
-        }
+        None => raise_exception(
+            "TypeError",
+            "dataclass field names must be a list/tuple of str",
+        ),
     };
     let values_obj = obj_from_bits(values_bits);
     let values = match decode_value_list(values_obj) {
         Some(val) => val,
-        None => return raise_exception("TypeError", "dataclass values must be a list/tuple"),
+        None => raise_exception("TypeError", "dataclass values must be a list/tuple"),
     };
     if field_names.len() != values.len() {
-        return raise_exception("TypeError", "dataclass constructor argument mismatch");
+        raise_exception("TypeError", "dataclass constructor argument mismatch");
     }
     let flags = to_i64(obj_from_bits(flags_bits)).unwrap_or(0) as u64;
     let frozen = (flags & 0x1) != 0;
@@ -1064,7 +1068,7 @@ pub extern "C" fn molt_dataclass_get(obj_bits: u64, index_bits: u64) -> u64 {
     let obj = obj_from_bits(obj_bits);
     let idx = match obj_from_bits(index_bits).as_int() {
         Some(val) => val,
-        None => return raise_exception("TypeError", "dataclass field index must be int"),
+        None => raise_exception("TypeError", "dataclass field index must be int"),
     };
     if let Some(ptr) = obj.as_ptr() {
         unsafe {
@@ -1073,7 +1077,7 @@ pub extern "C" fn molt_dataclass_get(obj_bits: u64, index_bits: u64) -> u64 {
             }
             let fields = dataclass_fields_ref(ptr);
             if idx < 0 || idx as usize >= fields.len() {
-                return raise_exception("TypeError", "dataclass field index out of range");
+                raise_exception("TypeError", "dataclass field index out of range");
             }
             let val = fields[idx as usize];
             inc_ref_bits(val);
@@ -1088,7 +1092,7 @@ pub extern "C" fn molt_dataclass_set(obj_bits: u64, index_bits: u64, val_bits: u
     let obj = obj_from_bits(obj_bits);
     let idx = match obj_from_bits(index_bits).as_int() {
         Some(val) => val,
-        None => return raise_exception("TypeError", "dataclass field index must be int"),
+        None => raise_exception("TypeError", "dataclass field index must be int"),
     };
     if let Some(ptr) = obj.as_ptr() {
         unsafe {
@@ -1097,11 +1101,11 @@ pub extern "C" fn molt_dataclass_set(obj_bits: u64, index_bits: u64, val_bits: u
             }
             let desc_ptr = dataclass_desc_ptr(ptr);
             if !desc_ptr.is_null() && (*desc_ptr).frozen {
-                return raise_exception("TypeError", "cannot assign to frozen dataclass field");
+                raise_exception("TypeError", "cannot assign to frozen dataclass field");
             }
             let fields = dataclass_fields_mut(ptr);
             if idx < 0 || idx as usize >= fields.len() {
-                return raise_exception("TypeError", "dataclass field index out of range");
+                raise_exception("TypeError", "dataclass field index out of range");
             }
             let old_bits = fields[idx as usize];
             if old_bits != val_bits {
@@ -1119,15 +1123,15 @@ pub extern "C" fn molt_dataclass_set(obj_bits: u64, index_bits: u64, val_bits: u
 pub extern "C" fn molt_buffer2d_new(rows_bits: u64, cols_bits: u64, init_bits: u64) -> u64 {
     let rows = match to_i64(obj_from_bits(rows_bits)) {
         Some(val) if val >= 0 => val as usize,
-        _ => return raise_exception("TypeError", "rows must be a non-negative int"),
+        _ => raise_exception("TypeError", "rows must be a non-negative int"),
     };
     let cols = match to_i64(obj_from_bits(cols_bits)) {
         Some(val) if val >= 0 => val as usize,
-        _ => return raise_exception("TypeError", "cols must be a non-negative int"),
+        _ => raise_exception("TypeError", "cols must be a non-negative int"),
     };
     let init = match obj_from_bits(init_bits).as_int() {
         Some(val) => val,
-        None => return raise_exception("TypeError", "init must be an int"),
+        None => raise_exception("TypeError", "init must be an int"),
     };
     let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut Buffer2D>();
     let ptr = alloc_object(total, TYPE_ID_BUFFER2D);
@@ -1151,11 +1155,11 @@ pub extern "C" fn molt_buffer2d_new(rows_bits: u64, cols_bits: u64, init_bits: u
 pub extern "C" fn molt_buffer2d_get(obj_bits: u64, row_bits: u64, col_bits: u64) -> u64 {
     let row = match to_i64(obj_from_bits(row_bits)) {
         Some(val) if val >= 0 => val as usize,
-        _ => return raise_exception("TypeError", "row must be a non-negative int"),
+        _ => raise_exception("TypeError", "row must be a non-negative int"),
     };
     let col = match to_i64(obj_from_bits(col_bits)) {
         Some(val) if val >= 0 => val as usize,
-        _ => return raise_exception("TypeError", "col must be a non-negative int"),
+        _ => raise_exception("TypeError", "col must be a non-negative int"),
     };
     let obj = obj_from_bits(obj_bits);
     if let Some(ptr) = obj.as_ptr() {
@@ -1169,7 +1173,7 @@ pub extern "C" fn molt_buffer2d_get(obj_bits: u64, row_bits: u64, col_bits: u64)
             }
             let buf = &*buf;
             if row >= buf.rows || col >= buf.cols {
-                return raise_exception("IndexError", "buffer2d index out of range");
+                raise_exception("IndexError", "buffer2d index out of range");
             }
             let idx = row * buf.cols + col;
             return MoltObject::from_int(buf.data[idx]).bits();
@@ -1187,15 +1191,15 @@ pub extern "C" fn molt_buffer2d_set(
 ) -> u64 {
     let row = match to_i64(obj_from_bits(row_bits)) {
         Some(val) if val >= 0 => val as usize,
-        _ => return raise_exception("TypeError", "row must be a non-negative int"),
+        _ => raise_exception("TypeError", "row must be a non-negative int"),
     };
     let col = match to_i64(obj_from_bits(col_bits)) {
         Some(val) if val >= 0 => val as usize,
-        _ => return raise_exception("TypeError", "col must be a non-negative int"),
+        _ => raise_exception("TypeError", "col must be a non-negative int"),
     };
     let val = match obj_from_bits(val_bits).as_int() {
         Some(v) => v,
-        None => return raise_exception("TypeError", "value must be an int"),
+        None => raise_exception("TypeError", "value must be an int"),
     };
     let obj = obj_from_bits(obj_bits);
     if let Some(ptr) = obj.as_ptr() {
@@ -1209,7 +1213,7 @@ pub extern "C" fn molt_buffer2d_set(
             }
             let buf = &mut *buf;
             if row >= buf.rows || col >= buf.cols {
-                return raise_exception("IndexError", "buffer2d index out of range");
+                raise_exception("IndexError", "buffer2d index out of range");
             }
             let idx = row * buf.cols + col;
             buf.data[idx] = val;
@@ -1225,11 +1229,11 @@ pub extern "C" fn molt_buffer2d_matmul(a_bits: u64, b_bits: u64) -> u64 {
     let b = obj_from_bits(b_bits);
     let (a_ptr, b_ptr) = match (a.as_ptr(), b.as_ptr()) {
         (Some(ap), Some(bp)) => (ap, bp),
-        _ => return raise_exception("TypeError", "matmul expects buffer2d operands"),
+        _ => raise_exception("TypeError", "matmul expects buffer2d operands"),
     };
     unsafe {
         if object_type_id(a_ptr) != TYPE_ID_BUFFER2D || object_type_id(b_ptr) != TYPE_ID_BUFFER2D {
-            return raise_exception("TypeError", "matmul expects buffer2d operands");
+            raise_exception("TypeError", "matmul expects buffer2d operands");
         }
         let a_buf = buffer2d_ptr(a_ptr);
         let b_buf = buffer2d_ptr(b_ptr);
@@ -1239,7 +1243,7 @@ pub extern "C" fn molt_buffer2d_matmul(a_bits: u64, b_bits: u64) -> u64 {
         let a_buf = &*a_buf;
         let b_buf = &*b_buf;
         if a_buf.cols != b_buf.rows {
-            return raise_exception("ValueError", "matmul dimension mismatch");
+            raise_exception("ValueError", "matmul dimension mismatch");
         }
         let rows = a_buf.rows;
         let cols = b_buf.cols;
@@ -1307,6 +1311,8 @@ pub extern "C" fn molt_dict_builder_new(capacity_hint: usize) -> *mut u8 {
 }
 
 #[no_mangle]
+/// # Safety
+/// Caller must ensure `builder_ptr` is valid and points to a dict builder.
 pub unsafe extern "C" fn molt_dict_builder_append(builder_ptr: *mut u8, key: u64, val: u64) {
     if builder_ptr.is_null() {
         return;
@@ -1321,6 +1327,8 @@ pub unsafe extern "C" fn molt_dict_builder_append(builder_ptr: *mut u8, key: u64
 }
 
 #[no_mangle]
+/// # Safety
+/// Caller must ensure `builder_ptr` is valid and points to a dict builder.
 pub unsafe extern "C" fn molt_dict_builder_finish(builder_ptr: *mut u8) -> u64 {
     if builder_ptr.is_null() {
         return MoltObject::none().bits();
@@ -1372,6 +1380,8 @@ pub extern "C" fn molt_chan_new() -> *mut u8 {
 }
 
 #[no_mangle]
+/// # Safety
+/// Caller must ensure `chan_ptr` is a valid channel pointer.
 pub unsafe extern "C" fn molt_chan_send(chan_ptr: *mut u8, val: i64) -> i64 {
     let chan = &*(chan_ptr as *mut MoltChannel);
     match chan.sender.try_send(val) {
@@ -1381,6 +1391,8 @@ pub unsafe extern "C" fn molt_chan_send(chan_ptr: *mut u8, val: i64) -> i64 {
 }
 
 #[no_mangle]
+/// # Safety
+/// Caller must ensure `chan_ptr` is a valid channel pointer.
 pub unsafe extern "C" fn molt_chan_recv(chan_ptr: *mut u8) -> i64 {
     let chan = &*(chan_ptr as *mut MoltChannel);
     match chan.receiver.try_recv() {
@@ -1409,6 +1421,8 @@ pub extern "C" fn molt_stream_new(capacity: usize) -> *mut u8 {
 }
 
 #[no_mangle]
+/// # Safety
+/// Caller must ensure `stream_ptr` is valid; `data_ptr` must be readable for `len` bytes.
 pub unsafe extern "C" fn molt_stream_send(
     stream_ptr: *mut u8,
     data_ptr: *const u8,
@@ -1426,6 +1440,8 @@ pub unsafe extern "C" fn molt_stream_send(
 }
 
 #[no_mangle]
+/// # Safety
+/// Caller must ensure `stream_ptr` is a valid stream pointer.
 pub unsafe extern "C" fn molt_stream_recv(stream_ptr: *mut u8) -> i64 {
     if stream_ptr.is_null() {
         return MoltObject::none().bits() as i64;
@@ -1451,6 +1467,8 @@ pub unsafe extern "C" fn molt_stream_recv(stream_ptr: *mut u8) -> i64 {
 }
 
 #[no_mangle]
+/// # Safety
+/// Caller must ensure `stream_ptr` is a valid stream pointer.
 pub unsafe extern "C" fn molt_stream_close(stream_ptr: *mut u8) {
     if stream_ptr.is_null() {
         return;
@@ -1460,7 +1478,9 @@ pub unsafe extern "C" fn molt_stream_close(stream_ptr: *mut u8) {
 }
 
 #[no_mangle]
-pub extern "C" fn molt_ws_pair(
+/// # Safety
+/// Caller must ensure `out_left` and `out_right` are valid writable pointers.
+pub unsafe extern "C" fn molt_ws_pair(
     capacity: usize,
     out_left: *mut *mut u8,
     out_right: *mut *mut u8,
@@ -1488,10 +1508,8 @@ pub extern "C" fn molt_ws_pair(
         close_hook: None,
         hook_ctx: std::ptr::null_mut(),
     });
-    unsafe {
-        *out_left = Box::into_raw(left) as *mut u8;
-        *out_right = Box::into_raw(right) as *mut u8;
-    }
+    *out_left = Box::into_raw(left) as *mut u8;
+    *out_right = Box::into_raw(right) as *mut u8;
     0
 }
 
@@ -1505,17 +1523,19 @@ pub extern "C" fn molt_ws_new_with_hooks(
     let send_hook = if send_hook == 0 {
         None
     } else {
-        Some(unsafe { std::mem::transmute(send_hook) })
+        Some(unsafe {
+            std::mem::transmute::<usize, extern "C" fn(*mut u8, *const u8, usize) -> i64>(send_hook)
+        })
     };
     let recv_hook = if recv_hook == 0 {
         None
     } else {
-        Some(unsafe { std::mem::transmute(recv_hook) })
+        Some(unsafe { std::mem::transmute::<usize, extern "C" fn(*mut u8) -> i64>(recv_hook) })
     };
     let close_hook = if close_hook == 0 {
         None
     } else {
-        Some(unsafe { std::mem::transmute(close_hook) })
+        Some(unsafe { std::mem::transmute::<usize, extern "C" fn(*mut u8)>(close_hook) })
     };
     let (s, r) = bytes_channel(0);
     let ws = Box::new(MoltWebSocket {
@@ -1558,6 +1578,8 @@ fn has_capability(name: &str) -> bool {
 }
 
 #[no_mangle]
+/// # Safety
+/// Caller must ensure `url_ptr` is valid for `url_len` bytes and `out` is writable.
 pub unsafe extern "C" fn molt_ws_connect(
     url_ptr: *const u8,
     url_len: usize,
@@ -1584,6 +1606,8 @@ pub unsafe extern "C" fn molt_ws_connect(
 }
 
 #[no_mangle]
+/// # Safety
+/// Caller must ensure `ws_ptr` is valid; `data_ptr` must be readable for `len` bytes.
 pub unsafe extern "C" fn molt_ws_send(ws_ptr: *mut u8, data_ptr: *const u8, len: usize) -> i64 {
     if ws_ptr.is_null() || (data_ptr.is_null() && len != 0) {
         return pending_bits_i64();
@@ -1600,6 +1624,8 @@ pub unsafe extern "C" fn molt_ws_send(ws_ptr: *mut u8, data_ptr: *const u8, len:
 }
 
 #[no_mangle]
+/// # Safety
+/// Caller must ensure `ws_ptr` is a valid websocket pointer.
 pub unsafe extern "C" fn molt_ws_recv(ws_ptr: *mut u8) -> i64 {
     if ws_ptr.is_null() {
         return MoltObject::none().bits() as i64;
@@ -1628,6 +1654,8 @@ pub unsafe extern "C" fn molt_ws_recv(ws_ptr: *mut u8) -> i64 {
 }
 
 #[no_mangle]
+/// # Safety
+/// Caller must ensure `ws_ptr` is a valid websocket pointer.
 pub unsafe extern "C" fn molt_ws_close(ws_ptr: *mut u8) {
     if ws_ptr.is_null() {
         return;
@@ -1749,10 +1777,18 @@ impl MoltScheduler {
     }
 }
 
+impl Default for MoltScheduler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 lazy_static::lazy_static! {
     static ref SCHEDULER: MoltScheduler = MoltScheduler::new();
 }
 
+/// # Safety
+/// - `task_ptr` must be a valid pointer to a Molt task with a valid header.
 #[no_mangle]
 pub unsafe extern "C" fn molt_spawn(task_ptr: *mut u8) {
     SCHEDULER.enqueue(MoltTask {
@@ -1760,6 +1796,8 @@ pub unsafe extern "C" fn molt_spawn(task_ptr: *mut u8) {
     });
 }
 
+/// # Safety
+/// - `task_ptr` must be a valid pointer to a Molt task with a valid header.
 #[no_mangle]
 pub unsafe extern "C" fn molt_block_on(task_ptr: *mut u8) -> i64 {
     let header = task_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
@@ -1778,15 +1816,17 @@ pub unsafe extern "C" fn molt_block_on(task_ptr: *mut u8) -> i64 {
     }
 }
 
+/// # Safety
+/// - `_obj_ptr` must be a valid pointer if the runtime associates a future with it.
 #[no_mangle]
 pub unsafe extern "C" fn molt_async_sleep(_obj_ptr: *mut u8) -> i64 {
     static mut CALLED: bool = false;
     if !CALLED {
         CALLED = true;
-        return pending_bits_i64();
+        pending_bits_i64()
     } else {
         CALLED = false;
-        return 0;
+        0
     }
 }
 
@@ -2040,7 +2080,7 @@ pub extern "C" fn molt_str_from_obj(val_bits: u64) -> u64 {
 pub extern "C" fn molt_guard_type(val_bits: u64, expected_bits: u64) -> u64 {
     let expected = match to_i64(obj_from_bits(expected_bits)) {
         Some(val) => val,
-        None => return raise_exception("TypeError", "guard type tag must be int"),
+        None => raise_exception("TypeError", "guard type tag must be int"),
     };
     if expected == TYPE_TAG_ANY {
         return val_bits;
@@ -2051,40 +2091,40 @@ pub extern "C" fn molt_guard_type(val_bits: u64, expected_bits: u64) -> u64 {
         TYPE_TAG_FLOAT => obj.is_float(),
         TYPE_TAG_BOOL => obj.is_bool(),
         TYPE_TAG_NONE => obj.is_none(),
-        TYPE_TAG_STR => obj.as_ptr().map_or(false, |ptr| unsafe {
-            object_type_id(ptr) == TYPE_ID_STRING
-        }),
+        TYPE_TAG_STR => obj
+            .as_ptr()
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING }),
         TYPE_TAG_BYTES => obj
             .as_ptr()
-            .map_or(false, |ptr| unsafe { object_type_id(ptr) == TYPE_ID_BYTES }),
-        TYPE_TAG_BYTEARRAY => obj.as_ptr().map_or(false, |ptr| unsafe {
-            object_type_id(ptr) == TYPE_ID_BYTEARRAY
-        }),
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_BYTES }),
+        TYPE_TAG_BYTEARRAY => obj
+            .as_ptr()
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_BYTEARRAY }),
         TYPE_TAG_LIST => obj
             .as_ptr()
-            .map_or(false, |ptr| unsafe { object_type_id(ptr) == TYPE_ID_LIST }),
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_LIST }),
         TYPE_TAG_TUPLE => obj
             .as_ptr()
-            .map_or(false, |ptr| unsafe { object_type_id(ptr) == TYPE_ID_TUPLE }),
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_TUPLE }),
         TYPE_TAG_DICT => obj
             .as_ptr()
-            .map_or(false, |ptr| unsafe { object_type_id(ptr) == TYPE_ID_DICT }),
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_DICT }),
         TYPE_TAG_RANGE => obj
             .as_ptr()
-            .map_or(false, |ptr| unsafe { object_type_id(ptr) == TYPE_ID_RANGE }),
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_RANGE }),
         TYPE_TAG_SLICE => obj
             .as_ptr()
-            .map_or(false, |ptr| unsafe { object_type_id(ptr) == TYPE_ID_SLICE }),
-        TYPE_TAG_DATACLASS => obj.as_ptr().map_or(false, |ptr| unsafe {
-            object_type_id(ptr) == TYPE_ID_DATACLASS
-        }),
-        TYPE_TAG_BUFFER2D => obj.as_ptr().map_or(false, |ptr| unsafe {
-            object_type_id(ptr) == TYPE_ID_BUFFER2D
-        }),
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_SLICE }),
+        TYPE_TAG_DATACLASS => obj
+            .as_ptr()
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_DATACLASS }),
+        TYPE_TAG_BUFFER2D => obj
+            .as_ptr()
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_BUFFER2D }),
         _ => false,
     };
     if !matches {
-        return raise_exception("TypeError", "type guard mismatch");
+        raise_exception("TypeError", "type guard mismatch");
     }
     val_bits
 }
@@ -2221,10 +2261,10 @@ enum SliceError {
 fn slice_error(err: SliceError) -> u64 {
     match err {
         SliceError::Type => {
-            return raise_exception("TypeError", "slice indices must be integers or None");
+            raise_exception("TypeError", "slice indices must be integers or None");
         }
         SliceError::Value => {
-            return raise_exception("ValueError", "slice step cannot be zero");
+            raise_exception("ValueError", "slice step cannot be zero");
         }
     }
 }
@@ -2544,7 +2584,7 @@ pub extern "C" fn molt_string_startswith(hay_bits: u64, needle_bits: u64) -> u64
             if object_type_id(hay_ptr) != TYPE_ID_STRING
                 || object_type_id(needle_ptr) != TYPE_ID_STRING
             {
-                return raise_exception("TypeError", "startswith expects str arguments");
+                raise_exception("TypeError", "startswith expects str arguments");
             }
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
             let needle_bytes =
@@ -2571,7 +2611,7 @@ pub extern "C" fn molt_string_endswith(hay_bits: u64, needle_bits: u64) -> u64 {
             if object_type_id(hay_ptr) != TYPE_ID_STRING
                 || object_type_id(needle_ptr) != TYPE_ID_STRING
             {
-                return raise_exception("TypeError", "endswith expects str arguments");
+                raise_exception("TypeError", "endswith expects str arguments");
             }
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
             let needle_bytes =
@@ -2598,7 +2638,7 @@ pub extern "C" fn molt_string_count(hay_bits: u64, needle_bits: u64) -> u64 {
             if object_type_id(hay_ptr) != TYPE_ID_STRING
                 || object_type_id(needle_ptr) != TYPE_ID_STRING
             {
-                return raise_exception("TypeError", "count expects str arguments");
+                raise_exception("TypeError", "count expects str arguments");
             }
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
             let needle_bytes =
@@ -2631,7 +2671,7 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
     };
     unsafe {
         if object_type_id(sep_ptr) != TYPE_ID_STRING {
-            return raise_exception("TypeError", "join expects a str separator");
+            raise_exception("TypeError", "join expects a str separator");
         }
         let elems = match items.as_ptr() {
             Some(ptr) => {
@@ -2639,10 +2679,10 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
                 if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
                     seq_vec_ref(ptr)
                 } else {
-                    return raise_exception("TypeError", "join expects a list or tuple of str");
+                    raise_exception("TypeError", "join expects a list or tuple of str");
                 }
             }
-            None => return raise_exception("TypeError", "join expects a list or tuple of str"),
+            None => raise_exception("TypeError", "join expects a list or tuple of str"),
         };
         let sep_bytes = std::slice::from_raw_parts(string_bytes(sep_ptr), string_len(sep_ptr));
         let mut total_len = 0usize;
@@ -2650,10 +2690,10 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
             let elem_obj = obj_from_bits(elem_bits);
             let elem_ptr = match elem_obj.as_ptr() {
                 Some(ptr) => ptr,
-                None => return raise_exception("TypeError", "join expects a list or tuple of str"),
+                None => raise_exception("TypeError", "join expects a list or tuple of str"),
             };
             if object_type_id(elem_ptr) != TYPE_ID_STRING {
-                return raise_exception("TypeError", "join expects a list or tuple of str");
+                raise_exception("TypeError", "join expects a list or tuple of str");
             }
             total_len += string_len(elem_ptr);
         }
@@ -2683,25 +2723,25 @@ pub extern "C" fn molt_string_format(val_bits: u64, spec_bits: u64) -> u64 {
     let spec_obj = obj_from_bits(spec_bits);
     let spec_ptr = match spec_obj.as_ptr() {
         Some(ptr) => ptr,
-        None => return raise_exception("TypeError", "format spec must be a str"),
+        None => raise_exception("TypeError", "format spec must be a str"),
     };
     unsafe {
         if object_type_id(spec_ptr) != TYPE_ID_STRING {
-            return raise_exception("TypeError", "format spec must be a str");
+            raise_exception("TypeError", "format spec must be a str");
         }
         let spec_bytes = std::slice::from_raw_parts(string_bytes(spec_ptr), string_len(spec_ptr));
         let spec_text = match std::str::from_utf8(spec_bytes) {
             Ok(val) => val,
-            Err(_) => return raise_exception("ValueError", "format spec must be valid UTF-8"),
+            Err(_) => raise_exception("ValueError", "format spec must be valid UTF-8"),
         };
         let spec = match parse_format_spec(spec_text) {
             Ok(val) => val,
-            Err(msg) => return raise_exception("ValueError", msg),
+            Err(msg) => raise_exception("ValueError", msg),
         };
         let obj = obj_from_bits(val_bits);
         let rendered = match format_with_spec(obj, &spec) {
             Ok(val) => val,
-            Err((kind, msg)) => return raise_exception(kind, msg),
+            Err((kind, msg)) => raise_exception(kind, msg),
         };
         let out_ptr = alloc_string(rendered.as_bytes());
         if out_ptr.is_null() {
@@ -2883,7 +2923,7 @@ pub extern "C" fn molt_string_split(hay_bits: u64, needle_bits: u64) -> u64 {
             let needle_bytes =
                 std::slice::from_raw_parts(string_bytes(needle_ptr), string_len(needle_ptr));
             if needle_bytes.is_empty() {
-                return raise_exception("ValueError", "empty separator");
+                raise_exception("ValueError", "empty separator");
             }
             let parts = match split_string_impl(hay_bytes, needle_bytes) {
                 Some(parts) => parts,
@@ -2969,7 +3009,7 @@ pub extern "C" fn molt_bytes_split(hay_bits: u64, needle_bits: u64) -> u64 {
                 None => return MoltObject::none().bits(),
             };
             if needle_bytes.is_empty() {
-                return raise_exception("ValueError", "empty separator");
+                raise_exception("ValueError", "empty separator");
             }
             let parts = match split_bytes_impl(hay_bytes, needle_bytes) {
                 Some(parts) => parts,
@@ -3017,7 +3057,7 @@ pub extern "C" fn molt_bytearray_split(hay_bits: u64, needle_bits: u64) -> u64 {
                 None => return MoltObject::none().bits(),
             };
             if needle_bytes.is_empty() {
-                return raise_exception("ValueError", "empty separator");
+                raise_exception("ValueError", "empty separator");
             }
             let parts = match split_bytes_impl(hay_bytes, needle_bytes) {
                 Some(parts) => parts,
@@ -3806,11 +3846,7 @@ pub extern "C" fn molt_list_insert(list_bits: u64, index_bits: u64, val_bits: u6
         unsafe {
             if object_type_id(list_ptr) == TYPE_ID_LIST {
                 let len = list_len(list_ptr) as i64;
-                let mut idx = if let Some(i) = index_obj.as_int() {
-                    i
-                } else {
-                    0
-                };
+                let mut idx = index_obj.as_int().unwrap_or_default();
                 if idx < 0 {
                     idx += len;
                 }
@@ -4611,13 +4647,13 @@ fn format_with_spec(
         return Ok(text);
     }
     let pad_len = width - len;
-    let align = spec.align.unwrap_or_else(|| {
-        if matches!(spec.ty, Some('d') | Some('f')) {
+    let align = spec
+        .align
+        .unwrap_or(if matches!(spec.ty, Some('d') | Some('f')) {
             '>'
         } else {
             '<'
-        }
-    });
+        });
     let fill = spec.fill;
     let padding = fill.to_string().repeat(pad_len);
     text = match align {
@@ -5112,7 +5148,7 @@ fn cbor_key_to_object(value: serde_cbor::Value) -> Result<MoltObject, i32> {
         serde_cbor::Value::Null => Ok(MoltObject::none()),
         serde_cbor::Value::Bool(b) => Ok(MoltObject::from_bool(b)),
         serde_cbor::Value::Integer(i) => {
-            let i_val = i128::from(i);
+            let i_val = i;
             if i_val < i64::MIN as i128 || i_val > i64::MAX as i128 {
                 Err(2)
             } else {
@@ -5197,10 +5233,7 @@ pub unsafe extern "C" fn molt_json_parse_scalar(ptr: *const u8, len: usize, out:
     }
     let obj = PARSE_ARENA.with(|arena| {
         let mut arena = arena.borrow_mut();
-        let result = match parse_json_scalar(ptr, len, &mut arena) {
-            Ok(val) => Ok(val),
-            Err(code) => Err(code),
-        };
+        let result = parse_json_scalar(ptr, len, &mut arena);
         arena.reset();
         result
     });
@@ -5231,10 +5264,7 @@ pub unsafe extern "C" fn molt_msgpack_parse_scalar(
     };
     let obj = PARSE_ARENA.with(|arena| {
         let mut arena = arena.borrow_mut();
-        let result = match msgpack_value_to_object(v, &mut arena) {
-            Ok(val) => Ok(val),
-            Err(code) => Err(code),
-        };
+        let result = msgpack_value_to_object(v, &mut arena);
         arena.reset();
         result
     });
@@ -5260,10 +5290,7 @@ pub unsafe extern "C" fn molt_cbor_parse_scalar(ptr: *const u8, len: usize, out:
     };
     let obj = PARSE_ARENA.with(|arena| {
         let mut arena = arena.borrow_mut();
-        let result = match cbor_value_to_object(v, &mut arena) {
-            Ok(val) => Ok(val),
-            Err(code) => Err(code),
-        };
+        let result = cbor_value_to_object(v, &mut arena);
         arena.reset();
         result
     });

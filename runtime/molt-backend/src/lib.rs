@@ -270,20 +270,18 @@ impl SimpleBackend {
 
         // 1. Pre-pass: discover states and create blocks
         for op in &func_ir.ops {
-            if op.kind == "state_transition"
+            let state_id = if op.kind == "state_transition"
                 || op.kind == "chan_send_yield"
                 || op.kind == "chan_recv_yield"
+                || op.kind == "label"
             {
-                let state_id = op.value.unwrap();
-                if !state_blocks.contains_key(&state_id) {
-                    state_blocks.insert(state_id, builder.create_block());
-                }
-            } else if op.kind == "label" {
-                let label_id = op.value.unwrap();
-                if !state_blocks.contains_key(&label_id) {
-                    state_blocks.insert(label_id, builder.create_block());
-                }
-            }
+                op.value.unwrap()
+            } else {
+                continue;
+            };
+            state_blocks
+                .entry(state_id)
+                .or_insert_with(|| builder.create_block());
         }
 
         // 2. Implementation
