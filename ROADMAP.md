@@ -91,6 +91,26 @@ Stdlib compatibility TODOs tracked here for CI parity:
 
 ---
 
+## 🧩 Language Features Roadmap
+**Goal:** Sequence the language/runtime features that unlock file I/O, context managers, and Python class patterns without sacrificing determinism.
+
+| Milestone | Focus | Owners | Status | Notes |
+| :--- | :--- | :--- | :--- | :--- |
+| **LF1** | Exceptions + context manager protocol | runtime, frontend | 🚧 In Progress | TODO(language-roadmap, owner:runtime, milestone:LF1): exception objects + last-exception plumbing. |
+| **LF2** | Classes, inheritance, descriptors, factory patterns | runtime, frontend, stdlib | 📅 Planned | TODO(language-roadmap, owner:runtime, milestone:LF2): type/object + MRO + descriptor protocol. |
+| **LF3** | Capability-gated file I/O + pathlib | stdlib, runtime | 📅 Planned | TODO(language-roadmap, owner:stdlib, milestone:LF3): io/pathlib stubs + capability enforcement. |
+
+Language feature TODOs tracked here for parity:
+- TODO(language-roadmap, owner:frontend, milestone:LF1): `with` lowering + `__enter__/__exit__` wiring.
+- TODO(language-roadmap, owner:runtime, milestone:LF1): context manager enter/exit intrinsics + exception propagation hooks.
+- TODO(language-roadmap, owner:stdlib, milestone:LF1): `contextlib` basics (`contextmanager`, `closing`).
+- TODO(language-roadmap, owner:runtime, milestone:LF2): `type`/`object` layout, `isinstance`/`issubclass`.
+- TODO(language-roadmap, owner:runtime, milestone:LF2): descriptor builtins (`property`, `classmethod`, `staticmethod`, `super`).
+- TODO(language-roadmap, owner:frontend, milestone:LF2): class lowering for `__init__`, factory classmethods, and dataclass defaults.
+- TODO(language-roadmap, owner:stdlib, milestone:LF3): `open`/`io`/`pathlib` capability gates and streaming stubs.
+
+---
+
 ## 🛠 Feature Checklist & Implementation Details
 
 ### Core Compiler

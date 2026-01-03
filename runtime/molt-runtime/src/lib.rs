@@ -52,6 +52,7 @@ const TYPE_ID_SLICE: u32 = 213;
 const TYPE_ID_EXCEPTION: u32 = 214;
 const TYPE_ID_DATACLASS: u32 = 215;
 const TYPE_ID_BUFFER2D: u32 = 216;
+const TYPE_ID_CONTEXT_MANAGER: u32 = 217;
 const MAX_SMALL_LIST: usize = 16;
 const TYPE_TAG_ANY: i64 = 0;
 const TYPE_TAG_INT: i64 = 1;
@@ -459,6 +460,18 @@ unsafe fn exception_msg_bits(ptr: *mut u8) -> u64 {
     *(ptr.add(std::mem::size_of::<u64>()) as *const u64)
 }
 
+unsafe fn context_enter_fn(ptr: *mut u8) -> u64 {
+    *(ptr as *const u64)
+}
+
+unsafe fn context_exit_fn(ptr: *mut u8) -> u64 {
+    *(ptr.add(std::mem::size_of::<u64>()) as *const u64)
+}
+
+unsafe fn context_payload_bits(ptr: *mut u8) -> u64 {
+    *(ptr.add(2 * std::mem::size_of::<u64>()) as *const u64)
+}
+
 unsafe fn dataclass_desc_ptr(ptr: *mut u8) -> *mut DataclassDesc {
     let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
     (*header_ptr).state as usize as *mut DataclassDesc
@@ -821,10 +834,46 @@ fn alloc_exception(kind: &str, message: &str) -> *mut u8 {
     ptr
 }
 
+fn alloc_exception_obj(kind_bits: u64, msg_bits: u64) -> *mut u8 {
+    let total = std::mem::size_of::<MoltHeader>() + 2 * std::mem::size_of::<u64>();
+    let ptr = alloc_object(total, TYPE_ID_EXCEPTION);
+    if ptr.is_null() {
+        return ptr;
+    }
+    unsafe {
+        *(ptr as *mut u64) = kind_bits;
+        *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = msg_bits;
+        inc_ref_bits(kind_bits);
+        inc_ref_bits(msg_bits);
+    }
+    ptr
+}
+
+fn alloc_context_manager(enter_fn: u64, exit_fn: u64, payload_bits: u64) -> *mut u8 {
+    let total = std::mem::size_of::<MoltHeader>() + 3 * std::mem::size_of::<u64>();
+    let ptr = alloc_object(total, TYPE_ID_CONTEXT_MANAGER);
+    if ptr.is_null() {
+        return ptr;
+    }
+    unsafe {
+        *(ptr as *mut u64) = enter_fn;
+        *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = exit_fn;
+        *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = payload_bits;
+        inc_ref_bits(payload_bits);
+    }
+    ptr
+}
+
 fn record_exception(ptr: *mut u8) {
     let cell = LAST_EXCEPTION.get_or_init(|| Mutex::new(None));
     let mut guard = cell.lock().unwrap();
+    if let Some(old_ptr) = guard.take() {
+        let old_bits = MoltObject::from_ptr(old_ptr as *mut u8).bits();
+        dec_ref_bits(old_bits);
+    }
     *guard = Some(ptr as usize);
+    let new_bits = MoltObject::from_ptr(ptr).bits();
+    inc_ref_bits(new_bits);
 }
 
 fn raise_exception(kind: &str, message: &str) -> ! {
@@ -1117,6 +1166,148 @@ pub extern "C" fn molt_dataclass_set(obj_bits: u64, index_bits: u64, val_bits: u
         }
     }
     MoltObject::none().bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_exception_new(kind_bits: u64, msg_bits: u64) -> u64 {
+    let kind_obj = obj_from_bits(kind_bits);
+    let msg_obj = obj_from_bits(msg_bits);
+    if let Some(ptr) = kind_obj.as_ptr() {
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_STRING {
+                raise_exception("TypeError", "exception kind must be a str");
+            }
+        }
+    } else {
+        raise_exception("TypeError", "exception kind must be a str");
+    }
+    if let Some(ptr) = msg_obj.as_ptr() {
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_STRING {
+                raise_exception("TypeError", "exception message must be a str");
+            }
+        }
+    } else {
+        raise_exception("TypeError", "exception message must be a str");
+    }
+    let ptr = alloc_exception_obj(kind_bits, msg_bits);
+    if ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(ptr).bits()
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_exception_kind(exc_bits: u64) -> u64 {
+    let exc_obj = obj_from_bits(exc_bits);
+    let Some(ptr) = exc_obj.as_ptr() else {
+        raise_exception("TypeError", "expected exception object");
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_EXCEPTION {
+            raise_exception("TypeError", "expected exception object");
+        }
+        let bits = exception_kind_bits(ptr);
+        inc_ref_bits(bits);
+        bits
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_exception_message(exc_bits: u64) -> u64 {
+    let exc_obj = obj_from_bits(exc_bits);
+    let Some(ptr) = exc_obj.as_ptr() else {
+        raise_exception("TypeError", "expected exception object");
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_EXCEPTION {
+            raise_exception("TypeError", "expected exception object");
+        }
+        let bits = exception_msg_bits(ptr);
+        inc_ref_bits(bits);
+        bits
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_exception_set_last(exc_bits: u64) {
+    let exc_obj = obj_from_bits(exc_bits);
+    let Some(ptr) = exc_obj.as_ptr() else {
+        raise_exception("TypeError", "expected exception object");
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_EXCEPTION {
+            raise_exception("TypeError", "expected exception object");
+        }
+    }
+    record_exception(ptr);
+}
+
+#[no_mangle]
+pub extern "C" fn molt_exception_last() -> u64 {
+    let cell = LAST_EXCEPTION.get_or_init(|| Mutex::new(None));
+    let guard = cell.lock().unwrap();
+    if let Some(ptr) = *guard {
+        let bits = MoltObject::from_ptr(ptr as *mut u8).bits();
+        inc_ref_bits(bits);
+        bits
+    } else {
+        MoltObject::none().bits()
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_context_new(enter_fn: u64, exit_fn: u64, payload_bits: u64) -> u64 {
+    if enter_fn == 0 || exit_fn == 0 {
+        raise_exception("TypeError", "context manager hooks must be non-null");
+    }
+    let ptr = alloc_context_manager(enter_fn, exit_fn, payload_bits);
+    if ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(ptr).bits()
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_context_enter(ctx_bits: u64) -> u64 {
+    let ctx_obj = obj_from_bits(ctx_bits);
+    let Some(ptr) = ctx_obj.as_ptr() else {
+        raise_exception("TypeError", "context manager must be an object");
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_CONTEXT_MANAGER {
+            raise_exception("TypeError", "context manager protocol not supported");
+        }
+        let enter_fn_addr = context_enter_fn(ptr);
+        if enter_fn_addr == 0 {
+            raise_exception("TypeError", "context manager missing __enter__");
+        }
+        let enter_fn =
+            std::mem::transmute::<usize, extern "C" fn(u64) -> u64>(enter_fn_addr as usize);
+        enter_fn(context_payload_bits(ptr))
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_context_exit(ctx_bits: u64, exc_bits: u64) -> u64 {
+    let ctx_obj = obj_from_bits(ctx_bits);
+    let Some(ptr) = ctx_obj.as_ptr() else {
+        raise_exception("TypeError", "context manager must be an object");
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_CONTEXT_MANAGER {
+            raise_exception("TypeError", "context manager protocol not supported");
+        }
+        let exit_fn_addr = context_exit_fn(ptr);
+        if exit_fn_addr == 0 {
+            raise_exception("TypeError", "context manager missing __exit__");
+        }
+        let exit_fn =
+            std::mem::transmute::<usize, extern "C" fn(u64, u64) -> u64>(exit_fn_addr as usize);
+        exit_fn(context_payload_bits(ptr), exc_bits)
+    }
 }
 
 #[no_mangle]
@@ -4325,6 +4516,9 @@ fn format_obj(obj: MoltObject) -> String {
             if type_id == TYPE_ID_EXCEPTION {
                 return format_exception(ptr);
             }
+            if type_id == TYPE_ID_CONTEXT_MANAGER {
+                return "<context_manager>".to_string();
+            }
             if type_id == TYPE_ID_DATACLASS {
                 return format_dataclass(ptr);
             }
@@ -4763,6 +4957,10 @@ pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
                 let msg_bits = exception_msg_bits(ptr);
                 dec_ref_bits(kind_bits);
                 dec_ref_bits(msg_bits);
+            }
+            TYPE_ID_CONTEXT_MANAGER => {
+                let payload_bits = context_payload_bits(ptr);
+                dec_ref_bits(payload_bits);
             }
             TYPE_ID_DATACLASS => {
                 let vec_ptr = dataclass_fields_ptr(ptr);
