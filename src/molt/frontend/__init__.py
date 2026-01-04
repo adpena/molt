@@ -98,7 +98,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return name
 
     def emit(self, op: MoltOp) -> None:
-        if op.kind == "CONST" and op.result and isinstance(op.args[0], int):
+        if (
+            op.kind == "CONST"
+            and op.result
+            and isinstance(op.args[0], int)
+            and not isinstance(op.args[0], bool)
+        ):
             self.const_ints[op.result.name] = op.args[0]
         self.current_ops.append(op)
 
@@ -1157,6 +1162,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if node.value is None:
             res = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
+            return res
+        if isinstance(node.value, bool):
+            res = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="CONST_BOOL", args=[node.value], result=res))
             return res
         if isinstance(node.value, bytes):
             res = MoltValue(self.next_var(), type_hint="bytes")
@@ -3141,8 +3150,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         json_ops: list[dict[str, Any]] = []
         for op in ops:
             if op.kind == "CONST":
+                value = op.args[0]
+                if isinstance(value, bool):
+                    value = 1 if value else 0
                 json_ops.append(
-                    {"kind": "const", "value": op.args[0], "out": op.result.name}
+                    {"kind": "const", "value": value, "out": op.result.name}
+                )
+            elif op.kind == "CONST_BOOL":
+                value = 1 if op.args[0] else 0
+                json_ops.append(
+                    {"kind": "const_bool", "value": value, "out": op.result.name}
                 )
             elif op.kind == "CONST_FLOAT":
                 json_ops.append(

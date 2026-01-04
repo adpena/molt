@@ -34,6 +34,11 @@ fn box_none() -> i64 {
     (QNAN | TAG_NONE) as i64
 }
 
+fn box_bool(val: i64) -> i64 {
+    let bit = if val != 0 { 1u64 } else { 0u64 };
+    (QNAN | TAG_BOOL | bit) as i64
+}
+
 fn unbox_int(builder: &mut FunctionBuilder, val: Value) -> Value {
     let mask = builder.ins().iconst(types::I64, INT_MASK as i64);
     let masked = builder.ins().band(val, mask);
@@ -305,6 +310,12 @@ impl SimpleBackend {
                 "const" => {
                     let val = op.value.unwrap();
                     let boxed = box_int(val);
+                    let iconst = builder.ins().iconst(types::I64, boxed);
+                    vars.insert(op.out.unwrap(), iconst);
+                }
+                "const_bool" => {
+                    let val = op.value.unwrap();
+                    let boxed = box_bool(val);
                     let iconst = builder.ins().iconst(types::I64, boxed);
                     vars.insert(op.out.unwrap(), iconst);
                 }

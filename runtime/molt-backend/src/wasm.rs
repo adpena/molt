@@ -8,6 +8,7 @@ use wasm_encoder::{
 
 const QNAN: u64 = 0x7ff8_0000_0000_0000;
 const TAG_INT: u64 = 0x0001_0000_0000_0000;
+const TAG_BOOL: u64 = 0x0002_0000_0000_0000;
 const TAG_NONE: u64 = 0x0003_0000_0000_0000;
 const POINTER_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
 
@@ -18,6 +19,11 @@ fn box_int(val: i64) -> i64 {
 
 fn box_float(val: f64) -> i64 {
     val.to_bits() as i64
+}
+
+fn box_bool(val: i64) -> i64 {
+    let bit = if val != 0 { 1u64 } else { 0u64 };
+    (QNAN | TAG_BOOL | bit) as i64
 }
 
 fn box_none() -> i64 {
@@ -335,6 +341,12 @@ impl WasmBackend {
                 "const" => {
                     let val = op.value.unwrap();
                     func.instruction(&Instruction::I64Const(box_int(val)));
+                    let local_idx = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(local_idx));
+                }
+                "const_bool" => {
+                    let val = op.value.unwrap();
+                    func.instruction(&Instruction::I64Const(box_bool(val)));
                     let local_idx = locals[op.out.as_ref().unwrap()];
                     func.instruction(&Instruction::LocalSet(local_idx));
                 }
