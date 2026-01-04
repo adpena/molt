@@ -6239,8 +6239,7 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                         let src_bytes = if let Some(src_ptr) = src_obj.as_ptr() {
                             let src_type = object_type_id(src_ptr);
                             if src_type == TYPE_ID_BYTES || src_type == TYPE_ID_BYTEARRAY {
-                                let slice = bytes_like_slice_raw(src_ptr)
-                                    .unwrap_or(&[]);
+                                let slice = bytes_like_slice_raw(src_ptr).unwrap_or(&[]);
                                 slice.to_vec()
                             } else if src_type == TYPE_ID_MEMORYVIEW {
                                 if let Some(slice) = memoryview_bytes_slice(src_ptr) {
