@@ -533,7 +533,6 @@ unsafe fn memoryview_collect_bytes(ptr: *mut u8) -> Option<Vec<u8>> {
     if offset < 0 {
         return None;
     }
-    let offset = offset as isize;
     let len = memoryview_len(ptr);
     let stride = memoryview_stride(ptr);
     let mut out = Vec::with_capacity(len);
