@@ -18,7 +18,7 @@ print(mv.tobytes())
 try:
     stride[::2] = b"12"
 except Exception as exc:
-    print(type(exc).__name__, exc)
+    print(type(exc).__name__ + " " + str(exc))
 
 ro = memoryview(b"hi")
 print(ro[0])
