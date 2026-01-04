@@ -864,7 +864,7 @@ fn alloc_bytearray(bytes: &[u8]) -> *mut u8 {
 fn alloc_intarray(values: &[i64]) -> *mut u8 {
     let total = std::mem::size_of::<MoltHeader>()
         + std::mem::size_of::<usize>()
-        + values.len() * std::mem::size_of::<i64>();
+        + std::mem::size_of_val(values);
     let ptr = alloc_object(total, TYPE_ID_INTARRAY);
     if ptr.is_null() {
         return ptr;
@@ -5655,7 +5655,6 @@ pub extern "C" fn molt_bytearray_from_obj(bits: u64) -> u64 {
                 if offset < 0 {
                     return MoltObject::none().bits();
                 }
-                let offset = offset as isize;
                 let mut out = Vec::with_capacity(len.saturating_mul(itemsize));
                 for idx in 0..len {
                     let start = offset + (idx as isize) * stride;
@@ -5774,8 +5773,10 @@ pub struct BufferExport {
     itemsize: u64,
 }
 
+/// # Safety
+/// Caller must ensure `out_ptr` is valid and writable.
 #[no_mangle]
-pub extern "C" fn molt_buffer_export(obj_bits: u64, out_ptr: *mut BufferExport) -> i32 {
+pub unsafe extern "C" fn molt_buffer_export(obj_bits: u64, out_ptr: *mut BufferExport) -> i32 {
     if out_ptr.is_null() {
         return 1;
     }
@@ -5784,54 +5785,52 @@ pub extern "C" fn molt_buffer_export(obj_bits: u64, out_ptr: *mut BufferExport) 
         Some(ptr) => ptr,
         None => return 1,
     };
-    unsafe {
-        let type_id = object_type_id(ptr);
-        if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
-            let data_ptr = bytes_data(ptr) as u64;
-            let len = bytes_len(ptr) as u64;
-            let readonly = if type_id == TYPE_ID_BYTES { 1 } else { 0 };
-            *out_ptr = BufferExport {
-                ptr: data_ptr,
-                len,
-                readonly,
-                stride: 1,
-                itemsize: 1,
-            };
-            return 0;
+    let type_id = object_type_id(ptr);
+    if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
+        let data_ptr = bytes_data(ptr) as u64;
+        let len = bytes_len(ptr) as u64;
+        let readonly = if type_id == TYPE_ID_BYTES { 1 } else { 0 };
+        *out_ptr = BufferExport {
+            ptr: data_ptr,
+            len,
+            readonly,
+            stride: 1,
+            itemsize: 1,
+        };
+        return 0;
+    }
+    if type_id == TYPE_ID_MEMORYVIEW {
+        let owner_bits = memoryview_owner_bits(ptr);
+        let owner = obj_from_bits(owner_bits);
+        let owner_ptr = match owner.as_ptr() {
+            Some(ptr) => ptr,
+            None => return 1,
+        };
+        let base = match bytes_like_slice_raw(owner_ptr) {
+            Some(slice) => slice,
+            None => return 1,
+        };
+        let offset = memoryview_offset(ptr);
+        if offset < 0 {
+            return 1;
         }
-        if type_id == TYPE_ID_MEMORYVIEW {
-            let owner_bits = memoryview_owner_bits(ptr);
-            let owner = obj_from_bits(owner_bits);
-            let owner_ptr = match owner.as_ptr() {
-                Some(ptr) => ptr,
-                None => return 1,
-            };
-            let base = match bytes_like_slice_raw(owner_ptr) {
-                Some(slice) => slice,
-                None => return 1,
-            };
-            let offset = memoryview_offset(ptr);
-            if offset < 0 {
-                return 1;
-            }
-            let offset = offset as usize;
-            if offset > base.len() {
-                return 1;
-            }
-            let data_ptr = base.as_ptr().add(offset) as u64;
-            let len = memoryview_len(ptr) as u64;
-            let readonly = if memoryview_readonly(ptr) { 1 } else { 0 };
-            let stride = memoryview_stride(ptr) as i64;
-            let itemsize = memoryview_itemsize(ptr) as u64;
-            *out_ptr = BufferExport {
-                ptr: data_ptr,
-                len,
-                readonly,
-                stride,
-                itemsize,
-            };
-            return 0;
+        let offset = offset as usize;
+        if offset > base.len() {
+            return 1;
         }
+        let data_ptr = base.as_ptr().add(offset) as u64;
+        let len = memoryview_len(ptr) as u64;
+        let readonly = if memoryview_readonly(ptr) { 1 } else { 0 };
+        let stride = memoryview_stride(ptr) as i64;
+        let itemsize = memoryview_itemsize(ptr) as u64;
+        *out_ptr = BufferExport {
+            ptr: data_ptr,
+            len,
+            readonly,
+            stride,
+            itemsize,
+        };
+        return 0;
     }
     1
 }
@@ -6365,7 +6364,6 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                     if itemsize != 1 {
                         raise_exception("TypeError", "memoryview itemsize not supported");
                     }
-                    let offset = offset as isize;
                     if stride == 1 {
                         let start = offset as usize;
                         let end = start.saturating_add(len);
