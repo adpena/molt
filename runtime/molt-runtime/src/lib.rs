@@ -853,6 +853,20 @@ fn alloc_bytes_like(bytes: &[u8], type_id: u32) -> *mut u8 {
     ptr
 }
 
+fn concat_bytes_like(left: &[u8], right: &[u8], type_id: u32) -> Option<u64> {
+    let total = left.len().checked_add(right.len())?;
+    let ptr = alloc_bytes_like_with_len(total, type_id);
+    if ptr.is_null() {
+        return None;
+    }
+    unsafe {
+        let data_ptr = ptr.add(std::mem::size_of::<usize>());
+        std::ptr::copy_nonoverlapping(left.as_ptr(), data_ptr, left.len());
+        std::ptr::copy_nonoverlapping(right.as_ptr(), data_ptr.add(left.len()), right.len());
+    }
+    Some(MoltObject::from_ptr(ptr).bits())
+}
+
 fn alloc_bytes(bytes: &[u8]) -> *mut u8 {
     alloc_bytes_like(bytes, TYPE_ID_BYTES)
 }
@@ -2698,42 +2712,30 @@ pub extern "C" fn molt_add(a: u64, b: u64) -> u64 {
                 let r_len = string_len(rp);
                 let l_bytes = std::slice::from_raw_parts(string_bytes(lp), l_len);
                 let r_bytes = std::slice::from_raw_parts(string_bytes(rp), r_len);
-                let mut combined = Vec::with_capacity(l_len + r_len);
-                combined.extend_from_slice(l_bytes);
-                combined.extend_from_slice(r_bytes);
-                let ptr = alloc_string(&combined);
-                if ptr.is_null() {
-                    return MoltObject::none().bits();
+                if let Some(bits) = concat_bytes_like(l_bytes, r_bytes, TYPE_ID_STRING) {
+                    return bits;
                 }
-                return MoltObject::from_ptr(ptr).bits();
+                return MoltObject::none().bits();
             }
             if ltype == TYPE_ID_BYTES && rtype == TYPE_ID_BYTES {
                 let l_len = bytes_len(lp);
                 let r_len = bytes_len(rp);
                 let l_bytes = std::slice::from_raw_parts(bytes_data(lp), l_len);
                 let r_bytes = std::slice::from_raw_parts(bytes_data(rp), r_len);
-                let mut combined = Vec::with_capacity(l_len + r_len);
-                combined.extend_from_slice(l_bytes);
-                combined.extend_from_slice(r_bytes);
-                let ptr = alloc_bytes(&combined);
-                if ptr.is_null() {
-                    return MoltObject::none().bits();
+                if let Some(bits) = concat_bytes_like(l_bytes, r_bytes, TYPE_ID_BYTES) {
+                    return bits;
                 }
-                return MoltObject::from_ptr(ptr).bits();
+                return MoltObject::none().bits();
             }
             if ltype == TYPE_ID_BYTEARRAY && rtype == TYPE_ID_BYTEARRAY {
                 let l_len = bytes_len(lp);
                 let r_len = bytes_len(rp);
                 let l_bytes = std::slice::from_raw_parts(bytes_data(lp), l_len);
                 let r_bytes = std::slice::from_raw_parts(bytes_data(rp), r_len);
-                let mut combined = Vec::with_capacity(l_len + r_len);
-                combined.extend_from_slice(l_bytes);
-                combined.extend_from_slice(r_bytes);
-                let ptr = alloc_bytearray(&combined);
-                if ptr.is_null() {
-                    return MoltObject::none().bits();
+                if let Some(bits) = concat_bytes_like(l_bytes, r_bytes, TYPE_ID_BYTEARRAY) {
+                    return bits;
                 }
-                return MoltObject::from_ptr(ptr).bits();
+                return MoltObject::none().bits();
             }
             if ltype == TYPE_ID_LIST && rtype == TYPE_ID_LIST {
                 let l_len = list_len(lp);
