@@ -7559,9 +7559,7 @@ fn format_exception(ptr: *mut u8) -> String {
 }
 
 fn format_exception_message(ptr: *mut u8) -> String {
-    unsafe {
-        string_obj_to_owned(obj_from_bits(exception_msg_bits(ptr))).unwrap_or_default()
-    }
+    unsafe { string_obj_to_owned(obj_from_bits(exception_msg_bits(ptr))).unwrap_or_default() }
 }
 
 fn format_dataclass(ptr: *mut u8) -> String {
