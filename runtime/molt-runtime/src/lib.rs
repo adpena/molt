@@ -7350,7 +7350,7 @@ pub extern "C" fn molt_print_obj(val: u64) {
                 return;
             }
             if type_id == TYPE_ID_EXCEPTION {
-                println!("{}", format_exception(ptr));
+                println!("{}", format_exception_message(ptr));
                 return;
             }
             if type_id == TYPE_ID_DATACLASS {
@@ -7558,6 +7558,12 @@ fn format_exception(ptr: *mut u8) -> String {
     }
 }
 
+fn format_exception_message(ptr: *mut u8) -> String {
+    unsafe {
+        string_obj_to_owned(obj_from_bits(exception_msg_bits(ptr))).unwrap_or_default()
+    }
+}
+
 fn format_dataclass(ptr: *mut u8) -> String {
     unsafe {
         let desc_ptr = dataclass_desc_ptr(ptr);
@@ -7592,10 +7598,14 @@ fn format_dataclass(ptr: *mut u8) -> String {
 fn format_obj_str(obj: MoltObject) -> String {
     if let Some(ptr) = obj.as_ptr() {
         unsafe {
-            if object_type_id(ptr) == TYPE_ID_STRING {
+            let type_id = object_type_id(ptr);
+            if type_id == TYPE_ID_STRING {
                 let len = string_len(ptr);
                 let bytes = std::slice::from_raw_parts(string_bytes(ptr), len);
                 return String::from_utf8_lossy(bytes).into_owned();
+            }
+            if type_id == TYPE_ID_EXCEPTION {
+                return format_exception_message(ptr);
             }
         }
     }

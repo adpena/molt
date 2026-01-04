@@ -3136,6 +3136,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="IS", args=[exc_val, none_val], result=is_none))
         pending = MoltValue(self.next_var(), type_hint="bool")
         self.emit(MoltOp(kind="NOT", args=[is_none], result=pending))
+
+        def emit_pending_raise() -> None:
+            exc_after = MoltValue(self.next_var(), type_hint="exception")
+            self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=exc_after))
+            none_after = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_after))
+            is_none_after = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(
+                MoltOp(kind="IS", args=[exc_after, none_after], result=is_none_after)
+            )
+            pending_after = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="NOT", args=[is_none_after], result=pending_after))
+            self.emit(MoltOp(kind="IF", args=[pending_after], result=MoltValue("none")))
+            self.emit(MoltOp(kind="RAISE", args=[exc_after], result=MoltValue("none")))
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+
         self.emit(MoltOp(kind="IF", args=[pending], result=MoltValue("none")))
         self.emit(
             MoltOp(
@@ -3144,23 +3160,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 result=MoltValue("none"),
             )
         )
-        self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
-        handled = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="CONST_BOOL", args=[0], result=handled))
 
         def emit_handlers(handlers: list[ast.ExceptHandler]) -> None:
-            nonlocal handled
             if not handlers:
                 return
             handler = handlers[0]
-            not_handled = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="NOT", args=[handled], result=not_handled))
-            self.emit(MoltOp(kind="IF", args=[not_handled], result=MoltValue("none")))
             match_val = self._emit_exception_match(handler, exc_val)
             self.emit(MoltOp(kind="IF", args=[match_val], result=MoltValue("none")))
-            handled_true = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="CONST_BOOL", args=[1], result=handled_true))
-            handled = handled_true
+            self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
             if handler.name:
                 self._store_local_value(handler.name, exc_val)
             self.active_exceptions.append(exc_val)
@@ -3171,77 +3178,23 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
                 emit_handlers(handlers[1:])
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
         if node.handlers:
             emit_handlers(node.handlers)
 
         if node.finalbody:
-            not_handled = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="NOT", args=[handled], result=not_handled))
-            if node.handlers:
-                self.emit(
-                    MoltOp(kind="IF", args=[not_handled], result=MoltValue("none"))
-                )
-                self.active_exceptions.append(exc_val)
-                self._emit_finalbody(node.finalbody)
-                self.active_exceptions.pop()
-                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-                self._emit_finalbody(node.finalbody)
-                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            else:
-                self.active_exceptions.append(exc_val)
-                self._emit_finalbody(node.finalbody)
-                self.active_exceptions.pop()
-
-            exc_after = MoltValue(self.next_var(), type_hint="exception")
-            self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=exc_after))
-            none_after = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_after))
-            is_none_after = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(
-                MoltOp(kind="IS", args=[exc_after, none_after], result=is_none_after)
-            )
-            pending_after = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="NOT", args=[is_none_after], result=pending_after))
-            self.emit(MoltOp(kind="IF", args=[pending_after], result=MoltValue("none")))
-            self.emit(MoltOp(kind="RAISE", args=[exc_after], result=MoltValue("none")))
-            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-            self.emit(MoltOp(kind="IF", args=[not_handled], result=MoltValue("none")))
-            self.emit(MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none")))
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-        else:
-            not_handled = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="NOT", args=[handled], result=not_handled))
-            self.emit(MoltOp(kind="IF", args=[not_handled], result=MoltValue("none")))
-            self.emit(MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none")))
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-
-        if node.finalbody:
-            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-            if node.orelse:
-                for stmt in node.orelse:
-                    self.visit(stmt)
+            self.active_exceptions.append(exc_val)
             self._emit_finalbody(node.finalbody)
-            exc_after = MoltValue(self.next_var(), type_hint="exception")
-            self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=exc_after))
-            none_after = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_after))
-            is_none_after = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(
-                MoltOp(kind="IS", args=[exc_after, none_after], result=is_none_after)
-            )
-            pending_after = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="NOT", args=[is_none_after], result=pending_after))
-            self.emit(MoltOp(kind="IF", args=[pending_after], result=MoltValue("none")))
-            self.emit(MoltOp(kind="RAISE", args=[exc_after], result=MoltValue("none")))
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-        else:
-            if node.orelse:
-                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-                for stmt in node.orelse:
-                    self.visit(stmt)
+            self.active_exceptions.pop()
+        emit_pending_raise()
+
+        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+        if node.orelse:
+            for stmt in node.orelse:
+                self.visit(stmt)
+        if node.finalbody:
+            self._emit_finalbody(node.finalbody)
+            emit_pending_raise()
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         self.try_scopes.pop()
         return None
