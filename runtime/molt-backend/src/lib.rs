@@ -83,6 +83,12 @@ pub struct OpIR {
     pub fast_int: Option<bool>,
 }
 
+#[derive(Clone)]
+struct TrackedValue {
+    name: String,
+    value: Value,
+}
+
 fn compute_last_use(ops: &[OpIR]) -> HashMap<String, usize> {
     let mut last_use = HashMap::new();
     for (idx, op) in ops.iter().enumerate() {
@@ -98,20 +104,23 @@ fn compute_last_use(ops: &[OpIR]) -> HashMap<String, usize> {
     last_use
 }
 
-fn drain_cleanup_names(
-    names: &mut Vec<String>,
+fn drain_cleanup_tracked(
+    names: &mut Vec<TrackedValue>,
     last_use: &HashMap<String, usize>,
     op_idx: usize,
     skip: Option<&str>,
-) -> Vec<String> {
+)-> Vec<TrackedValue> {
     let mut cleanup = Vec::new();
-    names.retain(|name| {
-        if skip == Some(name.as_str()) {
+    names.retain(|tracked| {
+        if skip == Some(tracked.name.as_str()) {
             return true;
         }
-        let last = last_use.get(name).copied().unwrap_or(op_idx);
+        let last = last_use
+            .get(&tracked.name)
+            .copied()
+            .unwrap_or(op_idx);
         if last <= op_idx {
-            cleanup.push(name.clone());
+            cleanup.push(tracked.clone());
             return false;
         }
         true
@@ -119,16 +128,22 @@ fn drain_cleanup_names(
     cleanup
 }
 
-fn collect_cleanup_names(
-    names: &[String],
+fn collect_cleanup_tracked(
+    names: &[TrackedValue],
     last_use: &HashMap<String, usize>,
     op_idx: usize,
     skip: Option<&str>,
-) -> Vec<String> {
+)-> Vec<TrackedValue> {
     names
         .iter()
-        .filter(|name| skip != Some(name.as_str()))
-        .filter(|name| last_use.get(*name).copied().unwrap_or(op_idx) <= op_idx)
+        .filter(|tracked| skip != Some(tracked.name.as_str()))
+        .filter(|tracked| {
+            last_use
+                .get(&tracked.name)
+                .copied()
+                .unwrap_or(op_idx)
+                <= op_idx
+        })
         .cloned()
         .collect()
 }
@@ -226,8 +241,8 @@ impl SimpleBackend {
         let mut if_stack: Vec<IfFrame> = Vec::new();
         let mut loop_stack: Vec<LoopFrame> = Vec::new();
         let mut loop_depth: i32 = 0;
-        let mut block_tracked_obj: HashMap<Block, Vec<String>> = HashMap::new();
-        let mut block_tracked_ptr: HashMap<Block, Vec<String>> = HashMap::new();
+        let mut block_tracked_obj: HashMap<Block, Vec<TrackedValue>> = HashMap::new();
+        let mut block_tracked_ptr: HashMap<Block, Vec<TrackedValue>> = HashMap::new();
         let last_use = compute_last_use(&func_ir.ops);
 
         let entry_block = builder.create_block();
@@ -1880,6 +1895,102 @@ impl SimpleBackend {
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
+                "context_closing" => {
+                    let args = op.args.as_ref().unwrap();
+                    let payload = vars.get(&args[0]).expect("Payload not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_context_closing", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*payload]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "context_unwind" => {
+                    let args = op.args.as_ref().unwrap();
+                    let exc = vars.get(&args[0]).expect("Exception not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_context_unwind", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*exc]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "file_open" => {
+                    let args = op.args.as_ref().unwrap();
+                    let path = vars.get(&args[0]).expect("Path not found");
+                    let mode = vars.get(&args[1]).expect("Mode not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_file_open", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*path, *mode]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "file_read" => {
+                    let args = op.args.as_ref().unwrap();
+                    let handle = vars.get(&args[0]).expect("Handle not found");
+                    let size = vars.get(&args[1]).expect("Size not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_file_read", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*handle, *size]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "file_write" => {
+                    let args = op.args.as_ref().unwrap();
+                    let handle = vars.get(&args[0]).expect("Handle not found");
+                    let data = vars.get(&args[1]).expect("Data not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_file_write", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*handle, *data]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "file_close" => {
+                    let args = op.args.as_ref().unwrap();
+                    let handle = vars.get(&args[0]).expect("Handle not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_file_close", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*handle]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
                 "bridge_unavailable" => {
                     let args = op.args.as_ref().unwrap();
                     let msg = vars.get(&args[0]).expect("Message not found");
@@ -1934,19 +2045,15 @@ impl SimpleBackend {
                     if !is_block_filled {
                         if let Some(block) = builder.current_block() {
                             if let Some(names) = block_tracked_obj.get_mut(&block) {
-                                let cleanup = drain_cleanup_names(names, &last_use, op_idx, None);
-                                for name in cleanup {
-                                    if let Some(val) = vars.get(&name) {
-                                        builder.ins().call(local_dec_ref_obj, &[*val]);
-                                    }
+                                let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
+                                for tracked in cleanup {
+                                    builder.ins().call(local_dec_ref_obj, &[tracked.value]);
                                 }
                             }
                             if let Some(names) = block_tracked_ptr.get_mut(&block) {
-                                let cleanup = drain_cleanup_names(names, &last_use, op_idx, None);
-                                for name in cleanup {
-                                    if let Some(val) = vars.get(&name) {
-                                        builder.ins().call(local_dec_ref, &[*val]);
-                                    }
+                                let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
+                                for tracked in cleanup {
+                                    builder.ins().call(local_dec_ref, &[tracked.value]);
                                 }
                             }
                         }
@@ -1962,19 +2069,15 @@ impl SimpleBackend {
                     if !is_block_filled {
                         if let Some(block) = builder.current_block() {
                             if let Some(names) = block_tracked_obj.get_mut(&block) {
-                                let cleanup = drain_cleanup_names(names, &last_use, op_idx, None);
-                                for name in cleanup {
-                                    if let Some(val) = vars.get(&name) {
-                                        builder.ins().call(local_dec_ref_obj, &[*val]);
-                                    }
+                                let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
+                                for tracked in cleanup {
+                                    builder.ins().call(local_dec_ref_obj, &[tracked.value]);
                                 }
                             }
                             if let Some(names) = block_tracked_ptr.get_mut(&block) {
-                                let cleanup = drain_cleanup_names(names, &last_use, op_idx, None);
-                                for name in cleanup {
-                                    if let Some(val) = vars.get(&name) {
-                                        builder.ins().call(local_dec_ref, &[*val]);
-                                    }
+                                let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
+                                for tracked in cleanup {
+                                    builder.ins().call(local_dec_ref, &[tracked.value]);
                                 }
                             }
                         }
@@ -2051,11 +2154,11 @@ impl SimpleBackend {
                         .expect("loop_break_if_true requires an active block");
                     let tracked_obj_snapshot = block_tracked_obj
                         .get(&current_block)
-                        .map(|names| collect_cleanup_names(names, &last_use, op_idx, None))
+                        .map(|names| collect_cleanup_tracked(names, &last_use, op_idx, None))
                         .unwrap_or_default();
                     let tracked_ptr_snapshot = block_tracked_ptr
                         .get(&current_block)
-                        .map(|names| collect_cleanup_names(names, &last_use, op_idx, None))
+                        .map(|names| collect_cleanup_tracked(names, &last_use, op_idx, None))
                         .unwrap_or_default();
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -2074,15 +2177,11 @@ impl SimpleBackend {
                         .brif(cond_bool, cleanup_block, &[], frame.body_block, &[]);
                     builder.switch_to_block(cleanup_block);
                     builder.seal_block(cleanup_block);
-                    for name in tracked_obj_snapshot {
-                        if let Some(val) = vars.get(&name) {
-                            builder.ins().call(local_dec_ref_obj, &[*val]);
-                        }
+                    for tracked in tracked_obj_snapshot {
+                        builder.ins().call(local_dec_ref_obj, &[tracked.value]);
                     }
-                    for name in tracked_ptr_snapshot {
-                        if let Some(val) = vars.get(&name) {
-                            builder.ins().call(local_dec_ref, &[*val]);
-                        }
+                    for tracked in tracked_ptr_snapshot {
+                        builder.ins().call(local_dec_ref, &[tracked.value]);
                     }
                     builder.ins().jump(frame.after_block, &[]);
                     builder.switch_to_block(frame.body_block);
@@ -2098,11 +2197,11 @@ impl SimpleBackend {
                         .expect("loop_break_if_false requires an active block");
                     let tracked_obj_snapshot = block_tracked_obj
                         .get(&current_block)
-                        .map(|names| collect_cleanup_names(names, &last_use, op_idx, None))
+                        .map(|names| collect_cleanup_tracked(names, &last_use, op_idx, None))
                         .unwrap_or_default();
                     let tracked_ptr_snapshot = block_tracked_ptr
                         .get(&current_block)
-                        .map(|names| collect_cleanup_names(names, &last_use, op_idx, None))
+                        .map(|names| collect_cleanup_tracked(names, &last_use, op_idx, None))
                         .unwrap_or_default();
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -2121,15 +2220,11 @@ impl SimpleBackend {
                         .brif(cond_bool, frame.body_block, &[], cleanup_block, &[]);
                     builder.switch_to_block(cleanup_block);
                     builder.seal_block(cleanup_block);
-                    for name in tracked_obj_snapshot {
-                        if let Some(val) = vars.get(&name) {
-                            builder.ins().call(local_dec_ref_obj, &[*val]);
-                        }
+                    for tracked in tracked_obj_snapshot {
+                        builder.ins().call(local_dec_ref_obj, &[tracked.value]);
                     }
-                    for name in tracked_ptr_snapshot {
-                        if let Some(val) = vars.get(&name) {
-                            builder.ins().call(local_dec_ref, &[*val]);
-                        }
+                    for tracked in tracked_ptr_snapshot {
+                        builder.ins().call(local_dec_ref, &[tracked.value]);
                     }
                     builder.ins().jump(frame.after_block, &[]);
                     builder.switch_to_block(frame.body_block);
@@ -2150,19 +2245,15 @@ impl SimpleBackend {
                         .current_block()
                         .expect("loop_continue requires an active block");
                     if let Some(names) = block_tracked_obj.get_mut(&current_block) {
-                        let cleanup = drain_cleanup_names(names, &last_use, op_idx, None);
-                        for name in cleanup {
-                            if let Some(val) = vars.get(&name) {
-                                builder.ins().call(local_dec_ref_obj, &[*val]);
-                            }
+                        let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
+                        for tracked in cleanup {
+                            builder.ins().call(local_dec_ref_obj, &[tracked.value]);
                         }
                     }
                     if let Some(names) = block_tracked_ptr.get_mut(&current_block) {
-                        let cleanup = drain_cleanup_names(names, &last_use, op_idx, None);
-                        for name in cleanup {
-                            if let Some(val) = vars.get(&name) {
-                                builder.ins().call(local_dec_ref, &[*val]);
-                            }
+                        let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
+                        for tracked in cleanup {
+                            builder.ins().call(local_dec_ref, &[tracked.value]);
                         }
                     }
                     if let Some(next_idx) = frame.next_index.take() {
@@ -2339,21 +2430,25 @@ impl SimpleBackend {
                     let ret_val = *vars.get(var_name).expect("Return variable not found");
                     if let Some(block) = builder.current_block() {
                         if let Some(names) = block_tracked_obj.get_mut(&block) {
-                            let cleanup =
-                                drain_cleanup_names(names, &last_use, op_idx, Some(var_name));
-                            for name in cleanup {
-                                if let Some(val) = vars.get(&name) {
-                                    builder.ins().call(local_dec_ref_obj, &[*val]);
-                                }
+                            let cleanup = drain_cleanup_tracked(
+                                names,
+                                &last_use,
+                                op_idx,
+                                Some(var_name),
+                            );
+                            for tracked in cleanup {
+                                builder.ins().call(local_dec_ref_obj, &[tracked.value]);
                             }
                         }
                         if let Some(names) = block_tracked_ptr.get_mut(&block) {
-                            let cleanup =
-                                drain_cleanup_names(names, &last_use, op_idx, Some(var_name));
-                            for name in cleanup {
-                                if let Some(val) = vars.get(&name) {
-                                    builder.ins().call(local_dec_ref, &[*val]);
-                                }
+                            let cleanup = drain_cleanup_tracked(
+                                names,
+                                &last_use,
+                                op_idx,
+                                Some(var_name),
+                            );
+                            for tracked in cleanup {
+                                builder.ins().call(local_dec_ref, &[tracked.value]);
                             }
                         }
                     }
@@ -2369,19 +2464,15 @@ impl SimpleBackend {
                 "ret_void" => {
                     if let Some(block) = builder.current_block() {
                         if let Some(names) = block_tracked_obj.get_mut(&block) {
-                            let cleanup = drain_cleanup_names(names, &last_use, op_idx, None);
-                            for name in cleanup {
-                                if let Some(val) = vars.get(&name) {
-                                    builder.ins().call(local_dec_ref_obj, &[*val]);
-                                }
+                            let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
+                            for tracked in cleanup {
+                                builder.ins().call(local_dec_ref_obj, &[tracked.value]);
                             }
                         }
                         if let Some(names) = block_tracked_ptr.get_mut(&block) {
-                            let cleanup = drain_cleanup_names(names, &last_use, op_idx, None);
-                            for name in cleanup {
-                                if let Some(val) = vars.get(&name) {
-                                    builder.ins().call(local_dec_ref, &[*val]);
-                                }
+                            let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
+                            for tracked in cleanup {
+                                builder.ins().call(local_dec_ref, &[tracked.value]);
                             }
                         }
                     }
@@ -2398,19 +2489,15 @@ impl SimpleBackend {
                     let target_block = state_blocks[&target_id];
                     if let Some(block) = builder.current_block() {
                         if let Some(names) = block_tracked_obj.get_mut(&block) {
-                            let cleanup = drain_cleanup_names(names, &last_use, op_idx, None);
-                            for name in cleanup {
-                                if let Some(val) = vars.get(&name) {
-                                    builder.ins().call(local_dec_ref_obj, &[*val]);
-                                }
+                            let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
+                            for tracked in cleanup {
+                                builder.ins().call(local_dec_ref_obj, &[tracked.value]);
                             }
                         }
                         if let Some(names) = block_tracked_ptr.get_mut(&block) {
-                            let cleanup = drain_cleanup_names(names, &last_use, op_idx, None);
-                            for name in cleanup {
-                                if let Some(val) = vars.get(&name) {
-                                    builder.ins().call(local_dec_ref, &[*val]);
-                                }
+                            let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
+                            for tracked in cleanup {
+                                builder.ins().call(local_dec_ref, &[tracked.value]);
                             }
                         }
                     }
@@ -2464,10 +2551,16 @@ impl SimpleBackend {
                             } else {
                                 tracked_obj_vars.push(name);
                             }
-                        } else if output_is_ptr {
-                            block_tracked_ptr.entry(block).or_default().push(name);
-                        } else {
-                            block_tracked_obj.entry(block).or_default().push(name);
+                        } else if let Some(val) = vars.get(&name) {
+                            let tracked = TrackedValue {
+                                name: name.to_string(),
+                                value: *val,
+                            };
+                            if output_is_ptr {
+                                block_tracked_ptr.entry(block).or_default().push(tracked);
+                            } else {
+                                block_tracked_obj.entry(block).or_default().push(tracked);
+                            }
                         }
                     }
                 }

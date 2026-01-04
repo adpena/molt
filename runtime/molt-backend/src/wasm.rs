@@ -192,7 +192,13 @@ impl WasmBackend {
         add_import("context_null", 2, &mut self.import_ids);
         add_import("context_enter", 2, &mut self.import_ids);
         add_import("context_exit", 3, &mut self.import_ids);
+        add_import("context_unwind", 2, &mut self.import_ids);
+        add_import("context_closing", 2, &mut self.import_ids);
         add_import("bridge_unavailable", 2, &mut self.import_ids);
+        add_import("file_open", 3, &mut self.import_ids);
+        add_import("file_read", 3, &mut self.import_ids);
+        add_import("file_write", 3, &mut self.import_ids);
+        add_import("file_close", 2, &mut self.import_ids);
 
         self.func_count = import_idx;
 
@@ -1206,11 +1212,59 @@ impl WasmBackend {
                     func.instruction(&Instruction::Call(import_ids["context_exit"]));
                     func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                 }
+                "context_unwind" => {
+                    let args = op.args.as_ref().unwrap();
+                    let exc = locals[&args[0]];
+                    func.instruction(&Instruction::LocalGet(exc));
+                    func.instruction(&Instruction::Call(import_ids["context_unwind"]));
+                    func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                }
+                "context_closing" => {
+                    let args = op.args.as_ref().unwrap();
+                    let payload = locals[&args[0]];
+                    func.instruction(&Instruction::LocalGet(payload));
+                    func.instruction(&Instruction::Call(import_ids["context_closing"]));
+                    func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                }
                 "bridge_unavailable" => {
                     let args = op.args.as_ref().unwrap();
                     let msg = locals[&args[0]];
                     func.instruction(&Instruction::LocalGet(msg));
                     func.instruction(&Instruction::Call(import_ids["bridge_unavailable"]));
+                    func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                }
+                "file_open" => {
+                    let args = op.args.as_ref().unwrap();
+                    let path = locals[&args[0]];
+                    let mode = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(path));
+                    func.instruction(&Instruction::LocalGet(mode));
+                    func.instruction(&Instruction::Call(import_ids["file_open"]));
+                    func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                }
+                "file_read" => {
+                    let args = op.args.as_ref().unwrap();
+                    let handle = locals[&args[0]];
+                    let size = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(handle));
+                    func.instruction(&Instruction::LocalGet(size));
+                    func.instruction(&Instruction::Call(import_ids["file_read"]));
+                    func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                }
+                "file_write" => {
+                    let args = op.args.as_ref().unwrap();
+                    let handle = locals[&args[0]];
+                    let data = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(handle));
+                    func.instruction(&Instruction::LocalGet(data));
+                    func.instruction(&Instruction::Call(import_ids["file_write"]));
+                    func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                }
+                "file_close" => {
+                    let args = op.args.as_ref().unwrap();
+                    let handle = locals[&args[0]];
+                    func.instruction(&Instruction::LocalGet(handle));
+                    func.instruction(&Instruction::Call(import_ids["file_close"]));
                     func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                 }
                 "block_on" => {

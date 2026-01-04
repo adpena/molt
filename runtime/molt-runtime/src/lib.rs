@@ -7,7 +7,8 @@ use memchr::{memchr, memmem};
 use molt_obj_model::MoltObject;
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::io::Cursor;
+use std::fs::OpenOptions;
+use std::io::{Cursor, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -35,6 +36,13 @@ struct Buffer2D {
     data: Vec<i64>,
 }
 
+struct MoltFileHandle {
+    file: Mutex<Option<std::fs::File>>,
+    readable: bool,
+    writable: bool,
+    text: bool,
+}
+
 const TYPE_ID_STRING: u32 = 200;
 const TYPE_ID_LIST: u32 = 201;
 const TYPE_ID_BYTES: u32 = 202;
@@ -53,6 +61,7 @@ const TYPE_ID_EXCEPTION: u32 = 214;
 const TYPE_ID_DATACLASS: u32 = 215;
 const TYPE_ID_BUFFER2D: u32 = 216;
 const TYPE_ID_CONTEXT_MANAGER: u32 = 217;
+const TYPE_ID_FILE_HANDLE: u32 = 218;
 const MAX_SMALL_LIST: usize = 16;
 const TYPE_TAG_ANY: i64 = 0;
 const TYPE_TAG_INT: i64 = 1;
@@ -72,6 +81,7 @@ const TYPE_TAG_BUFFER2D: i64 = 14;
 
 thread_local! {
     static PARSE_ARENA: RefCell<TempArena> = RefCell::new(TempArena::new(8 * 1024));
+    static CONTEXT_STACK: RefCell<Vec<u64>> = RefCell::new(Vec::new());
 }
 
 static LAST_EXCEPTION: OnceLock<Mutex<Option<usize>>> = OnceLock::new();
@@ -162,6 +172,9 @@ fn is_truthy(obj: MoltObject) -> bool {
                 return true;
             }
             if type_id == TYPE_ID_CONTEXT_MANAGER {
+                return true;
+            }
+            if type_id == TYPE_ID_FILE_HANDLE {
                 return true;
             }
         }
@@ -494,6 +507,10 @@ unsafe fn dataclass_fields_mut(ptr: *mut u8) -> &'static mut Vec<u64> {
 
 unsafe fn buffer2d_ptr(ptr: *mut u8) -> *mut Buffer2D {
     *(ptr as *const *mut Buffer2D)
+}
+
+unsafe fn file_handle_ptr(ptr: *mut u8) -> *mut MoltFileHandle {
+    *(ptr as *const *mut MoltFileHandle)
 }
 
 fn range_len_i64(start: i64, stop: i64, step: i64) -> i64 {
@@ -867,6 +884,30 @@ fn alloc_context_manager(enter_fn: u64, exit_fn: u64, payload_bits: u64) -> *mut
     ptr
 }
 
+fn alloc_file_handle(
+    file: std::fs::File,
+    readable: bool,
+    writable: bool,
+    text: bool,
+) -> *mut u8 {
+    let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut MoltFileHandle>();
+    let ptr = alloc_object(total, TYPE_ID_FILE_HANDLE);
+    if ptr.is_null() {
+        return ptr;
+    }
+    let handle = Box::new(MoltFileHandle {
+        file: Mutex::new(Some(file)),
+        readable,
+        writable,
+        text,
+    });
+    let handle_ptr = Box::into_raw(handle);
+    unsafe {
+        *(ptr as *mut *mut MoltFileHandle) = handle_ptr;
+    }
+    ptr
+}
+
 extern "C" fn context_null_enter(payload_bits: u64) -> u64 {
     inc_ref_bits(payload_bits);
     payload_bits
@@ -874,6 +915,108 @@ extern "C" fn context_null_enter(payload_bits: u64) -> u64 {
 
 extern "C" fn context_null_exit(_payload_bits: u64, _exc_bits: u64) -> u64 {
     MoltObject::from_bool(false).bits()
+}
+
+extern "C" fn context_closing_enter(payload_bits: u64) -> u64 {
+    inc_ref_bits(payload_bits);
+    payload_bits
+}
+
+extern "C" fn context_closing_exit(payload_bits: u64, _exc_bits: u64) -> u64 {
+    close_payload(payload_bits);
+    MoltObject::from_bool(false).bits()
+}
+
+fn context_stack_push(ctx_bits: u64) {
+    CONTEXT_STACK.with(|stack| {
+        stack.borrow_mut().push(ctx_bits);
+    });
+    inc_ref_bits(ctx_bits);
+}
+
+fn context_stack_pop(expected_bits: u64) {
+    CONTEXT_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        let Some(bits) = stack.pop() else {
+            raise_exception("RuntimeError", "context manager stack underflow");
+        };
+        if bits != expected_bits {
+            raise_exception("RuntimeError", "context manager stack mismatch");
+        }
+        dec_ref_bits(bits);
+    });
+}
+
+unsafe fn context_exit_unchecked(ctx_bits: u64, exc_bits: u64) {
+    let ctx_obj = obj_from_bits(ctx_bits);
+    let Some(ptr) = ctx_obj.as_ptr() else {
+        return;
+    };
+    let type_id = object_type_id(ptr);
+    if type_id == TYPE_ID_CONTEXT_MANAGER {
+        let exit_fn_addr = context_exit_fn(ptr);
+        if exit_fn_addr == 0 {
+            return;
+        }
+        let exit_fn =
+            std::mem::transmute::<usize, extern "C" fn(u64, u64) -> u64>(exit_fn_addr as usize);
+        exit_fn(context_payload_bits(ptr), exc_bits);
+        return;
+    }
+    if type_id == TYPE_ID_FILE_HANDLE {
+        file_handle_exit(ptr, exc_bits);
+    }
+}
+
+fn context_stack_unwind(exc_bits: u64) {
+    let contexts = CONTEXT_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        stack.drain(..).collect::<Vec<u64>>()
+    });
+    for bits in contexts.into_iter().rev() {
+        unsafe { context_exit_unchecked(bits, exc_bits) };
+        dec_ref_bits(bits);
+    }
+}
+
+fn file_handle_close_ptr(ptr: *mut u8) -> bool {
+    if ptr.is_null() {
+        return false;
+    }
+    unsafe {
+        let handle_ptr = file_handle_ptr(ptr);
+        if handle_ptr.is_null() {
+            return false;
+        }
+        let handle = &*handle_ptr;
+        let mut guard = handle.file.lock().unwrap();
+        guard.take().is_some()
+    }
+}
+
+unsafe fn file_handle_enter(ptr: *mut u8) -> u64 {
+    let bits = MoltObject::from_ptr(ptr).bits();
+    inc_ref_bits(bits);
+    bits
+}
+
+unsafe fn file_handle_exit(ptr: *mut u8, _exc_bits: u64) -> u64 {
+    file_handle_close_ptr(ptr);
+    MoltObject::from_bool(false).bits()
+}
+
+fn close_payload(payload_bits: u64) {
+    let payload = obj_from_bits(payload_bits);
+    let Some(ptr) = payload.as_ptr() else {
+        raise_exception("AttributeError", "object has no attribute 'close'");
+    };
+    unsafe {
+        if object_type_id(ptr) == TYPE_ID_FILE_HANDLE {
+            file_handle_close_ptr(ptr);
+            return;
+        }
+    }
+    raise_exception("AttributeError", "object has no attribute 'close'");
 }
 
 fn record_exception(ptr: *mut u8) {
@@ -892,6 +1035,8 @@ fn raise_exception(kind: &str, message: &str) -> ! {
     let ptr = alloc_exception(kind, message);
     if !ptr.is_null() {
         record_exception(ptr);
+        let exc_bits = MoltObject::from_ptr(ptr).bits();
+        context_stack_unwind(exc_bits);
     }
     eprintln!("{kind}: {message}");
     std::process::exit(1);
@@ -1289,16 +1434,24 @@ pub extern "C" fn molt_context_enter(ctx_bits: u64) -> u64 {
         raise_exception("TypeError", "context manager must be an object");
     };
     unsafe {
-        if object_type_id(ptr) != TYPE_ID_CONTEXT_MANAGER {
-            raise_exception("TypeError", "context manager protocol not supported");
+        let type_id = object_type_id(ptr);
+        if type_id == TYPE_ID_CONTEXT_MANAGER {
+            let enter_fn_addr = context_enter_fn(ptr);
+            if enter_fn_addr == 0 {
+                raise_exception("TypeError", "context manager missing __enter__");
+            }
+            let enter_fn =
+                std::mem::transmute::<usize, extern "C" fn(u64) -> u64>(enter_fn_addr as usize);
+            let res = enter_fn(context_payload_bits(ptr));
+            context_stack_push(ctx_bits);
+            return res;
         }
-        let enter_fn_addr = context_enter_fn(ptr);
-        if enter_fn_addr == 0 {
-            raise_exception("TypeError", "context manager missing __enter__");
+        if type_id == TYPE_ID_FILE_HANDLE {
+            let res = file_handle_enter(ptr);
+            context_stack_push(ctx_bits);
+            return res;
         }
-        let enter_fn =
-            std::mem::transmute::<usize, extern "C" fn(u64) -> u64>(enter_fn_addr as usize);
-        enter_fn(context_payload_bits(ptr))
+        raise_exception("TypeError", "context manager protocol not supported");
     }
 }
 
@@ -1309,17 +1462,30 @@ pub extern "C" fn molt_context_exit(ctx_bits: u64, exc_bits: u64) -> u64 {
         raise_exception("TypeError", "context manager must be an object");
     };
     unsafe {
-        if object_type_id(ptr) != TYPE_ID_CONTEXT_MANAGER {
-            raise_exception("TypeError", "context manager protocol not supported");
+        let type_id = object_type_id(ptr);
+        if type_id == TYPE_ID_CONTEXT_MANAGER {
+            let exit_fn_addr = context_exit_fn(ptr);
+            if exit_fn_addr == 0 {
+                raise_exception("TypeError", "context manager missing __exit__");
+            }
+            let exit_fn =
+                std::mem::transmute::<usize, extern "C" fn(u64, u64) -> u64>(exit_fn_addr as usize);
+            context_stack_pop(ctx_bits);
+            return exit_fn(context_payload_bits(ptr), exc_bits);
         }
-        let exit_fn_addr = context_exit_fn(ptr);
-        if exit_fn_addr == 0 {
-            raise_exception("TypeError", "context manager missing __exit__");
+        if type_id == TYPE_ID_FILE_HANDLE {
+            let res = file_handle_exit(ptr, exc_bits);
+            context_stack_pop(ctx_bits);
+            return res;
         }
-        let exit_fn =
-            std::mem::transmute::<usize, extern "C" fn(u64, u64) -> u64>(exit_fn_addr as usize);
-        exit_fn(context_payload_bits(ptr), exc_bits)
+        raise_exception("TypeError", "context manager protocol not supported");
     }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_context_unwind(exc_bits: u64) -> u64 {
+    context_stack_unwind(exc_bits);
+    MoltObject::none().bits()
 }
 
 #[no_mangle]
@@ -1332,6 +1498,250 @@ pub extern "C" fn molt_context_null(payload_bits: u64) -> u64 {
     } else {
         MoltObject::from_ptr(ptr).bits()
     }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_context_closing(payload_bits: u64) -> u64 {
+    let enter_fn = context_closing_enter as usize as u64;
+    let exit_fn = context_closing_exit as usize as u64;
+    let ptr = alloc_context_manager(enter_fn, exit_fn, payload_bits);
+    if ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(ptr).bits()
+    }
+}
+
+fn parse_file_mode(mode: &str) -> Result<(OpenOptions, bool, bool, bool), &'static str> {
+    let mut kind: Option<char> = None;
+    let mut read = false;
+    let mut write = false;
+    let mut append = false;
+    let mut truncate = false;
+    let mut create = false;
+    let mut create_new = false;
+    let text = !mode.contains('b');
+
+    for ch in mode.chars() {
+        match ch {
+            'r' | 'w' | 'a' | 'x' => {
+                if let Some(prev) = kind {
+                    if prev != ch {
+                        return Err("mode must include exactly one of 'r', 'w', 'a', or 'x'");
+                    }
+                } else {
+                    kind = Some(ch);
+                }
+                match ch {
+                    'r' => read = true,
+                    'w' => {
+                        write = true;
+                        truncate = true;
+                        create = true;
+                    }
+                    'a' => {
+                        write = true;
+                        append = true;
+                        create = true;
+                    }
+                    'x' => {
+                        write = true;
+                        create = true;
+                        create_new = true;
+                    }
+                    _ => {}
+                }
+            }
+            '+' => {
+                read = true;
+                write = true;
+            }
+            'b' | 't' => {}
+            _ => return Err("invalid mode"),
+        }
+    }
+
+    if kind.is_none() {
+        return Err("mode must include one of 'r', 'w', 'a', or 'x'");
+    }
+
+    let mut options = OpenOptions::new();
+    options.read(read).write(write).append(append).truncate(truncate).create(create);
+    if create_new {
+        options.create_new(true);
+    }
+    Ok((options, read, write, text))
+}
+
+#[no_mangle]
+pub extern "C" fn molt_file_open(path_bits: u64, mode_bits: u64) -> u64 {
+    let path_obj = obj_from_bits(path_bits);
+    let path = match string_obj_to_owned(path_obj) {
+        Some(path) => path,
+        None => raise_exception("TypeError", "open path must be a str"),
+    };
+    let mode_obj = obj_from_bits(mode_bits);
+    let mode = if mode_obj.is_none() {
+        "r".to_string()
+    } else {
+        match string_obj_to_owned(mode_obj) {
+            Some(mode) => mode,
+            None => raise_exception("TypeError", "open mode must be a str"),
+        }
+    };
+    let (options, readable, writable, text) = match parse_file_mode(&mode) {
+        Ok(parsed) => parsed,
+        Err(msg) => raise_exception("ValueError", msg),
+    };
+    if readable && !has_capability("fs.read") {
+        raise_exception("PermissionError", "missing fs.read capability");
+    }
+    if writable && !has_capability("fs.write") {
+        raise_exception("PermissionError", "missing fs.write capability");
+    }
+    let file = match options.open(path) {
+        Ok(file) => file,
+        Err(_) => raise_exception("OSError", "open failed"),
+    };
+    let ptr = alloc_file_handle(file, readable, writable, text);
+    if ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(ptr).bits()
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_file_read(handle_bits: u64, size_bits: u64) -> u64 {
+    let handle_obj = obj_from_bits(handle_bits);
+    let Some(ptr) = handle_obj.as_ptr() else {
+        raise_exception("TypeError", "expected file handle");
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+            raise_exception("TypeError", "expected file handle");
+        }
+        let handle_ptr = file_handle_ptr(ptr);
+        if handle_ptr.is_null() {
+            raise_exception("RuntimeError", "file handle missing");
+        }
+        let handle = &*handle_ptr;
+        if !handle.readable {
+            raise_exception("PermissionError", "file not readable");
+        }
+        let mut guard = handle.file.lock().unwrap();
+        let Some(file) = guard.as_mut() else {
+            raise_exception("ValueError", "I/O operation on closed file");
+        };
+        let mut buf = Vec::new();
+        let size_obj = obj_from_bits(size_bits);
+        let size = if size_obj.is_none() {
+            None
+        } else {
+            match to_i64(size_obj) {
+                Some(val) if val >= 0 => Some(val as usize),
+                Some(_) => None,
+                None => raise_exception("TypeError", "read size must be int"),
+            }
+        };
+        match size {
+            Some(len) => {
+                buf.resize(len, 0);
+                let n = match file.read(&mut buf) {
+                    Ok(n) => n,
+                    Err(_) => raise_exception("OSError", "read failed"),
+                };
+                buf.truncate(n);
+            }
+            None => {
+                if file.read_to_end(&mut buf).is_err() {
+                    raise_exception("OSError", "read failed");
+                }
+            }
+        }
+        if handle.text {
+            let text = match String::from_utf8(buf) {
+                Ok(text) => text,
+                Err(_) => raise_exception("ValueError", "file decode failed"),
+            };
+            let out_ptr = alloc_string(text.as_bytes());
+            if out_ptr.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(out_ptr).bits()
+            }
+        } else {
+            let out_ptr = alloc_bytes(&buf);
+            if out_ptr.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(out_ptr).bits()
+            }
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_file_write(handle_bits: u64, data_bits: u64) -> u64 {
+    let handle_obj = obj_from_bits(handle_bits);
+    let Some(ptr) = handle_obj.as_ptr() else {
+        raise_exception("TypeError", "expected file handle");
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+            raise_exception("TypeError", "expected file handle");
+        }
+        let handle_ptr = file_handle_ptr(ptr);
+        if handle_ptr.is_null() {
+            raise_exception("RuntimeError", "file handle missing");
+        }
+        let handle = &*handle_ptr;
+        if !handle.writable {
+            raise_exception("PermissionError", "file not writable");
+        }
+        let mut guard = handle.file.lock().unwrap();
+        let Some(file) = guard.as_mut() else {
+            raise_exception("ValueError", "I/O operation on closed file");
+        };
+        let data_obj = obj_from_bits(data_bits);
+        let bytes: Vec<u8> = if handle.text {
+            let text = match string_obj_to_owned(data_obj) {
+                Some(text) => text,
+                None => raise_exception("TypeError", "write expects str for text mode"),
+            };
+            text.into_bytes()
+        } else {
+            let Some(data_ptr) = data_obj.as_ptr() else {
+                raise_exception("TypeError", "write expects bytes or bytearray");
+            };
+            let type_id = object_type_id(data_ptr);
+            if type_id != TYPE_ID_BYTES && type_id != TYPE_ID_BYTEARRAY {
+                raise_exception("TypeError", "write expects bytes or bytearray");
+            }
+            let len = bytes_len(data_ptr);
+            let raw = std::slice::from_raw_parts(bytes_data(data_ptr), len);
+            raw.to_vec()
+        };
+        if file.write_all(&bytes).is_err() {
+            raise_exception("OSError", "write failed");
+        }
+        MoltObject::from_int(bytes.len() as i64).bits()
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_file_close(handle_bits: u64) -> u64 {
+    let handle_obj = obj_from_bits(handle_bits);
+    let Some(ptr) = handle_obj.as_ptr() else {
+        raise_exception("TypeError", "expected file handle");
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+            raise_exception("TypeError", "expected file handle");
+        }
+    }
+    file_handle_close_ptr(ptr);
+    MoltObject::none().bits()
 }
 
 #[no_mangle]
@@ -4550,6 +4960,9 @@ fn format_obj(obj: MoltObject) -> String {
             if type_id == TYPE_ID_CONTEXT_MANAGER {
                 return "<context_manager>".to_string();
             }
+            if type_id == TYPE_ID_FILE_HANDLE {
+                return "<file_handle>".to_string();
+            }
             if type_id == TYPE_ID_DATACLASS {
                 return format_dataclass(ptr);
             }
@@ -4993,6 +5406,16 @@ pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
                 let payload_bits = context_payload_bits(ptr);
                 dec_ref_bits(payload_bits);
             }
+            TYPE_ID_FILE_HANDLE => {
+                let handle_ptr = file_handle_ptr(ptr);
+                if !handle_ptr.is_null() {
+                    let handle_ref = &*handle_ptr;
+                    if let Ok(mut guard) = handle_ref.file.lock() {
+                        guard.take();
+                    }
+                    drop(Box::from_raw(handle_ptr));
+                }
+            }
             TYPE_ID_DATACLASS => {
                 let vec_ptr = dataclass_fields_ptr(ptr);
                 if !vec_ptr.is_null() {
@@ -5031,6 +5454,89 @@ pub extern "C" fn molt_inc_ref_obj(bits: u64) {
 pub extern "C" fn molt_dec_ref_obj(bits: u64) {
     if let Some(ptr) = obj_from_bits(bits).as_ptr() {
         unsafe { molt_dec_ref(ptr) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static EXIT_CALLED: AtomicBool = AtomicBool::new(false);
+
+    extern "C" fn test_enter(payload_bits: u64) -> u64 {
+        payload_bits
+    }
+
+    extern "C" fn test_exit(_payload_bits: u64, _exc_bits: u64) -> u64 {
+        EXIT_CALLED.store(true, Ordering::SeqCst);
+        MoltObject::from_bool(false).bits()
+    }
+
+    #[test]
+    fn context_unwind_runs_exit() {
+        EXIT_CALLED.store(false, Ordering::SeqCst);
+        let ctx_bits = molt_context_new(
+            test_enter as usize as u64,
+            test_exit as usize as u64,
+            MoltObject::none().bits(),
+        );
+        let _ = molt_context_enter(ctx_bits);
+        let _ = molt_context_unwind(MoltObject::none().bits());
+        assert!(EXIT_CALLED.load(Ordering::SeqCst));
+        if let Some(ptr) = obj_from_bits(ctx_bits).as_ptr() {
+            unsafe { molt_dec_ref(ptr) };
+        }
+    }
+
+    #[test]
+    fn file_handle_close_marks_closed() {
+        std::env::set_var("MOLT_CAPABILITIES", "fs.read,fs.write");
+        let tmp_dir = std::env::temp_dir();
+        let file_name = format!(
+            "molt_test_{}.txt",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let path = tmp_dir.join(file_name);
+        let path_bytes = path.to_string_lossy().into_owned();
+
+        let path_ptr = alloc_string(path_bytes.as_bytes());
+        assert!(!path_ptr.is_null());
+        let mode_ptr = alloc_string(b"w");
+        assert!(!mode_ptr.is_null());
+        let handle_bits = molt_file_open(
+            MoltObject::from_ptr(path_ptr).bits(),
+            MoltObject::from_ptr(mode_ptr).bits(),
+        );
+        let handle_obj = obj_from_bits(handle_bits);
+        let Some(handle_ptr) = handle_obj.as_ptr() else {
+            panic!("file handle missing");
+        };
+        unsafe {
+            let fh_ptr = file_handle_ptr(handle_ptr);
+            assert!(!fh_ptr.is_null());
+            let fh = &*fh_ptr;
+            let guard = fh.file.lock().unwrap();
+            assert!(guard.is_some());
+        }
+        let _ = molt_file_close(handle_bits);
+        unsafe {
+            let fh_ptr = file_handle_ptr(handle_ptr);
+            let fh = &*fh_ptr;
+            let guard = fh.file.lock().unwrap();
+            assert!(guard.is_none());
+        }
+        if let Some(ptr) = obj_from_bits(handle_bits).as_ptr() {
+            unsafe { molt_dec_ref(ptr) };
+        }
+        unsafe {
+            molt_dec_ref(path_ptr);
+            molt_dec_ref(mode_ptr);
+        }
+        let _ = std::fs::remove_file(path);
     }
 }
 

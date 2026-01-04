@@ -21,3 +21,5 @@ hello_molt
 bench/results/
 bench/cython/
 bench/numba/
+*.md
+!/README.md

@@ -60,6 +60,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.explicit_type_hints: dict[str, str] = {}
         self.fallback_policy = fallback_policy
         self.compat = CompatibilityReporter(fallback_policy, source_path)
+        self.context_depth = 0
+        self.func_aliases: dict[str, str] = {}
+        self.const_ints: dict[str, int] = {}
 
     def visit(self, node: ast.AST) -> Any:
         try:
@@ -80,6 +83,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return name
 
     def emit(self, op: MoltOp) -> None:
+        if op.kind == "CONST" and op.result and isinstance(op.args[0], int):
+            self.const_ints[op.result.name] = op.args[0]
         self.current_ops.append(op)
 
     def _fast_int_enabled(self) -> bool:
@@ -122,6 +127,35 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="CONTEXT_NULL", args=[payload], result=res))
         return res
 
+    def _emit_closing(self, payload: MoltValue) -> MoltValue:
+        res = MoltValue(self.next_var(), type_hint="context_manager")
+        self.emit(MoltOp(kind="CONTEXT_CLOSING", args=[payload], result=res))
+        return res
+
+    def _is_contextmanager_decorator(self, deco: ast.expr) -> bool:
+        if isinstance(deco, ast.Name) and deco.id == "contextmanager":
+            return True
+        if (
+            isinstance(deco, ast.Attribute)
+            and isinstance(deco.value, ast.Name)
+            and deco.value.id == "contextlib"
+            and deco.attr == "contextmanager"
+        ):
+            return True
+        return False
+
+    def _function_symbol(self, name: str) -> str:
+        if name in self.func_aliases:
+            return self.func_aliases[name]
+        base = "molt_user_main" if name == "main" else name
+        symbol = base
+        counter = 1
+        while symbol in self.funcs_map:
+            symbol = f"{base}_{counter}"
+            counter += 1
+        self.func_aliases[name] = symbol
+        return symbol
+
     def start_function(self, name: str, params: list[str] | None = None) -> None:
         if name not in self.funcs_map:
             self.funcs_map[name] = FuncInfo(params=params or [], ops=[])
@@ -130,6 +164,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.locals = {}
         self.async_locals = {}
         self.explicit_type_hints = {}
+        self.context_depth = 0
+        self.const_ints = {}
 
     def resume_function(self, name: str) -> None:
         self.current_func_name = name
@@ -220,6 +256,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
     def visit_Name(self, node: ast.Name) -> Any:
         if isinstance(node.ctx, ast.Load):
+            if node.id == "__name__":
+                res = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=["__main__"], result=res))
+                return res
             if self.is_async():
                 if node.id in self.async_locals:
                     offset = self.async_locals[node.id]
@@ -460,6 +500,29 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     ) -> None:
         target = node.target
         assert isinstance(target, ast.Name)
+        step_const = self.const_ints.get(step.name)
+        if step_const is not None and step_const != 0:
+            idx = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx))
+            cond = MoltValue(self.next_var(), type_hint="bool")
+            if step_const > 0:
+                self.emit(MoltOp(kind="LT", args=[idx, stop], result=cond))
+            else:
+                self.emit(MoltOp(kind="LT", args=[stop, idx], result=cond))
+            self.emit(
+                MoltOp(
+                    kind="LOOP_BREAK_IF_FALSE", args=[cond], result=MoltValue("none")
+                )
+            )
+            self._store_local_value(target.id, idx)
+            for stmt in node.body:
+                self.visit(stmt)
+            next_idx = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="ADD", args=[idx, step], result=next_idx))
+            self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
+            self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+            self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+            return None
         one = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[1], result=one))
         zero = MoltValue(self.next_var(), type_hint="int")
@@ -513,6 +576,29 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     ) -> MoltValue:
         res = MoltValue(self.next_var(), type_hint="list")
         self.emit(MoltOp(kind="LIST_NEW", args=[], result=res))
+        step_const = self.const_ints.get(step.name)
+        if step_const is not None and step_const != 0:
+            idx = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx))
+            cond = MoltValue(self.next_var(), type_hint="bool")
+            if step_const > 0:
+                self.emit(MoltOp(kind="LT", args=[idx, stop], result=cond))
+            else:
+                self.emit(MoltOp(kind="LT", args=[stop, idx], result=cond))
+            self.emit(
+                MoltOp(
+                    kind="LOOP_BREAK_IF_FALSE", args=[cond], result=MoltValue("none")
+                )
+            )
+            self.emit(
+                MoltOp(kind="LIST_APPEND", args=[res, idx], result=MoltValue("none"))
+            )
+            next_idx = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="ADD", args=[idx, step], result=next_idx))
+            self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
+            self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+            self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+            return res
         one = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[1], result=one))
         zero = MoltValue(self.next_var(), type_hint="int")
@@ -1090,6 +1176,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return self._emit_nullcontext(payload)
             if (
                 isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "contextlib"
+                and node.func.attr == "closing"
+            ):
+                if len(node.args) != 1:
+                    raise NotImplementedError("closing expects 1 argument")
+                payload = self.visit(node.args[0])
+                return self._emit_closing(payload)
+            if (
+                isinstance(node.func.value, ast.Name)
                 and node.func.value.id == "molt_json"
             ):
                 if node.func.attr == "parse":
@@ -1304,6 +1399,38 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if method == "items":
                 res = MoltValue(self.next_var(), type_hint="dict_items_view")
                 self.emit(MoltOp(kind="DICT_ITEMS", args=[receiver], result=res))
+                return res
+            if method == "read" and receiver.type_hint.startswith("file"):
+                if len(node.args) > 1:
+                    raise NotImplementedError("file.read expects 0 or 1 argument")
+                if node.args:
+                    size_val = self.visit(node.args[0])
+                else:
+                    size_val = MoltValue(self.next_var(), type_hint="None")
+                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=size_val))
+                if receiver.type_hint == "file_bytes":
+                    res_hint = "bytes"
+                elif receiver.type_hint == "file_text":
+                    res_hint = "str"
+                else:
+                    res_hint = "Any"
+                res = MoltValue(self.next_var(), type_hint=res_hint)
+                self.emit(
+                    MoltOp(kind="FILE_READ", args=[receiver, size_val], result=res)
+                )
+                return res
+            if method == "write" and receiver.type_hint.startswith("file"):
+                if len(node.args) != 1:
+                    raise NotImplementedError("file.write expects 1 argument")
+                data = self.visit(node.args[0])
+                res = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="FILE_WRITE", args=[receiver, data], result=res))
+                return res
+            if method == "close" and receiver.type_hint.startswith("file"):
+                if node.args:
+                    raise NotImplementedError("file.close expects 0 arguments")
+                res = MoltValue(self.next_var(), type_hint="None")
+                self.emit(MoltOp(kind="FILE_CLOSE", args=[receiver], result=res))
                 return res
             if method == "count" and receiver.type_hint == "tuple":
                 if len(node.args) != 1:
@@ -1528,13 +1655,50 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if isinstance(node.func, ast.Name):
             func_id = node.func.id
             if func_id == "open":
-                return self._bridge_fallback(
-                    node,
-                    "open()",
-                    impact="high",
-                    alternative="use molt.stdlib.io.open or molt.stdlib.io.stream",
-                    detail="file I/O is capability-gated and not yet native",
-                )
+                if node.keywords:
+                    mode_kw = next(
+                        (kw.value for kw in node.keywords if kw.arg == "mode"), None
+                    )
+                    if mode_kw is None or len(node.keywords) > 1:
+                        raise NotImplementedError("open only supports mode keyword")
+                else:
+                    mode_kw = None
+                if len(node.args) not in {1, 2}:
+                    raise NotImplementedError("open expects 1 or 2 arguments")
+                path = self.visit(node.args[0])
+                mode_expr = mode_kw if mode_kw is not None else None
+                if len(node.args) == 2:
+                    if mode_expr is not None:
+                        raise NotImplementedError("open received mode twice")
+                    mode_expr = node.args[1]
+                mode_val: MoltValue
+                if mode_expr is None:
+                    mode_val = MoltValue(self.next_var(), type_hint="str")
+                    self.emit(MoltOp(kind="CONST_STR", args=["r"], result=mode_val))
+                else:
+                    if isinstance(mode_expr, ast.Constant) and isinstance(
+                        mode_expr.value, str
+                    ):
+                        mode_val = MoltValue(self.next_var(), type_hint="str")
+                        self.emit(
+                            MoltOp(
+                                kind="CONST_STR",
+                                args=[mode_expr.value],
+                                result=mode_val,
+                            )
+                        )
+                    else:
+                        mode_val = self.visit(mode_expr)
+                mode_hint: str | None = None
+                if mode_expr is None:
+                    mode_hint = "file_text"
+                elif isinstance(mode_expr, ast.Constant) and isinstance(
+                    mode_expr.value, str
+                ):
+                    mode_hint = "file_bytes" if "b" in mode_expr.value else "file_text"
+                res = MoltValue(self.next_var(), type_hint=mode_hint or "file")
+                self.emit(MoltOp(kind="FILE_OPEN", args=[path, mode_val], result=res))
+                return res
             if func_id == "nullcontext":
                 if len(node.args) > 1:
                     raise NotImplementedError("nullcontext expects 0 or 1 argument")
@@ -1544,6 +1708,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     payload = MoltValue(self.next_var(), type_hint="None")
                     self.emit(MoltOp(kind="CONST_NONE", args=[], result=payload))
                 return self._emit_nullcontext(payload)
+            if func_id == "closing":
+                if len(node.args) != 1:
+                    raise NotImplementedError("closing expects 1 argument")
+                payload = self.visit(node.args[0])
+                return self._emit_closing(payload)
             if func_id == "print":
                 if len(node.args) == 0:
                     self.emit(
@@ -2085,8 +2254,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return None
             self._store_local_value(item.optional_vars.id, enter_val)
 
+        self.context_depth += 1
         for stmt in node.body:
             self.visit(stmt)
+        self.context_depth -= 1
 
         exc_val = MoltValue(self.next_var(), type_hint="None")
         self.emit(MoltOp(kind="CONST_NONE", args=[], result=exc_val))
@@ -2181,6 +2352,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return None
 
     def visit_Return(self, node: ast.Return) -> None:
+        if self.context_depth > 0:
+            exc_val = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=exc_val))
+            self.emit(
+                MoltOp(
+                    kind="CONTEXT_UNWIND",
+                    args=[exc_val],
+                    result=MoltValue("none"),
+                )
+            )
         val = self.visit(node.value) if node.value else None
         if val is None:
             val = MoltValue(self.next_var())
@@ -2190,15 +2371,57 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         if node.decorator_list:
+            if any(
+                self._is_contextmanager_decorator(deco) for deco in node.decorator_list
+            ):
+                issue = self.compat.bridge_unavailable(
+                    node,
+                    "contextlib.contextmanager",
+                    impact="high",
+                    alternative="use explicit context manager objects",
+                    detail="generator-based context managers are not lowered yet",
+                )
+                if self.fallback_policy != "bridge":
+                    raise self.compat.error(issue)
+                func_name = node.name
+                func_symbol = self._function_symbol(func_name)
+                prev_func = self.current_func_name
+                prev_hints = self.explicit_type_hints
+                prev_async_locals = self.async_locals
+                prev_context_depth = self.context_depth
+                params = [arg.arg for arg in node.args.args]
+                self.globals[func_name] = MoltValue(
+                    func_name, type_hint=f"Func:{func_symbol}"
+                )
+                self.start_function(func_symbol, params=params)
+                msg_val = MoltValue(self.next_var(), type_hint="str")
+                self.emit(
+                    MoltOp(
+                        kind="CONST_STR",
+                        args=[issue.runtime_message()],
+                        result=msg_val,
+                    )
+                )
+                res = MoltValue(self.next_var(), type_hint="Any")
+                self.emit(MoltOp(kind="BRIDGE_UNAVAILABLE", args=[msg_val], result=res))
+                self.emit(MoltOp(kind="ret", args=[res], result=MoltValue("none")))
+                self.resume_function(prev_func)
+                self.explicit_type_hints = prev_hints
+                self.async_locals = prev_async_locals
+                self.context_depth = prev_context_depth
+                return None
             raise NotImplementedError("Function decorators are not supported yet")
-        poll_func_name = f"{node.name}_poll"
+        func_name = node.name
+        func_symbol = self._function_symbol(func_name)
+        poll_func_name = f"{func_symbol}_poll"
         prev_func = self.current_func_name
         prev_async_locals = self.async_locals
         prev_hints = self.explicit_type_hints
+        prev_context_depth = self.context_depth
 
         # Add to globals to support calls from other scopes
-        self.globals[node.name] = MoltValue(
-            node.name, type_hint=f"AsyncFunc:{poll_func_name}:0"
+        self.globals[func_name] = MoltValue(
+            func_name, type_hint=f"AsyncFunc:{poll_func_name}:0"
         )  # Placeholder size
 
         self.start_function(poll_func_name, params=["self"])
@@ -2223,23 +2446,63 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.resume_function(prev_func)
         self.async_locals = prev_async_locals
         self.explicit_type_hints = prev_hints
+        self.context_depth = prev_context_depth
         # Update closure size
-        self.globals[node.name] = MoltValue(
-            node.name, type_hint=f"AsyncFunc:{poll_func_name}:{closure_size}"
+        self.globals[func_name] = MoltValue(
+            func_name, type_hint=f"AsyncFunc:{poll_func_name}:{closure_size}"
         )
         return None
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         if node.decorator_list:
+            if any(
+                self._is_contextmanager_decorator(deco) for deco in node.decorator_list
+            ):
+                issue = self.compat.bridge_unavailable(
+                    node,
+                    "contextlib.contextmanager",
+                    impact="high",
+                    alternative="use explicit context manager objects",
+                    detail="generator-based context managers are not lowered yet",
+                )
+                if self.fallback_policy != "bridge":
+                    raise self.compat.error(issue)
+                func_name = node.name
+                func_symbol = self._function_symbol(func_name)
+                prev_func = self.current_func_name
+                prev_hints = self.explicit_type_hints
+                prev_context_depth = self.context_depth
+                params = [arg.arg for arg in node.args.args]
+                self.globals[func_name] = MoltValue(
+                    func_name, type_hint=f"Func:{func_symbol}"
+                )
+                self.start_function(func_symbol, params=params)
+                msg_val = MoltValue(self.next_var(), type_hint="str")
+                self.emit(
+                    MoltOp(
+                        kind="CONST_STR",
+                        args=[issue.runtime_message()],
+                        result=msg_val,
+                    )
+                )
+                res = MoltValue(self.next_var(), type_hint="Any")
+                self.emit(MoltOp(kind="BRIDGE_UNAVAILABLE", args=[msg_val], result=res))
+                self.emit(MoltOp(kind="ret", args=[res], result=MoltValue("none")))
+                self.resume_function(prev_func)
+                self.explicit_type_hints = prev_hints
+                self.context_depth = prev_context_depth
+                return None
             raise NotImplementedError("Function decorators are not supported yet")
         func_name = node.name
+        func_symbol = self._function_symbol(func_name)
         prev_func = self.current_func_name
         prev_hints = self.explicit_type_hints
+        prev_context_depth = self.context_depth
         params = [arg.arg for arg in node.args.args]
 
-        self.globals[func_name] = MoltValue(func_name, type_hint=f"Func:{func_name}")
+        self.globals[func_name] = MoltValue(func_name, type_hint=f"Func:{func_symbol}")
 
-        self.start_function(func_name, params=params)
+        self.start_function(func_symbol, params=params)
         for arg in node.args.args:
             hint = None
             if self.type_hint_policy in {"trust", "check"}:
@@ -2262,6 +2525,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="ret", args=[res], result=MoltValue("none")))
         self.resume_function(prev_func)
         self.explicit_type_hints = prev_hints
+        self.context_depth = prev_context_depth
         return None
 
     def visit_Await(self, node: ast.Await) -> Any:
@@ -2384,6 +2648,54 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     {
                         "kind": "context_exit",
                         "args": [op.args[0].name, op.args[1].name],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "CONTEXT_UNWIND":
+                json_ops.append(
+                    {
+                        "kind": "context_unwind",
+                        "args": [op.args[0].name],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "CONTEXT_CLOSING":
+                json_ops.append(
+                    {
+                        "kind": "context_closing",
+                        "args": [op.args[0].name],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "FILE_OPEN":
+                json_ops.append(
+                    {
+                        "kind": "file_open",
+                        "args": [op.args[0].name, op.args[1].name],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "FILE_READ":
+                json_ops.append(
+                    {
+                        "kind": "file_read",
+                        "args": [op.args[0].name, op.args[1].name],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "FILE_WRITE":
+                json_ops.append(
+                    {
+                        "kind": "file_write",
+                        "args": [op.args[0].name, op.args[1].name],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "FILE_CLOSE":
+                json_ops.append(
+                    {
+                        "kind": "file_close",
+                        "args": [op.args[0].name],
                         "out": op.result.name,
                     }
                 )

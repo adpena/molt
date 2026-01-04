@@ -78,6 +78,12 @@ interface intrinsics {
     context_null: func(payload: molt-object) -> molt-object;
     context_enter: func(ctx: molt-object) -> molt-object;
     context_exit: func(ctx: molt-object, exc: molt-object) -> molt-object;
+    context_unwind: func(exc: molt-object) -> molt-object;
+    context_closing: func(payload: molt-object) -> molt-object;
+    file_open: func(path: molt-object, mode: molt-object) -> molt-object;
+    file_read: func(handle: molt-object, size: molt-object) -> molt-object;
+    file_write: func(handle: molt-object, data: molt-object) -> molt-object;
+    file_close: func(handle: molt-object) -> molt-object;
     bridge_unavailable: func(msg: molt-object) -> molt-object;
     stream_new: func(capacity: u64) -> u64;
     stream_send: func(handle: u64, ptr: molt-ptr, len: u64) -> u64;

@@ -47,6 +47,9 @@ jobs:
       - name: Run molt-diff basic suite
         if: matrix.python-version == '3.12'
         run: uv run python tests/molt_diff.py tests/differential/basic
+      - name: Run molt-diff patterns suite
+        if: matrix.python-version == '3.12'
+        run: uv run python tests/molt_diff.py tests/differential/patterns
       - name: Type coverage TODO sync
         if: matrix.python-version == '3.12'
         run: uv run python tools/check_type_coverage_todos.py
