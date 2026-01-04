@@ -97,4 +97,4 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
       - name: Run wasm parity test
-        run: uv run pytest tests/test_wasm_if_else.py
+        run: uv run pytest tests/test_wasm_control_flow.py

@@ -9,7 +9,7 @@ import pytest
 from tests.wasm_harness import write_wasm_runner
 
 
-def test_wasm_if_else_parity(tmp_path: Path) -> None:
+def test_wasm_control_flow_parity(tmp_path: Path) -> None:
     if shutil.which("node") is None:
         pytest.skip("node is required for wasm parity test")
     if shutil.which("cargo") is None:

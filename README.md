@@ -42,7 +42,7 @@ See `docs/spec/` for detailed architectural decisions.
 ## Testing
 
 ### CI Parity Jobs
-- **WASM parity**: CI runs a dedicated `test-wasm` job that executes `tests/test_wasm_if_else.py` via Node.
+- **WASM parity**: CI runs a dedicated `test-wasm` job that executes `tests/test_wasm_control_flow.py` via Node.
 - **Differential suite**: CI runs `python tests/molt_diff.py tests/differential/basic` on CPython 3.12.
 
 ### Local Commands
