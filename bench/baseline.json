@@ -183,16 +183,16 @@
       "pypy_time_s": 0.0
     },
     "bench_sum.py": {
-      "cpython_time_s": 2.799974417001067,
-      "cython_ok": true,
-      "cython_time_s": 2.056629292001162,
-      "molt_cpython_ratio": 0.13768441263565984,
+      "cpython_time_s": 0.9113,
+      "cython_ok": false,
+      "cython_time_s": 0.0,
+      "molt_cpython_ratio": 0.4462,
       "molt_ok": true,
-      "molt_size_kb": 1816.6015625,
-      "molt_speedup": 7.262986280416489,
-      "molt_time_s": 0.385512832999666,
-      "numba_ok": true,
-      "numba_time_s": 0.4508740410019527,
+      "molt_size_kb": 5168.1,
+      "molt_speedup": 2.24,
+      "molt_time_s": 0.4066,
+      "numba_ok": false,
+      "numba_time_s": 0.0,
       "pypy_time_s": 0.0
     },
     "bench_sum_list.py": {

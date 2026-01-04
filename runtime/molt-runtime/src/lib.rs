@@ -81,7 +81,7 @@ const TYPE_TAG_BUFFER2D: i64 = 14;
 
 thread_local! {
     static PARSE_ARENA: RefCell<TempArena> = RefCell::new(TempArena::new(8 * 1024));
-    static CONTEXT_STACK: RefCell<Vec<u64>> = RefCell::new(Vec::new());
+    static CONTEXT_STACK: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
 }
 
 static LAST_EXCEPTION: OnceLock<Mutex<Option<usize>>> = OnceLock::new();
