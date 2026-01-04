@@ -209,6 +209,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             base = base.strip()
             inner = inner[:-1].strip()
             if base in {"list", "tuple"} and inner:
+                if "," in inner:
+                    parts = [part.strip() for part in inner.split(",") if part.strip()]
+                    if parts:
+                        inner = parts[0]
                 return base, inner
             if base == "dict":
                 return base, None
@@ -2647,7 +2651,39 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             elif isinstance(target, ast.Subscript):
                 target_obj = self.visit(target.value)
                 if isinstance(target.slice, ast.Slice):
-                    raise NotImplementedError("Slice assignment is not supported")
+                    if target_obj is None or target_obj.type_hint != "memoryview":
+                        raise NotImplementedError("Slice assignment is not supported")
+                    if target.slice.lower is None:
+                        start = MoltValue(self.next_var(), type_hint="None")
+                        self.emit(MoltOp(kind="CONST_NONE", args=[], result=start))
+                    else:
+                        start = self.visit(target.slice.lower)
+                    if target.slice.upper is None:
+                        end = MoltValue(self.next_var(), type_hint="None")
+                        self.emit(MoltOp(kind="CONST_NONE", args=[], result=end))
+                    else:
+                        end = self.visit(target.slice.upper)
+                    if target.slice.step is None:
+                        step = MoltValue(self.next_var(), type_hint="None")
+                        self.emit(MoltOp(kind="CONST_NONE", args=[], result=step))
+                    else:
+                        step = self.visit(target.slice.step)
+                    slice_obj = MoltValue(self.next_var(), type_hint="slice")
+                    self.emit(
+                        MoltOp(
+                            kind="SLICE_NEW",
+                            args=[start, end, step],
+                            result=slice_obj,
+                        )
+                    )
+                    self.emit(
+                        MoltOp(
+                            kind="STORE_INDEX",
+                            args=[target_obj, slice_obj, value_node],
+                            result=MoltValue("none"),
+                        )
+                    )
+                    continue
                 index_val = self.visit(target.slice)
                 self.emit(
                     MoltOp(

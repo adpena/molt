@@ -521,6 +521,36 @@ unsafe fn memoryview_bytes_slice(ptr: *mut u8) -> Option<&'static [u8]> {
     Some(&base[offset..offset + len])
 }
 
+unsafe fn memoryview_collect_bytes(ptr: *mut u8) -> Option<Vec<u8>> {
+    if memoryview_itemsize(ptr) != 1 {
+        return None;
+    }
+    let owner_bits = memoryview_owner_bits(ptr);
+    let owner = obj_from_bits(owner_bits);
+    let owner_ptr = owner.as_ptr()?;
+    let base = bytes_like_slice_raw(owner_ptr)?;
+    let offset = memoryview_offset(ptr);
+    if offset < 0 {
+        return None;
+    }
+    let offset = offset as isize;
+    let len = memoryview_len(ptr);
+    let stride = memoryview_stride(ptr);
+    let mut out = Vec::with_capacity(len);
+    for idx in 0..len {
+        let start = offset + (idx as isize) * stride;
+        if start < 0 {
+            return None;
+        }
+        let start = start as usize;
+        if start >= base.len() {
+            return None;
+        }
+        out.push(base[start]);
+    }
+    Some(out)
+}
+
 unsafe fn bytes_like_slice(ptr: *mut u8) -> Option<&'static [u8]> {
     let type_id = object_type_id(ptr);
     if type_id == TYPE_ID_MEMORYVIEW {
@@ -6179,6 +6209,90 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
             if type_id == TYPE_ID_MEMORYVIEW {
                 if memoryview_readonly(ptr) {
                     raise_exception("TypeError", "cannot modify read-only memory");
+                }
+                if let Some(slice_ptr) = key.as_ptr() {
+                    if object_type_id(slice_ptr) == TYPE_ID_SLICE {
+                        let owner_bits = memoryview_owner_bits(ptr);
+                        let owner = obj_from_bits(owner_bits);
+                        let owner_ptr = match owner.as_ptr() {
+                            Some(ptr) => ptr,
+                            None => return MoltObject::none().bits(),
+                        };
+                        if object_type_id(owner_ptr) != TYPE_ID_BYTEARRAY {
+                            raise_exception("TypeError", "memoryview is not writable");
+                        }
+                        if memoryview_itemsize(ptr) != 1 {
+                            raise_exception("TypeError", "memoryview itemsize not supported");
+                        }
+                        let len = memoryview_len(ptr) as isize;
+                        let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
+                        let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
+                        let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
+                        let (start, stop, step) =
+                            match normalize_slice_indices(len, start_obj, stop_obj, step_obj) {
+                                Ok(vals) => vals,
+                                Err(err) => return slice_error(err),
+                            };
+                        let elem_count = range_len_i64(start as i64, stop as i64, step as i64);
+                        let elem_count = elem_count.max(0) as usize;
+                        let src_obj = obj_from_bits(val_bits);
+                        let src_bytes = if let Some(src_ptr) = src_obj.as_ptr() {
+                            let src_type = object_type_id(src_ptr);
+                            if src_type == TYPE_ID_BYTES || src_type == TYPE_ID_BYTEARRAY {
+                                let slice = bytes_like_slice_raw(src_ptr)
+                                    .unwrap_or(&[]);
+                                slice.to_vec()
+                            } else if src_type == TYPE_ID_MEMORYVIEW {
+                                if let Some(slice) = memoryview_bytes_slice(src_ptr) {
+                                    slice.to_vec()
+                                } else {
+                                    match memoryview_collect_bytes(src_ptr) {
+                                        Some(buf) => buf,
+                                        None => return MoltObject::none().bits(),
+                                    }
+                                }
+                            } else {
+                                raise_exception(
+                                    "TypeError",
+                                    &format!(
+                                        "a bytes-like object is required, not '{}'",
+                                        type_name(src_obj)
+                                    ),
+                                );
+                            }
+                        } else {
+                            raise_exception(
+                                "TypeError",
+                                &format!(
+                                    "a bytes-like object is required, not '{}'",
+                                    type_name(src_obj)
+                                ),
+                            );
+                        };
+                        if src_bytes.len() != elem_count {
+                            raise_exception(
+                                "ValueError",
+                                "memoryview assignment: lvalue and rvalue have different structures",
+                            );
+                        }
+                        let offset = memoryview_offset(ptr);
+                        let stride = memoryview_stride(ptr);
+                        if offset < 0 {
+                            return MoltObject::none().bits();
+                        }
+                        let base_len = bytes_len(owner_ptr) as isize;
+                        let data_ptr = bytes_data(owner_ptr) as *mut u8;
+                        let mut pos = offset + start * stride;
+                        let step_stride = stride * step;
+                        for byte in src_bytes {
+                            if pos < 0 || pos >= base_len {
+                                return MoltObject::none().bits();
+                            }
+                            *data_ptr.add(pos as usize) = byte;
+                            pos += step_stride;
+                        }
+                        return obj_bits;
+                    }
                 }
                 if let Some(idx) = key.as_int() {
                     let owner_bits = memoryview_owner_bits(ptr);
