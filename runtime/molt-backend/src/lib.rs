@@ -447,6 +447,293 @@ impl SimpleBackend {
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
+                "vec_sum_int_trusted" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = vars.get(&args[0]).expect("Seq arg not found");
+                    let acc = vars.get(&args[1]).expect("Acc arg not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_vec_sum_int_trusted", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*seq, *acc]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "vec_sum_int_range" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = vars.get(&args[0]).expect("Seq arg not found");
+                    let acc = vars.get(&args[1]).expect("Acc arg not found");
+                    let start = vars.get(&args[2]).expect("Start arg not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_vec_sum_int_range", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "vec_sum_int_range_trusted" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = vars.get(&args[0]).expect("Seq arg not found");
+                    let acc = vars.get(&args[1]).expect("Acc arg not found");
+                    let start = vars.get(&args[2]).expect("Start arg not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function(
+                            "molt_vec_sum_int_range_trusted",
+                            Linkage::Import,
+                            &sig,
+                        )
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "vec_prod_int" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = vars.get(&args[0]).expect("Seq arg not found");
+                    let acc = vars.get(&args[1]).expect("Acc arg not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_vec_prod_int", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*seq, *acc]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "vec_prod_int_trusted" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = vars.get(&args[0]).expect("Seq arg not found");
+                    let acc = vars.get(&args[1]).expect("Acc arg not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_vec_prod_int_trusted", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*seq, *acc]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "vec_prod_int_range" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = vars.get(&args[0]).expect("Seq arg not found");
+                    let acc = vars.get(&args[1]).expect("Acc arg not found");
+                    let start = vars.get(&args[2]).expect("Start arg not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_vec_prod_int_range", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "vec_prod_int_range_trusted" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = vars.get(&args[0]).expect("Seq arg not found");
+                    let acc = vars.get(&args[1]).expect("Acc arg not found");
+                    let start = vars.get(&args[2]).expect("Start arg not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function(
+                            "molt_vec_prod_int_range_trusted",
+                            Linkage::Import,
+                            &sig,
+                        )
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "vec_min_int" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = vars.get(&args[0]).expect("Seq arg not found");
+                    let acc = vars.get(&args[1]).expect("Acc arg not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_vec_min_int", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*seq, *acc]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "vec_min_int_trusted" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = vars.get(&args[0]).expect("Seq arg not found");
+                    let acc = vars.get(&args[1]).expect("Acc arg not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_vec_min_int_trusted", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*seq, *acc]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "vec_min_int_range" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = vars.get(&args[0]).expect("Seq arg not found");
+                    let acc = vars.get(&args[1]).expect("Acc arg not found");
+                    let start = vars.get(&args[2]).expect("Start arg not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_vec_min_int_range", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "vec_min_int_range_trusted" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = vars.get(&args[0]).expect("Seq arg not found");
+                    let acc = vars.get(&args[1]).expect("Acc arg not found");
+                    let start = vars.get(&args[2]).expect("Start arg not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function(
+                            "molt_vec_min_int_range_trusted",
+                            Linkage::Import,
+                            &sig,
+                        )
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "vec_max_int" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = vars.get(&args[0]).expect("Seq arg not found");
+                    let acc = vars.get(&args[1]).expect("Acc arg not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_vec_max_int", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*seq, *acc]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "vec_max_int_trusted" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = vars.get(&args[0]).expect("Seq arg not found");
+                    let acc = vars.get(&args[1]).expect("Acc arg not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_vec_max_int_trusted", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*seq, *acc]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "vec_max_int_range" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = vars.get(&args[0]).expect("Seq arg not found");
+                    let acc = vars.get(&args[1]).expect("Acc arg not found");
+                    let start = vars.get(&args[2]).expect("Start arg not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_vec_max_int_range", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "vec_max_int_range_trusted" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = vars.get(&args[0]).expect("Seq arg not found");
+                    let acc = vars.get(&args[1]).expect("Acc arg not found");
+                    let start = vars.get(&args[2]).expect("Start arg not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function(
+                            "molt_vec_max_int_range_trusted",
+                            Linkage::Import,
+                            &sig,
+                        )
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
                 "sub" => {
                     let args = op.args.as_ref().unwrap();
                     let lhs = vars.get(&args[0]).expect("LHS not found");
@@ -1265,6 +1552,51 @@ impl SimpleBackend {
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
+                "intarray_from_seq" => {
+                    let args = op.args.as_ref().unwrap();
+                    let src = vars.get(&args[0]).expect("Intarray source not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_intarray_from_seq", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*src]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "memoryview_new" => {
+                    let args = op.args.as_ref().unwrap();
+                    let src = vars.get(&args[0]).expect("Memoryview source not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_memoryview_new", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*src]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "memoryview_tobytes" => {
+                    let args = op.args.as_ref().unwrap();
+                    let src = vars.get(&args[0]).expect("Memoryview value not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_memoryview_tobytes", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*src]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
                 "buffer2d_new" => {
                     let args = op.args.as_ref().unwrap();
                     let rows = vars.get(&args[0]).expect("Buffer2D rows not found");
@@ -1461,6 +1793,55 @@ impl SimpleBackend {
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         builder.inst_results(call)[0]
                     };
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "is" => {
+                    let args = op.args.as_ref().unwrap();
+                    let lhs = vars.get(&args[0]).expect("LHS not found");
+                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_is", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "not" => {
+                    let args = op.args.as_ref().unwrap();
+                    let val = vars.get(&args[0]).expect("Value not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_not", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*val]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "contains" => {
+                    let args = op.args.as_ref().unwrap();
+                    let container = vars.get(&args[0]).expect("Container not found");
+                    let item = vars.get(&args[1]).expect("Item not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_contains", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*container, *item]);
+                    let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
                 "print" => {

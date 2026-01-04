@@ -17,15 +17,22 @@ BENCHMARKS = [
     "tests/benchmarks/bench_fib.py",
     "tests/benchmarks/bench_sum.py",
     "tests/benchmarks/bench_sum_list.py",
+    "tests/benchmarks/bench_min_list.py",
+    "tests/benchmarks/bench_max_list.py",
+    "tests/benchmarks/bench_prod_list.py",
     "tests/benchmarks/bench_struct.py",
     "tests/benchmarks/bench_deeply_nested_loop.py",
     "tests/benchmarks/bench_matrix_math.py",
     "tests/benchmarks/bench_bytes_find.py",
     "tests/benchmarks/bench_bytes_find_only.py",
     "tests/benchmarks/bench_str_find.py",
+    "tests/benchmarks/bench_str_find_unicode.py",
+    "tests/benchmarks/bench_str_find_unicode_warm.py",
     "tests/benchmarks/bench_str_split.py",
     "tests/benchmarks/bench_str_replace.py",
     "tests/benchmarks/bench_str_count.py",
+    "tests/benchmarks/bench_str_count_unicode.py",
+    "tests/benchmarks/bench_str_count_unicode_warm.py",
     "tests/benchmarks/bench_str_join.py",
     "tests/benchmarks/bench_str_startswith.py",
     "tests/benchmarks/bench_str_endswith.py",
@@ -234,7 +241,16 @@ def _pypy_command() -> list[str] | None:
         print("Skipping PyPy: uv not found.", file=sys.stderr)
         return None
     probe = subprocess.run(
-        ["uv", "run", "--python", "pypy@3.11", "python", "-c", "print('ok')"],
+        [
+            "uv",
+            "run",
+            "--no-project",
+            "--python",
+            "pypy@3.11",
+            "python",
+            "-c",
+            "print('ok')",
+        ],
         capture_output=True,
         text=True,
     )
@@ -243,7 +259,7 @@ def _pypy_command() -> list[str] | None:
         hint = msg[-1] if msg else "PyPy unavailable for this Python requirement"
         print(f"Skipping PyPy: {hint}", file=sys.stderr)
         return None
-    return ["uv", "run", "--python", "pypy@3.11", "python"]
+    return ["uv", "run", "--no-project", "--python", "pypy@3.11", "python"]
 
 
 def bench_results(benchmarks, samples, use_pypy, use_cython, use_numba):

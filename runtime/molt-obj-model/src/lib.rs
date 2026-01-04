@@ -116,6 +116,15 @@ impl MoltObject {
             None
         }
     }
+
+    pub fn as_int_unchecked(&self) -> i64 {
+        let val = self.0 & INT_MASK;
+        if (val & INT_SIGN_BIT) != 0 {
+            (val as i64) - ((1u64 << INT_WIDTH) as i64)
+        } else {
+            val as i64
+        }
+    }
 }
 
 #[cfg(test)]

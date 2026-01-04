@@ -23,3 +23,8 @@ bench/cython/
 bench/numba/
 *.md
 !/README.md
+!/AGENTS.md
+!/GEMINI.md
+!/OPTIMIZATIONS_PLAN.md
+!/ROADMAP.md
+!/docs/**/*.md

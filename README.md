@@ -46,30 +46,47 @@ See `docs/spec/` for detailed architectural decisions.
 - **Differential suite**: CI runs `python tests/molt_diff.py tests/differential/basic` on CPython 3.12.
 
 ### Local Commands
-- Python: `uv run pytest`
+- Python: `tools/dev.py test` (runs `pytest -q` via `uv run` on Python 3.12/3.13/3.14)
 - Rust: `cargo test`
 - Differential: `python tests/molt_diff.py <case.py>`
 - Bench setup (optional): `uv sync --group bench --python 3.12` (Numba requires <3.13)
 
 ## Performance & Comparisons
 
-After major features or optimizations, run `python3 tools/bench.py --json` and update this
+After major features or optimizations, run `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json` and update this
 section with a short summary (date/host, top speedups, regressions, and any build failures).
 Install optional baselines with `uv sync --group bench --python 3.12` to enable Cython/Numba
-columns. PyPy baselines are skipped until a PyPy release satisfies `requires-python`.
+columns. PyPy baselines use `uv run --no-project --python pypy@3.11` to bypass
+`requires-python` and remain comparable.
+For cross-version baselines, run the bench harness under each CPython version
+(`uv run --python 3.12 python3 tools/bench.py --json-out bench/results/bench_py312.json`,
+`uv run --python 3.13 python3 tools/bench.py --json-out bench/results/bench_py313.json`,
+`uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench_py314.json`)
+and summarize deltas across files.
 
-Latest run: 2026-01-03 (macOS arm64, CPython 3.12.12).
-Top speedups: `bench_matrix_math.py` 9.06x, `bench_str_count.py` 3.49x,
-`bench_str_endswith.py` 3.39x, `bench_fib.py` 3.07x, `bench_sum.py` 2.95x.
-Regressions: `bench_str_split.py` 0.64x, `bench_str_replace.py` 0.73x.
-Build/run failures: none.
+Latest run: 2026-01-04 (macOS x86_64, CPython 3.14.0).
+Top speedups: `bench_parse_msgpack.py` 66.78x, `bench_matrix_math.py` 10.83x,
+`bench_prod_list.py` 6.84x, `bench_sum.py` 6.64x, `bench_str_count.py` 5.60x.
+Regressions: `bench_str_split.py` 1.82x (down from 2.32x prior run; investigate).
+Build/run failures: PyPy/Cython/Numba baselines skipped.
+
+### Performance Gates
+- Vector reductions (`bench_sum_list.py`, `bench_min_list.py`, `bench_max_list.py`, `bench_prod_list.py`): regression >5% fails the gate.
+- String kernels (`bench_str_find.py`, `bench_str_find_unicode.py`, `bench_str_split.py`, `bench_str_replace.py`, `bench_str_count.py`, `bench_str_count_unicode.py`): regression >7% fails the gate.
+- Matrix/buffer kernels (`bench_matrix_math.py`): regression >5% fails the gate.
+- Any expected perf deltas from new kernels must be recorded here after the run; complex regressions move to `OPTIMIZATIONS_PLAN.md`.
+
+Baseline microbenchmarks (2026-01-04): `bench_min_list.py` 1.94x, `bench_max_list.py` 2.04x,
+`bench_prod_list.py` 6.84x, `bench_str_find_unicode.py` 4.68x, `bench_str_count_unicode.py` 1.86x.
 
 | Benchmark | Molt vs CPython | Notes |
 | --- | --- | --- |
-| bench_matrix_math.py | 9.06x | buffer2d matmul lowering |
-| bench_str_count.py | 3.49x | string count fast path |
-| bench_str_endswith.py | 3.39x | string endswith fast path |
-| bench_fib.py | 3.07x | recursive call path |
-| bench_sum.py | 2.95x | tight int loop |
-| bench_str_split.py | 0.64x | regression vs CPython |
-| bench_str_replace.py | 0.73x | regression vs CPython |
+| bench_matrix_math.py | 10.83x | buffer2d matmul lowering |
+| bench_deeply_nested_loop.py | 4.69x | nested loop lowering |
+| bench_str_endswith.py | 4.90x | string endswith fast path |
+| bench_str_startswith.py | 5.12x | string startswith fast path |
+| bench_str_count.py | 5.60x | string count fast path |
+| bench_str_split.py | 1.82x | optimized split builder |
+| bench_str_replace.py | 4.63x | SIMD-friendly replace path |
+| bench_str_join.py | 2.19x | pre-sized join buffer |
+| bench_sum_list.py | 2.65x | vector reduction fast path |

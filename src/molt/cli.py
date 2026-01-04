@@ -13,6 +13,11 @@ from typing import Any, Literal
 
 from molt.compat import CompatibilityError
 from molt.frontend import SimpleTIRGenerator
+from molt.type_facts import (
+    collect_type_facts_from_paths,
+    load_type_facts,
+    write_type_facts,
+)
 
 Target = Literal["native", "wasm"]
 ParseCodec = Literal["msgpack", "cbor", "json"]
@@ -88,6 +93,7 @@ def build(
     parse_codec: ParseCodec = "msgpack",
     type_hint_policy: TypeHintPolicy = "ignore",
     fallback_policy: FallbackPolicy = "error",
+    type_facts_path: str | None = None,
 ) -> int:
     source_path = Path(file_path)
     if not source_path.exists():
@@ -98,11 +104,38 @@ def build(
 
     # 1. Frontend: Python -> JSON IR
     tree = ast.parse(source)
+    type_facts = None
+    if type_facts_path is None and type_hint_policy in {"trust", "check"}:
+        type_facts, ty_ok = _collect_type_facts_for_build(source_path, type_hint_policy)
+        if type_facts is None and type_hint_policy == "trust":
+            print("Type facts unavailable; refusing trusted build.", file=sys.stderr)
+            return 2
+        if type_hint_policy == "trust" and not ty_ok:
+            print("ty check failed; refusing trusted build.", file=sys.stderr)
+            return 2
+        if type_hint_policy == "check" and not ty_ok:
+            print(
+                "ty check failed; continuing with guarded hints only.",
+                file=sys.stderr,
+            )
+    if type_facts_path is not None:
+        facts_path = Path(type_facts_path)
+        if not facts_path.exists():
+            print(f"Type facts not found: {facts_path}", file=sys.stderr)
+            return 2
+        try:
+            type_facts = load_type_facts(facts_path)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            print(f"Failed to load type facts: {exc}", file=sys.stderr)
+            return 2
+
     gen = SimpleTIRGenerator(
         parse_codec=parse_codec,
         type_hint_policy=type_hint_policy,
         fallback_policy=fallback_policy,
         source_path=str(source_path),
+        type_facts=type_facts,
+        module_name=source_path.stem,
     )
     try:
         gen.visit(tree)
@@ -168,6 +201,10 @@ int main() {
         )
         link_cmd.extend(["-arch", arch])
     link_cmd.extend(["main_stub.c", "output.o", str(runtime_lib), "-o", output_binary])
+    if sys.platform == "darwin":
+        link_cmd.append("-lc++")
+    elif sys.platform.startswith("linux"):
+        link_cmd.append("-lstdc++")
 
     link_process = subprocess.run(link_cmd)
 
@@ -242,6 +279,25 @@ def main() -> int:
         default="error",
         help="Fallback policy for unsupported constructs.",
     )
+    build_parser.add_argument(
+        "--type-facts",
+        help="Path to type facts JSON from `molt check`.",
+    )
+
+    check_parser = subparsers.add_parser(
+        "check", help="Generate a type facts artifact (ty-backed when available)"
+    )
+    check_parser.add_argument("path", help="Python file or package directory")
+    check_parser.add_argument(
+        "--output",
+        default="type_facts.json",
+        help="Output path for type facts JSON.",
+    )
+    check_parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Mark facts as trusted (strict tier).",
+    )
 
     deps_parser = subparsers.add_parser(
         "deps", help="Show dependency compatibility info"
@@ -265,7 +321,10 @@ def main() -> int:
             args.codec,
             args.type_hints,
             args.fallback,
+            args.type_facts,
         )
+    if args.command == "check":
+        return check(args.path, args.output, args.strict)
     if args.command == "deps":
         return deps(args.include_dev)
     if args.command == "vendor":
@@ -365,6 +424,68 @@ def _append_feature_notes(reason: str, pkg: dict[str, Any] | None) -> str:
     if notes:
         return f"{reason}; {', '.join(notes)}"
     return reason
+
+
+def _collect_py_files(target: Path) -> list[Path]:
+    if target.is_file():
+        return [target]
+    return sorted(path for path in target.rglob("*.py") if path.is_file())
+
+
+def _run_ty_check(path: Path) -> tuple[bool, str]:
+    commands = [
+        ["uv", "run", "ty", "check", str(path), "--output-format", "concise"],
+        ["ty", "check", str(path), "--output-format", "concise"],
+    ]
+    for cmd in commands:
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        except FileNotFoundError:
+            continue
+        if result.returncode == 0:
+            return True, result.stdout.strip()
+        combined = (result.stdout + result.stderr).strip()
+        return False, combined
+    return False, "ty is not available; install it with `uv add ty`."
+
+
+def _collect_type_facts_for_build(
+    source_path: Path, type_hint_policy: TypeHintPolicy
+) -> tuple[Any | None, bool]:
+    trust = "trusted" if type_hint_policy == "trust" else "guarded"
+    ty_ok, _ = _run_ty_check(source_path)
+    facts = collect_type_facts_from_paths([source_path], trust, infer=ty_ok)
+    if ty_ok:
+        facts.tool = "molt-check+ty+infer"
+    return facts, ty_ok
+
+
+def check(path: str, output: str, strict: bool) -> int:
+    target = Path(path)
+    if not target.exists():
+        print(f"Path not found: {target}", file=sys.stderr)
+        return 2
+    files = _collect_py_files(target)
+    if not files:
+        print(f"No Python files found under: {target}", file=sys.stderr)
+        return 2
+    trust = "trusted" if strict else "guarded"
+    ty_ok, ty_output = _run_ty_check(target)
+    if ty_ok:
+        facts = collect_type_facts_from_paths(files, trust, infer=True)
+        facts.tool = "molt-check+ty+infer"
+    elif ty_output:
+        print(ty_output, file=sys.stderr)
+        if strict:
+            print("ty check failed; refusing strict type facts.", file=sys.stderr)
+            return 2
+        facts = collect_type_facts_from_paths(files, trust, infer=False)
+    else:
+        facts = collect_type_facts_from_paths(files, trust, infer=False)
+    output_path = Path(output)
+    write_type_facts(output_path, facts)
+    print(f"Wrote type facts to {output_path}")
+    return 0
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ use crossbeam_deque::{Injector, Stealer, Worker};
 use memchr::{memchr, memmem};
 use molt_obj_model::MoltObject;
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::OpenOptions;
 use std::io::{Cursor, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -36,11 +36,65 @@ struct Buffer2D {
     data: Vec<i64>,
 }
 
+#[repr(C)]
+struct MemoryView {
+    owner_bits: u64,
+    offset: isize,
+    len: usize,
+    itemsize: usize,
+    stride: isize,
+    readonly: u8,
+    _pad: [u8; 7],
+}
+
 struct MoltFileHandle {
     file: Mutex<Option<std::fs::File>>,
     readable: bool,
     writable: bool,
     text: bool,
+}
+
+struct Utf8IndexCache {
+    block: usize,
+    prefix: Vec<i64>,
+}
+
+struct Utf8CacheStore {
+    entries: HashMap<usize, Arc<Utf8IndexCache>>,
+    order: VecDeque<usize>,
+}
+
+impl Utf8CacheStore {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    fn get(&self, key: usize) -> Option<Arc<Utf8IndexCache>> {
+        self.entries.get(&key).cloned()
+    }
+
+    fn insert(&mut self, key: usize, cache: Arc<Utf8IndexCache>) {
+        if self.entries.contains_key(&key) {
+            return;
+        }
+        self.entries.insert(key, cache);
+        self.order.push_back(key);
+        while self.entries.len() > UTF8_CACHE_MAX_ENTRIES {
+            if let Some(evict) = self.order.pop_front() {
+                self.entries.remove(&evict);
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn remove(&mut self, key: usize) {
+        self.entries.remove(&key);
+        self.order.retain(|entry| *entry != key);
+    }
 }
 
 const TYPE_ID_STRING: u32 = 200;
@@ -62,7 +116,12 @@ const TYPE_ID_DATACLASS: u32 = 215;
 const TYPE_ID_BUFFER2D: u32 = 216;
 const TYPE_ID_CONTEXT_MANAGER: u32 = 217;
 const TYPE_ID_FILE_HANDLE: u32 = 218;
+const TYPE_ID_MEMORYVIEW: u32 = 219;
+const TYPE_ID_INTARRAY: u32 = 220;
 const MAX_SMALL_LIST: usize = 16;
+const UTF8_CACHE_BLOCK: usize = 4096;
+const UTF8_CACHE_MIN_LEN: usize = 16 * 1024;
+const UTF8_CACHE_MAX_ENTRIES: usize = 128;
 const TYPE_TAG_ANY: i64 = 0;
 const TYPE_TAG_INT: i64 = 1;
 const TYPE_TAG_FLOAT: i64 = 2;
@@ -78,6 +137,8 @@ const TYPE_TAG_RANGE: i64 = 11;
 const TYPE_TAG_SLICE: i64 = 12;
 const TYPE_TAG_DATACLASS: i64 = 13;
 const TYPE_TAG_BUFFER2D: i64 = 14;
+const TYPE_TAG_MEMORYVIEW: i64 = 15;
+const TYPE_TAG_INTARRAY: i64 = 16;
 
 thread_local! {
     static PARSE_ARENA: RefCell<TempArena> = RefCell::new(TempArena::new(8 * 1024));
@@ -135,11 +196,17 @@ fn is_truthy(obj: MoltObject) -> bool {
             if type_id == TYPE_ID_BYTEARRAY {
                 return string_len(ptr) > 0;
             }
+            if type_id == TYPE_ID_MEMORYVIEW {
+                return memoryview_len(ptr) > 0;
+            }
             if type_id == TYPE_ID_LIST {
                 return list_len(ptr) > 0;
             }
             if type_id == TYPE_ID_TUPLE {
                 return tuple_len(ptr) > 0;
+            }
+            if type_id == TYPE_ID_INTARRAY {
+                return intarray_len(ptr) > 0;
             }
             if type_id == TYPE_ID_DICT {
                 return dict_len(ptr) > 0;
@@ -180,6 +247,44 @@ fn is_truthy(obj: MoltObject) -> bool {
         }
     }
     false
+}
+
+fn type_name(obj: MoltObject) -> &'static str {
+    if obj.is_int() {
+        return "int";
+    }
+    if obj.is_float() {
+        return "float";
+    }
+    if obj.is_bool() {
+        return "bool";
+    }
+    if obj.is_none() {
+        return "NoneType";
+    }
+    if let Some(ptr) = obj.as_ptr() {
+        unsafe {
+            return match object_type_id(ptr) {
+                TYPE_ID_STRING => "str",
+                TYPE_ID_BYTES => "bytes",
+                TYPE_ID_BYTEARRAY => "bytearray",
+                TYPE_ID_LIST => "list",
+                TYPE_ID_TUPLE => "tuple",
+                TYPE_ID_DICT => "dict",
+                TYPE_ID_RANGE => "range",
+                TYPE_ID_SLICE => "slice",
+                TYPE_ID_MEMORYVIEW => "memoryview",
+                TYPE_ID_INTARRAY => "intarray",
+                TYPE_ID_EXCEPTION => "Exception",
+                TYPE_ID_DATACLASS => "dataclass",
+                TYPE_ID_BUFFER2D => "buffer2d",
+                TYPE_ID_CONTEXT_MANAGER => "context_manager",
+                TYPE_ID_FILE_HANDLE => "file",
+                _ => "object",
+            };
+        }
+    }
+    "object"
 }
 
 fn obj_eq(lhs: MoltObject, rhs: MoltObject) -> bool {
@@ -342,11 +447,51 @@ unsafe fn bytes_len(ptr: *mut u8) -> usize {
     string_len(ptr)
 }
 
+unsafe fn intarray_len(ptr: *mut u8) -> usize {
+    *(ptr as *const usize)
+}
+
+unsafe fn intarray_data(ptr: *mut u8) -> *const i64 {
+    ptr.add(std::mem::size_of::<usize>()) as *const i64
+}
+
+unsafe fn intarray_slice(ptr: *mut u8) -> &'static [i64] {
+    std::slice::from_raw_parts(intarray_data(ptr), intarray_len(ptr))
+}
+
 unsafe fn bytes_data(ptr: *mut u8) -> *const u8 {
     string_bytes(ptr)
 }
 
-unsafe fn bytes_like_slice(ptr: *mut u8) -> Option<&'static [u8]> {
+unsafe fn memoryview_ptr(ptr: *mut u8) -> *mut MemoryView {
+    ptr as *mut MemoryView
+}
+
+unsafe fn memoryview_owner_bits(ptr: *mut u8) -> u64 {
+    (*memoryview_ptr(ptr)).owner_bits
+}
+
+unsafe fn memoryview_offset(ptr: *mut u8) -> isize {
+    (*memoryview_ptr(ptr)).offset
+}
+
+unsafe fn memoryview_len(ptr: *mut u8) -> usize {
+    (*memoryview_ptr(ptr)).len
+}
+
+unsafe fn memoryview_itemsize(ptr: *mut u8) -> usize {
+    (*memoryview_ptr(ptr)).itemsize
+}
+
+unsafe fn memoryview_stride(ptr: *mut u8) -> isize {
+    (*memoryview_ptr(ptr)).stride
+}
+
+unsafe fn memoryview_readonly(ptr: *mut u8) -> bool {
+    (*memoryview_ptr(ptr)).readonly != 0
+}
+
+unsafe fn bytes_like_slice_raw(ptr: *mut u8) -> Option<&'static [u8]> {
     let type_id = object_type_id(ptr);
     if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
         let len = bytes_len(ptr);
@@ -354,6 +499,34 @@ unsafe fn bytes_like_slice(ptr: *mut u8) -> Option<&'static [u8]> {
         return Some(std::slice::from_raw_parts(data, len));
     }
     None
+}
+
+unsafe fn memoryview_bytes_slice(ptr: *mut u8) -> Option<&'static [u8]> {
+    if memoryview_itemsize(ptr) != 1 || memoryview_stride(ptr) != 1 {
+        return None;
+    }
+    let owner_bits = memoryview_owner_bits(ptr);
+    let owner = obj_from_bits(owner_bits);
+    let owner_ptr = owner.as_ptr()?;
+    let base = bytes_like_slice_raw(owner_ptr)?;
+    let offset = memoryview_offset(ptr);
+    if offset < 0 {
+        return None;
+    }
+    let offset = offset as usize;
+    let len = memoryview_len(ptr);
+    if offset > base.len() || offset + len > base.len() {
+        return None;
+    }
+    Some(&base[offset..offset + len])
+}
+
+unsafe fn bytes_like_slice(ptr: *mut u8) -> Option<&'static [u8]> {
+    let type_id = object_type_id(ptr);
+    if type_id == TYPE_ID_MEMORYVIEW {
+        return memoryview_bytes_slice(ptr);
+    }
+    bytes_like_slice_raw(ptr)
 }
 
 unsafe fn seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64> {
@@ -686,6 +859,50 @@ fn alloc_bytes(bytes: &[u8]) -> *mut u8 {
 
 fn alloc_bytearray(bytes: &[u8]) -> *mut u8 {
     alloc_bytes_like(bytes, TYPE_ID_BYTEARRAY)
+}
+
+fn alloc_intarray(values: &[i64]) -> *mut u8 {
+    let total = std::mem::size_of::<MoltHeader>()
+        + std::mem::size_of::<usize>()
+        + values.len() * std::mem::size_of::<i64>();
+    let ptr = alloc_object(total, TYPE_ID_INTARRAY);
+    if ptr.is_null() {
+        return ptr;
+    }
+    unsafe {
+        let len_ptr = ptr as *mut usize;
+        *len_ptr = values.len();
+        let data_ptr = ptr.add(std::mem::size_of::<usize>()) as *mut i64;
+        std::ptr::copy_nonoverlapping(values.as_ptr(), data_ptr, values.len());
+    }
+    ptr
+}
+
+fn alloc_memoryview(
+    owner_bits: u64,
+    offset: isize,
+    len: usize,
+    itemsize: usize,
+    stride: isize,
+    readonly: bool,
+) -> *mut u8 {
+    let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<MemoryView>();
+    let ptr = alloc_object(total, TYPE_ID_MEMORYVIEW);
+    if ptr.is_null() {
+        return ptr;
+    }
+    unsafe {
+        let mv_ptr = memoryview_ptr(ptr);
+        (*mv_ptr).owner_bits = owner_bits;
+        (*mv_ptr).offset = offset;
+        (*mv_ptr).len = len;
+        (*mv_ptr).itemsize = itemsize;
+        (*mv_ptr).stride = stride;
+        (*mv_ptr).readonly = if readonly { 1 } else { 0 };
+        (*mv_ptr)._pad = [0; 7];
+    }
+    inc_ref_bits(owner_bits);
+    ptr
 }
 
 fn fill_repeated_bytes(dst: &mut [u8], pattern: &[u8]) {
@@ -2417,6 +2634,7 @@ impl Default for MoltScheduler {
 
 lazy_static::lazy_static! {
     static ref SCHEDULER: MoltScheduler = MoltScheduler::new();
+    static ref UTF8_INDEX_CACHE: Mutex<Utf8CacheStore> = Mutex::new(Utf8CacheStore::new());
 }
 
 /// # Safety
@@ -2690,6 +2908,11 @@ pub extern "C" fn molt_eq(a: u64, b: u64) -> u64 {
 }
 
 #[no_mangle]
+pub extern "C" fn molt_is(a: u64, b: u64) -> u64 {
+    MoltObject::from_bool(a == b).bits()
+}
+
+#[no_mangle]
 pub extern "C" fn molt_str_from_obj(val_bits: u64) -> u64 {
     let obj = obj_from_bits(val_bits);
     if let Some(ptr) = obj.as_ptr() {
@@ -2738,6 +2961,9 @@ pub extern "C" fn molt_guard_type(val_bits: u64, expected_bits: u64) -> u64 {
         TYPE_TAG_TUPLE => obj
             .as_ptr()
             .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_TUPLE }),
+        TYPE_TAG_INTARRAY => obj
+            .as_ptr()
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_INTARRAY }),
         TYPE_TAG_DICT => obj
             .as_ptr()
             .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_DICT }),
@@ -2753,6 +2979,9 @@ pub extern "C" fn molt_guard_type(val_bits: u64, expected_bits: u64) -> u64 {
         TYPE_TAG_BUFFER2D => obj
             .as_ptr()
             .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_BUFFER2D }),
+        TYPE_TAG_MEMORYVIEW => obj
+            .as_ptr()
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_MEMORYVIEW }),
         _ => false,
     };
     if !matches {
@@ -2768,6 +2997,11 @@ pub extern "C" fn molt_is_truthy(val: u64) -> i64 {
     } else {
         0
     }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_not(val: u64) -> u64 {
+    MoltObject::from_bool(!is_truthy(obj_from_bits(val))).bits()
 }
 
 fn vec_sum_result(sum_bits: u64, ok: bool) -> u64 {
@@ -2817,6 +3051,35 @@ unsafe fn sum_ints_simd_x86_64(elems: &[u64], acc: i64) -> Option<i64> {
     Some(sum)
 }
 
+#[cfg(target_arch = "x86_64")]
+unsafe fn sum_ints_simd_x86_64_avx2(elems: &[u64], acc: i64) -> Option<i64> {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut vec_sum = _mm256_setzero_si256();
+    while i + 4 <= elems.len() {
+        let obj0 = MoltObject::from_bits(elems[i]);
+        let obj1 = MoltObject::from_bits(elems[i + 1]);
+        let obj2 = MoltObject::from_bits(elems[i + 2]);
+        let obj3 = MoltObject::from_bits(elems[i + 3]);
+        let v0 = obj0.as_int()?;
+        let v1 = obj1.as_int()?;
+        let v2 = obj2.as_int()?;
+        let v3 = obj3.as_int()?;
+        let vec = _mm256_set_epi64x(v3, v2, v1, v0);
+        vec_sum = _mm256_add_epi64(vec_sum, vec);
+        i += 4;
+    }
+    let mut lanes = [0i64; 4];
+    _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, vec_sum);
+    let mut sum = acc + lanes.iter().sum::<i64>();
+    for &bits in &elems[i..] {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int()?;
+        sum += val;
+    }
+    Some(sum)
+}
+
 #[cfg(target_arch = "aarch64")]
 unsafe fn sum_ints_simd_aarch64(elems: &[u64], acc: i64) -> Option<i64> {
     use std::arch::aarch64::*;
@@ -2846,6 +3109,9 @@ unsafe fn sum_ints_simd_aarch64(elems: &[u64], acc: i64) -> Option<i64> {
 fn sum_ints_checked(elems: &[u64], acc: i64) -> Option<i64> {
     #[cfg(target_arch = "x86_64")]
     {
+        if std::arch::is_x86_feature_detected!("avx2") {
+            return unsafe { sum_ints_simd_x86_64_avx2(elems, acc) };
+        }
         if std::arch::is_x86_feature_detected!("sse2") {
             return unsafe { sum_ints_simd_x86_64(elems, acc) };
         }
@@ -2857,6 +3123,752 @@ fn sum_ints_checked(elems: &[u64], acc: i64) -> Option<i64> {
         }
     }
     sum_ints_scalar(elems, acc)
+}
+
+fn prod_ints_scalar(elems: &[u64], acc: i64) -> Option<i64> {
+    let mut prod = acc;
+    for &bits in elems {
+        let obj = MoltObject::from_bits(bits);
+        if let Some(val) = obj.as_int() {
+            prod *= val;
+        } else {
+            return None;
+        }
+    }
+    Some(prod)
+}
+
+fn prod_ints_unboxed(elems: &[i64], acc: i64) -> i64 {
+    let mut prod = acc;
+    if prod == 0 {
+        return 0;
+    }
+    if prod == 1 {
+        if let Some(result) = prod_ints_unboxed_trivial(elems) {
+            return result;
+        }
+    }
+    for &val in elems {
+        if val == 0 {
+            return 0;
+        }
+        prod *= val;
+    }
+    prod
+}
+
+fn prod_ints_unboxed_trivial(_elems: &[i64]) -> Option<i64> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("avx2") {
+            return unsafe { prod_ints_unboxed_avx2_trivial(_elems) };
+        }
+    }
+    None
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn prod_ints_unboxed_avx2_trivial(elems: &[i64]) -> Option<i64> {
+    use std::arch::x86_64::*;
+    let mut idx = 0usize;
+    let ones = _mm256_set1_epi64x(1);
+    let zeros = _mm256_setzero_si256();
+    let mut all_ones = true;
+    while idx + 4 <= elems.len() {
+        let vec = _mm256_loadu_si256(elems.as_ptr().add(idx) as *const __m256i);
+        let eq_zero = _mm256_cmpeq_epi64(vec, zeros);
+        if _mm256_movemask_epi8(eq_zero) != 0 {
+            return Some(0);
+        }
+        if all_ones {
+            let eq_one = _mm256_cmpeq_epi64(vec, ones);
+            if _mm256_movemask_epi8(eq_one) != -1 {
+                all_ones = false;
+            }
+        }
+        idx += 4;
+    }
+    for &val in &elems[idx..] {
+        if val == 0 {
+            return Some(0);
+        }
+        if val != 1 {
+            all_ones = false;
+        }
+    }
+    if all_ones {
+        return Some(1);
+    }
+    None
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn prod_ints_simd_aarch64(elems: &[u64], acc: i64) -> Option<i64> {
+    prod_ints_scalar(elems, acc)
+}
+
+fn prod_ints_checked(elems: &[u64], acc: i64) -> Option<i64> {
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            return unsafe { prod_ints_simd_aarch64(elems, acc) };
+        }
+    }
+    prod_ints_scalar(elems, acc)
+}
+
+fn min_ints_scalar(elems: &[u64], acc: i64) -> Option<i64> {
+    let mut min_val = acc;
+    for &bits in elems {
+        let obj = MoltObject::from_bits(bits);
+        if let Some(val) = obj.as_int() {
+            if val < min_val {
+                min_val = val;
+            }
+        } else {
+            return None;
+        }
+    }
+    Some(min_val)
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn min_ints_simd_x86_64(elems: &[u64], acc: i64) -> Option<i64> {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut vec_min = _mm_set1_epi64x(acc);
+    while i + 2 <= elems.len() {
+        let obj0 = MoltObject::from_bits(elems[i]);
+        let obj1 = MoltObject::from_bits(elems[i + 1]);
+        let v0 = obj0.as_int()?;
+        let v1 = obj1.as_int()?;
+        let vec = _mm_set_epi64x(v1, v0);
+        let cmp = _mm_cmpgt_epi64(vec_min, vec);
+        vec_min = _mm_blendv_epi8(vec_min, vec, cmp);
+        i += 2;
+    }
+    let mut lanes = [0i64; 2];
+    _mm_storeu_si128(lanes.as_mut_ptr() as *mut __m128i, vec_min);
+    let mut min_val = acc.min(lanes[0]).min(lanes[1]);
+    for &bits in &elems[i..] {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int()?;
+        if val < min_val {
+            min_val = val;
+        }
+    }
+    Some(min_val)
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn min_ints_simd_x86_64_avx2(elems: &[u64], acc: i64) -> Option<i64> {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut vec_min = _mm256_set1_epi64x(acc);
+    while i + 4 <= elems.len() {
+        let obj0 = MoltObject::from_bits(elems[i]);
+        let obj1 = MoltObject::from_bits(elems[i + 1]);
+        let obj2 = MoltObject::from_bits(elems[i + 2]);
+        let obj3 = MoltObject::from_bits(elems[i + 3]);
+        let v0 = obj0.as_int()?;
+        let v1 = obj1.as_int()?;
+        let v2 = obj2.as_int()?;
+        let v3 = obj3.as_int()?;
+        let vec = _mm256_set_epi64x(v3, v2, v1, v0);
+        let cmp = _mm256_cmpgt_epi64(vec_min, vec);
+        vec_min = _mm256_blendv_epi8(vec_min, vec, cmp);
+        i += 4;
+    }
+    let mut lanes = [0i64; 4];
+    _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, vec_min);
+    let mut min_val = acc;
+    for lane in lanes {
+        if lane < min_val {
+            min_val = lane;
+        }
+    }
+    for &bits in &elems[i..] {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int()?;
+        if val < min_val {
+            min_val = val;
+        }
+    }
+    Some(min_val)
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn min_ints_simd_aarch64(elems: &[u64], acc: i64) -> Option<i64> {
+    use std::arch::aarch64::*;
+    let mut i = 0usize;
+    let mut vec_min = vdupq_n_s64(acc);
+    while i + 2 <= elems.len() {
+        let obj0 = MoltObject::from_bits(elems[i]);
+        let obj1 = MoltObject::from_bits(elems[i + 1]);
+        let v0 = obj0.as_int()?;
+        let v1 = obj1.as_int()?;
+        let lanes = [v0, v1];
+        let vec = vld1q_s64(lanes.as_ptr());
+        let mask = vcgtq_s64(vec_min, vec);
+        let vec_min_u = vreinterpretq_u64_s64(vec_min);
+        let vec_u = vreinterpretq_u64_s64(vec);
+        let blended_u = vbslq_u64(mask, vec_u, vec_min_u);
+        vec_min = vreinterpretq_s64_u64(blended_u);
+        i += 2;
+    }
+    let mut lanes = [0i64; 2];
+    vst1q_s64(lanes.as_mut_ptr(), vec_min);
+    let mut min_val = acc.min(lanes[0]).min(lanes[1]);
+    for &bits in &elems[i..] {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int()?;
+        if val < min_val {
+            min_val = val;
+        }
+    }
+    Some(min_val)
+}
+
+fn min_ints_checked(elems: &[u64], acc: i64) -> Option<i64> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("avx2") {
+            return unsafe { min_ints_simd_x86_64_avx2(elems, acc) };
+        }
+        if std::arch::is_x86_feature_detected!("sse4.2") {
+            return unsafe { min_ints_simd_x86_64(elems, acc) };
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            return unsafe { min_ints_simd_aarch64(elems, acc) };
+        }
+    }
+    min_ints_scalar(elems, acc)
+}
+
+fn max_ints_scalar(elems: &[u64], acc: i64) -> Option<i64> {
+    let mut max_val = acc;
+    for &bits in elems {
+        let obj = MoltObject::from_bits(bits);
+        if let Some(val) = obj.as_int() {
+            if val > max_val {
+                max_val = val;
+            }
+        } else {
+            return None;
+        }
+    }
+    Some(max_val)
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn max_ints_simd_x86_64(elems: &[u64], acc: i64) -> Option<i64> {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut vec_max = _mm_set1_epi64x(acc);
+    while i + 2 <= elems.len() {
+        let obj0 = MoltObject::from_bits(elems[i]);
+        let obj1 = MoltObject::from_bits(elems[i + 1]);
+        let v0 = obj0.as_int()?;
+        let v1 = obj1.as_int()?;
+        let vec = _mm_set_epi64x(v1, v0);
+        let cmp = _mm_cmpgt_epi64(vec, vec_max);
+        vec_max = _mm_blendv_epi8(vec_max, vec, cmp);
+        i += 2;
+    }
+    let mut lanes = [0i64; 2];
+    _mm_storeu_si128(lanes.as_mut_ptr() as *mut __m128i, vec_max);
+    let mut max_val = acc.max(lanes[0]).max(lanes[1]);
+    for &bits in &elems[i..] {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int()?;
+        if val > max_val {
+            max_val = val;
+        }
+    }
+    Some(max_val)
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn max_ints_simd_x86_64_avx2(elems: &[u64], acc: i64) -> Option<i64> {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut vec_max = _mm256_set1_epi64x(acc);
+    while i + 4 <= elems.len() {
+        let obj0 = MoltObject::from_bits(elems[i]);
+        let obj1 = MoltObject::from_bits(elems[i + 1]);
+        let obj2 = MoltObject::from_bits(elems[i + 2]);
+        let obj3 = MoltObject::from_bits(elems[i + 3]);
+        let v0 = obj0.as_int()?;
+        let v1 = obj1.as_int()?;
+        let v2 = obj2.as_int()?;
+        let v3 = obj3.as_int()?;
+        let vec = _mm256_set_epi64x(v3, v2, v1, v0);
+        let cmp = _mm256_cmpgt_epi64(vec, vec_max);
+        vec_max = _mm256_blendv_epi8(vec_max, vec, cmp);
+        i += 4;
+    }
+    let mut lanes = [0i64; 4];
+    _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, vec_max);
+    let mut max_val = acc;
+    for lane in lanes {
+        if lane > max_val {
+            max_val = lane;
+        }
+    }
+    for &bits in &elems[i..] {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int()?;
+        if val > max_val {
+            max_val = val;
+        }
+    }
+    Some(max_val)
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn max_ints_simd_aarch64(elems: &[u64], acc: i64) -> Option<i64> {
+    use std::arch::aarch64::*;
+    let mut i = 0usize;
+    let mut vec_max = vdupq_n_s64(acc);
+    while i + 2 <= elems.len() {
+        let obj0 = MoltObject::from_bits(elems[i]);
+        let obj1 = MoltObject::from_bits(elems[i + 1]);
+        let v0 = obj0.as_int()?;
+        let v1 = obj1.as_int()?;
+        let lanes = [v0, v1];
+        let vec = vld1q_s64(lanes.as_ptr());
+        let mask = vcgtq_s64(vec, vec_max);
+        let vec_max_u = vreinterpretq_u64_s64(vec_max);
+        let vec_u = vreinterpretq_u64_s64(vec);
+        let blended_u = vbslq_u64(mask, vec_u, vec_max_u);
+        vec_max = vreinterpretq_s64_u64(blended_u);
+        i += 2;
+    }
+    let mut lanes = [0i64; 2];
+    vst1q_s64(lanes.as_mut_ptr(), vec_max);
+    let mut max_val = acc.max(lanes[0]).max(lanes[1]);
+    for &bits in &elems[i..] {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int()?;
+        if val > max_val {
+            max_val = val;
+        }
+    }
+    Some(max_val)
+}
+
+fn max_ints_checked(elems: &[u64], acc: i64) -> Option<i64> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("avx2") {
+            return unsafe { max_ints_simd_x86_64_avx2(elems, acc) };
+        }
+        if std::arch::is_x86_feature_detected!("sse4.2") {
+            return unsafe { max_ints_simd_x86_64(elems, acc) };
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            return unsafe { max_ints_simd_aarch64(elems, acc) };
+        }
+    }
+    max_ints_scalar(elems, acc)
+}
+
+fn sum_ints_trusted_scalar(elems: &[u64], acc: i64) -> i64 {
+    let mut sum = acc;
+    for &bits in elems {
+        let obj = MoltObject::from_bits(bits);
+        sum += obj.as_int_unchecked();
+    }
+    sum
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn sum_ints_trusted_simd_x86_64(elems: &[u64], acc: i64) -> i64 {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut vec_sum = _mm_setzero_si128();
+    while i + 2 <= elems.len() {
+        let obj0 = MoltObject::from_bits(elems[i]);
+        let obj1 = MoltObject::from_bits(elems[i + 1]);
+        let v0 = obj0.as_int_unchecked();
+        let v1 = obj1.as_int_unchecked();
+        let vec = _mm_set_epi64x(v1, v0);
+        vec_sum = _mm_add_epi64(vec_sum, vec);
+        i += 2;
+    }
+    let mut lanes = [0i64; 2];
+    _mm_storeu_si128(lanes.as_mut_ptr() as *mut __m128i, vec_sum);
+    let mut sum = acc + lanes[0] + lanes[1];
+    for &bits in &elems[i..] {
+        let obj = MoltObject::from_bits(bits);
+        sum += obj.as_int_unchecked();
+    }
+    sum
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn sum_ints_trusted_simd_x86_64_avx2(elems: &[u64], acc: i64) -> i64 {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut vec_sum = _mm256_setzero_si256();
+    while i + 4 <= elems.len() {
+        let obj0 = MoltObject::from_bits(elems[i]);
+        let obj1 = MoltObject::from_bits(elems[i + 1]);
+        let obj2 = MoltObject::from_bits(elems[i + 2]);
+        let obj3 = MoltObject::from_bits(elems[i + 3]);
+        let v0 = obj0.as_int_unchecked();
+        let v1 = obj1.as_int_unchecked();
+        let v2 = obj2.as_int_unchecked();
+        let v3 = obj3.as_int_unchecked();
+        let vec = _mm256_set_epi64x(v3, v2, v1, v0);
+        vec_sum = _mm256_add_epi64(vec_sum, vec);
+        i += 4;
+    }
+    let mut lanes = [0i64; 4];
+    _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, vec_sum);
+    let mut sum = acc + lanes.iter().sum::<i64>();
+    for &bits in &elems[i..] {
+        let obj = MoltObject::from_bits(bits);
+        sum += obj.as_int_unchecked();
+    }
+    sum
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn sum_ints_trusted_simd_aarch64(elems: &[u64], acc: i64) -> i64 {
+    use std::arch::aarch64::*;
+    let mut i = 0usize;
+    let mut vec_sum = vdupq_n_s64(0);
+    while i + 2 <= elems.len() {
+        let obj0 = MoltObject::from_bits(elems[i]);
+        let obj1 = MoltObject::from_bits(elems[i + 1]);
+        let v0 = obj0.as_int_unchecked();
+        let v1 = obj1.as_int_unchecked();
+        let lanes = [v0, v1];
+        let vec = vld1q_s64(lanes.as_ptr());
+        vec_sum = vaddq_s64(vec_sum, vec);
+        i += 2;
+    }
+    let mut lanes = [0i64; 2];
+    vst1q_s64(lanes.as_mut_ptr(), vec_sum);
+    let mut sum = acc + lanes[0] + lanes[1];
+    for &bits in &elems[i..] {
+        let obj = MoltObject::from_bits(bits);
+        sum += obj.as_int_unchecked();
+    }
+    sum
+}
+
+fn sum_ints_trusted(elems: &[u64], acc: i64) -> i64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("avx2") {
+            return unsafe { sum_ints_trusted_simd_x86_64_avx2(elems, acc) };
+        }
+        if std::arch::is_x86_feature_detected!("sse2") {
+            return unsafe { sum_ints_trusted_simd_x86_64(elems, acc) };
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            return unsafe { sum_ints_trusted_simd_aarch64(elems, acc) };
+        }
+    }
+    sum_ints_trusted_scalar(elems, acc)
+}
+
+fn prod_ints_trusted_scalar(elems: &[u64], acc: i64) -> i64 {
+    let mut prod = acc;
+    if prod == 0 {
+        return 0;
+    }
+    for &bits in elems {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int_unchecked();
+        if val == 0 {
+            return 0;
+        }
+        prod *= val;
+    }
+    prod
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn prod_ints_trusted_simd_aarch64(elems: &[u64], acc: i64) -> i64 {
+    prod_ints_trusted_scalar(elems, acc)
+}
+
+fn prod_ints_trusted(elems: &[u64], acc: i64) -> i64 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            return unsafe { prod_ints_trusted_simd_aarch64(elems, acc) };
+        }
+    }
+    prod_ints_trusted_scalar(elems, acc)
+}
+
+fn min_ints_trusted_scalar(elems: &[u64], acc: i64) -> i64 {
+    let mut min_val = acc;
+    for &bits in elems {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int_unchecked();
+        if val < min_val {
+            min_val = val;
+        }
+    }
+    min_val
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn min_ints_trusted_simd_x86_64(elems: &[u64], acc: i64) -> i64 {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut vec_min = _mm_set1_epi64x(acc);
+    while i + 2 <= elems.len() {
+        let obj0 = MoltObject::from_bits(elems[i]);
+        let obj1 = MoltObject::from_bits(elems[i + 1]);
+        let v0 = obj0.as_int_unchecked();
+        let v1 = obj1.as_int_unchecked();
+        let vec = _mm_set_epi64x(v1, v0);
+        let cmp = _mm_cmpgt_epi64(vec_min, vec);
+        vec_min = _mm_blendv_epi8(vec_min, vec, cmp);
+        i += 2;
+    }
+    let mut lanes = [0i64; 2];
+    _mm_storeu_si128(lanes.as_mut_ptr() as *mut __m128i, vec_min);
+    let mut min_val = acc.min(lanes[0]).min(lanes[1]);
+    for &bits in &elems[i..] {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int_unchecked();
+        if val < min_val {
+            min_val = val;
+        }
+    }
+    min_val
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn min_ints_trusted_simd_x86_64_avx2(elems: &[u64], acc: i64) -> i64 {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut vec_min = _mm256_set1_epi64x(acc);
+    while i + 4 <= elems.len() {
+        let obj0 = MoltObject::from_bits(elems[i]);
+        let obj1 = MoltObject::from_bits(elems[i + 1]);
+        let obj2 = MoltObject::from_bits(elems[i + 2]);
+        let obj3 = MoltObject::from_bits(elems[i + 3]);
+        let v0 = obj0.as_int_unchecked();
+        let v1 = obj1.as_int_unchecked();
+        let v2 = obj2.as_int_unchecked();
+        let v3 = obj3.as_int_unchecked();
+        let vec = _mm256_set_epi64x(v3, v2, v1, v0);
+        let cmp = _mm256_cmpgt_epi64(vec_min, vec);
+        vec_min = _mm256_blendv_epi8(vec_min, vec, cmp);
+        i += 4;
+    }
+    let mut lanes = [0i64; 4];
+    _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, vec_min);
+    let mut min_val = acc;
+    for lane in lanes {
+        if lane < min_val {
+            min_val = lane;
+        }
+    }
+    for &bits in &elems[i..] {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int_unchecked();
+        if val < min_val {
+            min_val = val;
+        }
+    }
+    min_val
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn min_ints_trusted_simd_aarch64(elems: &[u64], acc: i64) -> i64 {
+    use std::arch::aarch64::*;
+    let mut i = 0usize;
+    let mut vec_min = vdupq_n_s64(acc);
+    while i + 2 <= elems.len() {
+        let obj0 = MoltObject::from_bits(elems[i]);
+        let obj1 = MoltObject::from_bits(elems[i + 1]);
+        let v0 = obj0.as_int_unchecked();
+        let v1 = obj1.as_int_unchecked();
+        let lanes = [v0, v1];
+        let vec = vld1q_s64(lanes.as_ptr());
+        let mask = vcgtq_s64(vec_min, vec);
+        let vec_min_u = vreinterpretq_u64_s64(vec_min);
+        let vec_u = vreinterpretq_u64_s64(vec);
+        let blended_u = vbslq_u64(mask, vec_u, vec_min_u);
+        vec_min = vreinterpretq_s64_u64(blended_u);
+        i += 2;
+    }
+    let mut lanes = [0i64; 2];
+    vst1q_s64(lanes.as_mut_ptr(), vec_min);
+    let mut min_val = acc.min(lanes[0]).min(lanes[1]);
+    for &bits in &elems[i..] {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int_unchecked();
+        if val < min_val {
+            min_val = val;
+        }
+    }
+    min_val
+}
+
+fn min_ints_trusted(elems: &[u64], acc: i64) -> i64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("avx2") {
+            return unsafe { min_ints_trusted_simd_x86_64_avx2(elems, acc) };
+        }
+        if std::arch::is_x86_feature_detected!("sse4.2") {
+            return unsafe { min_ints_trusted_simd_x86_64(elems, acc) };
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            return unsafe { min_ints_trusted_simd_aarch64(elems, acc) };
+        }
+    }
+    min_ints_trusted_scalar(elems, acc)
+}
+
+fn max_ints_trusted_scalar(elems: &[u64], acc: i64) -> i64 {
+    let mut max_val = acc;
+    for &bits in elems {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int_unchecked();
+        if val > max_val {
+            max_val = val;
+        }
+    }
+    max_val
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn max_ints_trusted_simd_x86_64(elems: &[u64], acc: i64) -> i64 {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut vec_max = _mm_set1_epi64x(acc);
+    while i + 2 <= elems.len() {
+        let obj0 = MoltObject::from_bits(elems[i]);
+        let obj1 = MoltObject::from_bits(elems[i + 1]);
+        let v0 = obj0.as_int_unchecked();
+        let v1 = obj1.as_int_unchecked();
+        let vec = _mm_set_epi64x(v1, v0);
+        let cmp = _mm_cmpgt_epi64(vec, vec_max);
+        vec_max = _mm_blendv_epi8(vec_max, vec, cmp);
+        i += 2;
+    }
+    let mut lanes = [0i64; 2];
+    _mm_storeu_si128(lanes.as_mut_ptr() as *mut __m128i, vec_max);
+    let mut max_val = acc.max(lanes[0]).max(lanes[1]);
+    for &bits in &elems[i..] {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int_unchecked();
+        if val > max_val {
+            max_val = val;
+        }
+    }
+    max_val
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn max_ints_trusted_simd_x86_64_avx2(elems: &[u64], acc: i64) -> i64 {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut vec_max = _mm256_set1_epi64x(acc);
+    while i + 4 <= elems.len() {
+        let obj0 = MoltObject::from_bits(elems[i]);
+        let obj1 = MoltObject::from_bits(elems[i + 1]);
+        let obj2 = MoltObject::from_bits(elems[i + 2]);
+        let obj3 = MoltObject::from_bits(elems[i + 3]);
+        let v0 = obj0.as_int_unchecked();
+        let v1 = obj1.as_int_unchecked();
+        let v2 = obj2.as_int_unchecked();
+        let v3 = obj3.as_int_unchecked();
+        let vec = _mm256_set_epi64x(v3, v2, v1, v0);
+        let cmp = _mm256_cmpgt_epi64(vec, vec_max);
+        vec_max = _mm256_blendv_epi8(vec_max, vec, cmp);
+        i += 4;
+    }
+    let mut lanes = [0i64; 4];
+    _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, vec_max);
+    let mut max_val = acc;
+    for lane in lanes {
+        if lane > max_val {
+            max_val = lane;
+        }
+    }
+    for &bits in &elems[i..] {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int_unchecked();
+        if val > max_val {
+            max_val = val;
+        }
+    }
+    max_val
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn max_ints_trusted_simd_aarch64(elems: &[u64], acc: i64) -> i64 {
+    use std::arch::aarch64::*;
+    let mut i = 0usize;
+    let mut vec_max = vdupq_n_s64(acc);
+    while i + 2 <= elems.len() {
+        let obj0 = MoltObject::from_bits(elems[i]);
+        let obj1 = MoltObject::from_bits(elems[i + 1]);
+        let v0 = obj0.as_int_unchecked();
+        let v1 = obj1.as_int_unchecked();
+        let lanes = [v0, v1];
+        let vec = vld1q_s64(lanes.as_ptr());
+        let mask = vcgtq_s64(vec, vec_max);
+        let vec_max_u = vreinterpretq_u64_s64(vec_max);
+        let vec_u = vreinterpretq_u64_s64(vec);
+        let blended_u = vbslq_u64(mask, vec_u, vec_max_u);
+        vec_max = vreinterpretq_s64_u64(blended_u);
+        i += 2;
+    }
+    let mut lanes = [0i64; 2];
+    vst1q_s64(lanes.as_mut_ptr(), vec_max);
+    let mut max_val = acc.max(lanes[0]).max(lanes[1]);
+    for &bits in &elems[i..] {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int_unchecked();
+        if val > max_val {
+            max_val = val;
+        }
+    }
+    max_val
+}
+
+fn max_ints_trusted(elems: &[u64], acc: i64) -> i64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("avx2") {
+            return unsafe { max_ints_trusted_simd_x86_64_avx2(elems, acc) };
+        }
+        if std::arch::is_x86_feature_detected!("sse4.2") {
+            return unsafe { max_ints_trusted_simd_x86_64(elems, acc) };
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            return unsafe { max_ints_trusted_simd_aarch64(elems, acc) };
+        }
+    }
+    max_ints_trusted_scalar(elems, acc)
 }
 
 #[no_mangle]
@@ -2883,6 +3895,500 @@ pub extern "C" fn molt_vec_sum_int(seq_bits: u64, acc_bits: u64) -> u64 {
         }
     }
     vec_sum_result(MoltObject::from_int(acc).bits(), false)
+}
+
+#[no_mangle]
+pub extern "C" fn molt_vec_sum_int_trusted(seq_bits: u64, acc_bits: u64) -> u64 {
+    let acc_obj = obj_from_bits(acc_bits);
+    let acc = match acc_obj.as_int() {
+        Some(val) => val,
+        None => return vec_sum_result(MoltObject::none().bits(), false),
+    };
+    let seq_obj = obj_from_bits(seq_bits);
+    let ptr = match seq_obj.as_ptr() {
+        Some(ptr) => ptr,
+        None => return vec_sum_result(MoltObject::from_int(acc).bits(), false),
+    };
+    unsafe {
+        let type_id = object_type_id(ptr);
+        let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+            seq_vec_ref(ptr)
+        } else {
+            return vec_sum_result(MoltObject::from_int(acc).bits(), false);
+        };
+        let sum = sum_ints_trusted(elems, acc);
+        vec_sum_result(MoltObject::from_int(sum).bits(), true)
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_vec_prod_int(seq_bits: u64, acc_bits: u64) -> u64 {
+    let acc_obj = obj_from_bits(acc_bits);
+    let acc = match acc_obj.as_int() {
+        Some(val) => val,
+        None => return vec_sum_result(MoltObject::none().bits(), false),
+    };
+    let seq_obj = obj_from_bits(seq_bits);
+    let ptr = match seq_obj.as_ptr() {
+        Some(ptr) => ptr,
+        None => return vec_sum_result(MoltObject::from_int(acc).bits(), false),
+    };
+    unsafe {
+        let type_id = object_type_id(ptr);
+        if type_id == TYPE_ID_INTARRAY {
+            let elems = intarray_slice(ptr);
+            let prod = prod_ints_unboxed(elems, acc);
+            return vec_sum_result(MoltObject::from_int(prod).bits(), true);
+        }
+        let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+            seq_vec_ref(ptr)
+        } else {
+            return vec_sum_result(MoltObject::from_int(acc).bits(), false);
+        };
+        if let Some(prod) = prod_ints_checked(elems, acc) {
+            return vec_sum_result(MoltObject::from_int(prod).bits(), true);
+        }
+    }
+    vec_sum_result(MoltObject::from_int(acc).bits(), false)
+}
+
+#[no_mangle]
+pub extern "C" fn molt_vec_prod_int_trusted(seq_bits: u64, acc_bits: u64) -> u64 {
+    let acc_obj = obj_from_bits(acc_bits);
+    let acc = match acc_obj.as_int() {
+        Some(val) => val,
+        None => return vec_sum_result(MoltObject::none().bits(), false),
+    };
+    let seq_obj = obj_from_bits(seq_bits);
+    let ptr = match seq_obj.as_ptr() {
+        Some(ptr) => ptr,
+        None => return vec_sum_result(MoltObject::from_int(acc).bits(), false),
+    };
+    unsafe {
+        let type_id = object_type_id(ptr);
+        if type_id == TYPE_ID_INTARRAY {
+            let elems = intarray_slice(ptr);
+            let prod = prod_ints_unboxed(elems, acc);
+            return vec_sum_result(MoltObject::from_int(prod).bits(), true);
+        }
+        let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+            seq_vec_ref(ptr)
+        } else {
+            return vec_sum_result(MoltObject::from_int(acc).bits(), false);
+        };
+        let prod = prod_ints_trusted(elems, acc);
+        vec_sum_result(MoltObject::from_int(prod).bits(), true)
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_vec_min_int(seq_bits: u64, acc_bits: u64) -> u64 {
+    let acc_obj = obj_from_bits(acc_bits);
+    let acc = match acc_obj.as_int() {
+        Some(val) => val,
+        None => return vec_sum_result(MoltObject::none().bits(), false),
+    };
+    let seq_obj = obj_from_bits(seq_bits);
+    let ptr = match seq_obj.as_ptr() {
+        Some(ptr) => ptr,
+        None => return vec_sum_result(MoltObject::from_int(acc).bits(), false),
+    };
+    unsafe {
+        let type_id = object_type_id(ptr);
+        let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+            seq_vec_ref(ptr)
+        } else {
+            return vec_sum_result(MoltObject::from_int(acc).bits(), false);
+        };
+        if let Some(val) = min_ints_checked(elems, acc) {
+            return vec_sum_result(MoltObject::from_int(val).bits(), true);
+        }
+    }
+    vec_sum_result(MoltObject::from_int(acc).bits(), false)
+}
+
+#[no_mangle]
+pub extern "C" fn molt_vec_min_int_trusted(seq_bits: u64, acc_bits: u64) -> u64 {
+    let acc_obj = obj_from_bits(acc_bits);
+    let acc = match acc_obj.as_int() {
+        Some(val) => val,
+        None => return vec_sum_result(MoltObject::none().bits(), false),
+    };
+    let seq_obj = obj_from_bits(seq_bits);
+    let ptr = match seq_obj.as_ptr() {
+        Some(ptr) => ptr,
+        None => return vec_sum_result(MoltObject::from_int(acc).bits(), false),
+    };
+    unsafe {
+        let type_id = object_type_id(ptr);
+        let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+            seq_vec_ref(ptr)
+        } else {
+            return vec_sum_result(MoltObject::from_int(acc).bits(), false);
+        };
+        let val = min_ints_trusted(elems, acc);
+        vec_sum_result(MoltObject::from_int(val).bits(), true)
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_vec_max_int(seq_bits: u64, acc_bits: u64) -> u64 {
+    let acc_obj = obj_from_bits(acc_bits);
+    let acc = match acc_obj.as_int() {
+        Some(val) => val,
+        None => return vec_sum_result(MoltObject::none().bits(), false),
+    };
+    let seq_obj = obj_from_bits(seq_bits);
+    let ptr = match seq_obj.as_ptr() {
+        Some(ptr) => ptr,
+        None => return vec_sum_result(MoltObject::from_int(acc).bits(), false),
+    };
+    unsafe {
+        let type_id = object_type_id(ptr);
+        let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+            seq_vec_ref(ptr)
+        } else {
+            return vec_sum_result(MoltObject::from_int(acc).bits(), false);
+        };
+        if let Some(val) = max_ints_checked(elems, acc) {
+            return vec_sum_result(MoltObject::from_int(val).bits(), true);
+        }
+    }
+    vec_sum_result(MoltObject::from_int(acc).bits(), false)
+}
+
+#[no_mangle]
+pub extern "C" fn molt_vec_max_int_trusted(seq_bits: u64, acc_bits: u64) -> u64 {
+    let acc_obj = obj_from_bits(acc_bits);
+    let acc = match acc_obj.as_int() {
+        Some(val) => val,
+        None => return vec_sum_result(MoltObject::none().bits(), false),
+    };
+    let seq_obj = obj_from_bits(seq_bits);
+    let ptr = match seq_obj.as_ptr() {
+        Some(ptr) => ptr,
+        None => return vec_sum_result(MoltObject::from_int(acc).bits(), false),
+    };
+    unsafe {
+        let type_id = object_type_id(ptr);
+        let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+            seq_vec_ref(ptr)
+        } else {
+            return vec_sum_result(MoltObject::from_int(acc).bits(), false);
+        };
+        let val = max_ints_trusted(elems, acc);
+        vec_sum_result(MoltObject::from_int(val).bits(), true)
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_vec_sum_int_range(seq_bits: u64, acc_bits: u64, start_bits: u64) -> u64 {
+    let acc_obj = obj_from_bits(acc_bits);
+    let acc = match acc_obj.as_int() {
+        Some(val) => val,
+        None => return vec_sum_result(MoltObject::none().bits(), false),
+    };
+    let start_obj = obj_from_bits(start_bits);
+    let start = match start_obj.as_int() {
+        Some(val) => val,
+        None => return vec_sum_result(MoltObject::from_int(acc).bits(), false),
+    };
+    if start < 0 {
+        return vec_sum_result(MoltObject::from_int(acc).bits(), false);
+    }
+    let seq_obj = obj_from_bits(seq_bits);
+    let ptr = match seq_obj.as_ptr() {
+        Some(ptr) => ptr,
+        None => return vec_sum_result(MoltObject::from_int(acc).bits(), false),
+    };
+    unsafe {
+        let type_id = object_type_id(ptr);
+        let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+            seq_vec_ref(ptr)
+        } else {
+            return vec_sum_result(MoltObject::from_int(acc).bits(), false);
+        };
+        let start_idx = (start as usize).min(elems.len());
+        let slice = &elems[start_idx..];
+        if let Some(sum) = sum_ints_checked(slice, acc) {
+            return vec_sum_result(MoltObject::from_int(sum).bits(), true);
+        }
+    }
+    vec_sum_result(MoltObject::from_int(acc).bits(), false)
+}
+
+#[no_mangle]
+pub extern "C" fn molt_vec_sum_int_range_trusted(
+    seq_bits: u64,
+    acc_bits: u64,
+    start_bits: u64,
+) -> u64 {
+    let acc_obj = obj_from_bits(acc_bits);
+    let acc = match acc_obj.as_int() {
+        Some(val) => val,
+        None => return vec_sum_result(MoltObject::none().bits(), false),
+    };
+    let start_obj = obj_from_bits(start_bits);
+    let start = match start_obj.as_int() {
+        Some(val) => val,
+        None => return vec_sum_result(MoltObject::from_int(acc).bits(), false),
+    };
+    if start < 0 {
+        return vec_sum_result(MoltObject::from_int(acc).bits(), false);
+    }
+    let seq_obj = obj_from_bits(seq_bits);
+    let ptr = match seq_obj.as_ptr() {
+        Some(ptr) => ptr,
+        None => return vec_sum_result(MoltObject::from_int(acc).bits(), false),
+    };
+    unsafe {
+        let type_id = object_type_id(ptr);
+        let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+            seq_vec_ref(ptr)
+        } else {
+            return vec_sum_result(MoltObject::from_int(acc).bits(), false);
+        };
+        let start_idx = (start as usize).min(elems.len());
+        let slice = &elems[start_idx..];
+        let sum = sum_ints_trusted(slice, acc);
+        vec_sum_result(MoltObject::from_int(sum).bits(), true)
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_vec_prod_int_range(seq_bits: u64, acc_bits: u64, start_bits: u64) -> u64 {
+    let acc_obj = obj_from_bits(acc_bits);
+    let acc = match acc_obj.as_int() {
+        Some(val) => val,
+        None => return vec_sum_result(MoltObject::none().bits(), false),
+    };
+    let start_obj = obj_from_bits(start_bits);
+    let start = match start_obj.as_int() {
+        Some(val) => val,
+        None => return vec_sum_result(MoltObject::from_int(acc).bits(), false),
+    };
+    if start < 0 {
+        return vec_sum_result(MoltObject::from_int(acc).bits(), false);
+    }
+    let seq_obj = obj_from_bits(seq_bits);
+    let ptr = match seq_obj.as_ptr() {
+        Some(ptr) => ptr,
+        None => return vec_sum_result(MoltObject::from_int(acc).bits(), false),
+    };
+    unsafe {
+        let type_id = object_type_id(ptr);
+        if type_id == TYPE_ID_INTARRAY {
+            let elems = intarray_slice(ptr);
+            let start_idx = (start as usize).min(elems.len());
+            let slice = &elems[start_idx..];
+            let prod = prod_ints_unboxed(slice, acc);
+            return vec_sum_result(MoltObject::from_int(prod).bits(), true);
+        }
+        let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+            seq_vec_ref(ptr)
+        } else {
+            return vec_sum_result(MoltObject::from_int(acc).bits(), false);
+        };
+        let start_idx = (start as usize).min(elems.len());
+        let slice = &elems[start_idx..];
+        if let Some(prod) = prod_ints_checked(slice, acc) {
+            return vec_sum_result(MoltObject::from_int(prod).bits(), true);
+        }
+    }
+    vec_sum_result(MoltObject::from_int(acc).bits(), false)
+}
+
+#[no_mangle]
+pub extern "C" fn molt_vec_prod_int_range_trusted(
+    seq_bits: u64,
+    acc_bits: u64,
+    start_bits: u64,
+) -> u64 {
+    let acc_obj = obj_from_bits(acc_bits);
+    let acc = match acc_obj.as_int() {
+        Some(val) => val,
+        None => return vec_sum_result(MoltObject::none().bits(), false),
+    };
+    let start_obj = obj_from_bits(start_bits);
+    let start = match start_obj.as_int() {
+        Some(val) => val,
+        None => return vec_sum_result(MoltObject::from_int(acc).bits(), false),
+    };
+    if start < 0 {
+        return vec_sum_result(MoltObject::from_int(acc).bits(), false);
+    }
+    let seq_obj = obj_from_bits(seq_bits);
+    let ptr = match seq_obj.as_ptr() {
+        Some(ptr) => ptr,
+        None => return vec_sum_result(MoltObject::from_int(acc).bits(), false),
+    };
+    unsafe {
+        let type_id = object_type_id(ptr);
+        if type_id == TYPE_ID_INTARRAY {
+            let elems = intarray_slice(ptr);
+            let start_idx = (start as usize).min(elems.len());
+            let slice = &elems[start_idx..];
+            let prod = prod_ints_unboxed(slice, acc);
+            return vec_sum_result(MoltObject::from_int(prod).bits(), true);
+        }
+        let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+            seq_vec_ref(ptr)
+        } else {
+            return vec_sum_result(MoltObject::from_int(acc).bits(), false);
+        };
+        let start_idx = (start as usize).min(elems.len());
+        let slice = &elems[start_idx..];
+        let prod = prod_ints_trusted(slice, acc);
+        vec_sum_result(MoltObject::from_int(prod).bits(), true)
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_vec_min_int_range(seq_bits: u64, acc_bits: u64, start_bits: u64) -> u64 {
+    let acc_obj = obj_from_bits(acc_bits);
+    let acc = match acc_obj.as_int() {
+        Some(val) => val,
+        None => return vec_sum_result(MoltObject::none().bits(), false),
+    };
+    let start_obj = obj_from_bits(start_bits);
+    let start = match start_obj.as_int() {
+        Some(val) => val,
+        None => return vec_sum_result(MoltObject::from_int(acc).bits(), false),
+    };
+    if start < 0 {
+        return vec_sum_result(MoltObject::from_int(acc).bits(), false);
+    }
+    let seq_obj = obj_from_bits(seq_bits);
+    let ptr = match seq_obj.as_ptr() {
+        Some(ptr) => ptr,
+        None => return vec_sum_result(MoltObject::from_int(acc).bits(), false),
+    };
+    unsafe {
+        let type_id = object_type_id(ptr);
+        let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+            seq_vec_ref(ptr)
+        } else {
+            return vec_sum_result(MoltObject::from_int(acc).bits(), false);
+        };
+        let start_idx = (start as usize).min(elems.len());
+        let slice = &elems[start_idx..];
+        if let Some(val) = min_ints_checked(slice, acc) {
+            return vec_sum_result(MoltObject::from_int(val).bits(), true);
+        }
+    }
+    vec_sum_result(MoltObject::from_int(acc).bits(), false)
+}
+
+#[no_mangle]
+pub extern "C" fn molt_vec_min_int_range_trusted(
+    seq_bits: u64,
+    acc_bits: u64,
+    start_bits: u64,
+) -> u64 {
+    let acc_obj = obj_from_bits(acc_bits);
+    let acc = match acc_obj.as_int() {
+        Some(val) => val,
+        None => return vec_sum_result(MoltObject::none().bits(), false),
+    };
+    let start_obj = obj_from_bits(start_bits);
+    let start = match start_obj.as_int() {
+        Some(val) => val,
+        None => return vec_sum_result(MoltObject::from_int(acc).bits(), false),
+    };
+    if start < 0 {
+        return vec_sum_result(MoltObject::from_int(acc).bits(), false);
+    }
+    let seq_obj = obj_from_bits(seq_bits);
+    let ptr = match seq_obj.as_ptr() {
+        Some(ptr) => ptr,
+        None => return vec_sum_result(MoltObject::from_int(acc).bits(), false),
+    };
+    unsafe {
+        let type_id = object_type_id(ptr);
+        let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+            seq_vec_ref(ptr)
+        } else {
+            return vec_sum_result(MoltObject::from_int(acc).bits(), false);
+        };
+        let start_idx = (start as usize).min(elems.len());
+        let slice = &elems[start_idx..];
+        let val = min_ints_trusted(slice, acc);
+        vec_sum_result(MoltObject::from_int(val).bits(), true)
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_vec_max_int_range(seq_bits: u64, acc_bits: u64, start_bits: u64) -> u64 {
+    let acc_obj = obj_from_bits(acc_bits);
+    let acc = match acc_obj.as_int() {
+        Some(val) => val,
+        None => return vec_sum_result(MoltObject::none().bits(), false),
+    };
+    let start_obj = obj_from_bits(start_bits);
+    let start = match start_obj.as_int() {
+        Some(val) => val,
+        None => return vec_sum_result(MoltObject::from_int(acc).bits(), false),
+    };
+    if start < 0 {
+        return vec_sum_result(MoltObject::from_int(acc).bits(), false);
+    }
+    let seq_obj = obj_from_bits(seq_bits);
+    let ptr = match seq_obj.as_ptr() {
+        Some(ptr) => ptr,
+        None => return vec_sum_result(MoltObject::from_int(acc).bits(), false),
+    };
+    unsafe {
+        let type_id = object_type_id(ptr);
+        let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+            seq_vec_ref(ptr)
+        } else {
+            return vec_sum_result(MoltObject::from_int(acc).bits(), false);
+        };
+        let start_idx = (start as usize).min(elems.len());
+        let slice = &elems[start_idx..];
+        if let Some(val) = max_ints_checked(slice, acc) {
+            return vec_sum_result(MoltObject::from_int(val).bits(), true);
+        }
+    }
+    vec_sum_result(MoltObject::from_int(acc).bits(), false)
+}
+
+#[no_mangle]
+pub extern "C" fn molt_vec_max_int_range_trusted(
+    seq_bits: u64,
+    acc_bits: u64,
+    start_bits: u64,
+) -> u64 {
+    let acc_obj = obj_from_bits(acc_bits);
+    let acc = match acc_obj.as_int() {
+        Some(val) => val,
+        None => return vec_sum_result(MoltObject::none().bits(), false),
+    };
+    let start_obj = obj_from_bits(start_bits);
+    let start = match start_obj.as_int() {
+        Some(val) => val,
+        None => return vec_sum_result(MoltObject::from_int(acc).bits(), false),
+    };
+    if start < 0 {
+        return vec_sum_result(MoltObject::from_int(acc).bits(), false);
+    }
+    let seq_obj = obj_from_bits(seq_bits);
+    let ptr = match seq_obj.as_ptr() {
+        Some(ptr) => ptr,
+        None => return vec_sum_result(MoltObject::from_int(acc).bits(), false),
+    };
+    unsafe {
+        let type_id = object_type_id(ptr);
+        let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+            seq_vec_ref(ptr)
+        } else {
+            return vec_sum_result(MoltObject::from_int(acc).bits(), false);
+        };
+        let start_idx = (start as usize).min(elems.len());
+        let slice = &elems[start_idx..];
+        let val = max_ints_trusted(slice, acc);
+        vec_sum_result(MoltObject::from_int(val).bits(), true)
+    }
 }
 
 enum SliceError {
@@ -3011,11 +4517,17 @@ pub extern "C" fn molt_len(val: u64) -> u64 {
             if type_id == TYPE_ID_BYTEARRAY {
                 return MoltObject::from_int(bytes_len(ptr) as i64).bits();
             }
+            if type_id == TYPE_ID_MEMORYVIEW {
+                return MoltObject::from_int(memoryview_len(ptr) as i64).bits();
+            }
             if type_id == TYPE_ID_LIST {
                 return MoltObject::from_int(list_len(ptr) as i64).bits();
             }
             if type_id == TYPE_ID_TUPLE {
                 return MoltObject::from_int(tuple_len(ptr) as i64).bits();
+            }
+            if type_id == TYPE_ID_INTARRAY {
+                return MoltObject::from_int(intarray_len(ptr) as i64).bits();
             }
             if type_id == TYPE_ID_DICT {
                 return MoltObject::from_int(dict_len(ptr) as i64).bits();
@@ -3118,6 +4630,48 @@ pub extern "C" fn molt_slice(obj_bits: u64, start_bits: u64, end_bits: u64) -> u
                 }
                 return MoltObject::from_ptr(out).bits();
             }
+            if type_id == TYPE_ID_MEMORYVIEW {
+                let len = memoryview_len(ptr) as isize;
+                let start = match decode_slice_bound(start_obj, len, 0) {
+                    Ok(v) => v,
+                    Err(err) => return slice_error(err),
+                };
+                let end = match decode_slice_bound(end_obj, len, len) {
+                    Ok(v) => v,
+                    Err(err) => return slice_error(err),
+                };
+                if end < start {
+                    let base_offset = memoryview_offset(ptr);
+                    let stride = memoryview_stride(ptr);
+                    let out_ptr = alloc_memoryview(
+                        memoryview_owner_bits(ptr),
+                        base_offset + start * stride,
+                        0,
+                        memoryview_itemsize(ptr),
+                        stride,
+                        memoryview_readonly(ptr),
+                    );
+                    if out_ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    return MoltObject::from_ptr(out_ptr).bits();
+                }
+                let base_offset = memoryview_offset(ptr);
+                let new_offset = base_offset + start * memoryview_stride(ptr);
+                let new_len = (end - start) as usize;
+                let out_ptr = alloc_memoryview(
+                    memoryview_owner_bits(ptr),
+                    new_offset,
+                    new_len,
+                    memoryview_itemsize(ptr),
+                    memoryview_stride(ptr),
+                    memoryview_readonly(ptr),
+                );
+                if out_ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                return MoltObject::from_ptr(out_ptr).bits();
+            }
             if type_id == TYPE_ID_LIST {
                 let len = list_len(ptr) as isize;
                 let start = match decode_slice_bound(start_obj, len, 0) {
@@ -3191,17 +4745,16 @@ pub extern "C" fn molt_string_find(hay_bits: u64, needle_bits: u64) -> u64 {
             if needle_bytes.is_empty() {
                 return MoltObject::from_int(0).bits();
             }
-            if hay_bytes.is_ascii() && needle_bytes.is_ascii() {
-                let idx = bytes_find_impl(hay_bytes, needle_bytes);
+            let idx = bytes_find_impl(hay_bytes, needle_bytes);
+            if idx < 0 {
                 return MoltObject::from_int(idx).bits();
             }
-            let hay_str = std::str::from_utf8_unchecked(hay_bytes);
-            let needle_str = std::str::from_utf8_unchecked(needle_bytes);
-            let idx = match hay_str.find(needle_str) {
-                Some(byte_idx) => hay_str[..byte_idx].chars().count() as i64,
-                None => -1,
-            };
-            return MoltObject::from_int(idx).bits();
+            if hay_bytes.is_ascii() && needle_bytes.is_ascii() {
+                return MoltObject::from_int(idx).bits();
+            }
+            let char_idx =
+                utf8_byte_to_char_index_cached(hay_bytes, idx as usize, Some(hay_ptr as usize));
+            return MoltObject::from_int(char_idx).bits();
         }
     }
     MoltObject::none().bits()
@@ -3276,17 +4829,11 @@ pub extern "C" fn molt_string_count(hay_bits: u64, needle_bits: u64) -> u64 {
             let needle_bytes =
                 std::slice::from_raw_parts(string_bytes(needle_ptr), string_len(needle_ptr));
             if needle_bytes.is_empty() {
-                let hay_str = std::str::from_utf8_unchecked(hay_bytes);
-                let count = hay_str.chars().count() as i64 + 1;
+                let count =
+                    utf8_codepoint_count_cached(hay_bytes, Some(hay_ptr as usize)) + 1;
                 return MoltObject::from_int(count).bits();
             }
-            let count = if hay_bytes.is_ascii() && needle_bytes.is_ascii() {
-                bytes_count_impl(hay_bytes, needle_bytes)
-            } else {
-                let hay_str = std::str::from_utf8_unchecked(hay_bytes);
-                let needle_str = std::str::from_utf8_unchecked(needle_bytes);
-                hay_str.matches(needle_str).count() as i64
-            };
+            let count = bytes_count_impl(hay_bytes, needle_bytes);
             return MoltObject::from_int(count).bits();
         }
     }
@@ -3332,19 +4879,25 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
         if !elems.is_empty() {
             total_len = total_len.saturating_add(sep_bytes.len() * (elems.len() - 1));
         }
-        let mut out = Vec::with_capacity(total_len);
+        let out_ptr = alloc_bytes_like_with_len(total_len, TYPE_ID_STRING);
+        if out_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let data_ptr = out_ptr.add(std::mem::size_of::<usize>());
+        let out_slice = std::slice::from_raw_parts_mut(data_ptr, total_len);
+        let mut offset = 0usize;
         for (idx, &elem_bits) in elems.iter().enumerate() {
             if idx > 0 {
-                out.extend_from_slice(sep_bytes);
+                let end = offset + sep_bytes.len();
+                out_slice[offset..end].copy_from_slice(sep_bytes);
+                offset = end;
             }
             let elem_ptr = obj_from_bits(elem_bits).as_ptr().unwrap();
             let elem_bytes =
                 std::slice::from_raw_parts(string_bytes(elem_ptr), string_len(elem_ptr));
-            out.extend_from_slice(elem_bytes);
-        }
-        let out_ptr = alloc_string(&out);
-        if out_ptr.is_null() {
-            return MoltObject::none().bits();
+            let end = offset + elem_bytes.len();
+            out_slice[offset..end].copy_from_slice(elem_bytes);
+            offset = end;
         }
         MoltObject::from_ptr(out_ptr).bits()
     }
@@ -3413,6 +4966,11 @@ fn bytes_find_impl(hay_bytes: &[u8], needle_bytes: &[u8]) -> i64 {
             .map(|v| v as i64)
             .unwrap_or(-1);
     }
+    if needle_bytes.len() <= 4 {
+        return bytes_find_short(hay_bytes, needle_bytes)
+            .map(|v| v as i64)
+            .unwrap_or(-1);
+    }
     memmem::find(hay_bytes, needle_bytes)
         .map(|v| v as i64)
         .unwrap_or(-1)
@@ -3423,20 +4981,272 @@ fn bytes_count_impl(hay_bytes: &[u8], needle_bytes: &[u8]) -> i64 {
         return hay_bytes.len() as i64 + 1;
     }
     if needle_bytes.len() == 1 {
-        return hay_bytes.iter().filter(|b| **b == needle_bytes[0]).count() as i64;
+        return memchr::memchr_iter(needle_bytes[0], hay_bytes).count() as i64;
+    }
+    if needle_bytes.len() <= 4 {
+        return bytes_count_short(hay_bytes, needle_bytes);
     }
     let finder = memmem::Finder::new(needle_bytes);
+    finder.find_iter(hay_bytes).count() as i64
+}
+
+fn bytes_find_short(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    let needle_len = needle.len();
+    let first = needle[0];
+    let mut search = 0usize;
+    match needle_len {
+        2 => {
+            let b1 = needle[1];
+            while let Some(idx) = memchr_fast(first, &hay[search..]) {
+                let pos = search + idx;
+                if pos + 1 < hay.len() && hay[pos + 1] == b1 {
+                    return Some(pos);
+                }
+                search = pos + 1;
+            }
+        }
+        3 => {
+            let b1 = needle[1];
+            let b2 = needle[2];
+            while let Some(idx) = memchr_fast(first, &hay[search..]) {
+                let pos = search + idx;
+                if pos + 2 < hay.len() && hay[pos + 1] == b1 && hay[pos + 2] == b2 {
+                    return Some(pos);
+                }
+                search = pos + 1;
+            }
+        }
+        4 => {
+            let b1 = needle[1];
+            let b2 = needle[2];
+            let b3 = needle[3];
+            while let Some(idx) = memchr_fast(first, &hay[search..]) {
+                let pos = search + idx;
+                if pos + 3 < hay.len()
+                    && hay[pos + 1] == b1
+                    && hay[pos + 2] == b2
+                    && hay[pos + 3] == b3
+                {
+                    return Some(pos);
+                }
+                search = pos + 1;
+            }
+        }
+        _ => {
+            while let Some(idx) = memchr_fast(first, &hay[search..]) {
+                let pos = search + idx;
+                if pos + needle_len <= hay.len() && &hay[pos..pos + needle_len] == needle {
+                    return Some(pos);
+                }
+                search = pos + 1;
+            }
+        }
+    }
+    None
+}
+
+fn bytes_count_short(hay: &[u8], needle: &[u8]) -> i64 {
+    let needle_len = needle.len();
+    let first = needle[0];
     let mut count = 0i64;
-    let mut start = 0usize;
-    while start <= hay_bytes.len() {
-        if let Some(idx) = finder.find(&hay_bytes[start..]) {
-            count += 1;
-            start += idx + needle_bytes.len();
-        } else {
-            break;
+    let mut search = 0usize;
+    match needle_len {
+        2 => {
+            let b1 = needle[1];
+            let mut next_allowed = 0usize;
+            for pos in memchr::memchr_iter(first, hay) {
+                if pos < next_allowed {
+                    continue;
+                }
+                if pos + 1 < hay.len() && hay[pos + 1] == b1 {
+                    count += 1;
+                    next_allowed = pos + 2;
+                }
+            }
+        }
+        3 => {
+            let b1 = needle[1];
+            let b2 = needle[2];
+            while let Some(idx) = memchr_fast(first, &hay[search..]) {
+                let pos = search + idx;
+                if pos + 2 < hay.len() && hay[pos + 1] == b1 && hay[pos + 2] == b2 {
+                    count += 1;
+                    search = pos + 3;
+                } else {
+                    search = pos + 1;
+                }
+            }
+        }
+        4 => {
+            let b1 = needle[1];
+            let b2 = needle[2];
+            let b3 = needle[3];
+            while let Some(idx) = memchr_fast(first, &hay[search..]) {
+                let pos = search + idx;
+                if pos + 3 < hay.len()
+                    && hay[pos + 1] == b1
+                    && hay[pos + 2] == b2
+                    && hay[pos + 3] == b3
+                {
+                    count += 1;
+                    search = pos + 4;
+                } else {
+                    search = pos + 1;
+                }
+            }
+        }
+        _ => {
+            while let Some(idx) = memchr_fast(first, &hay[search..]) {
+                let pos = search + idx;
+                if pos + needle_len <= hay.len() && &hay[pos..pos + needle_len] == needle {
+                    count += 1;
+                    search = pos + needle_len;
+                } else {
+                    search = pos + 1;
+                }
+            }
         }
     }
     count
+}
+
+fn build_utf8_cache(bytes: &[u8]) -> Utf8IndexCache {
+    let mut prefix = Vec::new();
+    let mut total = 0i64;
+    let mut idx = 0usize;
+    prefix.push(0);
+    while idx < bytes.len() {
+        let end = (idx + UTF8_CACHE_BLOCK).min(bytes.len());
+        total += simdutf::count_utf8(&bytes[idx..end]) as i64;
+        prefix.push(total);
+        idx = end;
+    }
+    Utf8IndexCache {
+        block: UTF8_CACHE_BLOCK,
+        prefix,
+    }
+}
+
+fn utf8_cache_get_or_build(key: usize, bytes: &[u8]) -> Option<Arc<Utf8IndexCache>> {
+    if bytes.len() < UTF8_CACHE_MIN_LEN || bytes.is_ascii() {
+        return None;
+    }
+    if let Ok(store) = UTF8_INDEX_CACHE.lock() {
+        if let Some(cache) = store.get(key) {
+            return Some(cache);
+        }
+    }
+    let cache = Arc::new(build_utf8_cache(bytes));
+    if let Ok(mut store) = UTF8_INDEX_CACHE.lock() {
+        if let Some(existing) = store.get(key) {
+            return Some(existing);
+        }
+        store.insert(key, cache.clone());
+    }
+    Some(cache)
+}
+
+fn utf8_cache_remove(key: usize) {
+    if let Ok(mut store) = UTF8_INDEX_CACHE.lock() {
+        store.remove(key);
+    }
+}
+
+fn utf8_count_prefix_cached(bytes: &[u8], cache: &Utf8IndexCache, prefix_len: usize) -> i64 {
+    let prefix_len = prefix_len.min(bytes.len());
+    let block_idx = prefix_len / cache.block;
+    let mut total = *cache.prefix.get(block_idx).unwrap_or(&0);
+    let start = block_idx * cache.block;
+    if start < prefix_len {
+        total += simdutf::count_utf8(&bytes[start..prefix_len]) as i64;
+    }
+    total
+}
+
+fn utf8_codepoint_count_cached(bytes: &[u8], cache_key: Option<usize>) -> i64 {
+    if bytes.is_ascii() {
+        return bytes.len() as i64;
+    }
+    if let Some(key) = cache_key {
+        if let Some(cache) = utf8_cache_get_or_build(key, bytes) {
+            return *cache.prefix.last().unwrap_or(&0);
+        }
+    }
+    utf8_count_prefix_blocked(bytes, bytes.len())
+}
+
+fn utf8_byte_to_char_index_cached(
+    bytes: &[u8],
+    byte_idx: usize,
+    cache_key: Option<usize>,
+) -> i64 {
+    if byte_idx == 0 {
+        return 0;
+    }
+    if bytes.is_ascii() {
+        return byte_idx.min(bytes.len()) as i64;
+    }
+    let prefix_len = byte_idx.min(bytes.len());
+    if let Some(key) = cache_key {
+        if let Some(cache) = utf8_cache_get_or_build(key, bytes) {
+            return utf8_count_prefix_cached(bytes, &cache, prefix_len);
+        }
+    }
+    utf8_count_prefix_blocked(bytes, prefix_len)
+}
+
+fn utf8_count_prefix_blocked(bytes: &[u8], prefix_len: usize) -> i64 {
+    const BLOCK: usize = 4096;
+    let mut total = 0i64;
+    let mut idx = 0usize;
+    while idx + BLOCK <= prefix_len {
+        total += simdutf::count_utf8(&bytes[idx..idx + BLOCK]) as i64;
+        idx += BLOCK;
+    }
+    if idx < prefix_len {
+        total += simdutf::count_utf8(&bytes[idx..prefix_len]) as i64;
+    }
+    total
+}
+
+fn memchr_fast(needle: u8, hay: &[u8]) -> Option<usize> {
+    let (supported, idx) = memchr_simd128(needle, hay);
+    if supported {
+        return idx;
+    }
+    memchr(needle, hay)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn memchr_simd128(needle: u8, hay: &[u8]) -> (bool, Option<usize>) {
+    if !std::arch::is_wasm_feature_detected!("simd128") {
+        return (false, None);
+    }
+    unsafe {
+        use std::arch::wasm32::*;
+        let mut idx = 0usize;
+        let needle_vec = u8x16_splat(needle);
+        while idx + 16 <= hay.len() {
+            let chunk = v128_load(hay.as_ptr().add(idx) as *const v128);
+            let mask = u8x16_eq(chunk, needle_vec);
+            let bits = u8x16_bitmask(mask) as u32;
+            if bits != 0 {
+                return (true, Some(idx + bits.trailing_zeros() as usize));
+            }
+            idx += 16;
+        }
+        if idx < hay.len() {
+            if let Some(tail_idx) = memchr(needle, &hay[idx..]) {
+                return (true, Some(idx + tail_idx));
+            }
+        }
+    }
+    (true, None)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn memchr_simd128(_needle: u8, _hay: &[u8]) -> (bool, Option<usize>) {
+    (false, None)
 }
 
 #[no_mangle]
@@ -3460,18 +5270,6 @@ pub extern "C" fn molt_bytearray_find(hay_bits: u64, needle_bits: u64) -> u64 {
     MoltObject::none().bits()
 }
 
-fn split_bytes_impl(hay: &[u8], needle: &[u8]) -> Option<Vec<Vec<u8>>> {
-    let mut parts = Vec::new();
-    let mut start = 0usize;
-    let finder = memmem::Finder::new(needle);
-    for idx in finder.find_iter(hay) {
-        parts.push(hay[start..idx].to_vec());
-        start = idx + needle.len();
-    }
-    parts.push(hay[start..].to_vec());
-    Some(parts)
-}
-
 fn replace_bytes_impl(hay: &[u8], needle: &[u8], replacement: &[u8]) -> Option<Vec<u8>> {
     if needle.is_empty() {
         let mut out = Vec::with_capacity(hay.len() + replacement.len() * (hay.len() + 1));
@@ -3480,6 +5278,40 @@ fn replace_bytes_impl(hay: &[u8], needle: &[u8], replacement: &[u8]) -> Option<V
             out.push(b);
             out.extend_from_slice(replacement);
         }
+        return Some(out);
+    }
+    if needle.len() == 1 {
+        let needle_byte = needle[0];
+        if replacement.len() == 1 {
+            let mut out = hay.to_vec();
+            let repl = replacement[0];
+            if repl != needle_byte {
+                for byte in &mut out {
+                    if *byte == needle_byte {
+                        *byte = repl;
+                    }
+                }
+            }
+            return Some(out);
+        }
+        let mut count = 0usize;
+        let mut offset = 0usize;
+        while let Some(idx) = memchr(needle_byte, &hay[offset..]) {
+            count += 1;
+            offset += idx + 1;
+        }
+        let extra = replacement.len().saturating_sub(1) * count;
+        let mut out = Vec::with_capacity(hay.len().saturating_add(extra));
+        let mut start = 0usize;
+        let mut search = 0usize;
+        while let Some(idx) = memchr(needle_byte, &hay[search..]) {
+            let absolute = search + idx;
+            out.extend_from_slice(&hay[start..absolute]);
+            out.extend_from_slice(replacement);
+            start = absolute + 1;
+            search = start;
+        }
+        out.extend_from_slice(&hay[start..]);
         return Some(out);
     }
     let mut out = Vec::with_capacity(hay.len());
@@ -3494,23 +5326,8 @@ fn replace_bytes_impl(hay: &[u8], needle: &[u8], replacement: &[u8]) -> Option<V
     Some(out)
 }
 
-fn split_string_impl(hay_bytes: &[u8], needle_bytes: &[u8]) -> Option<Vec<Vec<u8>>> {
-    if needle_bytes.is_empty() {
-        return None;
-    }
-    if hay_bytes.is_ascii() && needle_bytes.is_ascii() {
-        return split_bytes_impl(hay_bytes, needle_bytes);
-    }
-    let hay_str = unsafe { std::str::from_utf8_unchecked(hay_bytes) };
-    let needle_str = unsafe { std::str::from_utf8_unchecked(needle_bytes) };
-    let mut parts = Vec::new();
-    for part in hay_str.split(needle_str) {
-        parts.push(part.as_bytes().to_vec());
-    }
-    Some(parts)
-}
-
 fn replace_string_impl(
+    hay_ptr: *mut u8,
     hay_bytes: &[u8],
     needle_bytes: &[u8],
     replacement_bytes: &[u8],
@@ -3521,8 +5338,9 @@ fn replace_string_impl(
         }
         let hay_str = unsafe { std::str::from_utf8_unchecked(hay_bytes) };
         let replacement_str = unsafe { std::str::from_utf8_unchecked(replacement_bytes) };
+        let codepoints = utf8_codepoint_count_cached(hay_bytes, Some(hay_ptr as usize)) as usize;
         let mut out = String::with_capacity(
-            hay_str.len() + replacement_str.len() * (hay_str.chars().count() + 1),
+            hay_str.len() + replacement_str.len() * (codepoints + 1),
         );
         out.push_str(replacement_str);
         for ch in hay_str.chars() {
@@ -3531,13 +5349,58 @@ fn replace_string_impl(
         }
         return Some(out.into_bytes());
     }
-    if hay_bytes.is_ascii() && needle_bytes.is_ascii() && replacement_bytes.is_ascii() {
-        return replace_bytes_impl(hay_bytes, needle_bytes, replacement_bytes);
+    replace_bytes_impl(hay_bytes, needle_bytes, replacement_bytes)
+}
+
+unsafe fn list_push_owned(list_ptr: *mut u8, val_bits: u64) {
+    let elems = seq_vec(list_ptr);
+    elems.push(val_bits);
+}
+
+fn alloc_list_empty_with_capacity(capacity: usize) -> *mut u8 {
+    let cap = capacity.max(MAX_SMALL_LIST);
+    alloc_list_with_capacity(&[], cap)
+}
+
+fn split_bytes_to_list<F>(hay: &[u8], needle: &[u8], mut alloc: F) -> Option<u64>
+where
+    F: FnMut(&[u8]) -> *mut u8,
+{
+    let mut positions = Vec::new();
+    if needle.len() == 1 {
+        positions.extend(memchr::memchr_iter(needle[0], hay));
+    } else {
+        let finder = memmem::Finder::new(needle);
+        positions.extend(finder.find_iter(hay));
     }
-    let hay_str = unsafe { std::str::from_utf8_unchecked(hay_bytes) };
-    let needle_str = unsafe { std::str::from_utf8_unchecked(needle_bytes) };
-    let replacement_str = unsafe { std::str::from_utf8_unchecked(replacement_bytes) };
-    Some(hay_str.replace(needle_str, replacement_str).into_bytes())
+    let list_ptr = alloc_list_empty_with_capacity(positions.len() + 1);
+    if list_ptr.is_null() {
+        return None;
+    }
+    let list_bits = MoltObject::from_ptr(list_ptr).bits();
+    let mut start = 0usize;
+    for idx in positions {
+        let part = &hay[start..idx];
+        let ptr = alloc(part);
+        if ptr.is_null() {
+            dec_ref_bits(list_bits);
+            return None;
+        }
+        unsafe {
+            list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
+        }
+        start = idx + needle.len();
+    }
+    let part = &hay[start..];
+    let ptr = alloc(part);
+    if ptr.is_null() {
+        dec_ref_bits(list_bits);
+        return None;
+    }
+    unsafe {
+        list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
+    }
+    Some(list_bits)
 }
 
 #[no_mangle]
@@ -3557,32 +5420,12 @@ pub extern "C" fn molt_string_split(hay_bits: u64, needle_bits: u64) -> u64 {
             if needle_bytes.is_empty() {
                 raise_exception("ValueError", "empty separator");
             }
-            let parts = match split_string_impl(hay_bytes, needle_bytes) {
-                Some(parts) => parts,
+            let list_bits = split_bytes_to_list(hay_bytes, needle_bytes, alloc_string);
+            let list_bits = match list_bits {
+                Some(val) => val,
                 None => return MoltObject::none().bits(),
             };
-            let mut elems: Vec<u64> = Vec::with_capacity(parts.len());
-            for part in parts {
-                let ptr = alloc_string(&part);
-                if ptr.is_null() {
-                    for bits in elems {
-                        dec_ref_bits(bits);
-                    }
-                    return MoltObject::none().bits();
-                }
-                elems.push(MoltObject::from_ptr(ptr).bits());
-            }
-            let list_ptr = alloc_list_with_capacity(&elems, elems.len().max(MAX_SMALL_LIST));
-            if list_ptr.is_null() {
-                for bits in elems {
-                    dec_ref_bits(bits);
-                }
-                return MoltObject::none().bits();
-            }
-            for bits in elems {
-                dec_ref_bits(bits);
-            }
-            return MoltObject::from_ptr(list_ptr).bits();
+            return list_bits;
         }
     }
     MoltObject::none().bits()
@@ -3612,7 +5455,7 @@ pub extern "C" fn molt_string_replace(
                 std::slice::from_raw_parts(string_bytes(needle_ptr), string_len(needle_ptr));
             let repl_bytes =
                 std::slice::from_raw_parts(string_bytes(repl_ptr), string_len(repl_ptr));
-            let out = match replace_string_impl(hay_bytes, needle_bytes, repl_bytes) {
+            let out = match replace_string_impl(hay_ptr, hay_bytes, needle_bytes, repl_bytes) {
                 Some(out) => out,
                 None => return MoltObject::none().bits(),
             };
@@ -3643,32 +5486,12 @@ pub extern "C" fn molt_bytes_split(hay_bits: u64, needle_bits: u64) -> u64 {
             if needle_bytes.is_empty() {
                 raise_exception("ValueError", "empty separator");
             }
-            let parts = match split_bytes_impl(hay_bytes, needle_bytes) {
-                Some(parts) => parts,
+            let list_bits = match split_bytes_to_list(hay_bytes, needle_bytes, alloc_bytes)
+            {
+                Some(val) => val,
                 None => return MoltObject::none().bits(),
             };
-            let mut elems: Vec<u64> = Vec::with_capacity(parts.len());
-            for part in parts {
-                let ptr = alloc_bytes(&part);
-                if ptr.is_null() {
-                    for bits in elems {
-                        dec_ref_bits(bits);
-                    }
-                    return MoltObject::none().bits();
-                }
-                elems.push(MoltObject::from_ptr(ptr).bits());
-            }
-            let list_ptr = alloc_list_with_capacity(&elems, elems.len().max(MAX_SMALL_LIST));
-            if list_ptr.is_null() {
-                for bits in elems {
-                    dec_ref_bits(bits);
-                }
-                return MoltObject::none().bits();
-            }
-            for bits in elems {
-                dec_ref_bits(bits);
-            }
-            return MoltObject::from_ptr(list_ptr).bits();
+            return list_bits;
         }
     }
     MoltObject::none().bits()
@@ -3691,32 +5514,12 @@ pub extern "C" fn molt_bytearray_split(hay_bits: u64, needle_bits: u64) -> u64 {
             if needle_bytes.is_empty() {
                 raise_exception("ValueError", "empty separator");
             }
-            let parts = match split_bytes_impl(hay_bytes, needle_bytes) {
-                Some(parts) => parts,
+            let list_bits =
+                match split_bytes_to_list(hay_bytes, needle_bytes, alloc_bytearray) {
+                Some(val) => val,
                 None => return MoltObject::none().bits(),
             };
-            let mut elems: Vec<u64> = Vec::with_capacity(parts.len());
-            for part in parts {
-                let ptr = alloc_bytearray(&part);
-                if ptr.is_null() {
-                    for bits in elems {
-                        dec_ref_bits(bits);
-                    }
-                    return MoltObject::none().bits();
-                }
-                elems.push(MoltObject::from_ptr(ptr).bits());
-            }
-            let list_ptr = alloc_list_with_capacity(&elems, elems.len().max(MAX_SMALL_LIST));
-            if list_ptr.is_null() {
-                for bits in elems {
-                    dec_ref_bits(bits);
-                }
-                return MoltObject::none().bits();
-            }
-            for bits in elems {
-                dec_ref_bits(bits);
-            }
-            return MoltObject::from_ptr(list_ptr).bits();
+            return list_bits;
         }
     }
     MoltObject::none().bits()
@@ -3801,6 +5604,36 @@ pub extern "C" fn molt_bytearray_replace(
 }
 
 #[no_mangle]
+pub extern "C" fn molt_intarray_from_seq(bits: u64) -> u64 {
+    let obj = obj_from_bits(bits);
+    if let Some(ptr) = obj.as_ptr() {
+        unsafe {
+            let type_id = object_type_id(ptr);
+            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                seq_vec_ref(ptr)
+            } else {
+                return MoltObject::none().bits();
+            };
+            let mut out = Vec::with_capacity(elems.len());
+            for &elem in elems {
+                let val = MoltObject::from_bits(elem);
+                if let Some(i) = val.as_int() {
+                    out.push(i);
+                } else {
+                    return MoltObject::none().bits();
+                }
+            }
+            let out_ptr = alloc_intarray(&out);
+            if out_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(out_ptr).bits();
+        }
+    }
+    MoltObject::none().bits()
+}
+
+#[no_mangle]
 pub extern "C" fn molt_bytearray_from_obj(bits: u64) -> u64 {
     let obj = obj_from_bits(bits);
     if let Some(ptr) = obj.as_ptr() {
@@ -3812,9 +5645,203 @@ pub extern "C" fn molt_bytearray_from_obj(bits: u64) -> u64 {
                 }
                 return MoltObject::from_ptr(out_ptr).bits();
             }
+            if object_type_id(ptr) == TYPE_ID_MEMORYVIEW {
+                let owner_bits = memoryview_owner_bits(ptr);
+                let owner = obj_from_bits(owner_bits);
+                let owner_ptr = match owner.as_ptr() {
+                    Some(ptr) => ptr,
+                    None => return MoltObject::none().bits(),
+                };
+                let base = match bytes_like_slice_raw(owner_ptr) {
+                    Some(slice) => slice,
+                    None => return MoltObject::none().bits(),
+                };
+                let offset = memoryview_offset(ptr);
+                let len = memoryview_len(ptr);
+                let itemsize = memoryview_itemsize(ptr);
+                let stride = memoryview_stride(ptr);
+                if offset < 0 {
+                    return MoltObject::none().bits();
+                }
+                let offset = offset as isize;
+                let mut out = Vec::with_capacity(len.saturating_mul(itemsize));
+                for idx in 0..len {
+                    let start = offset + (idx as isize) * stride;
+                    if start < 0 {
+                        return MoltObject::none().bits();
+                    }
+                    let start = start as usize;
+                    let end = start.saturating_add(itemsize);
+                    if end > base.len() {
+                        return MoltObject::none().bits();
+                    }
+                    out.extend_from_slice(&base[start..end]);
+                }
+                let out_ptr = alloc_bytearray(&out);
+                if out_ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                return MoltObject::from_ptr(out_ptr).bits();
+            }
         }
     }
     MoltObject::none().bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_memoryview_new(bits: u64) -> u64 {
+    let obj = obj_from_bits(bits);
+    let ptr = match obj.as_ptr() {
+        Some(ptr) => ptr,
+        None => raise_exception("TypeError", "memoryview expects a bytes-like object"),
+    };
+    unsafe {
+        let type_id = object_type_id(ptr);
+        if type_id == TYPE_ID_MEMORYVIEW {
+            let owner_bits = memoryview_owner_bits(ptr);
+            let offset = memoryview_offset(ptr);
+            let len = memoryview_len(ptr);
+            let itemsize = memoryview_itemsize(ptr);
+            let stride = memoryview_stride(ptr);
+            let readonly = memoryview_readonly(ptr);
+            let out_ptr = alloc_memoryview(owner_bits, offset, len, itemsize, stride, readonly);
+            if out_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(out_ptr).bits();
+        }
+        if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
+            let len = bytes_len(ptr);
+            let readonly = type_id == TYPE_ID_BYTES;
+            let out_ptr = alloc_memoryview(bits, 0, len, 1, 1, readonly);
+            if out_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(out_ptr).bits();
+        }
+    }
+    raise_exception("TypeError", "memoryview expects a bytes-like object");
+}
+
+#[no_mangle]
+pub extern "C" fn molt_memoryview_tobytes(bits: u64) -> u64 {
+    let obj = obj_from_bits(bits);
+    let ptr = match obj.as_ptr() {
+        Some(ptr) => ptr,
+        None => raise_exception("TypeError", "tobytes expects a memoryview"),
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_MEMORYVIEW {
+            raise_exception("TypeError", "tobytes expects a memoryview");
+        }
+        let owner_bits = memoryview_owner_bits(ptr);
+        let owner = obj_from_bits(owner_bits);
+        let owner_ptr = match owner.as_ptr() {
+            Some(ptr) => ptr,
+            None => return MoltObject::none().bits(),
+        };
+        let base = match bytes_like_slice_raw(owner_ptr) {
+            Some(slice) => slice,
+            None => return MoltObject::none().bits(),
+        };
+        let offset = memoryview_offset(ptr);
+        let len = memoryview_len(ptr);
+        let itemsize = memoryview_itemsize(ptr);
+        let stride = memoryview_stride(ptr);
+        if offset < 0 {
+            return MoltObject::none().bits();
+        }
+        let offset = offset as isize;
+        let mut out = Vec::with_capacity(len.saturating_mul(itemsize));
+        for idx in 0..len {
+            let start = offset + (idx as isize) * stride;
+            if start < 0 {
+                return MoltObject::none().bits();
+            }
+            let start = start as usize;
+            let end = start.saturating_add(itemsize);
+            if end > base.len() {
+                return MoltObject::none().bits();
+            }
+            out.extend_from_slice(&base[start..end]);
+        }
+        let out_ptr = alloc_bytes(&out);
+        if out_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(out_ptr).bits()
+    }
+}
+
+#[repr(C)]
+pub struct BufferExport {
+    ptr: u64,
+    len: u64,
+    readonly: u64,
+    stride: i64,
+    itemsize: u64,
+}
+
+#[no_mangle]
+pub extern "C" fn molt_buffer_export(obj_bits: u64, out_ptr: *mut BufferExport) -> i32 {
+    if out_ptr.is_null() {
+        return 1;
+    }
+    let obj = obj_from_bits(obj_bits);
+    let ptr = match obj.as_ptr() {
+        Some(ptr) => ptr,
+        None => return 1,
+    };
+    unsafe {
+        let type_id = object_type_id(ptr);
+        if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
+            let data_ptr = bytes_data(ptr) as u64;
+            let len = bytes_len(ptr) as u64;
+            let readonly = if type_id == TYPE_ID_BYTES { 1 } else { 0 };
+            *out_ptr = BufferExport {
+                ptr: data_ptr,
+                len,
+                readonly,
+                stride: 1,
+                itemsize: 1,
+            };
+            return 0;
+        }
+        if type_id == TYPE_ID_MEMORYVIEW {
+            let owner_bits = memoryview_owner_bits(ptr);
+            let owner = obj_from_bits(owner_bits);
+            let owner_ptr = match owner.as_ptr() {
+                Some(ptr) => ptr,
+                None => return 1,
+            };
+            let base = match bytes_like_slice_raw(owner_ptr) {
+                Some(slice) => slice,
+                None => return 1,
+            };
+            let offset = memoryview_offset(ptr);
+            if offset < 0 {
+                return 1;
+            }
+            let offset = offset as usize;
+            if offset > base.len() {
+                return 1;
+            }
+            let data_ptr = base.as_ptr().add(offset) as u64;
+            let len = memoryview_len(ptr) as u64;
+            let readonly = if memoryview_readonly(ptr) { 1 } else { 0 };
+            let stride = memoryview_stride(ptr) as i64;
+            let itemsize = memoryview_itemsize(ptr) as u64;
+            *out_ptr = BufferExport {
+                ptr: data_ptr,
+                len,
+                readonly,
+                stride,
+                itemsize,
+            };
+            return 0;
+        }
+    }
+    1
 }
 
 #[no_mangle]
@@ -3824,6 +5851,74 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
     if let Some(ptr) = obj.as_ptr() {
         unsafe {
             let type_id = object_type_id(ptr);
+            if type_id == TYPE_ID_MEMORYVIEW {
+                if let Some(slice_ptr) = key.as_ptr() {
+                    if object_type_id(slice_ptr) == TYPE_ID_SLICE {
+                        let len = memoryview_len(ptr) as isize;
+                        let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
+                        let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
+                        let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
+                        let (start, stop, step) =
+                            match normalize_slice_indices(len, start_obj, stop_obj, step_obj) {
+                                Ok(vals) => vals,
+                                Err(err) => return slice_error(err),
+                            };
+                        let base_offset = memoryview_offset(ptr);
+                        let base_stride = memoryview_stride(ptr);
+                        let itemsize = memoryview_itemsize(ptr);
+                        let new_offset = base_offset + start * base_stride;
+                        let new_stride = base_stride * step;
+                        let new_len = range_len_i64(start as i64, stop as i64, step as i64);
+                        let new_len = new_len.max(0) as usize;
+                        let out_ptr = alloc_memoryview(
+                            memoryview_owner_bits(ptr),
+                            new_offset,
+                            new_len,
+                            itemsize,
+                            new_stride,
+                            memoryview_readonly(ptr),
+                        );
+                        if out_ptr.is_null() {
+                            return MoltObject::none().bits();
+                        }
+                        return MoltObject::from_ptr(out_ptr).bits();
+                    }
+                }
+                if let Some(idx) = key.as_int() {
+                    let owner_bits = memoryview_owner_bits(ptr);
+                    let owner = obj_from_bits(owner_bits);
+                    let owner_ptr = match owner.as_ptr() {
+                        Some(ptr) => ptr,
+                        None => return MoltObject::none().bits(),
+                    };
+                    let base = match bytes_like_slice_raw(owner_ptr) {
+                        Some(slice) => slice,
+                        None => return MoltObject::none().bits(),
+                    };
+                    let len = memoryview_len(ptr) as i64;
+                    let mut i = idx;
+                    if i < 0 {
+                        i += len;
+                    }
+                    if i < 0 || i >= len {
+                        return MoltObject::none().bits();
+                    }
+                    let offset = memoryview_offset(ptr);
+                    let stride = memoryview_stride(ptr);
+                    let itemsize = memoryview_itemsize(ptr);
+                    let start = offset + (i as isize) * stride;
+                    if start < 0 {
+                        return MoltObject::none().bits();
+                    }
+                    let start = start as usize;
+                    let end = start.saturating_add(itemsize);
+                    if end > base.len() {
+                        return MoltObject::none().bits();
+                    }
+                    return MoltObject::from_int(base[start] as i64).bits();
+                }
+                return MoltObject::none().bits();
+            }
             if type_id == TYPE_ID_STRING || type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY
             {
                 if let Some(slice_ptr) = key.as_ptr() {
@@ -4088,6 +6183,54 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
             if type_id == TYPE_ID_TUPLE {
                 return MoltObject::none().bits();
             }
+            if type_id == TYPE_ID_MEMORYVIEW {
+                if memoryview_readonly(ptr) {
+                    raise_exception("TypeError", "cannot modify read-only memory");
+                }
+                if let Some(idx) = key.as_int() {
+                    let owner_bits = memoryview_owner_bits(ptr);
+                    let owner = obj_from_bits(owner_bits);
+                    let owner_ptr = match owner.as_ptr() {
+                        Some(ptr) => ptr,
+                        None => return MoltObject::none().bits(),
+                    };
+                    if object_type_id(owner_ptr) != TYPE_ID_BYTEARRAY {
+                        raise_exception("TypeError", "memoryview is not writable");
+                    }
+                    let len = memoryview_len(ptr) as i64;
+                    let mut i = idx;
+                    if i < 0 {
+                        i += len;
+                    }
+                    if i < 0 || i >= len {
+                        return MoltObject::none().bits();
+                    }
+                    let itemsize = memoryview_itemsize(ptr);
+                    if itemsize != 1 {
+                        raise_exception("TypeError", "memoryview itemsize not supported");
+                    }
+                    let offset = memoryview_offset(ptr);
+                    let stride = memoryview_stride(ptr);
+                    let start = offset + (i as isize) * stride;
+                    if start < 0 {
+                        return MoltObject::none().bits();
+                    }
+                    let start = start as usize;
+                    let base_len = bytes_len(owner_ptr);
+                    if start >= base_len {
+                        return MoltObject::none().bits();
+                    }
+                    let val = obj_from_bits(val_bits);
+                    let byte = match val.as_int() {
+                        Some(v) if (0..=255).contains(&v) => v as u8,
+                        _ => raise_exception("TypeError", "memoryview item must be int 0-255"),
+                    };
+                    let data_ptr = bytes_data(owner_ptr) as *mut u8;
+                    *data_ptr.add(start) = byte;
+                    return obj_bits;
+                }
+                return MoltObject::none().bits();
+            }
             if type_id == TYPE_ID_DICT {
                 dict_set_in_place(ptr, key_bits, val_bits);
                 return obj_bits;
@@ -4095,6 +6238,244 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
         }
     }
     MoltObject::none().bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
+    let container = obj_from_bits(container_bits);
+    let item = obj_from_bits(item_bits);
+    if let Some(ptr) = container.as_ptr() {
+        unsafe {
+            match object_type_id(ptr) {
+                TYPE_ID_LIST | TYPE_ID_TUPLE => {
+                    let elems = seq_vec_ref(ptr);
+                    for &elem_bits in elems.iter() {
+                        if obj_eq(obj_from_bits(elem_bits), item) {
+                            return MoltObject::from_bool(true).bits();
+                        }
+                    }
+                    return MoltObject::from_bool(false).bits();
+                }
+                TYPE_ID_DICT => {
+                    let order = dict_order(ptr);
+                    let table = dict_table(ptr);
+                    let found = dict_find_entry(order, table, item_bits).is_some();
+                    return MoltObject::from_bool(found).bits();
+                }
+                TYPE_ID_STRING => {
+                    let Some(item_ptr) = item.as_ptr() else {
+                        raise_exception(
+                            "TypeError",
+                            &format!(
+                                "'in <string>' requires string as left operand, not {}",
+                                type_name(item)
+                            ),
+                        );
+                    };
+                    if object_type_id(item_ptr) != TYPE_ID_STRING {
+                        raise_exception(
+                            "TypeError",
+                            &format!(
+                                "'in <string>' requires string as left operand, not {}",
+                                type_name(item)
+                            ),
+                        );
+                    }
+                    let hay_len = string_len(ptr);
+                    let needle_len = string_len(item_ptr);
+                    let hay_bytes = std::slice::from_raw_parts(string_bytes(ptr), hay_len);
+                    let needle_bytes =
+                        std::slice::from_raw_parts(string_bytes(item_ptr), needle_len);
+                    if needle_bytes.is_empty() {
+                        return MoltObject::from_bool(true).bits();
+                    }
+                    let idx = bytes_find_impl(hay_bytes, needle_bytes);
+                    return MoltObject::from_bool(idx >= 0).bits();
+                }
+                TYPE_ID_BYTES | TYPE_ID_BYTEARRAY => {
+                    let hay_len = bytes_len(ptr);
+                    let hay_bytes = std::slice::from_raw_parts(bytes_data(ptr), hay_len);
+                    if let Some(byte) = item.as_int() {
+                        if !(0..=255).contains(&byte) {
+                            raise_exception("ValueError", "byte must be in range(0, 256)");
+                        }
+                        let found = memchr(byte as u8, hay_bytes).is_some();
+                        return MoltObject::from_bool(found).bits();
+                    }
+                    if let Some(item_ptr) = item.as_ptr() {
+                        let item_type = object_type_id(item_ptr);
+                        if item_type == TYPE_ID_BYTES || item_type == TYPE_ID_BYTEARRAY {
+                            let needle_len = bytes_len(item_ptr);
+                            let needle_bytes =
+                                std::slice::from_raw_parts(bytes_data(item_ptr), needle_len);
+                            if needle_bytes.is_empty() {
+                                return MoltObject::from_bool(true).bits();
+                            }
+                            let idx = bytes_find_impl(hay_bytes, needle_bytes);
+                            return MoltObject::from_bool(idx >= 0).bits();
+                        }
+                    }
+                    raise_exception(
+                        "TypeError",
+                        &format!(
+                            "a bytes-like object is required, not '{}'",
+                            type_name(item)
+                        ),
+                    );
+                }
+                TYPE_ID_RANGE => {
+                    let Some(val) = item.as_int() else {
+                        return MoltObject::from_bool(false).bits();
+                    };
+                    let start = range_start(ptr);
+                    let stop = range_stop(ptr);
+                    let step = range_step(ptr);
+                    if step == 0 {
+                        return MoltObject::from_bool(false).bits();
+                    }
+                    let in_range = if step > 0 {
+                        val >= start && val < stop
+                    } else {
+                        val <= start && val > stop
+                    };
+                    if !in_range {
+                        return MoltObject::from_bool(false).bits();
+                    }
+                    let offset = val - start;
+                    let step_abs = if step < 0 { -step } else { step };
+                    let aligned = offset.rem_euclid(step_abs) == 0;
+                    return MoltObject::from_bool(aligned).bits();
+                }
+                TYPE_ID_MEMORYVIEW => {
+                    let owner_bits = memoryview_owner_bits(ptr);
+                    let owner = obj_from_bits(owner_bits);
+                    let owner_ptr = match owner.as_ptr() {
+                        Some(ptr) => ptr,
+                        None => raise_exception(
+                            "TypeError",
+                            &format!(
+                                "a bytes-like object is required, not '{}'",
+                                type_name(item)
+                            ),
+                        ),
+                    };
+                    let base = match bytes_like_slice_raw(owner_ptr) {
+                        Some(slice) => slice,
+                        None => raise_exception(
+                            "TypeError",
+                            &format!(
+                                "a bytes-like object is required, not '{}'",
+                                type_name(item)
+                            ),
+                        ),
+                    };
+                    let offset = memoryview_offset(ptr);
+                    let len = memoryview_len(ptr);
+                    let itemsize = memoryview_itemsize(ptr);
+                    let stride = memoryview_stride(ptr);
+                    if offset < 0 {
+                        raise_exception(
+                            "TypeError",
+                            &format!(
+                                "a bytes-like object is required, not '{}'",
+                                type_name(item)
+                            ),
+                        );
+                    }
+                    if itemsize != 1 {
+                        raise_exception("TypeError", "memoryview itemsize not supported");
+                    }
+                    let offset = offset as isize;
+                    if stride == 1 {
+                        let start = offset as usize;
+                        let end = start.saturating_add(len);
+                        let hay = &base[start.min(base.len())..end.min(base.len())];
+                        if let Some(byte) = item.as_int() {
+                            if !(0..=255).contains(&byte) {
+                                raise_exception("ValueError", "byte must be in range(0, 256)");
+                            }
+                            let found = memchr(byte as u8, hay).is_some();
+                            return MoltObject::from_bool(found).bits();
+                        }
+                        if let Some(item_ptr) = item.as_ptr() {
+                            let item_type = object_type_id(item_ptr);
+                            if item_type == TYPE_ID_BYTES || item_type == TYPE_ID_BYTEARRAY {
+                                let needle_len = bytes_len(item_ptr);
+                                let needle_bytes =
+                                    std::slice::from_raw_parts(bytes_data(item_ptr), needle_len);
+                                if needle_bytes.is_empty() {
+                                    return MoltObject::from_bool(true).bits();
+                                }
+                                let idx = bytes_find_impl(hay, needle_bytes);
+                                return MoltObject::from_bool(idx >= 0).bits();
+                            }
+                        }
+                        raise_exception(
+                            "TypeError",
+                            &format!(
+                                "a bytes-like object is required, not '{}'",
+                                type_name(item)
+                            ),
+                        );
+                    }
+                    let mut out = Vec::with_capacity(len);
+                    for idx in 0..len {
+                        let start = offset + (idx as isize) * stride;
+                        if start < 0 {
+                            raise_exception(
+                                "TypeError",
+                                &format!(
+                                    "a bytes-like object is required, not '{}'",
+                                    type_name(item)
+                                ),
+                            );
+                        }
+                        let start = start as usize;
+                        if start >= base.len() {
+                            break;
+                        }
+                        out.push(base[start]);
+                    }
+                    let hay = out.as_slice();
+                    if let Some(byte) = item.as_int() {
+                        if !(0..=255).contains(&byte) {
+                            raise_exception("ValueError", "byte must be in range(0, 256)");
+                        }
+                        let found = memchr(byte as u8, hay).is_some();
+                        return MoltObject::from_bool(found).bits();
+                    }
+                    if let Some(item_ptr) = item.as_ptr() {
+                        let item_type = object_type_id(item_ptr);
+                        if item_type == TYPE_ID_BYTES || item_type == TYPE_ID_BYTEARRAY {
+                            let needle_len = bytes_len(item_ptr);
+                            let needle_bytes =
+                                std::slice::from_raw_parts(bytes_data(item_ptr), needle_len);
+                            if needle_bytes.is_empty() {
+                                return MoltObject::from_bool(true).bits();
+                            }
+                            let idx = bytes_find_impl(hay, needle_bytes);
+                            return MoltObject::from_bool(idx >= 0).bits();
+                        }
+                    }
+                    raise_exception(
+                        "TypeError",
+                        &format!(
+                            "a bytes-like object is required, not '{}'",
+                            type_name(item)
+                        ),
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+    raise_exception(
+        "TypeError",
+        &format!(
+            "argument of type '{}' is not iterable",
+            type_name(container)
+        ),
+    );
 }
 
 #[no_mangle]
@@ -4681,6 +7062,13 @@ pub extern "C" fn molt_print_obj(val: u64) {
                 println!("<buffer2d {}x{}>", buf.rows, buf.cols);
                 return;
             }
+            if type_id == TYPE_ID_MEMORYVIEW {
+                let len = memoryview_len(ptr);
+                let stride = memoryview_stride(ptr);
+                let readonly = memoryview_readonly(ptr);
+                println!("<memoryview len={len} stride={stride} readonly={readonly}>");
+                return;
+            }
             if type_id == TYPE_ID_LIST {
                 let elems = seq_vec_ref(ptr);
                 let mut out = String::from("[");
@@ -4973,6 +7361,24 @@ fn format_obj(obj: MoltObject) -> String {
                 }
                 let buf = &*buf_ptr;
                 return format!("<buffer2d {}x{}>", buf.rows, buf.cols);
+            }
+            if type_id == TYPE_ID_MEMORYVIEW {
+                let len = memoryview_len(ptr);
+                let stride = memoryview_stride(ptr);
+                let readonly = memoryview_readonly(ptr);
+                return format!("<memoryview len={len} stride={stride} readonly={readonly}>");
+            }
+            if type_id == TYPE_ID_INTARRAY {
+                let elems = intarray_slice(ptr);
+                let mut out = String::from("intarray([");
+                for (idx, val) in elems.iter().enumerate() {
+                    if idx > 0 {
+                        out.push_str(", ");
+                    }
+                    out.push_str(&val.to_string());
+                }
+                out.push_str("])");
+                return out;
             }
             if type_id == TYPE_ID_LIST {
                 let elems = seq_vec_ref(ptr);
@@ -5337,6 +7743,9 @@ pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
     header.ref_count -= 1;
     if header.ref_count == 0 {
         match header.type_id {
+            TYPE_ID_STRING => {
+                utf8_cache_remove(ptr as usize);
+            }
             TYPE_ID_LIST => {
                 let vec_ptr = seq_vec_ptr(ptr);
                 if !vec_ptr.is_null() {
@@ -5434,6 +7843,10 @@ pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
                 if !buf_ptr.is_null() {
                     drop(Box::from_raw(buf_ptr));
                 }
+            }
+            TYPE_ID_MEMORYVIEW => {
+                let owner_bits = memoryview_owner_bits(ptr);
+                dec_ref_bits(owner_bits);
             }
             _ => {}
         }

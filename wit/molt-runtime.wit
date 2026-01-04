@@ -12,10 +12,28 @@ interface intrinsics {
 
     add: func(a: molt-object, b: molt-object) -> molt-object;
     vec_sum_int: func(seq: molt-object, acc: molt-object) -> molt-object;
+    vec_sum_int_trusted: func(seq: molt-object, acc: molt-object) -> molt-object;
+    vec_prod_int: func(seq: molt-object, acc: molt-object) -> molt-object;
+    vec_prod_int_trusted: func(seq: molt-object, acc: molt-object) -> molt-object;
+    vec_min_int: func(seq: molt-object, acc: molt-object) -> molt-object;
+    vec_min_int_trusted: func(seq: molt-object, acc: molt-object) -> molt-object;
+    vec_max_int: func(seq: molt-object, acc: molt-object) -> molt-object;
+    vec_max_int_trusted: func(seq: molt-object, acc: molt-object) -> molt-object;
+    vec_sum_int_range: func(seq: molt-object, acc: molt-object, start: molt-object) -> molt-object;
+    vec_sum_int_range_trusted: func(seq: molt-object, acc: molt-object, start: molt-object) -> molt-object;
+    vec_prod_int_range: func(seq: molt-object, acc: molt-object, start: molt-object) -> molt-object;
+    vec_prod_int_range_trusted: func(seq: molt-object, acc: molt-object, start: molt-object) -> molt-object;
+    vec_min_int_range: func(seq: molt-object, acc: molt-object, start: molt-object) -> molt-object;
+    vec_min_int_range_trusted: func(seq: molt-object, acc: molt-object, start: molt-object) -> molt-object;
+    vec_max_int_range: func(seq: molt-object, acc: molt-object, start: molt-object) -> molt-object;
+    vec_max_int_range_trusted: func(seq: molt-object, acc: molt-object, start: molt-object) -> molt-object;
     sub: func(a: molt-object, b: molt-object) -> molt-object;
     mul: func(a: molt-object, b: molt-object) -> molt-object;
     lt: func(a: molt-object, b: molt-object) -> molt-object;
     eq: func(a: molt-object, b: molt-object) -> molt-object;
+    is: func(a: molt-object, b: molt-object) -> molt-object;
+    not: func(val: molt-object) -> molt-object;
+    contains: func(container: molt-object, item: molt-object) -> molt-object;
     is_truthy: func(val: molt-object) -> u64;
 
     json_parse_scalar: func(ptr: molt-ptr, len: u64, out: molt-ptr) -> s32;
@@ -68,6 +86,9 @@ interface intrinsics {
     bytes_replace: func(haystack: molt-object, needle: molt-object, replacement: molt-object) -> molt-object;
     bytearray_replace: func(haystack: molt-object, needle: molt-object, replacement: molt-object) -> molt-object;
     bytearray_from_obj: func(obj: molt-object) -> molt-object;
+    intarray_from_seq: func(obj: molt-object) -> molt-object;
+    memoryview_new: func(obj: molt-object) -> molt-object;
+    memoryview_tobytes: func(obj: molt-object) -> molt-object;
     buffer2d_new: func(rows: molt-object, cols: molt-object, init: molt-object) -> molt-object;
     buffer2d_get: func(buf: molt-object, row: molt-object, col: molt-object) -> molt-object;
     buffer2d_set: func(buf: molt-object, row: molt-object, col: molt-object, val: molt-object) -> molt-object;

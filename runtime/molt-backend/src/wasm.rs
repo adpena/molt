@@ -118,10 +118,28 @@ impl WasmBackend {
         add_import("block_on", 2, &mut self.import_ids);
         add_import("add", 3, &mut self.import_ids);
         add_import("vec_sum_int", 3, &mut self.import_ids);
+        add_import("vec_sum_int_trusted", 3, &mut self.import_ids);
+        add_import("vec_sum_int_range", 5, &mut self.import_ids);
+        add_import("vec_sum_int_range_trusted", 5, &mut self.import_ids);
+        add_import("vec_prod_int", 3, &mut self.import_ids);
+        add_import("vec_prod_int_trusted", 3, &mut self.import_ids);
+        add_import("vec_prod_int_range", 5, &mut self.import_ids);
+        add_import("vec_prod_int_range_trusted", 5, &mut self.import_ids);
+        add_import("vec_min_int", 3, &mut self.import_ids);
+        add_import("vec_min_int_trusted", 3, &mut self.import_ids);
+        add_import("vec_min_int_range", 5, &mut self.import_ids);
+        add_import("vec_min_int_range_trusted", 5, &mut self.import_ids);
+        add_import("vec_max_int", 3, &mut self.import_ids);
+        add_import("vec_max_int_trusted", 3, &mut self.import_ids);
+        add_import("vec_max_int_range", 5, &mut self.import_ids);
+        add_import("vec_max_int_range_trusted", 5, &mut self.import_ids);
         add_import("sub", 3, &mut self.import_ids);
         add_import("mul", 3, &mut self.import_ids);
         add_import("lt", 3, &mut self.import_ids);
         add_import("eq", 3, &mut self.import_ids);
+        add_import("is", 3, &mut self.import_ids);
+        add_import("not", 2, &mut self.import_ids);
+        add_import("contains", 3, &mut self.import_ids);
         add_import("guard_type", 3, &mut self.import_ids);
         add_import("is_truthy", 2, &mut self.import_ids);
         add_import("json_parse_scalar", 4, &mut self.import_ids);
@@ -130,6 +148,9 @@ impl WasmBackend {
         add_import("string_from_bytes", 4, &mut self.import_ids);
         add_import("bytes_from_bytes", 4, &mut self.import_ids);
         add_import("str_from_obj", 2, &mut self.import_ids);
+        add_import("memoryview_new", 2, &mut self.import_ids);
+        add_import("memoryview_tobytes", 2, &mut self.import_ids);
+        add_import("intarray_from_seq", 2, &mut self.import_ids);
         add_import("len", 2, &mut self.import_ids);
         add_import("slice", 5, &mut self.import_ids);
         add_import("slice_new", 5, &mut self.import_ids);
@@ -425,6 +446,172 @@ impl WasmBackend {
                     let res = locals[op.out.as_ref().unwrap()];
                     func.instruction(&Instruction::LocalSet(res));
                 }
+                "vec_sum_int_trusted" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = locals[&args[0]];
+                    let acc = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(seq));
+                    func.instruction(&Instruction::LocalGet(acc));
+                    func.instruction(&Instruction::Call(import_ids["vec_sum_int_trusted"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "vec_sum_int_range" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = locals[&args[0]];
+                    let acc = locals[&args[1]];
+                    let start = locals[&args[2]];
+                    func.instruction(&Instruction::LocalGet(seq));
+                    func.instruction(&Instruction::LocalGet(acc));
+                    func.instruction(&Instruction::LocalGet(start));
+                    func.instruction(&Instruction::Call(import_ids["vec_sum_int_range"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "vec_sum_int_range_trusted" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = locals[&args[0]];
+                    let acc = locals[&args[1]];
+                    let start = locals[&args[2]];
+                    func.instruction(&Instruction::LocalGet(seq));
+                    func.instruction(&Instruction::LocalGet(acc));
+                    func.instruction(&Instruction::LocalGet(start));
+                    func.instruction(&Instruction::Call(import_ids["vec_sum_int_range_trusted"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "vec_prod_int" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = locals[&args[0]];
+                    let acc = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(seq));
+                    func.instruction(&Instruction::LocalGet(acc));
+                    func.instruction(&Instruction::Call(import_ids["vec_prod_int"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "vec_prod_int_trusted" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = locals[&args[0]];
+                    let acc = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(seq));
+                    func.instruction(&Instruction::LocalGet(acc));
+                    func.instruction(&Instruction::Call(import_ids["vec_prod_int_trusted"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "vec_prod_int_range" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = locals[&args[0]];
+                    let acc = locals[&args[1]];
+                    let start = locals[&args[2]];
+                    func.instruction(&Instruction::LocalGet(seq));
+                    func.instruction(&Instruction::LocalGet(acc));
+                    func.instruction(&Instruction::LocalGet(start));
+                    func.instruction(&Instruction::Call(import_ids["vec_prod_int_range"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "vec_prod_int_range_trusted" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = locals[&args[0]];
+                    let acc = locals[&args[1]];
+                    let start = locals[&args[2]];
+                    func.instruction(&Instruction::LocalGet(seq));
+                    func.instruction(&Instruction::LocalGet(acc));
+                    func.instruction(&Instruction::LocalGet(start));
+                    func.instruction(&Instruction::Call(import_ids["vec_prod_int_range_trusted"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "vec_min_int" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = locals[&args[0]];
+                    let acc = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(seq));
+                    func.instruction(&Instruction::LocalGet(acc));
+                    func.instruction(&Instruction::Call(import_ids["vec_min_int"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "vec_min_int_trusted" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = locals[&args[0]];
+                    let acc = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(seq));
+                    func.instruction(&Instruction::LocalGet(acc));
+                    func.instruction(&Instruction::Call(import_ids["vec_min_int_trusted"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "vec_min_int_range" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = locals[&args[0]];
+                    let acc = locals[&args[1]];
+                    let start = locals[&args[2]];
+                    func.instruction(&Instruction::LocalGet(seq));
+                    func.instruction(&Instruction::LocalGet(acc));
+                    func.instruction(&Instruction::LocalGet(start));
+                    func.instruction(&Instruction::Call(import_ids["vec_min_int_range"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "vec_min_int_range_trusted" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = locals[&args[0]];
+                    let acc = locals[&args[1]];
+                    let start = locals[&args[2]];
+                    func.instruction(&Instruction::LocalGet(seq));
+                    func.instruction(&Instruction::LocalGet(acc));
+                    func.instruction(&Instruction::LocalGet(start));
+                    func.instruction(&Instruction::Call(import_ids["vec_min_int_range_trusted"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "vec_max_int" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = locals[&args[0]];
+                    let acc = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(seq));
+                    func.instruction(&Instruction::LocalGet(acc));
+                    func.instruction(&Instruction::Call(import_ids["vec_max_int"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "vec_max_int_trusted" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = locals[&args[0]];
+                    let acc = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(seq));
+                    func.instruction(&Instruction::LocalGet(acc));
+                    func.instruction(&Instruction::Call(import_ids["vec_max_int_trusted"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "vec_max_int_range" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = locals[&args[0]];
+                    let acc = locals[&args[1]];
+                    let start = locals[&args[2]];
+                    func.instruction(&Instruction::LocalGet(seq));
+                    func.instruction(&Instruction::LocalGet(acc));
+                    func.instruction(&Instruction::LocalGet(start));
+                    func.instruction(&Instruction::Call(import_ids["vec_max_int_range"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "vec_max_int_range_trusted" => {
+                    let args = op.args.as_ref().unwrap();
+                    let seq = locals[&args[0]];
+                    let acc = locals[&args[1]];
+                    let start = locals[&args[2]];
+                    func.instruction(&Instruction::LocalGet(seq));
+                    func.instruction(&Instruction::LocalGet(acc));
+                    func.instruction(&Instruction::LocalGet(start));
+                    func.instruction(&Instruction::Call(import_ids["vec_max_int_range_trusted"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
                 "sub" => {
                     let args = op.args.as_ref().unwrap();
                     let lhs = locals[&args[0]];
@@ -462,6 +649,34 @@ impl WasmBackend {
                     func.instruction(&Instruction::LocalGet(lhs));
                     func.instruction(&Instruction::LocalGet(rhs));
                     func.instruction(&Instruction::Call(import_ids["eq"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "is" => {
+                    let args = op.args.as_ref().unwrap();
+                    let lhs = locals[&args[0]];
+                    let rhs = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(lhs));
+                    func.instruction(&Instruction::LocalGet(rhs));
+                    func.instruction(&Instruction::Call(import_ids["is"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "not" => {
+                    let args = op.args.as_ref().unwrap();
+                    let val = locals[&args[0]];
+                    func.instruction(&Instruction::LocalGet(val));
+                    func.instruction(&Instruction::Call(import_ids["not"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "contains" => {
+                    let args = op.args.as_ref().unwrap();
+                    let container = locals[&args[0]];
+                    let item = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(container));
+                    func.instruction(&Instruction::LocalGet(item));
+                    func.instruction(&Instruction::Call(import_ids["contains"]));
                     let res = locals[op.out.as_ref().unwrap()];
                     func.instruction(&Instruction::LocalSet(res));
                 }
@@ -1008,6 +1223,30 @@ impl WasmBackend {
                     let src = locals[&args[0]];
                     func.instruction(&Instruction::LocalGet(src));
                     func.instruction(&Instruction::Call(import_ids["bytearray_from_obj"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "intarray_from_seq" => {
+                    let args = op.args.as_ref().unwrap();
+                    let src = locals[&args[0]];
+                    func.instruction(&Instruction::LocalGet(src));
+                    func.instruction(&Instruction::Call(import_ids["intarray_from_seq"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "memoryview_new" => {
+                    let args = op.args.as_ref().unwrap();
+                    let src = locals[&args[0]];
+                    func.instruction(&Instruction::LocalGet(src));
+                    func.instruction(&Instruction::Call(import_ids["memoryview_new"]));
+                    let res = locals[op.out.as_ref().unwrap()];
+                    func.instruction(&Instruction::LocalSet(res));
+                }
+                "memoryview_tobytes" => {
+                    let args = op.args.as_ref().unwrap();
+                    let src = locals[&args[0]];
+                    func.instruction(&Instruction::LocalGet(src));
+                    func.instruction(&Instruction::Call(import_ids["memoryview_tobytes"]));
                     let res = locals[op.out.as_ref().unwrap()];
                     func.instruction(&Instruction::LocalSet(res));
                 }
