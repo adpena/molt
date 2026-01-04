@@ -109,16 +109,13 @@ fn drain_cleanup_tracked(
     last_use: &HashMap<String, usize>,
     op_idx: usize,
     skip: Option<&str>,
-)-> Vec<TrackedValue> {
+) -> Vec<TrackedValue> {
     let mut cleanup = Vec::new();
     names.retain(|tracked| {
         if skip == Some(tracked.name.as_str()) {
             return true;
         }
-        let last = last_use
-            .get(&tracked.name)
-            .copied()
-            .unwrap_or(op_idx);
+        let last = last_use.get(&tracked.name).copied().unwrap_or(op_idx);
         if last <= op_idx {
             cleanup.push(tracked.clone());
             return false;
@@ -133,17 +130,11 @@ fn collect_cleanup_tracked(
     last_use: &HashMap<String, usize>,
     op_idx: usize,
     skip: Option<&str>,
-)-> Vec<TrackedValue> {
+) -> Vec<TrackedValue> {
     names
         .iter()
         .filter(|tracked| skip != Some(tracked.name.as_str()))
-        .filter(|tracked| {
-            last_use
-                .get(&tracked.name)
-                .copied()
-                .unwrap_or(op_idx)
-                <= op_idx
-        })
+        .filter(|tracked| last_use.get(&tracked.name).copied().unwrap_or(op_idx) <= op_idx)
         .cloned()
         .collect()
 }
@@ -2430,23 +2421,15 @@ impl SimpleBackend {
                     let ret_val = *vars.get(var_name).expect("Return variable not found");
                     if let Some(block) = builder.current_block() {
                         if let Some(names) = block_tracked_obj.get_mut(&block) {
-                            let cleanup = drain_cleanup_tracked(
-                                names,
-                                &last_use,
-                                op_idx,
-                                Some(var_name),
-                            );
+                            let cleanup =
+                                drain_cleanup_tracked(names, &last_use, op_idx, Some(var_name));
                             for tracked in cleanup {
                                 builder.ins().call(local_dec_ref_obj, &[tracked.value]);
                             }
                         }
                         if let Some(names) = block_tracked_ptr.get_mut(&block) {
-                            let cleanup = drain_cleanup_tracked(
-                                names,
-                                &last_use,
-                                op_idx,
-                                Some(var_name),
-                            );
+                            let cleanup =
+                                drain_cleanup_tracked(names, &last_use, op_idx, Some(var_name));
                             for tracked in cleanup {
                                 builder.ins().call(local_dec_ref, &[tracked.value]);
                             }

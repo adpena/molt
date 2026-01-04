@@ -884,12 +884,7 @@ fn alloc_context_manager(enter_fn: u64, exit_fn: u64, payload_bits: u64) -> *mut
     ptr
 }
 
-fn alloc_file_handle(
-    file: std::fs::File,
-    readable: bool,
-    writable: bool,
-    text: bool,
-) -> *mut u8 {
+fn alloc_file_handle(file: std::fs::File, readable: bool, writable: bool, text: bool) -> *mut u8 {
     let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut MoltFileHandle>();
     let ptr = alloc_object(total, TYPE_ID_FILE_HANDLE);
     if ptr.is_null() {
@@ -1566,7 +1561,12 @@ fn parse_file_mode(mode: &str) -> Result<(OpenOptions, bool, bool, bool), &'stat
     }
 
     let mut options = OpenOptions::new();
-    options.read(read).write(write).append(append).truncate(truncate).create(create);
+    options
+        .read(read)
+        .write(write)
+        .append(append)
+        .truncate(truncate)
+        .create(create);
     if create_new {
         options.create_new(true);
     }

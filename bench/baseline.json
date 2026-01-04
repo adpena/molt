@@ -1,14 +1,14 @@
 {
   "benchmarks": {
     "bench_bytes_find.py": {
-      "cpython_time_s": 0.04480322198166201,
+      "cpython_time_s": 0.02523254200059455,
       "cython_ok": true,
-      "cython_time_s": 0.5590387636524005,
-      "molt_cpython_ratio": 0.3638559000653403,
+      "cython_time_s": 0.268227125001431,
+      "molt_cpython_ratio": 0.3791185603781153,
       "molt_ok": true,
-      "molt_size_kb": 1797.3984375,
-      "molt_speedup": 2.7483407574823513,
-      "molt_time_s": 0.01630191665996487,
+      "molt_size_kb": 1816.7578125,
+      "molt_speedup": 2.6376972918515156,
+      "molt_time_s": 0.009566124997945735,
       "numba_ok": false,
       "numba_time_s": 0.0,
       "pypy_time_s": 0.0
@@ -183,16 +183,16 @@
       "pypy_time_s": 0.0
     },
     "bench_sum.py": {
-      "cpython_time_s": 2.1638990833307616,
+      "cpython_time_s": 2.799974417001067,
       "cython_ok": true,
-      "cython_time_s": 1.5827143329855364,
-      "molt_cpython_ratio": 0.33894468677385664,
+      "cython_time_s": 2.056629292001162,
+      "molt_cpython_ratio": 0.13768441263565984,
       "molt_ok": true,
-      "molt_size_kb": 1797.2265625,
-      "molt_speedup": 2.950333901139446,
-      "molt_time_s": 0.7334420970097805,
+      "molt_size_kb": 1816.6015625,
+      "molt_speedup": 7.262986280416489,
+      "molt_time_s": 0.385512832999666,
       "numba_ok": true,
-      "numba_time_s": 0.8373267913314825,
+      "numba_time_s": 0.4508740410019527,
       "pypy_time_s": 0.0
     },
     "bench_sum_list.py": {
@@ -209,12 +209,12 @@
       "pypy_time_s": 0.0
     }
   },
-  "created_at": "2026-01-03T04:38:09.913525+00:00",
-  "git_rev": "1101acaf31dd51e2aec63e3ccb7cc307d8554097",
+  "created_at": "2026-01-04T02:35:41.118510+00:00",
+  "git_rev": "22240b694ee88075f9e2f80de972be0c9f86bb4d",
   "schema_version": 1,
   "system": {
     "machine": "arm64",
-    "platform": "macOS-26.1-arm64-arm-64bit",
+    "platform": "macOS-26.2-arm64-arm-64bit",
     "python": "3.12.12"
   }
 }
