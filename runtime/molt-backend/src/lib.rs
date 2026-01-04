@@ -495,11 +495,7 @@ impl SimpleBackend {
                     sig.returns.push(AbiParam::new(types::I64));
                     let callee = self
                         .module
-                        .declare_function(
-                            "molt_vec_sum_int_range_trusted",
-                            Linkage::Import,
-                            &sig,
-                        )
+                        .declare_function("molt_vec_sum_int_range_trusted", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
@@ -571,11 +567,7 @@ impl SimpleBackend {
                     sig.returns.push(AbiParam::new(types::I64));
                     let callee = self
                         .module
-                        .declare_function(
-                            "molt_vec_prod_int_range_trusted",
-                            Linkage::Import,
-                            &sig,
-                        )
+                        .declare_function("molt_vec_prod_int_range_trusted", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
@@ -647,11 +639,7 @@ impl SimpleBackend {
                     sig.returns.push(AbiParam::new(types::I64));
                     let callee = self
                         .module
-                        .declare_function(
-                            "molt_vec_min_int_range_trusted",
-                            Linkage::Import,
-                            &sig,
-                        )
+                        .declare_function("molt_vec_min_int_range_trusted", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
@@ -723,11 +711,7 @@ impl SimpleBackend {
                     sig.returns.push(AbiParam::new(types::I64));
                     let callee = self
                         .module
-                        .declare_function(
-                            "molt_vec_max_int_range_trusted",
-                            Linkage::Import,
-                            &sig,
-                        )
+                        .declare_function("molt_vec_max_int_range_trusted", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);

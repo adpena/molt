@@ -4829,8 +4829,7 @@ pub extern "C" fn molt_string_count(hay_bits: u64, needle_bits: u64) -> u64 {
             let needle_bytes =
                 std::slice::from_raw_parts(string_bytes(needle_ptr), string_len(needle_ptr));
             if needle_bytes.is_empty() {
-                let count =
-                    utf8_codepoint_count_cached(hay_bytes, Some(hay_ptr as usize)) + 1;
+                let count = utf8_codepoint_count_cached(hay_bytes, Some(hay_ptr as usize)) + 1;
                 return MoltObject::from_int(count).bits();
             }
             let count = bytes_count_impl(hay_bytes, needle_bytes);
@@ -5175,11 +5174,7 @@ fn utf8_codepoint_count_cached(bytes: &[u8], cache_key: Option<usize>) -> i64 {
     utf8_count_prefix_blocked(bytes, bytes.len())
 }
 
-fn utf8_byte_to_char_index_cached(
-    bytes: &[u8],
-    byte_idx: usize,
-    cache_key: Option<usize>,
-) -> i64 {
+fn utf8_byte_to_char_index_cached(bytes: &[u8], byte_idx: usize, cache_key: Option<usize>) -> i64 {
     if byte_idx == 0 {
         return 0;
     }
@@ -5339,9 +5334,8 @@ fn replace_string_impl(
         let hay_str = unsafe { std::str::from_utf8_unchecked(hay_bytes) };
         let replacement_str = unsafe { std::str::from_utf8_unchecked(replacement_bytes) };
         let codepoints = utf8_codepoint_count_cached(hay_bytes, Some(hay_ptr as usize)) as usize;
-        let mut out = String::with_capacity(
-            hay_str.len() + replacement_str.len() * (codepoints + 1),
-        );
+        let mut out =
+            String::with_capacity(hay_str.len() + replacement_str.len() * (codepoints + 1));
         out.push_str(replacement_str);
         for ch in hay_str.chars() {
             out.push(ch);
@@ -5486,8 +5480,7 @@ pub extern "C" fn molt_bytes_split(hay_bits: u64, needle_bits: u64) -> u64 {
             if needle_bytes.is_empty() {
                 raise_exception("ValueError", "empty separator");
             }
-            let list_bits = match split_bytes_to_list(hay_bytes, needle_bytes, alloc_bytes)
-            {
+            let list_bits = match split_bytes_to_list(hay_bytes, needle_bytes, alloc_bytes) {
                 Some(val) => val,
                 None => return MoltObject::none().bits(),
             };
@@ -5514,8 +5507,7 @@ pub extern "C" fn molt_bytearray_split(hay_bits: u64, needle_bits: u64) -> u64 {
             if needle_bytes.is_empty() {
                 raise_exception("ValueError", "empty separator");
             }
-            let list_bits =
-                match split_bytes_to_list(hay_bytes, needle_bytes, alloc_bytearray) {
+            let list_bits = match split_bytes_to_list(hay_bytes, needle_bytes, alloc_bytearray) {
                 Some(val) => val,
                 None => return MoltObject::none().bits(),
             };
@@ -6317,10 +6309,7 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                     }
                     raise_exception(
                         "TypeError",
-                        &format!(
-                            "a bytes-like object is required, not '{}'",
-                            type_name(item)
-                        ),
+                        &format!("a bytes-like object is required, not '{}'", type_name(item)),
                     );
                 }
                 TYPE_ID_RANGE => {
@@ -6353,20 +6342,14 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                         Some(ptr) => ptr,
                         None => raise_exception(
                             "TypeError",
-                            &format!(
-                                "a bytes-like object is required, not '{}'",
-                                type_name(item)
-                            ),
+                            &format!("a bytes-like object is required, not '{}'", type_name(item)),
                         ),
                     };
                     let base = match bytes_like_slice_raw(owner_ptr) {
                         Some(slice) => slice,
                         None => raise_exception(
                             "TypeError",
-                            &format!(
-                                "a bytes-like object is required, not '{}'",
-                                type_name(item)
-                            ),
+                            &format!("a bytes-like object is required, not '{}'", type_name(item)),
                         ),
                     };
                     let offset = memoryview_offset(ptr);
@@ -6376,10 +6359,7 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                     if offset < 0 {
                         raise_exception(
                             "TypeError",
-                            &format!(
-                                "a bytes-like object is required, not '{}'",
-                                type_name(item)
-                            ),
+                            &format!("a bytes-like object is required, not '{}'", type_name(item)),
                         );
                     }
                     if itemsize != 1 {
@@ -6412,10 +6392,7 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                         }
                         raise_exception(
                             "TypeError",
-                            &format!(
-                                "a bytes-like object is required, not '{}'",
-                                type_name(item)
-                            ),
+                            &format!("a bytes-like object is required, not '{}'", type_name(item)),
                         );
                     }
                     let mut out = Vec::with_capacity(len);
@@ -6459,10 +6436,7 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                     }
                     raise_exception(
                         "TypeError",
-                        &format!(
-                            "a bytes-like object is required, not '{}'",
-                            type_name(item)
-                        ),
+                        &format!("a bytes-like object is required, not '{}'", type_name(item)),
                     );
                 }
                 _ => {}
