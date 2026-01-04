@@ -2,9 +2,475 @@ import os
 import shutil
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
+
+from tests.wasm_harness import write_wasm_runner
+
+LIST_DICT_IMPORT_OVERRIDES = textwrap.dedent(
+    """\
+    print_obj: (val) => {
+      if (isTag(val, TAG_INT)) {
+        console.log(unboxInt(val).toString());
+        return;
+      }
+      if (isTag(val, TAG_BOOL)) {
+        console.log((val & 1n) === 1n ? 'True' : 'False');
+        return;
+      }
+      if (isTag(val, TAG_NONE)) {
+        console.log('None');
+        return;
+      }
+      console.log(val.toString());
+    },
+    print_newline: () => console.log(''),
+    alloc: () => 0n,
+    async_sleep: () => 0n,
+    block_on: () => 0n,
+    add: (a, b) => boxInt(unboxInt(a) + unboxInt(b)),
+    vec_sum_int: (seqBits, accBits) => {
+      const list = getList(seqBits);
+      if (!list || !isTag(accBits, TAG_INT)) {
+        return listFromArray([boxNone(), boxBool(false)]);
+      }
+      let sum = unboxInt(accBits);
+      for (const item of list.items) {
+        if (!isTag(item, TAG_INT)) {
+          return listFromArray([boxInt(sum), boxBool(false)]);
+        }
+        sum += unboxInt(item);
+      }
+      return listFromArray([boxInt(sum), boxBool(true)]);
+    },
+    vec_sum_int_trusted: (seqBits, accBits) => {
+      const list = getList(seqBits);
+      if (!list || !isTag(accBits, TAG_INT)) {
+        return listFromArray([boxNone(), boxBool(false)]);
+      }
+      let sum = unboxInt(accBits);
+      for (const item of list.items) {
+        if (!isTag(item, TAG_INT)) {
+          return listFromArray([boxInt(sum), boxBool(false)]);
+        }
+        sum += unboxInt(item);
+      }
+      return listFromArray([boxInt(sum), boxBool(true)]);
+    },
+    vec_sum_int_range: (seqBits, accBits, startBits) => {
+      const list = getList(seqBits);
+      if (!list || !isTag(accBits, TAG_INT) || !isTag(startBits, TAG_INT)) {
+        return listFromArray([boxNone(), boxBool(false)]);
+      }
+      const start = Number(unboxInt(startBits));
+      if (start < 0) {
+        return listFromArray([boxInt(unboxInt(accBits)), boxBool(false)]);
+      }
+      let sum = unboxInt(accBits);
+      for (let i = start; i < list.items.length; i += 1) {
+        const item = list.items[i];
+        if (!isTag(item, TAG_INT)) {
+          return listFromArray([boxInt(sum), boxBool(false)]);
+        }
+        sum += unboxInt(item);
+      }
+      return listFromArray([boxInt(sum), boxBool(true)]);
+    },
+    vec_sum_int_range_trusted: (seqBits, accBits, startBits) => {
+      const list = getList(seqBits);
+      if (!list || !isTag(accBits, TAG_INT) || !isTag(startBits, TAG_INT)) {
+        return listFromArray([boxNone(), boxBool(false)]);
+      }
+      const start = Number(unboxInt(startBits));
+      if (start < 0) {
+        return listFromArray([boxInt(unboxInt(accBits)), boxBool(false)]);
+      }
+      let sum = unboxInt(accBits);
+      for (let i = start; i < list.items.length; i += 1) {
+        const item = list.items[i];
+        if (!isTag(item, TAG_INT)) {
+          return listFromArray([boxInt(sum), boxBool(false)]);
+        }
+        sum += unboxInt(item);
+      }
+      return listFromArray([boxInt(sum), boxBool(true)]);
+    },
+    vec_prod_int: () => listFromArray([boxNone(), boxBool(false)]),
+    vec_prod_int_trusted: () => listFromArray([boxNone(), boxBool(false)]),
+    vec_prod_int_range: () => listFromArray([boxNone(), boxBool(false)]),
+    vec_prod_int_range_trusted: () => listFromArray([boxNone(), boxBool(false)]),
+    vec_min_int: () => listFromArray([boxNone(), boxBool(false)]),
+    vec_min_int_trusted: () => listFromArray([boxNone(), boxBool(false)]),
+    vec_min_int_range: () => listFromArray([boxNone(), boxBool(false)]),
+    vec_min_int_range_trusted: () => listFromArray([boxNone(), boxBool(false)]),
+    vec_max_int: () => listFromArray([boxNone(), boxBool(false)]),
+    vec_max_int_trusted: () => listFromArray([boxNone(), boxBool(false)]),
+    vec_max_int_range: () => listFromArray([boxNone(), boxBool(false)]),
+    vec_max_int_range_trusted: () => listFromArray([boxNone(), boxBool(false)]),
+    sub: (a, b) => boxInt(unboxInt(a) - unboxInt(b)),
+    mul: (a, b) => boxInt(unboxInt(a) * unboxInt(b)),
+    lt: (a, b) => boxBool(unboxInt(a) < unboxInt(b)),
+    eq: (a, b) => boxBool(a === b),
+    is: (a, b) => boxBool(a === b),
+    not: (val) => {
+      if (isTag(val, TAG_BOOL)) return boxBool((val & 1n) !== 1n);
+      if (isTag(val, TAG_INT)) return boxBool(unboxInt(val) === 0n);
+      if (isPtr(val)) {
+        const obj = getObj(val);
+        if (obj && obj.type === 'list') return boxBool(obj.items.length === 0);
+        if (obj && obj.type === 'dict') return boxBool(obj.map.size === 0);
+      }
+      return boxBool(true);
+    },
+    contains: (container, item) => {
+      const list = getList(container);
+      if (list) {
+        return boxBool(list.items.some((val) => val === item));
+      }
+      const dict = getDict(container);
+      if (dict) {
+        return boxBool(dict.map.has(item));
+      }
+      return boxBool(false);
+    },
+    guard_type: (val, expected) => val,
+    is_truthy: (val) => {
+      if (isTag(val, TAG_BOOL)) {
+        return (val & 1n) === 1n ? 1n : 0n;
+      }
+      if (isTag(val, TAG_INT)) {
+        return unboxInt(val) !== 0n ? 1n : 0n;
+      }
+      if (isTag(val, TAG_NONE)) {
+        return 0n;
+      }
+      if (isPtr(val)) {
+        const obj = getObj(val);
+        if (obj && obj.type === 'list') return obj.items.length ? 1n : 0n;
+        if (obj && obj.type === 'dict') return obj.map.size ? 1n : 0n;
+        if (obj && obj.type === 'dict_keys_view') return obj.dict.map.size ? 1n : 0n;
+        if (obj && obj.type === 'dict_values_view') return obj.dict.map.size ? 1n : 0n;
+        if (obj && obj.type === 'dict_items_view') return obj.dict.map.size ? 1n : 0n;
+        if (obj && obj.type === 'iter') return 1n;
+      }
+      return 0n;
+    },
+    json_parse_scalar: () => 0,
+    msgpack_parse_scalar: () => 0,
+    cbor_parse_scalar: () => 0,
+    string_from_bytes: () => 0,
+    bytes_from_bytes: () => 0,
+    memoryview_new: () => boxNone(),
+    memoryview_tobytes: () => boxNone(),
+    str_from_obj: () => 0n,
+    len: (val) => {
+      const list = getList(val);
+      if (list) return boxInt(list.items.length);
+      const dict = getDict(val);
+      if (dict) return boxInt(dict.map.size);
+      const view = getObj(val);
+      if (view && (view.type === 'dict_keys_view' || view.type === 'dict_values_view' || view.type === 'dict_items_view')) {
+        return boxInt(view.dict.map.size);
+      }
+      return boxInt(0);
+    },
+    slice: (obj, startBits, endBits) => {
+      const list = getList(obj);
+      if (!list) return boxNone();
+      const len = list.items.length;
+      let start = isTag(startBits, TAG_NONE) ? 0 : Number(unboxInt(startBits));
+      let end = isTag(endBits, TAG_NONE) ? len : Number(unboxInt(endBits));
+      if (start < 0) start += len;
+      if (end < 0) end += len;
+      if (start < 0) start = 0;
+      if (end > len) end = len;
+      if (end < start) end = start;
+      return listFromArray(list.items.slice(start, end));
+    },
+    slice_new: (startBits, stopBits, stepBits) => {
+      return boxPtr({ type: 'slice', startBits, stopBits, stepBits });
+    },
+    range_new: () => boxNone(),
+    list_builder_new: () => boxPtr({ type: 'list_builder', items: [] }),
+    list_builder_append: (builder, val) => {
+      const obj = getObj(builder);
+      if (obj) obj.items.push(val);
+    },
+    list_builder_finish: (builder) => {
+      const obj = getObj(builder);
+      if (!obj) return boxNone();
+      return listFromArray(obj.items.slice());
+    },
+    tuple_builder_finish: (builder) => {
+      const obj = getObj(builder);
+      if (!obj) return boxNone();
+      return listFromArray(obj.items.slice());
+    },
+    list_append: (listBits, val) => {
+      const list = getList(listBits);
+      if (!list) return boxNone();
+      list.items.push(val);
+      return boxNone();
+    },
+    list_pop: (listBits, idxBits) => {
+      const list = getList(listBits);
+      if (!list || list.items.length === 0) return boxNone();
+      let idx;
+      if (isTag(idxBits, TAG_NONE)) {
+        idx = list.items.length - 1;
+      } else if (isTag(idxBits, TAG_INT)) {
+        idx = Number(unboxInt(idxBits));
+      } else {
+        return boxNone();
+      }
+      if (idx < 0) idx += list.items.length;
+      if (idx < 0 || idx >= list.items.length) return boxNone();
+      return list.items.splice(idx, 1)[0];
+    },
+    list_extend: (listBits, otherBits) => {
+      const list = getList(listBits);
+      if (!list) return boxNone();
+      const otherList = getList(otherBits);
+      if (otherList) {
+        list.items.push(...otherList.items);
+        return boxNone();
+      }
+      const view = getObj(otherBits);
+      if (view && (view.type === 'dict_keys_view' || view.type === 'dict_values_view' || view.type === 'dict_items_view')) {
+        const keys = Array.from(view.dict.map.keys());
+        const values = Array.from(view.dict.map.values());
+        for (let i = 0; i < keys.length; i += 1) {
+          if (view.type === 'dict_items_view') {
+            list.items.push(listFromArray([keys[i], values[i]]));
+          } else if (view.type === 'dict_keys_view') {
+            list.items.push(keys[i]);
+          } else {
+            list.items.push(values[i]);
+          }
+        }
+      }
+      return boxNone();
+    },
+    list_insert: (listBits, idxBits, valBits) => {
+      const list = getList(listBits);
+      if (!list) return boxNone();
+      let idx = Number(unboxInt(idxBits));
+      if (idx < 0) idx += list.items.length;
+      if (idx < 0) idx = 0;
+      if (idx > list.items.length) idx = list.items.length;
+      list.items.splice(idx, 0, valBits);
+      return boxNone();
+    },
+    list_remove: (listBits, valBits) => {
+      const list = getList(listBits);
+      if (!list) return boxNone();
+      const idx = list.items.findIndex((v) => v === valBits);
+      if (idx >= 0) list.items.splice(idx, 1);
+      return boxNone();
+    },
+    list_count: (listBits, valBits) => {
+      const list = getList(listBits);
+      if (!list) return boxInt(0);
+      let count = 0;
+      for (const item of list.items) {
+        if (item === valBits) count += 1;
+      }
+      return boxInt(count);
+    },
+    list_index: (listBits, valBits) => {
+      const list = getList(listBits);
+      if (!list) return boxNone();
+      const idx = list.items.indexOf(valBits);
+      return idx >= 0 ? boxInt(idx) : boxNone();
+    },
+    dict_new: () => boxPtr({ type: 'dict', map: new Map() }),
+    dict_set: (dictBits, keyBits, valBits) => {
+      const dict = getDict(dictBits);
+      if (!dict) return boxNone();
+      dict.map.set(keyBits, valBits);
+      return dictBits;
+    },
+    dict_get: (dictBits, keyBits, defaultBits) => {
+      const dict = getDict(dictBits);
+      if (!dict) return defaultBits;
+      return dict.map.has(keyBits) ? dict.map.get(keyBits) : defaultBits;
+    },
+    dict_pop: (dictBits, keyBits, defaultBits, hasDefaultBits) => {
+      const dict = getDict(dictBits);
+      const hasDefault = unboxInt(hasDefaultBits) !== 0n;
+      if (!dict) return hasDefault ? defaultBits : boxNone();
+      if (dict.map.has(keyBits)) {
+        const val = dict.map.get(keyBits);
+        dict.map.delete(keyBits);
+        return val;
+      }
+      return hasDefault ? defaultBits : boxNone();
+    },
+    dict_keys: (dictBits) => {
+      const dict = getDict(dictBits);
+      if (!dict) return boxNone();
+      return boxPtr({ type: 'dict_keys_view', dict });
+    },
+    dict_values: (dictBits) => {
+      const dict = getDict(dictBits);
+      if (!dict) return boxNone();
+      return boxPtr({ type: 'dict_values_view', dict });
+    },
+    dict_items: (dictBits) => {
+      const dict = getDict(dictBits);
+      if (!dict) return boxNone();
+      return boxPtr({ type: 'dict_items_view', dict });
+    },
+    tuple_count: (tupleBits, valBits) => {
+      const list = getList(tupleBits);
+      if (!list) return boxInt(0);
+      let count = 0;
+      for (const item of list.items) {
+        if (item === valBits) count += 1;
+      }
+      return boxInt(count);
+    },
+    tuple_index: (tupleBits, valBits) => {
+      const list = getList(tupleBits);
+      if (!list) return boxNone();
+      const idx = list.items.indexOf(valBits);
+      return idx >= 0 ? boxInt(idx) : boxNone();
+    },
+    iter: (objBits) => {
+      const obj = getObj(objBits);
+      if (obj && obj.type === 'dict') {
+        const view = { type: 'dict_keys_view', dict: obj };
+        return boxPtr({ type: 'iter', target: view, idx: 0 });
+      }
+      return boxPtr({ type: 'iter', target: obj, idx: 0 });
+    },
+    iter_next: (iterBits) => {
+      const iter = getObj(iterBits);
+      if (!iter || iter.type !== 'iter') return listFromArray([boxNone(), boxBool(true)]);
+      const target = iter.target;
+      let items = [];
+      if (target && target.type === 'list') {
+        items = target.items;
+      } else if (target && (target.type === 'dict_keys_view' || target.type === 'dict_values_view' || target.type === 'dict_items_view')) {
+        const keys = Array.from(target.dict.map.keys());
+        const values = Array.from(target.dict.map.values());
+        for (let i = 0; i < keys.length; i += 1) {
+          if (target.type === 'dict_items_view') {
+            items.push(listFromArray([keys[i], values[i]]));
+          } else if (target.type === 'dict_keys_view') {
+            items.push(keys[i]);
+          } else {
+            items.push(values[i]);
+          }
+        }
+      }
+      if (iter.idx >= items.length) {
+        return listFromArray([boxNone(), boxBool(true)]);
+      }
+      const value = items[iter.idx];
+      iter.idx += 1;
+      return listFromArray([value, boxBool(false)]);
+    },
+    index: (obj, key) => {
+      const list = getList(obj);
+      if (list) {
+        let idx = Number(unboxInt(key));
+        if (idx < 0) idx += list.items.length;
+        if (idx < 0 || idx >= list.items.length) return boxNone();
+        return list.items[idx];
+      }
+      const dict = getDict(obj);
+      if (dict) {
+        return dict.map.has(key) ? dict.map.get(key) : boxNone();
+      }
+      const view = getObj(obj);
+      if (view && (view.type === 'dict_keys_view' || view.type === 'dict_values_view' || view.type === 'dict_items_view')) {
+        const keys = Array.from(view.dict.map.keys());
+        const values = Array.from(view.dict.map.values());
+        let idx = Number(unboxInt(key));
+        if (idx < 0) idx += keys.length;
+        if (idx < 0 || idx >= keys.length) return boxNone();
+        if (view.type === 'dict_items_view') {
+          return listFromArray([keys[idx], values[idx]]);
+        }
+        return view.type === 'dict_keys_view' ? keys[idx] : values[idx];
+      }
+      return boxNone();
+    },
+    store_index: (obj, key, val) => {
+      const list = getList(obj);
+      if (list) {
+        let idx = Number(unboxInt(key));
+        if (idx < 0) idx += list.items.length;
+        if (idx < 0 || idx >= list.items.length) return boxNone();
+        list.items[idx] = val;
+        return obj;
+      }
+      const dict = getDict(obj);
+      if (dict) {
+        dict.map.set(key, val);
+        return obj;
+      }
+      return boxNone();
+    },
+    bytes_find: () => boxInt(-1),
+    bytearray_find: () => boxInt(-1),
+    string_find: () => boxInt(-1),
+    string_format: () => boxNone(),
+    string_startswith: () => boxBool(false),
+    string_endswith: () => boxBool(false),
+    string_count: () => boxInt(0),
+    string_join: () => boxNone(),
+    string_split: () => boxNone(),
+    bytes_split: () => boxNone(),
+    bytearray_split: () => boxNone(),
+    string_replace: () => boxNone(),
+    bytes_replace: () => boxNone(),
+    bytearray_replace: () => boxNone(),
+    bytearray_from_obj: () => boxNone(),
+    intarray_from_seq: () => boxNone(),
+    buffer2d_new: () => boxNone(),
+    buffer2d_get: () => boxNone(),
+    buffer2d_set: () => boxNone(),
+    buffer2d_matmul: () => boxNone(),
+    dataclass_new: () => boxNone(),
+    dataclass_get: () => boxNone(),
+    dataclass_set: () => boxNone(),
+    context_null: (val) => val,
+    context_enter: (val) => val,
+    context_exit: () => boxBool(false),
+    context_unwind: () => boxBool(false),
+    context_depth: () => boxInt(0),
+    context_unwind_to: () => boxNone(),
+    exception_push: () => boxNone(),
+    exception_pop: () => boxNone(),
+    exception_last: () => boxNone(),
+    exception_new: () => boxNone(),
+    exception_clear: () => boxNone(),
+    exception_pending: () => 0n,
+    exception_kind: () => boxNone(),
+    exception_message: () => boxNone(),
+    exception_set_cause: () => boxNone(),
+    raise: () => boxNone(),
+    context_closing: (val) => val,
+    bridge_unavailable: () => boxNone(),
+    file_open: () => boxNone(),
+    file_read: () => boxNone(),
+    file_write: () => boxNone(),
+    file_close: () => boxNone(),
+    stream_new: () => 0n,
+    stream_send: () => 0n,
+    stream_recv: () => 0n,
+    stream_close: () => {},
+    ws_connect: () => 0,
+    ws_pair: () => 0,
+    ws_send: () => 0n,
+    ws_recv: () => 0n,
+    ws_close: () => {},
+"""
+)
 
 
 def test_wasm_list_dict_ops_parity(tmp_path: Path) -> None:
@@ -75,511 +541,10 @@ def test_wasm_list_dict_ops_parity(tmp_path: Path) -> None:
     output_wasm = root / "output.wasm"
     existed = output_wasm.exists()
 
-    runner = tmp_path / "run_wasm_list_dict.js"
-    runner.write_text(
-        "const fs = require('fs');\n"
-        "const wasmPath = process.argv[2];\n"
-        "const wasmBuffer = fs.readFileSync(wasmPath);\n"
-        "const QNAN = 0x7ff8000000000000n;\n"
-        "const TAG_INT = 0x0001000000000000n;\n"
-        "const TAG_BOOL = 0x0002000000000000n;\n"
-        "const TAG_NONE = 0x0003000000000000n;\n"
-        "const TAG_PTR = 0x0004000000000000n;\n"
-        "const TAG_MASK = 0x0007000000000000n;\n"
-        "const POINTER_MASK = 0x0000ffffffffffffn;\n"
-        "const INT_SIGN_BIT = 1n << 46n;\n"
-        "const INT_WIDTH = 47n;\n"
-        "const INT_MASK = (1n << INT_WIDTH) - 1n;\n"
-        "const isTag = (val, tag) => (val & (QNAN | TAG_MASK)) === (QNAN | tag);\n"
-        "const isPtr = (val) => isTag(val, TAG_PTR);\n"
-        "const unboxInt = (val) => {\n"
-        "  let v = val & INT_MASK;\n"
-        "  if ((v & INT_SIGN_BIT) !== 0n) {\n"
-        "    v = v - (1n << INT_WIDTH);\n"
-        "  }\n"
-        "  return v;\n"
-        "};\n"
-        "const boxInt = (n) => {\n"
-        "  const v = BigInt(n) & INT_MASK;\n"
-        "  return QNAN | TAG_INT | v;\n"
-        "};\n"
-        "const boxBool = (b) => QNAN | TAG_BOOL | (b ? 1n : 0n);\n"
-        "const boxNone = () => QNAN | TAG_NONE;\n"
-        "const heap = new Map();\n"
-        "let nextPtr = 1n;\n"
-        "const boxPtr = (obj) => {\n"
-        "  const id = nextPtr++;\n"
-        "  heap.set(id, obj);\n"
-        "  return QNAN | TAG_PTR | id;\n"
-        "};\n"
-        "const getObj = (val) => heap.get(val & POINTER_MASK);\n"
-        "const getList = (val) => {\n"
-        "  const obj = getObj(val);\n"
-        "  if (!obj || obj.type !== 'list') return null;\n"
-        "  return obj;\n"
-        "};\n"
-        "const getDict = (val) => {\n"
-        "  const obj = getObj(val);\n"
-        "  if (!obj || obj.type !== 'dict') return null;\n"
-        "  return obj;\n"
-        "};\n"
-        "const listFromArray = (items) => boxPtr({ type: 'list', items });\n"
-        "const imports = {\n"
-        "  molt_runtime: {\n"
-        "    print_obj: (val) => {\n"
-        "      if (isTag(val, TAG_INT)) {\n"
-        "        console.log(unboxInt(val).toString());\n"
-        "        return;\n"
-        "      }\n"
-        "      if (isTag(val, TAG_BOOL)) {\n"
-        "        console.log((val & 1n) === 1n ? 'True' : 'False');\n"
-        "        return;\n"
-        "      }\n"
-        "      if (isTag(val, TAG_NONE)) {\n"
-        "        console.log('None');\n"
-        "        return;\n"
-        "      }\n"
-        "      console.log(val.toString());\n"
-        "    },\n"
-        "    print_newline: () => console.log(''),\n"
-        "    alloc: () => 0n,\n"
-        "    async_sleep: () => 0n,\n"
-        "    block_on: () => 0n,\n"
-        "    add: (a, b) => boxInt(unboxInt(a) + unboxInt(b)),\n"
-        "    vec_sum_int: (seqBits, accBits) => {\n"
-        "      const list = getList(seqBits);\n"
-        "      if (!list || !isTag(accBits, TAG_INT)) {\n"
-        "        return listFromArray([boxNone(), boxBool(false)]);\n"
-        "      }\n"
-        "      let sum = unboxInt(accBits);\n"
-        "      for (const item of list.items) {\n"
-        "        if (!isTag(item, TAG_INT)) {\n"
-        "          return listFromArray([boxInt(sum), boxBool(false)]);\n"
-        "        }\n"
-        "        sum += unboxInt(item);\n"
-        "      }\n"
-        "      return listFromArray([boxInt(sum), boxBool(true)]);\n"
-        "    },\n"
-        "    vec_sum_int_trusted: (seqBits, accBits) => {\n"
-        "      const list = getList(seqBits);\n"
-        "      if (!list || !isTag(accBits, TAG_INT)) {\n"
-        "        return listFromArray([boxNone(), boxBool(false)]);\n"
-        "      }\n"
-        "      let sum = unboxInt(accBits);\n"
-        "      for (const item of list.items) {\n"
-        "        if (!isTag(item, TAG_INT)) {\n"
-        "          return listFromArray([boxInt(sum), boxBool(false)]);\n"
-        "        }\n"
-        "        sum += unboxInt(item);\n"
-        "      }\n"
-        "      return listFromArray([boxInt(sum), boxBool(true)]);\n"
-        "    },\n"
-        "    vec_sum_int_range: (seqBits, accBits, startBits) => {\n"
-        "      const list = getList(seqBits);\n"
-        "      if (!list || !isTag(accBits, TAG_INT) || !isTag(startBits, TAG_INT)) {\n"
-        "        return listFromArray([boxNone(), boxBool(false)]);\n"
-        "      }\n"
-        "      const start = Number(unboxInt(startBits));\n"
-        "      if (start < 0) {\n"
-        "        return listFromArray([boxInt(unboxInt(accBits)), boxBool(false)]);\n"
-        "      }\n"
-        "      let sum = unboxInt(accBits);\n"
-        "      for (let i = start; i < list.items.length; i += 1) {\n"
-        "        const item = list.items[i];\n"
-        "        if (!isTag(item, TAG_INT)) {\n"
-        "          return listFromArray([boxInt(sum), boxBool(false)]);\n"
-        "        }\n"
-        "        sum += unboxInt(item);\n"
-        "      }\n"
-        "      return listFromArray([boxInt(sum), boxBool(true)]);\n"
-        "    },\n"
-        "    vec_sum_int_range_trusted: (seqBits, accBits, startBits) => {\n"
-        "      const list = getList(seqBits);\n"
-        "      if (!list || !isTag(accBits, TAG_INT) || !isTag(startBits, TAG_INT)) {\n"
-        "        return listFromArray([boxNone(), boxBool(false)]);\n"
-        "      }\n"
-        "      const start = Number(unboxInt(startBits));\n"
-        "      if (start < 0) {\n"
-        "        return listFromArray([boxInt(unboxInt(accBits)), boxBool(false)]);\n"
-        "      }\n"
-        "      let sum = unboxInt(accBits);\n"
-        "      for (let i = start; i < list.items.length; i += 1) {\n"
-        "        const item = list.items[i];\n"
-        "        if (!isTag(item, TAG_INT)) {\n"
-        "          return listFromArray([boxInt(sum), boxBool(false)]);\n"
-        "        }\n"
-        "        sum += unboxInt(item);\n"
-        "      }\n"
-        "      return listFromArray([boxInt(sum), boxBool(true)]);\n"
-        "    },\n"
-        "    vec_prod_int: () => listFromArray([boxNone(), boxBool(false)]),\n"
-        "    vec_prod_int_trusted: () => listFromArray([boxNone(), boxBool(false)]),\n"
-        "    vec_prod_int_range: () => listFromArray([boxNone(), boxBool(false)]),\n"
-        "    vec_prod_int_range_trusted: () => listFromArray([boxNone(), boxBool(false)]),\n"
-        "    vec_min_int: () => listFromArray([boxNone(), boxBool(false)]),\n"
-        "    vec_min_int_trusted: () => listFromArray([boxNone(), boxBool(false)]),\n"
-        "    vec_min_int_range: () => listFromArray([boxNone(), boxBool(false)]),\n"
-        "    vec_min_int_range_trusted: () => listFromArray([boxNone(), boxBool(false)]),\n"
-        "    vec_max_int: () => listFromArray([boxNone(), boxBool(false)]),\n"
-        "    vec_max_int_trusted: () => listFromArray([boxNone(), boxBool(false)]),\n"
-        "    vec_max_int_range: () => listFromArray([boxNone(), boxBool(false)]),\n"
-        "    vec_max_int_range_trusted: () => listFromArray([boxNone(), boxBool(false)]),\n"
-        "    sub: (a, b) => boxInt(unboxInt(a) - unboxInt(b)),\n"
-        "    mul: (a, b) => boxInt(unboxInt(a) * unboxInt(b)),\n"
-        "    lt: (a, b) => boxBool(unboxInt(a) < unboxInt(b)),\n"
-        "    eq: (a, b) => boxBool(a === b),\n"
-        "    is: (a, b) => boxBool(a === b),\n"
-        "    not: (val) => {\n"
-        "      if (isTag(val, TAG_BOOL)) return boxBool((val & 1n) !== 1n);\n"
-        "      if (isTag(val, TAG_INT)) return boxBool(unboxInt(val) === 0n);\n"
-        "      if (isPtr(val)) {\n"
-        "        const obj = getObj(val);\n"
-        "        if (obj && obj.type === 'list') return boxBool(obj.items.length === 0);\n"
-        "        if (obj && obj.type === 'dict') return boxBool(obj.map.size === 0);\n"
-        "      }\n"
-        "      return boxBool(true);\n"
-        "    },\n"
-        "    contains: (container, item) => {\n"
-        "      const list = getList(container);\n"
-        "      if (list) {\n"
-        "        return boxBool(list.items.some((val) => val === item));\n"
-        "      }\n"
-        "      const dict = getDict(container);\n"
-        "      if (dict) {\n"
-        "        return boxBool(dict.map.has(item));\n"
-        "      }\n"
-        "      return boxBool(false);\n"
-        "    },\n"
-        "    guard_type: (val, expected) => val,\n"
-        "    is_truthy: (val) => {\n"
-        "      if (isTag(val, TAG_BOOL)) {\n"
-        "        return (val & 1n) === 1n ? 1n : 0n;\n"
-        "      }\n"
-        "      if (isTag(val, TAG_INT)) {\n"
-        "        return unboxInt(val) !== 0n ? 1n : 0n;\n"
-        "      }\n"
-        "      if (isTag(val, TAG_NONE)) {\n"
-        "        return 0n;\n"
-        "      }\n"
-        "      if (isPtr(val)) {\n"
-        "        const obj = getObj(val);\n"
-        "        if (obj && obj.type === 'list') return obj.items.length ? 1n : 0n;\n"
-        "        if (obj && obj.type === 'dict') return obj.map.size ? 1n : 0n;\n"
-        "        if (obj && obj.type === 'dict_keys_view') return obj.dict.map.size ? 1n : 0n;\n"
-        "        if (obj && obj.type === 'dict_values_view') return obj.dict.map.size ? 1n : 0n;\n"
-        "        if (obj && obj.type === 'dict_items_view') return obj.dict.map.size ? 1n : 0n;\n"
-        "        if (obj && obj.type === 'iter') return 1n;\n"
-        "      }\n"
-        "      return 0n;\n"
-        "    },\n"
-        "    json_parse_scalar: () => 0,\n"
-        "    msgpack_parse_scalar: () => 0,\n"
-        "    cbor_parse_scalar: () => 0,\n"
-        "    string_from_bytes: () => 0,\n"
-        "    bytes_from_bytes: () => 0,\n"
-        "    memoryview_new: () => boxNone(),\n"
-        "    memoryview_tobytes: () => boxNone(),\n"
-        "    str_from_obj: () => 0n,\n"
-        "    len: (val) => {\n"
-        "      const list = getList(val);\n"
-        "      if (list) return boxInt(list.items.length);\n"
-        "      const dict = getDict(val);\n"
-        "      if (dict) return boxInt(dict.map.size);\n"
-        "      const view = getObj(val);\n"
-        "      if (view && (view.type === 'dict_keys_view' || view.type === 'dict_values_view' || view.type === 'dict_items_view')) {\n"
-        "        return boxInt(view.dict.map.size);\n"
-        "      }\n"
-        "      return boxInt(0);\n"
-        "    },\n"
-        "    slice: (obj, startBits, endBits) => {\n"
-        "      const list = getList(obj);\n"
-        "      if (!list) return boxNone();\n"
-        "      const len = list.items.length;\n"
-        "      let start = isTag(startBits, TAG_NONE) ? 0 : Number(unboxInt(startBits));\n"
-        "      let end = isTag(endBits, TAG_NONE) ? len : Number(unboxInt(endBits));\n"
-        "      if (start < 0) start += len;\n"
-        "      if (end < 0) end += len;\n"
-        "      if (start < 0) start = 0;\n"
-        "      if (end > len) end = len;\n"
-        "      if (end < start) end = start;\n"
-        "      return listFromArray(list.items.slice(start, end));\n"
-        "    },\n"
-        "    slice_new: (startBits, stopBits, stepBits) => {\n"
-        "      return boxPtr({ type: 'slice', startBits, stopBits, stepBits });\n"
-        "    },\n"
-        "    range_new: () => boxNone(),\n"
-        "    list_builder_new: () => boxPtr({ type: 'list_builder', items: [] }),\n"
-        "    list_builder_append: (builder, val) => {\n"
-        "      const obj = getObj(builder);\n"
-        "      if (obj) obj.items.push(val);\n"
-        "    },\n"
-        "    list_builder_finish: (builder) => {\n"
-        "      const obj = getObj(builder);\n"
-        "      if (!obj) return boxNone();\n"
-        "      return listFromArray(obj.items.slice());\n"
-        "    },\n"
-        "    tuple_builder_finish: (builder) => {\n"
-        "      const obj = getObj(builder);\n"
-        "      if (!obj) return boxNone();\n"
-        "      return listFromArray(obj.items.slice());\n"
-        "    },\n"
-        "    list_append: (listBits, val) => {\n"
-        "      const list = getList(listBits);\n"
-        "      if (!list) return boxNone();\n"
-        "      list.items.push(val);\n"
-        "      return boxNone();\n"
-        "    },\n"
-        "    list_pop: (listBits, idxBits) => {\n"
-        "      const list = getList(listBits);\n"
-        "      if (!list || list.items.length === 0) return boxNone();\n"
-        "      let idx;\n"
-        "      if (isTag(idxBits, TAG_NONE)) {\n"
-        "        idx = list.items.length - 1;\n"
-        "      } else if (isTag(idxBits, TAG_INT)) {\n"
-        "        idx = Number(unboxInt(idxBits));\n"
-        "      } else {\n"
-        "        return boxNone();\n"
-        "      }\n"
-        "      if (idx < 0) idx += list.items.length;\n"
-        "      if (idx < 0 || idx >= list.items.length) return boxNone();\n"
-        "      return list.items.splice(idx, 1)[0];\n"
-        "    },\n"
-        "    list_extend: (listBits, otherBits) => {\n"
-        "      const list = getList(listBits);\n"
-        "      if (!list) return boxNone();\n"
-        "      const otherList = getList(otherBits);\n"
-        "      if (otherList) {\n"
-        "        list.items.push(...otherList.items);\n"
-        "        return boxNone();\n"
-        "      }\n"
-        "      const view = getObj(otherBits);\n"
-        "      if (view && (view.type === 'dict_keys_view' || view.type === 'dict_values_view' || view.type === 'dict_items_view')) {\n"
-        "        const keys = Array.from(view.dict.map.keys());\n"
-        "        const values = Array.from(view.dict.map.values());\n"
-        "        for (let i = 0; i < keys.length; i += 1) {\n"
-        "          if (view.type === 'dict_items_view') {\n"
-        "            list.items.push(listFromArray([keys[i], values[i]]));\n"
-        "          } else if (view.type === 'dict_keys_view') {\n"
-        "            list.items.push(keys[i]);\n"
-        "          } else {\n"
-        "            list.items.push(values[i]);\n"
-        "          }\n"
-        "        }\n"
-        "      }\n"
-        "      return boxNone();\n"
-        "    },\n"
-        "    list_insert: (listBits, idxBits, valBits) => {\n"
-        "      const list = getList(listBits);\n"
-        "      if (!list) return boxNone();\n"
-        "      let idx = Number(unboxInt(idxBits));\n"
-        "      if (idx < 0) idx += list.items.length;\n"
-        "      if (idx < 0) idx = 0;\n"
-        "      if (idx > list.items.length) idx = list.items.length;\n"
-        "      list.items.splice(idx, 0, valBits);\n"
-        "      return boxNone();\n"
-        "    },\n"
-        "    list_remove: (listBits, valBits) => {\n"
-        "      const list = getList(listBits);\n"
-        "      if (!list) return boxNone();\n"
-        "      const idx = list.items.findIndex((v) => v === valBits);\n"
-        "      if (idx >= 0) list.items.splice(idx, 1);\n"
-        "      return boxNone();\n"
-        "    },\n"
-        "    list_count: (listBits, valBits) => {\n"
-        "      const list = getList(listBits);\n"
-        "      if (!list) return boxInt(0);\n"
-        "      let count = 0;\n"
-        "      for (const item of list.items) {\n"
-        "        if (item === valBits) count += 1;\n"
-        "      }\n"
-        "      return boxInt(count);\n"
-        "    },\n"
-        "    list_index: (listBits, valBits) => {\n"
-        "      const list = getList(listBits);\n"
-        "      if (!list) return boxNone();\n"
-        "      const idx = list.items.indexOf(valBits);\n"
-        "      return idx >= 0 ? boxInt(idx) : boxNone();\n"
-        "    },\n"
-        "    dict_new: () => boxPtr({ type: 'dict', map: new Map() }),\n"
-        "    dict_set: (dictBits, keyBits, valBits) => {\n"
-        "      const dict = getDict(dictBits);\n"
-        "      if (!dict) return boxNone();\n"
-        "      dict.map.set(keyBits, valBits);\n"
-        "      return dictBits;\n"
-        "    },\n"
-        "    dict_get: (dictBits, keyBits, defaultBits) => {\n"
-        "      const dict = getDict(dictBits);\n"
-        "      if (!dict) return defaultBits;\n"
-        "      return dict.map.has(keyBits) ? dict.map.get(keyBits) : defaultBits;\n"
-        "    },\n"
-        "    dict_pop: (dictBits, keyBits, defaultBits, hasDefaultBits) => {\n"
-        "      const dict = getDict(dictBits);\n"
-        "      const hasDefault = unboxInt(hasDefaultBits) !== 0n;\n"
-        "      if (!dict) return hasDefault ? defaultBits : boxNone();\n"
-        "      if (dict.map.has(keyBits)) {\n"
-        "        const val = dict.map.get(keyBits);\n"
-        "        dict.map.delete(keyBits);\n"
-        "        return val;\n"
-        "      }\n"
-        "      return hasDefault ? defaultBits : boxNone();\n"
-        "    },\n"
-        "    dict_keys: (dictBits) => {\n"
-        "      const dict = getDict(dictBits);\n"
-        "      if (!dict) return boxNone();\n"
-        "      return boxPtr({ type: 'dict_keys_view', dict });\n"
-        "    },\n"
-        "    dict_values: (dictBits) => {\n"
-        "      const dict = getDict(dictBits);\n"
-        "      if (!dict) return boxNone();\n"
-        "      return boxPtr({ type: 'dict_values_view', dict });\n"
-        "    },\n"
-        "    dict_items: (dictBits) => {\n"
-        "      const dict = getDict(dictBits);\n"
-        "      if (!dict) return boxNone();\n"
-        "      return boxPtr({ type: 'dict_items_view', dict });\n"
-        "    },\n"
-        "    tuple_count: (tupleBits, valBits) => {\n"
-        "      const list = getList(tupleBits);\n"
-        "      if (!list) return boxInt(0);\n"
-        "      let count = 0;\n"
-        "      for (const item of list.items) {\n"
-        "        if (item === valBits) count += 1;\n"
-        "      }\n"
-        "      return boxInt(count);\n"
-        "    },\n"
-        "    tuple_index: (tupleBits, valBits) => {\n"
-        "      const list = getList(tupleBits);\n"
-        "      if (!list) return boxNone();\n"
-        "      const idx = list.items.indexOf(valBits);\n"
-        "      return idx >= 0 ? boxInt(idx) : boxNone();\n"
-        "    },\n"
-        "    iter: (objBits) => {\n"
-        "      const obj = getObj(objBits);\n"
-        "      if (obj && obj.type === 'dict') {\n"
-        "        const view = { type: 'dict_keys_view', dict: obj };\n"
-        "        return boxPtr({ type: 'iter', target: view, idx: 0 });\n"
-        "      }\n"
-        "      return boxPtr({ type: 'iter', target: obj, idx: 0 });\n"
-        "    },\n"
-        "    iter_next: (iterBits) => {\n"
-        "      const iter = getObj(iterBits);\n"
-        "      if (!iter || iter.type !== 'iter') return listFromArray([boxNone(), boxBool(true)]);\n"
-        "      const target = iter.target;\n"
-        "      let items = [];\n"
-        "      if (target && target.type === 'list') {\n"
-        "        items = target.items;\n"
-        "      } else if (target && (target.type === 'dict_keys_view' || target.type === 'dict_values_view' || target.type === 'dict_items_view')) {\n"
-        "        const keys = Array.from(target.dict.map.keys());\n"
-        "        const values = Array.from(target.dict.map.values());\n"
-        "        for (let i = 0; i < keys.length; i += 1) {\n"
-        "          if (target.type === 'dict_items_view') {\n"
-        "            items.push(listFromArray([keys[i], values[i]]));\n"
-        "          } else if (target.type === 'dict_keys_view') {\n"
-        "            items.push(keys[i]);\n"
-        "          } else {\n"
-        "            items.push(values[i]);\n"
-        "          }\n"
-        "        }\n"
-        "      }\n"
-        "      if (iter.idx >= items.length) {\n"
-        "        return listFromArray([boxNone(), boxBool(true)]);\n"
-        "      }\n"
-        "      const value = items[iter.idx];\n"
-        "      iter.idx += 1;\n"
-        "      return listFromArray([value, boxBool(false)]);\n"
-        "    },\n"
-        "    index: (obj, key) => {\n"
-        "      const list = getList(obj);\n"
-        "      if (list) {\n"
-        "        let idx = Number(unboxInt(key));\n"
-        "        if (idx < 0) idx += list.items.length;\n"
-        "        if (idx < 0 || idx >= list.items.length) return boxNone();\n"
-        "        return list.items[idx];\n"
-        "      }\n"
-        "      const dict = getDict(obj);\n"
-        "      if (dict) {\n"
-        "        return dict.map.has(key) ? dict.map.get(key) : boxNone();\n"
-        "      }\n"
-        "      const view = getObj(obj);\n"
-        "      if (view && (view.type === 'dict_keys_view' || view.type === 'dict_values_view' || view.type === 'dict_items_view')) {\n"
-        "        const keys = Array.from(view.dict.map.keys());\n"
-        "        const values = Array.from(view.dict.map.values());\n"
-        "        let idx = Number(unboxInt(key));\n"
-        "        if (idx < 0) idx += keys.length;\n"
-        "        if (idx < 0 || idx >= keys.length) return boxNone();\n"
-        "        if (view.type === 'dict_items_view') {\n"
-        "          return listFromArray([keys[idx], values[idx]]);\n"
-        "        }\n"
-        "        return view.type === 'dict_keys_view' ? keys[idx] : values[idx];\n"
-        "      }\n"
-        "      return boxNone();\n"
-        "    },\n"
-        "    store_index: (obj, key, val) => {\n"
-        "      const list = getList(obj);\n"
-        "      if (list) {\n"
-        "        let idx = Number(unboxInt(key));\n"
-        "        if (idx < 0) idx += list.items.length;\n"
-        "        if (idx < 0 || idx >= list.items.length) return boxNone();\n"
-        "        list.items[idx] = val;\n"
-        "        return obj;\n"
-        "      }\n"
-        "      const dict = getDict(obj);\n"
-        "      if (dict) {\n"
-        "        dict.map.set(key, val);\n"
-        "        return obj;\n"
-        "      }\n"
-        "      return boxNone();\n"
-        "    },\n"
-        "    bytes_find: () => boxInt(-1),\n"
-        "    bytearray_find: () => boxInt(-1),\n"
-        "    string_find: () => boxInt(-1),\n"
-        "    string_format: () => boxNone(),\n"
-        "    string_startswith: () => boxBool(false),\n"
-        "    string_endswith: () => boxBool(false),\n"
-        "    string_count: () => boxInt(0),\n"
-        "    string_join: () => boxNone(),\n"
-        "    string_split: () => boxNone(),\n"
-        "    bytes_split: () => boxNone(),\n"
-        "    bytearray_split: () => boxNone(),\n"
-        "    string_replace: () => boxNone(),\n"
-        "    bytes_replace: () => boxNone(),\n"
-        "    bytearray_replace: () => boxNone(),\n"
-        "    bytearray_from_obj: () => boxNone(),\n"
-        "    intarray_from_seq: () => boxNone(),\n"
-        "    buffer2d_new: () => boxNone(),\n"
-        "    buffer2d_get: () => boxNone(),\n"
-        "    buffer2d_set: () => boxNone(),\n"
-        "    buffer2d_matmul: () => boxNone(),\n"
-        "    dataclass_new: () => boxNone(),\n"
-        "    dataclass_get: () => boxNone(),\n"
-        "    dataclass_set: () => boxNone(),\n"
-        "    context_null: (val) => val,\n"
-        "    context_enter: (val) => val,\n"
-        "    context_exit: () => boxBool(false),\n"
-        "    context_unwind: () => boxBool(false),\n"
-        "    context_closing: (val) => val,\n"
-        "    bridge_unavailable: () => boxNone(),\n"
-        "    file_open: () => boxNone(),\n"
-        "    file_read: () => boxNone(),\n"
-        "    file_write: () => boxNone(),\n"
-        "    file_close: () => boxNone(),\n"
-        "    stream_new: () => 0n,\n"
-        "    stream_send: () => 0n,\n"
-        "    stream_recv: () => 0n,\n"
-        "    stream_close: () => {},\n"
-        "    ws_connect: () => 0,\n"
-        "    ws_pair: () => 0,\n"
-        "    ws_send: () => 0n,\n"
-        "    ws_recv: () => 0n,\n"
-        "    ws_close: () => {},\n"
-        "  },\n"
-        "};\n"
-        "WebAssembly.instantiate(wasmBuffer, imports)\n"
-        "  .then((mod) => mod.instance.exports.molt_main())\n"
-        "  .catch((err) => {\n"
-        "    console.error(err);\n"
-        "    process.exit(1);\n"
-        "  });\n"
+    runner = write_wasm_runner(
+        tmp_path,
+        "run_wasm_list_dict.js",
+        import_overrides=LIST_DICT_IMPORT_OVERRIDES,
     )
 
     env = os.environ.copy()
@@ -601,36 +566,9 @@ def test_wasm_list_dict_ops_parity(tmp_path: Path) -> None:
             text=True,
         )
         assert run.returncode == 0, run.stderr
-        assert run.stdout.strip() == "\n".join(
-            [
-                "1",
-                "4",
-                "2",
-                "4",
-                "1",
-                "10",
-                "None",
-                "99",
-                "3",
-                "2",
-                "30",
-                "1",
-                "99",
-                "5",
-                "4",
-                "2",
-                "1",
-                "None",
-                "10",
-                "99",
-                "1",
-                "2",
-                "20",
-                "6",
-                "9",
-                "15",
-                "150",
-            ]
+        assert (
+            run.stdout.strip()
+            == "1\n4\n2\n4\n1\n10\nNone\n99\n3\n2\n30\n1\n99\n5\n4\n2\n1\nNone\n10\n99\n1\n2\n20\n6\n9\n15\n150"
         )
     finally:
         if not existed and output_wasm.exists():

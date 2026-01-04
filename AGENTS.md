@@ -7,6 +7,7 @@
 - `examples/` contains small programs used in docs and manual validation.
 - `docs/spec/` is the architecture and runtime specification set; treat it as the source of truth for behavior.
 - `tools/` includes developer scripts like `tools/dev.py`.
+- Keep Rust crate entrypoints (`lib.rs`) thin; place substantive runtime/backend logic in focused modules under `src/` and re-export from `lib.rs`.
 
 ## Build, Test, and Development Commands
 - `cargo build --release --package molt-runtime`: build the Rust runtime used by compiled binaries.
@@ -28,8 +29,10 @@
 - Use `pytest tests/differential` for `molt-diff` parity checks against CPython.
 - Keep semantic tests deterministic; update or add differential cases when changing runtime or lowering behavior.
 - For Rust changes that affect runtime semantics, add or update `cargo test` coverage.
-- Treat benchmark regressions as failures; run `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json`, `tools/dev.py lint`, and `tools/dev.py test`, then iterate on optimization until the regression is removed without introducing new regressions.
-- Sound the alarm immediately on performance regressions and trigger an optimization-first feedback loop (bench → lint → test → optimize) until green.
+- Avoid excessive lint/test loops while implementing; validate once after a cohesive set of changes is complete unless debugging a failure.
+- If tests fail due to missing functionality, do not contort tests to pass. Call out the missing feature and implement the correct behavior instead.
+- Treat benchmark regressions as failures; run `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json`, `tools/dev.py lint`, and `tools/dev.py test` after the fix is in, then iterate on optimization until the regression is removed without introducing new regressions.
+- Sound the alarm immediately on performance regressions and trigger an optimization-first feedback loop (bench → lint → test → optimize) until green, but avoid repeated cycles before the implementation is complete.
 - Prefer performance wins even if they increase compile time or binary size; document tradeoffs explicitly.
 - Always run tests via `uv run --python 3.12/3.13/3.14`; never use the raw `.venv` interpreter directly.
 
@@ -47,6 +50,7 @@
 - Be creative and visionary; proactively propose performance leaps while grounding them in specs and benchmarks.
 - Provide extra handholding/step-by-step guidance when requested.
 - Prefer production-first implementations over quick hacks; prototype work must be clearly marked and scoped.
+- Do not "fix" tests by weakening coverage when functionality is missing; surface the missing capability and implement it properly.
 - Proactively read and update `ROADMAP.md` and relevant files under `docs/spec/` when behavior or scope changes.
 - Proactively and aggressively plan for native support of popular and growing Python packages written in Rust, with a bias toward production-quality integrations.
 - Treat the long-term vision as full Python compatibility: all types, syntax, and dependencies.
@@ -66,6 +70,6 @@
 ## Multi-Agent Workflow
 - Use `AGENT_LOCKS.md` to coordinate file ownership and avoid collisions.
 - Agents may use `gh` (GitHub CLI) and git over SSH to open/merge PRs; commit frequently with clear messages.
-- Run extensive linting and testing before merges (`tools/dev.py lint`, `tools/dev.py test`, plus relevant `cargo` checks).
+- Run linting/testing once after a cohesive change set is complete (`tools/dev.py lint`, `tools/dev.py test`, plus relevant `cargo` checks); avoid repetitive cycles mid-implementation.
 - Prioritize clear, explicit communication: scope, files touched, and tests run.
 - After any push, monitor CI logs until green; if failures appear, propose fixes, implement them, push again, and repeat until green.

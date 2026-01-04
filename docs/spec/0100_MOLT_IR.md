@@ -7,6 +7,9 @@ Molt IR is typed SSA with explicit control flow, ownership, and effects. It exis
 - **TIR (Typed IR)**: SSA with concrete `MoltType` for every value.
 - **LIR (Low-level IR)**: explicit memory operations, reference counting, and layout-level access.
 
+## Implementation layout
+- Keep Rust crate entrypoints (`lib.rs`) thin; implement runtime/backend subsystems in focused modules under `src/` and re-export from `lib.rs`.
+
 ## Core structure
 - **Module**: a set of functions, globals, and type definitions.
 - **Function**: SSA values, basic blocks, and a declared effect summary.
@@ -22,10 +25,11 @@ Coverage status and planned additions are tracked in `docs/spec/0014_TYPE_COVERA
 ## Instruction categories (minimum set)
 - **Constants**: `ConstInt`, `ConstFloat`, `ConstBool`, `ConstNone`, `ConstStr`, `ConstBytes`.
 - **Arithmetic/logic**: `Add`, `Sub`, `Mul`, `Div`, `Eq`, `Lt`, `Gt`, `Is`, `Contains`, `And`, `Or`, `Not`.
-- **Control**: `Phi` (TIR), `Jump`, `Branch`, `Return`, `Throw`, `LoopStart`, `LoopIndexStart`, `LoopIndexNext`, `LoopBreakIfTrue`, `LoopBreakIfFalse`, `LoopContinue`, `LoopEnd`.
+- **Control**: `Phi` (TIR), `Jump`, `Branch`, `Return`, `Throw`, `TryStart`, `TryEnd`, `CheckException`, `LoopStart`, `LoopIndexStart`, `LoopIndexNext`, `LoopBreakIfTrue`, `LoopBreakIfFalse`, `LoopContinue`, `LoopEnd`.
 - **Calls**: `Call`, `CallIndirect`, `InvokeFFI` (with declared effects).
 - **Object/layout**: `Alloc`, `LoadAttr`, `StoreAttr`, `LoadIndex`, `StoreIndex`, `Index`, `Iter`, `IterNext`, `ListNew`, `DictNew`, `Len`, `Slice`, `SliceNew`, `BytearrayFromObj`, `IntArrayFromSeq`, `MemoryViewNew`, `MemoryViewToBytes`, `RangeNew`, `Buffer2DNew`, `Buffer2DGet`, `Buffer2DSet`, `Buffer2DMatmul`.
 - **Bytes/Bytearray/String**: `BytesFind`, `BytesSplit`, `BytesReplace`, `BytearrayFind`, `BytearraySplit`, `BytearrayReplace`, `StringFind`, `StringFormat`, `StringSplit`, `StringReplace`, `StringStartswith`, `StringEndswith`, `StringCount`, `StringJoin`.
+- **Exceptions**: `ExceptionNew`, `ExceptionLast`, `ExceptionClear`, `ExceptionKind`, `ExceptionMessage`, `ExceptionSetCause`, `Raise`.
 - **Vector**: `VecSumInt`, `VecProdInt`, `VecMinInt`, `VecMaxInt` (guarded reductions; emit `(result, ok)` tuples), plus trusted variants (`VecSumIntTrusted`, `VecProdIntTrusted`, `VecMinIntTrusted`, `VecMaxIntTrusted`) that skip per-element checks when type facts are trusted. Range-aware variants (`Vec*IntRange`, `Vec*IntRangeTrusted`) accept a start offset for `range(k, len(xs))` patterns.
 - **Guards (Tier 1)**: `GuardType`, `GuardTag`, `GuardLayout`, `GuardDictShape`.
 - **RC ops (LIR)**: `IncRef`, `DecRef`, `Borrow`, `Release`.

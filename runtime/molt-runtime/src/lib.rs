@@ -143,9 +143,66 @@ const TYPE_TAG_INTARRAY: i64 = 16;
 thread_local! {
     static PARSE_ARENA: RefCell<TempArena> = RefCell::new(TempArena::new(8 * 1024));
     static CONTEXT_STACK: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+    static EXCEPTION_STACK: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
 static LAST_EXCEPTION: OnceLock<Mutex<Option<usize>>> = OnceLock::new();
+
+trait ExceptionSentinel {
+    fn exception_sentinel() -> Self;
+}
+
+impl ExceptionSentinel for u64 {
+    fn exception_sentinel() -> Self {
+        MoltObject::none().bits()
+    }
+}
+
+impl ExceptionSentinel for i64 {
+    fn exception_sentinel() -> Self {
+        0
+    }
+}
+
+impl ExceptionSentinel for i32 {
+    fn exception_sentinel() -> Self {
+        0
+    }
+}
+
+impl ExceptionSentinel for usize {
+    fn exception_sentinel() -> Self {
+        0
+    }
+}
+
+impl ExceptionSentinel for bool {
+    fn exception_sentinel() -> Self {
+        false
+    }
+}
+
+impl ExceptionSentinel for *mut u8 {
+    fn exception_sentinel() -> Self {
+        std::ptr::null_mut()
+    }
+}
+
+impl ExceptionSentinel for () {
+    fn exception_sentinel() -> Self {}
+}
+
+impl<T> ExceptionSentinel for Option<T> {
+    fn exception_sentinel() -> Self {
+        None
+    }
+}
+
+macro_rules! raise {
+    ($kind:expr, $message:expr $(,)?) => {
+        return raise_exception($kind, $message)
+    };
+}
 
 fn obj_from_bits(bits: u64) -> MoltObject {
     MoltObject::from_bits(bits)
@@ -678,6 +735,10 @@ unsafe fn exception_msg_bits(ptr: *mut u8) -> u64 {
     *(ptr.add(std::mem::size_of::<u64>()) as *const u64)
 }
 
+unsafe fn exception_cause_bits(ptr: *mut u8) -> u64 {
+    *(ptr.add(2 * std::mem::size_of::<u64>()) as *const u64)
+}
+
 unsafe fn context_enter_fn(ptr: *mut u8) -> u64 {
     *(ptr as *const u64)
 }
@@ -1098,7 +1159,7 @@ fn alloc_exception(kind: &str, message: &str) -> *mut u8 {
         unsafe { molt_dec_ref(kind_ptr) };
         return std::ptr::null_mut();
     }
-    let total = std::mem::size_of::<MoltHeader>() + 2 * std::mem::size_of::<u64>();
+    let total = std::mem::size_of::<MoltHeader>() + 3 * std::mem::size_of::<u64>();
     let ptr = alloc_object(total, TYPE_ID_EXCEPTION);
     if ptr.is_null() {
         unsafe {
@@ -1110,12 +1171,13 @@ fn alloc_exception(kind: &str, message: &str) -> *mut u8 {
     unsafe {
         *(ptr as *mut u64) = MoltObject::from_ptr(kind_ptr).bits();
         *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = MoltObject::from_ptr(msg_ptr).bits();
+        *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = MoltObject::none().bits();
     }
     ptr
 }
 
 fn alloc_exception_obj(kind_bits: u64, msg_bits: u64) -> *mut u8 {
-    let total = std::mem::size_of::<MoltHeader>() + 2 * std::mem::size_of::<u64>();
+    let total = std::mem::size_of::<MoltHeader>() + 3 * std::mem::size_of::<u64>();
     let ptr = alloc_object(total, TYPE_ID_EXCEPTION);
     if ptr.is_null() {
         return ptr;
@@ -1123,8 +1185,10 @@ fn alloc_exception_obj(kind_bits: u64, msg_bits: u64) -> *mut u8 {
     unsafe {
         *(ptr as *mut u64) = kind_bits;
         *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = msg_bits;
+        *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = MoltObject::none().bits();
         inc_ref_bits(kind_bits);
         inc_ref_bits(msg_bits);
+        inc_ref_bits(MoltObject::none().bits());
     }
     ptr
 }
@@ -1190,16 +1254,20 @@ fn context_stack_push(ctx_bits: u64) {
 }
 
 fn context_stack_pop(expected_bits: u64) {
-    CONTEXT_STACK.with(|stack| {
+    let result = CONTEXT_STACK.with(|stack| {
         let mut stack = stack.borrow_mut();
         let Some(bits) = stack.pop() else {
-            raise_exception("RuntimeError", "context manager stack underflow");
+            return Err("context manager stack underflow");
         };
         if bits != expected_bits {
-            raise_exception("RuntimeError", "context manager stack mismatch");
+            return Err("context manager stack mismatch");
         }
-        dec_ref_bits(bits);
+        Ok(bits)
     });
+    match result {
+        Ok(bits) => dec_ref_bits(bits),
+        Err(msg) => raise!("RuntimeError", msg),
+    }
 }
 
 unsafe fn context_exit_unchecked(ctx_bits: u64, exc_bits: u64) {
@@ -1223,15 +1291,32 @@ unsafe fn context_exit_unchecked(ctx_bits: u64, exc_bits: u64) {
     }
 }
 
-fn context_stack_unwind(exc_bits: u64) {
+fn context_stack_depth() -> usize {
+    CONTEXT_STACK.with(|stack| stack.borrow().len())
+}
+
+fn context_stack_unwind_to(depth: usize, exc_bits: u64) {
     let contexts = CONTEXT_STACK.with(|stack| {
         let mut stack = stack.borrow_mut();
-        stack.drain(..).collect::<Vec<u64>>()
+        if depth > stack.len() {
+            return Err("context manager stack underflow");
+        }
+        let tail = stack.split_off(depth);
+        Ok(tail)
     });
-    for bits in contexts.into_iter().rev() {
-        unsafe { context_exit_unchecked(bits, exc_bits) };
-        dec_ref_bits(bits);
+    match contexts {
+        Ok(contexts) => {
+            for bits in contexts.into_iter().rev() {
+                unsafe { context_exit_unchecked(bits, exc_bits) };
+                dec_ref_bits(bits);
+            }
+        }
+        Err(msg) => raise!("RuntimeError", msg),
     }
+}
+
+fn context_stack_unwind(exc_bits: u64) {
+    context_stack_unwind_to(0, exc_bits);
 }
 
 fn file_handle_close_ptr(ptr: *mut u8) -> bool {
@@ -1263,7 +1348,7 @@ unsafe fn file_handle_exit(ptr: *mut u8, _exc_bits: u64) -> u64 {
 fn close_payload(payload_bits: u64) {
     let payload = obj_from_bits(payload_bits);
     let Some(ptr) = payload.as_ptr() else {
-        raise_exception("AttributeError", "object has no attribute 'close'");
+        raise!("AttributeError", "object has no attribute 'close'");
     };
     unsafe {
         if object_type_id(ptr) == TYPE_ID_FILE_HANDLE {
@@ -1271,7 +1356,7 @@ fn close_payload(payload_bits: u64) {
             return;
         }
     }
-    raise_exception("AttributeError", "object has no attribute 'close'");
+    raise!("AttributeError", "object has no attribute 'close'");
 }
 
 fn record_exception(ptr: *mut u8) {
@@ -1286,15 +1371,54 @@ fn record_exception(ptr: *mut u8) {
     inc_ref_bits(new_bits);
 }
 
-fn raise_exception(kind: &str, message: &str) -> ! {
+fn clear_exception() {
+    let cell = LAST_EXCEPTION.get_or_init(|| Mutex::new(None));
+    let mut guard = cell.lock().unwrap();
+    if let Some(old_ptr) = guard.take() {
+        let old_bits = MoltObject::from_ptr(old_ptr as *mut u8).bits();
+        dec_ref_bits(old_bits);
+    }
+}
+
+fn exception_pending() -> bool {
+    let cell = LAST_EXCEPTION.get_or_init(|| Mutex::new(None));
+    let guard = cell.lock().unwrap();
+    guard.is_some()
+}
+
+fn exception_handler_active() -> bool {
+    EXCEPTION_STACK.with(|stack| !stack.borrow().is_empty())
+}
+
+fn exception_stack_push() {
+    EXCEPTION_STACK.with(|stack| {
+        stack.borrow_mut().push(0);
+    });
+}
+
+fn exception_stack_pop() {
+    let underflow = EXCEPTION_STACK.with(|stack| stack.borrow_mut().pop().is_none());
+    if underflow {
+        raise!("RuntimeError", "exception handler stack underflow");
+    }
+}
+
+fn raise_exception<T: ExceptionSentinel>(kind: &str, message: &str) -> T {
     let ptr = alloc_exception(kind, message);
     if !ptr.is_null() {
         record_exception(ptr);
-        let exc_bits = MoltObject::from_ptr(ptr).bits();
-        context_stack_unwind(exc_bits);
     }
-    eprintln!("{kind}: {message}");
-    std::process::exit(1);
+    if !exception_handler_active() {
+        let exc_bits = if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        };
+        context_stack_unwind(exc_bits);
+        eprintln!("{kind}: {message}");
+        std::process::exit(1);
+    }
+    T::exception_sentinel()
 }
 
 fn alloc_dict_with_pairs(pairs: &[u64]) -> *mut u8 {
@@ -1443,7 +1567,7 @@ pub extern "C" fn molt_range_new(start_bits: u64, stop_bits: u64, step_bits: u64
         None => return MoltObject::none().bits(),
     };
     if step == 0 {
-        raise_exception("ValueError", "range() arg 3 must not be zero");
+        raise!("ValueError", "range() arg 3 must not be zero");
     }
     let ptr = alloc_range(start, stop, step);
     if ptr.is_null() {
@@ -1473,12 +1597,12 @@ pub extern "C" fn molt_dataclass_new(
     let name_obj = obj_from_bits(name_bits);
     let name = match string_obj_to_owned(name_obj) {
         Some(val) => val,
-        None => raise_exception("TypeError", "dataclass name must be a str"),
+        None => raise!("TypeError", "dataclass name must be a str"),
     };
     let field_names_obj = obj_from_bits(field_names_bits);
     let field_names = match decode_string_list(field_names_obj) {
         Some(val) => val,
-        None => raise_exception(
+        None => raise!(
             "TypeError",
             "dataclass field names must be a list/tuple of str",
         ),
@@ -1486,10 +1610,10 @@ pub extern "C" fn molt_dataclass_new(
     let values_obj = obj_from_bits(values_bits);
     let values = match decode_value_list(values_obj) {
         Some(val) => val,
-        None => raise_exception("TypeError", "dataclass values must be a list/tuple"),
+        None => raise!("TypeError", "dataclass values must be a list/tuple"),
     };
     if field_names.len() != values.len() {
-        raise_exception("TypeError", "dataclass constructor argument mismatch");
+        raise!("TypeError", "dataclass constructor argument mismatch");
     }
     let flags = to_i64(obj_from_bits(flags_bits)).unwrap_or(0) as u64;
     let frozen = (flags & 0x1) != 0;
@@ -1529,7 +1653,7 @@ pub extern "C" fn molt_dataclass_get(obj_bits: u64, index_bits: u64) -> u64 {
     let obj = obj_from_bits(obj_bits);
     let idx = match obj_from_bits(index_bits).as_int() {
         Some(val) => val,
-        None => raise_exception("TypeError", "dataclass field index must be int"),
+        None => raise!("TypeError", "dataclass field index must be int"),
     };
     if let Some(ptr) = obj.as_ptr() {
         unsafe {
@@ -1538,7 +1662,7 @@ pub extern "C" fn molt_dataclass_get(obj_bits: u64, index_bits: u64) -> u64 {
             }
             let fields = dataclass_fields_ref(ptr);
             if idx < 0 || idx as usize >= fields.len() {
-                raise_exception("TypeError", "dataclass field index out of range");
+                raise!("TypeError", "dataclass field index out of range");
             }
             let val = fields[idx as usize];
             inc_ref_bits(val);
@@ -1553,7 +1677,7 @@ pub extern "C" fn molt_dataclass_set(obj_bits: u64, index_bits: u64, val_bits: u
     let obj = obj_from_bits(obj_bits);
     let idx = match obj_from_bits(index_bits).as_int() {
         Some(val) => val,
-        None => raise_exception("TypeError", "dataclass field index must be int"),
+        None => raise!("TypeError", "dataclass field index must be int"),
     };
     if let Some(ptr) = obj.as_ptr() {
         unsafe {
@@ -1562,11 +1686,11 @@ pub extern "C" fn molt_dataclass_set(obj_bits: u64, index_bits: u64, val_bits: u
             }
             let desc_ptr = dataclass_desc_ptr(ptr);
             if !desc_ptr.is_null() && (*desc_ptr).frozen {
-                raise_exception("TypeError", "cannot assign to frozen dataclass field");
+                raise!("TypeError", "cannot assign to frozen dataclass field");
             }
             let fields = dataclass_fields_mut(ptr);
             if idx < 0 || idx as usize >= fields.len() {
-                raise_exception("TypeError", "dataclass field index out of range");
+                raise!("TypeError", "dataclass field index out of range");
             }
             let old_bits = fields[idx as usize];
             if old_bits != val_bits {
@@ -1587,20 +1711,20 @@ pub extern "C" fn molt_exception_new(kind_bits: u64, msg_bits: u64) -> u64 {
     if let Some(ptr) = kind_obj.as_ptr() {
         unsafe {
             if object_type_id(ptr) != TYPE_ID_STRING {
-                raise_exception("TypeError", "exception kind must be a str");
+                raise!("TypeError", "exception kind must be a str");
             }
         }
     } else {
-        raise_exception("TypeError", "exception kind must be a str");
+        raise!("TypeError", "exception kind must be a str");
     }
     if let Some(ptr) = msg_obj.as_ptr() {
         unsafe {
             if object_type_id(ptr) != TYPE_ID_STRING {
-                raise_exception("TypeError", "exception message must be a str");
+                raise!("TypeError", "exception message must be a str");
             }
         }
     } else {
-        raise_exception("TypeError", "exception message must be a str");
+        raise!("TypeError", "exception message must be a str");
     }
     let ptr = alloc_exception_obj(kind_bits, msg_bits);
     if ptr.is_null() {
@@ -1614,11 +1738,11 @@ pub extern "C" fn molt_exception_new(kind_bits: u64, msg_bits: u64) -> u64 {
 pub extern "C" fn molt_exception_kind(exc_bits: u64) -> u64 {
     let exc_obj = obj_from_bits(exc_bits);
     let Some(ptr) = exc_obj.as_ptr() else {
-        raise_exception("TypeError", "expected exception object");
+        raise!("TypeError", "expected exception object");
     };
     unsafe {
         if object_type_id(ptr) != TYPE_ID_EXCEPTION {
-            raise_exception("TypeError", "expected exception object");
+            raise!("TypeError", "expected exception object");
         }
         let bits = exception_kind_bits(ptr);
         inc_ref_bits(bits);
@@ -1630,11 +1754,11 @@ pub extern "C" fn molt_exception_kind(exc_bits: u64) -> u64 {
 pub extern "C" fn molt_exception_message(exc_bits: u64) -> u64 {
     let exc_obj = obj_from_bits(exc_bits);
     let Some(ptr) = exc_obj.as_ptr() else {
-        raise_exception("TypeError", "expected exception object");
+        raise!("TypeError", "expected exception object");
     };
     unsafe {
         if object_type_id(ptr) != TYPE_ID_EXCEPTION {
-            raise_exception("TypeError", "expected exception object");
+            raise!("TypeError", "expected exception object");
         }
         let bits = exception_msg_bits(ptr);
         inc_ref_bits(bits);
@@ -1643,14 +1767,47 @@ pub extern "C" fn molt_exception_message(exc_bits: u64) -> u64 {
 }
 
 #[no_mangle]
-pub extern "C" fn molt_exception_set_last(exc_bits: u64) {
+pub extern "C" fn molt_exception_set_cause(exc_bits: u64, cause_bits: u64) -> u64 {
     let exc_obj = obj_from_bits(exc_bits);
     let Some(ptr) = exc_obj.as_ptr() else {
-        raise_exception("TypeError", "expected exception object");
+        raise!("TypeError", "expected exception object");
     };
     unsafe {
         if object_type_id(ptr) != TYPE_ID_EXCEPTION {
-            raise_exception("TypeError", "expected exception object");
+            raise!("TypeError", "expected exception object");
+        }
+    }
+    let cause_obj = obj_from_bits(cause_bits);
+    if !cause_obj.is_none() {
+        let Some(cause_ptr) = cause_obj.as_ptr() else {
+            raise!("TypeError", "exception cause must be an exception or None");
+        };
+        unsafe {
+            if object_type_id(cause_ptr) != TYPE_ID_EXCEPTION {
+                raise!("TypeError", "exception cause must be an exception or None");
+            }
+        }
+    }
+    unsafe {
+        let old_bits = exception_cause_bits(ptr);
+        if old_bits != cause_bits {
+            dec_ref_bits(old_bits);
+            inc_ref_bits(cause_bits);
+            *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = cause_bits;
+        }
+    }
+    MoltObject::none().bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_exception_set_last(exc_bits: u64) {
+    let exc_obj = obj_from_bits(exc_bits);
+    let Some(ptr) = exc_obj.as_ptr() else {
+        raise!("TypeError", "expected exception object");
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_EXCEPTION {
+            raise!("TypeError", "expected exception object");
         }
     }
     record_exception(ptr);
@@ -1670,9 +1827,56 @@ pub extern "C" fn molt_exception_last() -> u64 {
 }
 
 #[no_mangle]
+pub extern "C" fn molt_exception_clear() -> u64 {
+    clear_exception();
+    MoltObject::none().bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_exception_pending() -> u64 {
+    if exception_pending() {
+        1
+    } else {
+        0
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_exception_push() -> u64 {
+    exception_stack_push();
+    MoltObject::none().bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_exception_pop() -> u64 {
+    exception_stack_pop();
+    MoltObject::none().bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_raise(exc_bits: u64) -> u64 {
+    let exc_obj = obj_from_bits(exc_bits);
+    let Some(ptr) = exc_obj.as_ptr() else {
+        raise!("TypeError", "expected exception object");
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_EXCEPTION {
+            raise!("TypeError", "expected exception object");
+        }
+    }
+    record_exception(ptr);
+    if !exception_handler_active() {
+        context_stack_unwind(MoltObject::from_ptr(ptr).bits());
+        eprintln!("{}", format_exception(ptr));
+        std::process::exit(1);
+    }
+    MoltObject::none().bits()
+}
+
+#[no_mangle]
 pub extern "C" fn molt_context_new(enter_fn: u64, exit_fn: u64, payload_bits: u64) -> u64 {
     if enter_fn == 0 || exit_fn == 0 {
-        raise_exception("TypeError", "context manager hooks must be non-null");
+        raise!("TypeError", "context manager hooks must be non-null");
     }
     let ptr = alloc_context_manager(enter_fn, exit_fn, payload_bits);
     if ptr.is_null() {
@@ -1686,14 +1890,14 @@ pub extern "C" fn molt_context_new(enter_fn: u64, exit_fn: u64, payload_bits: u6
 pub extern "C" fn molt_context_enter(ctx_bits: u64) -> u64 {
     let ctx_obj = obj_from_bits(ctx_bits);
     let Some(ptr) = ctx_obj.as_ptr() else {
-        raise_exception("TypeError", "context manager must be an object");
+        raise!("TypeError", "context manager must be an object");
     };
     unsafe {
         let type_id = object_type_id(ptr);
         if type_id == TYPE_ID_CONTEXT_MANAGER {
             let enter_fn_addr = context_enter_fn(ptr);
             if enter_fn_addr == 0 {
-                raise_exception("TypeError", "context manager missing __enter__");
+                raise!("TypeError", "context manager missing __enter__");
             }
             let enter_fn =
                 std::mem::transmute::<usize, extern "C" fn(u64) -> u64>(enter_fn_addr as usize);
@@ -1706,7 +1910,7 @@ pub extern "C" fn molt_context_enter(ctx_bits: u64) -> u64 {
             context_stack_push(ctx_bits);
             return res;
         }
-        raise_exception("TypeError", "context manager protocol not supported");
+        raise!("TypeError", "context manager protocol not supported");
     }
 }
 
@@ -1714,14 +1918,14 @@ pub extern "C" fn molt_context_enter(ctx_bits: u64) -> u64 {
 pub extern "C" fn molt_context_exit(ctx_bits: u64, exc_bits: u64) -> u64 {
     let ctx_obj = obj_from_bits(ctx_bits);
     let Some(ptr) = ctx_obj.as_ptr() else {
-        raise_exception("TypeError", "context manager must be an object");
+        raise!("TypeError", "context manager must be an object");
     };
     unsafe {
         let type_id = object_type_id(ptr);
         if type_id == TYPE_ID_CONTEXT_MANAGER {
             let exit_fn_addr = context_exit_fn(ptr);
             if exit_fn_addr == 0 {
-                raise_exception("TypeError", "context manager missing __exit__");
+                raise!("TypeError", "context manager missing __exit__");
             }
             let exit_fn =
                 std::mem::transmute::<usize, extern "C" fn(u64, u64) -> u64>(exit_fn_addr as usize);
@@ -1733,13 +1937,28 @@ pub extern "C" fn molt_context_exit(ctx_bits: u64, exc_bits: u64) -> u64 {
             context_stack_pop(ctx_bits);
             return res;
         }
-        raise_exception("TypeError", "context manager protocol not supported");
+        raise!("TypeError", "context manager protocol not supported");
     }
 }
 
 #[no_mangle]
 pub extern "C" fn molt_context_unwind(exc_bits: u64) -> u64 {
     context_stack_unwind(exc_bits);
+    MoltObject::none().bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_context_depth() -> u64 {
+    MoltObject::from_int(context_stack_depth() as i64).bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_context_unwind_to(depth_bits: u64, exc_bits: u64) -> u64 {
+    let depth = match to_i64(obj_from_bits(depth_bits)) {
+        Some(val) if val >= 0 => val as usize,
+        _ => raise!("TypeError", "context depth must be a non-negative int"),
+    };
+    context_stack_unwind_to(depth, exc_bits);
     MoltObject::none().bits()
 }
 
@@ -1838,7 +2057,7 @@ pub extern "C" fn molt_file_open(path_bits: u64, mode_bits: u64) -> u64 {
     let path_obj = obj_from_bits(path_bits);
     let path = match string_obj_to_owned(path_obj) {
         Some(path) => path,
-        None => raise_exception("TypeError", "open path must be a str"),
+        None => raise!("TypeError", "open path must be a str"),
     };
     let mode_obj = obj_from_bits(mode_bits);
     let mode = if mode_obj.is_none() {
@@ -1846,22 +2065,22 @@ pub extern "C" fn molt_file_open(path_bits: u64, mode_bits: u64) -> u64 {
     } else {
         match string_obj_to_owned(mode_obj) {
             Some(mode) => mode,
-            None => raise_exception("TypeError", "open mode must be a str"),
+            None => raise!("TypeError", "open mode must be a str"),
         }
     };
     let (options, readable, writable, text) = match parse_file_mode(&mode) {
         Ok(parsed) => parsed,
-        Err(msg) => raise_exception("ValueError", msg),
+        Err(msg) => raise!("ValueError", msg),
     };
     if readable && !has_capability("fs.read") {
-        raise_exception("PermissionError", "missing fs.read capability");
+        raise!("PermissionError", "missing fs.read capability");
     }
     if writable && !has_capability("fs.write") {
-        raise_exception("PermissionError", "missing fs.write capability");
+        raise!("PermissionError", "missing fs.write capability");
     }
     let file = match options.open(path) {
         Ok(file) => file,
-        Err(_) => raise_exception("OSError", "open failed"),
+        Err(_) => raise!("OSError", "open failed"),
     };
     let ptr = alloc_file_handle(file, readable, writable, text);
     if ptr.is_null() {
@@ -1875,23 +2094,23 @@ pub extern "C" fn molt_file_open(path_bits: u64, mode_bits: u64) -> u64 {
 pub extern "C" fn molt_file_read(handle_bits: u64, size_bits: u64) -> u64 {
     let handle_obj = obj_from_bits(handle_bits);
     let Some(ptr) = handle_obj.as_ptr() else {
-        raise_exception("TypeError", "expected file handle");
+        raise!("TypeError", "expected file handle");
     };
     unsafe {
         if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
-            raise_exception("TypeError", "expected file handle");
+            raise!("TypeError", "expected file handle");
         }
         let handle_ptr = file_handle_ptr(ptr);
         if handle_ptr.is_null() {
-            raise_exception("RuntimeError", "file handle missing");
+            raise!("RuntimeError", "file handle missing");
         }
         let handle = &*handle_ptr;
         if !handle.readable {
-            raise_exception("PermissionError", "file not readable");
+            raise!("PermissionError", "file not readable");
         }
         let mut guard = handle.file.lock().unwrap();
         let Some(file) = guard.as_mut() else {
-            raise_exception("ValueError", "I/O operation on closed file");
+            raise!("ValueError", "I/O operation on closed file");
         };
         let mut buf = Vec::new();
         let size_obj = obj_from_bits(size_bits);
@@ -1901,7 +2120,7 @@ pub extern "C" fn molt_file_read(handle_bits: u64, size_bits: u64) -> u64 {
             match to_i64(size_obj) {
                 Some(val) if val >= 0 => Some(val as usize),
                 Some(_) => None,
-                None => raise_exception("TypeError", "read size must be int"),
+                None => raise!("TypeError", "read size must be int"),
             }
         };
         match size {
@@ -1909,20 +2128,20 @@ pub extern "C" fn molt_file_read(handle_bits: u64, size_bits: u64) -> u64 {
                 buf.resize(len, 0);
                 let n = match file.read(&mut buf) {
                     Ok(n) => n,
-                    Err(_) => raise_exception("OSError", "read failed"),
+                    Err(_) => raise!("OSError", "read failed"),
                 };
                 buf.truncate(n);
             }
             None => {
                 if file.read_to_end(&mut buf).is_err() {
-                    raise_exception("OSError", "read failed");
+                    raise!("OSError", "read failed");
                 }
             }
         }
         if handle.text {
             let text = match String::from_utf8(buf) {
                 Ok(text) => text,
-                Err(_) => raise_exception("ValueError", "file decode failed"),
+                Err(_) => raise!("ValueError", "file decode failed"),
             };
             let out_ptr = alloc_string(text.as_bytes());
             if out_ptr.is_null() {
@@ -1945,45 +2164,45 @@ pub extern "C" fn molt_file_read(handle_bits: u64, size_bits: u64) -> u64 {
 pub extern "C" fn molt_file_write(handle_bits: u64, data_bits: u64) -> u64 {
     let handle_obj = obj_from_bits(handle_bits);
     let Some(ptr) = handle_obj.as_ptr() else {
-        raise_exception("TypeError", "expected file handle");
+        raise!("TypeError", "expected file handle");
     };
     unsafe {
         if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
-            raise_exception("TypeError", "expected file handle");
+            raise!("TypeError", "expected file handle");
         }
         let handle_ptr = file_handle_ptr(ptr);
         if handle_ptr.is_null() {
-            raise_exception("RuntimeError", "file handle missing");
+            raise!("RuntimeError", "file handle missing");
         }
         let handle = &*handle_ptr;
         if !handle.writable {
-            raise_exception("PermissionError", "file not writable");
+            raise!("PermissionError", "file not writable");
         }
         let mut guard = handle.file.lock().unwrap();
         let Some(file) = guard.as_mut() else {
-            raise_exception("ValueError", "I/O operation on closed file");
+            raise!("ValueError", "I/O operation on closed file");
         };
         let data_obj = obj_from_bits(data_bits);
         let bytes: Vec<u8> = if handle.text {
             let text = match string_obj_to_owned(data_obj) {
                 Some(text) => text,
-                None => raise_exception("TypeError", "write expects str for text mode"),
+                None => raise!("TypeError", "write expects str for text mode"),
             };
             text.into_bytes()
         } else {
             let Some(data_ptr) = data_obj.as_ptr() else {
-                raise_exception("TypeError", "write expects bytes or bytearray");
+                raise!("TypeError", "write expects bytes or bytearray");
             };
             let type_id = object_type_id(data_ptr);
             if type_id != TYPE_ID_BYTES && type_id != TYPE_ID_BYTEARRAY {
-                raise_exception("TypeError", "write expects bytes or bytearray");
+                raise!("TypeError", "write expects bytes or bytearray");
             }
             let len = bytes_len(data_ptr);
             let raw = std::slice::from_raw_parts(bytes_data(data_ptr), len);
             raw.to_vec()
         };
         if file.write_all(&bytes).is_err() {
-            raise_exception("OSError", "write failed");
+            raise!("OSError", "write failed");
         }
         MoltObject::from_int(bytes.len() as i64).bits()
     }
@@ -1993,11 +2212,11 @@ pub extern "C" fn molt_file_write(handle_bits: u64, data_bits: u64) -> u64 {
 pub extern "C" fn molt_file_close(handle_bits: u64) -> u64 {
     let handle_obj = obj_from_bits(handle_bits);
     let Some(ptr) = handle_obj.as_ptr() else {
-        raise_exception("TypeError", "expected file handle");
+        raise!("TypeError", "expected file handle");
     };
     unsafe {
         if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
-            raise_exception("TypeError", "expected file handle");
+            raise!("TypeError", "expected file handle");
         }
     }
     file_handle_close_ptr(ptr);
@@ -2015,15 +2234,15 @@ pub extern "C" fn molt_bridge_unavailable(msg_bits: u64) -> u64 {
 pub extern "C" fn molt_buffer2d_new(rows_bits: u64, cols_bits: u64, init_bits: u64) -> u64 {
     let rows = match to_i64(obj_from_bits(rows_bits)) {
         Some(val) if val >= 0 => val as usize,
-        _ => raise_exception("TypeError", "rows must be a non-negative int"),
+        _ => raise!("TypeError", "rows must be a non-negative int"),
     };
     let cols = match to_i64(obj_from_bits(cols_bits)) {
         Some(val) if val >= 0 => val as usize,
-        _ => raise_exception("TypeError", "cols must be a non-negative int"),
+        _ => raise!("TypeError", "cols must be a non-negative int"),
     };
     let init = match obj_from_bits(init_bits).as_int() {
         Some(val) => val,
-        None => raise_exception("TypeError", "init must be an int"),
+        None => raise!("TypeError", "init must be an int"),
     };
     let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut Buffer2D>();
     let ptr = alloc_object(total, TYPE_ID_BUFFER2D);
@@ -2047,11 +2266,11 @@ pub extern "C" fn molt_buffer2d_new(rows_bits: u64, cols_bits: u64, init_bits: u
 pub extern "C" fn molt_buffer2d_get(obj_bits: u64, row_bits: u64, col_bits: u64) -> u64 {
     let row = match to_i64(obj_from_bits(row_bits)) {
         Some(val) if val >= 0 => val as usize,
-        _ => raise_exception("TypeError", "row must be a non-negative int"),
+        _ => raise!("TypeError", "row must be a non-negative int"),
     };
     let col = match to_i64(obj_from_bits(col_bits)) {
         Some(val) if val >= 0 => val as usize,
-        _ => raise_exception("TypeError", "col must be a non-negative int"),
+        _ => raise!("TypeError", "col must be a non-negative int"),
     };
     let obj = obj_from_bits(obj_bits);
     if let Some(ptr) = obj.as_ptr() {
@@ -2065,7 +2284,7 @@ pub extern "C" fn molt_buffer2d_get(obj_bits: u64, row_bits: u64, col_bits: u64)
             }
             let buf = &*buf;
             if row >= buf.rows || col >= buf.cols {
-                raise_exception("IndexError", "buffer2d index out of range");
+                raise!("IndexError", "buffer2d index out of range");
             }
             let idx = row * buf.cols + col;
             return MoltObject::from_int(buf.data[idx]).bits();
@@ -2083,15 +2302,15 @@ pub extern "C" fn molt_buffer2d_set(
 ) -> u64 {
     let row = match to_i64(obj_from_bits(row_bits)) {
         Some(val) if val >= 0 => val as usize,
-        _ => raise_exception("TypeError", "row must be a non-negative int"),
+        _ => raise!("TypeError", "row must be a non-negative int"),
     };
     let col = match to_i64(obj_from_bits(col_bits)) {
         Some(val) if val >= 0 => val as usize,
-        _ => raise_exception("TypeError", "col must be a non-negative int"),
+        _ => raise!("TypeError", "col must be a non-negative int"),
     };
     let val = match obj_from_bits(val_bits).as_int() {
         Some(v) => v,
-        None => raise_exception("TypeError", "value must be an int"),
+        None => raise!("TypeError", "value must be an int"),
     };
     let obj = obj_from_bits(obj_bits);
     if let Some(ptr) = obj.as_ptr() {
@@ -2105,7 +2324,7 @@ pub extern "C" fn molt_buffer2d_set(
             }
             let buf = &mut *buf;
             if row >= buf.rows || col >= buf.cols {
-                raise_exception("IndexError", "buffer2d index out of range");
+                raise!("IndexError", "buffer2d index out of range");
             }
             let idx = row * buf.cols + col;
             buf.data[idx] = val;
@@ -2121,11 +2340,11 @@ pub extern "C" fn molt_buffer2d_matmul(a_bits: u64, b_bits: u64) -> u64 {
     let b = obj_from_bits(b_bits);
     let (a_ptr, b_ptr) = match (a.as_ptr(), b.as_ptr()) {
         (Some(ap), Some(bp)) => (ap, bp),
-        _ => raise_exception("TypeError", "matmul expects buffer2d operands"),
+        _ => raise!("TypeError", "matmul expects buffer2d operands"),
     };
     unsafe {
         if object_type_id(a_ptr) != TYPE_ID_BUFFER2D || object_type_id(b_ptr) != TYPE_ID_BUFFER2D {
-            raise_exception("TypeError", "matmul expects buffer2d operands");
+            raise!("TypeError", "matmul expects buffer2d operands");
         }
         let a_buf = buffer2d_ptr(a_ptr);
         let b_buf = buffer2d_ptr(b_ptr);
@@ -2135,7 +2354,7 @@ pub extern "C" fn molt_buffer2d_matmul(a_bits: u64, b_bits: u64) -> u64 {
         let a_buf = &*a_buf;
         let b_buf = &*b_buf;
         if a_buf.cols != b_buf.rows {
-            raise_exception("ValueError", "matmul dimension mismatch");
+            raise!("ValueError", "matmul dimension mismatch");
         }
         let rows = a_buf.rows;
         let cols = b_buf.cols;
@@ -2966,7 +3185,7 @@ pub extern "C" fn molt_str_from_obj(val_bits: u64) -> u64 {
 pub extern "C" fn molt_guard_type(val_bits: u64, expected_bits: u64) -> u64 {
     let expected = match to_i64(obj_from_bits(expected_bits)) {
         Some(val) => val,
-        None => raise_exception("TypeError", "guard type tag must be int"),
+        None => raise!("TypeError", "guard type tag must be int"),
     };
     if expected == TYPE_TAG_ANY {
         return val_bits;
@@ -3016,7 +3235,7 @@ pub extern "C" fn molt_guard_type(val_bits: u64, expected_bits: u64) -> u64 {
         _ => false,
     };
     if !matches {
-        raise_exception("TypeError", "type guard mismatch");
+        raise!("TypeError", "type guard mismatch");
     }
     val_bits
 }
@@ -4430,10 +4649,10 @@ enum SliceError {
 fn slice_error(err: SliceError) -> u64 {
     match err {
         SliceError::Type => {
-            raise_exception("TypeError", "slice indices must be integers or None");
+            raise!("TypeError", "slice indices must be integers or None");
         }
         SliceError::Value => {
-            raise_exception("ValueError", "slice step cannot be zero");
+            raise!("ValueError", "slice step cannot be zero");
         }
     }
 }
@@ -4800,7 +5019,7 @@ pub extern "C" fn molt_string_startswith(hay_bits: u64, needle_bits: u64) -> u64
             if object_type_id(hay_ptr) != TYPE_ID_STRING
                 || object_type_id(needle_ptr) != TYPE_ID_STRING
             {
-                raise_exception("TypeError", "startswith expects str arguments");
+                raise!("TypeError", "startswith expects str arguments");
             }
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
             let needle_bytes =
@@ -4827,7 +5046,7 @@ pub extern "C" fn molt_string_endswith(hay_bits: u64, needle_bits: u64) -> u64 {
             if object_type_id(hay_ptr) != TYPE_ID_STRING
                 || object_type_id(needle_ptr) != TYPE_ID_STRING
             {
-                raise_exception("TypeError", "endswith expects str arguments");
+                raise!("TypeError", "endswith expects str arguments");
             }
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
             let needle_bytes =
@@ -4854,7 +5073,7 @@ pub extern "C" fn molt_string_count(hay_bits: u64, needle_bits: u64) -> u64 {
             if object_type_id(hay_ptr) != TYPE_ID_STRING
                 || object_type_id(needle_ptr) != TYPE_ID_STRING
             {
-                raise_exception("TypeError", "count expects str arguments");
+                raise!("TypeError", "count expects str arguments");
             }
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
             let needle_bytes =
@@ -4880,7 +5099,7 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
     };
     unsafe {
         if object_type_id(sep_ptr) != TYPE_ID_STRING {
-            raise_exception("TypeError", "join expects a str separator");
+            raise!("TypeError", "join expects a str separator");
         }
         let elems = match items.as_ptr() {
             Some(ptr) => {
@@ -4888,10 +5107,10 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
                 if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
                     seq_vec_ref(ptr)
                 } else {
-                    raise_exception("TypeError", "join expects a list or tuple of str");
+                    raise!("TypeError", "join expects a list or tuple of str");
                 }
             }
-            None => raise_exception("TypeError", "join expects a list or tuple of str"),
+            None => raise!("TypeError", "join expects a list or tuple of str"),
         };
         let sep_bytes = std::slice::from_raw_parts(string_bytes(sep_ptr), string_len(sep_ptr));
         let mut total_len = 0usize;
@@ -4899,10 +5118,10 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
             let elem_obj = obj_from_bits(elem_bits);
             let elem_ptr = match elem_obj.as_ptr() {
                 Some(ptr) => ptr,
-                None => raise_exception("TypeError", "join expects a list or tuple of str"),
+                None => raise!("TypeError", "join expects a list or tuple of str"),
             };
             if object_type_id(elem_ptr) != TYPE_ID_STRING {
-                raise_exception("TypeError", "join expects a list or tuple of str");
+                raise!("TypeError", "join expects a list or tuple of str");
             }
             total_len += string_len(elem_ptr);
         }
@@ -4938,25 +5157,25 @@ pub extern "C" fn molt_string_format(val_bits: u64, spec_bits: u64) -> u64 {
     let spec_obj = obj_from_bits(spec_bits);
     let spec_ptr = match spec_obj.as_ptr() {
         Some(ptr) => ptr,
-        None => raise_exception("TypeError", "format spec must be a str"),
+        None => raise!("TypeError", "format spec must be a str"),
     };
     unsafe {
         if object_type_id(spec_ptr) != TYPE_ID_STRING {
-            raise_exception("TypeError", "format spec must be a str");
+            raise!("TypeError", "format spec must be a str");
         }
         let spec_bytes = std::slice::from_raw_parts(string_bytes(spec_ptr), string_len(spec_ptr));
         let spec_text = match std::str::from_utf8(spec_bytes) {
             Ok(val) => val,
-            Err(_) => raise_exception("ValueError", "format spec must be valid UTF-8"),
+            Err(_) => raise!("ValueError", "format spec must be valid UTF-8"),
         };
         let spec = match parse_format_spec(spec_text) {
             Ok(val) => val,
-            Err(msg) => raise_exception("ValueError", msg),
+            Err(msg) => raise!("ValueError", msg),
         };
         let obj = obj_from_bits(val_bits);
         let rendered = match format_with_spec(obj, &spec) {
             Ok(val) => val,
-            Err((kind, msg)) => raise_exception(kind, msg),
+            Err((kind, msg)) => raise!(kind, msg),
         };
         let out_ptr = alloc_string(rendered.as_bytes());
         if out_ptr.is_null() {
@@ -5443,7 +5662,7 @@ pub extern "C" fn molt_string_split(hay_bits: u64, needle_bits: u64) -> u64 {
             let needle_bytes =
                 std::slice::from_raw_parts(string_bytes(needle_ptr), string_len(needle_ptr));
             if needle_bytes.is_empty() {
-                raise_exception("ValueError", "empty separator");
+                raise!("ValueError", "empty separator");
             }
             let list_bits = split_bytes_to_list(hay_bytes, needle_bytes, alloc_string);
             let list_bits = match list_bits {
@@ -5509,7 +5728,7 @@ pub extern "C" fn molt_bytes_split(hay_bits: u64, needle_bits: u64) -> u64 {
                 None => return MoltObject::none().bits(),
             };
             if needle_bytes.is_empty() {
-                raise_exception("ValueError", "empty separator");
+                raise!("ValueError", "empty separator");
             }
             let list_bits = match split_bytes_to_list(hay_bytes, needle_bytes, alloc_bytes) {
                 Some(val) => val,
@@ -5536,7 +5755,7 @@ pub extern "C" fn molt_bytearray_split(hay_bits: u64, needle_bits: u64) -> u64 {
                 None => return MoltObject::none().bits(),
             };
             if needle_bytes.is_empty() {
-                raise_exception("ValueError", "empty separator");
+                raise!("ValueError", "empty separator");
             }
             let list_bits = match split_bytes_to_list(hay_bytes, needle_bytes, alloc_bytearray) {
                 Some(val) => val,
@@ -5715,7 +5934,7 @@ pub extern "C" fn molt_memoryview_new(bits: u64) -> u64 {
     let obj = obj_from_bits(bits);
     let ptr = match obj.as_ptr() {
         Some(ptr) => ptr,
-        None => raise_exception("TypeError", "memoryview expects a bytes-like object"),
+        None => raise!("TypeError", "memoryview expects a bytes-like object"),
     };
     unsafe {
         let type_id = object_type_id(ptr);
@@ -5742,7 +5961,7 @@ pub extern "C" fn molt_memoryview_new(bits: u64) -> u64 {
             return MoltObject::from_ptr(out_ptr).bits();
         }
     }
-    raise_exception("TypeError", "memoryview expects a bytes-like object");
+    raise!("TypeError", "memoryview expects a bytes-like object");
 }
 
 #[no_mangle]
@@ -5750,11 +5969,11 @@ pub extern "C" fn molt_memoryview_tobytes(bits: u64) -> u64 {
     let obj = obj_from_bits(bits);
     let ptr = match obj.as_ptr() {
         Some(ptr) => ptr,
-        None => raise_exception("TypeError", "tobytes expects a memoryview"),
+        None => raise!("TypeError", "tobytes expects a memoryview"),
     };
     unsafe {
         if object_type_id(ptr) != TYPE_ID_MEMORYVIEW {
-            raise_exception("TypeError", "tobytes expects a memoryview");
+            raise!("TypeError", "tobytes expects a memoryview");
         }
         let owner_bits = memoryview_owner_bits(ptr);
         let owner = obj_from_bits(owner_bits);
@@ -6207,7 +6426,7 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
             }
             if type_id == TYPE_ID_MEMORYVIEW {
                 if memoryview_readonly(ptr) {
-                    raise_exception("TypeError", "cannot modify read-only memory");
+                    raise!("TypeError", "cannot modify read-only memory");
                 }
                 if let Some(slice_ptr) = key.as_ptr() {
                     if object_type_id(slice_ptr) == TYPE_ID_SLICE {
@@ -6218,10 +6437,10 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                             None => return MoltObject::none().bits(),
                         };
                         if object_type_id(owner_ptr) != TYPE_ID_BYTEARRAY {
-                            raise_exception("TypeError", "memoryview is not writable");
+                            raise!("TypeError", "memoryview is not writable");
                         }
                         if memoryview_itemsize(ptr) != 1 {
-                            raise_exception("TypeError", "memoryview itemsize not supported");
+                            raise!("TypeError", "memoryview itemsize not supported");
                         }
                         let len = memoryview_len(ptr) as isize;
                         let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
@@ -6250,7 +6469,7 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                                     }
                                 }
                             } else {
-                                raise_exception(
+                                raise!(
                                     "TypeError",
                                     &format!(
                                         "a bytes-like object is required, not '{}'",
@@ -6259,7 +6478,7 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                                 );
                             }
                         } else {
-                            raise_exception(
+                            raise!(
                                 "TypeError",
                                 &format!(
                                     "a bytes-like object is required, not '{}'",
@@ -6268,7 +6487,7 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                             );
                         };
                         if src_bytes.len() != elem_count {
-                            raise_exception(
+                            raise!(
                                 "ValueError",
                                 "memoryview assignment: lvalue and rvalue have different structures",
                             );
@@ -6300,7 +6519,7 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                         None => return MoltObject::none().bits(),
                     };
                     if object_type_id(owner_ptr) != TYPE_ID_BYTEARRAY {
-                        raise_exception("TypeError", "memoryview is not writable");
+                        raise!("TypeError", "memoryview is not writable");
                     }
                     let len = memoryview_len(ptr) as i64;
                     let mut i = idx;
@@ -6312,7 +6531,7 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                     }
                     let itemsize = memoryview_itemsize(ptr);
                     if itemsize != 1 {
-                        raise_exception("TypeError", "memoryview itemsize not supported");
+                        raise!("TypeError", "memoryview itemsize not supported");
                     }
                     let offset = memoryview_offset(ptr);
                     let stride = memoryview_stride(ptr);
@@ -6328,7 +6547,7 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                     let val = obj_from_bits(val_bits);
                     let byte = match val.as_int() {
                         Some(v) if (0..=255).contains(&v) => v as u8,
-                        _ => raise_exception("TypeError", "memoryview item must be int 0-255"),
+                        _ => raise!("TypeError", "memoryview item must be int 0-255"),
                     };
                     let data_ptr = bytes_data(owner_ptr) as *mut u8;
                     *data_ptr.add(start) = byte;
@@ -6369,7 +6588,7 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                 }
                 TYPE_ID_STRING => {
                     let Some(item_ptr) = item.as_ptr() else {
-                        raise_exception(
+                        raise!(
                             "TypeError",
                             &format!(
                                 "'in <string>' requires string as left operand, not {}",
@@ -6378,7 +6597,7 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                         );
                     };
                     if object_type_id(item_ptr) != TYPE_ID_STRING {
-                        raise_exception(
+                        raise!(
                             "TypeError",
                             &format!(
                                 "'in <string>' requires string as left operand, not {}",
@@ -6402,7 +6621,7 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                     let hay_bytes = std::slice::from_raw_parts(bytes_data(ptr), hay_len);
                     if let Some(byte) = item.as_int() {
                         if !(0..=255).contains(&byte) {
-                            raise_exception("ValueError", "byte must be in range(0, 256)");
+                            raise!("ValueError", "byte must be in range(0, 256)");
                         }
                         let found = memchr(byte as u8, hay_bytes).is_some();
                         return MoltObject::from_bool(found).bits();
@@ -6420,7 +6639,7 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                             return MoltObject::from_bool(idx >= 0).bits();
                         }
                     }
-                    raise_exception(
+                    raise!(
                         "TypeError",
                         &format!("a bytes-like object is required, not '{}'", type_name(item)),
                     );
@@ -6453,14 +6672,14 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                     let owner = obj_from_bits(owner_bits);
                     let owner_ptr = match owner.as_ptr() {
                         Some(ptr) => ptr,
-                        None => raise_exception(
+                        None => raise!(
                             "TypeError",
                             &format!("a bytes-like object is required, not '{}'", type_name(item)),
                         ),
                     };
                     let base = match bytes_like_slice_raw(owner_ptr) {
                         Some(slice) => slice,
-                        None => raise_exception(
+                        None => raise!(
                             "TypeError",
                             &format!("a bytes-like object is required, not '{}'", type_name(item)),
                         ),
@@ -6470,13 +6689,13 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                     let itemsize = memoryview_itemsize(ptr);
                     let stride = memoryview_stride(ptr);
                     if offset < 0 {
-                        raise_exception(
+                        raise!(
                             "TypeError",
                             &format!("a bytes-like object is required, not '{}'", type_name(item)),
                         );
                     }
                     if itemsize != 1 {
-                        raise_exception("TypeError", "memoryview itemsize not supported");
+                        raise!("TypeError", "memoryview itemsize not supported");
                     }
                     if stride == 1 {
                         let start = offset as usize;
@@ -6484,7 +6703,7 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                         let hay = &base[start.min(base.len())..end.min(base.len())];
                         if let Some(byte) = item.as_int() {
                             if !(0..=255).contains(&byte) {
-                                raise_exception("ValueError", "byte must be in range(0, 256)");
+                                raise!("ValueError", "byte must be in range(0, 256)");
                             }
                             let found = memchr(byte as u8, hay).is_some();
                             return MoltObject::from_bool(found).bits();
@@ -6502,7 +6721,7 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                                 return MoltObject::from_bool(idx >= 0).bits();
                             }
                         }
-                        raise_exception(
+                        raise!(
                             "TypeError",
                             &format!("a bytes-like object is required, not '{}'", type_name(item)),
                         );
@@ -6511,7 +6730,7 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                     for idx in 0..len {
                         let start = offset + (idx as isize) * stride;
                         if start < 0 {
-                            raise_exception(
+                            raise!(
                                 "TypeError",
                                 &format!(
                                     "a bytes-like object is required, not '{}'",
@@ -6528,7 +6747,7 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                     let hay = out.as_slice();
                     if let Some(byte) = item.as_int() {
                         if !(0..=255).contains(&byte) {
-                            raise_exception("ValueError", "byte must be in range(0, 256)");
+                            raise!("ValueError", "byte must be in range(0, 256)");
                         }
                         let found = memchr(byte as u8, hay).is_some();
                         return MoltObject::from_bool(found).bits();
@@ -6546,7 +6765,7 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                             return MoltObject::from_bool(idx >= 0).bits();
                         }
                     }
-                    raise_exception(
+                    raise!(
                         "TypeError",
                         &format!("a bytes-like object is required, not '{}'", type_name(item)),
                     );
@@ -6555,7 +6774,7 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
             }
         }
     }
-    raise_exception(
+    raise!(
         "TypeError",
         &format!(
             "argument of type '{}' is not iterable",
@@ -7894,8 +8113,10 @@ pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
             TYPE_ID_EXCEPTION => {
                 let kind_bits = exception_kind_bits(ptr);
                 let msg_bits = exception_msg_bits(ptr);
+                let cause_bits = exception_cause_bits(ptr);
                 dec_ref_bits(kind_bits);
                 dec_ref_bits(msg_bits);
+                dec_ref_bits(cause_bits);
             }
             TYPE_ID_CONTEXT_MANAGER => {
                 let payload_bits = context_payload_bits(ptr);

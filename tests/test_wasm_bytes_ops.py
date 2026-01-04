@@ -2,9 +2,357 @@ import os
 import shutil
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
+
+from tests.wasm_harness import write_wasm_runner
+
+BYTES_HELPERS = textwrap.dedent(
+    """\
+    const bytesFromArray = (items, type) =>
+      boxPtr({ type, data: Uint8Array.from(items) });
+    const concatBytes = (left, right) => {
+      const out = new Uint8Array(left.length + right.length);
+      out.set(left, 0);
+      out.set(right, left.length);
+      return out;
+    };
+    const findBytes = (hay, needle) => {
+      if (needle.length === 0) return 0;
+      for (let i = 0; i + needle.length <= hay.length; i += 1) {
+        let ok = true;
+        for (let j = 0; j < needle.length; j += 1) {
+          if (hay[i + j] !== needle[j]) {
+            ok = false;
+            break;
+          }
+        }
+        if (ok) return i;
+      }
+      return -1;
+    };
+    const splitBytes = (hay, needle) => {
+      const parts = [];
+      let start = 0;
+      let i = 0;
+      while (i + needle.length <= hay.length) {
+        let match = true;
+        for (let j = 0; j < needle.length; j += 1) {
+          if (hay[i + j] !== needle[j]) {
+            match = false;
+            break;
+          }
+        }
+        if (match) {
+          parts.push(hay.slice(start, i));
+          i += needle.length;
+          start = i;
+        } else {
+          i += 1;
+        }
+      }
+      parts.push(hay.slice(start));
+      return parts;
+    };
+    const replaceBytes = (hay, needle, repl) => {
+      const out = [];
+      let i = 0;
+      while (i + needle.length <= hay.length) {
+        let match = true;
+        for (let j = 0; j < needle.length; j += 1) {
+          if (hay[i + j] !== needle[j]) {
+            match = false;
+            break;
+          }
+        }
+        if (match) {
+          for (const b of repl) out.push(b);
+          i += needle.length;
+        } else {
+          out.push(hay[i]);
+          i += 1;
+        }
+      }
+      for (; i < hay.length; i += 1) out.push(hay[i]);
+      return Uint8Array.from(out);
+    };
+    """
+)
+
+BYTES_IMPORT_OVERRIDES = textwrap.dedent(
+    """\
+    print_obj: (val) => {
+      if (isTag(val, TAG_INT)) {
+        console.log(unboxInt(val).toString());
+        return;
+      }
+      if (isTag(val, TAG_BOOL)) {
+        console.log((val & 1n) === 1n ? 'True' : 'False');
+        return;
+      }
+      if (isTag(val, TAG_NONE)) {
+        console.log('None');
+        return;
+      }
+      console.log(val.toString());
+    },
+    print_newline: () => console.log(''),
+    alloc: () => 0n,
+    async_sleep: () => 0n,
+    block_on: () => 0n,
+    add: (a, b) => {
+      if (isTag(a, TAG_INT) && isTag(b, TAG_INT)) {
+        return boxInt(unboxInt(a) + unboxInt(b));
+      }
+      if (isPtr(a) && isPtr(b)) {
+        const left = getObj(a);
+        const right = getObj(b);
+        if (left && right && left.type === 'bytes' && right.type === 'bytes') {
+          return boxPtr({ type: 'bytes', data: concatBytes(left.data, right.data) });
+        }
+        if (left && right && left.type === 'bytearray' && right.type === 'bytearray') {
+          return boxPtr({ type: 'bytearray', data: concatBytes(left.data, right.data) });
+        }
+      }
+      return boxNone();
+    },
+    vec_sum_int: () => boxNone(),
+    vec_sum_int_trusted: () => boxNone(),
+    vec_sum_int_range: () => boxNone(),
+    vec_sum_int_range_trusted: () => boxNone(),
+    vec_prod_int: () => boxNone(),
+    vec_prod_int_trusted: () => boxNone(),
+    vec_prod_int_range: () => boxNone(),
+    vec_prod_int_range_trusted: () => boxNone(),
+    vec_min_int: () => boxNone(),
+    vec_min_int_trusted: () => boxNone(),
+    vec_min_int_range: () => boxNone(),
+    vec_min_int_range_trusted: () => boxNone(),
+    vec_max_int: () => boxNone(),
+    vec_max_int_trusted: () => boxNone(),
+    vec_max_int_range: () => boxNone(),
+    vec_max_int_range_trusted: () => boxNone(),
+    sub: (a, b) => boxInt(unboxInt(a) - unboxInt(b)),
+    mul: (a, b) => boxInt(unboxInt(a) * unboxInt(b)),
+    lt: (a, b) => boxBool(unboxInt(a) < unboxInt(b)),
+    eq: (a, b) => boxBool(a === b),
+    is: (a, b) => boxBool(a === b),
+    not: (val) => {
+      if (isTag(val, TAG_BOOL)) return boxBool((val & 1n) !== 1n);
+      if (isTag(val, TAG_INT)) return boxBool(unboxInt(val) === 0n);
+      if (isPtr(val)) {
+        const obj = getObj(val);
+        if (obj && obj.type === 'list') return boxBool(obj.items.length === 0);
+        if (obj && obj.type === 'bytes') return boxBool(obj.data.length === 0);
+        if (obj && obj.type === 'bytearray') return boxBool(obj.data.length === 0);
+      }
+      return boxBool(true);
+    },
+    contains: (container, item) => {
+      const list = getList(container);
+      if (list) {
+        return boxBool(list.items.some((val) => val === item));
+      }
+      const bytes = getBytes(container);
+      if (bytes) {
+        if (isTag(item, TAG_INT)) {
+          const needle = Number(unboxInt(item));
+          return boxBool(bytes.data.includes(needle));
+        }
+      }
+      const bytearray = getBytearray(container);
+      if (bytearray) {
+        if (isTag(item, TAG_INT)) {
+          const needle = Number(unboxInt(item));
+          return boxBool(bytearray.data.includes(needle));
+        }
+      }
+      return boxBool(false);
+    },
+    guard_type: (val, expected) => val,
+    is_truthy: (val) => {
+      if (isTag(val, TAG_BOOL)) return (val & 1n) === 1n ? 1n : 0n;
+      if (isTag(val, TAG_INT)) return unboxInt(val) !== 0n ? 1n : 0n;
+      if (isPtr(val)) {
+        const obj = getObj(val);
+        if (obj && obj.type === 'list') return obj.items.length ? 1n : 0n;
+        if (obj && obj.type === 'bytes') return obj.data.length ? 1n : 0n;
+        if (obj && obj.type === 'bytearray') return obj.data.length ? 1n : 0n;
+      }
+      return 0n;
+    },
+    json_parse_scalar: () => 0,
+    msgpack_parse_scalar: () => 0,
+    cbor_parse_scalar: () => 0,
+    string_from_bytes: (ptr, len, out) => {
+      const view = new DataView(memory.buffer);
+      const bytes = new Uint8Array(memory.buffer, Number(ptr), Number(len));
+      const boxed = boxPtr({ type: 'string', data: bytes.slice() });
+      view.setBigInt64(Number(out), boxed, true);
+      return 0;
+    },
+    bytes_from_bytes: (ptr, len, out) => {
+      const view = new DataView(memory.buffer);
+      const bytes = new Uint8Array(memory.buffer, Number(ptr), Number(len));
+      const boxed = boxPtr({ type: 'bytes', data: bytes.slice() });
+      view.setBigInt64(Number(out), boxed, true);
+      return 0;
+    },
+    memoryview_new: () => boxNone(),
+    memoryview_tobytes: () => boxNone(),
+    str_from_obj: () => boxNone(),
+    len: (val) => {
+      const list = getList(val);
+      if (list) return boxInt(list.items.length);
+      const bytes = getBytes(val);
+      if (bytes) return boxInt(bytes.data.length);
+      const ba = getBytearray(val);
+      if (ba) return boxInt(ba.data.length);
+      return boxInt(0);
+    },
+    slice: () => boxNone(),
+    slice_new: (startBits, stopBits, stepBits) => {
+      return boxPtr({ type: 'slice', startBits, stopBits, stepBits });
+    },
+    range_new: () => boxNone(),
+    list_builder_new: () => boxPtr({ type: 'list_builder', items: [] }),
+    list_builder_append: (builder, val) => {
+      const obj = getObj(builder);
+      if (obj) obj.items.push(val);
+    },
+    list_builder_finish: (builder) => {
+      const obj = getObj(builder);
+      if (!obj) return boxNone();
+      return boxPtr({ type: 'list', items: obj.items.slice() });
+    },
+    tuple_builder_finish: () => boxNone(),
+    list_append: () => boxNone(),
+    list_pop: () => boxNone(),
+    list_extend: () => boxNone(),
+    list_insert: () => boxNone(),
+    list_remove: () => boxNone(),
+    list_count: () => boxNone(),
+    list_index: () => boxNone(),
+    dict_new: () => boxNone(),
+    dict_set: () => boxNone(),
+    dict_get: () => boxNone(),
+    dict_pop: () => boxNone(),
+    dict_keys: () => boxNone(),
+    dict_values: () => boxNone(),
+    dict_items: () => boxNone(),
+    tuple_count: () => boxNone(),
+    tuple_index: () => boxNone(),
+    iter: () => boxNone(),
+    iter_next: () => boxNone(),
+    index: (obj, key) => {
+      const list = getList(obj);
+      if (!list) return boxNone();
+      let idx = Number(unboxInt(key));
+      if (idx < 0) idx += list.items.length;
+      if (idx < 0 || idx >= list.items.length) return boxNone();
+      return list.items[idx];
+    },
+    store_index: () => boxNone(),
+    bytes_find: (hay, needle) => {
+      const h = getBytes(hay);
+      const n = getBytes(needle) || getBytearray(needle);
+      if (!h || !n) return boxInt(-1);
+      return boxInt(findBytes(h.data, n.data));
+    },
+    bytearray_find: (hay, needle) => {
+      const h = getBytearray(hay);
+      const n = getBytes(needle) || getBytearray(needle);
+      if (!h || !n) return boxInt(-1);
+      return boxInt(findBytes(h.data, n.data));
+    },
+    string_find: () => boxInt(-1),
+    string_format: () => boxNone(),
+    string_startswith: () => boxBool(false),
+    string_endswith: () => boxBool(false),
+    string_count: () => boxInt(0),
+    string_join: () => boxNone(),
+    string_split: () => boxNone(),
+    bytes_split: (hay, needle) => {
+      const h = getBytes(hay);
+      const n = getBytes(needle) || getBytearray(needle);
+      if (!h || !n) return boxNone();
+      const parts = splitBytes(h.data, n.data).map((part) =>
+        boxPtr({ type: 'bytes', data: part })
+      );
+      return boxPtr({ type: 'list', items: parts });
+    },
+    bytearray_split: (hay, needle) => {
+      const h = getBytearray(hay);
+      const n = getBytes(needle) || getBytearray(needle);
+      if (!h || !n) return boxNone();
+      const parts = splitBytes(h.data, n.data).map((part) =>
+        boxPtr({ type: 'bytearray', data: part })
+      );
+      return boxPtr({ type: 'list', items: parts });
+    },
+    string_replace: () => boxNone(),
+    bytes_replace: (hay, needle, repl) => {
+      const h = getBytes(hay);
+      const n = getBytes(needle) || getBytearray(needle);
+      const r = getBytes(repl) || getBytearray(repl);
+      if (!h || !n || !r) return boxNone();
+      return boxPtr({ type: 'bytes', data: replaceBytes(h.data, n.data, r.data) });
+    },
+    bytearray_replace: (hay, needle, repl) => {
+      const h = getBytearray(hay);
+      const n = getBytes(needle) || getBytearray(needle);
+      const r = getBytes(repl) || getBytearray(repl);
+      if (!h || !n || !r) return boxNone();
+      return boxPtr({ type: 'bytearray', data: replaceBytes(h.data, n.data, r.data) });
+    },
+    bytearray_from_obj: (src) => {
+      const bytes = getBytes(src);
+      if (!bytes) return boxNone();
+      return boxPtr({ type: 'bytearray', data: bytes.data.slice() });
+    },
+    intarray_from_seq: () => boxNone(),
+    buffer2d_new: () => boxNone(),
+    buffer2d_get: () => boxNone(),
+    buffer2d_set: () => boxNone(),
+    buffer2d_matmul: () => boxNone(),
+    dataclass_new: () => boxNone(),
+    dataclass_get: () => boxNone(),
+    dataclass_set: () => boxNone(),
+    context_null: (val) => val,
+    context_enter: (val) => val,
+    context_exit: () => boxBool(false),
+    context_unwind: () => boxBool(false),
+    context_depth: () => boxInt(0),
+    context_unwind_to: () => boxNone(),
+    exception_push: () => boxNone(),
+    exception_pop: () => boxNone(),
+    exception_last: () => boxNone(),
+    exception_new: () => boxNone(),
+    exception_clear: () => boxNone(),
+    exception_pending: () => 0n,
+    exception_kind: () => boxNone(),
+    exception_message: () => boxNone(),
+    exception_set_cause: () => boxNone(),
+    raise: () => boxNone(),
+    context_closing: (val) => val,
+    bridge_unavailable: () => boxNone(),
+    file_open: () => boxNone(),
+    file_read: () => boxNone(),
+    file_write: () => boxNone(),
+    file_close: () => boxNone(),
+    stream_new: () => 0n,
+    stream_send: () => 0n,
+    stream_recv: () => 0n,
+    stream_close: () => {},
+    ws_connect: () => 0,
+    ws_pair: () => 0,
+    ws_send: () => 0n,
+    ws_recv: () => 0n,
+    ws_close: () => {},
+    """
+)
 
 
 def test_wasm_bytes_ops_parity(tmp_path: Path) -> None:
@@ -38,391 +386,11 @@ def test_wasm_bytes_ops_parity(tmp_path: Path) -> None:
     output_wasm = root / "output.wasm"
     existed = output_wasm.exists()
 
-    runner = tmp_path / "run_wasm_bytes.js"
-    runner.write_text(
-        "const fs = require('fs');\n"
-        "const wasmPath = process.argv[2];\n"
-        "const wasmBuffer = fs.readFileSync(wasmPath);\n"
-        "const QNAN = 0x7ff8000000000000n;\n"
-        "const TAG_INT = 0x0001000000000000n;\n"
-        "const TAG_BOOL = 0x0002000000000000n;\n"
-        "const TAG_NONE = 0x0003000000000000n;\n"
-        "const TAG_PTR = 0x0004000000000000n;\n"
-        "const TAG_MASK = 0x0007000000000000n;\n"
-        "const POINTER_MASK = 0x0000ffffffffffffn;\n"
-        "const INT_SIGN_BIT = 1n << 46n;\n"
-        "const INT_WIDTH = 47n;\n"
-        "const INT_MASK = (1n << INT_WIDTH) - 1n;\n"
-        "const isTag = (val, tag) => (val & (QNAN | TAG_MASK)) === (QNAN | tag);\n"
-        "const isPtr = (val) => isTag(val, TAG_PTR);\n"
-        "const unboxInt = (val) => {\n"
-        "  let v = val & INT_MASK;\n"
-        "  if ((v & INT_SIGN_BIT) !== 0n) {\n"
-        "    v = v - (1n << INT_WIDTH);\n"
-        "  }\n"
-        "  return v;\n"
-        "};\n"
-        "const boxInt = (n) => {\n"
-        "  const v = BigInt(n) & INT_MASK;\n"
-        "  return QNAN | TAG_INT | v;\n"
-        "};\n"
-        "const boxBool = (b) => QNAN | TAG_BOOL | (b ? 1n : 0n);\n"
-        "const boxNone = () => QNAN | TAG_NONE;\n"
-        "const heap = new Map();\n"
-        "let nextPtr = 1n;\n"
-        "let memory = null;\n"
-        "const boxPtr = (obj) => {\n"
-        "  const id = nextPtr++;\n"
-        "  heap.set(id, obj);\n"
-        "  return QNAN | TAG_PTR | id;\n"
-        "};\n"
-        "const getObj = (val) => heap.get(val & POINTER_MASK);\n"
-        "const getList = (val) => {\n"
-        "  const obj = getObj(val);\n"
-        "  if (!obj || obj.type !== 'list') return null;\n"
-        "  return obj;\n"
-        "};\n"
-        "const getBytes = (val) => {\n"
-        "  const obj = getObj(val);\n"
-        "  if (!obj || obj.type !== 'bytes') return null;\n"
-        "  return obj;\n"
-        "};\n"
-        "const getBytearray = (val) => {\n"
-        "  const obj = getObj(val);\n"
-        "  if (!obj || obj.type !== 'bytearray') return null;\n"
-        "  return obj;\n"
-        "};\n"
-        "const bytesFromArray = (items, type) => boxPtr({ type, data: Uint8Array.from(items) });\n"
-        "const concatBytes = (left, right) => {\n"
-        "  const out = new Uint8Array(left.length + right.length);\n"
-        "  out.set(left, 0);\n"
-        "  out.set(right, left.length);\n"
-        "  return out;\n"
-        "};\n"
-        "const findBytes = (hay, needle) => {\n"
-        "  if (needle.length === 0) return 0;\n"
-        "  for (let i = 0; i + needle.length <= hay.length; i += 1) {\n"
-        "    let ok = true;\n"
-        "    for (let j = 0; j < needle.length; j += 1) {\n"
-        "      if (hay[i + j] !== needle[j]) {\n"
-        "        ok = false;\n"
-        "        break;\n"
-        "      }\n"
-        "    }\n"
-        "    if (ok) return i;\n"
-        "  }\n"
-        "  return -1;\n"
-        "};\n"
-        "const splitBytes = (hay, needle) => {\n"
-        "  const parts = [];\n"
-        "  let start = 0;\n"
-        "  let i = 0;\n"
-        "  while (i + needle.length <= hay.length) {\n"
-        "    let match = true;\n"
-        "    for (let j = 0; j < needle.length; j += 1) {\n"
-        "      if (hay[i + j] !== needle[j]) {\n"
-        "        match = false;\n"
-        "        break;\n"
-        "      }\n"
-        "    }\n"
-        "    if (match) {\n"
-        "      parts.push(hay.slice(start, i));\n"
-        "      i += needle.length;\n"
-        "      start = i;\n"
-        "    } else {\n"
-        "      i += 1;\n"
-        "    }\n"
-        "  }\n"
-        "  parts.push(hay.slice(start));\n"
-        "  return parts;\n"
-        "};\n"
-        "const replaceBytes = (hay, needle, repl) => {\n"
-        "  const out = [];\n"
-        "  let i = 0;\n"
-        "  while (i + needle.length <= hay.length) {\n"
-        "    let match = true;\n"
-        "    for (let j = 0; j < needle.length; j += 1) {\n"
-        "      if (hay[i + j] !== needle[j]) {\n"
-        "        match = false;\n"
-        "        break;\n"
-        "      }\n"
-        "    }\n"
-        "    if (match) {\n"
-        "      for (const b of repl) out.push(b);\n"
-        "      i += needle.length;\n"
-        "    } else {\n"
-        "      out.push(hay[i]);\n"
-        "      i += 1;\n"
-        "    }\n"
-        "  }\n"
-        "  for (; i < hay.length; i += 1) out.push(hay[i]);\n"
-        "  return Uint8Array.from(out);\n"
-        "};\n"
-        "const imports = {\n"
-        "  molt_runtime: {\n"
-        "    print_obj: (val) => {\n"
-        "      if (isTag(val, TAG_INT)) {\n"
-        "        console.log(unboxInt(val).toString());\n"
-        "        return;\n"
-        "      }\n"
-        "      if (isTag(val, TAG_BOOL)) {\n"
-        "        console.log((val & 1n) === 1n ? 'True' : 'False');\n"
-        "        return;\n"
-        "      }\n"
-        "      if (isTag(val, TAG_NONE)) {\n"
-        "        console.log('None');\n"
-        "        return;\n"
-        "      }\n"
-        "      console.log(val.toString());\n"
-        "    },\n"
-        "    print_newline: () => console.log(''),\n"
-        "    alloc: () => 0n,\n"
-        "    async_sleep: () => 0n,\n"
-        "    block_on: () => 0n,\n"
-        "    add: (a, b) => {\n"
-        "      if (isTag(a, TAG_INT) && isTag(b, TAG_INT)) {\n"
-        "        return boxInt(unboxInt(a) + unboxInt(b));\n"
-        "      }\n"
-        "      if (isPtr(a) && isPtr(b)) {\n"
-        "        const left = getObj(a);\n"
-        "        const right = getObj(b);\n"
-        "        if (left && right && left.type === 'bytes' && right.type === 'bytes') {\n"
-        "          return boxPtr({ type: 'bytes', data: concatBytes(left.data, right.data) });\n"
-        "        }\n"
-        "        if (left && right && left.type === 'bytearray' && right.type === 'bytearray') {\n"
-        "          return boxPtr({ type: 'bytearray', data: concatBytes(left.data, right.data) });\n"
-        "        }\n"
-        "      }\n"
-        "      return boxNone();\n"
-        "    },\n"
-        "    vec_sum_int: () => boxNone(),\n"
-        "    vec_sum_int_trusted: () => boxNone(),\n"
-        "    vec_sum_int_range: () => boxNone(),\n"
-        "    vec_sum_int_range_trusted: () => boxNone(),\n"
-        "    vec_prod_int: () => boxNone(),\n"
-        "    vec_prod_int_trusted: () => boxNone(),\n"
-        "    vec_prod_int_range: () => boxNone(),\n"
-        "    vec_prod_int_range_trusted: () => boxNone(),\n"
-        "    vec_min_int: () => boxNone(),\n"
-        "    vec_min_int_trusted: () => boxNone(),\n"
-        "    vec_min_int_range: () => boxNone(),\n"
-        "    vec_min_int_range_trusted: () => boxNone(),\n"
-        "    vec_max_int: () => boxNone(),\n"
-        "    vec_max_int_trusted: () => boxNone(),\n"
-        "    vec_max_int_range: () => boxNone(),\n"
-        "    vec_max_int_range_trusted: () => boxNone(),\n"
-        "    sub: (a, b) => boxInt(unboxInt(a) - unboxInt(b)),\n"
-        "    mul: (a, b) => boxInt(unboxInt(a) * unboxInt(b)),\n"
-        "    lt: (a, b) => boxBool(unboxInt(a) < unboxInt(b)),\n"
-        "    eq: (a, b) => boxBool(a === b),\n"
-        "    is: (a, b) => boxBool(a === b),\n"
-        "    not: (val) => {\n"
-        "      if (isTag(val, TAG_BOOL)) return boxBool((val & 1n) !== 1n);\n"
-        "      if (isTag(val, TAG_INT)) return boxBool(unboxInt(val) === 0n);\n"
-        "      if (isPtr(val)) {\n"
-        "        const obj = getObj(val);\n"
-        "        if (obj && obj.type === 'list') return boxBool(obj.items.length === 0);\n"
-        "        if (obj && obj.type === 'bytes') return boxBool(obj.data.length === 0);\n"
-        "        if (obj && obj.type === 'bytearray') return boxBool(obj.data.length === 0);\n"
-        "      }\n"
-        "      return boxBool(true);\n"
-        "    },\n"
-        "    contains: (container, item) => {\n"
-        "      const list = getList(container);\n"
-        "      if (list) {\n"
-        "        return boxBool(list.items.some((val) => val === item));\n"
-        "      }\n"
-        "      const bytes = getBytes(container);\n"
-        "      if (bytes) {\n"
-        "        if (isTag(item, TAG_INT)) {\n"
-        "          const needle = Number(unboxInt(item));\n"
-        "          return boxBool(bytes.data.includes(needle));\n"
-        "        }\n"
-        "      }\n"
-        "      const bytearray = getBytearray(container);\n"
-        "      if (bytearray) {\n"
-        "        if (isTag(item, TAG_INT)) {\n"
-        "          const needle = Number(unboxInt(item));\n"
-        "          return boxBool(bytearray.data.includes(needle));\n"
-        "        }\n"
-        "      }\n"
-        "      return boxBool(false);\n"
-        "    },\n"
-        "    guard_type: (val, expected) => val,\n"
-        "    is_truthy: (val) => {\n"
-        "      if (isTag(val, TAG_BOOL)) return (val & 1n) === 1n ? 1n : 0n;\n"
-        "      if (isTag(val, TAG_INT)) return unboxInt(val) !== 0n ? 1n : 0n;\n"
-        "      if (isPtr(val)) {\n"
-        "        const obj = getObj(val);\n"
-        "        if (obj && obj.type === 'list') return obj.items.length ? 1n : 0n;\n"
-        "        if (obj && obj.type === 'bytes') return obj.data.length ? 1n : 0n;\n"
-        "        if (obj && obj.type === 'bytearray') return obj.data.length ? 1n : 0n;\n"
-        "      }\n"
-        "      return 0n;\n"
-        "    },\n"
-        "    json_parse_scalar: () => 0,\n"
-        "    msgpack_parse_scalar: () => 0,\n"
-        "    cbor_parse_scalar: () => 0,\n"
-        "    string_from_bytes: (ptr, len, out) => {\n"
-        "      const view = new DataView(memory.buffer);\n"
-        "      const bytes = new Uint8Array(memory.buffer, Number(ptr), Number(len));\n"
-        "      const boxed = boxPtr({ type: 'string', data: bytes.slice() });\n"
-        "      view.setBigInt64(Number(out), boxed, true);\n"
-        "      return 0;\n"
-        "    },\n"
-        "    bytes_from_bytes: (ptr, len, out) => {\n"
-        "      const view = new DataView(memory.buffer);\n"
-        "      const bytes = new Uint8Array(memory.buffer, Number(ptr), Number(len));\n"
-        "      const boxed = boxPtr({ type: 'bytes', data: bytes.slice() });\n"
-        "      view.setBigInt64(Number(out), boxed, true);\n"
-        "      return 0;\n"
-        "    },\n"
-        "    memoryview_new: () => boxNone(),\n"
-        "    memoryview_tobytes: () => boxNone(),\n"
-        "    str_from_obj: () => boxNone(),\n"
-        "    len: (val) => {\n"
-        "      const list = getList(val);\n"
-        "      if (list) return boxInt(list.items.length);\n"
-        "      const bytes = getBytes(val);\n"
-        "      if (bytes) return boxInt(bytes.data.length);\n"
-        "      const ba = getBytearray(val);\n"
-        "      if (ba) return boxInt(ba.data.length);\n"
-        "      return boxInt(0);\n"
-        "    },\n"
-        "    slice: () => boxNone(),\n"
-        "    slice_new: (startBits, stopBits, stepBits) => {\n"
-        "      return boxPtr({ type: 'slice', startBits, stopBits, stepBits });\n"
-        "    },\n"
-        "    range_new: () => boxNone(),\n"
-        "    list_builder_new: () => boxPtr({ type: 'list_builder', items: [] }),\n"
-        "    list_builder_append: (builder, val) => {\n"
-        "      const obj = getObj(builder);\n"
-        "      if (obj) obj.items.push(val);\n"
-        "    },\n"
-        "    list_builder_finish: (builder) => {\n"
-        "      const obj = getObj(builder);\n"
-        "      if (!obj) return boxNone();\n"
-        "      return boxPtr({ type: 'list', items: obj.items.slice() });\n"
-        "    },\n"
-        "    tuple_builder_finish: () => boxNone(),\n"
-        "    list_append: () => boxNone(),\n"
-        "    list_pop: () => boxNone(),\n"
-        "    list_extend: () => boxNone(),\n"
-        "    list_insert: () => boxNone(),\n"
-        "    list_remove: () => boxNone(),\n"
-        "    list_count: () => boxNone(),\n"
-        "    list_index: () => boxNone(),\n"
-        "    dict_new: () => boxNone(),\n"
-        "    dict_set: () => boxNone(),\n"
-        "    dict_get: () => boxNone(),\n"
-        "    dict_pop: () => boxNone(),\n"
-        "    dict_keys: () => boxNone(),\n"
-        "    dict_values: () => boxNone(),\n"
-        "    dict_items: () => boxNone(),\n"
-        "    tuple_count: () => boxNone(),\n"
-        "    tuple_index: () => boxNone(),\n"
-        "    iter: () => boxNone(),\n"
-        "    iter_next: () => boxNone(),\n"
-        "    index: (obj, key) => {\n"
-        "      const list = getList(obj);\n"
-        "      if (!list) return boxNone();\n"
-        "      let idx = Number(unboxInt(key));\n"
-        "      if (idx < 0) idx += list.items.length;\n"
-        "      if (idx < 0 || idx >= list.items.length) return boxNone();\n"
-        "      return list.items[idx];\n"
-        "    },\n"
-        "    store_index: () => boxNone(),\n"
-        "    bytes_find: (hay, needle) => {\n"
-        "      const h = getBytes(hay);\n"
-        "      const n = getBytes(needle) || getBytearray(needle);\n"
-        "      if (!h || !n) return boxInt(-1);\n"
-        "      return boxInt(findBytes(h.data, n.data));\n"
-        "    },\n"
-        "    bytearray_find: (hay, needle) => {\n"
-        "      const h = getBytearray(hay);\n"
-        "      const n = getBytes(needle) || getBytearray(needle);\n"
-        "      if (!h || !n) return boxInt(-1);\n"
-        "      return boxInt(findBytes(h.data, n.data));\n"
-        "    },\n"
-        "    string_find: () => boxInt(-1),\n"
-        "    string_format: () => boxNone(),\n"
-        "    string_startswith: () => boxBool(false),\n"
-        "    string_endswith: () => boxBool(false),\n"
-        "    string_count: () => boxInt(0),\n"
-        "    string_join: () => boxNone(),\n"
-        "    string_split: () => boxNone(),\n"
-        "    bytes_split: (hay, needle) => {\n"
-        "      const h = getBytes(hay);\n"
-        "      const n = getBytes(needle) || getBytearray(needle);\n"
-        "      if (!h || !n) return boxNone();\n"
-        "      const parts = splitBytes(h.data, n.data).map((part) => boxPtr({ type: 'bytes', data: part }));\n"
-        "      return boxPtr({ type: 'list', items: parts });\n"
-        "    },\n"
-        "    bytearray_split: (hay, needle) => {\n"
-        "      const h = getBytearray(hay);\n"
-        "      const n = getBytes(needle) || getBytearray(needle);\n"
-        "      if (!h || !n) return boxNone();\n"
-        "      const parts = splitBytes(h.data, n.data).map((part) => boxPtr({ type: 'bytearray', data: part }));\n"
-        "      return boxPtr({ type: 'list', items: parts });\n"
-        "    },\n"
-        "    string_replace: () => boxNone(),\n"
-        "    bytes_replace: (hay, needle, repl) => {\n"
-        "      const h = getBytes(hay);\n"
-        "      const n = getBytes(needle) || getBytearray(needle);\n"
-        "      const r = getBytes(repl) || getBytearray(repl);\n"
-        "      if (!h || !n || !r) return boxNone();\n"
-        "      return boxPtr({ type: 'bytes', data: replaceBytes(h.data, n.data, r.data) });\n"
-        "    },\n"
-        "    bytearray_replace: (hay, needle, repl) => {\n"
-        "      const h = getBytearray(hay);\n"
-        "      const n = getBytes(needle) || getBytearray(needle);\n"
-        "      const r = getBytes(repl) || getBytearray(repl);\n"
-        "      if (!h || !n || !r) return boxNone();\n"
-        "      return boxPtr({ type: 'bytearray', data: replaceBytes(h.data, n.data, r.data) });\n"
-        "    },\n"
-        "    bytearray_from_obj: (obj) => {\n"
-        "      const src = getBytes(obj) || getBytearray(obj);\n"
-        "      if (!src) return boxNone();\n"
-        "      return boxPtr({ type: 'bytearray', data: src.data.slice() });\n"
-        "    },\n"
-        "    intarray_from_seq: () => boxNone(),\n"
-        "    buffer2d_new: () => boxNone(),\n"
-        "    buffer2d_get: () => boxNone(),\n"
-        "    buffer2d_set: () => boxNone(),\n"
-        "    buffer2d_matmul: () => boxNone(),\n"
-        "    dataclass_new: () => boxNone(),\n"
-        "    dataclass_get: () => boxNone(),\n"
-        "    dataclass_set: () => boxNone(),\n"
-        "    context_null: (val) => val,\n"
-        "    context_enter: (val) => val,\n"
-        "    context_exit: () => boxBool(false),\n"
-        "    context_unwind: () => boxBool(false),\n"
-        "    context_closing: (val) => val,\n"
-        "    bridge_unavailable: () => boxNone(),\n"
-        "    file_open: () => boxNone(),\n"
-        "    file_read: () => boxNone(),\n"
-        "    file_write: () => boxNone(),\n"
-        "    file_close: () => boxNone(),\n"
-        "    stream_new: () => 0n,\n"
-        "    stream_send: () => 0n,\n"
-        "    stream_recv: () => 0n,\n"
-        "    stream_close: () => {},\n"
-        "    ws_connect: () => 0,\n"
-        "    ws_pair: () => 0,\n"
-        "    ws_send: () => 0n,\n"
-        "    ws_recv: () => 0n,\n"
-        "    ws_close: () => {},\n"
-        "  },\n"
-        "};\n"
-        "WebAssembly.instantiate(wasmBuffer, imports)\n"
-        "  .then((mod) => {\n"
-        "    memory = mod.instance.exports.molt_memory;\n"
-        "    mod.instance.exports.molt_main();\n"
-        "  })\n"
-        "  .catch((err) => {\n"
-        "    console.error(err);\n"
-        "    process.exit(1);\n"
-        "  });\n"
+    runner = write_wasm_runner(
+        tmp_path,
+        "run_wasm_bytes.js",
+        extra_js=BYTES_HELPERS,
+        import_overrides=BYTES_IMPORT_OVERRIDES,
     )
 
     env = os.environ.copy()
@@ -436,29 +404,15 @@ def test_wasm_bytes_ops_parity(tmp_path: Path) -> None:
     )
     assert build.returncode == 0, build.stderr
 
-    run = subprocess.run(
-        ["node", str(runner), str(output_wasm)],
-        cwd=root,
-        capture_output=True,
-        text=True,
-    )
-
-    if existed:
-        output_wasm.unlink(missing_ok=True)
-
-    assert run.returncode == 0, run.stderr
-    assert run.stdout.strip().splitlines() == [
-        "7",
-        "4",
-        "2",
-        "3",
-        "3",
-        "0",
-        "7",
-        "4",
-        "2",
-        "3",
-        "3",
-        "4",
-        "7",
-    ]
+    try:
+        run = subprocess.run(
+            ["node", str(runner), str(output_wasm)],
+            cwd=root,
+            capture_output=True,
+            text=True,
+        )
+        assert run.returncode == 0, run.stderr
+        assert run.stdout.strip() == "7\n4\n2\n3\n3\n0\n7\n4\n2\n3\n3\n4\n7"
+    finally:
+        if not existed and output_wasm.exists():
+            output_wasm.unlink()

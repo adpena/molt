@@ -25,7 +25,7 @@
 | memoryview | buffer protocol, slicing, writable views, strides | Partial | P2 | TC3 | runtime |
 | iterator | iter/next protocol, StopIteration | Partial | P0 | TC1 | runtime |
 | generator/coroutine | send/throw/close, await | Partial | P0 | TC2 | runtime/frontend |
-| exceptions | BaseException hierarchy, raise/try | Planned | P0 | TC1 | frontend/runtime |
+| exceptions | BaseException hierarchy, raise/try | Partial | P0 | TC1 | frontend/runtime |
 | function/method | callables, closures, descriptors | Planned | P1 | TC2 | frontend/runtime |
 | type/object | isinstance/issubclass, MRO | Planned | P2 | TC3 | runtime |
 | module | imports, attributes, globals | Planned | P2 | TC3 | stdlib/frontend |
@@ -109,7 +109,8 @@
 ## 2. Milestones
 - **TC0 (Now):** ints/bools/None/float + core containers in MVP.
 - **TC1 (Near):** exceptions, full container semantics, range/slice polish.
-  - TODO(type-coverage, owner:frontend, milestone:TC1): `try/except/finally` lowering + raise paths.
+  - Implemented: `try/finally` lowering + `raise ... from ...` exception chaining.
+  - TODO(type-coverage, owner:runtime, milestone:TC1): BaseException hierarchy + typed matching (beyond name string checks).
 - Implemented: comparison ops (`==`, `!=`, `<`, `<=`, `>`, `>=`, `is`, `in`, chained comparisons) + lowering rules for core types (list/tuple/dict/str/bytes/bytearray/range).
   - TODO(type-coverage, owner:frontend, milestone:TC1): builtin reductions (`sum/min/max`) and `len` parity.
   - TODO(type-coverage, owner:frontend, milestone:TC1): builtin constructors for `tuple`, `dict`, `bytes`, `bytearray`.

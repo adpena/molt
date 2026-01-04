@@ -220,7 +220,19 @@ impl WasmBackend {
         add_import("context_enter", 2, &mut self.import_ids);
         add_import("context_exit", 3, &mut self.import_ids);
         add_import("context_unwind", 2, &mut self.import_ids);
+        add_import("context_depth", 0, &mut self.import_ids);
+        add_import("context_unwind_to", 3, &mut self.import_ids);
         add_import("context_closing", 2, &mut self.import_ids);
+        add_import("exception_push", 0, &mut self.import_ids);
+        add_import("exception_pop", 0, &mut self.import_ids);
+        add_import("exception_last", 0, &mut self.import_ids);
+        add_import("exception_new", 3, &mut self.import_ids);
+        add_import("exception_clear", 0, &mut self.import_ids);
+        add_import("exception_pending", 0, &mut self.import_ids);
+        add_import("exception_kind", 2, &mut self.import_ids);
+        add_import("exception_message", 2, &mut self.import_ids);
+        add_import("exception_set_cause", 3, &mut self.import_ids);
+        add_import("raise", 2, &mut self.import_ids);
         add_import("bridge_unavailable", 2, &mut self.import_ids);
         add_import("file_open", 3, &mut self.import_ids);
         add_import("file_read", 3, &mut self.import_ids);
@@ -335,6 +347,15 @@ impl WasmBackend {
         }
 
         let mut func = Function::new_with_locals_types(local_types);
+        #[derive(Clone, Copy)]
+        enum ControlKind {
+            Block,
+            Loop,
+            If,
+            Try,
+        }
+        let mut control_stack: Vec<ControlKind> = Vec::new();
+        let mut try_stack: Vec<usize> = Vec::new();
 
         for op in func_ir.ops {
             match op.kind.as_str() {
@@ -1470,11 +1491,79 @@ impl WasmBackend {
                     func.instruction(&Instruction::Call(import_ids["context_unwind"]));
                     func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                 }
+                "context_depth" => {
+                    func.instruction(&Instruction::Call(import_ids["context_depth"]));
+                    func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                }
+                "context_unwind_to" => {
+                    let args = op.args.as_ref().unwrap();
+                    let depth = locals[&args[0]];
+                    let exc = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(depth));
+                    func.instruction(&Instruction::LocalGet(exc));
+                    func.instruction(&Instruction::Call(import_ids["context_unwind_to"]));
+                    func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                }
                 "context_closing" => {
                     let args = op.args.as_ref().unwrap();
                     let payload = locals[&args[0]];
                     func.instruction(&Instruction::LocalGet(payload));
                     func.instruction(&Instruction::Call(import_ids["context_closing"]));
+                    func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                }
+                "exception_push" => {
+                    func.instruction(&Instruction::Call(import_ids["exception_push"]));
+                    func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                }
+                "exception_pop" => {
+                    func.instruction(&Instruction::Call(import_ids["exception_pop"]));
+                    func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                }
+                "exception_last" => {
+                    func.instruction(&Instruction::Call(import_ids["exception_last"]));
+                    func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                }
+                "exception_new" => {
+                    let args = op.args.as_ref().unwrap();
+                    let kind = locals[&args[0]];
+                    let msg = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(kind));
+                    func.instruction(&Instruction::LocalGet(msg));
+                    func.instruction(&Instruction::Call(import_ids["exception_new"]));
+                    func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                }
+                "exception_clear" => {
+                    func.instruction(&Instruction::Call(import_ids["exception_clear"]));
+                    func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                }
+                "exception_kind" => {
+                    let args = op.args.as_ref().unwrap();
+                    let exc = locals[&args[0]];
+                    func.instruction(&Instruction::LocalGet(exc));
+                    func.instruction(&Instruction::Call(import_ids["exception_kind"]));
+                    func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                }
+                "exception_message" => {
+                    let args = op.args.as_ref().unwrap();
+                    let exc = locals[&args[0]];
+                    func.instruction(&Instruction::LocalGet(exc));
+                    func.instruction(&Instruction::Call(import_ids["exception_message"]));
+                    func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                }
+                "exception_set_cause" => {
+                    let args = op.args.as_ref().unwrap();
+                    let exc = locals[&args[0]];
+                    let cause = locals[&args[1]];
+                    func.instruction(&Instruction::LocalGet(exc));
+                    func.instruction(&Instruction::LocalGet(cause));
+                    func.instruction(&Instruction::Call(import_ids["exception_set_cause"]));
+                    func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                }
+                "raise" => {
+                    let args = op.args.as_ref().unwrap();
+                    let exc = locals[&args[0]];
+                    func.instruction(&Instruction::LocalGet(exc));
+                    func.instruction(&Instruction::Call(import_ids["raise"]));
                     func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                 }
                 "bridge_unavailable" => {
@@ -1542,16 +1631,20 @@ impl WasmBackend {
                     func.instruction(&Instruction::I64Const(0));
                     func.instruction(&Instruction::I64Ne);
                     func.instruction(&Instruction::If(BlockType::Empty));
+                    control_stack.push(ControlKind::If);
                 }
                 "else" => {
                     func.instruction(&Instruction::Else);
                 }
                 "end_if" => {
                     func.instruction(&Instruction::End);
+                    control_stack.pop();
                 }
                 "loop_start" => {
                     func.instruction(&Instruction::Block(BlockType::Empty));
                     func.instruction(&Instruction::Loop(BlockType::Empty));
+                    control_stack.push(ControlKind::Block);
+                    control_stack.push(ControlKind::Loop);
                 }
                 "loop_index_start" => {
                     let args = op.args.as_ref().unwrap();
@@ -1561,6 +1654,8 @@ impl WasmBackend {
                     func.instruction(&Instruction::LocalSet(out));
                     func.instruction(&Instruction::Block(BlockType::Empty));
                     func.instruction(&Instruction::Loop(BlockType::Empty));
+                    control_stack.push(ControlKind::Block);
+                    control_stack.push(ControlKind::Loop);
                 }
                 "loop_index_next" => {
                     let args = op.args.as_ref().unwrap();
@@ -1593,6 +1688,27 @@ impl WasmBackend {
                 "loop_end" => {
                     func.instruction(&Instruction::End);
                     func.instruction(&Instruction::End);
+                    control_stack.pop();
+                    control_stack.pop();
+                }
+                "try_start" => {
+                    func.instruction(&Instruction::Block(BlockType::Empty));
+                    control_stack.push(ControlKind::Try);
+                    try_stack.push(control_stack.len() - 1);
+                }
+                "try_end" => {
+                    func.instruction(&Instruction::End);
+                    control_stack.pop();
+                    try_stack.pop();
+                }
+                "check_exception" => {
+                    if let Some(&try_index) = try_stack.last() {
+                        func.instruction(&Instruction::Call(import_ids["exception_pending"]));
+                        func.instruction(&Instruction::I64Const(0));
+                        func.instruction(&Instruction::I64Ne);
+                        let depth = control_stack.len().saturating_sub(1 + try_index);
+                        func.instruction(&Instruction::BrIf(depth as u32));
+                    }
                 }
                 _ => {}
             }

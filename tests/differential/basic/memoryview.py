@@ -15,9 +15,11 @@ print(mv.tobytes())
 
 stride[:] = b"12"
 print(mv.tobytes())
+try:
+    stride[::2] = b"12"
+except Exception as exc:
+    print(str(exc))
 
 ro = memoryview(b"hi")
 print(ro[0])
 print(ro.tobytes())
-
-stride[::2] = b"12"

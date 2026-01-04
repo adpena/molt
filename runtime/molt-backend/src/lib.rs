@@ -2292,6 +2292,182 @@ impl SimpleBackend {
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
+                "context_depth" => {
+                    let mut sig = self.module.make_signature();
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_context_depth", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "context_unwind_to" => {
+                    let args = op.args.as_ref().unwrap();
+                    let depth = vars.get(&args[0]).expect("Depth not found");
+                    let exc = vars.get(&args[1]).expect("Exception not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_context_unwind_to", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*depth, *exc]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "exception_push" => {
+                    let mut sig = self.module.make_signature();
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_exception_push", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "exception_pop" => {
+                    let mut sig = self.module.make_signature();
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_exception_pop", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "exception_last" => {
+                    let mut sig = self.module.make_signature();
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_exception_last", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "exception_new" => {
+                    let args = op.args.as_ref().unwrap();
+                    let kind = vars.get(&args[0]).expect("Kind not found");
+                    let msg = vars.get(&args[1]).expect("Message not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_exception_new", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*kind, *msg]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "exception_clear" => {
+                    let mut sig = self.module.make_signature();
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_exception_clear", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "exception_kind" => {
+                    let args = op.args.as_ref().unwrap();
+                    let exc = vars.get(&args[0]).expect("Exception not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_exception_kind", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*exc]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "exception_message" => {
+                    let args = op.args.as_ref().unwrap();
+                    let exc = vars.get(&args[0]).expect("Exception not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_exception_message", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*exc]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "exception_set_cause" => {
+                    let args = op.args.as_ref().unwrap();
+                    let exc = vars.get(&args[0]).expect("Exception not found");
+                    let cause = vars.get(&args[1]).expect("Cause not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_exception_set_cause", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*exc, *cause]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "raise" => {
+                    let args = op.args.as_ref().unwrap();
+                    let exc = vars.get(&args[0]).expect("Exception not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_raise", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*exc]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "check_exception" => {
+                    let target_id = op.value.unwrap();
+                    let target_block = state_blocks[&target_id];
+                    let mut sig = self.module.make_signature();
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_exception_pending", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[]);
+                    let pending = builder.inst_results(call)[0];
+                    let cond = builder.ins().icmp_imm(IntCC::NotEqual, pending, 0);
+                    let fallthrough = builder.create_block();
+                    builder
+                        .ins()
+                        .brif(cond, target_block, &[], fallthrough, &[]);
+                    builder.switch_to_block(fallthrough);
+                    builder.seal_block(fallthrough);
+                }
                 "file_open" => {
                     let args = op.args.as_ref().unwrap();
                     let path = vars.get(&args[0]).expect("Path not found");

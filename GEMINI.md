@@ -34,6 +34,8 @@ The Molt compiler itself is designed to be "AI-friendly". Its modular IR and cle
 - Be creative and visionary; propose bold optimizations, but validate with measurements and specs.
 - Provide extra handholding/step-by-step guidance when requested.
 - Default to production-first implementations; avoid short-term hacks unless explicitly approved.
+- Keep Rust crate entrypoints (`lib.rs`) thin; factor substantive runtime/backend code into focused modules and re-export from `lib.rs`.
+- Do not weaken or contort tests to mask missing functionality; surface the gap and implement the correct behavior.
 - Aggressively and proactively update `ROADMAP.md` and the specs in `docs/spec/` when scope or behavior changes.
 - Proactively and aggressively plan for native support of popular and growing Python packages written in Rust.
 - The project vision is full Python compatibility: all types, syntax, and dependencies.
@@ -42,8 +44,8 @@ The Molt compiler itself is designed to be "AI-friendly". Its modular IR and cle
 - Document partial or interim implementations with grepable `TODO(type-coverage, ...)` or `TODO(stdlib-compat, ...)` tags and record follow-ups in `ROADMAP.md`.
 - When major features or optimizations land, run benchmarks with JSON output (`python3 tools/bench.py --json`) and update the Performance & Comparisons section in `README.md` with summarized results.
 - Install optional benchmark deps with `uv sync --group bench --python 3.12` before recording Cython/Numba baselines (Numba requires <3.13).
-- Treat benchmark regressions as build breakers; iterate on optimization + `tools/dev.py lint` + `tools/dev.py test` + benchmarks (`uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json`) until the regression is gone and no new regressions appear.
-- Sound the alarm immediately on performance regressions; prioritize optimization feedback loops before shipping other work.
+- Treat benchmark regressions as build breakers; iterate on optimization + `tools/dev.py lint` + `tools/dev.py test` + benchmarks (`uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json`) until the regression is gone and no new regressions appear, but avoid repeated cycles before the implementation is complete.
+- Sound the alarm immediately on performance regressions; prioritize optimization feedback loops before shipping other work without overfitting to tests mid-implementation.
 - Favor runtime performance over compile-time speed or binary size unless explicitly directed otherwise.
 - Treat `docs/spec/0015_STDLIB_COMPATIBILITY_MATRIX.md` as the source of truth for stdlib scope, tiering, and promotion rules.
 - Keep stdlib modules import-only by default; promote to core only with spec + roadmap updates.
@@ -51,7 +53,7 @@ The Molt compiler itself is designed to be "AI-friendly". Its modular IR and cle
 - Use `ruff format` (black-style) as the canonical Python formatter before builds to avoid inconsistent quoting or formatting drift.
 - When a potential optimization is complex or needs extended focus, add a fully specced entry to `OPTIMIZATIONS_PLAN.md` and propose a detailed evaluation plan (alternatives, checklists, perf matrix, regression gates, and research references; prefer papers and modern algorithms).
 - Use `AGENT_LOCKS.md` for multi-agent coordination and keep communication explicit about scope, touched files, and tests.
-- Agents may use `gh` and git over SSH; proactively commit and merge after extensive linting/testing.
+- Agents may use `gh` and git over SSH; commit after cohesive changes and run lint/test once at the end rather than in repeated cycles.
 - After any push, monitor CI logs until green; if failures appear, propose fixes, implement them, push again, and repeat until green.
 - Always run tests via `uv run --python 3.12/3.13/3.14`; never use the raw `.venv` interpreter directly.
 
