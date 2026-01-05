@@ -63,6 +63,11 @@ fn box_bool_value(builder: &mut FunctionBuilder, val: Value) -> Value {
     builder.ins().bor(tag, bool_val)
 }
 
+fn unbox_ptr_value(builder: &mut FunctionBuilder, val: Value) -> Value {
+    let mask = builder.ins().iconst(types::I64, POINTER_MASK as i64);
+    builder.ins().band(val, mask)
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SimpleIR {
     pub functions: Vec<FunctionIR>,
@@ -3528,17 +3533,20 @@ impl SimpleBackend {
                     let gen_local = self.module.declare_func_in_func(gen_callee, builder.func);
                     let call = builder.ins().call(gen_local, &[poll_addr, size]);
                     let obj = builder.inst_results(call)[0];
+                    let obj_ptr = unbox_ptr_value(&mut builder, obj);
 
                     if let Some(args_names) = &op.args {
                         for (i, name) in args_names.iter().enumerate() {
                             let arg_val =
                                 vars.get(name).expect("Arg not found for alloc_generator");
                             let offset = GENERATOR_CONTROL_BYTES + (i * 8) as i32;
-                            builder.ins().store(MemFlags::new(), *arg_val, obj, offset);
+                            builder
+                                .ins()
+                                .store(MemFlags::new(), *arg_val, obj_ptr, offset);
                         }
                     }
 
-                    output_is_ptr = true;
+                    output_is_ptr = false;
                     let out_name = op.out.unwrap();
                     vars.insert(out_name, obj);
                 }
@@ -3558,6 +3566,45 @@ impl SimpleBackend {
                         .load(types::I64, MemFlags::new(), *obj, offset);
                     let out_name = op.out.unwrap();
                     vars.insert(out_name, res);
+                }
+                "closure_load" => {
+                    let args = op.args.as_ref().unwrap();
+                    let obj = vars.get(&args[0]).expect("Object not found");
+                    let offset = builder.ins().iconst(types::I64, op.value.unwrap());
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_closure_load", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*obj, offset]);
+                    let res = builder.inst_results(call)[0];
+                    let out_name = op.out.unwrap();
+                    vars.insert(out_name, res);
+                }
+                "closure_store" => {
+                    let args = op.args.as_ref().unwrap();
+                    let obj = vars.get(&args[0]).expect("Object not found");
+                    let val = vars.get(&args[1]).expect("Value not found");
+                    let offset = builder.ins().iconst(types::I64, op.value.unwrap());
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_closure_store", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*obj, offset, *val]);
+                    if let Some(out_name) = op.out {
+                        let res = builder.inst_results(call)[0];
+                        vars.insert(out_name, res);
+                    }
                 }
                 "guarded_load" => {
                     let args = op.args.as_ref().unwrap();

@@ -5,7 +5,7 @@ use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
 use crossbeam_deque::{Injector, Stealer, Worker};
 use memchr::{memchr, memmem};
 use molt_obj_model::MoltObject;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::OpenOptions;
 use std::io::{Cursor, Read, Write};
@@ -160,6 +160,7 @@ thread_local! {
     static PARSE_ARENA: RefCell<TempArena> = RefCell::new(TempArena::new(8 * 1024));
     static CONTEXT_STACK: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
     static EXCEPTION_STACK: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    static GENERATOR_RAISE: Cell<bool> = const { Cell::new(false) };
 }
 
 static LAST_EXCEPTION: OnceLock<Mutex<Option<usize>>> = OnceLock::new();
@@ -1656,6 +1657,14 @@ fn exception_handler_active() -> bool {
     EXCEPTION_STACK.with(|stack| !stack.borrow().is_empty())
 }
 
+fn generator_raise_active() -> bool {
+    GENERATOR_RAISE.with(|flag| flag.get())
+}
+
+fn set_generator_raise(active: bool) {
+    GENERATOR_RAISE.with(|flag| flag.set(active));
+}
+
 fn exception_stack_push() {
     EXCEPTION_STACK.with(|stack| {
         stack.borrow_mut().push(0);
@@ -2291,6 +2300,34 @@ unsafe fn generator_set_slot(ptr: *mut u8, offset: usize, bits: u64) {
     *slot = bits;
 }
 
+#[no_mangle]
+pub extern "C" fn molt_closure_load(self_ptr: *mut u8, offset: u64) -> u64 {
+    if self_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    unsafe {
+        let slot = self_ptr.add(offset as usize) as *mut u64;
+        let bits = *slot;
+        inc_ref_bits(bits);
+        bits
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_closure_store(self_ptr: *mut u8, offset: u64, bits: u64) -> u64 {
+    if self_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    unsafe {
+        let slot = self_ptr.add(offset as usize) as *mut u64;
+        let old_bits = *slot;
+        dec_ref_bits(old_bits);
+        inc_ref_bits(bits);
+        *slot = bits;
+    }
+    MoltObject::none().bits()
+}
+
 unsafe fn generator_closed(ptr: *mut u8) -> bool {
     let bits = *generator_slot_ptr(ptr, GEN_CLOSED_OFFSET);
     obj_from_bits(bits).as_bool().unwrap_or(false)
@@ -2328,11 +2365,11 @@ fn generator_unpack_pair(bits: u64) -> Option<(u64, bool)> {
 }
 
 #[no_mangle]
-pub extern "C" fn molt_generator_new(poll_fn_addr: u64, closure_size: u64) -> *mut u8 {
+pub extern "C" fn molt_generator_new(poll_fn_addr: u64, closure_size: u64) -> u64 {
     let total_size = std::mem::size_of::<MoltHeader>() + closure_size as usize;
     let ptr = alloc_object(total_size, TYPE_ID_GENERATOR);
     if ptr.is_null() {
-        return std::ptr::null_mut();
+        return MoltObject::none().bits();
     }
     unsafe {
         let header = header_from_obj_ptr(ptr);
@@ -2342,25 +2379,22 @@ pub extern "C" fn molt_generator_new(poll_fn_addr: u64, closure_size: u64) -> *m
             *generator_slot_ptr(ptr, GEN_SEND_OFFSET) = MoltObject::none().bits();
             *generator_slot_ptr(ptr, GEN_THROW_OFFSET) = MoltObject::none().bits();
             *generator_slot_ptr(ptr, GEN_CLOSED_OFFSET) = MoltObject::from_bool(false).bits();
-            *generator_slot_ptr(ptr, GEN_EXC_DEPTH_OFFSET) = MoltObject::from_int(0).bits();
+            *generator_slot_ptr(ptr, GEN_EXC_DEPTH_OFFSET) = MoltObject::from_int(1).bits();
         }
     }
-    ptr
+    MoltObject::from_ptr(ptr).bits()
 }
 
 #[no_mangle]
 pub extern "C" fn molt_is_generator(obj_bits: u64) -> u64 {
-    let obj = obj_from_bits(obj_bits);
-    let is_gen = obj
-        .as_ptr()
+    let is_gen = maybe_ptr_from_bits(obj_bits)
         .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_GENERATOR });
     MoltObject::from_bool(is_gen).bits()
 }
 
 #[no_mangle]
 pub extern "C" fn molt_generator_send(gen_bits: u64, send_bits: u64) -> u64 {
-    let obj = obj_from_bits(gen_bits);
-    let Some(ptr) = obj.as_ptr() else {
+    let Some(ptr) = maybe_ptr_from_bits(gen_bits) else {
         raise!("TypeError", "expected generator");
     };
     unsafe {
@@ -2383,7 +2417,18 @@ pub extern "C" fn molt_generator_send(gen_bits: u64, send_bits: u64) -> u64 {
         let gen_depth = if gen_depth < 0 { 0 } else { gen_depth as usize };
         exception_stack_set_depth(gen_depth);
         let poll_fn: extern "C" fn(*mut u8) -> i64 = std::mem::transmute(poll_fn_addr as usize);
+        let prev_raise = generator_raise_active();
+        set_generator_raise(true);
         let res = poll_fn(ptr);
+        set_generator_raise(prev_raise);
+        let pending = exception_pending();
+        let exc_bits = if pending {
+            let bits = molt_exception_last();
+            clear_exception();
+            bits
+        } else {
+            MoltObject::none().bits()
+        };
         let new_depth = exception_stack_depth();
         generator_set_slot(
             ptr,
@@ -2391,14 +2436,18 @@ pub extern "C" fn molt_generator_send(gen_bits: u64, send_bits: u64) -> u64 {
             MoltObject::from_int(new_depth as i64).bits(),
         );
         exception_stack_set_depth(caller_depth);
+        if pending {
+            let raised = molt_raise(exc_bits);
+            dec_ref_bits(exc_bits);
+            return raised;
+        }
         res as u64
     }
 }
 
 #[no_mangle]
 pub extern "C" fn molt_generator_throw(gen_bits: u64, exc_bits: u64) -> u64 {
-    let obj = obj_from_bits(gen_bits);
-    let Some(ptr) = obj.as_ptr() else {
+    let Some(ptr) = maybe_ptr_from_bits(gen_bits) else {
         raise!("TypeError", "expected generator");
     };
     unsafe {
@@ -2421,7 +2470,18 @@ pub extern "C" fn molt_generator_throw(gen_bits: u64, exc_bits: u64) -> u64 {
         let gen_depth = if gen_depth < 0 { 0 } else { gen_depth as usize };
         exception_stack_set_depth(gen_depth);
         let poll_fn: extern "C" fn(*mut u8) -> i64 = std::mem::transmute(poll_fn_addr as usize);
+        let prev_raise = generator_raise_active();
+        set_generator_raise(true);
         let res = poll_fn(ptr);
+        set_generator_raise(prev_raise);
+        let pending = exception_pending();
+        let exc_bits = if pending {
+            let bits = molt_exception_last();
+            clear_exception();
+            bits
+        } else {
+            MoltObject::none().bits()
+        };
         let new_depth = exception_stack_depth();
         generator_set_slot(
             ptr,
@@ -2429,14 +2489,18 @@ pub extern "C" fn molt_generator_throw(gen_bits: u64, exc_bits: u64) -> u64 {
             MoltObject::from_int(new_depth as i64).bits(),
         );
         exception_stack_set_depth(caller_depth);
+        if pending {
+            let raised = molt_raise(exc_bits);
+            dec_ref_bits(exc_bits);
+            return raised;
+        }
         res as u64
     }
 }
 
 #[no_mangle]
 pub extern "C" fn molt_generator_close(gen_bits: u64) -> u64 {
-    let obj = obj_from_bits(gen_bits);
-    let Some(ptr) = obj.as_ptr() else {
+    let Some(ptr) = maybe_ptr_from_bits(gen_bits) else {
         raise!("TypeError", "expected generator");
     };
     unsafe {
@@ -2478,7 +2542,18 @@ pub extern "C" fn molt_generator_close(gen_bits: u64) -> u64 {
         let gen_depth = if gen_depth < 0 { 0 } else { gen_depth as usize };
         exception_stack_set_depth(gen_depth);
         let poll_fn: extern "C" fn(*mut u8) -> i64 = std::mem::transmute(poll_fn_addr as usize);
+        let prev_raise = generator_raise_active();
+        set_generator_raise(true);
         let res = poll_fn(ptr) as u64;
+        set_generator_raise(prev_raise);
+        let pending = exception_pending();
+        let exc_bits = if pending {
+            let bits = molt_exception_last();
+            clear_exception();
+            bits
+        } else {
+            MoltObject::none().bits()
+        };
         let new_depth = exception_stack_depth();
         generator_set_slot(
             ptr,
@@ -2486,6 +2561,28 @@ pub extern "C" fn molt_generator_close(gen_bits: u64) -> u64 {
             MoltObject::from_int(new_depth as i64).bits(),
         );
         exception_stack_set_depth(caller_depth);
+        if pending {
+            let exc_obj = obj_from_bits(exc_bits);
+            let is_exit = if let Some(exc_ptr) = exc_obj.as_ptr() {
+                if object_type_id(exc_ptr) == TYPE_ID_EXCEPTION {
+                    let kind = string_obj_to_owned(obj_from_bits(exception_kind_bits(exc_ptr)))
+                        .unwrap_or_default();
+                    kind == "GeneratorExit"
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if is_exit {
+                dec_ref_bits(exc_bits);
+                generator_set_closed(ptr, true);
+                return MoltObject::none().bits();
+            }
+            let raised = molt_raise(exc_bits);
+            dec_ref_bits(exc_bits);
+            return raised;
+        }
         if let Some((_val, done)) = generator_unpack_pair(res) {
             if !done {
                 raise!("RuntimeError", "generator ignored GeneratorExit");
@@ -2634,7 +2731,7 @@ pub extern "C" fn molt_raise(exc_bits: u64) -> u64 {
         }
     }
     record_exception(ptr);
-    if !exception_handler_active() {
+    if !exception_handler_active() && !generator_raise_active() {
         context_stack_unwind(MoltObject::from_ptr(ptr).bits());
         eprintln!("{}", format_exception(ptr));
         std::process::exit(1);
@@ -7621,8 +7718,7 @@ pub extern "C" fn molt_dict_pop(
 
 #[no_mangle]
 pub extern "C" fn molt_iter(iter_bits: u64) -> u64 {
-    let obj = obj_from_bits(iter_bits);
-    if let Some(ptr) = obj.as_ptr() {
+    if let Some(ptr) = maybe_ptr_from_bits(iter_bits) {
         unsafe {
             let type_id = object_type_id(ptr);
             let mut target_bits = iter_bits;
@@ -7667,8 +7763,7 @@ pub extern "C" fn molt_iter(iter_bits: u64) -> u64 {
 
 #[no_mangle]
 pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
-    let obj = obj_from_bits(iter_bits);
-    if let Some(ptr) = obj.as_ptr() {
+    if let Some(ptr) = maybe_ptr_from_bits(iter_bits) {
         unsafe {
             if object_type_id(ptr) == TYPE_ID_GENERATOR {
                 if generator_closed(ptr) {
@@ -9687,7 +9782,7 @@ fn maybe_ptr_from_bits(bits: u64) -> Option<*mut u8> {
         if header.is_null() {
             return None;
         }
-        if (*header).type_id == TYPE_ID_OBJECT {
+        if (*header).type_id == TYPE_ID_OBJECT || (*header).type_id == TYPE_ID_GENERATOR {
             return Some(ptr);
         }
     }

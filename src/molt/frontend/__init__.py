@@ -72,6 +72,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         source_path: str | None = None,
         type_facts: "TypeFacts | None" = None,
         module_name: str | None = None,
+        entry_module: str | None = None,
         enable_phi: bool = True,
         known_modules: set[str] | None = None,
         stdlib_allowlist: set[str] | None = None,
@@ -99,6 +100,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.global_dict_value_hints: dict[str, str] = {}
         self.type_facts = type_facts
         self.module_name = module_name or "__main__"
+        self.entry_module = entry_module
         self.enable_phi = enable_phi
         self.module_prefix = f"{self._sanitize_module_name(self.module_name)}__"
         self.known_modules = set(known_modules or [])
@@ -732,8 +734,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def visit_Name(self, node: ast.Name) -> Any:
         if isinstance(node.ctx, ast.Load):
             if node.id == "__name__":
+                module_name = (
+                    "__main__"
+                    if self.entry_module and self.module_name == self.entry_module
+                    else self.module_name
+                )
                 res = MoltValue(self.next_var(), type_hint="str")
-                self.emit(MoltOp(kind="CONST_STR", args=[self.module_name], result=res))
+                self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=res))
                 return res
             local = self._load_local_value(node.id)
             if local is not None:
@@ -4980,6 +4987,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
             module_name = alias.name
+            if module_name in {"typing", "typing_extensions"}:
+                continue
             bind_name = alias.asname or module_name.split(".")[0]
             module_val = self._emit_module_load_with_parents(module_name)
             if alias.asname:
@@ -4994,6 +5003,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         if node.module is None:
             raise NotImplementedError("Relative imports are not supported yet")
+        if node.module in {"__future__", "typing", "typing_extensions"}:
+            return None
         module_name = node.module
         module_val = self._emit_module_load_with_parents(module_name)
         for alias in node.names:
@@ -5002,7 +5013,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             attr_name = alias.name
             bind_name = alias.asname or attr_name
             submodule_name = f"{module_name}.{attr_name}"
-            if self.known_modules and submodule_name in self.known_modules:
+            if (
+                self.known_modules
+                and module_name == "molt.stdlib"
+                and attr_name in self.known_modules
+            ):
+                attr_val = self._emit_module_load_with_parents(attr_name)
+                self._emit_module_attr_set_on(module_val, attr_name, attr_val)
+            elif self.known_modules and submodule_name in self.known_modules:
                 attr_val = self._emit_module_load_with_parents(submodule_name)
             else:
                 attr_val = MoltValue(self.next_var(), type_hint="Any")
@@ -6601,7 +6619,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self_ptr, offset = op.args
                 json_ops.append(
                     {
-                        "kind": "load",
+                        "kind": "closure_load",
                         "args": [self_ptr],
                         "value": offset,
                         "out": op.result.name,
@@ -6610,7 +6628,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             elif op.kind == "STORE_CLOSURE":
                 self_ptr, offset, val = op.args
                 json_ops.append(
-                    {"kind": "store", "args": [self_ptr, val.name], "value": offset}
+                    {
+                        "kind": "closure_store",
+                        "args": [self_ptr, val.name],
+                        "value": offset,
+                    }
                 )
 
         if ops and ops[-1].kind != "ret":

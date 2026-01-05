@@ -270,6 +270,7 @@ def build(
     stdlib_allowlist = _stdlib_allowlist()
     stdlib_allowlist.update(STUB_MODULES)
     stdlib_allowlist.update(stub_parents)
+    stdlib_allowlist.add("molt.stdlib")
     type_facts = None
     if type_facts_path is None and type_hint_policy in {"trust", "check"}:
         type_facts, ty_ok = _collect_type_facts_for_build(
@@ -318,6 +319,7 @@ def build(
             source_path=str(module_path),
             type_facts=type_facts,
             module_name=module_name,
+            entry_module=entry_module,
             enable_phi=enable_phi,
             known_modules=known_modules,
             stdlib_allowlist=stdlib_allowlist,

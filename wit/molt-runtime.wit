@@ -32,6 +32,8 @@ interface intrinsics {
     lt: func(a: molt-object, b: molt-object) -> molt-object;
     eq: func(a: molt-object, b: molt-object) -> molt-object;
     is: func(a: molt-object, b: molt-object) -> molt-object;
+    closure_load: func(ptr: molt-ptr, offset: u64) -> molt-object;
+    closure_store: func(ptr: molt-ptr, offset: u64, val: molt-object) -> molt-object;
     not: func(val: molt-object) -> molt-object;
     contains: func(container: molt-object, item: molt-object) -> molt-object;
     is_truthy: func(val: molt-object) -> u64;

@@ -10,6 +10,7 @@ const QNAN: u64 = 0x7ff8_0000_0000_0000;
 const TAG_INT: u64 = 0x0001_0000_0000_0000;
 const TAG_BOOL: u64 = 0x0002_0000_0000_0000;
 const TAG_NONE: u64 = 0x0003_0000_0000_0000;
+const TAG_PTR: u64 = 0x0004_0000_0000_0000;
 const TAG_PENDING: u64 = 0x0005_0000_0000_0000;
 const POINTER_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
 
@@ -149,6 +150,8 @@ impl WasmBackend {
         add_import("lt", 3, &mut self.import_ids);
         add_import("eq", 3, &mut self.import_ids);
         add_import("is", 3, &mut self.import_ids);
+        add_import("closure_load", 3, &mut self.import_ids);
+        add_import("closure_store", 5, &mut self.import_ids);
         add_import("not", 2, &mut self.import_ids);
         add_import("contains", 3, &mut self.import_ids);
         add_import("guard_type", 3, &mut self.import_ids);
@@ -1722,6 +1725,25 @@ impl WasmBackend {
                         }));
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                     }
+                    "closure_load" => {
+                        let args = op.args.as_ref().unwrap();
+                        func.instruction(&Instruction::LocalGet(locals[&args[0]]));
+                        func.instruction(&Instruction::I64Const(op.value.unwrap()));
+                        func.instruction(&Instruction::Call(import_ids["closure_load"]));
+                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                    }
+                    "closure_store" => {
+                        let args = op.args.as_ref().unwrap();
+                        func.instruction(&Instruction::LocalGet(locals[&args[0]]));
+                        func.instruction(&Instruction::I64Const(op.value.unwrap()));
+                        func.instruction(&Instruction::LocalGet(locals[&args[1]]));
+                        func.instruction(&Instruction::Call(import_ids["closure_store"]));
+                        if let Some(out) = op.out.as_ref() {
+                            func.instruction(&Instruction::LocalSet(locals[out]));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
                     "guarded_load" => {
                         let args = op.args.as_ref().unwrap();
                         func.instruction(&Instruction::LocalGet(locals[&args[0]]));
@@ -1951,6 +1973,10 @@ impl WasmBackend {
                                 }));
                             }
                         }
+                        func.instruction(&Instruction::LocalGet(res));
+                        func.instruction(&Instruction::I64Const((QNAN | TAG_PTR) as i64));
+                        func.instruction(&Instruction::I64Or);
+                        func.instruction(&Instruction::LocalSet(res));
                     }
                     "state_yield" => {
                         let args = op.args.as_ref().unwrap();

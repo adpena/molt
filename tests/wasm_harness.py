@@ -322,6 +322,19 @@ BASE_IMPORTS = """\
     return boxBool(a === b);
   },
   is: (a, b) => boxBool(a === b),
+  closure_load: (ptr, offset) => {
+    if (!memory) return boxNone();
+    const addr = ptrAddr(ptr) + Number(offset);
+    const view = new DataView(memory.buffer);
+    return view.getBigInt64(addr, true);
+  },
+  closure_store: (ptr, offset, val) => {
+    if (!memory) return boxNone();
+    const addr = ptrAddr(ptr) + Number(offset);
+    const view = new DataView(memory.buffer);
+    view.setBigInt64(addr, val, true);
+    return boxNone();
+  },
   not: (val) => {
     if (isTag(val, TAG_BOOL)) {
       return boxBool((val & 1n) !== 1n);
