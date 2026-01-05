@@ -34,8 +34,10 @@ The Molt compiler itself is designed to be "AI-friendly". Its modular IR and cle
 - Be creative and visionary; propose bold optimizations, but validate with measurements and specs.
 - Provide extra handholding/step-by-step guidance when requested.
 - Default to production-first implementations; avoid short-term hacks unless explicitly approved.
+- Use stubs only if absolutely necessary; build lower-level primitives first and document any remaining gaps.
 - Maintain full parity between native and wasm targets; close gaps immediately and treat wasm regressions as blockers.
 - Keep Rust crate entrypoints (`lib.rs`) thin; factor substantive runtime/backend code into focused modules and re-export from `lib.rs`.
+- Standardize naming: Python modules use `snake_case`, Rust crates use `kebab-case`, and paths reflect module names.
 - Do not weaken or contort tests to mask missing functionality; surface the gap and implement the correct behavior.
 - Aggressively and proactively update `ROADMAP.md` and the specs in `docs/spec/` when scope or behavior changes.
 - Proactively and aggressively plan for native support of popular and growing Python packages written in Rust.
@@ -43,6 +45,7 @@ The Molt compiler itself is designed to be "AI-friendly". Its modular IR and cle
 - Prioritize extending features and refactor current implementations when required to meet roadmap/spec goals.
 - For major changes, ensure tight integration and compatibility across the project.
 - Document partial or interim implementations with grepable `TODO(type-coverage, ...)` or `TODO(stdlib-compat, ...)` tags and record follow-ups in `ROADMAP.md`.
+- Whenever a stub/partial feature or optimization candidate is added, update `README.md`, the relevant `docs/spec/` files, and `ROADMAP.md` in the same change.
 - When major features or optimizations land, run benchmarks with JSON output (`python3 tools/bench.py --json`) and update the Performance & Comparisons section in `README.md` with summarized results.
 - Install optional benchmark deps with `uv sync --group bench --python 3.12` before recording Cython/Numba baselines (Numba requires <3.13).
 - Treat benchmark regressions as build breakers; iterate on optimization + `tools/dev.py lint` + `tools/dev.py test` + benchmarks (`uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json`) until the regression is gone and no new regressions appear, but avoid repeated cycles before the implementation is complete.

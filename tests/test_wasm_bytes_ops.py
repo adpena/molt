@@ -172,6 +172,14 @@ BYTES_IMPORT_OVERRIDES = textwrap.dedent(
       return boxBool(false);
     },
     guard_type: (val, expected) => val,
+    get_attr_generic: () => boxNone(),
+    get_attr_object: () => boxNone(),
+    set_attr_generic: () => boxNone(),
+    set_attr_object: () => boxNone(),
+    get_attr_name: () => boxNone(),
+    get_attr_name_default: () => boxNone(),
+    has_attr_name: () => boxBool(false),
+    set_attr_name: () => boxNone(),
     is_truthy: (val) => {
       if (isTag(val, TAG_BOOL)) return (val & 1n) === 1n ? 1n : 0n;
       if (isTag(val, TAG_INT)) return unboxInt(val) !== 0n ? 1n : 0n;
@@ -320,6 +328,12 @@ BYTES_IMPORT_OVERRIDES = textwrap.dedent(
     dataclass_new: () => boxNone(),
     dataclass_get: () => boxNone(),
     dataclass_set: () => boxNone(),
+    dataclass_set_class: () => boxNone(),
+    class_new: () => boxNone(),
+    classmethod_new: () => boxNone(),
+    staticmethod_new: () => boxNone(),
+    property_new: () => boxNone(),
+    object_set_class: () => boxNone(),
     context_null: (val) => val,
     context_enter: (val) => val,
     context_exit: () => boxBool(false),

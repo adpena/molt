@@ -43,6 +43,14 @@ interface intrinsics {
     bytes_from_bytes: func(ptr: molt-ptr, len: u64, out: molt-ptr) -> s32;
     str_from_obj: func(val: molt-object) -> molt-object;
     guard_type: func(val: molt-object, expected: molt-object) -> molt-object;
+    get_attr_generic: func(obj: molt-ptr, attr_ptr: molt-ptr, attr_len: u64) -> molt-object;
+    get_attr_object: func(obj: molt-object, attr_ptr: molt-ptr, attr_len: u64) -> molt-object;
+    set_attr_generic: func(obj: molt-ptr, attr_ptr: molt-ptr, attr_len: u64, val: molt-object) -> molt-object;
+    set_attr_object: func(obj: molt-object, attr_ptr: molt-ptr, attr_len: u64, val: molt-object) -> molt-object;
+    get_attr_name: func(obj: molt-object, name: molt-object) -> molt-object;
+    get_attr_name_default: func(obj: molt-object, name: molt-object, default: molt-object) -> molt-object;
+    has_attr_name: func(obj: molt-object, name: molt-object) -> molt-object;
+    set_attr_name: func(obj: molt-object, name: molt-object, val: molt-object) -> molt-object;
     len: func(val: molt-object) -> molt-object;
     slice: func(obj: molt-object, start: molt-object, end: molt-object) -> molt-object;
     slice_new: func(start: molt-object, stop: molt-object, step: molt-object) -> molt-object;
@@ -100,6 +108,12 @@ interface intrinsics {
     dataclass_new: func(name: molt-object, fields: molt-object, values: molt-object, flags: molt-object) -> molt-object;
     dataclass_get: func(obj: molt-object, index: molt-object) -> molt-object;
     dataclass_set: func(obj: molt-object, index: molt-object, value: molt-object) -> molt-object;
+    dataclass_set_class: func(obj: molt-object, class_obj: molt-object) -> molt-object;
+    class_new: func(name: molt-object) -> molt-object;
+    classmethod_new: func(func: molt-object) -> molt-object;
+    staticmethod_new: func(func: molt-object) -> molt-object;
+    property_new: func(getter: molt-object, setter: molt-object, deleter: molt-object) -> molt-object;
+    object_set_class: func(obj: molt-ptr, class_obj: molt-object) -> molt-object;
     context_null: func(payload: molt-object) -> molt-object;
     context_enter: func(ctx: molt-object) -> molt-object;
     context_exit: func(ctx: molt-object, exc: molt-object) -> molt-object;

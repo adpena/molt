@@ -7,6 +7,8 @@
 ## Type Coverage
 - memoryview (Partial): constructor, slicing, `tobytes`, writable views, strides, buffer export.
 - TODO(type-coverage, owner:runtime, milestone:TC3): memoryview format codes and multidimensional shapes.
+- Implemented: class objects + basic descriptors (`classmethod`, `staticmethod`, `property`).
+- TODO(type-coverage, owner:runtime, milestone:TC2): inheritance semantics + full descriptor protocol (setters/deleters, `super`).
 
 ## Tooling
 - Keep type facts + `ty` validation wired into build/lint flows and surface regressions early.

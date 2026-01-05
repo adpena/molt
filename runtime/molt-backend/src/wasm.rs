@@ -152,6 +152,14 @@ impl WasmBackend {
         add_import("not", 2, &mut self.import_ids);
         add_import("contains", 3, &mut self.import_ids);
         add_import("guard_type", 3, &mut self.import_ids);
+        add_import("get_attr_generic", 5, &mut self.import_ids);
+        add_import("get_attr_object", 5, &mut self.import_ids);
+        add_import("set_attr_generic", 7, &mut self.import_ids);
+        add_import("set_attr_object", 7, &mut self.import_ids);
+        add_import("get_attr_name", 3, &mut self.import_ids);
+        add_import("get_attr_name_default", 5, &mut self.import_ids);
+        add_import("has_attr_name", 3, &mut self.import_ids);
+        add_import("set_attr_name", 5, &mut self.import_ids);
         add_import("is_truthy", 2, &mut self.import_ids);
         add_import("json_parse_scalar", 4, &mut self.import_ids);
         add_import("msgpack_parse_scalar", 4, &mut self.import_ids);
@@ -201,6 +209,7 @@ impl WasmBackend {
         add_import("string_startswith", 3, &mut self.import_ids);
         add_import("string_endswith", 3, &mut self.import_ids);
         add_import("string_count", 3, &mut self.import_ids);
+        add_import("env_get", 3, &mut self.import_ids);
         add_import("string_join", 3, &mut self.import_ids);
         add_import("string_split", 3, &mut self.import_ids);
         add_import("bytes_split", 3, &mut self.import_ids);
@@ -216,6 +225,12 @@ impl WasmBackend {
         add_import("dataclass_new", 7, &mut self.import_ids);
         add_import("dataclass_get", 3, &mut self.import_ids);
         add_import("dataclass_set", 5, &mut self.import_ids);
+        add_import("dataclass_set_class", 3, &mut self.import_ids);
+        add_import("class_new", 2, &mut self.import_ids);
+        add_import("classmethod_new", 2, &mut self.import_ids);
+        add_import("staticmethod_new", 2, &mut self.import_ids);
+        add_import("property_new", 5, &mut self.import_ids);
+        add_import("object_set_class", 3, &mut self.import_ids);
         add_import("stream_new", 2, &mut self.import_ids);
         add_import("stream_send", 5, &mut self.import_ids);
         add_import("stream_recv", 2, &mut self.import_ids);
@@ -1278,6 +1293,16 @@ impl WasmBackend {
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
+                    "env_get" => {
+                        let args = op.args.as_ref().unwrap();
+                        let key = locals[&args[0]];
+                        let default = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(key));
+                        func.instruction(&Instruction::LocalGet(default));
+                        func.instruction(&Instruction::Call(import_ids["env_get"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
                     "string_join" => {
                         let args = op.args.as_ref().unwrap();
                         let sep = locals[&args[0]];
@@ -1475,6 +1500,186 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(idx));
                         func.instruction(&Instruction::LocalGet(val));
                         func.instruction(&Instruction::Call(import_ids["dataclass_set"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "dataclass_set_class" => {
+                        let args = op.args.as_ref().unwrap();
+                        let obj = locals[&args[0]];
+                        let class_obj = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(obj));
+                        func.instruction(&Instruction::LocalGet(class_obj));
+                        func.instruction(&Instruction::Call(import_ids["dataclass_set_class"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "class_new" => {
+                        let args = op.args.as_ref().unwrap();
+                        let name = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(name));
+                        func.instruction(&Instruction::Call(import_ids["class_new"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "classmethod_new" => {
+                        let args = op.args.as_ref().unwrap();
+                        let func_bits = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(func_bits));
+                        func.instruction(&Instruction::Call(import_ids["classmethod_new"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "staticmethod_new" => {
+                        let args = op.args.as_ref().unwrap();
+                        let func_bits = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(func_bits));
+                        func.instruction(&Instruction::Call(import_ids["staticmethod_new"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "property_new" => {
+                        let args = op.args.as_ref().unwrap();
+                        let getter = locals[&args[0]];
+                        let setter = locals[&args[1]];
+                        let deleter = locals[&args[2]];
+                        func.instruction(&Instruction::LocalGet(getter));
+                        func.instruction(&Instruction::LocalGet(setter));
+                        func.instruction(&Instruction::LocalGet(deleter));
+                        func.instruction(&Instruction::Call(import_ids["property_new"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "object_set_class" => {
+                        let args = op.args.as_ref().unwrap();
+                        let obj = locals[&args[0]];
+                        let class_obj = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(obj));
+                        func.instruction(&Instruction::LocalGet(class_obj));
+                        func.instruction(&Instruction::Call(import_ids["object_set_class"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "get_attr_generic_ptr" => {
+                        let args = op.args.as_ref().unwrap();
+                        let obj = locals[&args[0]];
+                        let attr = op.s_value.as_ref().unwrap();
+                        let bytes = attr.as_bytes();
+                        let offset = self.data_offset;
+                        self.data.active(
+                            0,
+                            &ConstExpr::i32_const(offset as i32),
+                            bytes.iter().copied(),
+                        );
+                        self.data_offset = (self.data_offset + bytes.len() as u32 + 7) & !7;
+                        func.instruction(&Instruction::LocalGet(obj));
+                        func.instruction(&Instruction::I64Const(offset as i64));
+                        func.instruction(&Instruction::I64Const(bytes.len() as i64));
+                        func.instruction(&Instruction::Call(import_ids["get_attr_generic"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "get_attr_generic_obj" => {
+                        let args = op.args.as_ref().unwrap();
+                        let obj = locals[&args[0]];
+                        let attr = op.s_value.as_ref().unwrap();
+                        let bytes = attr.as_bytes();
+                        let offset = self.data_offset;
+                        self.data.active(
+                            0,
+                            &ConstExpr::i32_const(offset as i32),
+                            bytes.iter().copied(),
+                        );
+                        self.data_offset = (self.data_offset + bytes.len() as u32 + 7) & !7;
+                        func.instruction(&Instruction::LocalGet(obj));
+                        func.instruction(&Instruction::I64Const(offset as i64));
+                        func.instruction(&Instruction::I64Const(bytes.len() as i64));
+                        func.instruction(&Instruction::Call(import_ids["get_attr_object"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "set_attr_generic_ptr" => {
+                        let args = op.args.as_ref().unwrap();
+                        let obj = locals[&args[0]];
+                        let val = locals[&args[1]];
+                        let attr = op.s_value.as_ref().unwrap();
+                        let bytes = attr.as_bytes();
+                        let offset = self.data_offset;
+                        self.data.active(
+                            0,
+                            &ConstExpr::i32_const(offset as i32),
+                            bytes.iter().copied(),
+                        );
+                        self.data_offset = (self.data_offset + bytes.len() as u32 + 7) & !7;
+                        func.instruction(&Instruction::LocalGet(obj));
+                        func.instruction(&Instruction::I64Const(offset as i64));
+                        func.instruction(&Instruction::I64Const(bytes.len() as i64));
+                        func.instruction(&Instruction::LocalGet(val));
+                        func.instruction(&Instruction::Call(import_ids["set_attr_generic"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "set_attr_generic_obj" => {
+                        let args = op.args.as_ref().unwrap();
+                        let obj = locals[&args[0]];
+                        let val = locals[&args[1]];
+                        let attr = op.s_value.as_ref().unwrap();
+                        let bytes = attr.as_bytes();
+                        let offset = self.data_offset;
+                        self.data.active(
+                            0,
+                            &ConstExpr::i32_const(offset as i32),
+                            bytes.iter().copied(),
+                        );
+                        self.data_offset = (self.data_offset + bytes.len() as u32 + 7) & !7;
+                        func.instruction(&Instruction::LocalGet(obj));
+                        func.instruction(&Instruction::I64Const(offset as i64));
+                        func.instruction(&Instruction::I64Const(bytes.len() as i64));
+                        func.instruction(&Instruction::LocalGet(val));
+                        func.instruction(&Instruction::Call(import_ids["set_attr_object"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "get_attr_name" => {
+                        let args = op.args.as_ref().unwrap();
+                        let obj = locals[&args[0]];
+                        let name = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(obj));
+                        func.instruction(&Instruction::LocalGet(name));
+                        func.instruction(&Instruction::Call(import_ids["get_attr_name"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "get_attr_name_default" => {
+                        let args = op.args.as_ref().unwrap();
+                        let obj = locals[&args[0]];
+                        let name = locals[&args[1]];
+                        let default_val = locals[&args[2]];
+                        func.instruction(&Instruction::LocalGet(obj));
+                        func.instruction(&Instruction::LocalGet(name));
+                        func.instruction(&Instruction::LocalGet(default_val));
+                        func.instruction(&Instruction::Call(import_ids["get_attr_name_default"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "has_attr_name" => {
+                        let args = op.args.as_ref().unwrap();
+                        let obj = locals[&args[0]];
+                        let name = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(obj));
+                        func.instruction(&Instruction::LocalGet(name));
+                        func.instruction(&Instruction::Call(import_ids["has_attr_name"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "set_attr_name" => {
+                        let args = op.args.as_ref().unwrap();
+                        let obj = locals[&args[0]];
+                        let name = locals[&args[1]];
+                        let val = locals[&args[2]];
+                        func.instruction(&Instruction::LocalGet(obj));
+                        func.instruction(&Instruction::LocalGet(name));
+                        func.instruction(&Instruction::LocalGet(val));
+                        func.instruction(&Instruction::Call(import_ids["set_attr_name"]));
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }

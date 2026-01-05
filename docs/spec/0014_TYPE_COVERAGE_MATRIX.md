@@ -26,10 +26,10 @@
 | iterator | iter/next protocol, StopIteration | Partial | P0 | TC1 | runtime |
 | generator/coroutine | send/throw/close, await | Partial | P0 | TC2 | runtime/frontend |
 | exceptions | BaseException hierarchy, raise/try | Partial | P0 | TC1 | frontend/runtime |
-| function/method | callables, closures, descriptors | Planned | P1 | TC2 | frontend/runtime |
+| function/method | callables, closures, descriptors | Partial | P1 | TC2 | frontend/runtime |
 | type/object | isinstance/issubclass, MRO | Planned | P2 | TC3 | runtime |
-| module | imports, attributes, globals | Planned | P2 | TC3 | stdlib/frontend |
-| descriptor protocol | @property, @classmethod | Planned | P2 | TC3 | runtime/frontend |
+| module | imports, attributes, globals | Partial | P2 | TC3 | stdlib/frontend |
+| descriptor protocol | @property, @classmethod | Partial | P1 | TC2 | runtime/frontend |
 
 ### Builtin functions
 | Builtin | Required Semantics (short) | Status | Priority | Milestone | Owner |
@@ -47,7 +47,7 @@
 | bytes | bytes constructor | Planned | P1 | TC2 | frontend/runtime |
 | callable | callable predicate | Planned | P2 | TC3 | runtime |
 | chr | int to Unicode char | Planned | P2 | TC3 | runtime |
-| classmethod | descriptor constructor | Planned | P2 | TC3 | runtime |
+| classmethod | descriptor constructor | Partial | P1 | TC2 | runtime |
 | compile | code object (restricted) | Planned | P2 | TC3 | stdlib |
 | complex | complex constructor | Planned | P1 | TC2 | frontend/runtime |
 | delattr | attribute deletion | Planned | P2 | TC3 | runtime |
@@ -61,9 +61,9 @@
 | float | float constructor | Planned | P1 | TC2 | frontend/runtime |
 | format | format protocol | Partial | P2 | TC3 | runtime |
 | frozenset | frozenset constructor | Planned | P1 | TC2 | frontend/runtime |
-| getattr | attribute lookup | Planned | P2 | TC3 | runtime |
+| getattr | attribute lookup | Partial | P1 | TC2 | runtime |
 | globals | globals dict | Planned | P2 | TC3 | stdlib |
-| hasattr | attribute predicate | Planned | P2 | TC3 | runtime |
+| hasattr | attribute predicate | Partial | P1 | TC2 | runtime |
 | hash | hash protocol | Planned | P2 | TC3 | runtime |
 | help | help system (gated) | Planned | P2 | TC3 | stdlib |
 | hex | integer to hex string | Planned | P2 | TC3 | runtime |
@@ -87,16 +87,16 @@
 | ord | char to int | Planned | P2 | TC3 | runtime |
 | pow | power with mod | Planned | P1 | TC2 | frontend/runtime |
 | print | output formatting | Supported | P0 | TC0 | runtime |
-| property | descriptor constructor | Planned | P2 | TC3 | runtime |
+| property | descriptor constructor | Partial | P1 | TC2 | runtime |
 | range | range object construction + errors | Partial | P0 | TC1 | frontend/runtime |
 | repr | repr protocol | Partial | P1 | TC2 | runtime |
 | reversed | reverse iterator | Planned | P1 | TC2 | frontend/runtime |
 | round | rounding | Planned | P1 | TC2 | frontend/runtime |
 | set | set constructor | Planned | P1 | TC2 | frontend/runtime |
-| setattr | attribute set | Planned | P2 | TC3 | runtime |
+| setattr | attribute set | Partial | P1 | TC2 | runtime |
 | slice | slice constructor | Partial | P1 | TC2 | frontend/runtime |
 | sorted | stable sort + key/reverse | Planned | P2 | TC3 | frontend/runtime |
-| staticmethod | descriptor constructor | Planned | P2 | TC3 | runtime |
+| staticmethod | descriptor constructor | Partial | P1 | TC2 | runtime |
 | str | str constructor | Partial | P1 | TC2 | frontend/runtime |
 | sum | reduction with start | Planned | P1 | TC2 | frontend/runtime |
 | super | super() resolution | Planned | P2 | TC3 | runtime |
@@ -109,7 +109,7 @@
 ## 2. Milestones
 - **TC0 (Now):** ints/bools/None/float + core containers in MVP.
 - **TC1 (Near):** exceptions, full container semantics, range/slice polish.
-  - Implemented: `try/finally` lowering + `raise ... from ...` exception chaining.
+  - Implemented: `try/except/else/finally` lowering + `raise ... from ...` exception chaining.
   - TODO(type-coverage, owner:runtime, milestone:TC1): BaseException hierarchy + typed matching (beyond name string checks).
 - Implemented: comparison ops (`==`, `!=`, `<`, `<=`, `>`, `>=`, `is`, `in`, chained comparisons) + lowering rules for core types (list/tuple/dict/str/bytes/bytearray/range).
   - TODO(type-coverage, owner:frontend, milestone:TC1): builtin reductions (`sum/min/max`) and `len` parity.
@@ -124,20 +124,23 @@
 - **TC3 (Late):** memoryview, type/object, modules, descriptors.
   - TODO(type-coverage, owner:runtime, milestone:TC3): memoryview format codes, multidimensional shapes, and advanced buffer exports.
   - TODO(type-coverage, owner:stdlib, milestone:TC3): import/module rules + module object model (`__import__`, package resolution, `sys.path` policy).
-  - TODO(type-coverage, owner:stdlib, milestone:TC3): reflection builtins (`type`, `isinstance`, `issubclass`, `getattr`, `setattr`, `hasattr`, `dir`, `vars`, `globals`, `locals`).
+  - TODO(type-coverage, owner:stdlib, milestone:TC3): reflection builtins (`type`, `isinstance`, `issubclass`, `dir`, `vars`, `globals`, `locals`).
   - TODO(type-coverage, owner:stdlib, milestone:TC3): dynamic execution builtins (`eval`, `exec`, `compile`) with sandboxing rules.
   - TODO(type-coverage, owner:stdlib, milestone:TC3): I/O builtins (`open`, `input`, `help`, `breakpoint`) with capability gating.
-  - TODO(type-coverage, owner:runtime, milestone:TC3): descriptor builtins (`property`, `classmethod`, `staticmethod`, `super`).
+  - TODO(type-coverage, owner:runtime, milestone:TC3): descriptor builtins (`super`) + setter/deleter support.
 
 ## 3. Runtime Object Model Expansion
 - Deterministic layouts for all new heap objects (stable header + payload).
 - RC/GC hooks for all container edges and iterator state.
+- Implemented: instance dict fallback for structified objects + dynamic attrs on non-slot dataclasses.
+- Implemented: class objects + basic descriptors (`classmethod`, `staticmethod`, `property`).
 - TODO(type-coverage, owner:runtime, milestone:TC2): set/frozenset hashing + deterministic ordering.
 - TODO(type-coverage, owner:runtime, milestone:TC1): exception objects + stack trace capture.
 - TODO(type-coverage, owner:runtime, milestone:TC2): formatting builtins (`repr`, `ascii`, `bin`, `hex`, `oct`, `chr`, `ord`) + full `format` protocol (format specs, named fields, conversion flags).
 - TODO(type-coverage, owner:runtime, milestone:TC2): rounding intrinsics (`round`, `floor`, `ceil`, `trunc`) with deterministic semantics.
 - TODO(type-coverage, owner:runtime, milestone:TC2): identity builtins (`hash`, `id`, `callable`).
 - TODO(type-coverage, owner:runtime, milestone:TC1): recursion limits + `RecursionError` guard semantics.
+- TODO(type-coverage, owner:runtime, milestone:TC2): inheritance hooks + full descriptor protocol for attribute resolution.
 
 ## 4. Frontend + IR Coverage
 - Lower literals/ops for set/frozenset, complex, and exceptions.

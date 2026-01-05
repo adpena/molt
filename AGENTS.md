@@ -8,6 +8,7 @@
 - `docs/spec/` is the architecture and runtime specification set; treat it as the source of truth for behavior.
 - `tools/` includes developer scripts like `tools/dev.py`.
 - Keep Rust crate entrypoints (`lib.rs`) thin; place substantive runtime/backend logic in focused modules under `src/` and re-export from `lib.rs`.
+- Standardize naming: Python modules use `snake_case`, Rust crates use `kebab-case`, and paths reflect module names (avoid ad-hoc casing).
 
 ## Build, Test, and Development Commands
 - `cargo build --release --package molt-runtime`: build the Rust runtime used by compiled binaries.
@@ -50,6 +51,7 @@
 - Be creative and visionary; proactively propose performance leaps while grounding them in specs and benchmarks.
 - Provide extra handholding/step-by-step guidance when requested.
 - Prefer production-first implementations over quick hacks; prototype work must be clearly marked and scoped.
+- Use stubs only if absolutely necessary; prefer implementing lower-level primitives first and document any remaining gaps.
 - Keep native and wasm feature sets in lockstep; treat wasm parity gaps as blockers and call them out immediately.
 - Do not "fix" tests by weakening coverage when functionality is missing; surface the missing capability and implement it properly.
 - Proactively read and update `ROADMAP.md` and relevant files under `docs/spec/` when behavior or scope changes.
@@ -58,6 +60,7 @@
 - Prioritize extending features; update existing implementations when needed to hit roadmap/spec goals, even if it requires refactors.
 - For major changes, ensure tight integration and compatibility across compiler, runtime, tooling, and tests.
 - Document partial or interim implementations with grepable `TODO(type-coverage, ...)` or `TODO(stdlib-compat, ...)` markers and mirror them in `ROADMAP.md`.
+- Whenever a stub/partial feature or optimization candidate is added, update `README.md`, the relevant `docs/spec/` file(s), and `ROADMAP.md` in the same change.
 - When major features or optimizations land, run benchmarks with JSON output (`python3 tools/bench.py --json`) and update the Performance & Comparisons section in `README.md` with the summarized results.
 - Follow `docs/spec/0015_STDLIB_COMPATIBILITY_MATRIX.md` for stdlib scope, tiers (core vs import vs gated), and promotion rules.
 - Keep stdlib modules import-only by default; only promote to core after updating the stdlib matrix and `ROADMAP.md`.

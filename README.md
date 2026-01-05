@@ -13,6 +13,14 @@ with strict reproducibility, rigorous testing, and staged compatibility.
 - **AOT Compilation**: Uses Cranelift to generate high-performance machine code.
 - **Differential Testing**: Verified against CPython 3.12.
 
+## Limitations (Current)
+
+- **Classes & object model**: no inheritance, metaclasses, descriptors, `@classmethod`/`@staticmethod`/`@property`, or full class objects (class names are compile-time only).
+- **Attributes**: instances use fixed struct fields with a dynamic instance-dict fallback; no `__getattr__`/`__setattr__` hooks and no user-defined `__slots__` beyond dataclass lowering.
+- **Dataclasses**: compile-time lowering for frozen/eq/repr/slots; no `default_factory`, `kw_only`, or `order`; runtime `dataclasses` module provides metadata only.
+- **Exceptions**: `try/except/else/finally` + `raise`/reraise support; still partial vs full BaseException semantics (see `docs/spec/0014_TYPE_COVERAGE_MATRIX.md`).
+- **Imports**: static module graph only; no dynamic import hooks or full package resolution.
+
 ## Quick start
 
 ```bash
@@ -64,9 +72,9 @@ For cross-version baselines, run the bench harness under each CPython version
 `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench_py314.json`)
 and summarize deltas across files.
 
-Latest run: 2026-01-04 (macOS x86_64, CPython 3.14.0).
-Top speedups: `bench_parse_msgpack.py` 25.41x, `bench_matrix_math.py` 10.45x,
-`bench_prod_list.py` 6.32x, `bench_str_count.py` 5.38x, `bench_str_endswith.py` 5.20x.
+Latest run: 2026-01-05 (macOS x86_64, CPython 3.14.0).
+Top speedups: `bench_parse_msgpack.py` 27.36x, `bench_matrix_math.py` 10.23x,
+`bench_prod_list.py` 6.46x, `bench_str_count.py` 5.39x, `bench_str_endswith.py` 5.30x.
 Regressions: `bench_str_count_unicode_warm.py` 0.25x (cache warm path slowdown; investigate).
 Build/run failures: Cython/Numba baselines skipped.
 
@@ -76,17 +84,17 @@ Build/run failures: Cython/Numba baselines skipped.
 - Matrix/buffer kernels (`bench_matrix_math.py`): regression >5% fails the gate.
 - Any expected perf deltas from new kernels must be recorded here after the run; complex regressions move to `OPTIMIZATIONS_PLAN.md`.
 
-Baseline microbenchmarks (2026-01-04): `bench_min_list.py` 2.02x, `bench_max_list.py` 1.89x,
-`bench_prod_list.py` 6.32x, `bench_str_find_unicode.py` 4.82x, `bench_str_count_unicode.py` 1.81x.
+Baseline microbenchmarks (2026-01-05): `bench_min_list.py` 1.96x, `bench_max_list.py` 1.97x,
+`bench_prod_list.py` 6.46x, `bench_str_find_unicode.py` 5.19x, `bench_str_count_unicode.py` 1.94x.
 
 | Benchmark | Molt vs CPython | Notes |
 | --- | --- | --- |
-| bench_matrix_math.py | 10.45x | buffer2d matmul lowering |
-| bench_deeply_nested_loop.py | 1.30x | nested loop lowering |
-| bench_str_endswith.py | 5.20x | string endswith fast path |
-| bench_str_startswith.py | 4.96x | string startswith fast path |
-| bench_str_count.py | 5.38x | string count fast path |
-| bench_str_split.py | 1.60x | optimized split builder |
-| bench_str_replace.py | 4.35x | SIMD-friendly replace path |
-| bench_str_join.py | 2.52x | pre-sized join buffer |
-| bench_sum_list.py | 2.50x | vector reduction fast path |
+| bench_matrix_math.py | 10.23x | buffer2d matmul lowering |
+| bench_deeply_nested_loop.py | 1.22x | nested loop lowering |
+| bench_str_endswith.py | 5.30x | string endswith fast path |
+| bench_str_startswith.py | 5.24x | string startswith fast path |
+| bench_str_count.py | 5.39x | string count fast path |
+| bench_str_split.py | 1.62x | optimized split builder |
+| bench_str_replace.py | 4.51x | SIMD-friendly replace path |
+| bench_str_join.py | 2.56x | pre-sized join buffer |
+| bench_sum_list.py | 2.74x | vector reduction fast path |

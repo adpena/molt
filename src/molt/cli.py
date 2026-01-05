@@ -24,22 +24,25 @@ ParseCodec = Literal["msgpack", "cbor", "json"]
 TypeHintPolicy = Literal["ignore", "trust", "check"]
 FallbackPolicy = Literal["error", "bridge"]
 STUB_MODULES = {"molt_buffer", "molt_cbor", "molt_json", "molt_msgpack"}
+STUB_PARENT_MODULES = {"molt"}
 
 
 def _module_name_from_path(path: Path, roots: list[Path], stdlib_root: Path) -> str:
     resolved = path.resolve()
     rel = None
-    for root in roots:
-        try:
-            rel = resolved.relative_to(root.resolve())
-            break
-        except ValueError:
-            continue
+    try:
+        rel = resolved.relative_to(stdlib_root.resolve())
+    except ValueError:
+        rel = None
     if rel is None:
-        try:
-            rel = resolved.relative_to(stdlib_root.resolve())
-        except ValueError:
-            rel = resolved.with_suffix("")
+        for root in roots:
+            try:
+                rel = resolved.relative_to(root.resolve())
+                break
+            except ValueError:
+                continue
+    if rel is None:
+        rel = resolved.with_suffix("")
     if rel.name == "__init__.py":
         rel = rel.parent
     else:
@@ -121,10 +124,11 @@ def _discover_module_graph(
     roots: list[Path],
     module_roots: list[Path],
     skip_modules: set[str] | None = None,
-) -> dict[str, Path]:
+) -> tuple[dict[str, Path], set[str]]:
     stdlib_root = Path("src/molt/stdlib")
     graph: dict[str, Path] = {}
     skip_modules = skip_modules or set()
+    explicit_imports: set[str] = set()
     queue = [entry_path]
     while queue:
         path = queue.pop()
@@ -141,13 +145,14 @@ def _discover_module_graph(
         except SyntaxError:
             continue
         for name in _collect_imports(tree):
+            explicit_imports.add(name)
             for candidate in _expand_module_chain(name):
                 if candidate.split(".", 1)[0] in skip_modules:
                     continue
                 resolved = _resolve_module_path(candidate, roots)
                 if resolved is not None:
                     queue.append(resolved)
-    return graph
+    return graph, explicit_imports
 
 
 def _latest_mtime(paths: list[Path]) -> float:
@@ -234,13 +239,18 @@ def build(
     module_roots.append(source_path.parent)
     module_roots = list(dict.fromkeys(root.resolve() for root in module_roots))
     roots = module_roots + [stdlib_root]
-    module_graph = _discover_module_graph(
+    module_graph, explicit_imports = _discover_module_graph(
         source_path, roots, module_roots, skip_modules=STUB_MODULES
     )
-    known_modules = set(module_graph.keys())
     entry_module = _module_name_from_path(source_path, module_roots, stdlib_root)
+    stub_parents = STUB_PARENT_MODULES - explicit_imports
+    for stub in stub_parents:
+        if stub != entry_module:
+            module_graph.pop(stub, None)
+    known_modules = set(module_graph.keys())
     stdlib_allowlist = _stdlib_allowlist()
     stdlib_allowlist.update(STUB_MODULES)
+    stdlib_allowlist.update(stub_parents)
     type_facts = None
     if type_facts_path is None and type_hint_policy in {"trust", "check"}:
         type_facts, ty_ok = _collect_type_facts_for_build(

@@ -45,7 +45,7 @@
 | zoneinfo | Stdlib | Planned | P3 | SL3 | stdlib | Timezone data handling. |
 | pathlib | Stdlib | Planned | P2 | SL2 | stdlib | Path abstraction (gated I/O). |
 | enum | Stdlib | Planned | P2 | SL2 | stdlib | Enum base types. |
-| dataclasses | Stdlib | Partial | P2 | SL2 | stdlib | Dataclass lowering (frozen/eq/repr/field order); defaults/kw-only/slots pending. |
+| dataclasses | Stdlib | Partial | P2 | SL2 | stdlib | Dataclass lowering (frozen/eq/repr/field order, slots flag); defaults/kw-only/order/default_factory pending. |
 | typing | Stdlib | Planned | P3 | SL3 | stdlib | Runtime typing helpers + annotations. |
 | abc | Stdlib | Planned | P3 | SL3 | stdlib | Abstract base classes. |
 | contextlib | Stdlib | Partial | P2 | SL2 | stdlib | `nullcontext` + `closing` lowered; `contextmanager` pending. |
@@ -209,7 +209,7 @@ Modules that touch the host require explicit capabilities. Tokens are additive a
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2): `json` parity plan (interop with `molt_json`).
 - TODO(stdlib-compat, owner:frontend, milestone:SL1): decorator whitelist + compile-time lowering for `@lru_cache`.
 - TODO(stdlib-compat, owner:frontend, milestone:SL2): `contextlib.contextmanager` lowering (generator-based context managers).
-- TODO(stdlib-compat, owner:stdlib, milestone:SL2): `dataclasses` transform (default_factory, kw-only, order, slots, `__annotations__`).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2): `dataclasses` transform (default_factory, kw-only, order, `__annotations__`).
 - TODO(stdlib-compat, owner:runtime, milestone:SL2): `hashlib` deterministic hashing policy.
 - TODO(stdlib-compat, owner:runtime, milestone:SL3): expand `io` to buffered/text wrappers and streaming helpers.
 - TODO(stdlib-compat, owner:runtime, milestone:SL3): CPython bridge contract (IPC/ABI, capability gating, deterministic fallback for C extensions).

@@ -110,3 +110,44 @@ else:
 finally:
     print("finally")
 print("case9 done")
+
+header("case10")
+
+
+def return_in_finally() -> str:
+    try:
+        raise ValueError("boom")
+    finally:
+        return "ret"
+
+
+print(return_in_finally())
+print("case10 done")
+
+header("case11")
+
+
+def return_value_order() -> str:
+    x = "start"
+    try:
+        return x
+    finally:
+        x = "final"
+        print("finally", x)
+
+
+print(return_value_order())
+print("case11 done")
+
+header("case12")
+
+
+def return_none() -> None:
+    try:
+        pass
+    finally:
+        pass
+
+
+print(return_none() is None)
+print("case12 done")
