@@ -1239,7 +1239,9 @@ fn alloc_list(elems: &[u64]) -> *mut u8 {
 
 fn alloc_tuple_with_capacity(elems: &[u64], capacity: usize) -> *mut u8 {
     let cap = capacity.max(elems.len());
-    let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut Vec<u64>>();
+    let total = std::mem::size_of::<MoltHeader>()
+        + std::mem::size_of::<*mut Vec<u64>>()
+        + std::mem::size_of::<u64>();
     let ptr = alloc_object(total, TYPE_ID_TUPLE);
     if ptr.is_null() {
         return ptr;
