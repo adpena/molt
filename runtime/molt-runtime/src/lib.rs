@@ -486,8 +486,12 @@ fn obj_eq(lhs: MoltObject, rhs: MoltObject) -> bool {
 }
 
 fn inc_ref_bits(bits: u64) {
-    if let Some(ptr) = obj_from_bits(bits).as_ptr() {
+    let obj = obj_from_bits(bits);
+    if let Some(ptr) = obj.as_ptr() {
         unsafe { molt_inc_ref(ptr) };
+        return;
+    }
+    if !obj.is_float() {
         return;
     }
     if is_raw_object(bits) {
@@ -496,8 +500,12 @@ fn inc_ref_bits(bits: u64) {
 }
 
 fn dec_ref_bits(bits: u64) {
-    if let Some(ptr) = obj_from_bits(bits).as_ptr() {
+    let obj = obj_from_bits(bits);
+    if let Some(ptr) = obj.as_ptr() {
         unsafe { molt_dec_ref(ptr) };
+        return;
+    }
+    if !obj.is_float() {
         return;
     }
     if is_raw_object(bits) {
