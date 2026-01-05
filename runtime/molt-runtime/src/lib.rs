@@ -2137,6 +2137,9 @@ pub extern "C" fn molt_property_new(get_bits: u64, set_bits: u64, del_bits: u64)
     }
 }
 
+/// # Safety
+/// `obj_ptr` must point to a valid Molt object header that can be mutated, and
+/// `class_bits` must be either zero or a valid Molt type object.
 #[no_mangle]
 pub unsafe extern "C" fn molt_object_set_class(obj_ptr: *mut u8, class_bits: u64) -> u64 {
     if obj_ptr.is_null() {
@@ -9801,9 +9804,7 @@ unsafe fn attr_lookup_ptr(obj_ptr: *mut u8, attr_bits: u64) -> Option<u64> {
     }
     if type_id == TYPE_ID_EXCEPTION {
         let name = string_obj_to_owned(obj_from_bits(attr_bits));
-        let Some(attr_name) = name.as_deref() else {
-            return None;
-        };
+        let attr_name = name.as_deref()?;
         match attr_name {
             "__cause__" => {
                 let bits = exception_cause_bits(obj_ptr);
