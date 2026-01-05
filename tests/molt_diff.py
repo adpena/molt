@@ -53,6 +53,8 @@ def diff_test(file_path, python_exe=sys.executable):
         print(f"[FAIL] {file_path} mismatch")
         print(f"  CPython stdout: {cp_out!r}")
         print(f"  Molt    stdout: {molt_out!r}")
+        print(f"  CPython return: {cp_ret} stderr: {cp_err!r}")
+        print(f"  Molt    return: {molt_ret} stderr: {molt_err!r}")
         return False
 
 
