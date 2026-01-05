@@ -2456,31 +2456,33 @@ unsafe fn generator_set_slot(ptr: *mut u8, offset: usize, bits: u64) {
     *slot = bits;
 }
 
+/// # Safety
+/// `self_ptr` must point to a valid closure storage region and `offset` must be
+/// within the allocated payload.
 #[no_mangle]
-pub extern "C" fn molt_closure_load(self_ptr: *mut u8, offset: u64) -> u64 {
+pub unsafe extern "C" fn molt_closure_load(self_ptr: *mut u8, offset: u64) -> u64 {
     if self_ptr.is_null() {
         return MoltObject::none().bits();
     }
-    unsafe {
-        let slot = self_ptr.add(offset as usize) as *mut u64;
-        let bits = *slot;
-        inc_ref_bits(bits);
-        bits
-    }
+    let slot = self_ptr.add(offset as usize) as *mut u64;
+    let bits = *slot;
+    inc_ref_bits(bits);
+    bits
 }
 
+/// # Safety
+/// `self_ptr` must point to a valid closure storage region and `offset` must be
+/// within the allocated payload.
 #[no_mangle]
-pub extern "C" fn molt_closure_store(self_ptr: *mut u8, offset: u64, bits: u64) -> u64 {
+pub unsafe extern "C" fn molt_closure_store(self_ptr: *mut u8, offset: u64, bits: u64) -> u64 {
     if self_ptr.is_null() {
         return MoltObject::none().bits();
     }
-    unsafe {
-        let slot = self_ptr.add(offset as usize) as *mut u64;
-        let old_bits = *slot;
-        dec_ref_bits(old_bits);
-        inc_ref_bits(bits);
-        *slot = bits;
-    }
+    let slot = self_ptr.add(offset as usize) as *mut u64;
+    let old_bits = *slot;
+    dec_ref_bits(old_bits);
+    inc_ref_bits(bits);
+    *slot = bits;
     MoltObject::none().bits()
 }
 
