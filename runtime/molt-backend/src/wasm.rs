@@ -128,6 +128,9 @@ impl WasmBackend {
         add_import("alloc", 2, &mut self.import_ids);
         add_import("async_sleep", 2, &mut self.import_ids);
         add_import("block_on", 2, &mut self.import_ids);
+        add_import("chan_new", 0, &mut self.import_ids);
+        add_import("chan_send", 3, &mut self.import_ids);
+        add_import("chan_recv", 2, &mut self.import_ids);
         add_import("add", 3, &mut self.import_ids);
         add_import("vec_sum_int", 3, &mut self.import_ids);
         add_import("vec_sum_int_trusted", 3, &mut self.import_ids);
@@ -1838,6 +1841,10 @@ impl WasmBackend {
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
+                    "chan_new" => {
+                        func.instruction(&Instruction::Call(import_ids["chan_new"]));
+                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                    }
                     "module_new" | "module_cache_get" | "module_cache_set" | "module_get_attr"
                     | "module_set_attr" => {
                         if let Some(out) = op.out.as_ref() {
@@ -2436,7 +2443,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::End);
                         func.instruction(&Instruction::Br(depth));
                     }
-                    "state_yield" | "chan_send_yield" | "chan_recv_yield" => {
+                    "state_yield" => {
                         let args = op.args.as_ref().unwrap();
                         let pair = locals[&args[0]];
                         func.instruction(&Instruction::I64Const((idx + 1) as i64));
@@ -2453,6 +2460,66 @@ impl WasmBackend {
                         }));
                         func.instruction(&Instruction::LocalGet(pair));
                         func.instruction(&Instruction::Return);
+                    }
+                    "chan_send_yield" => {
+                        let args = op.args.as_ref().unwrap();
+                        let chan = locals[&args[0]];
+                        let val = locals[&args[1]];
+                        let next_state_id = op.value.unwrap();
+                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
+                        func.instruction(&Instruction::LocalSet(state_local));
+                        func.instruction(&Instruction::LocalGet(self_param));
+                        func.instruction(&Instruction::I32WrapI64);
+                        func.instruction(&Instruction::I32Const(-16));
+                        func.instruction(&Instruction::I32Add);
+                        func.instruction(&Instruction::I64Const(next_state_id));
+                        func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
+                            align: 3,
+                            offset: 0,
+                            memory_index: 0,
+                        }));
+                        func.instruction(&Instruction::LocalGet(chan));
+                        func.instruction(&Instruction::LocalGet(val));
+                        func.instruction(&Instruction::Call(import_ids["chan_send"]));
+                        let out = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(out));
+                        func.instruction(&Instruction::LocalGet(out));
+                        func.instruction(&Instruction::I64Const(box_pending()));
+                        func.instruction(&Instruction::I64Eq);
+                        func.instruction(&Instruction::If(BlockType::Empty));
+                        func.instruction(&Instruction::I64Const(box_pending()));
+                        func.instruction(&Instruction::Return);
+                        func.instruction(&Instruction::End);
+                        func.instruction(&Instruction::Br(depth));
+                    }
+                    "chan_recv_yield" => {
+                        let args = op.args.as_ref().unwrap();
+                        let chan = locals[&args[0]];
+                        let next_state_id = op.value.unwrap();
+                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
+                        func.instruction(&Instruction::LocalSet(state_local));
+                        func.instruction(&Instruction::LocalGet(self_param));
+                        func.instruction(&Instruction::I32WrapI64);
+                        func.instruction(&Instruction::I32Const(-16));
+                        func.instruction(&Instruction::I32Add);
+                        func.instruction(&Instruction::I64Const(next_state_id));
+                        func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
+                            align: 3,
+                            offset: 0,
+                            memory_index: 0,
+                        }));
+                        func.instruction(&Instruction::LocalGet(chan));
+                        func.instruction(&Instruction::Call(import_ids["chan_recv"]));
+                        let out = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(out));
+                        func.instruction(&Instruction::LocalGet(out));
+                        func.instruction(&Instruction::I64Const(box_pending()));
+                        func.instruction(&Instruction::I64Eq);
+                        func.instruction(&Instruction::If(BlockType::Empty));
+                        func.instruction(&Instruction::I64Const(box_pending()));
+                        func.instruction(&Instruction::Return);
+                        func.instruction(&Instruction::End);
+                        func.instruction(&Instruction::Br(depth));
                     }
                     "if" => {
                         let args = op.args.as_ref().unwrap();

@@ -212,3 +212,29 @@ except RuntimeError as exc:
     print(exc.__cause__ is None)
     print(exc.__context__ is None)
     print(exc.__suppress_context__)
+
+header("stop_value")
+
+
+def gen_ret_val():
+    return 7
+    yield
+
+
+g11 = gen_ret_val()
+try:
+    g11.send(None)
+except StopIteration as exc:
+    print(str(exc))
+
+
+def gen_ret_none():
+    return None
+    yield
+
+
+g12 = gen_ret_none()
+try:
+    g12.send(None)
+except StopIteration as exc:
+    print(str(exc) == "")

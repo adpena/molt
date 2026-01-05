@@ -39,6 +39,8 @@ let nextPtr = 1n << 40n;
 let memory = null;
 let table = null;
 let asyncSleepCalled = false;
+const chanQueues = new Map();
+let nextChanId = 1n;
 let heapPtr = 1 << 20;
 const align = (size, align) => (size + (align - 1)) & ~(align - 1);
 const isNone = (val) => isTag(val, TAG_NONE);
@@ -515,6 +517,22 @@ BASE_IMPORTS = """\
       if (isPending(res)) continue;
       return res;
     }
+  },
+  chan_new: () => {
+    const id = nextChanId++;
+    chanQueues.set(id, []);
+    return id;
+  },
+  chan_send: (chan, val) => {
+    const queue = chanQueues.get(chan);
+    if (!queue) return boxPending();
+    queue.push(val);
+    return 0n;
+  },
+  chan_recv: (chan) => {
+    const queue = chanQueues.get(chan);
+    if (!queue || queue.length === 0) return boxPending();
+    return queue.shift();
   },
   add: (a, b) => boxInt(unboxInt(a) + unboxInt(b)),
   vec_sum_int: () => boxNone(),
