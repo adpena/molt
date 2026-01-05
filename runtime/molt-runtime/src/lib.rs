@@ -118,7 +118,16 @@ const TYPE_ID_CONTEXT_MANAGER: u32 = 217;
 const TYPE_ID_FILE_HANDLE: u32 = 218;
 const TYPE_ID_MEMORYVIEW: u32 = 219;
 const TYPE_ID_INTARRAY: u32 = 220;
+const TYPE_ID_FUNCTION: u32 = 221;
+const TYPE_ID_BOUND_METHOD: u32 = 222;
+const TYPE_ID_MODULE: u32 = 223;
+const TYPE_ID_TYPE: u32 = 224;
+const TYPE_ID_GENERATOR: u32 = 225;
 const MAX_SMALL_LIST: usize = 16;
+const GEN_SEND_OFFSET: usize = 0;
+const GEN_THROW_OFFSET: usize = 8;
+const GEN_CLOSED_OFFSET: usize = 16;
+const GEN_CONTROL_SIZE: usize = 24;
 const UTF8_CACHE_BLOCK: usize = 4096;
 const UTF8_CACHE_MIN_LEN: usize = 16 * 1024;
 const UTF8_CACHE_MAX_ENTRIES: usize = 128;
@@ -147,6 +156,7 @@ thread_local! {
 }
 
 static LAST_EXCEPTION: OnceLock<Mutex<Option<usize>>> = OnceLock::new();
+static MODULE_CACHE: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
 
 trait ExceptionSentinel {
     fn exception_sentinel() -> Self;
@@ -289,6 +299,9 @@ fn is_truthy(obj: MoltObject) -> bool {
             if type_id == TYPE_ID_ITER {
                 return true;
             }
+            if type_id == TYPE_ID_GENERATOR {
+                return true;
+            }
             if type_id == TYPE_ID_SLICE {
                 return true;
             }
@@ -337,6 +350,11 @@ fn type_name(obj: MoltObject) -> &'static str {
                 TYPE_ID_BUFFER2D => "buffer2d",
                 TYPE_ID_CONTEXT_MANAGER => "context_manager",
                 TYPE_ID_FILE_HANDLE => "file",
+                TYPE_ID_FUNCTION => "function",
+                TYPE_ID_BOUND_METHOD => "method",
+                TYPE_ID_MODULE => "module",
+                TYPE_ID_TYPE => "type",
+                TYPE_ID_GENERATOR => "generator",
                 _ => "object",
             };
         }
@@ -749,6 +767,30 @@ unsafe fn context_exit_fn(ptr: *mut u8) -> u64 {
 
 unsafe fn context_payload_bits(ptr: *mut u8) -> u64 {
     *(ptr.add(2 * std::mem::size_of::<u64>()) as *const u64)
+}
+
+unsafe fn function_fn_ptr(ptr: *mut u8) -> u64 {
+    *(ptr as *const u64)
+}
+
+unsafe fn function_arity(ptr: *mut u8) -> u64 {
+    *(ptr.add(std::mem::size_of::<u64>()) as *const u64)
+}
+
+unsafe fn bound_method_func_bits(ptr: *mut u8) -> u64 {
+    *(ptr as *const u64)
+}
+
+unsafe fn bound_method_self_bits(ptr: *mut u8) -> u64 {
+    *(ptr.add(std::mem::size_of::<u64>()) as *const u64)
+}
+
+unsafe fn module_name_bits(ptr: *mut u8) -> u64 {
+    *(ptr as *const u64)
+}
+
+unsafe fn module_dict_bits(ptr: *mut u8) -> u64 {
+    *(ptr.add(std::mem::size_of::<u64>()) as *const u64)
 }
 
 unsafe fn dataclass_desc_ptr(ptr: *mut u8) -> *mut DataclassDesc {
@@ -1208,6 +1250,55 @@ fn alloc_context_manager(enter_fn: u64, exit_fn: u64, payload_bits: u64) -> *mut
     ptr
 }
 
+fn alloc_function_obj(fn_ptr: u64, arity: u64) -> *mut u8 {
+    let total = std::mem::size_of::<MoltHeader>() + 2 * std::mem::size_of::<u64>();
+    let ptr = alloc_object(total, TYPE_ID_FUNCTION);
+    if ptr.is_null() {
+        return ptr;
+    }
+    unsafe {
+        *(ptr as *mut u64) = fn_ptr;
+        *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = arity;
+    }
+    ptr
+}
+
+fn alloc_bound_method_obj(func_bits: u64, self_bits: u64) -> *mut u8 {
+    let total = std::mem::size_of::<MoltHeader>() + 2 * std::mem::size_of::<u64>();
+    let ptr = alloc_object(total, TYPE_ID_BOUND_METHOD);
+    if ptr.is_null() {
+        return ptr;
+    }
+    unsafe {
+        *(ptr as *mut u64) = func_bits;
+        *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = self_bits;
+        inc_ref_bits(func_bits);
+        inc_ref_bits(self_bits);
+    }
+    ptr
+}
+
+fn alloc_module_obj(name_bits: u64) -> *mut u8 {
+    let dict_ptr = alloc_dict_with_pairs(&[]);
+    if dict_ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
+    let total = std::mem::size_of::<MoltHeader>() + 2 * std::mem::size_of::<u64>();
+    let ptr = alloc_object(total, TYPE_ID_MODULE);
+    if ptr.is_null() {
+        dec_ref_bits(dict_bits);
+        return ptr;
+    }
+    unsafe {
+        *(ptr as *mut u64) = name_bits;
+        *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = dict_bits;
+        inc_ref_bits(name_bits);
+        inc_ref_bits(dict_bits);
+    }
+    ptr
+}
+
 fn alloc_file_handle(file: std::fs::File, readable: bool, writable: bool, text: bool) -> *mut u8 {
     let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut MoltFileHandle>();
     let ptr = alloc_object(total, TYPE_ID_FILE_HANDLE);
@@ -1419,6 +1510,10 @@ fn raise_exception<T: ExceptionSentinel>(kind: &str, message: &str) -> T {
         std::process::exit(1);
     }
     T::exception_sentinel()
+}
+
+fn module_cache() -> &'static Mutex<HashMap<String, u64>> {
+    MODULE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn alloc_dict_with_pairs(pairs: &[u64]) -> *mut u8 {
@@ -1705,6 +1800,147 @@ pub extern "C" fn molt_dataclass_set(obj_bits: u64, index_bits: u64, val_bits: u
 }
 
 #[no_mangle]
+pub extern "C" fn molt_func_new(fn_ptr: u64, arity: u64) -> u64 {
+    let ptr = alloc_function_obj(fn_ptr, arity);
+    if ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(ptr).bits()
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_bound_method_new(func_bits: u64, self_bits: u64) -> u64 {
+    let func_obj = obj_from_bits(func_bits);
+    let Some(func_ptr) = func_obj.as_ptr() else {
+        raise!("TypeError", "bound method expects function object");
+    };
+    unsafe {
+        if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
+            raise!("TypeError", "bound method expects function object");
+        }
+    }
+    let ptr = alloc_bound_method_obj(func_bits, self_bits);
+    if ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(ptr).bits()
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_module_new(name_bits: u64) -> u64 {
+    let name_obj = obj_from_bits(name_bits);
+    let Some(name_ptr) = name_obj.as_ptr() else {
+        raise!("TypeError", "module name must be str");
+    };
+    unsafe {
+        if object_type_id(name_ptr) != TYPE_ID_STRING {
+            raise!("TypeError", "module name must be str");
+        }
+    }
+    let ptr = alloc_module_obj(name_bits);
+    if ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    unsafe {
+        let dict_bits = module_dict_bits(ptr);
+        let dict_obj = obj_from_bits(dict_bits);
+        if let Some(dict_ptr) = dict_obj.as_ptr() {
+            if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                let key_ptr = alloc_string(b"__name__");
+                if !key_ptr.is_null() {
+                    let key_bits = MoltObject::from_ptr(key_ptr).bits();
+                    dict_set_in_place(dict_ptr, key_bits, name_bits);
+                    dec_ref_bits(key_bits);
+                }
+            }
+        }
+    }
+    MoltObject::from_ptr(ptr).bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_module_cache_get(name_bits: u64) -> u64 {
+    let name = match string_obj_to_owned(obj_from_bits(name_bits)) {
+        Some(val) => val,
+        None => raise!("TypeError", "module name must be str"),
+    };
+    let cache = module_cache();
+    let guard = cache.lock().unwrap();
+    if let Some(bits) = guard.get(&name) {
+        inc_ref_bits(*bits);
+        return *bits;
+    }
+    MoltObject::none().bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_module_cache_set(name_bits: u64, module_bits: u64) -> u64 {
+    let name = match string_obj_to_owned(obj_from_bits(name_bits)) {
+        Some(val) => val,
+        None => raise!("TypeError", "module name must be str"),
+    };
+    let cache = module_cache();
+    let mut guard = cache.lock().unwrap();
+    if let Some(old) = guard.insert(name, module_bits) {
+        dec_ref_bits(old);
+    }
+    inc_ref_bits(module_bits);
+    MoltObject::none().bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 {
+    let module_obj = obj_from_bits(module_bits);
+    let Some(module_ptr) = module_obj.as_ptr() else {
+        raise!("TypeError", "module attribute access expects module");
+    };
+    unsafe {
+        if object_type_id(module_ptr) != TYPE_ID_MODULE {
+            raise!("TypeError", "module attribute access expects module");
+        }
+        let dict_bits = module_dict_bits(module_ptr);
+        let dict_obj = obj_from_bits(dict_bits);
+        let dict_ptr = match dict_obj.as_ptr() {
+            Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
+            _ => raise!("TypeError", "module dict missing"),
+        };
+        if let Some(val) = dict_get_in_place(dict_ptr, attr_bits) {
+            inc_ref_bits(val);
+            return val;
+        }
+        let module_name =
+            string_obj_to_owned(obj_from_bits(module_name_bits(module_ptr))).unwrap_or_default();
+        let attr_name =
+            string_obj_to_owned(obj_from_bits(attr_bits)).unwrap_or_else(|| "<attr>".to_string());
+        let msg = format!("module '{module_name}' has no attribute '{attr_name}'");
+        raise!("AttributeError", &msg);
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_module_set_attr(module_bits: u64, attr_bits: u64, val_bits: u64) -> u64 {
+    let module_obj = obj_from_bits(module_bits);
+    let Some(module_ptr) = module_obj.as_ptr() else {
+        raise!("TypeError", "module attribute set expects module");
+    };
+    unsafe {
+        if object_type_id(module_ptr) != TYPE_ID_MODULE {
+            raise!("TypeError", "module attribute set expects module");
+        }
+        let dict_bits = module_dict_bits(module_ptr);
+        let dict_obj = obj_from_bits(dict_bits);
+        let dict_ptr = match dict_obj.as_ptr() {
+            Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
+            _ => raise!("TypeError", "module dict missing"),
+        };
+        dict_set_in_place(dict_ptr, attr_bits, val_bits);
+    }
+    MoltObject::none().bits()
+}
+
+#[no_mangle]
 pub extern "C" fn molt_exception_new(kind_bits: u64, msg_bits: u64) -> u64 {
     let kind_obj = obj_from_bits(kind_bits);
     let msg_obj = obj_from_bits(msg_bits);
@@ -1732,6 +1968,186 @@ pub extern "C" fn molt_exception_new(kind_bits: u64, msg_bits: u64) -> u64 {
     } else {
         MoltObject::from_ptr(ptr).bits()
     }
+}
+
+unsafe fn generator_slot_ptr(ptr: *mut u8, offset: usize) -> *mut u64 {
+    ptr.add(offset) as *mut u64
+}
+
+unsafe fn generator_set_slot(ptr: *mut u8, offset: usize, bits: u64) {
+    let slot = generator_slot_ptr(ptr, offset);
+    let old_bits = *slot;
+    dec_ref_bits(old_bits);
+    inc_ref_bits(bits);
+    *slot = bits;
+}
+
+unsafe fn generator_closed(ptr: *mut u8) -> bool {
+    let bits = *generator_slot_ptr(ptr, GEN_CLOSED_OFFSET);
+    obj_from_bits(bits).as_bool().unwrap_or(false)
+}
+
+unsafe fn generator_set_closed(ptr: *mut u8, closed: bool) {
+    let bits = MoltObject::from_bool(closed).bits();
+    generator_set_slot(ptr, GEN_CLOSED_OFFSET, bits);
+}
+
+fn generator_done_tuple(value_bits: u64) -> u64 {
+    let done_bits = MoltObject::from_bool(true).bits();
+    let tuple_ptr = alloc_tuple(&[value_bits, done_bits]);
+    if tuple_ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(tuple_ptr).bits()
+    }
+}
+
+fn generator_unpack_pair(bits: u64) -> Option<(u64, bool)> {
+    let obj = obj_from_bits(bits);
+    let ptr = obj.as_ptr()?;
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_TUPLE {
+            return None;
+        }
+        let elems = seq_vec_ref(ptr);
+        if elems.len() < 2 {
+            return None;
+        }
+        let done = obj_from_bits(elems[1]).as_bool().unwrap_or(false);
+        Some((elems[0], done))
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_generator_new(poll_fn_addr: u64, closure_size: u64) -> *mut u8 {
+    let total_size = std::mem::size_of::<MoltHeader>() + closure_size as usize;
+    let ptr = alloc_object(total_size, TYPE_ID_GENERATOR);
+    if ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    unsafe {
+        let header = header_from_obj_ptr(ptr);
+        (*header).poll_fn = poll_fn_addr;
+        (*header).state = 0;
+        if closure_size as usize >= GEN_CONTROL_SIZE {
+            *generator_slot_ptr(ptr, GEN_SEND_OFFSET) = MoltObject::none().bits();
+            *generator_slot_ptr(ptr, GEN_THROW_OFFSET) = MoltObject::none().bits();
+            *generator_slot_ptr(ptr, GEN_CLOSED_OFFSET) = MoltObject::from_bool(false).bits();
+        }
+    }
+    ptr
+}
+
+#[no_mangle]
+pub extern "C" fn molt_is_generator(obj_bits: u64) -> u64 {
+    let obj = obj_from_bits(obj_bits);
+    let is_gen = obj
+        .as_ptr()
+        .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_GENERATOR });
+    MoltObject::from_bool(is_gen).bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_generator_send(gen_bits: u64, send_bits: u64) -> u64 {
+    let obj = obj_from_bits(gen_bits);
+    let Some(ptr) = obj.as_ptr() else {
+        raise!("TypeError", "expected generator");
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_GENERATOR {
+            raise!("TypeError", "expected generator");
+        }
+        if generator_closed(ptr) {
+            return generator_done_tuple(MoltObject::none().bits());
+        }
+        generator_set_slot(ptr, GEN_SEND_OFFSET, send_bits);
+        generator_set_slot(ptr, GEN_THROW_OFFSET, MoltObject::none().bits());
+        let header = header_from_obj_ptr(ptr);
+        let poll_fn_addr = (*header).poll_fn;
+        if poll_fn_addr == 0 {
+            return generator_done_tuple(MoltObject::none().bits());
+        }
+        let poll_fn: extern "C" fn(*mut u8) -> i64 = std::mem::transmute(poll_fn_addr as usize);
+        let res = poll_fn(ptr);
+        res as u64
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_generator_throw(gen_bits: u64, exc_bits: u64) -> u64 {
+    let obj = obj_from_bits(gen_bits);
+    let Some(ptr) = obj.as_ptr() else {
+        raise!("TypeError", "expected generator");
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_GENERATOR {
+            raise!("TypeError", "expected generator");
+        }
+        if generator_closed(ptr) {
+            return generator_done_tuple(MoltObject::none().bits());
+        }
+        generator_set_slot(ptr, GEN_THROW_OFFSET, exc_bits);
+        generator_set_slot(ptr, GEN_SEND_OFFSET, MoltObject::none().bits());
+        let header = header_from_obj_ptr(ptr);
+        let poll_fn_addr = (*header).poll_fn;
+        if poll_fn_addr == 0 {
+            return generator_done_tuple(MoltObject::none().bits());
+        }
+        let poll_fn: extern "C" fn(*mut u8) -> i64 = std::mem::transmute(poll_fn_addr as usize);
+        let res = poll_fn(ptr);
+        res as u64
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_generator_close(gen_bits: u64) -> u64 {
+    let obj = obj_from_bits(gen_bits);
+    let Some(ptr) = obj.as_ptr() else {
+        raise!("TypeError", "expected generator");
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_GENERATOR {
+            raise!("TypeError", "expected generator");
+        }
+        if generator_closed(ptr) {
+            return MoltObject::none().bits();
+        }
+        let kind_ptr = alloc_string(b"GeneratorExit");
+        if kind_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let msg_ptr = alloc_string(b"");
+        if msg_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let kind_bits = MoltObject::from_ptr(kind_ptr).bits();
+        let msg_bits = MoltObject::from_ptr(msg_ptr).bits();
+        let exc_ptr = alloc_exception_obj(kind_bits, msg_bits);
+        dec_ref_bits(kind_bits);
+        dec_ref_bits(msg_bits);
+        if exc_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let exc_bits = MoltObject::from_ptr(exc_ptr).bits();
+        generator_set_slot(ptr, GEN_THROW_OFFSET, exc_bits);
+        dec_ref_bits(exc_bits);
+        generator_set_slot(ptr, GEN_SEND_OFFSET, MoltObject::none().bits());
+        let header = header_from_obj_ptr(ptr);
+        let poll_fn_addr = (*header).poll_fn;
+        if poll_fn_addr == 0 {
+            generator_set_closed(ptr, true);
+            return MoltObject::none().bits();
+        }
+        let poll_fn: extern "C" fn(*mut u8) -> i64 = std::mem::transmute(poll_fn_addr as usize);
+        let res = poll_fn(ptr) as u64;
+        if let Some((_val, done)) = generator_unpack_pair(res) {
+            if !done {
+                raise!("RuntimeError", "generator ignored GeneratorExit");
+            }
+        }
+        generator_set_closed(ptr, true);
+    }
+    MoltObject::none().bits()
 }
 
 #[no_mangle]
@@ -6865,6 +7281,10 @@ pub extern "C" fn molt_iter(iter_bits: u64) -> u64 {
                 }
                 inc_target = false;
             }
+            if type_id == TYPE_ID_GENERATOR {
+                inc_ref_bits(iter_bits);
+                return iter_bits;
+            }
             if type_id == TYPE_ID_LIST
                 || type_id == TYPE_ID_TUPLE
                 || type_id == TYPE_ID_DICT
@@ -6897,6 +7317,21 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
     let obj = obj_from_bits(iter_bits);
     if let Some(ptr) = obj.as_ptr() {
         unsafe {
+            if object_type_id(ptr) == TYPE_ID_GENERATOR {
+                if generator_closed(ptr) {
+                    return generator_done_tuple(MoltObject::none().bits());
+                }
+                generator_set_slot(ptr, GEN_SEND_OFFSET, MoltObject::none().bits());
+                let header = header_from_obj_ptr(ptr);
+                let poll_fn_addr = (*header).poll_fn;
+                if poll_fn_addr == 0 {
+                    return generator_done_tuple(MoltObject::none().bits());
+                }
+                let poll_fn: extern "C" fn(*mut u8) -> i64 =
+                    std::mem::transmute(poll_fn_addr as usize);
+                let res = poll_fn(ptr);
+                return res as u64;
+            }
             if object_type_id(ptr) != TYPE_ID_ITER {
                 return MoltObject::none().bits();
             }
@@ -7664,6 +8099,26 @@ fn format_obj(obj: MoltObject) -> String {
             if type_id == TYPE_ID_FILE_HANDLE {
                 return "<file_handle>".to_string();
             }
+            if type_id == TYPE_ID_FUNCTION {
+                return "<function>".to_string();
+            }
+            if type_id == TYPE_ID_BOUND_METHOD {
+                return "<bound_method>".to_string();
+            }
+            if type_id == TYPE_ID_GENERATOR {
+                return "<generator>".to_string();
+            }
+            if type_id == TYPE_ID_MODULE {
+                let name =
+                    string_obj_to_owned(obj_from_bits(module_name_bits(ptr))).unwrap_or_default();
+                if name.is_empty() {
+                    return "<module>".to_string();
+                }
+                return format!("<module '{name}'>");
+            }
+            if type_id == TYPE_ID_TYPE {
+                return "<type>".to_string();
+            }
             if type_id == TYPE_ID_DATACLASS {
                 return format_dataclass(ptr);
             }
@@ -8162,6 +8617,18 @@ pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
             TYPE_ID_MEMORYVIEW => {
                 let owner_bits = memoryview_owner_bits(ptr);
                 dec_ref_bits(owner_bits);
+            }
+            TYPE_ID_BOUND_METHOD => {
+                let func_bits = bound_method_func_bits(ptr);
+                let self_bits = bound_method_self_bits(ptr);
+                dec_ref_bits(func_bits);
+                dec_ref_bits(self_bits);
+            }
+            TYPE_ID_MODULE => {
+                let name_bits = module_name_bits(ptr);
+                let dict_bits = module_dict_bits(ptr);
+                dec_ref_bits(name_bits);
+                dec_ref_bits(dict_bits);
             }
             _ => {}
         }
@@ -8771,15 +9238,33 @@ pub unsafe extern "C" fn molt_cbor_parse_scalar(ptr: *const u8, len: usize, out:
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
 #[no_mangle]
 pub unsafe extern "C" fn molt_get_attr_generic(
-    _obj_ptr: *mut u8,
+    obj_ptr: *mut u8,
     attr_name_ptr: *const u8,
     attr_name_len: usize,
 ) -> i64 {
-    let _s = {
-        let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
-        std::str::from_utf8(slice).unwrap()
-    };
-    0
+    if obj_ptr.is_null() {
+        raise!("AttributeError", "object has no attribute");
+    }
+    let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
+    let attr_name = std::str::from_utf8(slice).unwrap_or("<attr>");
+    let type_id = object_type_id(obj_ptr);
+    if type_id == TYPE_ID_MODULE {
+        let attr_ptr = alloc_string(slice);
+        if attr_ptr.is_null() {
+            return MoltObject::none().bits() as i64;
+        }
+        let attr_bits = MoltObject::from_ptr(attr_ptr).bits();
+        let module_bits = MoltObject::from_ptr(obj_ptr).bits();
+        let res = molt_module_get_attr(module_bits, attr_bits);
+        dec_ref_bits(attr_bits);
+        return res as i64;
+    }
+    let msg = format!(
+        "'{}' object has no attribute '{}'",
+        type_name(MoltObject::from_ptr(obj_ptr)),
+        attr_name
+    );
+    raise!("AttributeError", &msg);
 }
 mod arena;
 use arena::TempArena;

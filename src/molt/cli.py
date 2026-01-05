@@ -23,6 +23,131 @@ Target = Literal["native", "wasm"]
 ParseCodec = Literal["msgpack", "cbor", "json"]
 TypeHintPolicy = Literal["ignore", "trust", "check"]
 FallbackPolicy = Literal["error", "bridge"]
+STUB_MODULES = {"molt_buffer", "molt_cbor", "molt_json", "molt_msgpack"}
+
+
+def _module_name_from_path(path: Path, roots: list[Path], stdlib_root: Path) -> str:
+    resolved = path.resolve()
+    rel = None
+    for root in roots:
+        try:
+            rel = resolved.relative_to(root.resolve())
+            break
+        except ValueError:
+            continue
+    if rel is None:
+        try:
+            rel = resolved.relative_to(stdlib_root.resolve())
+        except ValueError:
+            rel = resolved.with_suffix("")
+    if rel.name == "__init__.py":
+        rel = rel.parent
+    else:
+        rel = rel.with_suffix("")
+    return ".".join(rel.parts)
+
+
+def _expand_module_chain(name: str) -> list[str]:
+    parts = name.split(".")
+    return [".".join(parts[:idx]) for idx in range(1, len(parts) + 1)]
+
+
+def _find_project_root(start: Path) -> Path:
+    for parent in [start] + list(start.parents):
+        if (parent / "pyproject.toml").exists() or (parent / ".git").exists():
+            return parent
+    return start.parent
+
+
+def _resolve_module_path(module_name: str, roots: list[Path]) -> Path | None:
+    parts = module_name.split(".")
+    rel = Path(*parts)
+    for root in roots:
+        mod_path = root / f"{rel}.py"
+        if mod_path.exists():
+            return mod_path
+        pkg_path = root / rel / "__init__.py"
+        if pkg_path.exists():
+            return pkg_path
+    return None
+
+
+def _collect_imports(tree: ast.AST) -> list[str]:
+    imports: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imports.append(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                continue
+            if node.module:
+                imports.append(node.module)
+                for alias in node.names:
+                    if alias.name != "*":
+                        imports.append(f"{node.module}.{alias.name}")
+    return imports
+
+
+def _stdlib_allowlist() -> set[str]:
+    allowlist: set[str] = set()
+    spec_path = Path("docs/spec/0015_STDLIB_COMPATIBILITY_MATRIX.md")
+    if not spec_path.exists():
+        return allowlist
+    in_table = False
+    for line in spec_path.read_text().splitlines():
+        if line.startswith("| Module |"):
+            in_table = True
+            continue
+        if in_table and not line.startswith("|"):
+            break
+        if not in_table or line.startswith("| ---"):
+            continue
+        parts = [part.strip() for part in line.strip().strip("|").split("|")]
+        if not parts:
+            continue
+        module_name = parts[0]
+        if not module_name or module_name == "Module":
+            continue
+        for entry in module_name.split("/"):
+            entry = entry.strip()
+            if entry:
+                allowlist.add(entry)
+    return allowlist
+
+
+def _discover_module_graph(
+    entry_path: Path,
+    roots: list[Path],
+    module_roots: list[Path],
+    skip_modules: set[str] | None = None,
+) -> dict[str, Path]:
+    stdlib_root = Path("src/molt/stdlib")
+    graph: dict[str, Path] = {}
+    skip_modules = skip_modules or set()
+    queue = [entry_path]
+    while queue:
+        path = queue.pop()
+        module_name = _module_name_from_path(path, module_roots, stdlib_root)
+        if module_name in graph:
+            continue
+        graph[module_name] = path
+        try:
+            source = path.read_text()
+        except OSError:
+            continue
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            continue
+        for name in _collect_imports(tree):
+            for candidate in _expand_module_chain(name):
+                if candidate.split(".", 1)[0] in skip_modules:
+                    continue
+                resolved = _resolve_module_path(candidate, roots)
+                if resolved is not None:
+                    queue.append(resolved)
+    return graph
 
 
 def _latest_mtime(paths: list[Path]) -> float:
@@ -100,13 +225,27 @@ def build(
         print(f"File not found: {source_path}", file=sys.stderr)
         return 2
 
-    source = source_path.read_text()
-
-    # 1. Frontend: Python -> JSON IR
-    tree = ast.parse(source)
+    stdlib_root = Path("src/molt/stdlib")
+    project_root = _find_project_root(source_path.resolve())
+    module_roots: list[Path] = []
+    src_root = project_root / "src"
+    if src_root.exists():
+        module_roots.append(src_root)
+    module_roots.append(source_path.parent)
+    module_roots = list(dict.fromkeys(root.resolve() for root in module_roots))
+    roots = module_roots + [stdlib_root]
+    module_graph = _discover_module_graph(
+        source_path, roots, module_roots, skip_modules=STUB_MODULES
+    )
+    known_modules = set(module_graph.keys())
+    entry_module = _module_name_from_path(source_path, module_roots, stdlib_root)
+    stdlib_allowlist = _stdlib_allowlist()
+    stdlib_allowlist.update(STUB_MODULES)
     type_facts = None
     if type_facts_path is None and type_hint_policy in {"trust", "check"}:
-        type_facts, ty_ok = _collect_type_facts_for_build(source_path, type_hint_policy)
+        type_facts, ty_ok = _collect_type_facts_for_build(
+            list(module_graph.values()), type_hint_policy, source_path
+        )
         if type_facts is None and type_hint_policy == "trust":
             print("Type facts unavailable; refusing trusted build.", file=sys.stderr)
             return 2
@@ -129,20 +268,55 @@ def build(
             print(f"Failed to load type facts: {exc}", file=sys.stderr)
             return 2
 
-    gen = SimpleTIRGenerator(
-        parse_codec=parse_codec,
-        type_hint_policy=type_hint_policy,
-        fallback_policy=fallback_policy,
-        source_path=str(source_path),
-        type_facts=type_facts,
-        module_name=source_path.stem,
+    functions: list[dict[str, Any]] = []
+    enable_phi = target != "wasm"
+    for module_name in sorted(module_graph.keys()):
+        module_path = module_graph[module_name]
+        try:
+            source = module_path.read_text()
+        except OSError as exc:
+            print(f"Failed to read module {module_path}: {exc}", file=sys.stderr)
+            return 2
+        try:
+            tree = ast.parse(source)
+        except SyntaxError as exc:
+            print(f"Syntax error in {module_path}: {exc}", file=sys.stderr)
+            return 2
+        gen = SimpleTIRGenerator(
+            parse_codec=parse_codec,
+            type_hint_policy=type_hint_policy,
+            fallback_policy=fallback_policy,
+            source_path=str(module_path),
+            type_facts=type_facts,
+            module_name=module_name,
+            enable_phi=enable_phi,
+            known_modules=known_modules,
+            stdlib_allowlist=stdlib_allowlist,
+        )
+        try:
+            gen.visit(tree)
+        except CompatibilityError as exc:
+            print(exc, file=sys.stderr)
+            return 2
+        ir = gen.to_json()
+        init_symbol = SimpleTIRGenerator.module_init_symbol(module_name)
+        for func in ir["functions"]:
+            if func["name"] == "molt_main":
+                func["name"] = init_symbol
+        functions.extend(ir["functions"])
+
+    entry_init = SimpleTIRGenerator.module_init_symbol(entry_module)
+    functions.append(
+        {
+            "name": "molt_main",
+            "params": [],
+            "ops": [
+                {"kind": "call", "s_value": entry_init, "args": [], "out": "v0"},
+                {"kind": "ret_void"},
+            ],
+        }
     )
-    try:
-        gen.visit(tree)
-    except CompatibilityError as exc:
-        print(exc, file=sys.stderr)
-        return 2
-    ir = gen.to_json()
+    ir = {"functions": functions}
 
     # 2. Backend: JSON IR -> output.o / output.wasm
     cmd = ["cargo", "run", "--quiet", "--package", "molt-backend", "--"]
@@ -450,11 +624,11 @@ def _run_ty_check(path: Path) -> tuple[bool, str]:
 
 
 def _collect_type_facts_for_build(
-    source_path: Path, type_hint_policy: TypeHintPolicy
+    paths: list[Path], type_hint_policy: TypeHintPolicy, ty_target: Path
 ) -> tuple[Any | None, bool]:
     trust = "trusted" if type_hint_policy == "trust" else "guarded"
-    ty_ok, _ = _run_ty_check(source_path)
-    facts = collect_type_facts_from_paths([source_path], trust, infer=ty_ok)
+    ty_ok, _ = _run_ty_check(ty_target)
+    facts = collect_type_facts_from_paths(paths, trust, infer=ty_ok)
     if ty_ok:
         facts.tool = "molt-check+ty+infer"
     return facts, ty_ok

@@ -50,6 +50,7 @@
 - Be creative and visionary; proactively propose performance leaps while grounding them in specs and benchmarks.
 - Provide extra handholding/step-by-step guidance when requested.
 - Prefer production-first implementations over quick hacks; prototype work must be clearly marked and scoped.
+- Keep native and wasm feature sets in lockstep; treat wasm parity gaps as blockers and call them out immediately.
 - Do not "fix" tests by weakening coverage when functionality is missing; surface the missing capability and implement it properly.
 - Proactively read and update `ROADMAP.md` and relevant files under `docs/spec/` when behavior or scope changes.
 - Proactively and aggressively plan for native support of popular and growing Python packages written in Rust, with a bias toward production-quality integrations.

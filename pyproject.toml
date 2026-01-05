@@ -3,6 +3,7 @@ name = "molt"
 version = "0.1.0"
 description = "Molt: A verified subset Python to native/WASM compiler."
 readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.12, <3.15"
 dependencies = [
     "click>=8.1.7",

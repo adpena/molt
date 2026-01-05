@@ -2,6 +2,7 @@
 name = "molt-backend"
 version = "0.1.0"
 edition = "2021"
+license = "Apache-2.0"
 
 [dependencies]
 cranelift = "0.116"
@@ -13,4 +14,3 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 molt-obj-model = { path = "../molt-obj-model" }
 wasm-encoder = "0.32.0"
-

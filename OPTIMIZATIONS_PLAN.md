@@ -110,8 +110,9 @@ and regression control.
 - Spec + README updates with new perf gates.
 
 **Latest Results (2026-01-04)**
-- `bench_str_count_unicode.py`: 1.86x (improved from 1.52x after adding block-prefix cache + memchr-iter short needle scan).
-- `bench_str_find_unicode.py`: 4.68x (no regression observed).
+- `bench_str_count_unicode.py`: 1.81x (steady vs prior run).
+- `bench_str_find_unicode.py`: 4.82x (no regression observed).
+- `bench_str_count_unicode_warm.py`: 0.25x (regression; warm cache path still dominated by index translation).
 - Memory tradeoff: cache uses 8 bytes per 4KB block (≈2KB per 1MB string, ≈20KB per 10MB string); capped at 128 entries (~2.5MB worst-case) and only enabled for strings >=16KB.
 
 ### OPT-0002: Typed Buffer Protocol + SIMD Kernels for MemoryView

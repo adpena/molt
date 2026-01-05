@@ -234,7 +234,8 @@ def normalize_type_hint(value: str | None) -> str | None:
                 return "dict"
             return None
         text = base
-    base = text.strip().lower()
+    base = text.strip()
+    base_lower = base.lower()
     mapping = {
         "int": "int",
         "float": "float",
@@ -247,14 +248,15 @@ def normalize_type_hint(value: str | None) -> str | None:
         "dict": "dict",
         "range": "range",
         "slice": "slice",
-        "buffer2d": "buffer2d",
         "memoryview": "memoryview",
         "none": "None",
         "nonetype": "None",
         "any": "Any",
         "object": "Any",
     }
-    return mapping.get(base)
+    if base_lower == "buffer2d" and base == base_lower:
+        return "buffer2d"
+    return mapping.get(base_lower, base)
 
 
 def _infer_expr_type(node: ast.expr) -> str | None:

@@ -69,6 +69,10 @@ interface intrinsics {
     tuple_index: func(tuple: molt-object, val: molt-object) -> molt-object;
     iter: func(obj: molt-object) -> molt-object;
     iter_next: func(iter: molt-object) -> molt-object;
+    generator_send: func(gen: molt-object, val: molt-object) -> molt-object;
+    generator_throw: func(gen: molt-object, exc: molt-object) -> molt-object;
+    generator_close: func(gen: molt-object) -> molt-object;
+    is_generator: func(obj: molt-object) -> molt-object;
     index: func(obj: molt-object, key: molt-object) -> molt-object;
     store_index: func(obj: molt-object, key: molt-object, val: molt-object) -> molt-object;
     bytes_find: func(haystack: molt-object, needle: molt-object) -> molt-object;

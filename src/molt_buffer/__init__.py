@@ -1,10 +1,20 @@
 class Buffer2D:
+    rows: int
+    cols: int
+    _data: list
+
     def __init__(self, rows: int, cols: int, init: int = 0) -> None:
         if rows < 0 or cols < 0:
             raise ValueError("rows/cols must be non-negative")
         self.rows = rows
         self.cols = cols
-        self._data = [[init for _ in range(cols)] for _ in range(rows)]
+        data = []
+        for _ in range(rows):
+            row = []
+            for _ in range(cols):
+                row.append(init)
+            data.append(row)
+        self._data = data
 
     def get(self, row: int, col: int) -> int:
         return self._data[row][col]

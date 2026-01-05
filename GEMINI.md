@@ -34,6 +34,7 @@ The Molt compiler itself is designed to be "AI-friendly". Its modular IR and cle
 - Be creative and visionary; propose bold optimizations, but validate with measurements and specs.
 - Provide extra handholding/step-by-step guidance when requested.
 - Default to production-first implementations; avoid short-term hacks unless explicitly approved.
+- Maintain full parity between native and wasm targets; close gaps immediately and treat wasm regressions as blockers.
 - Keep Rust crate entrypoints (`lib.rs`) thin; factor substantive runtime/backend code into focused modules and re-export from `lib.rs`.
 - Do not weaken or contort tests to mask missing functionality; surface the gap and implement the correct behavior.
 - Aggressively and proactively update `ROADMAP.md` and the specs in `docs/spec/` when scope or behavior changes.

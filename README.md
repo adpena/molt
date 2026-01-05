@@ -65,10 +65,10 @@ For cross-version baselines, run the bench harness under each CPython version
 and summarize deltas across files.
 
 Latest run: 2026-01-04 (macOS x86_64, CPython 3.14.0).
-Top speedups: `bench_parse_msgpack.py` 66.78x, `bench_matrix_math.py` 10.83x,
-`bench_prod_list.py` 6.84x, `bench_sum.py` 6.64x, `bench_str_count.py` 5.60x.
-Regressions: `bench_str_split.py` 1.82x (down from 2.32x prior run; investigate).
-Build/run failures: PyPy/Cython/Numba baselines skipped.
+Top speedups: `bench_parse_msgpack.py` 25.41x, `bench_matrix_math.py` 10.45x,
+`bench_prod_list.py` 6.32x, `bench_str_count.py` 5.38x, `bench_str_endswith.py` 5.20x.
+Regressions: `bench_str_count_unicode_warm.py` 0.25x (cache warm path slowdown; investigate).
+Build/run failures: Cython/Numba baselines skipped.
 
 ### Performance Gates
 - Vector reductions (`bench_sum_list.py`, `bench_min_list.py`, `bench_max_list.py`, `bench_prod_list.py`): regression >5% fails the gate.
@@ -76,17 +76,17 @@ Build/run failures: PyPy/Cython/Numba baselines skipped.
 - Matrix/buffer kernels (`bench_matrix_math.py`): regression >5% fails the gate.
 - Any expected perf deltas from new kernels must be recorded here after the run; complex regressions move to `OPTIMIZATIONS_PLAN.md`.
 
-Baseline microbenchmarks (2026-01-04): `bench_min_list.py` 1.94x, `bench_max_list.py` 2.04x,
-`bench_prod_list.py` 6.84x, `bench_str_find_unicode.py` 4.68x, `bench_str_count_unicode.py` 1.86x.
+Baseline microbenchmarks (2026-01-04): `bench_min_list.py` 2.02x, `bench_max_list.py` 1.89x,
+`bench_prod_list.py` 6.32x, `bench_str_find_unicode.py` 4.82x, `bench_str_count_unicode.py` 1.81x.
 
 | Benchmark | Molt vs CPython | Notes |
 | --- | --- | --- |
-| bench_matrix_math.py | 10.83x | buffer2d matmul lowering |
-| bench_deeply_nested_loop.py | 4.69x | nested loop lowering |
-| bench_str_endswith.py | 4.90x | string endswith fast path |
-| bench_str_startswith.py | 5.12x | string startswith fast path |
-| bench_str_count.py | 5.60x | string count fast path |
-| bench_str_split.py | 1.82x | optimized split builder |
-| bench_str_replace.py | 4.63x | SIMD-friendly replace path |
-| bench_str_join.py | 2.19x | pre-sized join buffer |
-| bench_sum_list.py | 2.65x | vector reduction fast path |
+| bench_matrix_math.py | 10.45x | buffer2d matmul lowering |
+| bench_deeply_nested_loop.py | 1.30x | nested loop lowering |
+| bench_str_endswith.py | 5.20x | string endswith fast path |
+| bench_str_startswith.py | 4.96x | string startswith fast path |
+| bench_str_count.py | 5.38x | string count fast path |
+| bench_str_split.py | 1.60x | optimized split builder |
+| bench_str_replace.py | 4.35x | SIMD-friendly replace path |
+| bench_str_join.py | 2.52x | pre-sized join buffer |
+| bench_sum_list.py | 2.50x | vector reduction fast path |
