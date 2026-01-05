@@ -8,7 +8,9 @@
 - memoryview (Partial): constructor, slicing, `tobytes`, writable views, strides, buffer export.
 - TODO(type-coverage, owner:runtime, milestone:TC3): memoryview format codes and multidimensional shapes.
 - Implemented: class objects + basic descriptors (`classmethod`, `staticmethod`, `property`).
+- Implemented: exception chaining with explicit `__cause__`, implicit `__context__`, and `__suppress_context__`.
 - TODO(type-coverage, owner:runtime, milestone:TC2): inheritance semantics + full descriptor protocol (setters/deleters, `super`).
+- Partial: wasm generator state machines; finish runtime/WIT parity for async/generator support.
 
 ## Tooling
 - Keep type facts + `ty` validation wired into build/lint flows and surface regressions early.

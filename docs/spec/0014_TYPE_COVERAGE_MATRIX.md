@@ -25,7 +25,7 @@
 | memoryview | buffer protocol, slicing, writable views, strides | Partial | P2 | TC3 | runtime |
 | iterator | iter/next protocol, StopIteration | Partial | P0 | TC1 | runtime |
 | generator/coroutine | send/throw/close, await | Partial | P0 | TC2 | runtime/frontend |
-| exceptions | BaseException hierarchy, raise/try | Partial | P0 | TC1 | frontend/runtime |
+| exceptions | BaseException hierarchy, raise/try, chaining | Partial | P0 | TC1 | frontend/runtime |
 | function/method | callables, closures, descriptors | Partial | P1 | TC2 | frontend/runtime |
 | type/object | isinstance/issubclass, MRO | Planned | P2 | TC3 | runtime |
 | module | imports, attributes, globals | Partial | P2 | TC3 | stdlib/frontend |
@@ -109,7 +109,7 @@
 ## 2. Milestones
 - **TC0 (Now):** ints/bools/None/float + core containers in MVP.
 - **TC1 (Near):** exceptions, full container semantics, range/slice polish.
-  - Implemented: `try/except/else/finally` lowering + `raise ... from ...` exception chaining.
+  - Implemented: `try/except/else/finally` lowering + exception chaining (explicit `__cause__`, implicit `__context__`, `__suppress_context__`).
   - TODO(type-coverage, owner:runtime, milestone:TC1): BaseException hierarchy + typed matching (beyond name string checks).
 - Implemented: comparison ops (`==`, `!=`, `<`, `<=`, `>`, `>=`, `is`, `in`, chained comparisons) + lowering rules for core types (list/tuple/dict/str/bytes/bytearray/range).
   - TODO(type-coverage, owner:frontend, milestone:TC1): builtin reductions (`sum/min/max`) and `len` parity.
@@ -135,7 +135,8 @@
 - Implemented: instance dict fallback for structified objects + dynamic attrs on non-slot dataclasses.
 - Implemented: class objects + basic descriptors (`classmethod`, `staticmethod`, `property`).
 - TODO(type-coverage, owner:runtime, milestone:TC2): set/frozenset hashing + deterministic ordering.
-- TODO(type-coverage, owner:runtime, milestone:TC1): exception objects + stack trace capture.
+- Implemented: exception objects with cause/context/suppress fields.
+- TODO(type-coverage, owner:runtime, milestone:TC1): exception stack trace capture.
 - TODO(type-coverage, owner:runtime, milestone:TC2): formatting builtins (`repr`, `ascii`, `bin`, `hex`, `oct`, `chr`, `ord`) + full `format` protocol (format specs, named fields, conversion flags).
 - TODO(type-coverage, owner:runtime, milestone:TC2): rounding intrinsics (`round`, `floor`, `ceil`, `trunc`) with deterministic semantics.
 - TODO(type-coverage, owner:runtime, milestone:TC2): identity builtins (`hash`, `id`, `callable`).
@@ -150,7 +151,7 @@
 ## 5. Backend + WIT/ABI
 - Implement ops in native + WASM backends and add WIT intrinsics.
 - Add parity tests per new type (native vs wasm).
-- TODO(type-coverage, owner:backend, milestone:TC2): generator/iterator state in wasm ABI.
+- Partial: wasm backend handles generator state machines; runtime/WIT parity still pending.
 
 ## 6. Stdlib + Interop
 - Expand builtins (e.g., `set`, `range`, `slice`, exceptions).

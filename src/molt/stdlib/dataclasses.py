@@ -14,7 +14,7 @@ MISSING = _MissingType()
 class Field:
     __slots__ = ("name", "default", "default_factory")
 
-    def __init__(self, *, default=MISSING, default_factory=MISSING) -> None:
+    def __init__(self, default=MISSING, default_factory=MISSING) -> None:
         if default is not MISSING and default_factory is not MISSING:
             raise ValueError("cannot specify both default and default_factory")
         self.name = ""
@@ -65,7 +65,7 @@ def dataclass(
             if isinstance(default, Field):
                 field_obj = default
             else:
-                field_obj = Field(default=default)
+                field_obj = Field(default)
             if not field_obj.name:
                 field_obj.name = name
             fields[name] = field_obj
@@ -83,7 +83,7 @@ def dataclass(
 
 
 def field(*, default=MISSING, default_factory=MISSING):
-    return Field(default=default, default_factory=default_factory)
+    return Field(default, default_factory)
 
 
 __all__ = ["Field", "MISSING", "dataclass", "field"]

@@ -112,3 +112,48 @@ g5 = gen_close()
 print(g5.send(None))
 g5.close()
 print(events)
+
+header("close_raise")
+
+events = []
+
+
+def sub_raise():
+    try:
+        yield 1
+    finally:
+        events.append("sub_final")
+        raise RuntimeError("boom")
+
+
+def gen_raise():
+    try:
+        yield from sub_raise()
+    finally:
+        events.append("gen_final")
+
+
+g6 = gen_raise()
+print(g6.send(None))
+try:
+    g6.close()
+except RuntimeError:
+    print("raised")
+print(events)
+
+header("throw_finally")
+
+
+def gen_throw_finally():
+    try:
+        yield 1
+    finally:
+        raise RuntimeError("boom")
+
+
+g7 = gen_throw_finally()
+print(g7.send(None))
+try:
+    g7.throw(ValueError("x"))
+except RuntimeError:
+    print("raised")

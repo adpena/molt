@@ -16,7 +16,7 @@ const POINTER_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
 const INT_WIDTH: u64 = 47;
 const INT_MASK: u64 = (1u64 << INT_WIDTH) - 1;
 const INT_SHIFT: i64 = (64 - INT_WIDTH) as i64;
-const GENERATOR_CONTROL_BYTES: i32 = 24;
+const GENERATOR_CONTROL_BYTES: i32 = 32;
 
 fn box_int(val: i64) -> i64 {
     let masked = (val as u64) & POINTER_MASK;
@@ -2149,6 +2149,9 @@ impl SimpleBackend {
                         let id_const = builder.ins().iconst(types::I64, *id);
                         let is_state = builder.ins().icmp(IntCC::Equal, state, id_const);
                         let next_check = builder.create_block();
+                        if let Some(current_block) = builder.current_block() {
+                            builder.insert_block_after(next_check, current_block);
+                        }
                         builder.ins().brif(is_state, block, &[], next_check, &[]);
                         builder.switch_to_block(next_check);
                         builder.seal_block(next_check);
@@ -2183,6 +2186,9 @@ impl SimpleBackend {
 
                     let next_block = state_blocks[&next_state_id];
                     let ready_path = builder.create_block();
+                    if let Some(current_block) = builder.current_block() {
+                        builder.insert_block_after(ready_path, current_block);
+                    }
                     builder.ins().brif(
                         is_pending,
                         master_return_block,
@@ -2251,6 +2257,9 @@ impl SimpleBackend {
 
                     let next_block = state_blocks[&next_state_id];
                     let ready_path = builder.create_block();
+                    if let Some(current_block) = builder.current_block() {
+                        builder.insert_block_after(ready_path, current_block);
+                    }
                     builder.ins().brif(
                         is_pending,
                         master_return_block,
@@ -2295,6 +2304,9 @@ impl SimpleBackend {
 
                     let next_block = state_blocks[&next_state_id];
                     let ready_path = builder.create_block();
+                    if let Some(current_block) = builder.current_block() {
+                        builder.insert_block_after(ready_path, current_block);
+                    }
                     builder.ins().brif(
                         is_pending,
                         master_return_block,
@@ -2372,8 +2384,12 @@ impl SimpleBackend {
                     let func_name = op.s_value.as_ref().unwrap();
                     let arity = op.value.unwrap();
                     let mut func_sig = self.module.make_signature();
-                    for _ in 0..arity {
+                    if func_name.ends_with("_poll") {
                         func_sig.params.push(AbiParam::new(types::I64));
+                    } else {
+                        for _ in 0..arity {
+                            func_sig.params.push(AbiParam::new(types::I64));
+                        }
                     }
                     func_sig.returns.push(AbiParam::new(types::I64));
                     let func_id = self
@@ -2909,6 +2925,9 @@ impl SimpleBackend {
                     builder
                         .ins()
                         .brif(cond, target_block, &[], fallthrough, &[]);
+                    if let Some(current_block) = builder.current_block() {
+                        builder.insert_block_after(fallthrough, current_block);
+                    }
                     builder.switch_to_block(fallthrough);
                     builder.seal_block(fallthrough);
                 }
@@ -3304,6 +3323,9 @@ impl SimpleBackend {
                     let truthy = builder.inst_results(call)[0];
                     let cond_bool = builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0);
                     let cleanup_block = builder.create_block();
+                    if let Some(current_block) = builder.current_block() {
+                        builder.insert_block_after(cleanup_block, current_block);
+                    }
                     builder
                         .ins()
                         .brif(cond_bool, cleanup_block, &[], frame.body_block, &[]);
@@ -3347,6 +3369,9 @@ impl SimpleBackend {
                     let truthy = builder.inst_results(call)[0];
                     let cond_bool = builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0);
                     let cleanup_block = builder.create_block();
+                    if let Some(current_block) = builder.current_block() {
+                        builder.insert_block_after(cleanup_block, current_block);
+                    }
                     builder
                         .ins()
                         .brif(cond_bool, frame.body_block, &[], cleanup_block, &[]);
@@ -3924,6 +3949,9 @@ impl SimpleBackend {
                         .ins()
                         .brif(cond_bool, target_block, &[], fallthrough_block, &[]);
 
+                    if let Some(current_block) = builder.current_block() {
+                        builder.insert_block_after(fallthrough_block, current_block);
+                    }
                     builder.switch_to_block(fallthrough_block);
                     builder.seal_block(fallthrough_block);
                 }

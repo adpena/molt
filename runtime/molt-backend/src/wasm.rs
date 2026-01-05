@@ -347,9 +347,17 @@ impl WasmBackend {
         let mut local_count = 0;
         let mut local_types = Vec::new();
 
+        for (idx, name) in func_ir.params.iter().enumerate() {
+            locals.insert(name.clone(), idx as u32);
+            local_count += 1;
+        }
+
         if type_idx == 2 {
-            locals.insert("self_param".to_string(), 0);
-            local_count = 1;
+            locals.entry("self_param".to_string()).or_insert(0);
+            locals.entry("self".to_string()).or_insert(0);
+            if local_count == 0 {
+                local_count = 1;
+            }
         }
 
         for op in &func_ir.ops {
@@ -379,7 +387,16 @@ impl WasmBackend {
             }
         }
 
-        let stateful = func_ir.ops.iter().any(|op| op.kind == "state_switch");
+        let stateful = func_ir.ops.iter().any(|op| {
+            matches!(
+                op.kind.as_str(),
+                "state_switch"
+                    | "state_transition"
+                    | "state_yield"
+                    | "chan_send_yield"
+                    | "chan_recv_yield"
+            )
+        });
         let state_local = if stateful {
             let idx = local_count;
             local_types.push(ValType::I64);
@@ -1806,8 +1823,11 @@ impl WasmBackend {
                         }
                     }
                     "alloc_future" => {
-                        func.instruction(&Instruction::I64Const(0));
+                        let total = op.value.unwrap_or(0) + 24;
+                        func.instruction(&Instruction::I64Const(total));
                         func.instruction(&Instruction::Call(import_ids["alloc"]));
+                        func.instruction(&Instruction::I64Const(24));
+                        func.instruction(&Instruction::I64Add);
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                         func.instruction(&Instruction::LocalGet(res));
@@ -1848,8 +1868,11 @@ impl WasmBackend {
                         }
                     }
                     "alloc_generator" => {
-                        func.instruction(&Instruction::I64Const(0));
+                        let total = op.value.unwrap_or(0) + 24;
+                        func.instruction(&Instruction::I64Const(total));
                         func.instruction(&Instruction::Call(import_ids["alloc"]));
+                        func.instruction(&Instruction::I64Const(24));
+                        func.instruction(&Instruction::I64Add);
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                         func.instruction(&Instruction::LocalGet(res));
@@ -1903,12 +1926,22 @@ impl WasmBackend {
                             offset: 0,
                             memory_index: 0,
                         }));
+                        func.instruction(&Instruction::LocalGet(res));
+                        func.instruction(&Instruction::I32WrapI64);
+                        func.instruction(&Instruction::I32Const(24));
+                        func.instruction(&Instruction::I32Add);
+                        func.instruction(&Instruction::I64Const(box_int(0)));
+                        func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
+                            align: 3,
+                            offset: 0,
+                            memory_index: 0,
+                        }));
                         if let Some(args) = op.args.as_ref() {
                             for (i, name) in args.iter().enumerate() {
                                 let arg_local = locals[name];
                                 func.instruction(&Instruction::LocalGet(res));
                                 func.instruction(&Instruction::I32WrapI64);
-                                func.instruction(&Instruction::I32Const(24 + (i as i32) * 8));
+                                func.instruction(&Instruction::I32Const(32 + (i as i32) * 8));
                                 func.instruction(&Instruction::I32Add);
                                 func.instruction(&Instruction::LocalGet(arg_local));
                                 func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
@@ -2272,6 +2305,19 @@ impl WasmBackend {
                 }
             }
 
+            let mut state_map: HashMap<i64, usize> = HashMap::new();
+            state_map.insert(0, 0);
+            for (idx, op) in func_ir.ops.iter().enumerate() {
+                if matches!(
+                    op.kind.as_str(),
+                    "state_transition" | "state_yield" | "chan_send_yield" | "chan_recv_yield"
+                ) {
+                    if let Some(state_id) = op.value {
+                        state_map.insert(state_id, idx + 1);
+                    }
+                }
+            }
+
             let dispatch_depths: Vec<u32> = (0..op_count)
                 .map(|idx| (op_count - 1 - idx) as u32)
                 .collect();
@@ -2286,8 +2332,16 @@ impl WasmBackend {
                 memory_index: 0,
             }));
             func.instruction(&Instruction::LocalSet(state_local));
+            for (state_id, target_idx) in &state_map {
+                func.instruction(&Instruction::LocalGet(state_local));
+                func.instruction(&Instruction::I64Const(*state_id));
+                func.instruction(&Instruction::I64Eq);
+                func.instruction(&Instruction::If(BlockType::Empty));
+                func.instruction(&Instruction::I64Const(*target_idx as i64));
+                func.instruction(&Instruction::LocalSet(state_local));
+                func.instruction(&Instruction::End);
+            }
 
-            func.instruction(&Instruction::Block(BlockType::Empty));
             func.instruction(&Instruction::Loop(BlockType::Empty));
             for _ in (0..op_count).rev() {
                 func.instruction(&Instruction::Block(BlockType::Empty));
@@ -2296,7 +2350,7 @@ impl WasmBackend {
             func.instruction(&Instruction::LocalGet(state_local));
             func.instruction(&Instruction::I32WrapI64);
             let targets: Vec<u32> = (0..op_count).map(|idx| idx as u32).collect();
-            func.instruction(&Instruction::BrTable(targets.into(), (op_count + 1) as u32));
+            func.instruction(&Instruction::BrTable(targets.into(), op_count as u32));
             func.instruction(&Instruction::End);
 
             let mut scratch_control: Vec<ControlKind> = Vec::new();
@@ -2313,13 +2367,14 @@ impl WasmBackend {
                     "state_transition" => {
                         let args = op.args.as_ref().unwrap();
                         let future = locals[&args[0]];
+                        let next_state_id = op.value.unwrap();
                         func.instruction(&Instruction::I64Const((idx + 1) as i64));
                         func.instruction(&Instruction::LocalSet(state_local));
                         func.instruction(&Instruction::LocalGet(self_param));
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(-16));
                         func.instruction(&Instruction::I32Add);
-                        func.instruction(&Instruction::LocalGet(state_local));
+                        func.instruction(&Instruction::I64Const(next_state_id));
                         func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
                             align: 3,
                             offset: 0,
@@ -2356,7 +2411,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(-16));
                         func.instruction(&Instruction::I32Add);
-                        func.instruction(&Instruction::LocalGet(state_local));
+                        func.instruction(&Instruction::I64Const(op.value.unwrap()));
                         func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
                             align: 3,
                             offset: 0,

@@ -133,7 +133,8 @@ const MAX_SMALL_LIST: usize = 16;
 const GEN_SEND_OFFSET: usize = 0;
 const GEN_THROW_OFFSET: usize = 8;
 const GEN_CLOSED_OFFSET: usize = 16;
-const GEN_CONTROL_SIZE: usize = 24;
+const GEN_EXC_DEPTH_OFFSET: usize = 24;
+const GEN_CONTROL_SIZE: usize = 32;
 const UTF8_CACHE_BLOCK: usize = 4096;
 const UTF8_CACHE_MIN_LEN: usize = 16 * 1024;
 const UTF8_CACHE_MAX_ENTRIES: usize = 128;
@@ -791,6 +792,14 @@ unsafe fn exception_cause_bits(ptr: *mut u8) -> u64 {
     *(ptr.add(2 * std::mem::size_of::<u64>()) as *const u64)
 }
 
+unsafe fn exception_context_bits(ptr: *mut u8) -> u64 {
+    *(ptr.add(3 * std::mem::size_of::<u64>()) as *const u64)
+}
+
+unsafe fn exception_suppress_bits(ptr: *mut u8) -> u64 {
+    *(ptr.add(4 * std::mem::size_of::<u64>()) as *const u64)
+}
+
 unsafe fn context_enter_fn(ptr: *mut u8) -> u64 {
     *(ptr as *const u64)
 }
@@ -1283,7 +1292,7 @@ fn alloc_exception(kind: &str, message: &str) -> *mut u8 {
         unsafe { molt_dec_ref(kind_ptr) };
         return std::ptr::null_mut();
     }
-    let total = std::mem::size_of::<MoltHeader>() + 3 * std::mem::size_of::<u64>();
+    let total = std::mem::size_of::<MoltHeader>() + 5 * std::mem::size_of::<u64>();
     let ptr = alloc_object(total, TYPE_ID_EXCEPTION);
     if ptr.is_null() {
         unsafe {
@@ -1296,12 +1305,15 @@ fn alloc_exception(kind: &str, message: &str) -> *mut u8 {
         *(ptr as *mut u64) = MoltObject::from_ptr(kind_ptr).bits();
         *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = MoltObject::from_ptr(msg_ptr).bits();
         *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = MoltObject::none().bits();
+        *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64) = MoltObject::none().bits();
+        *(ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64) =
+            MoltObject::from_bool(false).bits();
     }
     ptr
 }
 
 fn alloc_exception_obj(kind_bits: u64, msg_bits: u64) -> *mut u8 {
-    let total = std::mem::size_of::<MoltHeader>() + 3 * std::mem::size_of::<u64>();
+    let total = std::mem::size_of::<MoltHeader>() + 5 * std::mem::size_of::<u64>();
     let ptr = alloc_object(total, TYPE_ID_EXCEPTION);
     if ptr.is_null() {
         return ptr;
@@ -1310,9 +1322,14 @@ fn alloc_exception_obj(kind_bits: u64, msg_bits: u64) -> *mut u8 {
         *(ptr as *mut u64) = kind_bits;
         *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = msg_bits;
         *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = MoltObject::none().bits();
+        *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64) = MoltObject::none().bits();
+        *(ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64) =
+            MoltObject::from_bool(false).bits();
         inc_ref_bits(kind_bits);
         inc_ref_bits(msg_bits);
         inc_ref_bits(MoltObject::none().bits());
+        inc_ref_bits(MoltObject::none().bits());
+        inc_ref_bits(MoltObject::from_bool(false).bits());
     }
     ptr
 }
@@ -1604,6 +1621,15 @@ fn record_exception(ptr: *mut u8) {
     let mut guard = cell.lock().unwrap();
     if let Some(old_ptr) = guard.take() {
         let old_bits = MoltObject::from_ptr(old_ptr as *mut u8).bits();
+        if old_ptr as *mut u8 != ptr {
+            let context_bits = unsafe { exception_context_bits(ptr) };
+            if obj_from_bits(context_bits).is_none() {
+                unsafe {
+                    inc_ref_bits(old_bits);
+                    *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64) = old_bits;
+                }
+            }
+        }
         dec_ref_bits(old_bits);
     }
     *guard = Some(ptr as usize);
@@ -1641,6 +1667,22 @@ fn exception_stack_pop() {
     if underflow {
         raise!("RuntimeError", "exception handler stack underflow");
     }
+}
+
+fn exception_stack_depth() -> usize {
+    EXCEPTION_STACK.with(|stack| stack.borrow().len())
+}
+
+fn exception_stack_set_depth(target: usize) {
+    EXCEPTION_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        while stack.len() > target {
+            stack.pop();
+        }
+        while stack.len() < target {
+            stack.push(1);
+        }
+    });
 }
 
 fn raise_exception<T: ExceptionSentinel>(kind: &str, message: &str) -> T {
@@ -2096,32 +2138,30 @@ pub extern "C" fn molt_property_new(get_bits: u64, set_bits: u64, del_bits: u64)
 }
 
 #[no_mangle]
-pub extern "C" fn molt_object_set_class(obj_ptr: *mut u8, class_bits: u64) -> u64 {
+pub unsafe extern "C" fn molt_object_set_class(obj_ptr: *mut u8, class_bits: u64) -> u64 {
     if obj_ptr.is_null() {
         raise!("AttributeError", "object has no class");
     }
-    unsafe {
-        let header = header_from_obj_ptr(obj_ptr);
-        if (*header).poll_fn != 0 {
-            raise!("TypeError", "cannot set class on async object");
+    let header = header_from_obj_ptr(obj_ptr);
+    if (*header).poll_fn != 0 {
+        raise!("TypeError", "cannot set class on async object");
+    }
+    if class_bits != 0 {
+        let class_obj = obj_from_bits(class_bits);
+        let Some(class_ptr) = class_obj.as_ptr() else {
+            raise!("TypeError", "class must be a type object");
+        };
+        if object_type_id(class_ptr) != TYPE_ID_TYPE {
+            raise!("TypeError", "class must be a type object");
         }
-        if class_bits != 0 {
-            let class_obj = obj_from_bits(class_bits);
-            let Some(class_ptr) = class_obj.as_ptr() else {
-                raise!("TypeError", "class must be a type object");
-            };
-            if object_type_id(class_ptr) != TYPE_ID_TYPE {
-                raise!("TypeError", "class must be a type object");
-            }
-        }
-        let old_bits = object_class_bits(obj_ptr);
-        if old_bits != 0 {
-            dec_ref_bits(old_bits);
-        }
-        object_set_class_bits(obj_ptr, class_bits);
-        if class_bits != 0 {
-            inc_ref_bits(class_bits);
-        }
+    }
+    let old_bits = object_class_bits(obj_ptr);
+    if old_bits != 0 {
+        dec_ref_bits(old_bits);
+    }
+    object_set_class_bits(obj_ptr, class_bits);
+    if class_bits != 0 {
+        inc_ref_bits(class_bits);
     }
     MoltObject::none().bits()
 }
@@ -2299,6 +2339,7 @@ pub extern "C" fn molt_generator_new(poll_fn_addr: u64, closure_size: u64) -> *m
             *generator_slot_ptr(ptr, GEN_SEND_OFFSET) = MoltObject::none().bits();
             *generator_slot_ptr(ptr, GEN_THROW_OFFSET) = MoltObject::none().bits();
             *generator_slot_ptr(ptr, GEN_CLOSED_OFFSET) = MoltObject::from_bool(false).bits();
+            *generator_slot_ptr(ptr, GEN_EXC_DEPTH_OFFSET) = MoltObject::from_int(0).bits();
         }
     }
     ptr
@@ -2333,8 +2374,20 @@ pub extern "C" fn molt_generator_send(gen_bits: u64, send_bits: u64) -> u64 {
         if poll_fn_addr == 0 {
             return generator_done_tuple(MoltObject::none().bits());
         }
+        let caller_depth = exception_stack_depth();
+        let gen_depth_bits = *generator_slot_ptr(ptr, GEN_EXC_DEPTH_OFFSET);
+        let gen_depth = to_i64(obj_from_bits(gen_depth_bits)).unwrap_or(0);
+        let gen_depth = if gen_depth < 0 { 0 } else { gen_depth as usize };
+        exception_stack_set_depth(gen_depth);
         let poll_fn: extern "C" fn(*mut u8) -> i64 = std::mem::transmute(poll_fn_addr as usize);
         let res = poll_fn(ptr);
+        let new_depth = exception_stack_depth();
+        generator_set_slot(
+            ptr,
+            GEN_EXC_DEPTH_OFFSET,
+            MoltObject::from_int(new_depth as i64).bits(),
+        );
+        exception_stack_set_depth(caller_depth);
         res as u64
     }
 }
@@ -2359,8 +2412,20 @@ pub extern "C" fn molt_generator_throw(gen_bits: u64, exc_bits: u64) -> u64 {
         if poll_fn_addr == 0 {
             return generator_done_tuple(MoltObject::none().bits());
         }
+        let caller_depth = exception_stack_depth();
+        let gen_depth_bits = *generator_slot_ptr(ptr, GEN_EXC_DEPTH_OFFSET);
+        let gen_depth = to_i64(obj_from_bits(gen_depth_bits)).unwrap_or(0);
+        let gen_depth = if gen_depth < 0 { 0 } else { gen_depth as usize };
+        exception_stack_set_depth(gen_depth);
         let poll_fn: extern "C" fn(*mut u8) -> i64 = std::mem::transmute(poll_fn_addr as usize);
         let res = poll_fn(ptr);
+        let new_depth = exception_stack_depth();
+        generator_set_slot(
+            ptr,
+            GEN_EXC_DEPTH_OFFSET,
+            MoltObject::from_int(new_depth as i64).bits(),
+        );
+        exception_stack_set_depth(caller_depth);
         res as u64
     }
 }
@@ -2404,8 +2469,20 @@ pub extern "C" fn molt_generator_close(gen_bits: u64) -> u64 {
             generator_set_closed(ptr, true);
             return MoltObject::none().bits();
         }
+        let caller_depth = exception_stack_depth();
+        let gen_depth_bits = *generator_slot_ptr(ptr, GEN_EXC_DEPTH_OFFSET);
+        let gen_depth = to_i64(obj_from_bits(gen_depth_bits)).unwrap_or(0);
+        let gen_depth = if gen_depth < 0 { 0 } else { gen_depth as usize };
+        exception_stack_set_depth(gen_depth);
         let poll_fn: extern "C" fn(*mut u8) -> i64 = std::mem::transmute(poll_fn_addr as usize);
         let res = poll_fn(ptr) as u64;
+        let new_depth = exception_stack_depth();
+        generator_set_slot(
+            ptr,
+            GEN_EXC_DEPTH_OFFSET,
+            MoltObject::from_int(new_depth as i64).bits(),
+        );
+        exception_stack_set_depth(caller_depth);
         if let Some((_val, done)) = generator_unpack_pair(res) {
             if !done {
                 raise!("RuntimeError", "generator ignored GeneratorExit");
@@ -2476,6 +2553,13 @@ pub extern "C" fn molt_exception_set_cause(exc_bits: u64, cause_bits: u64) -> u6
             dec_ref_bits(old_bits);
             inc_ref_bits(cause_bits);
             *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = cause_bits;
+        }
+        let suppress_bits = MoltObject::from_bool(true).bits();
+        let old_suppress = exception_suppress_bits(ptr);
+        if old_suppress != suppress_bits {
+            dec_ref_bits(old_suppress);
+            inc_ref_bits(suppress_bits);
+            *(ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64) = suppress_bits;
         }
     }
     MoltObject::none().bits()
@@ -8857,9 +8941,13 @@ pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
                 let kind_bits = exception_kind_bits(ptr);
                 let msg_bits = exception_msg_bits(ptr);
                 let cause_bits = exception_cause_bits(ptr);
+                let context_bits = exception_context_bits(ptr);
+                let suppress_bits = exception_suppress_bits(ptr);
                 dec_ref_bits(kind_bits);
                 dec_ref_bits(msg_bits);
                 dec_ref_bits(cause_bits);
+                dec_ref_bits(context_bits);
+                dec_ref_bits(suppress_bits);
             }
             TYPE_ID_CONTEXT_MANAGER => {
                 let payload_bits = context_payload_bits(ptr);
@@ -9644,10 +9732,7 @@ unsafe fn module_attr_lookup(ptr: *mut u8, attr_bits: u64) -> Option<u64> {
     if object_type_id(dict_ptr) != TYPE_ID_DICT {
         return None;
     }
-    dict_get_in_place(dict_ptr, attr_bits).map(|val| {
-        inc_ref_bits(val);
-        val
-    })
+    dict_get_in_place(dict_ptr, attr_bits).inspect(|val| inc_ref_bits(*val))
 }
 
 unsafe fn class_attr_lookup(
@@ -9713,6 +9798,30 @@ unsafe fn attr_lookup_ptr(obj_ptr: *mut u8, attr_bits: u64) -> Option<u64> {
     let type_id = object_type_id(obj_ptr);
     if type_id == TYPE_ID_MODULE {
         return module_attr_lookup(obj_ptr, attr_bits);
+    }
+    if type_id == TYPE_ID_EXCEPTION {
+        let name = string_obj_to_owned(obj_from_bits(attr_bits));
+        let Some(attr_name) = name.as_deref() else {
+            return None;
+        };
+        match attr_name {
+            "__cause__" => {
+                let bits = exception_cause_bits(obj_ptr);
+                inc_ref_bits(bits);
+                return Some(bits);
+            }
+            "__context__" => {
+                let bits = exception_context_bits(obj_ptr);
+                inc_ref_bits(bits);
+                return Some(bits);
+            }
+            "__suppress_context__" => {
+                let bits = exception_suppress_bits(obj_ptr);
+                inc_ref_bits(bits);
+                return Some(bits);
+            }
+            _ => {}
+        }
     }
     if type_id == TYPE_ID_TYPE {
         return class_attr_lookup(obj_ptr, None, attr_bits);
@@ -9866,6 +9975,82 @@ pub unsafe extern "C" fn molt_set_attr_generic(
         }
         dec_ref_bits(attr_bits);
         return attr_error("type", attr_name);
+    }
+    if type_id == TYPE_ID_EXCEPTION {
+        let attr_ptr = alloc_string(slice);
+        if attr_ptr.is_null() {
+            return MoltObject::none().bits() as i64;
+        }
+        let attr_bits = MoltObject::from_ptr(attr_ptr).bits();
+        let name = string_obj_to_owned(obj_from_bits(attr_bits)).unwrap_or_default();
+        dec_ref_bits(attr_bits);
+        if name == "__cause__" || name == "__context__" {
+            let val_obj = obj_from_bits(val_bits);
+            if !val_obj.is_none() {
+                let Some(val_ptr) = val_obj.as_ptr() else {
+                    raise!(
+                        "TypeError",
+                        if name == "__cause__" {
+                            "exception cause must be an exception or None"
+                        } else {
+                            "exception context must be an exception or None"
+                        }
+                    );
+                };
+                unsafe {
+                    if object_type_id(val_ptr) != TYPE_ID_EXCEPTION {
+                        raise!(
+                            "TypeError",
+                            if name == "__cause__" {
+                                "exception cause must be an exception or None"
+                            } else {
+                                "exception context must be an exception or None"
+                            }
+                        );
+                    }
+                }
+            }
+            unsafe {
+                let slot = if name == "__cause__" {
+                    obj_ptr.add(2 * std::mem::size_of::<u64>())
+                } else {
+                    obj_ptr.add(3 * std::mem::size_of::<u64>())
+                } as *mut u64;
+                let old_bits = *slot;
+                if old_bits != val_bits {
+                    dec_ref_bits(old_bits);
+                    inc_ref_bits(val_bits);
+                    *slot = val_bits;
+                }
+                if name == "__cause__" {
+                    let suppress_bits = MoltObject::from_bool(true).bits();
+                    let suppress_slot =
+                        obj_ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64;
+                    let old_bits = *suppress_slot;
+                    if old_bits != suppress_bits {
+                        dec_ref_bits(old_bits);
+                        inc_ref_bits(suppress_bits);
+                        *suppress_slot = suppress_bits;
+                    }
+                }
+            }
+            return MoltObject::none().bits() as i64;
+        }
+        if name == "__suppress_context__" {
+            let suppress = is_truthy(obj_from_bits(val_bits));
+            let suppress_bits = MoltObject::from_bool(suppress).bits();
+            unsafe {
+                let slot = obj_ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64;
+                let old_bits = *slot;
+                if old_bits != suppress_bits {
+                    dec_ref_bits(old_bits);
+                    inc_ref_bits(suppress_bits);
+                    *slot = suppress_bits;
+                }
+            }
+            return MoltObject::none().bits() as i64;
+        }
+        return attr_error("exception", attr_name);
     }
     if type_id == TYPE_ID_DATACLASS {
         let desc_ptr = dataclass_desc_ptr(obj_ptr);

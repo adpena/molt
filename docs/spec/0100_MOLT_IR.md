@@ -29,7 +29,7 @@ Coverage status and planned additions are tracked in `docs/spec/0014_TYPE_COVERA
 - **Calls**: `Call`, `CallIndirect`, `InvokeFFI` (with declared effects).
 - **Object/layout**: `Alloc`, `LoadAttr`, `StoreAttr`, `GetAttrGenericPtr`, `SetAttrGenericPtr`, `GetAttrGenericObj`, `SetAttrGenericObj`, `LoadIndex`, `StoreIndex`, `Index`, `Iter`, `IterNext`, `ListNew`, `DictNew`, `Len`, `Slice`, `SliceNew`, `BytearrayFromObj`, `IntArrayFromSeq`, `MemoryViewNew`, `MemoryViewToBytes`, `RangeNew`, `Buffer2DNew`, `Buffer2DGet`, `Buffer2DSet`, `Buffer2DMatmul`.
 - **Bytes/Bytearray/String**: `BytesFind`, `BytesSplit`, `BytesReplace`, `BytearrayFind`, `BytearraySplit`, `BytearrayReplace`, `StringFind`, `StringFormat`, `StringSplit`, `StringReplace`, `StringStartswith`, `StringEndswith`, `StringCount`, `StringJoin`.
-- **Exceptions**: `ExceptionNew`, `ExceptionLast`, `ExceptionClear`, `ExceptionKind`, `ExceptionMessage`, `ExceptionSetCause`, `Raise`.
+- **Exceptions**: `ExceptionNew`, `ExceptionLast`, `ExceptionClear`, `ExceptionKind`, `ExceptionMessage`, `ExceptionSetCause`, `Raise` (raise sets implicit `__context__`; `ExceptionSetCause` sets explicit `__cause__` and suppresses context).
 - **Vector**: `VecSumInt`, `VecProdInt`, `VecMinInt`, `VecMaxInt` (guarded reductions; emit `(result, ok)` tuples), plus trusted variants (`VecSumIntTrusted`, `VecProdIntTrusted`, `VecMinIntTrusted`, `VecMaxIntTrusted`) that skip per-element checks when type facts are trusted. Range-aware variants (`Vec*IntRange`, `Vec*IntRangeTrusted`) accept a start offset for `range(k, len(xs))` patterns.
 - **Guards (Tier 1)**: `GuardType`, `GuardTag`, `GuardLayout`, `GuardDictShape`.
 - **RC ops (LIR)**: `IncRef`, `DecRef`, `Borrow`, `Release`.

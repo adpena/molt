@@ -38,7 +38,7 @@ The Molt compiler itself is designed to be "AI-friendly". Its modular IR and cle
 - Maintain full parity between native and wasm targets; close gaps immediately and treat wasm regressions as blockers.
 - Keep Rust crate entrypoints (`lib.rs`) thin; factor substantive runtime/backend code into focused modules and re-export from `lib.rs`.
 - Standardize naming: Python modules use `snake_case`, Rust crates use `kebab-case`, and paths reflect module names.
-- Do not weaken or contort tests to mask missing functionality; surface the gap and implement the correct behavior.
+- Do not weaken or contort tests to mask missing functionality; surface the gap, ask for priority/plan, and implement the correct behavior.
 - Aggressively and proactively update `ROADMAP.md` and the specs in `docs/spec/` when scope or behavior changes.
 - Proactively and aggressively plan for native support of popular and growing Python packages written in Rust.
 - The project vision is full Python compatibility: all types, syntax, and dependencies.

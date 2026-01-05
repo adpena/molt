@@ -31,7 +31,7 @@
 - Keep semantic tests deterministic; update or add differential cases when changing runtime or lowering behavior.
 - For Rust changes that affect runtime semantics, add or update `cargo test` coverage.
 - Avoid excessive lint/test loops while implementing; validate once after a cohesive set of changes is complete unless debugging a failure.
-- If tests fail due to missing functionality, do not contort tests to pass. Call out the missing feature and implement the correct behavior instead.
+- If tests fail due to missing functionality, stop and call out the missing feature; ask for priority/plan before changing tests, then implement the correct behavior instead.
 - Treat benchmark regressions as failures; run `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json`, `tools/dev.py lint`, and `tools/dev.py test` after the fix is in, then iterate on optimization until the regression is removed without introducing new regressions.
 - Sound the alarm immediately on performance regressions and trigger an optimization-first feedback loop (bench → lint → test → optimize) until green, but avoid repeated cycles before the implementation is complete.
 - Prefer performance wins even if they increase compile time or binary size; document tradeoffs explicitly.

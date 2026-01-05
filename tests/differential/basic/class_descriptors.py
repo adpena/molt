@@ -35,3 +35,13 @@ try:
     w.value = 10
 except Exception as exc:
     print(str(exc))
+
+print(getattr(Widget, "kind"))
+print(getattr(Widget, "make")(5).x)
+print(getattr(Widget, "add")(4, 6))
+print(hasattr(Widget, "value"))
+setattr(Widget, "kind", "gizmo")
+print(Widget.kind)
+setattr(Widget, "extra", 7)
+print(hasattr(Widget, "extra"))
+print(getattr(Widget, "extra"))

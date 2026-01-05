@@ -151,3 +151,105 @@ def return_none() -> None:
 
 print(return_none() is None)
 print("case12 done")
+
+header("case13")
+try:
+    try:
+        print("try")
+    except Exception:
+        print("except")
+    else:
+        print("else")
+        raise RuntimeError("else boom")
+    finally:
+        print("finally")
+except RuntimeError:
+    print("outer except")
+print("case13 done")
+
+header("case14")
+try:
+    try:
+        raise ValueError("inner")
+    except ValueError:
+        print("except")
+        raise RuntimeError("raised")
+    else:
+        print("else")
+    finally:
+        print("finally")
+except RuntimeError:
+    print("outer except")
+print("case14 done")
+
+header("case15")
+try:
+    try:
+        print("try")
+    finally:
+        print("finally")
+        raise KeyError("k")
+except KeyError:
+    print("outer except")
+print("case15 done")
+
+header("case16")
+try:
+    try:
+        raise ValueError("inner")
+    except ValueError:
+        raise RuntimeError("outer")
+except RuntimeError as exc:
+    print(exc.__context__)
+    print(exc.__cause__ is None)
+    print(exc.__suppress_context__)
+print("case16 done")
+
+header("case17")
+try:
+    try:
+        raise ValueError("inner")
+    except ValueError as err:
+        raise RuntimeError("outer") from err
+except RuntimeError as exc:
+    print(exc.__context__)
+    print(exc.__cause__)
+    print(exc.__suppress_context__)
+print("case17 done")
+
+header("case18")
+try:
+    try:
+        raise ValueError("inner")
+    except ValueError:
+        raise RuntimeError("outer") from None
+except RuntimeError as exc:
+    print(exc.__context__)
+    print(exc.__cause__ is None)
+    print(exc.__suppress_context__)
+print("case18 done")
+
+header("case19")
+try:
+    raise ValueError("inner")
+except ValueError as err:
+    try:
+        raise RuntimeError("ctx")
+    except RuntimeError as ctx:
+        err.__context__ = ctx
+    err.__cause__ = None
+    err.__suppress_context__ = True
+    print(err.__context__)
+    print(err.__cause__ is None)
+    print(err.__suppress_context__)
+print("case19 done")
+
+header("case20")
+try:
+    raise ValueError("inner")
+except ValueError as err:
+    try:
+        err.__cause__ = "bad"
+    except TypeError:
+        print("typeerror")
+print("case20 done")
