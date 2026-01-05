@@ -10024,8 +10024,7 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                 }
                 if name == "__cause__" {
                     let suppress_bits = MoltObject::from_bool(true).bits();
-                    let suppress_slot =
-                        obj_ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64;
+                    let suppress_slot = obj_ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64;
                     let old_bits = *suppress_slot;
                     if old_bits != suppress_bits {
                         dec_ref_bits(old_bits);
