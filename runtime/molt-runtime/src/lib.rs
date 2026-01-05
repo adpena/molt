@@ -769,10 +769,12 @@ unsafe fn context_payload_bits(ptr: *mut u8) -> u64 {
     *(ptr.add(2 * std::mem::size_of::<u64>()) as *const u64)
 }
 
+#[allow(dead_code)]
 unsafe fn function_fn_ptr(ptr: *mut u8) -> u64 {
     *(ptr as *const u64)
 }
 
+#[allow(dead_code)]
 unsafe fn function_arity(ptr: *mut u8) -> u64 {
     *(ptr.add(std::mem::size_of::<u64>()) as *const u64)
 }

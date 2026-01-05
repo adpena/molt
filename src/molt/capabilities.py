@@ -11,7 +11,7 @@ def _parse_caps(raw: str) -> set[str]:
 
 
 def capabilities() -> set[str]:
-    return _parse_caps(os.environ.get("MOLT_CAPABILITIES", ""))
+    return _parse_caps(os.getenv("MOLT_CAPABILITIES", ""))
 
 
 def has(capability: str) -> bool:
