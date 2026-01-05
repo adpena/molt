@@ -9795,11 +9795,21 @@ pub unsafe extern "C" fn molt_get_attr_generic(
     if type_id == TYPE_ID_DATACLASS {
         let desc_ptr = dataclass_desc_ptr(obj_ptr);
         if !desc_ptr.is_null() && (*desc_ptr).slots {
-            let type_label = (*desc_ptr).name.as_str();
+            let name = &(*desc_ptr).name;
+            let type_label = if name.is_empty() {
+                "dataclass"
+            } else {
+                name.as_str()
+            };
             return attr_error(type_label, attr_name);
         }
-        let type_label = if !desc_ptr.is_null() && !(&(*desc_ptr).name).is_empty() {
-            (&(*desc_ptr).name).as_str()
+        let type_label = if !desc_ptr.is_null() {
+            let name = &(*desc_ptr).name;
+            if name.is_empty() {
+                "dataclass"
+            } else {
+                name.as_str()
+            }
         } else {
             "dataclass"
         };
@@ -9897,7 +9907,12 @@ pub unsafe extern "C" fn molt_set_attr_generic(
             }
             if (*desc_ptr).slots {
                 dec_ref_bits(attr_bits);
-                let type_label = (*desc_ptr).name.as_str();
+                let name = &(*desc_ptr).name;
+                let type_label = if name.is_empty() {
+                    "dataclass"
+                } else {
+                    name.as_str()
+                };
                 return attr_error(type_label, attr_name);
             }
         }
@@ -9919,8 +9934,13 @@ pub unsafe extern "C" fn molt_set_attr_generic(
             }
         }
         dec_ref_bits(attr_bits);
-        let type_label = if !desc_ptr.is_null() && !(&(*desc_ptr).name).is_empty() {
-            (&(*desc_ptr).name).as_str()
+        let type_label = if !desc_ptr.is_null() {
+            let name = &(*desc_ptr).name;
+            if name.is_empty() {
+                "dataclass"
+            } else {
+                name.as_str()
+            }
         } else {
             "dataclass"
         };
@@ -10044,11 +10064,21 @@ pub extern "C" fn molt_get_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
             if type_id == TYPE_ID_DATACLASS {
                 let desc_ptr = dataclass_desc_ptr(obj_ptr);
                 if !desc_ptr.is_null() && (*desc_ptr).slots {
-                    let type_label = (*desc_ptr).name.as_str();
+                    let name = &(*desc_ptr).name;
+                    let type_label = if name.is_empty() {
+                        "dataclass"
+                    } else {
+                        name.as_str()
+                    };
                     return attr_error(type_label, &attr_name) as u64;
                 }
-                let type_label = if !desc_ptr.is_null() && !(&(*desc_ptr).name).is_empty() {
-                    (&(*desc_ptr).name).as_str()
+                let type_label = if !desc_ptr.is_null() {
+                    let name = &(*desc_ptr).name;
+                    if name.is_empty() {
+                        "dataclass"
+                    } else {
+                        name.as_str()
+                    }
                 } else {
                     "dataclass"
                 };

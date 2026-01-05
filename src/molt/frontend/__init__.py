@@ -110,6 +110,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.try_scopes: list[TryScope] = []
         self.try_suppress_depth: int | None = None
         self.return_unwind_depth = 0
+        self.return_label: int | None = None
+        self.return_slot: MoltValue | None = None
+        self.return_slot_index: MoltValue | None = None
         self.active_exceptions: list[MoltValue] = []
         self.func_aliases: dict[str, str] = {}
         self.const_ints: dict[str, int] = {}
@@ -295,6 +298,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             stack.extend(ast.iter_child_nodes(current))
         return False
 
+    @staticmethod
+    def _function_contains_return(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+        stack: list[ast.AST] = list(node.body)
+        while stack:
+            current = stack.pop()
+            if isinstance(current, ast.Return):
+                return True
+            if isinstance(
+                current,
+                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
+            ):
+                continue
+            stack.extend(ast.iter_child_nodes(current))
+        return False
+
     def _function_symbol(self, name: str) -> str:
         if name in self.func_aliases:
             return self.func_aliases[name]
@@ -312,6 +330,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         name: str,
         params: list[str] | None = None,
         type_facts_name: str | None = None,
+        needs_return_slot: bool = False,
     ) -> None:
         if name not in self.funcs_map:
             self.funcs_map[name] = FuncInfo(params=params or [], ops=[])
@@ -329,7 +348,73 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.context_depth = 0
         self.const_ints = {}
         self.in_generator = False
+        self.return_label = None
+        self.return_slot = None
+        self.return_slot_index = None
+        if needs_return_slot:
+            self._init_return_slot()
         self._apply_type_facts(type_facts_name or name)
+
+    def _init_return_slot(self) -> None:
+        if self.return_label is not None:
+            return
+        self.return_label = self.next_label()
+        self.return_slot_index = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[0], result=self.return_slot_index))
+        init = MoltValue(self.next_var(), type_hint="None")
+        self.emit(MoltOp(kind="CONST_NONE", args=[], result=init))
+        self.return_slot = MoltValue(self.next_var(), type_hint="list")
+        self.emit(MoltOp(kind="LIST_NEW", args=[init], result=self.return_slot))
+
+    def _emit_return_value(self, value: MoltValue) -> None:
+        if self.return_slot is None or self.return_label is None:
+            self.emit(MoltOp(kind="ret", args=[value], result=MoltValue("none")))
+            return
+        idx = self.return_slot_index
+        if idx is None:
+            idx = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[0], result=idx))
+            self.return_slot_index = idx
+        self.emit(
+            MoltOp(
+                kind="STORE_INDEX",
+                args=[self.return_slot, idx, value],
+                result=MoltValue("none"),
+            )
+        )
+        self.emit(
+            MoltOp(kind="JUMP", args=[self.return_label], result=MoltValue("none"))
+        )
+
+    def _emit_return_label(self) -> None:
+        if self.return_label is None or self.return_slot is None:
+            return
+        idx = self.return_slot_index
+        if idx is None:
+            idx = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[0], result=idx))
+            self.return_slot_index = idx
+        self.emit(
+            MoltOp(kind="LABEL", args=[self.return_label], result=MoltValue("none"))
+        )
+        res = MoltValue(self.next_var())
+        self.emit(MoltOp(kind="INDEX", args=[self.return_slot, idx], result=res))
+        self.emit(MoltOp(kind="ret", args=[res], result=MoltValue("none")))
+
+    def _ends_with_return_jump(self) -> bool:
+        if not self.current_ops:
+            return False
+        last = self.current_ops[-1]
+        if last.kind == "ret":
+            return True
+        if (
+            last.kind == "JUMP"
+            and self.return_label is not None
+            and last.args
+            and last.args[0] == self.return_label
+        ):
+            return True
+        return False
 
     def resume_function(self, name: str) -> None:
         self.current_func_name = name
@@ -2052,6 +2137,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             method_name = item.name
             method_symbol = self._function_symbol(f"{node.name}_{method_name}")
             params = [arg.arg for arg in item.args.args]
+            has_return = self._function_contains_return(item)
             func_val = MoltValue(self.next_var(), type_hint=f"Func:{method_symbol}")
             self.emit(
                 MoltOp(
@@ -2066,6 +2152,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 method_symbol,
                 params=params,
                 type_facts_name=f"{node.name}.{method_name}",
+                needs_return_slot=has_return,
             )
             for idx, arg in enumerate(item.args.args):
                 hint = None
@@ -2092,7 +2179,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         self._emit_guard_type(self.locals[arg.arg], hint)
             for stmt in item.body:
                 self.visit(stmt)
-            if not (self.current_ops and self.current_ops[-1].kind == "ret"):
+            if self.return_label is not None:
+                if not self._ends_with_return_jump():
+                    res = MoltValue(self.next_var())
+                    self.emit(MoltOp(kind="CONST", args=[0], result=res))
+                    self._emit_return_value(res)
+                self._emit_return_label()
+            elif not (self.current_ops and self.current_ops[-1].kind == "ret"):
                 res = MoltValue(self.next_var())
                 self.emit(MoltOp(kind="CONST", args=[0], result=res))
                 self.emit(MoltOp(kind="ret", args=[res], result=MoltValue("none")))
@@ -4392,7 +4485,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=done))
             pair = MoltValue(self.next_var(), type_hint="tuple")
             self.emit(MoltOp(kind="TUPLE_NEW", args=[val, done], result=pair))
-            self.emit(MoltOp(kind="ret", args=[pair], result=MoltValue("none")))
+            self._emit_return_value(pair)
             return None
         val = self.visit(node.value) if node.value else None
         if val is None:
@@ -4440,7 +4533,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             )
         self._emit_raise_if_pending()
-        self.emit(MoltOp(kind="ret", args=[val], result=MoltValue("none")))
+        self._emit_return_value(val)
         return None
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
@@ -4494,13 +4587,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         prev_async_locals = self.async_locals
         prev_hints = self.explicit_type_hints
         prev_context_depth = self.context_depth
+        has_return = self._function_contains_return(node)
 
         # Add to globals to support calls from other scopes
         self.globals[func_name] = MoltValue(
             func_name, type_hint=f"AsyncFunc:{poll_func_name}:0"
         )  # Placeholder size
 
-        self.start_function(poll_func_name, params=["self"], type_facts_name=func_name)
+        self.start_function(
+            poll_func_name,
+            params=["self"],
+            type_facts_name=func_name,
+            needs_return_slot=has_return,
+        )
         prev_base = self.async_locals_base
         for i, arg in enumerate(node.args.args):
             self.async_locals[arg.arg] = self.async_locals_base + i * 8
@@ -4518,9 +4617,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     self._emit_guard_type(MoltValue(arg.arg, type_hint=hint), hint)
         for item in node.body:
             self.visit(item)
-        res = MoltValue(self.next_var())
-        self.emit(MoltOp(kind="CONST", args=[0], result=res))
-        self.emit(MoltOp(kind="ret", args=[res], result=MoltValue("none")))
+        if self.return_label is not None:
+            if not self._ends_with_return_jump():
+                res = MoltValue(self.next_var())
+                self.emit(MoltOp(kind="CONST", args=[0], result=res))
+                self._emit_return_value(res)
+            self._emit_return_label()
+        else:
+            res = MoltValue(self.next_var())
+            self.emit(MoltOp(kind="CONST", args=[0], result=res))
+            self.emit(MoltOp(kind="ret", args=[res], result=MoltValue("none")))
         closure_size = self.async_locals_base + len(self.async_locals) * 8
         self.resume_function(prev_func)
         self.async_locals = prev_async_locals
@@ -4535,6 +4641,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         is_generator = self._function_contains_yield(node)
+        has_return = self._function_contains_return(node)
         if is_generator:
             if node.decorator_list:
                 raise NotImplementedError("Function decorators are not supported yet")
@@ -4566,7 +4673,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self._emit_module_attr_set(func_name, func_val)
 
             self.start_function(
-                poll_func_name, params=["self"], type_facts_name=func_name
+                poll_func_name,
+                params=["self"],
+                type_facts_name=func_name,
+                needs_return_slot=has_return,
             )
             self.in_generator = True
             self.async_locals_base = GEN_CONTROL_SIZE
@@ -4586,7 +4696,28 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         self._emit_guard_type(MoltValue(arg.arg, type_hint=hint), hint)
             for item in node.body:
                 self.visit(item)
-            if not (self.current_ops and self.current_ops[-1].kind == "ret"):
+            if self.return_label is not None:
+                if not self._ends_with_return_jump():
+                    none_val = MoltValue(self.next_var(), type_hint="None")
+                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
+                    closed = MoltValue(self.next_var(), type_hint="bool")
+                    self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=closed))
+                    self.emit(
+                        MoltOp(
+                            kind="STORE_CLOSURE",
+                            args=["self", GEN_CLOSED_OFFSET, closed],
+                            result=MoltValue("none"),
+                        )
+                    )
+                    done = MoltValue(self.next_var(), type_hint="bool")
+                    self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=done))
+                    pair = MoltValue(self.next_var(), type_hint="tuple")
+                    self.emit(
+                        MoltOp(kind="TUPLE_NEW", args=[none_val, done], result=pair)
+                    )
+                    self._emit_return_value(pair)
+                self._emit_return_label()
+            elif not (self.current_ops and self.current_ops[-1].kind == "ret"):
                 none_val = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
                 closed = MoltValue(self.next_var(), type_hint="bool")
@@ -4685,7 +4816,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.locals[func_name] = func_val
         self._emit_module_attr_set(func_name, func_val)
 
-        self.start_function(func_symbol, params=params, type_facts_name=func_name)
+        self.start_function(
+            func_symbol,
+            params=params,
+            type_facts_name=func_name,
+            needs_return_slot=has_return,
+        )
         for arg in node.args.args:
             hint = None
             if self.type_hint_policy == "ignore" and arg.annotation is not None:
@@ -4711,7 +4847,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     self._emit_guard_type(self.locals[arg.arg], hint)
         for item in node.body:
             self.visit(item)
-        if not (self.current_ops and self.current_ops[-1].kind == "ret"):
+        if self.return_label is not None:
+            if not self._ends_with_return_jump():
+                res = MoltValue(self.next_var())
+                self.emit(MoltOp(kind="CONST", args=[0], result=res))
+                self._emit_return_value(res)
+            self._emit_return_label()
+        elif not (self.current_ops and self.current_ops[-1].kind == "ret"):
             res = MoltValue(self.next_var())
             self.emit(MoltOp(kind="CONST", args=[0], result=res))
             self.emit(MoltOp(kind="ret", args=[res], result=MoltValue("none")))

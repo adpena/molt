@@ -24,9 +24,9 @@ class Field:
     def __repr__(self) -> str:
         return (
             "Field("
-            f"name={self.name!r}, "
-            f"default={self.default!r}, "
-            f"default_factory={self.default_factory!r})"
+            "name=" + repr(self.name) + ", "
+            "default=" + repr(self.default) + ", "
+            "default_factory=" + repr(self.default_factory) + ")"
         )
 
 
@@ -42,10 +42,10 @@ class _DataclassParams:
     def __repr__(self) -> str:
         return (
             "_DataclassParams("
-            f"frozen={self.frozen!r}, "
-            f"eq={self.eq!r}, "
-            f"repr={self.repr!r}, "
-            f"slots={self.slots!r})"
+            "frozen=" + repr(self.frozen) + ", "
+            "eq=" + repr(self.eq) + ", "
+            "repr=" + repr(self.repr) + ", "
+            "slots=" + repr(self.slots) + ")"
         )
 
 
