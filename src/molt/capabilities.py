@@ -20,7 +20,7 @@ def has(capability: str) -> bool:
 
 def require(capability: str) -> None:
     if not has(capability):
-        raise PermissionError(f"Missing capability: {capability}")
+        raise PermissionError("Missing capability")
 
 
 def format_caps(caps: Iterable[str]) -> str:
