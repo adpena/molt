@@ -259,6 +259,7 @@ impl WasmBackend {
         add_import("exception_kind", 2, &mut self.import_ids);
         add_import("exception_message", 2, &mut self.import_ids);
         add_import("exception_set_cause", 3, &mut self.import_ids);
+        add_import("exception_context_set", 2, &mut self.import_ids);
         add_import("raise", 2, &mut self.import_ids);
         add_import("bridge_unavailable", 2, &mut self.import_ids);
         add_import("file_open", 3, &mut self.import_ids);
@@ -1952,7 +1953,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(24));
                         func.instruction(&Instruction::I32Add);
-                        func.instruction(&Instruction::I64Const(box_int(0)));
+                        func.instruction(&Instruction::I64Const(box_int(1)));
                         func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
                             align: 3,
                             offset: 0,
@@ -2096,6 +2097,13 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(exc));
                         func.instruction(&Instruction::LocalGet(cause));
                         func.instruction(&Instruction::Call(import_ids["exception_set_cause"]));
+                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                    }
+                    "exception_context_set" => {
+                        let args = op.args.as_ref().unwrap();
+                        let exc = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(exc));
+                        func.instruction(&Instruction::Call(import_ids["exception_context_set"]));
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                     }
                     "raise" => {

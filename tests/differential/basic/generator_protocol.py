@@ -157,3 +157,20 @@ try:
     g7.throw(ValueError("x"))
 except RuntimeError:
     print("raised")
+
+header("context")
+
+
+def gen_ctx():
+    raise RuntimeError("inner")
+    yield 1
+
+
+g8 = gen_ctx()
+try:
+    raise ValueError("outer")
+except ValueError as outer:
+    try:
+        g8.send(None)
+    except RuntimeError as exc:
+        print(exc.__context__ is outer)

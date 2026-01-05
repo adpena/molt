@@ -132,6 +132,7 @@ interface intrinsics {
     exception_kind: func(exc: molt-object) -> molt-object;
     exception_message: func(exc: molt-object) -> molt-object;
     exception_set_cause: func(exc: molt-object, cause: molt-object) -> molt-object;
+    exception_context_set: func(exc: molt-object) -> molt-object;
     raise: func(exc: molt-object) -> molt-object;
     file_open: func(path: molt-object, mode: molt-object) -> molt-object;
     file_read: func(handle: molt-object, size: molt-object) -> molt-object;

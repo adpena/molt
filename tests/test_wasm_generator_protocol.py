@@ -54,6 +54,62 @@ def test_wasm_generator_protocol_parity(tmp_path: Path) -> None:
         "g3 = gen_close()\n"
         "print(g3.send(None))\n"
         "g3.close()\n"
+        "\n"
+        "def sub_send():\n"
+        "    x = yield 101\n"
+        "    yield x\n"
+        "\n"
+        "def gen_yf():\n"
+        "    yield from sub_send()\n"
+        "\n"
+        "g4 = gen_yf()\n"
+        "print(g4.send(None))\n"
+        "print(g4.send(202))\n"
+        "try:\n"
+        "    g4.send(None)\n"
+        "except StopIteration:\n"
+        "    print(203)\n"
+        "\n"
+        "def gen_close_raise():\n"
+        "    try:\n"
+        "        yield 111\n"
+        "    finally:\n"
+        "        print(112)\n"
+        "        raise RuntimeError('boom')\n"
+        "\n"
+        "g5 = gen_close_raise()\n"
+        "print(g5.send(None))\n"
+        "try:\n"
+        "    g5.close()\n"
+        "except RuntimeError:\n"
+        "    print(113)\n"
+        "\n"
+        "def gen_throw_finally():\n"
+        "    try:\n"
+        "        yield 121\n"
+        "    finally:\n"
+        "        print(122)\n"
+        "        raise RuntimeError('boom')\n"
+        "\n"
+        "g6 = gen_throw_finally()\n"
+        "print(g6.send(None))\n"
+        "try:\n"
+        "    g6.throw(ValueError('x'))\n"
+        "except RuntimeError:\n"
+        "    print(123)\n"
+        "\n"
+        "def gen_ctx():\n"
+        "    raise RuntimeError('inner')\n"
+        "    yield 1\n"
+        "\n"
+        "g7 = gen_ctx()\n"
+        "try:\n"
+        "    raise ValueError('outer')\n"
+        "except ValueError as outer:\n"
+        "    try:\n"
+        "        g7.send(None)\n"
+        "    except RuntimeError as exc:\n"
+        "        print(exc.__context__ is outer)\n"
     )
 
     output_wasm = root / "output.wasm"
@@ -81,7 +137,27 @@ def test_wasm_generator_protocol_parity(tmp_path: Path) -> None:
         )
         assert run.returncode == 0, run.stderr
         assert run.stdout.strip() == "\n".join(
-            ["1", "10", "0", "1", "7", "2", "3", "1", "4"]
+            [
+                "1",
+                "10",
+                "0",
+                "1",
+                "7",
+                "2",
+                "3",
+                "1",
+                "4",
+                "101",
+                "202",
+                "203",
+                "111",
+                "112",
+                "113",
+                "121",
+                "122",
+                "123",
+                "True",
+            ]
         )
     finally:
         if not existed and output_wasm.exists():

@@ -200,6 +200,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "EXCEPTION_CLEAR",
             "EXCEPTION_LAST",
             "EXCEPTION_SET_CAUSE",
+            "EXCEPTION_CONTEXT_SET",
             "CONTEXT_UNWIND_TO",
             "ret",
         }:
@@ -4315,6 +4316,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self._store_local_value(handler.name, exc_val)
             self.active_exceptions.append(exc_val)
             self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
+            self.emit(
+                MoltOp(
+                    kind="EXCEPTION_CONTEXT_SET",
+                    args=[exc_val],
+                    result=MoltValue("none"),
+                )
+            )
             self._emit_guarded_body(handler.body, exc_val)
             self.active_exceptions.pop()
             if len(handlers) > 1:
@@ -4329,6 +4337,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             final_exc = MoltValue(self.next_var(), type_hint="exception")
             self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=final_exc))
             self.active_exceptions.append(final_exc)
+            self.emit(
+                MoltOp(
+                    kind="EXCEPTION_CONTEXT_SET",
+                    args=[final_exc],
+                    result=MoltValue("none"),
+                )
+            )
             self._emit_finalbody(node.finalbody, final_exc)
             self.active_exceptions.pop()
 
@@ -5648,6 +5663,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     {
                         "kind": "exception_set_cause",
                         "args": [op.args[0].name, op.args[1].name],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "EXCEPTION_CONTEXT_SET":
+                json_ops.append(
+                    {
+                        "kind": "exception_context_set",
+                        "args": [op.args[0].name],
                         "out": op.result.name,
                     }
                 )

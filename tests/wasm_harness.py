@@ -84,13 +84,114 @@ const getStr = (val) => {
   if (obj && obj.type === 'str') return obj.value;
   return '';
 };
+const getStrObj = (val) => {
+  const obj = getObj(val);
+  if (obj && obj.type === 'str') return obj.value;
+  return null;
+};
 const getException = (val) => {
   const obj = getObj(val);
   if (obj && obj.type === 'exception') return obj;
   return null;
 };
+const readUtf8 = (ptr, len) => {
+  if (!memory) return '';
+  const addr = Number(ptr);
+  const size = Number(len);
+  if (!size) return '';
+  const bytes = new Uint8Array(memory.buffer, addr, size);
+  return Buffer.from(bytes).toString('utf8');
+};
+const isTruthyBits = (val) => {
+  if (isTag(val, TAG_BOOL)) {
+    return (val & 1n) === 1n;
+  }
+  if (isTag(val, TAG_INT)) {
+    return unboxInt(val) !== 0n;
+  }
+  if (isTag(val, TAG_NONE)) {
+    return false;
+  }
+  if (isPtr(val)) {
+    const obj = getObj(val);
+    if (obj && obj.type === 'str') return obj.value.length !== 0;
+    if (obj && obj.type === 'bytes') return obj.data.length !== 0;
+    if (obj && obj.type === 'bytearray') return obj.data.length !== 0;
+    if (obj && obj.type === 'list') return obj.items.length !== 0;
+    if (obj && obj.type === 'tuple') return obj.items.length !== 0;
+    if (obj && obj.type === 'iter') return true;
+  }
+  return false;
+};
+const lookupExceptionAttr = (exc, name) => {
+  switch (name) {
+    case '__cause__':
+      return exc.causeBits;
+    case '__context__':
+      return exc.contextBits;
+    case '__suppress_context__':
+      return exc.suppressBits;
+    default:
+      return undefined;
+  }
+};
+const lookupAttr = (objBits, name) => {
+  const exc = getException(objBits);
+  if (exc) {
+    return lookupExceptionAttr(exc, name);
+  }
+  return undefined;
+};
+const getAttrValue = (objBits, name) => {
+  const val = lookupAttr(objBits, name);
+  if (val === undefined) return boxNone();
+  return val;
+};
+const setExceptionAttr = (exc, name, valBits) => {
+  if (name === '__cause__' || name === '__context__') {
+    if (!isNone(valBits) && !getException(valBits)) {
+      const msg =
+        name === '__cause__'
+          ? 'TypeError: exception cause must be an exception or None'
+          : 'TypeError: exception context must be an exception or None';
+      throw new Error(msg);
+    }
+    if (name === '__cause__') {
+      exc.causeBits = valBits;
+      exc.suppressBits = boxBool(true);
+    } else {
+      exc.contextBits = valBits;
+    }
+    return true;
+  }
+  if (name === '__suppress_context__') {
+    exc.suppressBits = boxBool(isTruthyBits(valBits));
+    return true;
+  }
+  return false;
+};
+const setAttrValue = (objBits, name, valBits) => {
+  const exc = getException(objBits);
+  if (exc && setExceptionAttr(exc, name, valBits)) {
+    return boxNone();
+  }
+  return boxNone();
+};
 let lastException = boxNone();
 const exceptionStack = [];
+const activeExceptionStack = [];
+const activeExceptionFallback = [];
+const generatorExceptionStacks = new Map();
+let generatorRaise = false;
+const lastNonNone = (stack) => {
+  for (let i = stack.length - 1; i >= 0; i -= 1) {
+    const bits = stack[i];
+    if (!isNone(bits)) {
+      return bits;
+    }
+  }
+  return boxNone();
+};
 const exceptionDepth = () => exceptionStack.length;
 const exceptionSetDepth = (depth) => {
   const target = Math.max(0, depth);
@@ -99,6 +200,12 @@ const exceptionSetDepth = (depth) => {
   }
   while (exceptionStack.length < target) {
     exceptionStack.push(1);
+  }
+  while (activeExceptionStack.length > target) {
+    activeExceptionStack.pop();
+  }
+  while (activeExceptionStack.length < target) {
+    activeExceptionStack.push(boxNone());
   }
 };
 const exceptionNew = (kindBits, msgBits) => {
@@ -121,6 +228,15 @@ const exceptionSetCause = (excBits, causeBits) => {
   exc.suppressBits = boxBool(true);
   return boxNone();
 };
+const exceptionContextSet = (excBits) => {
+  if (!activeExceptionStack.length || isNone(excBits)) return boxNone();
+  const exc = getException(excBits);
+  if (!exc) {
+    throw new Error('TypeError: expected exception object');
+  }
+  activeExceptionStack[activeExceptionStack.length - 1] = excBits;
+  return boxNone();
+};
 const exceptionKind = (excBits) => {
   const exc = getException(excBits);
   if (!exc) return boxNone();
@@ -139,6 +255,7 @@ const exceptionClear = () => {
 const exceptionPending = () => (isNone(lastException) ? 0n : 1n);
 const exceptionPush = () => {
   exceptionStack.push(1);
+  activeExceptionStack.push(boxNone());
   return boxNone();
 };
 const exceptionPop = () => {
@@ -146,15 +263,25 @@ const exceptionPop = () => {
     throw new Error('RuntimeError: exception handler stack underflow');
   }
   exceptionStack.pop();
+  activeExceptionStack.pop();
   return boxNone();
 };
 const raiseException = (excBits) => {
   const exc = getException(excBits);
-  if (exc && !isNone(lastException) && isNone(exc.contextBits)) {
-    exc.contextBits = lastException;
+  const activeContext = lastNonNone(activeExceptionStack);
+  const fallbackContext = lastNonNone(activeExceptionFallback);
+  const context = !isNone(activeContext) ? activeContext : fallbackContext;
+  const candidate = !isNone(lastException) ? lastException : context;
+  if (
+    exc &&
+    isNone(exc.contextBits) &&
+    !isNone(candidate) &&
+    candidate !== excBits
+  ) {
+    exc.contextBits = candidate;
   }
   lastException = excBits;
-  if (!exceptionStack.length) {
+  if (!exceptionStack.length && !generatorRaise) {
     const kind = exc ? getStr(exc.kindBits) : 'Exception';
     const msg = exc ? getStr(exc.msgBits) : '';
     throw new Error(`${kind}: ${msg}`);
@@ -173,6 +300,15 @@ const generatorSend = (gen, sendVal) => {
     return tupleFromArray([boxNone(), boxBool(true)]);
   }
   const callerDepth = exceptionDepth();
+  const callerStack = activeExceptionStack.slice();
+  const callerContext = callerStack.length
+    ? callerStack[callerStack.length - 1]
+    : boxNone();
+  activeExceptionFallback.push(callerContext);
+  const key = addr;
+  const genStack = generatorExceptionStacks.get(key) || [];
+  activeExceptionStack.length = 0;
+  activeExceptionStack.push(...genStack);
   const depthBits = view.getBigInt64(addr + 24, true);
   const genDepth = isTag(depthBits, TAG_INT) ? Number(unboxInt(depthBits)) : 0;
   exceptionSetDepth(genDepth);
@@ -180,12 +316,26 @@ const generatorSend = (gen, sendVal) => {
   view.setBigInt64(addr + 8, boxNone(), true);
   const pollIdx = view.getUint32(addr - 24, true);
   const poll = table.get(pollIdx);
+  const prevRaise = generatorRaise;
+  generatorRaise = true;
   const res = poll
     ? poll(gen)
     : tupleFromArray([boxNone(), boxBool(true)]);
+  generatorRaise = prevRaise;
+  const pending = exceptionPending() !== 0n;
+  const excBits = pending ? exceptionLast() : boxNone();
+  if (pending) exceptionClear();
   const newDepth = exceptionDepth();
   view.setBigInt64(addr + 24, boxInt(newDepth), true);
+  exceptionSetDepth(newDepth);
+  generatorExceptionStacks.set(key, activeExceptionStack.slice());
+  activeExceptionStack.length = 0;
+  activeExceptionStack.push(...callerStack);
   exceptionSetDepth(callerDepth);
+  activeExceptionFallback.pop();
+  if (pending) {
+    return raiseException(excBits);
+  }
   return res;
 };
 const generatorThrow = (gen, exc) => {
@@ -200,6 +350,15 @@ const generatorThrow = (gen, exc) => {
     return tupleFromArray([boxNone(), boxBool(true)]);
   }
   const callerDepth = exceptionDepth();
+  const callerStack = activeExceptionStack.slice();
+  const callerContext = callerStack.length
+    ? callerStack[callerStack.length - 1]
+    : boxNone();
+  activeExceptionFallback.push(callerContext);
+  const key = addr;
+  const genStack = generatorExceptionStacks.get(key) || [];
+  activeExceptionStack.length = 0;
+  activeExceptionStack.push(...genStack);
   const depthBits = view.getBigInt64(addr + 24, true);
   const genDepth = isTag(depthBits, TAG_INT) ? Number(unboxInt(depthBits)) : 0;
   exceptionSetDepth(genDepth);
@@ -207,12 +366,26 @@ const generatorThrow = (gen, exc) => {
   view.setBigInt64(addr + 0, boxNone(), true);
   const pollIdx = view.getUint32(addr - 24, true);
   const poll = table.get(pollIdx);
+  const prevRaise = generatorRaise;
+  generatorRaise = true;
   const res = poll
     ? poll(gen)
     : tupleFromArray([boxNone(), boxBool(true)]);
+  generatorRaise = prevRaise;
+  const pending = exceptionPending() !== 0n;
+  const excBits = pending ? exceptionLast() : boxNone();
+  if (pending) exceptionClear();
   const newDepth = exceptionDepth();
   view.setBigInt64(addr + 24, boxInt(newDepth), true);
+  exceptionSetDepth(newDepth);
+  generatorExceptionStacks.set(key, activeExceptionStack.slice());
+  activeExceptionStack.length = 0;
+  activeExceptionStack.push(...callerStack);
   exceptionSetDepth(callerDepth);
+  activeExceptionFallback.pop();
+  if (pending) {
+    return raiseException(excBits);
+  }
   return res;
 };
 const generatorClose = (gen) => {
@@ -225,6 +398,15 @@ const generatorClose = (gen) => {
   const closed = isTag(closedBits, TAG_BOOL) && (closedBits & 1n) === 1n;
   if (closed) return boxNone();
   const callerDepth = exceptionDepth();
+  const callerStack = activeExceptionStack.slice();
+  const callerContext = callerStack.length
+    ? callerStack[callerStack.length - 1]
+    : boxNone();
+  activeExceptionFallback.push(callerContext);
+  const key = addr;
+  const genStack = generatorExceptionStacks.get(key) || [];
+  activeExceptionStack.length = 0;
+  activeExceptionStack.push(...genStack);
   const depthBits = view.getBigInt64(addr + 24, true);
   const genDepth = isTag(depthBits, TAG_INT) ? Number(unboxInt(depthBits)) : 0;
   exceptionSetDepth(genDepth);
@@ -236,10 +418,30 @@ const generatorClose = (gen) => {
   view.setBigInt64(addr + 0, boxNone(), true);
   const pollIdx = view.getUint32(addr - 24, true);
   const poll = table.get(pollIdx);
+  const prevRaise = generatorRaise;
+  generatorRaise = true;
   const res = poll ? poll(gen) : null;
+  generatorRaise = prevRaise;
+  const pending = exceptionPending() !== 0n;
+  const excBits = pending ? exceptionLast() : boxNone();
+  if (pending) exceptionClear();
   const newDepth = exceptionDepth();
   view.setBigInt64(addr + 24, boxInt(newDepth), true);
+  exceptionSetDepth(newDepth);
+  generatorExceptionStacks.set(key, activeExceptionStack.slice());
+  activeExceptionStack.length = 0;
+  activeExceptionStack.push(...callerStack);
   exceptionSetDepth(callerDepth);
+  activeExceptionFallback.pop();
+  if (pending) {
+    const excObj = getException(excBits);
+    const isExit = excObj && getStr(excObj.kindBits) === 'GeneratorExit';
+    if (isExit) {
+      view.setBigInt64(addr + 16, boxBool(true), true);
+      return boxNone();
+    }
+    return raiseException(excBits);
+  }
   if (res) {
     const pair = getTuple(res);
     if (pair) {
@@ -346,14 +548,43 @@ BASE_IMPORTS = """\
   },
   contains: () => boxBool(false),
   guard_type: (val, expected) => val,
-  get_attr_generic: () => boxNone(),
-  get_attr_object: () => boxNone(),
-  set_attr_generic: () => boxNone(),
-  set_attr_object: () => boxNone(),
-  get_attr_name: () => boxNone(),
-  get_attr_name_default: () => boxNone(),
-  has_attr_name: () => boxBool(false),
-  set_attr_name: () => boxNone(),
+  get_attr_generic: (obj, namePtr, nameLen) =>
+    getAttrValue(obj, readUtf8(namePtr, nameLen)),
+  get_attr_object: (obj, namePtr, nameLen) =>
+    getAttrValue(obj, readUtf8(namePtr, nameLen)),
+  set_attr_generic: (obj, namePtr, nameLen, val) =>
+    setAttrValue(obj, readUtf8(namePtr, nameLen), val),
+  set_attr_object: (obj, namePtr, nameLen, val) =>
+    setAttrValue(obj, readUtf8(namePtr, nameLen), val),
+  get_attr_name: (obj, nameBits) => {
+    const name = getStrObj(nameBits);
+    if (name === null) {
+      throw new Error('TypeError: attribute name must be str');
+    }
+    return getAttrValue(obj, name);
+  },
+  get_attr_name_default: (obj, nameBits, defaultVal) => {
+    const name = getStrObj(nameBits);
+    if (name === null) {
+      throw new Error('TypeError: attribute name must be str');
+    }
+    const val = lookupAttr(obj, name);
+    return val === undefined ? defaultVal : val;
+  },
+  has_attr_name: (obj, nameBits) => {
+    const name = getStrObj(nameBits);
+    if (name === null) {
+      throw new Error('TypeError: attribute name must be str');
+    }
+    return boxBool(lookupAttr(obj, name) !== undefined);
+  },
+  set_attr_name: (obj, nameBits, val) => {
+    const name = getStrObj(nameBits);
+    if (name === null) {
+      throw new Error('TypeError: attribute name must be str');
+    }
+    return setAttrValue(obj, name, val);
+  },
   is_truthy: (val) => {
     if (isTag(val, TAG_BOOL)) {
       return (val & 1n) === 1n ? 1n : 0n;
@@ -561,6 +792,7 @@ BASE_IMPORTS = """\
   exception_kind: (exc) => exceptionKind(exc),
   exception_message: (exc) => exceptionMessage(exc),
   exception_set_cause: (exc, cause) => exceptionSetCause(exc, cause),
+  exception_context_set: (exc) => exceptionContextSet(exc),
   raise: (exc) => raiseException(exc),
   context_closing: (val) => val,
   bridge_unavailable: () => boxNone(),

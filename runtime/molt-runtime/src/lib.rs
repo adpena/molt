@@ -160,6 +160,10 @@ thread_local! {
     static PARSE_ARENA: RefCell<TempArena> = RefCell::new(TempArena::new(8 * 1024));
     static CONTEXT_STACK: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
     static EXCEPTION_STACK: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    static ACTIVE_EXCEPTION_STACK: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+    static ACTIVE_EXCEPTION_FALLBACK: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+    static GENERATOR_EXCEPTION_STACKS: RefCell<HashMap<usize, Vec<u64>>> =
+        RefCell::new(HashMap::new());
     static GENERATOR_RAISE: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -1620,18 +1624,28 @@ fn close_payload(payload_bits: u64) {
 fn record_exception(ptr: *mut u8) {
     let cell = LAST_EXCEPTION.get_or_init(|| Mutex::new(None));
     let mut guard = cell.lock().unwrap();
+    let mut context_bits: Option<u64> = None;
     if let Some(old_ptr) = guard.take() {
         let old_bits = MoltObject::from_ptr(old_ptr as *mut u8).bits();
         if old_ptr as *mut u8 != ptr {
-            let context_bits = unsafe { exception_context_bits(ptr) };
-            if obj_from_bits(context_bits).is_none() {
+            context_bits = Some(old_bits);
+        }
+        dec_ref_bits(old_bits);
+    }
+    if context_bits.is_none() {
+        context_bits = exception_context_active_bits();
+    }
+    if let Some(ctx_bits) = context_bits {
+        let new_bits = MoltObject::from_ptr(ptr).bits();
+        if ctx_bits != new_bits {
+            let existing = unsafe { exception_context_bits(ptr) };
+            if obj_from_bits(existing).is_none() {
                 unsafe {
-                    inc_ref_bits(old_bits);
-                    *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64) = old_bits;
+                    inc_ref_bits(ctx_bits);
+                    *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64) = ctx_bits;
                 }
             }
         }
-        dec_ref_bits(old_bits);
     }
     *guard = Some(ptr as usize);
     let new_bits = MoltObject::from_ptr(ptr).bits();
@@ -1657,6 +1671,80 @@ fn exception_handler_active() -> bool {
     EXCEPTION_STACK.with(|stack| !stack.borrow().is_empty())
 }
 
+fn exception_context_active_bits() -> Option<u64> {
+    let active = ACTIVE_EXCEPTION_STACK.with(|stack| {
+        let stack = stack.borrow();
+        stack.iter().rev().find_map(|bits| {
+            if obj_from_bits(*bits).is_none() {
+                None
+            } else {
+                Some(*bits)
+            }
+        })
+    });
+    if active.is_some() {
+        return active;
+    }
+    ACTIVE_EXCEPTION_FALLBACK.with(|stack| {
+        let stack = stack.borrow();
+        stack.iter().rev().find_map(|bits| {
+            if obj_from_bits(*bits).is_none() {
+                None
+            } else {
+                Some(*bits)
+            }
+        })
+    })
+}
+
+fn exception_context_set(bits: u64) {
+    if obj_from_bits(bits).is_none() {
+        return;
+    }
+    ACTIVE_EXCEPTION_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        let Some(slot) = stack.last_mut() else {
+            return;
+        };
+        if *slot == bits {
+            return;
+        }
+        if !obj_from_bits(*slot).is_none() {
+            dec_ref_bits(*slot);
+        }
+        inc_ref_bits(bits);
+        *slot = bits;
+    });
+}
+
+fn exception_context_align_depth(target: usize) {
+    ACTIVE_EXCEPTION_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        while stack.len() > target {
+            if let Some(bits) = stack.pop() {
+                if !obj_from_bits(bits).is_none() {
+                    dec_ref_bits(bits);
+                }
+            }
+        }
+        while stack.len() < target {
+            stack.push(MoltObject::none().bits());
+        }
+    });
+}
+
+fn exception_context_fallback_push(bits: u64) {
+    ACTIVE_EXCEPTION_FALLBACK.with(|stack| {
+        stack.borrow_mut().push(bits);
+    });
+}
+
+fn exception_context_fallback_pop() {
+    ACTIVE_EXCEPTION_FALLBACK.with(|stack| {
+        let _ = stack.borrow_mut().pop();
+    });
+}
+
 fn generator_raise_active() -> bool {
     GENERATOR_RAISE.with(|flag| flag.get())
 }
@@ -1669,6 +1757,9 @@ fn exception_stack_push() {
     EXCEPTION_STACK.with(|stack| {
         stack.borrow_mut().push(0);
     });
+    ACTIVE_EXCEPTION_STACK.with(|stack| {
+        stack.borrow_mut().push(MoltObject::none().bits());
+    });
 }
 
 fn exception_stack_pop() {
@@ -1676,6 +1767,14 @@ fn exception_stack_pop() {
     if underflow {
         raise!("RuntimeError", "exception handler stack underflow");
     }
+    ACTIVE_EXCEPTION_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        if let Some(bits) = stack.pop() {
+            if !obj_from_bits(bits).is_none() {
+                dec_ref_bits(bits);
+            }
+        }
+    });
 }
 
 fn exception_stack_depth() -> usize {
@@ -1690,6 +1789,33 @@ fn exception_stack_set_depth(target: usize) {
         }
         while stack.len() < target {
             stack.push(1);
+        }
+    });
+    exception_context_align_depth(target);
+}
+
+fn generator_exception_stack_take(ptr: *mut u8) -> Vec<u64> {
+    GENERATOR_EXCEPTION_STACKS.with(|map| {
+        map.borrow_mut()
+            .remove(&(ptr as usize))
+            .unwrap_or_default()
+    })
+}
+
+fn generator_exception_stack_store(ptr: *mut u8, stack: Vec<u64>) {
+    GENERATOR_EXCEPTION_STACKS.with(|map| {
+        map.borrow_mut().insert(ptr as usize, stack);
+    });
+}
+
+fn generator_exception_stack_drop(ptr: *mut u8) {
+    GENERATOR_EXCEPTION_STACKS.with(|map| {
+        if let Some(stack) = map.borrow_mut().remove(&(ptr as usize)) {
+            for bits in stack {
+                if !obj_from_bits(bits).is_none() {
+                    dec_ref_bits(bits);
+                }
+            }
         }
     });
 }
@@ -2412,6 +2538,18 @@ pub extern "C" fn molt_generator_send(gen_bits: u64, send_bits: u64) -> u64 {
             return generator_done_tuple(MoltObject::none().bits());
         }
         let caller_depth = exception_stack_depth();
+        let caller_active = ACTIVE_EXCEPTION_STACK.with(|stack| {
+            std::mem::take(&mut *stack.borrow_mut())
+        });
+        let caller_context = caller_active
+            .last()
+            .copied()
+            .unwrap_or(MoltObject::none().bits());
+        exception_context_fallback_push(caller_context);
+        let gen_active = generator_exception_stack_take(ptr);
+        ACTIVE_EXCEPTION_STACK.with(|stack| {
+            *stack.borrow_mut() = gen_active;
+        });
         let gen_depth_bits = *generator_slot_ptr(ptr, GEN_EXC_DEPTH_OFFSET);
         let gen_depth = to_i64(obj_from_bits(gen_depth_bits)).unwrap_or(0);
         let gen_depth = if gen_depth < 0 { 0 } else { gen_depth as usize };
@@ -2435,7 +2573,16 @@ pub extern "C" fn molt_generator_send(gen_bits: u64, send_bits: u64) -> u64 {
             GEN_EXC_DEPTH_OFFSET,
             MoltObject::from_int(new_depth as i64).bits(),
         );
+        exception_context_align_depth(new_depth);
+        let gen_active = ACTIVE_EXCEPTION_STACK.with(|stack| {
+            std::mem::take(&mut *stack.borrow_mut())
+        });
+        generator_exception_stack_store(ptr, gen_active);
+        ACTIVE_EXCEPTION_STACK.with(|stack| {
+            *stack.borrow_mut() = caller_active;
+        });
         exception_stack_set_depth(caller_depth);
+        exception_context_fallback_pop();
         if pending {
             let raised = molt_raise(exc_bits);
             dec_ref_bits(exc_bits);
@@ -2465,6 +2612,18 @@ pub extern "C" fn molt_generator_throw(gen_bits: u64, exc_bits: u64) -> u64 {
             return generator_done_tuple(MoltObject::none().bits());
         }
         let caller_depth = exception_stack_depth();
+        let caller_active = ACTIVE_EXCEPTION_STACK.with(|stack| {
+            std::mem::take(&mut *stack.borrow_mut())
+        });
+        let caller_context = caller_active
+            .last()
+            .copied()
+            .unwrap_or(MoltObject::none().bits());
+        exception_context_fallback_push(caller_context);
+        let gen_active = generator_exception_stack_take(ptr);
+        ACTIVE_EXCEPTION_STACK.with(|stack| {
+            *stack.borrow_mut() = gen_active;
+        });
         let gen_depth_bits = *generator_slot_ptr(ptr, GEN_EXC_DEPTH_OFFSET);
         let gen_depth = to_i64(obj_from_bits(gen_depth_bits)).unwrap_or(0);
         let gen_depth = if gen_depth < 0 { 0 } else { gen_depth as usize };
@@ -2488,7 +2647,16 @@ pub extern "C" fn molt_generator_throw(gen_bits: u64, exc_bits: u64) -> u64 {
             GEN_EXC_DEPTH_OFFSET,
             MoltObject::from_int(new_depth as i64).bits(),
         );
+        exception_context_align_depth(new_depth);
+        let gen_active = ACTIVE_EXCEPTION_STACK.with(|stack| {
+            std::mem::take(&mut *stack.borrow_mut())
+        });
+        generator_exception_stack_store(ptr, gen_active);
+        ACTIVE_EXCEPTION_STACK.with(|stack| {
+            *stack.borrow_mut() = caller_active;
+        });
         exception_stack_set_depth(caller_depth);
+        exception_context_fallback_pop();
         if pending {
             let raised = molt_raise(exc_bits);
             dec_ref_bits(exc_bits);
@@ -2537,6 +2705,18 @@ pub extern "C" fn molt_generator_close(gen_bits: u64) -> u64 {
             return MoltObject::none().bits();
         }
         let caller_depth = exception_stack_depth();
+        let caller_active = ACTIVE_EXCEPTION_STACK.with(|stack| {
+            std::mem::take(&mut *stack.borrow_mut())
+        });
+        let caller_context = caller_active
+            .last()
+            .copied()
+            .unwrap_or(MoltObject::none().bits());
+        exception_context_fallback_push(caller_context);
+        let gen_active = generator_exception_stack_take(ptr);
+        ACTIVE_EXCEPTION_STACK.with(|stack| {
+            *stack.borrow_mut() = gen_active;
+        });
         let gen_depth_bits = *generator_slot_ptr(ptr, GEN_EXC_DEPTH_OFFSET);
         let gen_depth = to_i64(obj_from_bits(gen_depth_bits)).unwrap_or(0);
         let gen_depth = if gen_depth < 0 { 0 } else { gen_depth as usize };
@@ -2560,7 +2740,16 @@ pub extern "C" fn molt_generator_close(gen_bits: u64) -> u64 {
             GEN_EXC_DEPTH_OFFSET,
             MoltObject::from_int(new_depth as i64).bits(),
         );
+        exception_context_align_depth(new_depth);
+        let gen_active = ACTIVE_EXCEPTION_STACK.with(|stack| {
+            std::mem::take(&mut *stack.borrow_mut())
+        });
+        generator_exception_stack_store(ptr, gen_active);
+        ACTIVE_EXCEPTION_STACK.with(|stack| {
+            *stack.borrow_mut() = caller_active;
+        });
         exception_stack_set_depth(caller_depth);
+        exception_context_fallback_pop();
         if pending {
             let exc_obj = obj_from_bits(exc_bits);
             let is_exit = if let Some(exc_ptr) = exc_obj.as_ptr() {
@@ -2662,6 +2851,23 @@ pub extern "C" fn molt_exception_set_cause(exc_bits: u64, cause_bits: u64) -> u6
             *(ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64) = suppress_bits;
         }
     }
+    MoltObject::none().bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_exception_context_set(exc_bits: u64) -> u64 {
+    let exc_obj = obj_from_bits(exc_bits);
+    if !exc_obj.is_none() {
+        let Some(ptr) = exc_obj.as_ptr() else {
+            raise!("TypeError", "expected exception object");
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_EXCEPTION {
+                raise!("TypeError", "expected exception object");
+            }
+        }
+    }
+    exception_context_set(exc_bits);
     MoltObject::none().bits()
 }
 
@@ -9046,6 +9252,9 @@ pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
                 dec_ref_bits(cause_bits);
                 dec_ref_bits(context_bits);
                 dec_ref_bits(suppress_bits);
+            }
+            TYPE_ID_GENERATOR => {
+                generator_exception_stack_drop(ptr);
             }
             TYPE_ID_CONTEXT_MANAGER => {
                 let payload_bits = context_payload_bits(ptr);

@@ -10,7 +10,7 @@
 - Implemented: class objects + basic descriptors (`classmethod`, `staticmethod`, `property`).
 - Implemented: exception chaining with explicit `__cause__`, implicit `__context__`, and `__suppress_context__`.
 - TODO(type-coverage, owner:runtime, milestone:TC2): inheritance semantics + full descriptor protocol (setters/deleters, `super`).
-- Partial: wasm generator state machines; finish runtime/WIT parity for async/generator support.
+- Partial: wasm generator state machines + closure slot intrinsics landed; async parity and remaining generator state object/StopIteration work still pending.
 
 ## Tooling
 - Keep type facts + `ty` validation wired into build/lint flows and surface regressions early.

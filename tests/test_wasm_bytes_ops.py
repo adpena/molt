@@ -349,6 +349,7 @@ BYTES_IMPORT_OVERRIDES = textwrap.dedent(
     exception_kind: () => boxNone(),
     exception_message: () => boxNone(),
     exception_set_cause: () => boxNone(),
+    exception_context_set: () => boxNone(),
     raise: () => boxNone(),
     context_closing: (val) => val,
     bridge_unavailable: () => boxNone(),
