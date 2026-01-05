@@ -2566,7 +2566,9 @@ impl SimpleBackend {
                         .declare_function("molt_property_new", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*getter, *setter, *deleter]);
+                    let call = builder
+                        .ins()
+                        .call(local_callee, &[*getter, *setter, *deleter]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
@@ -3641,7 +3643,9 @@ impl SimpleBackend {
                         .declare_function("molt_get_attr_generic", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*obj, attr_ptr, attr_len]);
+                    let call = builder
+                        .ins()
+                        .call(local_callee, &[*obj, attr_ptr, attr_len]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
@@ -3675,7 +3679,9 @@ impl SimpleBackend {
                         .declare_function("molt_get_attr_object", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*obj, attr_ptr, attr_len]);
+                    let call = builder
+                        .ins()
+                        .call(local_callee, &[*obj, attr_ptr, attr_len]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
@@ -3783,7 +3789,9 @@ impl SimpleBackend {
                         .declare_function("molt_set_attr_generic", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*obj, attr_ptr, attr_len, *val]);
+                    let call = builder
+                        .ins()
+                        .call(local_callee, &[*obj, attr_ptr, attr_len, *val]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
@@ -3819,7 +3827,9 @@ impl SimpleBackend {
                         .declare_function("molt_set_attr_object", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*obj, attr_ptr, attr_len, *val]);
+                    let call = builder
+                        .ins()
+                        .call(local_callee, &[*obj, attr_ptr, attr_len, *val]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }

@@ -9872,9 +9872,7 @@ pub unsafe extern "C" fn molt_set_attr_generic(
             if class_bits != 0 {
                 if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
                     if object_type_id(class_ptr) == TYPE_ID_TYPE {
-                        if let Some(dict_ptr) =
-                            obj_from_bits(class_dict_bits(class_ptr)).as_ptr()
-                        {
+                        if let Some(dict_ptr) = obj_from_bits(class_dict_bits(class_ptr)).as_ptr() {
                             if object_type_id(dict_ptr) == TYPE_ID_DICT {
                                 if let Some(val) = dict_get_in_place(dict_ptr, attr_bits) {
                                     if let Some(val_ptr) = obj_from_bits(val).as_ptr() {
@@ -9885,11 +9883,8 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                                                 raise!("AttributeError", "can't set attribute");
                                             }
                                             let inst_bits = MoltObject::from_ptr(obj_ptr).bits();
-                                            let _ = call_function_obj2(
-                                                set_bits,
-                                                inst_bits,
-                                                val_bits,
-                                            );
+                                            let _ =
+                                                call_function_obj2(set_bits, inst_bits, val_bits);
                                             dec_ref_bits(attr_bits);
                                             return MoltObject::none().bits() as i64;
                                         }
@@ -9949,9 +9944,7 @@ pub unsafe extern "C" fn molt_set_attr_generic(
         if class_bits != 0 {
             if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
                 if object_type_id(class_ptr) == TYPE_ID_TYPE {
-                    if let Some(dict_ptr) =
-                        obj_from_bits(class_dict_bits(class_ptr)).as_ptr()
-                    {
+                    if let Some(dict_ptr) = obj_from_bits(class_dict_bits(class_ptr)).as_ptr() {
                         if object_type_id(dict_ptr) == TYPE_ID_DICT {
                             if let Some(val) = dict_get_in_place(dict_ptr, attr_bits) {
                                 if let Some(val_ptr) = obj_from_bits(val).as_ptr() {
@@ -9962,11 +9955,7 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                                             raise!("AttributeError", "can't set attribute");
                                         }
                                         let inst_bits = MoltObject::from_ptr(obj_ptr).bits();
-                                        let _ = call_function_obj2(
-                                            set_bits,
-                                            inst_bits,
-                                            val_bits,
-                                        );
+                                        let _ = call_function_obj2(set_bits, inst_bits, val_bits);
                                         dec_ref_bits(attr_bits);
                                         return MoltObject::none().bits() as i64;
                                     }
@@ -10066,10 +10055,9 @@ pub extern "C" fn molt_get_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
                 return attr_error(type_label, &attr_name) as u64;
             }
             if type_id == TYPE_ID_TYPE {
-                let class_name =
-                    string_obj_to_owned(obj_from_bits(class_name_bits(obj_ptr))).unwrap_or_default();
-                let msg =
-                    format!("type object '{class_name}' has no attribute '{attr_name}'");
+                let class_name = string_obj_to_owned(obj_from_bits(class_name_bits(obj_ptr)))
+                    .unwrap_or_default();
+                let msg = format!("type object '{class_name}' has no attribute '{attr_name}'");
                 raise!("AttributeError", &msg);
             }
             return attr_error(type_name(MoltObject::from_ptr(obj_ptr)), &attr_name) as u64;
