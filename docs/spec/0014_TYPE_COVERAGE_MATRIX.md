@@ -116,6 +116,7 @@
   - TODO(type-coverage, owner:frontend, milestone:TC1): builtin constructors for `tuple`, `dict`, `bytes`, `bytearray`.
 - **TC2 (Mid):** set/frozenset, generators/coroutines, callable objects.
   - Implemented: generator protocol (`send`/`throw`/`close`, `yield from`) + closure slot load/store intrinsics across native + wasm backends.
+  - Implemented: async state machine (`await`, `asyncio.run`/`asyncio.sleep`) with pending sentinel across native + wasm harness.
   - TODO(type-coverage, owner:runtime, milestone:TC2): generator state objects + StopIteration.
   - TODO(type-coverage, owner:frontend, milestone:TC2): comprehension lowering to iterators.
   - TODO(type-coverage, owner:frontend, milestone:TC2): builtin iterators (`iter`, `next`, `reversed`, `enumerate`, `zip`, `map`, `filter`).
@@ -152,7 +153,7 @@
 ## 5. Backend + WIT/ABI
 - Implement ops in native + WASM backends and add WIT intrinsics.
 - Add parity tests per new type (native vs wasm).
-- Partial: wasm backend covers generator state machines + closure slot intrinsics; async parity still pending.
+- Partial: wasm backend covers generator state machines, closure slot intrinsics, and basic async pending semantics; remaining async parity gaps include async iteration/scheduler semantics.
 
 ## 6. Stdlib + Interop
 - Expand builtins (e.g., `set`, `range`, `slice`, exceptions).

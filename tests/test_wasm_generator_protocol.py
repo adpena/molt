@@ -110,6 +110,36 @@ def test_wasm_generator_protocol_parity(tmp_path: Path) -> None:
         "        g7.send(None)\n"
         "    except RuntimeError as exc:\n"
         "        print(exc.__context__ is outer)\n"
+        "\n"
+        "def gen_raise_from():\n"
+        "    try:\n"
+        "        raise ValueError('inner')\n"
+        "    except ValueError as err:\n"
+        "        raise RuntimeError('outer') from err\n"
+        "    yield 1\n"
+        "\n"
+        "g9 = gen_raise_from()\n"
+        "try:\n"
+        "    g9.send(None)\n"
+        "except RuntimeError as exc:\n"
+        "    print(exc.__cause__ is None)\n"
+        "    print(exc.__context__ is exc.__cause__)\n"
+        "    print(exc.__suppress_context__)\n"
+        "\n"
+        "def gen_raise_from_none():\n"
+        "    try:\n"
+        "        raise ValueError('inner')\n"
+        "    except ValueError:\n"
+        "        raise RuntimeError('outer') from None\n"
+        "    yield 1\n"
+        "\n"
+        "g10 = gen_raise_from_none()\n"
+        "try:\n"
+        "    g10.send(None)\n"
+        "except RuntimeError as exc:\n"
+        "    print(exc.__cause__ is None)\n"
+        "    print(exc.__context__ is None)\n"
+        "    print(exc.__suppress_context__)\n"
     )
 
     output_wasm = root / "output.wasm"
@@ -156,6 +186,12 @@ def test_wasm_generator_protocol_parity(tmp_path: Path) -> None:
                 "121",
                 "122",
                 "123",
+                "True",
+                "False",
+                "True",
+                "True",
+                "True",
+                "False",
                 "True",
             ]
         )

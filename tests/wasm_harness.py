@@ -11,12 +11,14 @@ const TAG_INT = 0x0001000000000000n;
 const TAG_BOOL = 0x0002000000000000n;
 const TAG_NONE = 0x0003000000000000n;
 const TAG_PTR = 0x0004000000000000n;
+const TAG_PENDING = 0x0005000000000000n;
 const TAG_MASK = 0x0007000000000000n;
 const POINTER_MASK = 0x0000ffffffffffffn;
 const INT_SIGN_BIT = 1n << 46n;
 const INT_WIDTH = 47n;
 const INT_MASK = (1n << INT_WIDTH) - 1n;
 const isTag = (val, tag) => (val & (QNAN | TAG_MASK)) === (QNAN | tag);
+const isPending = (val) => isTag(val, TAG_PENDING);
 const isPtr = (val) => isTag(val, TAG_PTR);
 const unboxInt = (val) => {
   let v = val & INT_MASK;
@@ -31,11 +33,13 @@ const boxInt = (n) => {
 };
 const boxBool = (b) => QNAN | TAG_BOOL | (b ? 1n : 0n);
 const boxNone = () => QNAN | TAG_NONE;
+const boxPending = () => QNAN | TAG_PENDING;
 const heap = new Map();
 let nextPtr = 1n << 40n;
 let memory = null;
 let table = null;
-let heapPtr = 1024;
+let asyncSleepCalled = false;
+let heapPtr = 1 << 20;
 const align = (size, align) => (size + (align - 1)) & ~(align - 1);
 const isNone = (val) => isTag(val, TAG_NONE);
 const boxPtrAddr = (addr) => QNAN | TAG_PTR | (BigInt(addr) & POINTER_MASK);
@@ -491,8 +495,27 @@ BASE_IMPORTS = """\
     }
     return boxPtrAddr(addr);
   },
-  async_sleep: () => 0n,
-  block_on: () => 0n,
+  async_sleep: (_taskPtr) => {
+    if (!asyncSleepCalled) {
+      asyncSleepCalled = true;
+      return boxPending();
+    }
+    asyncSleepCalled = false;
+    return 0n;
+  },
+  block_on: (taskPtr) => {
+    if (!memory || !table) return 0n;
+    const addr = ptrAddr(taskPtr);
+    const view = new DataView(memory.buffer);
+    const pollIdx = view.getUint32(addr - 24, true);
+    const poll = table.get(pollIdx);
+    if (!poll) return 0n;
+    while (true) {
+      const res = poll(taskPtr);
+      if (isPending(res)) continue;
+      return res;
+    }
+  },
   add: (a, b) => boxInt(unboxInt(a) + unboxInt(b)),
   vec_sum_int: () => boxNone(),
   vec_sum_int_trusted: () => boxNone(),

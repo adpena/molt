@@ -31,6 +31,7 @@ Coverage status and planned additions are tracked in `docs/spec/0014_TYPE_COVERA
 - **Bytes/Bytearray/String**: `BytesFind`, `BytesSplit`, `BytesReplace`, `BytearrayFind`, `BytearraySplit`, `BytearrayReplace`, `StringFind`, `StringFormat`, `StringSplit`, `StringReplace`, `StringStartswith`, `StringEndswith`, `StringCount`, `StringJoin`.
 - **Exceptions**: `ExceptionNew`, `ExceptionLast`, `ExceptionClear`, `ExceptionKind`, `ExceptionMessage`, `ExceptionSetCause`, `ExceptionContextSet`, `Raise` (raise sets implicit `__context__`; `ExceptionSetCause` sets explicit `__cause__` and suppresses context).
 - **Generators/async**: `AllocGenerator`, `GenSend`, `GenThrow`, `GenClose`, `IsGenerator`, `AllocFuture`, `CallAsync`, `StateSwitch`, `StateTransition`, `StateYield`, `ChanSendYield`, `ChanRecvYield`.
+  - `StateSwitch` dispatches based on the state slot (`self` payload -16). `StateTransition`/`StateYield` advance the state and return `Pending` when awaiting.
 - **Vector**: `VecSumInt`, `VecProdInt`, `VecMinInt`, `VecMaxInt` (guarded reductions; emit `(result, ok)` tuples), plus trusted variants (`VecSumIntTrusted`, `VecProdIntTrusted`, `VecMinIntTrusted`, `VecMaxIntTrusted`) that skip per-element checks when type facts are trusted. Range-aware variants (`Vec*IntRange`, `Vec*IntRangeTrusted`) accept a start offset for `range(k, len(xs))` patterns.
 - **Guards (Tier 1)**: `GuardType`, `GuardTag`, `GuardLayout`, `GuardDictShape`.
 - **RC ops (LIR)**: `IncRef`, `DecRef`, `Borrow`, `Release`.

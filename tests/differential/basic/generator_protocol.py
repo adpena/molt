@@ -174,3 +174,41 @@ except ValueError as outer:
         g8.send(None)
     except RuntimeError as exc:
         print(exc.__context__ is outer)
+
+header("raise_from")
+
+
+def gen_raise_from():
+    try:
+        raise ValueError("inner")
+    except ValueError as err:
+        raise RuntimeError("outer") from err
+    yield 1
+
+
+g9 = gen_raise_from()
+try:
+    g9.send(None)
+except RuntimeError as exc:
+    print(exc.__cause__ is None)
+    print(exc.__context__ is exc.__cause__)
+    print(exc.__suppress_context__)
+
+header("raise_from_none")
+
+
+def gen_raise_from_none():
+    try:
+        raise ValueError("inner")
+    except ValueError:
+        raise RuntimeError("outer") from None
+    yield 1
+
+
+g10 = gen_raise_from_none()
+try:
+    g10.send(None)
+except RuntimeError as exc:
+    print(exc.__cause__ is None)
+    print(exc.__context__ is None)
+    print(exc.__suppress_context__)
