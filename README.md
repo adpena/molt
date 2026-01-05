@@ -20,6 +20,7 @@ with strict reproducibility, rigorous testing, and staged compatibility.
 - **Dataclasses**: compile-time lowering for frozen/eq/repr/slots; no `default_factory`, `kw_only`, or `order`; runtime `dataclasses` module provides metadata only.
 - **Exceptions**: `try/except/else/finally` + `raise`/reraise support; still partial vs full BaseException semantics (see `docs/spec/0014_TYPE_COVERAGE_MATRIX.md`).
 - **Imports**: static module graph only; no dynamic import hooks or full package resolution.
+- **Async iteration**: `await anext(...)` over sync iterables only; no `async for` lowering or real async iterator protocol yet.
 
 ## Quick start
 
