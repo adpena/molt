@@ -33,7 +33,7 @@ class Field:
 class _DataclassParams:
     __slots__ = ("frozen", "eq", "repr", "slots")
 
-    def __init__(self, *, frozen: bool, eq: bool, repr: bool, slots: bool) -> None:
+    def __init__(self, frozen: bool, eq: bool, repr: bool, slots: bool) -> None:
         self.frozen = frozen
         self.eq = eq
         self.repr = repr
@@ -49,40 +49,56 @@ class _DataclassParams:
         )
 
 
+_PENDING_PARAMS: tuple[bool, bool, bool, bool] | None = None
+
+
+def _apply_dataclass(cls, frozen: bool, eq: bool, repr: bool, slots: bool):
+    annotations = getattr(cls, "__annotations__", {})
+    fields: dict[str, Field] = {}
+    for name in annotations:
+        default = getattr(cls, name, MISSING)
+        if isinstance(default, Field):
+            field_obj = default
+        else:
+            field_obj = Field(default, MISSING)
+        if not field_obj.name:
+            field_obj.name = name
+        fields[name] = field_obj
+    cls.__dataclass_fields__ = fields
+    cls.__dataclass_params__ = _DataclassParams(frozen, eq, repr, slots)
+    if slots:
+        cls.__slots__ = tuple(fields.keys())
+    return cls
+
+
+def _dataclass_wrap(cls):
+    global _PENDING_PARAMS
+    params = _PENDING_PARAMS
+    _PENDING_PARAMS = None
+    if params is None:
+        return cls
+    frozen = params[0]
+    eq = params[1]
+    repr = params[2]
+    slots = params[3]
+    return _apply_dataclass(cls, frozen, eq, repr, slots)
+
+
 def dataclass(
     _cls=None,
-    *,
     frozen: bool = False,
     eq: bool = True,
     repr: bool = True,
     slots: bool = False,
 ):
-    def wrap(cls):
-        annotations = getattr(cls, "__annotations__", {})
-        fields: dict[str, Field] = {}
-        for name in annotations:
-            default = getattr(cls, name, MISSING)
-            if isinstance(default, Field):
-                field_obj = default
-            else:
-                field_obj = Field(default)
-            if not field_obj.name:
-                field_obj.name = name
-            fields[name] = field_obj
-        cls.__dataclass_fields__ = fields
-        cls.__dataclass_params__ = _DataclassParams(
-            frozen=frozen, eq=eq, repr=repr, slots=slots
-        )
-        if slots:
-            cls.__slots__ = tuple(fields.keys())
-        return cls
-
     if _cls is None:
-        return wrap
-    return wrap(_cls)
+        global _PENDING_PARAMS
+        _PENDING_PARAMS = (frozen, eq, repr, slots)
+        return _dataclass_wrap
+    return _apply_dataclass(_cls, frozen, eq, repr, slots)
 
 
-def field(*, default=MISSING, default_factory=MISSING):
+def field(default=MISSING, default_factory=MISSING):
     return Field(default, default_factory)
 
 

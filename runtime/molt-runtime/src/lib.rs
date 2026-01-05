@@ -169,6 +169,7 @@ thread_local! {
 
 static LAST_EXCEPTION: OnceLock<Mutex<Option<usize>>> = OnceLock::new();
 static MODULE_CACHE: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+static RAW_OBJECTS: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
 
 trait ExceptionSentinel {
     fn exception_sentinel() -> Self;
@@ -487,12 +488,20 @@ fn obj_eq(lhs: MoltObject, rhs: MoltObject) -> bool {
 fn inc_ref_bits(bits: u64) {
     if let Some(ptr) = obj_from_bits(bits).as_ptr() {
         unsafe { molt_inc_ref(ptr) };
+        return;
+    }
+    if is_raw_object(bits) {
+        unsafe { molt_inc_ref(bits as *mut u8) };
     }
 }
 
 fn dec_ref_bits(bits: u64) {
     if let Some(ptr) = obj_from_bits(bits).as_ptr() {
         unsafe { molt_dec_ref(ptr) };
+        return;
+    }
+    if is_raw_object(bits) {
+        unsafe { molt_dec_ref(bits as *mut u8) };
     }
 }
 
@@ -1795,11 +1804,8 @@ fn exception_stack_set_depth(target: usize) {
 }
 
 fn generator_exception_stack_take(ptr: *mut u8) -> Vec<u64> {
-    GENERATOR_EXCEPTION_STACKS.with(|map| {
-        map.borrow_mut()
-            .remove(&(ptr as usize))
-            .unwrap_or_default()
-    })
+    GENERATOR_EXCEPTION_STACKS
+        .with(|map| map.borrow_mut().remove(&(ptr as usize)).unwrap_or_default())
 }
 
 fn generator_exception_stack_store(ptr: *mut u8, stack: Vec<u64>) {
@@ -1842,6 +1848,28 @@ fn module_cache() -> &'static Mutex<HashMap<String, u64>> {
     MODULE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn raw_objects() -> &'static Mutex<HashSet<usize>> {
+    RAW_OBJECTS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn register_raw_object(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+    raw_objects().lock().unwrap().insert(ptr as usize);
+}
+
+fn unregister_raw_object(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+    raw_objects().lock().unwrap().remove(&(ptr as usize));
+}
+
+fn is_raw_object(bits: u64) -> bool {
+    raw_objects().lock().unwrap().contains(&(bits as usize))
+}
+
 fn alloc_dict_with_pairs(pairs: &[u64]) -> *mut u8 {
     let total = std::mem::size_of::<MoltHeader>()
         + std::mem::size_of::<*mut Vec<u64>>()
@@ -1881,7 +1909,9 @@ pub extern "C" fn molt_alloc(size: usize) -> *mut u8 {
         (*header).poll_fn = 0;
         (*header).state = 0;
         (*header).size = total_size;
-        ptr.add(std::mem::size_of::<MoltHeader>())
+        let obj_ptr = ptr.add(std::mem::size_of::<MoltHeader>());
+        register_raw_object(obj_ptr);
+        obj_ptr
     }
 }
 
@@ -2538,9 +2568,8 @@ pub extern "C" fn molt_generator_send(gen_bits: u64, send_bits: u64) -> u64 {
             return generator_done_tuple(MoltObject::none().bits());
         }
         let caller_depth = exception_stack_depth();
-        let caller_active = ACTIVE_EXCEPTION_STACK.with(|stack| {
-            std::mem::take(&mut *stack.borrow_mut())
-        });
+        let caller_active =
+            ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
         let caller_context = caller_active
             .last()
             .copied()
@@ -2574,9 +2603,8 @@ pub extern "C" fn molt_generator_send(gen_bits: u64, send_bits: u64) -> u64 {
             MoltObject::from_int(new_depth as i64).bits(),
         );
         exception_context_align_depth(new_depth);
-        let gen_active = ACTIVE_EXCEPTION_STACK.with(|stack| {
-            std::mem::take(&mut *stack.borrow_mut())
-        });
+        let gen_active =
+            ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
         generator_exception_stack_store(ptr, gen_active);
         ACTIVE_EXCEPTION_STACK.with(|stack| {
             *stack.borrow_mut() = caller_active;
@@ -2612,9 +2640,8 @@ pub extern "C" fn molt_generator_throw(gen_bits: u64, exc_bits: u64) -> u64 {
             return generator_done_tuple(MoltObject::none().bits());
         }
         let caller_depth = exception_stack_depth();
-        let caller_active = ACTIVE_EXCEPTION_STACK.with(|stack| {
-            std::mem::take(&mut *stack.borrow_mut())
-        });
+        let caller_active =
+            ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
         let caller_context = caller_active
             .last()
             .copied()
@@ -2648,9 +2675,8 @@ pub extern "C" fn molt_generator_throw(gen_bits: u64, exc_bits: u64) -> u64 {
             MoltObject::from_int(new_depth as i64).bits(),
         );
         exception_context_align_depth(new_depth);
-        let gen_active = ACTIVE_EXCEPTION_STACK.with(|stack| {
-            std::mem::take(&mut *stack.borrow_mut())
-        });
+        let gen_active =
+            ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
         generator_exception_stack_store(ptr, gen_active);
         ACTIVE_EXCEPTION_STACK.with(|stack| {
             *stack.borrow_mut() = caller_active;
@@ -2705,9 +2731,8 @@ pub extern "C" fn molt_generator_close(gen_bits: u64) -> u64 {
             return MoltObject::none().bits();
         }
         let caller_depth = exception_stack_depth();
-        let caller_active = ACTIVE_EXCEPTION_STACK.with(|stack| {
-            std::mem::take(&mut *stack.borrow_mut())
-        });
+        let caller_active =
+            ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
         let caller_context = caller_active
             .last()
             .copied()
@@ -2741,9 +2766,8 @@ pub extern "C" fn molt_generator_close(gen_bits: u64) -> u64 {
             MoltObject::from_int(new_depth as i64).bits(),
         );
         exception_context_align_depth(new_depth);
-        let gen_active = ACTIVE_EXCEPTION_STACK.with(|stack| {
-            std::mem::take(&mut *stack.borrow_mut())
-        });
+        let gen_active =
+            ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
         generator_exception_stack_store(ptr, gen_active);
         ACTIVE_EXCEPTION_STACK.with(|stack| {
             *stack.borrow_mut() = caller_active;
@@ -9178,6 +9202,9 @@ pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
     let header = &mut *header_ptr;
     header.ref_count -= 1;
     if header.ref_count == 0 {
+        if header.type_id == TYPE_ID_OBJECT {
+            unregister_raw_object(ptr);
+        }
         match header.type_id {
             TYPE_ID_STRING => {
                 utf8_cache_remove(ptr as usize);
@@ -9976,6 +10003,18 @@ fn attr_error(type_label: &str, attr_name: &str) -> i64 {
     raise!("AttributeError", &msg);
 }
 
+fn property_no_setter(attr_name: &str, class_ptr: *mut u8) -> i64 {
+    let class_name = if class_ptr.is_null() || unsafe { object_type_id(class_ptr) } != TYPE_ID_TYPE
+    {
+        "object".to_string()
+    } else {
+        string_obj_to_owned(obj_from_bits(unsafe { class_name_bits(class_ptr) }))
+            .unwrap_or_else(|| "object".to_string())
+    };
+    let msg = format!("property '{attr_name}' of '{class_name}' object has no setter");
+    raise!("AttributeError", &msg);
+}
+
 fn maybe_ptr_from_bits(bits: u64) -> Option<*mut u8> {
     let obj = obj_from_bits(bits);
     if let Some(ptr) = obj.as_ptr() {
@@ -10042,6 +10081,14 @@ unsafe fn module_attr_lookup(ptr: *mut u8, attr_bits: u64) -> Option<u64> {
     dict_get_in_place(dict_ptr, attr_bits).inspect(|val| inc_ref_bits(*val))
 }
 
+unsafe fn instance_bits_for_call(ptr: *mut u8) -> u64 {
+    if object_type_id(ptr) == TYPE_ID_OBJECT {
+        ptr as u64
+    } else {
+        MoltObject::from_ptr(ptr).bits()
+    }
+}
+
 unsafe fn class_attr_lookup(
     class_ptr: *mut u8,
     instance_ptr: Option<*mut u8>,
@@ -10062,7 +10109,7 @@ unsafe fn class_attr_lookup(
     match object_type_id(val_ptr) {
         TYPE_ID_FUNCTION => {
             if let Some(inst_ptr) = instance_ptr {
-                let inst_bits = MoltObject::from_ptr(inst_ptr).bits();
+                let inst_bits = instance_bits_for_call(inst_ptr);
                 let bound_bits = molt_bound_method_new(val_bits, inst_bits);
                 return Some(bound_bits);
             }
@@ -10086,7 +10133,7 @@ unsafe fn class_attr_lookup(
                 if obj_from_bits(get_bits).is_none() {
                     raise!("AttributeError", "unreadable property");
                 }
-                let inst_bits = MoltObject::from_ptr(inst_ptr).bits();
+                let inst_bits = instance_bits_for_call(inst_ptr);
                 let value_bits = call_function_obj1(get_bits, inst_bits);
                 Some(value_bits)
             } else {
@@ -10379,9 +10426,9 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                                             let set_bits = property_set_bits(val_ptr);
                                             if obj_from_bits(set_bits).is_none() {
                                                 dec_ref_bits(attr_bits);
-                                                raise!("AttributeError", "can't set attribute");
+                                                return property_no_setter(attr_name, class_ptr);
                                             }
-                                            let inst_bits = MoltObject::from_ptr(obj_ptr).bits();
+                                            let inst_bits = instance_bits_for_call(obj_ptr);
                                             let _ =
                                                 call_function_obj2(set_bits, inst_bits, val_bits);
                                             dec_ref_bits(attr_bits);
@@ -10461,9 +10508,9 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                                         let set_bits = property_set_bits(val_ptr);
                                         if obj_from_bits(set_bits).is_none() {
                                             dec_ref_bits(attr_bits);
-                                            raise!("AttributeError", "can't set attribute");
+                                            return property_no_setter(attr_name, class_ptr);
                                         }
-                                        let inst_bits = MoltObject::from_ptr(obj_ptr).bits();
+                                        let inst_bits = instance_bits_for_call(obj_ptr);
                                         let _ = call_function_obj2(set_bits, inst_bits, val_bits);
                                         dec_ref_bits(attr_bits);
                                         return MoltObject::none().bits() as i64;
