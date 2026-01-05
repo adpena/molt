@@ -107,6 +107,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.known_modules = set(known_modules or [])
         self.stdlib_allowlist = set(stdlib_allowlist or [])
         self.module_obj: MoltValue | None = None
+        self.defer_module_attrs = False
+        self.deferred_module_attrs: set[str] = set()
         self.fallback_policy = fallback_policy
         self.compat = CompatibilityReporter(fallback_policy, source_path)
         self.context_depth = 0
@@ -365,6 +367,30 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self._init_return_slot()
         self._apply_type_facts(type_facts_name or name)
 
+    def _module_can_defer_attrs(self, node: ast.Module) -> bool:
+        for current in ast.walk(node):
+            if isinstance(
+                current,
+                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
+            ):
+                return False
+            if isinstance(current, ast.Call) and isinstance(current.func, ast.Name):
+                if current.func.id in {"globals", "locals", "vars"}:
+                    return False
+        return True
+
+    def _flush_deferred_module_attrs(self) -> None:
+        if not self.deferred_module_attrs or self.module_obj is None:
+            return
+        for name in sorted(self.deferred_module_attrs):
+            val = self._load_local_value(name)
+            if val is None:
+                val = self.globals.get(name)
+            if val is None:
+                val = MoltValue(self.next_var(), type_hint="None")
+                self.emit(MoltOp(kind="CONST_NONE", args=[], result=val))
+            self._emit_module_attr_set_on(self.module_obj, name, val)
+
     def _capture_function_state(self) -> dict[str, Any]:
         return {
             "locals": self.locals,
@@ -387,6 +413,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "return_label": self.return_label,
             "return_slot": self.return_slot,
             "return_slot_index": self.return_slot_index,
+            "defer_module_attrs": self.defer_module_attrs,
+            "deferred_module_attrs": self.deferred_module_attrs,
         }
 
     def _restore_function_state(self, state: dict[str, Any]) -> None:
@@ -410,6 +438,23 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.return_label = state["return_label"]
         self.return_slot = state["return_slot"]
         self.return_slot_index = state["return_slot_index"]
+        self.defer_module_attrs = state["defer_module_attrs"]
+        self.deferred_module_attrs = state["deferred_module_attrs"]
+
+    def visit_Module(self, node: ast.Module) -> None:
+        defer = self._module_can_defer_attrs(node)
+        prev_defer = self.defer_module_attrs
+        prev_dirty = self.deferred_module_attrs
+        if defer:
+            self.defer_module_attrs = True
+            self.deferred_module_attrs = set()
+        for stmt in node.body:
+            self.visit(stmt)
+        if defer:
+            self._flush_deferred_module_attrs()
+        self.defer_module_attrs = prev_defer
+        self.deferred_module_attrs = prev_dirty
+        return None
 
     def _init_return_slot(self) -> None:
         if self.return_label is not None:
@@ -628,6 +673,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
     def _emit_module_attr_set(self, name: str, value: MoltValue) -> None:
         if self.current_func_name != "molt_main" or self.module_obj is None:
+            return
+        if self.defer_module_attrs:
+            self.deferred_module_attrs.add(name)
             return
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
