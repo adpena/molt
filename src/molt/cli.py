@@ -124,10 +124,12 @@ def _discover_module_graph(
     roots: list[Path],
     module_roots: list[Path],
     skip_modules: set[str] | None = None,
+    stub_parents: set[str] | None = None,
 ) -> tuple[dict[str, Path], set[str]]:
     stdlib_root = Path("src/molt/stdlib")
     graph: dict[str, Path] = {}
     skip_modules = skip_modules or set()
+    stub_parents = stub_parents or set()
     explicit_imports: set[str] = set()
     queue = [entry_path]
     while queue:
@@ -147,6 +149,8 @@ def _discover_module_graph(
         for name in _collect_imports(tree):
             explicit_imports.add(name)
             for candidate in _expand_module_chain(name):
+                if candidate in stub_parents:
+                    continue
                 if candidate.split(".", 1)[0] in skip_modules:
                     continue
                 resolved = _resolve_module_path(candidate, roots)
@@ -231,6 +235,18 @@ def build(
         return 2
 
     stdlib_root = Path("src/molt/stdlib")
+    try:
+        entry_source = source_path.read_text()
+    except OSError as exc:
+        print(f"Failed to read entry module {source_path}: {exc}", file=sys.stderr)
+        return 2
+    try:
+        entry_tree = ast.parse(entry_source)
+    except SyntaxError as exc:
+        print(f"Syntax error in {source_path}: {exc}", file=sys.stderr)
+        return 2
+    entry_imports = set(_collect_imports(entry_tree))
+    stub_parents = STUB_PARENT_MODULES - entry_imports
     project_root = _find_project_root(source_path.resolve())
     module_roots: list[Path] = []
     src_root = project_root / "src"
@@ -239,11 +255,14 @@ def build(
     module_roots.append(source_path.parent)
     module_roots = list(dict.fromkeys(root.resolve() for root in module_roots))
     roots = module_roots + [stdlib_root]
-    module_graph, explicit_imports = _discover_module_graph(
-        source_path, roots, module_roots, skip_modules=STUB_MODULES
+    module_graph, _explicit_imports = _discover_module_graph(
+        source_path,
+        roots,
+        module_roots,
+        skip_modules=STUB_MODULES,
+        stub_parents=stub_parents,
     )
     entry_module = _module_name_from_path(source_path, module_roots, stdlib_root)
-    stub_parents = STUB_PARENT_MODULES - explicit_imports
     for stub in stub_parents:
         if stub != entry_module:
             module_graph.pop(stub, None)

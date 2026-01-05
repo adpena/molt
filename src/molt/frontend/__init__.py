@@ -4307,29 +4307,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if handler.name:
                 self._store_local_value(handler.name, exc_val)
             self.active_exceptions.append(exc_val)
-            if self.is_async():
-                self.emit(
-                    MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none"))
-                )
+            self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
             self._emit_guarded_body(handler.body, exc_val)
             self.active_exceptions.pop()
-            exc_after = MoltValue(self.next_var(), type_hint="exception")
-            self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=exc_after))
-            exc_compare = exc_val
-            if exc_slot_offset is not None:
-                exc_compare = MoltValue(self.next_var(), type_hint="exception")
-                self.emit(
-                    MoltOp(
-                        kind="LOAD_CLOSURE",
-                        args=["self", exc_slot_offset],
-                        result=exc_compare,
-                    )
-                )
-            is_same = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="IS", args=[exc_after, exc_compare], result=is_same))
-            self.emit(MoltOp(kind="IF", args=[is_same], result=MoltValue("none")))
-            self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
             if len(handlers) > 1:
                 self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
                 emit_handlers(handlers[1:])
@@ -4446,6 +4426,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
                 return none_val
             if isinstance(expr, ast.Name):
+                local = self._load_local_value(expr.id)
+                if local is not None:
+                    return local
+                global_val = self.globals.get(expr.id)
+                if global_val is not None:
+                    if self.current_func_name == "molt_main":
+                        return global_val
+                    return self._emit_module_attr_get(expr.id)
                 return self._emit_exception_new(expr.id, "")
             if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name):
                 if expr.keywords or len(expr.args) > 1:
@@ -4524,6 +4512,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         exc_val = emit_exception_value(node.exc, allow_none=False, context="raise")
         if exc_val is None:
             return None
+        if self.active_exceptions:
+            context_val = self.active_exceptions[-1]
+            self.emit(
+                MoltOp(
+                    kind="SETATTR_GENERIC_OBJ",
+                    args=[exc_val, "__context__", context_val],
+                    result=MoltValue("none"),
+                )
+            )
         if node.cause is not None:
             cause_val = emit_exception_value(
                 node.cause, allow_none=True, context="raise cause"
@@ -4737,13 +4734,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.visit(item)
         if self.return_label is not None:
             if not self._ends_with_return_jump():
-                res = MoltValue(self.next_var())
-                self.emit(MoltOp(kind="CONST", args=[0], result=res))
+                res = MoltValue(self.next_var(), type_hint="None")
+                self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
                 self._emit_return_value(res)
             self._emit_return_label()
         else:
-            res = MoltValue(self.next_var())
-            self.emit(MoltOp(kind="CONST", args=[0], result=res))
+            res = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
             self.emit(MoltOp(kind="ret", args=[res], result=MoltValue("none")))
         closure_size = self.async_locals_base + len(self.async_locals) * 8
         self.resume_function(prev_func)
@@ -4967,13 +4964,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.visit(item)
         if self.return_label is not None:
             if not self._ends_with_return_jump():
-                res = MoltValue(self.next_var())
-                self.emit(MoltOp(kind="CONST", args=[0], result=res))
+                res = MoltValue(self.next_var(), type_hint="None")
+                self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
                 self._emit_return_value(res)
             self._emit_return_label()
         elif not (self.current_ops and self.current_ops[-1].kind == "ret"):
-            res = MoltValue(self.next_var())
-            self.emit(MoltOp(kind="CONST", args=[0], result=res))
+            res = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
             self.emit(MoltOp(kind="ret", args=[res], result=MoltValue("none")))
         self.resume_function(prev_func)
         self.explicit_type_hints = prev_hints
