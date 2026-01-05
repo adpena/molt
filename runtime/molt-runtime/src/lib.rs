@@ -2084,7 +2084,9 @@ pub extern "C" fn molt_dataclass_new(
     });
     let desc_ptr = Box::into_raw(desc);
 
-    let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut Vec<u64>>();
+    let total = std::mem::size_of::<MoltHeader>()
+        + std::mem::size_of::<*mut Vec<u64>>()
+        + std::mem::size_of::<u64>();
     let ptr = alloc_object(total, TYPE_ID_DATACLASS);
     if ptr.is_null() {
         unsafe { drop(Box::from_raw(desc_ptr)) };
