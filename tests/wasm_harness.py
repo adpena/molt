@@ -481,6 +481,13 @@ BASE_IMPORTS = """\
       console.log('None');
       return;
     }
+    if (isPtr(val)) {
+      const str = getStrObj(val);
+      if (str !== null) {
+        console.log(str);
+        return;
+      }
+    }
     console.log(val.toString());
   },
   print_newline: () => console.log(''),
@@ -787,7 +794,18 @@ BASE_IMPORTS = """\
     if (pos < 0 || pos >= items.length) return boxNone();
     return items[pos];
   },
-  store_index: () => boxNone(),
+  store_index: (seq, idxBits, val) => {
+    const idx = Number(unboxInt(idxBits));
+    const list = getList(seq);
+    if (list) {
+      let i = idx;
+      if (i < 0) i += list.items.length;
+      if (i < 0 || i >= list.items.length) return boxNone();
+      list.items[i] = val;
+      return seq;
+    }
+    return boxNone();
+  },
   bytes_find: () => boxNone(),
   bytearray_find: () => boxNone(),
   string_find: () => boxNone(),
