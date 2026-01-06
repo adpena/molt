@@ -155,6 +155,8 @@ const TYPE_TAG_DATACLASS: i64 = 13;
 const TYPE_TAG_BUFFER2D: i64 = 14;
 const TYPE_TAG_MEMORYVIEW: i64 = 15;
 const TYPE_TAG_INTARRAY: i64 = 16;
+const BUILTIN_TAG_OBJECT: i64 = 100;
+const BUILTIN_TAG_TYPE: i64 = 101;
 
 thread_local! {
     static PARSE_ARENA: RefCell<TempArena> = RefCell::new(TempArena::new(8 * 1024));
@@ -170,6 +172,7 @@ thread_local! {
 static LAST_EXCEPTION: OnceLock<Mutex<Option<usize>>> = OnceLock::new();
 static MODULE_CACHE: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
 static RAW_OBJECTS: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
+static BUILTIN_CLASSES: OnceLock<BuiltinClasses> = OnceLock::new();
 
 trait ExceptionSentinel {
     fn exception_sentinel() -> Self;
@@ -1894,6 +1897,295 @@ fn is_raw_object(bits: u64) -> bool {
     raw_objects().lock().unwrap().contains(&(bits as usize))
 }
 
+struct BuiltinClasses {
+    object: u64,
+    type_obj: u64,
+    none_type: u64,
+    int: u64,
+    float: u64,
+    bool: u64,
+    str: u64,
+    bytes: u64,
+    bytearray: u64,
+    list: u64,
+    tuple: u64,
+    dict: u64,
+    range: u64,
+    slice: u64,
+    memoryview: u64,
+    function: u64,
+    module: u64,
+}
+
+fn make_builtin_class(name: &str) -> u64 {
+    let name_ptr = alloc_string(name.as_bytes());
+    if name_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    let name_bits = MoltObject::from_ptr(name_ptr).bits();
+    let class_ptr = alloc_class_obj(name_bits);
+    dec_ref_bits(name_bits);
+    if class_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    MoltObject::from_ptr(class_ptr).bits()
+}
+
+fn builtin_classes() -> &'static BuiltinClasses {
+    BUILTIN_CLASSES.get_or_init(|| {
+        let object = make_builtin_class("object");
+        let type_obj = make_builtin_class("type");
+        let none_type = make_builtin_class("NoneType");
+        let int = make_builtin_class("int");
+        let float = make_builtin_class("float");
+        let bool = make_builtin_class("bool");
+        let str = make_builtin_class("str");
+        let bytes = make_builtin_class("bytes");
+        let bytearray = make_builtin_class("bytearray");
+        let list = make_builtin_class("list");
+        let tuple = make_builtin_class("tuple");
+        let dict = make_builtin_class("dict");
+        let range = make_builtin_class("range");
+        let slice = make_builtin_class("slice");
+        let memoryview = make_builtin_class("memoryview");
+        let function = make_builtin_class("function");
+        let module = make_builtin_class("module");
+
+        let _ = molt_class_set_base(type_obj, object);
+        let _ = molt_class_set_base(none_type, object);
+        let _ = molt_class_set_base(int, object);
+        let _ = molt_class_set_base(float, object);
+        let _ = molt_class_set_base(bool, int);
+        let _ = molt_class_set_base(str, object);
+        let _ = molt_class_set_base(bytes, object);
+        let _ = molt_class_set_base(bytearray, object);
+        let _ = molt_class_set_base(list, object);
+        let _ = molt_class_set_base(tuple, object);
+        let _ = molt_class_set_base(dict, object);
+        let _ = molt_class_set_base(range, object);
+        let _ = molt_class_set_base(slice, object);
+        let _ = molt_class_set_base(memoryview, object);
+        let _ = molt_class_set_base(function, object);
+        let _ = molt_class_set_base(module, object);
+
+        BuiltinClasses {
+            object,
+            type_obj,
+            none_type,
+            int,
+            float,
+            bool,
+            str,
+            bytes,
+            bytearray,
+            list,
+            tuple,
+            dict,
+            range,
+            slice,
+            memoryview,
+            function,
+            module,
+        }
+    })
+}
+
+fn builtin_type_bits(tag: i64) -> Option<u64> {
+    let builtins = builtin_classes();
+    match tag {
+        TYPE_TAG_INT => Some(builtins.int),
+        TYPE_TAG_FLOAT => Some(builtins.float),
+        TYPE_TAG_BOOL => Some(builtins.bool),
+        TYPE_TAG_NONE => Some(builtins.none_type),
+        TYPE_TAG_STR => Some(builtins.str),
+        TYPE_TAG_BYTES => Some(builtins.bytes),
+        TYPE_TAG_BYTEARRAY => Some(builtins.bytearray),
+        TYPE_TAG_LIST => Some(builtins.list),
+        TYPE_TAG_TUPLE => Some(builtins.tuple),
+        TYPE_TAG_DICT => Some(builtins.dict),
+        TYPE_TAG_RANGE => Some(builtins.range),
+        TYPE_TAG_SLICE => Some(builtins.slice),
+        TYPE_TAG_MEMORYVIEW => Some(builtins.memoryview),
+        BUILTIN_TAG_OBJECT => Some(builtins.object),
+        BUILTIN_TAG_TYPE => Some(builtins.type_obj),
+        _ => None,
+    }
+}
+
+fn is_builtin_class_bits(bits: u64) -> bool {
+    let builtins = builtin_classes();
+    bits == builtins.object
+        || bits == builtins.type_obj
+        || bits == builtins.none_type
+        || bits == builtins.int
+        || bits == builtins.float
+        || bits == builtins.bool
+        || bits == builtins.str
+        || bits == builtins.bytes
+        || bits == builtins.bytearray
+        || bits == builtins.list
+        || bits == builtins.tuple
+        || bits == builtins.dict
+        || bits == builtins.range
+        || bits == builtins.slice
+        || bits == builtins.memoryview
+        || bits == builtins.function
+        || bits == builtins.module
+}
+
+fn type_of_bits(val_bits: u64) -> u64 {
+    let builtins = builtin_classes();
+    let obj = obj_from_bits(val_bits);
+    if obj.is_none() {
+        return builtins.none_type;
+    }
+    if obj.is_bool() {
+        return builtins.bool;
+    }
+    if obj.is_int() {
+        return builtins.int;
+    }
+    if is_raw_object(val_bits) {
+        let ptr = val_bits as *mut u8;
+        unsafe {
+            let class_bits = object_class_bits(ptr);
+            if class_bits != 0 {
+                return class_bits;
+            }
+        }
+        return builtins.object;
+    }
+    if obj.is_float() {
+        return builtins.float;
+    }
+    if let Some(ptr) = obj.as_ptr() {
+        unsafe {
+            return match object_type_id(ptr) {
+                TYPE_ID_STRING => builtins.str,
+                TYPE_ID_BYTES => builtins.bytes,
+                TYPE_ID_BYTEARRAY => builtins.bytearray,
+                TYPE_ID_LIST => builtins.list,
+                TYPE_ID_TUPLE => builtins.tuple,
+                TYPE_ID_DICT => builtins.dict,
+                TYPE_ID_RANGE => builtins.range,
+                TYPE_ID_SLICE => builtins.slice,
+                TYPE_ID_MEMORYVIEW => builtins.memoryview,
+                TYPE_ID_FUNCTION => builtins.function,
+                TYPE_ID_MODULE => builtins.module,
+                TYPE_ID_TYPE => builtins.type_obj,
+                TYPE_ID_DATACLASS => {
+                    let desc_ptr = dataclass_desc_ptr(ptr);
+                    if !desc_ptr.is_null() {
+                        let class_bits = (*desc_ptr).class_bits;
+                        if class_bits != 0 {
+                            return class_bits;
+                        }
+                    }
+                    builtins.object
+                }
+                TYPE_ID_OBJECT => {
+                    let class_bits = object_class_bits(ptr);
+                    if class_bits != 0 {
+                        class_bits
+                    } else {
+                        builtins.object
+                    }
+                }
+                _ => builtins.object,
+            };
+        }
+    }
+    if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
+        unsafe {
+            let class_bits = object_class_bits(ptr);
+            if class_bits != 0 {
+                return class_bits;
+            }
+        }
+    }
+    builtins.object
+}
+
+fn collect_classinfo_isinstance(class_bits: u64, out: &mut Vec<u64>) {
+    let obj = obj_from_bits(class_bits);
+    let Some(ptr) = obj.as_ptr() else {
+        raise!("TypeError", "isinstance() arg 2 must be a type or tuple of types");
+    };
+    unsafe {
+        match object_type_id(ptr) {
+            TYPE_ID_TYPE => out.push(class_bits),
+            TYPE_ID_TUPLE => {
+                let items = seq_vec_ref(ptr);
+                for item in items.iter() {
+                    collect_classinfo_isinstance(*item, out);
+                }
+            }
+            _ => raise!("TypeError", "isinstance() arg 2 must be a type or tuple of types"),
+        }
+    }
+}
+
+fn collect_classinfo_issubclass(class_bits: u64, out: &mut Vec<u64>) {
+    let obj = obj_from_bits(class_bits);
+    let Some(ptr) = obj.as_ptr() else {
+        raise!("TypeError", "issubclass() arg 2 must be a class or tuple of classes");
+    };
+    unsafe {
+        match object_type_id(ptr) {
+            TYPE_ID_TYPE => out.push(class_bits),
+            TYPE_ID_TUPLE => {
+                let items = seq_vec_ref(ptr);
+                for item in items.iter() {
+                    collect_classinfo_issubclass(*item, out);
+                }
+            }
+            _ => raise!("TypeError", "issubclass() arg 2 must be a class or tuple of classes"),
+        }
+    }
+}
+
+fn issubclass_bits(mut sub_bits: u64, class_bits: u64) -> bool {
+    let mut depth = 0usize;
+    loop {
+        if sub_bits == class_bits {
+            return true;
+        }
+        let obj = obj_from_bits(sub_bits);
+        let Some(ptr) = obj.as_ptr() else {
+            return false;
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_TYPE {
+                return false;
+            }
+            let base_bits = class_base_bits(ptr);
+            if obj_from_bits(base_bits).is_none() {
+                return false;
+            }
+            if base_bits == sub_bits {
+                return false;
+            }
+            sub_bits = base_bits;
+        }
+        depth += 1;
+        if depth > 64 {
+            return false;
+        }
+    }
+}
+
+fn isinstance_bits(val_bits: u64, class_bits: u64) -> bool {
+    let mut classes = Vec::new();
+    collect_classinfo_isinstance(class_bits, &mut classes);
+    let val_type = type_of_bits(val_bits);
+    for class_bits in classes {
+        if issubclass_bits(val_type, class_bits) {
+            return true;
+        }
+    }
+    false
+}
+
 fn alloc_dict_with_pairs(pairs: &[u64]) -> *mut u8 {
     let total = std::mem::size_of::<MoltHeader>()
         + std::mem::size_of::<*mut Vec<u64>>()
@@ -2296,6 +2588,66 @@ pub extern "C" fn molt_class_new(name_bits: u64) -> u64 {
         return MoltObject::none().bits();
     }
     MoltObject::from_ptr(ptr).bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_builtin_type(tag_bits: u64) -> u64 {
+    let tag = match to_i64(obj_from_bits(tag_bits)) {
+        Some(val) => val,
+        None => raise!("TypeError", "builtin type tag must be int"),
+    };
+    let Some(bits) = builtin_type_bits(tag) else {
+        raise!("TypeError", "unknown builtin type tag");
+    };
+    inc_ref_bits(bits);
+    bits
+}
+
+#[no_mangle]
+pub extern "C" fn molt_type_of(val_bits: u64) -> u64 {
+    let bits = type_of_bits(val_bits);
+    inc_ref_bits(bits);
+    bits
+}
+
+#[no_mangle]
+pub extern "C" fn molt_isinstance(val_bits: u64, class_bits: u64) -> u64 {
+    MoltObject::from_bool(isinstance_bits(val_bits, class_bits)).bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_issubclass(sub_bits: u64, class_bits: u64) -> u64 {
+    let obj = obj_from_bits(sub_bits);
+    let Some(ptr) = obj.as_ptr() else {
+        raise!("TypeError", "issubclass() arg 1 must be a class");
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_TYPE {
+            raise!("TypeError", "issubclass() arg 1 must be a class");
+        }
+    }
+    let mut classes = Vec::new();
+    collect_classinfo_issubclass(class_bits, &mut classes);
+    for class_bits in classes {
+        if issubclass_bits(sub_bits, class_bits) {
+            return MoltObject::from_bool(true).bits();
+        }
+    }
+    MoltObject::from_bool(false).bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_object_new() -> u64 {
+    let obj_ptr = molt_alloc(std::mem::size_of::<u64>());
+    if obj_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    let obj_bits = MoltObject::from_ptr(obj_ptr).bits();
+    let class_bits = builtin_classes().object;
+    unsafe {
+        let _ = molt_object_set_class(obj_ptr, class_bits);
+    }
+    obj_bits
 }
 
 #[no_mangle]
@@ -10386,6 +10738,13 @@ unsafe fn attr_lookup_ptr(obj_ptr: *mut u8, attr_bits: u64) -> Option<u64> {
         }
     }
     if type_id == TYPE_ID_TYPE {
+        if let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits)) {
+            if name == "__name__" {
+                let bits = class_name_bits(obj_ptr);
+                inc_ref_bits(bits);
+                return Some(bits);
+            }
+        }
         return class_attr_lookup(obj_ptr, obj_ptr, None, attr_bits);
     }
     if type_id == TYPE_ID_FUNCTION {
@@ -10536,6 +10895,10 @@ pub unsafe extern "C" fn molt_set_attr_generic(
         return res as i64;
     }
     if type_id == TYPE_ID_TYPE {
+        let class_bits = MoltObject::from_ptr(obj_ptr).bits();
+        if is_builtin_class_bits(class_bits) {
+            raise!("TypeError", "cannot set attributes on builtin type");
+        }
         let attr_ptr = alloc_string(slice);
         if attr_ptr.is_null() {
             return MoltObject::none().bits() as i64;

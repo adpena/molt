@@ -242,6 +242,11 @@ impl WasmBackend {
         add_import("dataclass_set_class", 3, &mut self.import_ids);
         add_import("class_new", 2, &mut self.import_ids);
         add_import("class_set_base", 3, &mut self.import_ids);
+        add_import("builtin_type", 2, &mut self.import_ids);
+        add_import("type_of", 2, &mut self.import_ids);
+        add_import("isinstance", 3, &mut self.import_ids);
+        add_import("issubclass", 3, &mut self.import_ids);
+        add_import("object_new", 0, &mut self.import_ids);
         add_import("func_new", 3, &mut self.import_ids);
         add_import("bound_method_new", 3, &mut self.import_ids);
         add_import("classmethod_new", 2, &mut self.import_ids);
@@ -1598,6 +1603,47 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(class_bits));
                         func.instruction(&Instruction::LocalGet(base_bits));
                         func.instruction(&Instruction::Call(import_ids["class_set_base"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "builtin_type" => {
+                        let args = op.args.as_ref().unwrap();
+                        let tag = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(tag));
+                        func.instruction(&Instruction::Call(import_ids["builtin_type"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "type_of" => {
+                        let args = op.args.as_ref().unwrap();
+                        let obj = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(obj));
+                        func.instruction(&Instruction::Call(import_ids["type_of"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "isinstance" => {
+                        let args = op.args.as_ref().unwrap();
+                        let obj = locals[&args[0]];
+                        let cls = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(obj));
+                        func.instruction(&Instruction::LocalGet(cls));
+                        func.instruction(&Instruction::Call(import_ids["isinstance"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "issubclass" => {
+                        let args = op.args.as_ref().unwrap();
+                        let sub = locals[&args[0]];
+                        let cls = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(sub));
+                        func.instruction(&Instruction::LocalGet(cls));
+                        func.instruction(&Instruction::Call(import_ids["issubclass"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "object_new" => {
+                        func.instruction(&Instruction::Call(import_ids["object_new"]));
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }

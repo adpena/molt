@@ -70,8 +70,8 @@
 | id | identity (deterministic) | Planned | P2 | TC3 | runtime |
 | input | stdin (gated) | Planned | P2 | TC3 | stdlib |
 | int | int constructor | Planned | P1 | TC2 | frontend/runtime |
-| isinstance | type check | Planned | P2 | TC3 | runtime |
-| issubclass | type check | Planned | P2 | TC3 | runtime |
+| isinstance | type check + tuple-of-types | Partial | P2 | TC3 | runtime |
+| issubclass | type check + tuple-of-types | Partial | P2 | TC3 | runtime |
 | iter | iterator construction | Planned | P1 | TC2 | frontend/runtime |
 | len | container/sequence length | Partial | P0 | TC1 | frontend/runtime |
 | list | list constructor | Partial | P0 | TC1 | frontend/runtime |
@@ -81,7 +81,7 @@
 | memoryview | memoryview constructor | Partial | P2 | TC3 | runtime |
 | min | reduction with key/default | Planned | P1 | TC2 | frontend/runtime |
 | next | iterator next with default | Planned | P1 | TC2 | frontend/runtime |
-| object | base object constructor | Planned | P2 | TC3 | runtime |
+| object | base object constructor | Partial | P2 | TC3 | runtime |
 | oct | integer to octal string | Planned | P2 | TC3 | runtime |
 | open | file I/O (gated) | Planned | P2 | TC3 | stdlib |
 | ord | char to int | Planned | P2 | TC3 | runtime |
@@ -101,7 +101,7 @@
 | sum | reduction with start | Planned | P1 | TC2 | frontend/runtime |
 | super | super() resolution | Planned | P2 | TC3 | runtime |
 | tuple | tuple constructor | Planned | P1 | TC2 | frontend/runtime |
-| type | type constructor + metaclass | Planned | P2 | TC3 | runtime |
+| type | type constructor (no metaclass) | Partial | P2 | TC3 | runtime |
 | vars | vars dict | Planned | P2 | TC3 | runtime |
 | zip | lazy iterator over iterables | Planned | P1 | TC2 | frontend/runtime |
 | __import__ | import hook | Planned | P2 | TC3 | stdlib |

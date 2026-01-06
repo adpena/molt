@@ -30,6 +30,23 @@ GEN_THROW_OFFSET = 8
 GEN_CLOSED_OFFSET = 16
 GEN_CONTROL_SIZE = 32
 
+BUILTIN_TYPE_TAGS = {
+    "int": 1,
+    "float": 2,
+    "bool": 3,
+    "str": 5,
+    "bytes": 6,
+    "bytearray": 7,
+    "list": 8,
+    "tuple": 9,
+    "dict": 10,
+    "range": 11,
+    "slice": 12,
+    "memoryview": 15,
+    "object": 100,
+    "type": 101,
+}
+
 
 @dataclass
 class TryScope:
@@ -973,6 +990,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if node.id == "TYPE_CHECKING":
                     res = MoltValue(self.next_var(), type_hint="bool")
                     self.emit(MoltOp(kind="CONST_BOOL", args=[0], result=res))
+                    return res
+                builtin_tag = BUILTIN_TYPE_TAGS.get(node.id)
+                if builtin_tag is not None:
+                    tag_val = MoltValue(self.next_var(), type_hint="int")
+                    self.emit(MoltOp(kind="CONST", args=[builtin_tag], result=tag_val))
+                    res = MoltValue(self.next_var(), type_hint="type")
+                    self.emit(MoltOp(kind="BUILTIN_TYPE", args=[tag_val], result=res))
                     return res
                 return None
             if self.current_func_name == "molt_main":
@@ -4177,6 +4201,39 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.emit(MoltOp(kind="CALL", args=[target_name] + args, result=res))
                 return res
 
+            if func_id == "type":
+                if len(node.args) != 1:
+                    raise NotImplementedError("type expects 1 argument")
+                arg = self.visit(node.args[0])
+                res = MoltValue(self.next_var(), type_hint="type")
+                self.emit(MoltOp(kind="TYPE_OF", args=[arg], result=res))
+                return res
+            if func_id == "isinstance":
+                if len(node.args) != 2:
+                    raise NotImplementedError("isinstance expects 2 arguments")
+                obj = self.visit(node.args[0])
+                clsinfo = self.visit(node.args[1])
+                if obj is None or clsinfo is None:
+                    raise NotImplementedError("Unsupported isinstance arguments")
+                res = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(MoltOp(kind="ISINSTANCE", args=[obj, clsinfo], result=res))
+                return res
+            if func_id == "issubclass":
+                if len(node.args) != 2:
+                    raise NotImplementedError("issubclass expects 2 arguments")
+                sub = self.visit(node.args[0])
+                clsinfo = self.visit(node.args[1])
+                if sub is None or clsinfo is None:
+                    raise NotImplementedError("Unsupported issubclass arguments")
+                res = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(MoltOp(kind="ISSUBCLASS", args=[sub, clsinfo], result=res))
+                return res
+            if func_id == "object":
+                if node.args:
+                    raise NotImplementedError("object expects 0 arguments")
+                res = MoltValue(self.next_var(), type_hint="object")
+                self.emit(MoltOp(kind="OBJECT_NEW", args=[], result=res))
+                return res
             if func_id == "len":
                 arg = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="int")
@@ -6986,6 +7043,42 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "args": [arg.name for arg in op.args],
                         "out": op.result.name,
                     }
+                )
+            elif op.kind == "BUILTIN_TYPE":
+                json_ops.append(
+                    {
+                        "kind": "builtin_type",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "TYPE_OF":
+                json_ops.append(
+                    {
+                        "kind": "type_of",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "ISINSTANCE":
+                json_ops.append(
+                    {
+                        "kind": "isinstance",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "ISSUBCLASS":
+                json_ops.append(
+                    {
+                        "kind": "issubclass",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "OBJECT_NEW":
+                json_ops.append(
+                    {"kind": "object_new", "args": [], "out": op.result.name}
                 )
             elif op.kind == "CLASSMETHOD_NEW":
                 json_ops.append(

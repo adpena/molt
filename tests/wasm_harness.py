@@ -34,6 +34,46 @@ const boxInt = (n) => {
 const boxBool = (b) => QNAN | TAG_BOOL | (b ? 1n : 0n);
 const boxNone = () => QNAN | TAG_NONE;
 const boxPending = () => QNAN | TAG_PENDING;
+const BUILTIN_TYPE_TAGS = new Map([
+  [1, 'int'],
+  [2, 'float'],
+  [3, 'bool'],
+  [4, 'NoneType'],
+  [5, 'str'],
+  [6, 'bytes'],
+  [7, 'bytearray'],
+  [8, 'list'],
+  [9, 'tuple'],
+  [10, 'dict'],
+  [11, 'range'],
+  [12, 'slice'],
+  [15, 'memoryview'],
+  [100, 'object'],
+  [101, 'type'],
+]);
+const builtinTypes = new Map();
+const builtinBaseTag = (tag) => {
+  if (tag === 3) return 1;
+  if (tag === 101) return 100;
+  if (tag === 100) return null;
+  if (tag === 4) return 100;
+  return 100;
+};
+const getBuiltinType = (tag) => {
+  if (builtinTypes.has(tag)) return builtinTypes.get(tag);
+  const name = BUILTIN_TYPE_TAGS.get(tag);
+  if (!name) return boxNone();
+  const baseTag = builtinBaseTag(tag);
+  const baseBits = baseTag ? getBuiltinType(baseTag) : boxNone();
+  const clsBits = boxPtr({
+    type: 'class',
+    name,
+    attrs: new Map(),
+    baseBits,
+  });
+  builtinTypes.set(tag, clsBits);
+  return clsBits;
+};
 const heap = new Map();
 const instanceClasses = new Map();
 let nextPtr = 1n << 40n;
@@ -232,6 +272,42 @@ const lookupAttr = (objBits, name) => {
     }
   }
   return undefined;
+};
+const isSubclass = (subBits, classBits) => {
+  let current = subBits;
+  let depth = 0;
+  while (current && !isNone(current)) {
+    if (current === classBits) return true;
+    const cls = getClass(current);
+    if (!cls) return false;
+    const baseBits = cls.baseBits;
+    if (!baseBits || isNone(baseBits) || baseBits === current) return false;
+    current = baseBits;
+    depth += 1;
+    if (depth > 64) return false;
+  }
+  return false;
+};
+const typeOfBits = (objBits) => {
+  if (isTag(objBits, TAG_NONE)) return getBuiltinType(4);
+  if (isTag(objBits, TAG_BOOL)) return getBuiltinType(3);
+  if (isTag(objBits, TAG_INT)) return getBuiltinType(1);
+  const obj = getObj(objBits);
+  if (obj) {
+    if (obj.type === 'class') return getBuiltinType(101);
+    if (obj.type === 'str') return getBuiltinType(5);
+    if (obj.type === 'bytes') return getBuiltinType(6);
+    if (obj.type === 'bytearray') return getBuiltinType(7);
+    if (obj.type === 'list') return getBuiltinType(8);
+    if (obj.type === 'tuple') return getBuiltinType(9);
+    if (obj.type === 'dict') return getBuiltinType(10);
+    if (obj.type === 'memoryview') return getBuiltinType(15);
+  }
+  if (isPtr(objBits) && !heap.has(objBits & POINTER_MASK)) {
+    const clsBits = instanceClasses.get(ptrAddr(objBits));
+    if (clsBits !== undefined) return clsBits;
+  }
+  return getBuiltinType(100);
 };
 const getAttrValue = (objBits, name) => {
   const val = lookupAttr(objBits, name);
@@ -991,6 +1067,58 @@ BASE_IMPORTS = """\
       cls.baseBits = baseBits;
     }
     return boxNone();
+  },
+  builtin_type: (tagBits) => {
+    if (!isTag(tagBits, TAG_INT)) {
+      throw new Error('TypeError: builtin type tag must be int');
+    }
+    const tag = Number(unboxInt(tagBits));
+    return getBuiltinType(tag);
+  },
+  type_of: (objBits) => typeOfBits(objBits),
+  isinstance: (objBits, classBits) => {
+    const tuple = getTuple(classBits);
+    if (tuple) {
+      for (const item of tuple.items) {
+        if (getClass(item) && isSubclass(typeOfBits(objBits), item)) {
+          return boxBool(true);
+        }
+      }
+      return boxBool(false);
+    }
+    if (!getClass(classBits)) {
+      throw new Error('TypeError: isinstance() arg 2 must be a type or tuple of types');
+    }
+    return boxBool(isSubclass(typeOfBits(objBits), classBits));
+  },
+  issubclass: (subBits, classBits) => {
+    if (!getClass(subBits)) {
+      throw new Error('TypeError: issubclass() arg 1 must be a class');
+    }
+    const tuple = getTuple(classBits);
+    if (tuple) {
+      for (const item of tuple.items) {
+        if (!getClass(item)) {
+          throw new Error(
+            'TypeError: issubclass() arg 2 must be a class or tuple of classes'
+          );
+        }
+        if (isSubclass(subBits, item)) {
+          return boxBool(true);
+        }
+      }
+      return boxBool(false);
+    }
+    if (!getClass(classBits)) {
+      throw new Error('TypeError: issubclass() arg 2 must be a class or tuple of classes');
+    }
+    return boxBool(isSubclass(subBits, classBits));
+  },
+  object_new: () => {
+    const objBits = boxPtrAddr(heapPtr);
+    heapPtr = align(heapPtr + HEADER_SIZE + 8, 8);
+    instanceClasses.set(ptrAddr(objBits), getBuiltinType(100));
+    return objBits;
   },
   func_new: (fnIdx, arity) =>
     boxPtr({
