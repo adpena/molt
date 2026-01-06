@@ -2101,7 +2101,8 @@ fn class_name_for_error(class_bits: u64) -> String {
         if object_type_id(ptr) != TYPE_ID_TYPE {
             return "<class>".to_string();
         }
-        string_obj_to_owned(obj_from_bits(class_name_bits(ptr))).unwrap_or_else(|| "<class>".to_string())
+        string_obj_to_owned(obj_from_bits(class_name_bits(ptr)))
+            .unwrap_or_else(|| "<class>".to_string())
     }
 }
 
@@ -2941,7 +2942,10 @@ pub extern "C" fn molt_super_new(type_bits: u64, obj_bits: u64) -> u64 {
     }
     let obj = obj_from_bits(obj_bits);
     if obj.is_none() || obj_bits == 0 {
-        raise!("TypeError", "super() arg 2 must be an instance or subtype of type");
+        raise!(
+            "TypeError",
+            "super() arg 2 must be an instance or subtype of type"
+        );
     }
     let obj_type_bits = if let Some(obj_ptr) = obj.as_ptr() {
         unsafe {
@@ -2955,7 +2959,10 @@ pub extern "C" fn molt_super_new(type_bits: u64, obj_bits: u64) -> u64 {
         type_of_bits(obj_bits)
     };
     if !issubclass_bits(obj_type_bits, type_bits) {
-        raise!("TypeError", "super() arg 2 must be an instance or subtype of type");
+        raise!(
+            "TypeError",
+            "super() arg 2 must be an instance or subtype of type"
+        );
     }
     let ptr = alloc_super_obj(type_bits, obj_bits);
     if ptr.is_null() {
@@ -11512,14 +11519,14 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                                             return property_no_setter(attr_name, class_ptr);
                                         }
                                         let inst_bits = instance_bits_for_call(obj_ptr);
-                                        let _ =
-                                            call_function_obj2(set_bits, inst_bits, val_bits);
+                                        let _ = call_function_obj2(set_bits, inst_bits, val_bits);
                                         dec_ref_bits(attr_bits);
                                         return MoltObject::none().bits() as i64;
                                     }
                                 }
                                 let set_bits = intern_static_name(&INTERN_SET_NAME, b"__set__");
-                                if let Some(method_bits) = descriptor_method_bits(desc_bits, set_bits)
+                                if let Some(method_bits) =
+                                    descriptor_method_bits(desc_bits, set_bits)
                                 {
                                     let method_obj = obj_from_bits(method_bits);
                                     let Some(method_ptr) = method_obj.as_ptr() else {
@@ -11622,8 +11629,7 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                                 }
                             }
                             let set_bits = intern_static_name(&INTERN_SET_NAME, b"__set__");
-                            if let Some(method_bits) = descriptor_method_bits(desc_bits, set_bits)
-                            {
+                            if let Some(method_bits) = descriptor_method_bits(desc_bits, set_bits) {
                                 let method_obj = obj_from_bits(method_bits);
                                 let Some(method_ptr) = method_obj.as_ptr() else {
                                     raise!("TypeError", "__set__ must be a function");
@@ -11633,12 +11639,8 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                                 }
                                 let self_bits = desc_bits;
                                 let inst_bits = instance_bits_for_call(obj_ptr);
-                                let _ = call_function_obj3(
-                                    method_bits,
-                                    self_bits,
-                                    inst_bits,
-                                    val_bits,
-                                );
+                                let _ =
+                                    call_function_obj3(method_bits, self_bits, inst_bits, val_bits);
                                 dec_ref_bits(attr_bits);
                                 return MoltObject::none().bits() as i64;
                             }
