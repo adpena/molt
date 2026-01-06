@@ -58,6 +58,10 @@
 | io | Capability-gated | Partial | P2 | SL3 | stdlib | Native `open`/`read`/`write`/`close` with `fs.read`/`fs.write` gating; streams pending. |
 | os | Capability-gated | Partial | P2 | SL3 | stdlib | Minimal shim: env access gated via `env.read`/`env.write`; path helpers only. |
 | sys | Capability-gated | Partial | P2 | SL3 | stdlib | Minimal shim: argv/version/path/modules + recursion limits; host info gated via `env.read`. |
+| errno | Stdlib | Planned | P2 | SL2 | stdlib | Errno constants; import-only allowlist stub. |
+| stat | Stdlib | Planned | P3 | SL3 | stdlib | Stat constants; import-only allowlist stub. |
+| signal | Capability-gated | Planned | P3 | SL3 | stdlib/runtime | Signal handling; gated by `process.signal`. |
+| select | Capability-gated | Planned | P3 | SL3 | stdlib/runtime | I/O multiplexing; gated by `io.poll`/`net.poll`. |
 | site | Capability-gated | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; path config gated via `env.read`/`fs.read`. |
 | sysconfig | Capability-gated | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; host/path data gated via `env.read`/`fs.read`. |
 | subprocess | Capability-gated | Planned | P3 | SL3 | stdlib | Process spawn control. |
@@ -82,6 +86,8 @@
 | pickle | Stdlib | Planned | P2 | SL2 | stdlib | Import-only allowlist stub; deterministic serialization pending. |
 | unittest | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; runner/assertions parity pending. |
 | argparse | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; CLI parsing parity pending. |
+| getopt | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; CLI parsing parity pending. |
+| locale | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; locale data pending. |
 | ast | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; AST API parity pending. |
 | atexit | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; exit handler semantics pending. |
 | collections.abc | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; ABC registration pending. |
