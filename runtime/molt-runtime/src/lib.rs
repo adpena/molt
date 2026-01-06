@@ -11059,8 +11059,7 @@ unsafe fn class_field_offset(class_ptr: *mut u8, attr_bits: u64) -> Option<usize
     if object_type_id(dict_ptr) != TYPE_ID_DICT {
         return None;
     }
-    let fields_bits =
-        intern_static_name(&INTERN_FIELD_OFFSETS_NAME, b"__molt_field_offsets__");
+    let fields_bits = intern_static_name(&INTERN_FIELD_OFFSETS_NAME, b"__molt_field_offsets__");
     let offsets_bits = dict_get_in_place(dict_ptr, fields_bits)?;
     let offsets_ptr = obj_from_bits(offsets_bits).as_ptr()?;
     if object_type_id(offsets_ptr) != TYPE_ID_DICT {
@@ -11827,8 +11826,7 @@ unsafe fn del_attr_ptr(obj_ptr: *mut u8, attr_bits: u64, attr_name: &str) -> i64
                 }
                 if attr_name == "__cause__" {
                     let suppress_bits = MoltObject::from_bool(false).bits();
-                    let suppress_slot =
-                        obj_ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64;
+                    let suppress_slot = obj_ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64;
                     let old_bits = *suppress_slot;
                     if old_bits != suppress_bits {
                         dec_ref_bits(old_bits);
