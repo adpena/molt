@@ -317,6 +317,39 @@ impl SimpleBackend {
             }
             let op = ops[op_idx].clone();
             if is_block_filled {
+                if op.kind == "if" {
+                    let mut depth = 0usize;
+                    let mut scan = op_idx + 1;
+                    let mut end_if_idx = None;
+                    while scan < ops.len() {
+                        match ops[scan].kind.as_str() {
+                            "if" => depth += 1,
+                            "end_if" => {
+                                if depth == 0 {
+                                    end_if_idx = Some(scan);
+                                    break;
+                                }
+                                depth -= 1;
+                            }
+                            _ => {}
+                        }
+                        scan += 1;
+                    }
+                    if let Some(end_if_idx) = end_if_idx {
+                        for idx in op_idx..=end_if_idx {
+                            skip_ops.insert(idx);
+                        }
+                        let mut phi_idx = end_if_idx + 1;
+                        while phi_idx < ops.len() {
+                            if ops[phi_idx].kind != "phi" {
+                                break;
+                            }
+                            skip_ops.insert(phi_idx);
+                            phi_idx += 1;
+                        }
+                        continue;
+                    }
+                }
                 match op.kind.as_str() {
                     "label" | "else" | "end_if" | "loop_end" => {}
                     _ => continue,

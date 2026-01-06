@@ -5108,7 +5108,25 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         )
         return res
 
-    def _emit_raise_if_pending(self) -> None:
+    def _emit_raise_exit(self) -> None:
+        if self.try_end_labels:
+            if (
+                self.try_suppress_depth is None
+                or len(self.try_end_labels) > self.try_suppress_depth
+            ):
+                self.emit(
+                    MoltOp(
+                        kind="JUMP",
+                        args=[self.try_end_labels[-1]],
+                        result=MoltValue("none"),
+                    )
+                )
+            return
+        none_val = MoltValue(self.next_var(), type_hint="None")
+        self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
+        self.emit(MoltOp(kind="ret", args=[none_val], result=MoltValue("none")))
+
+    def _emit_raise_if_pending(self, *, emit_exit: bool = False) -> None:
         exc_after = MoltValue(self.next_var(), type_hint="exception")
         self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=exc_after))
         none_after = MoltValue(self.next_var(), type_hint="None")
@@ -5136,6 +5154,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         else:
             self.emit(MoltOp(kind="RAISE", args=[exc_after], result=MoltValue("none")))
+            if emit_exit:
+                self._emit_raise_exit()
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
     def visit_Try(self, node: ast.Try) -> None:
@@ -5275,7 +5295,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         self.try_suppress_depth = prior_suppress
         self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
-        self._emit_raise_if_pending()
+        self._emit_raise_if_pending(emit_exit=True)
         self.try_scopes.pop()
         return None
 
@@ -5415,20 +5435,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return None
             return exc_val
 
-        def emit_raise_exit() -> None:
-            if self.try_end_labels:
-                self.emit(
-                    MoltOp(
-                        kind="JUMP",
-                        args=[self.try_end_labels[-1]],
-                        result=MoltValue("none"),
-                    )
-                )
-            else:
-                none_val = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-                self.emit(MoltOp(kind="ret", args=[none_val], result=MoltValue("none")))
-
         if node.exc is None:
             if self.active_exceptions:
                 exc_val = self.active_exceptions[-1]
@@ -5448,7 +5454,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none"))
                 )
                 self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-                emit_raise_exit()
+                self._emit_raise_exit()
                 return None
             exc_val = MoltValue(self.next_var(), type_hint="exception")
             self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=exc_val))
@@ -5464,7 +5470,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none")))
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            emit_raise_exit()
+            self._emit_raise_exit()
             return None
 
         exc_val = emit_exception_value(node.exc, allow_none=False, context="raise")
@@ -5493,7 +5499,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             )
         self.emit(MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none")))
-        emit_raise_exit()
+        self._emit_raise_exit()
         return None
 
     def visit_Return(self, node: ast.Return) -> None:
