@@ -1604,6 +1604,42 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return None
         return index_name, bound.value, node.body[:-1]
 
+    def _match_counted_while_sum(
+        self, index_name: str, body: list[ast.stmt]
+    ) -> str | None:
+        if len(body) != 1:
+            return None
+        stmt = body[0]
+        if isinstance(stmt, ast.AugAssign):
+            if (
+                isinstance(stmt.op, ast.Add)
+                and isinstance(stmt.target, ast.Name)
+                and isinstance(stmt.value, ast.Name)
+                and stmt.value.id == index_name
+            ):
+                return stmt.target.id
+            return None
+        if isinstance(stmt, ast.Assign):
+            if len(stmt.targets) != 1 or not isinstance(stmt.targets[0], ast.Name):
+                return None
+            acc_name = stmt.targets[0].id
+            if not isinstance(stmt.value, ast.BinOp) or not isinstance(
+                stmt.value.op, ast.Add
+            ):
+                return None
+            left = stmt.value.left
+            right = stmt.value.right
+            if (
+                isinstance(left, ast.Name)
+                and isinstance(right, ast.Name)
+                and (
+                    {left.id, right.id} == {acc_name, index_name}
+                    and left.id != right.id
+                )
+            ):
+                return acc_name
+        return None
+
     def _is_unit_increment(self, stmt: ast.stmt, name: str) -> bool:
         if isinstance(stmt, ast.AugAssign):
             if isinstance(stmt.target, ast.Name) and stmt.target.id == name:
@@ -4549,15 +4585,41 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def visit_While(self, node: ast.While) -> None:
         if node.orelse:
             raise NotImplementedError("while-else is not supported")
+        counted = self._match_counted_while(node)
+        if counted is not None and not self.is_async():
+            index_name, bound, body = counted
+            acc_name = self._match_counted_while_sum(index_name, body)
+            if acc_name is not None:
+                start_val = self._load_local_value(index_name)
+                if start_val is None:
+                    start_const = 0
+                else:
+                    start_const = self.const_ints.get(start_val.name)
+                acc_val = self._load_local_value(acc_name)
+                acc_const = None
+                if acc_val is not None:
+                    acc_const = self.const_ints.get(acc_val.name)
+                if start_const is not None and acc_const is not None:
+                    span = bound - start_const
+                    sum_val = span * (start_const + bound - 1) // 2
+                    final_val = acc_const + sum_val
+                    acc_res = MoltValue(self.next_var(), type_hint="int")
+                    self.emit(MoltOp(kind="CONST", args=[final_val], result=acc_res))
+                    self._store_local_value(acc_name, acc_res)
+                    final_index = bound if start_const < bound else start_const
+                    idx_res = MoltValue(self.next_var(), type_hint="int")
+                    self.emit(MoltOp(kind="CONST", args=[final_index], result=idx_res))
+                    self._store_local_value(index_name, idx_res)
+                    return None
+            assigned = self._collect_assigned_names(node.body)
+            for name in sorted(assigned):
+                self._box_local(name)
+            self._emit_counted_while(index_name, bound, body)
+            return None
         assigned = self._collect_assigned_names(node.body)
         for name in sorted(assigned):
             if not self.is_async():
                 self._box_local(name)
-        counted = self._match_counted_while(node)
-        if counted is not None and not self.is_async():
-            index_name, bound, body = counted
-            self._emit_counted_while(index_name, bound, body)
-            return None
         self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
         cond = self.visit(node.test)
         self.emit(

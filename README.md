@@ -73,9 +73,9 @@ For cross-version baselines, run the bench harness under each CPython version
 `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench_py314.json`)
 and summarize deltas across files.
 
-Latest run: 2026-01-05 (macOS x86_64, CPython 3.14.0).
-Top speedups: `bench_parse_msgpack.py` 27.36x, `bench_matrix_math.py` 10.23x,
-`bench_prod_list.py` 6.46x, `bench_str_count.py` 5.39x, `bench_str_endswith.py` 5.30x.
+Latest run: 2026-01-06 (macOS x86_64, CPython 3.14.0).
+Top speedups: `bench_sum.py` 231.69x, `bench_parse_msgpack.py` 26.58x,
+`bench_matrix_math.py` 10.47x, `bench_prod_list.py` 6.66x, `bench_str_find_unicode_warm.py` 5.95x.
 Regressions: `bench_str_count_unicode_warm.py` 0.25x (cache warm path slowdown; investigate).
 Build/run failures: Cython/Numba baselines skipped.
 
@@ -85,17 +85,17 @@ Build/run failures: Cython/Numba baselines skipped.
 - Matrix/buffer kernels (`bench_matrix_math.py`): regression >5% fails the gate.
 - Any expected perf deltas from new kernels must be recorded here after the run; complex regressions move to `OPTIMIZATIONS_PLAN.md`.
 
-Baseline microbenchmarks (2026-01-05): `bench_min_list.py` 1.96x, `bench_max_list.py` 1.97x,
-`bench_prod_list.py` 6.46x, `bench_str_find_unicode.py` 5.19x, `bench_str_count_unicode.py` 1.94x.
+Baseline microbenchmarks (2026-01-06): `bench_min_list.py` 1.90x, `bench_max_list.py` 1.98x,
+`bench_prod_list.py` 6.66x, `bench_str_find_unicode.py` 5.19x, `bench_str_count_unicode.py` 1.79x.
 
 | Benchmark | Molt vs CPython | Notes |
 | --- | --- | --- |
-| bench_matrix_math.py | 10.23x | buffer2d matmul lowering |
-| bench_deeply_nested_loop.py | 1.22x | nested loop lowering |
-| bench_str_endswith.py | 5.30x | string endswith fast path |
-| bench_str_startswith.py | 5.24x | string startswith fast path |
-| bench_str_count.py | 5.39x | string count fast path |
+| bench_matrix_math.py | 10.47x | buffer2d matmul lowering |
+| bench_deeply_nested_loop.py | 3.61x | nested loop lowering |
+| bench_str_endswith.py | 5.07x | string endswith fast path |
+| bench_str_startswith.py | 5.12x | string startswith fast path |
+| bench_str_count.py | 5.49x | string count fast path |
 | bench_str_split.py | 1.62x | optimized split builder |
-| bench_str_replace.py | 4.51x | SIMD-friendly replace path |
-| bench_str_join.py | 2.56x | pre-sized join buffer |
-| bench_sum_list.py | 2.74x | vector reduction fast path |
+| bench_str_replace.py | 4.31x | SIMD-friendly replace path |
+| bench_str_join.py | 2.54x | pre-sized join buffer |
+| bench_sum_list.py | 2.47x | vector reduction fast path |
