@@ -9,7 +9,7 @@ interface intrinsics {
     alloc: func(size: u64) -> u64;
     async_sleep: func(obj: u64) -> u64;
     block_on: func(task: u64) -> u64;
-    chan_new: func() -> molt-ptr;
+    chan_new: func(capacity: molt-object) -> molt-ptr;
     chan_send: func(chan: molt-ptr, val: molt-object) -> molt-object;
     chan_recv: func(chan: molt-ptr) -> molt-object;
 

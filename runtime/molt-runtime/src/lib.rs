@@ -3591,8 +3591,20 @@ pub struct MoltWebSocket {
 }
 
 #[no_mangle]
-pub extern "C" fn molt_chan_new() -> *mut u8 {
-    let (s, r) = unbounded();
+pub extern "C" fn molt_chan_new(capacity_bits: u64) -> *mut u8 {
+    let capacity = match to_i64(obj_from_bits(capacity_bits)) {
+        Some(val) => val,
+        None => raise!("TypeError", "channel capacity must be an integer"),
+    };
+    if capacity < 0 {
+        raise!("ValueError", "channel capacity must be non-negative");
+    }
+    let capacity = capacity as usize;
+    let (s, r) = if capacity == 0 {
+        unbounded()
+    } else {
+        bounded(capacity)
+    };
     let chan = Box::new(MoltChannel {
         sender: s,
         receiver: r,

@@ -122,8 +122,8 @@
   - TODO(type-coverage, owner:frontend, milestone:TC2): builtin iterators (`iter`, `next`, `reversed`, `enumerate`, `zip`, `map`, `filter`).
   - TODO(type-coverage, owner:frontend, milestone:TC2): builtin numeric ops (`abs`, `round`, `pow`, `divmod`, `min`, `max`, `sum`).
   - TODO(type-coverage, owner:frontend, milestone:TC2): builtin conversions (`int`, `float`, `complex`, `str`, `bool`).
-  - Implemented (partial): `aiter`/`anext` lowering for `await anext(...)` over sync iterables.
-  - TODO(type-coverage, owner:frontend, milestone:TC2): full async iterator protocol + `async for` lowering.
+  - Implemented (partial): `aiter`/`anext` + `async for` lowering over sync iterables.
+  - TODO(type-coverage, owner:frontend, milestone:TC2): full async iterator protocol (`__aiter__`/`__anext__`) and async-for parity.
 - **TC3 (Late):** memoryview, type/object, modules, descriptors.
   - TODO(type-coverage, owner:runtime, milestone:TC3): memoryview format codes, multidimensional shapes, and advanced buffer exports.
   - TODO(type-coverage, owner:stdlib, milestone:TC3): import/module rules + module object model (`__import__`, package resolution, `sys.path` policy).

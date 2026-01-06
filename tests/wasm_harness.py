@@ -40,6 +40,7 @@ let memory = null;
 let table = null;
 let asyncSleepCalled = false;
 const chanQueues = new Map();
+const chanCaps = new Map();
 let nextChanId = 1n;
 let heapPtr = 1 << 20;
 const align = (size, align) => (size + (align - 1)) & ~(align - 1);
@@ -525,14 +526,18 @@ BASE_IMPORTS = """\
       return res;
     }
   },
-  chan_new: () => {
+  chan_new: (capacity) => {
     const id = nextChanId++;
     chanQueues.set(id, []);
+    const cap = Number(unboxInt(capacity));
+    chanCaps.set(id, cap);
     return id;
   },
   chan_send: (chan, val) => {
     const queue = chanQueues.get(chan);
     if (!queue) return boxPending();
+    const cap = chanCaps.get(chan) || 0;
+    if (cap > 0 && queue.length >= cap) return boxPending();
     queue.push(val);
     return 0n;
   },

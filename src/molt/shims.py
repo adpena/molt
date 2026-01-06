@@ -22,7 +22,14 @@ from molt import net as net_mod
 _loop: asyncio.AbstractEventLoop | None = None
 _thread: threading.Thread | None = None
 _runtime_lib: ctypes.CDLL | None = None
+_QNAN = 0x7FF8_0000_0000_0000
+_TAG_INT = 0x0001_0000_0000_0000
+_INT_MASK = (1 << 47) - 1
 _PENDING = 0x7FFD_0000_0000_0000
+
+
+def _box_int(value: int) -> int:
+    return _QNAN | _TAG_INT | (int(value) & _INT_MASK)
 
 
 def _use_runtime_concurrency() -> bool:
@@ -90,6 +97,7 @@ def load_runtime() -> ctypes.CDLL | None:
     except OSError:
         return None
 
+    lib.molt_chan_new.argtypes = [ctypes.c_uint64]
     lib.molt_chan_new.restype = ctypes.c_void_p
     lib.molt_chan_send.argtypes = [ctypes.c_void_p, ctypes.c_longlong]
     lib.molt_chan_send.restype = ctypes.c_longlong
@@ -206,12 +214,12 @@ def molt_spawn(task: Any) -> None:
     raise TypeError("molt_spawn expects a coroutine or callable")
 
 
-def molt_chan_new() -> Any:
+def molt_chan_new(maxsize: int = 0) -> Any:
     lib = load_runtime() if _use_runtime_concurrency() else None
     if lib is not None:
-        ptr = lib.molt_chan_new()
+        ptr = lib.molt_chan_new(_box_int(maxsize))
         return ctypes.c_void_p(ptr)
-    return queue.Queue()
+    return queue.Queue(maxsize=maxsize)
 
 
 def molt_chan_send(chan: Any, val: Any) -> int:

@@ -128,7 +128,7 @@ impl WasmBackend {
         add_import("alloc", 2, &mut self.import_ids);
         add_import("async_sleep", 2, &mut self.import_ids);
         add_import("block_on", 2, &mut self.import_ids);
-        add_import("chan_new", 0, &mut self.import_ids);
+        add_import("chan_new", 2, &mut self.import_ids);
         add_import("chan_send", 3, &mut self.import_ids);
         add_import("chan_recv", 2, &mut self.import_ids);
         add_import("add", 3, &mut self.import_ids);
@@ -1842,6 +1842,9 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalSet(res));
                     }
                     "chan_new" => {
+                        let args = op.args.as_ref().unwrap();
+                        let cap = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(cap));
                         func.instruction(&Instruction::Call(import_ids["chan_new"]));
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                     }

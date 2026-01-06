@@ -19,7 +19,7 @@ def test_wasm_channel_async_parity(tmp_path: Path) -> None:
     src = tmp_path / "channel_async.py"
     src.write_text(
         "async def main():\n"
-        "    chan = molt_chan_new()\n"
+        "    chan = molt_chan_new(1)\n"
         "    molt_chan_send(chan, 41)\n"
         "    print(molt_chan_recv(chan))\n"
         "    molt_chan_send(chan, 1)\n"

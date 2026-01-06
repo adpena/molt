@@ -75,7 +75,7 @@ def channel(maxsize: int = 0) -> Channel[Any]:
     lib = shims.load_runtime()
     if lib is None:
         return Channel(queue.Queue(maxsize=maxsize), maxsize=maxsize)
-    handle = shims.molt_chan_new()
+    handle = shims.molt_chan_new(maxsize)
     return Channel(handle, maxsize=maxsize)
 
 

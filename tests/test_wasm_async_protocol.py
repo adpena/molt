@@ -24,6 +24,8 @@ def test_wasm_async_protocol_parity(tmp_path: Path) -> None:
         "    print(2)\n"
         "    await asyncio.sleep(0)\n"
         "    print(3)\n"
+        "    async for item in [20, 30]:\n"
+        "        print(item)\n"
         "    it = aiter([10])\n"
         "    print(await anext(it))\n"
         "    try:\n"
@@ -60,7 +62,9 @@ def test_wasm_async_protocol_parity(tmp_path: Path) -> None:
             text=True,
         )
         assert run.returncode == 0, run.stderr
-        assert run.stdout.strip() == "\n".join(["1", "2", "3", "10", "done", "7"])
+        assert run.stdout.strip() == "\n".join(
+            ["1", "2", "3", "20", "30", "10", "done", "7"]
+        )
     finally:
         if not existed and output_wasm.exists():
             output_wasm.unlink()
