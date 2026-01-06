@@ -11780,9 +11780,7 @@ unsafe fn del_attr_ptr(obj_ptr: *mut u8, attr_bits: u64, attr_name: &str) -> i64
     if type_id == TYPE_ID_MODULE {
         let dict_bits = module_dict_bits(obj_ptr);
         if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-            if object_type_id(dict_ptr) == TYPE_ID_DICT
-                && dict_del_in_place(dict_ptr, attr_bits)
-            {
+            if object_type_id(dict_ptr) == TYPE_ID_DICT && dict_del_in_place(dict_ptr, attr_bits) {
                 return MoltObject::none().bits() as i64;
             }
         }
@@ -11798,9 +11796,7 @@ unsafe fn del_attr_ptr(obj_ptr: *mut u8, attr_bits: u64, attr_name: &str) -> i64
         }
         let dict_bits = class_dict_bits(obj_ptr);
         if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-            if object_type_id(dict_ptr) == TYPE_ID_DICT
-                && dict_del_in_place(dict_ptr, attr_bits)
-            {
+            if object_type_id(dict_ptr) == TYPE_ID_DICT && dict_del_in_place(dict_ptr, attr_bits) {
                 return MoltObject::none().bits() as i64;
             }
         }
