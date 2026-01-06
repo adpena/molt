@@ -3,6 +3,8 @@ members = [
     "runtime/molt-runtime",
     "runtime/molt-obj-model",
     "runtime/molt-backend",
+    "runtime/molt-db",
+    "runtime/molt-worker",
 ]
 resolver = "2"
 

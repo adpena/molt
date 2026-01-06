@@ -4,6 +4,7 @@
 **Priority:** P0
 **Audience:** runtime engineers, AI coding agents
 **Goal:** Define the minimal worker that can execute exported entrypoints safely and predictably.
+**Implementation status:** Initial Rust stdio shell exists in `runtime/molt-worker` with framing, export allowlist, and a deterministic `list_items` demo entrypoint. Cancellation, compiled entrypoint dispatch, and metrics are pending.
 
 ---
 
@@ -69,6 +70,8 @@ Entrypoints are invoked by name with a payload.
   - return status
   - drop/rollback resources
 - Do not leak memory, tasks, or DB connections
+
+**Implementation note:** current worker accepts `__cancel__` requests carrying a `request_id` payload; cancellation is best-effort and only affects the built-in demo handler. Full propagation into compiled entrypoints/DB tasks is still pending.
 
 ---
 

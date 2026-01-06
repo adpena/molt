@@ -4,6 +4,7 @@
 **Priority:** P0 for service usefulness
 **Audience:** runtime engineers, DB engineers, AI coding agents
 **Goal:** Deliver a Molt-native async DB layer (starting with Postgres) that enables Go-class concurrency for web services and provides a practical Django adapter/migration path—without rewriting the Django ORM.
+**Implementation status:** `runtime/molt-db` now contains a bounded pool skeleton (sync, connection-agnostic). Async drivers, Postgres protocol, and cancellation-aware query execution are still pending.
 
 ---
 

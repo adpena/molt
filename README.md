@@ -25,7 +25,8 @@ with strict reproducibility, rigorous testing, and staged compatibility.
 - **Reflection**: `type`, `isinstance`, `issubclass`, and `object` are supported with single-inheritance base chains; no metaclasses or dynamic `type()` construction.
 - **Async iteration**: `anext` is await-only, and `__aiter__` must return an async iterator (awaitable `__aiter__` still pending).
 - **Asyncio**: shim covers `run`/`sleep` only (no loop/task APIs; sleep delay ignored).
-- **Offload demo**: `molt_accel` scaffolding (stdio framing + decorator) exists; worker IPC shell and Django demo are not implemented yet.
+- **Offload demo**: `molt_accel` scaffolding exists and a `molt_worker` stdio shell returns a deterministic `list_items` response; compiled entrypoint dispatch, cancellation, and Django demo wiring are still pending.
+- **DB layer**: `molt-db` pool skeleton exists; async drivers and Postgres protocol integration are not implemented yet.
 
 ## Quick start
 

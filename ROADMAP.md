@@ -21,7 +21,11 @@
 - Import-only allowlist expanded for `base64`, `binascii`, `pickle`, `unittest`, `site`, and `sysconfig` (API parity pending).
 
 ## Offload / IPC
-- Partial: `molt_accel` v0 scaffolding (stdio framing + client + decorator); worker/IPC contract + demo still pending.
+- Partial: `molt_accel` v0 scaffolding (stdio framing + client + decorator) + initial `molt_worker` stdio shell (built-in `list_items` demo handler).
+- TODO(offload, owner:runtime, milestone:SL1): compiled entrypoint dispatch + cancellation propagation + queue/timeout metrics.
+
+## DB
+- Partial: `molt-db` pool skeleton (bounded, sync); async drivers + Postgres protocol + cancellation-aware queries still pending.
 
 ## Tooling
 - Keep type facts + `ty` validation wired into build/lint flows and surface regressions early.

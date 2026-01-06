@@ -4,7 +4,7 @@
 **Priority:** P0
 **Audience:** Python integrators, AI coding agents
 **Goal:** Provide a minimal, reliable client library that makes offloading one endpoint trivial.
-**Implementation status:** Initial stdio client + decorator scaffolding exists in `src/molt_accel` (framing + JSON/MsgPack payloads). Cancellation/retries/metrics and Django test-client coverage are still pending.
+**Implementation status:** Initial stdio client + decorator scaffolding exists in `src/molt_accel` (framing + JSON/MsgPack payloads). Timeouts send a best-effort cancel and restart the worker; retries/metrics and Django test-client coverage are still pending.
 
 ---
 
@@ -32,6 +32,8 @@ from molt_accel import molt_offload
 def items_view(request):
     ...
 ```
+
+See `docs/demo/django_offload_example.py` for a minimal example.
 
 Decorator semantics:
 - prepares payload from request (defined by demo contract)

@@ -134,6 +134,8 @@ class MoltClient:
                     max_size=self._max_frame_size,
                 )
             except TimeoutError as exc:
+                self._send_cancel_locked(request_id)
+                self.close()
                 raise MoltTimeout("Worker response timed out") from exc
             except EOFError as exc:
                 raise MoltWorkerUnavailable("Worker closed the stream") from exc
@@ -149,6 +151,24 @@ class MoltClient:
         payload_data = response.get("payload", b"")
         response_codec = response.get("codec", codec)
         return decode_payload(payload_data, response_codec)
+
+    def _send_cancel_locked(self, request_id: int) -> None:
+        if self._stdin is None:
+            return
+        cancel_codec = "msgpack" if self._wire == "msgpack" else "json"
+        try:
+            payload = encode_payload({"request_id": request_id}, cancel_codec)
+            message = {
+                "request_id": request_id,
+                "entry": "__cancel__",
+                "timeout_ms": 0,
+                "codec": cancel_codec,
+                "payload": payload,
+            }
+            wire_payload = encode_message(message, self._wire)
+            write_frame(self._stdin, wire_payload, max_size=self._max_frame_size)
+        except Exception:
+            return
 
     def ping(self, timeout_ms: int = 100) -> float:
         start = time.monotonic()
