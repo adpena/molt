@@ -5175,6 +5175,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         self._emit_guard_type(MoltValue(arg.arg, type_hint=hint), hint)
             for item in node.body:
                 self.visit(item)
+                if isinstance(item, (ast.Return, ast.Raise)):
+                    break
             if self.return_label is not None:
                 if not self._ends_with_return_jump():
                     none_val = MoltValue(self.next_var(), type_hint="None")
