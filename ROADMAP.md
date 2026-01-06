@@ -8,8 +8,9 @@
 - memoryview (Partial): constructor, slicing, `tobytes`, writable views, strides, buffer export.
 - TODO(type-coverage, owner:runtime, milestone:TC3): memoryview format codes and multidimensional shapes.
 - Implemented: class objects + basic descriptors (`classmethod`, `staticmethod`, `property`).
+- Implemented: single inheritance base chain for attribute lookup + base `__init__` dispatch.
 - Implemented: exception chaining with explicit `__cause__`, implicit `__context__`, and `__suppress_context__`.
-- TODO(type-coverage, owner:runtime, milestone:TC2): inheritance semantics + full descriptor protocol (setters/deleters, `super`).
+- TODO(type-coverage, owner:runtime, milestone:TC2): multiple inheritance/MRO + `super()` + full descriptor protocol (setters/deleters, classmethod/staticmethod parity).
 - Partial: wasm generator state machines + closure slot intrinsics + channel send/recv intrinsics + async pending/block_on parity landed; remaining generator state object and scheduler semantics.
 - Implemented: async iterator protocol (`__aiter__`/`__anext__`) with `aiter`/`anext` lowering and `async for` support; sync-iter fallback remains for now (awaitable `anext` outside `await` still pending).
 

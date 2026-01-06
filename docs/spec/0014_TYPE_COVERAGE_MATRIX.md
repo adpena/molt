@@ -137,6 +137,7 @@
 - RC/GC hooks for all container edges and iterator state.
 - Implemented: instance dict fallback for structified objects + dynamic attrs on non-slot dataclasses.
 - Implemented: class objects + basic descriptors (`classmethod`, `staticmethod`, `property`).
+- Implemented: single inheritance base chain for attribute lookup + base `__init__` dispatch.
 - TODO(type-coverage, owner:runtime, milestone:TC2): set/frozenset hashing + deterministic ordering.
 - Implemented: exception objects with cause/context/suppress fields.
 - TODO(type-coverage, owner:runtime, milestone:TC1): exception stack trace capture.
@@ -144,7 +145,7 @@
 - TODO(type-coverage, owner:runtime, milestone:TC2): rounding intrinsics (`round`, `floor`, `ceil`, `trunc`) with deterministic semantics.
 - TODO(type-coverage, owner:runtime, milestone:TC2): identity builtins (`hash`, `id`, `callable`).
 - TODO(type-coverage, owner:runtime, milestone:TC1): recursion limits + `RecursionError` guard semantics.
-- TODO(type-coverage, owner:runtime, milestone:TC2): inheritance hooks + full descriptor protocol for attribute resolution.
+- TODO(type-coverage, owner:runtime, milestone:TC2): multiple inheritance/MRO + `super()` + full descriptor protocol (setters/deleters, classmethod/staticmethod parity).
 
 ## 4. Frontend + IR Coverage
 - Lower literals/ops for set/frozenset, complex, and exceptions.

@@ -51,6 +51,7 @@ class ClassInfo(TypedDict, total=False):
     field_order: list[str]
     defaults: dict[str, ast.expr]
     class_attrs: dict[str, ast.expr]
+    base: str | None
     dataclass: bool
     frozen: bool
     eq: bool
@@ -1385,6 +1386,49 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _emit_iter_loop(self, node: ast.For, iterable: MoltValue) -> None:
         target = node.target
         assert isinstance(target, ast.Name)
+        if self.is_async():
+            iter_obj = MoltValue(self.next_var(), type_hint="iter")
+            self.emit(MoltOp(kind="ITER_NEW", args=[iterable], result=iter_obj))
+            iter_slot = self._async_local_offset(f"__for_iter_{len(self.async_locals)}")
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", iter_slot, iter_obj],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
+            iter_val = MoltValue(self.next_var(), type_hint="iter")
+            self.emit(
+                MoltOp(
+                    kind="LOAD_CLOSURE",
+                    args=["self", iter_slot],
+                    result=iter_val,
+                )
+            )
+            zero = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[0], result=zero))
+            one = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[1], result=one))
+            pair = MoltValue(self.next_var(), type_hint="tuple")
+            self.emit(MoltOp(kind="ITER_NEXT", args=[iter_val], result=pair))
+            done = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="INDEX", args=[pair, one], result=done))
+            self.emit(
+                MoltOp(
+                    kind="LOOP_BREAK_IF_TRUE",
+                    args=[done],
+                    result=MoltValue("none"),
+                )
+            )
+            item = MoltValue(self.next_var(), type_hint="Any")
+            self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=item))
+            self._store_local_value(target.id, item)
+            for stmt in node.body:
+                self.visit(stmt)
+            self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+            self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+            return
         iter_obj = MoltValue(self.next_var(), type_hint="iter")
         self.emit(MoltOp(kind="ITER_NEW", args=[iterable], result=iter_obj))
 
@@ -1412,6 +1456,90 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _emit_index_loop(self, node: ast.For, iterable: MoltValue) -> None:
         target = node.target
         assert isinstance(target, ast.Name)
+        if self.is_async():
+            seq_slot = self._async_local_offset(f"__for_seq_{len(self.async_locals)}")
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", seq_slot, iterable],
+                    result=MoltValue("none"),
+                )
+            )
+            length_val = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="LEN", args=[iterable], result=length_val))
+            length_slot = self._async_local_offset(
+                f"__for_len_{len(self.async_locals)}"
+            )
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", length_slot, length_val],
+                    result=MoltValue("none"),
+                )
+            )
+            zero = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[0], result=zero))
+            idx_slot = self._async_local_offset(f"__for_idx_{len(self.async_locals)}")
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", idx_slot, zero],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
+            idx = MoltValue(self.next_var(), type_hint="int")
+            self.emit(
+                MoltOp(
+                    kind="LOAD_CLOSURE",
+                    args=["self", idx_slot],
+                    result=idx,
+                )
+            )
+            seq_val = MoltValue(self.next_var(), type_hint=iterable.type_hint)
+            self.emit(
+                MoltOp(
+                    kind="LOAD_CLOSURE",
+                    args=["self", seq_slot],
+                    result=seq_val,
+                )
+            )
+            length = MoltValue(self.next_var(), type_hint="int")
+            self.emit(
+                MoltOp(
+                    kind="LOAD_CLOSURE",
+                    args=["self", length_slot],
+                    result=length,
+                )
+            )
+            cond = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="LT", args=[idx, length], result=cond))
+            self.emit(
+                MoltOp(
+                    kind="LOOP_BREAK_IF_FALSE",
+                    args=[cond],
+                    result=MoltValue("none"),
+                )
+            )
+            item = MoltValue(self.next_var(), type_hint="Any")
+            self.emit(MoltOp(kind="INDEX", args=[seq_val, idx], result=item))
+            self._store_local_value(target.id, item)
+            for stmt in node.body:
+                self.visit(stmt)
+            one = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[1], result=one))
+            next_idx = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="ADD", args=[idx, one], result=next_idx))
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", idx_slot, next_idx],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+            self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+            return
         zero = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[0], result=zero))
         one = MoltValue(self.next_var(), type_hint="int")
@@ -1469,6 +1597,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     ) -> None:
         target = node.target
         assert isinstance(target, ast.Name)
+        if self.is_async():
+            range_obj = MoltValue(self.next_var(), type_hint="range")
+            self.emit(
+                MoltOp(kind="RANGE_NEW", args=[start, stop, step], result=range_obj)
+            )
+            self._emit_iter_loop(node, range_obj)
+            return None
         step_const = self.const_ints.get(step.name)
         if step_const is not None and step_const != 0:
             idx = MoltValue(self.next_var(), type_hint="int")
@@ -2224,6 +2359,27 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return res
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        base_name = None
+        base_val = None
+        if node.bases:
+            if node.keywords:
+                raise NotImplementedError("Class keywords are not supported")
+            if len(node.bases) != 1:
+                raise NotImplementedError("Multiple inheritance is not supported")
+            base_expr = node.bases[0]
+            if isinstance(base_expr, ast.Name):
+                if base_expr.id != "object":
+                    base_name = base_expr.id
+                    base_val = self.visit(base_expr)
+                    if base_val is None:
+                        raise NotImplementedError(
+                            "Base class must be defined before use"
+                        )
+            else:
+                raise NotImplementedError("Unsupported base class expression")
+        elif node.keywords:
+            raise NotImplementedError("Class keywords are not supported")
+
         dataclass_opts = None
         if node.decorator_list:
             for deco in node.decorator_list:
@@ -2320,6 +2476,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         class_attrs: dict[str, ast.expr] = {}
 
         if dataclass_opts is not None:
+            if base_name is not None:
+                raise NotImplementedError("Dataclass inheritance is not supported")
             field_order: list[str] = []
             field_defaults: dict[str, ast.expr] = {}
             for item in node.body:
@@ -2341,6 +2499,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 "field_order": field_order,
                 "defaults": field_defaults,
                 "class_attrs": class_attrs,
+                "base": base_name,
                 "size": len(field_order) * 8,
                 "dataclass": True,
                 "frozen": dataclass_opts["frozen"],
@@ -2424,6 +2583,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 field_order=field_order,
                 defaults=field_defaults,
                 class_attrs=class_attrs,
+                base=base_name,
             )
 
         def compile_method(item: ast.FunctionDef) -> MethodInfo:
@@ -2742,6 +2902,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="CONST_STR", args=[node.name], result=name_val))
         class_val = MoltValue(self.next_var(), type_hint="type")
         self.emit(MoltOp(kind="CLASS_NEW", args=[name_val], result=class_val))
+        if base_val is not None:
+            self.emit(
+                MoltOp(
+                    kind="CLASS_SET_BASE",
+                    args=[class_val, base_val],
+                    result=MoltValue("none"),
+                )
+            )
         self.globals[node.name] = class_val
         self._emit_module_attr_set(node.name, class_val)
 
@@ -3924,6 +4092,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                     )
                 init_method = class_info.get("methods", {}).get("__init__")
+                base_name = class_info.get("base")
+                while init_method is None and base_name:
+                    base_info = self.classes.get(base_name)
+                    if base_info is None:
+                        break
+                    init_method = base_info.get("methods", {}).get("__init__")
+                    base_name = base_info.get("base")
                 if init_method is not None:
                     init_func = init_method["func"]
                     target_name = init_func.type_hint.split(":", 1)[1]
@@ -6778,6 +6953,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 json_ops.append(
                     {
                         "kind": "class_new",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "CLASS_SET_BASE":
+                json_ops.append(
+                    {
+                        "kind": "class_set_base",
                         "args": [arg.name for arg in op.args],
                         "out": op.result.name,
                     }

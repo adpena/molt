@@ -16,7 +16,7 @@ with strict reproducibility, rigorous testing, and staged compatibility.
 
 ## Limitations (Current)
 
-- **Classes & object model**: no inheritance, metaclasses, descriptors, `@classmethod`/`@staticmethod`/`@property`, or full class objects (class names are compile-time only).
+- **Classes & object model**: single inheritance with base attribute lookup + base `__init__` dispatch; no multiple inheritance, metaclasses, MRO/`super()`, or full descriptor protocol (`@classmethod`/`@staticmethod`/`@property` are partial).
 - **Attributes**: instances use fixed struct fields with a dynamic instance-dict fallback; no `__getattr__`/`__setattr__` hooks and no user-defined `__slots__` beyond dataclass lowering.
 - **Dataclasses**: compile-time lowering for frozen/eq/repr/slots; no `default_factory`, `kw_only`, or `order`; runtime `dataclasses` module provides metadata only.
 - **Exceptions**: `try/except/else/finally` + `raise`/reraise support; still partial vs full BaseException semantics (see `docs/spec/0014_TYPE_COVERAGE_MATRIX.md`).

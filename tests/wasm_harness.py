@@ -189,14 +189,36 @@ const lookupExceptionAttr = (exc, name) => {
       return undefined;
   }
 };
+const lookupClassAttr = (classBits, name, instanceBits = null) => {
+  let currentBits = classBits;
+  let depth = 0;
+  while (currentBits && !isNone(currentBits)) {
+    const cls = getClass(currentBits);
+    if (!cls) return undefined;
+    if (cls.attrs.has(name)) {
+      const attrVal = cls.attrs.get(name);
+      if (instanceBits && getFunction(attrVal)) {
+        return boxPtr({ type: 'bound_method', func: attrVal, self: instanceBits });
+      }
+      return attrVal;
+    }
+    const baseBits = cls.baseBits;
+    if (!baseBits || isNone(baseBits)) return undefined;
+    currentBits = baseBits;
+    depth += 1;
+    if (depth > 64) return undefined;
+  }
+  return undefined;
+};
 const lookupAttr = (objBits, name) => {
   const exc = getException(objBits);
   if (exc) {
     return lookupExceptionAttr(exc, name);
   }
   const cls = getClass(objBits);
-  if (cls && cls.attrs.has(name)) {
-    return cls.attrs.get(name);
+  if (cls) {
+    const val = lookupClassAttr(objBits, name);
+    if (val !== undefined) return val;
   }
   const func = getFunction(objBits);
   if (func && func.attrs && func.attrs.has(name)) {
@@ -205,15 +227,8 @@ const lookupAttr = (objBits, name) => {
   if (isPtr(objBits) && !heap.has(objBits & POINTER_MASK)) {
     const clsBits = instanceClasses.get(ptrAddr(objBits));
     if (clsBits !== undefined) {
-      const instClass = getClass(clsBits);
-      if (instClass && instClass.attrs.has(name)) {
-        const attrVal = instClass.attrs.get(name);
-        const func = getFunction(attrVal);
-        if (func) {
-          return boxPtr({ type: 'bound_method', func: attrVal, self: objBits });
-        }
-        return attrVal;
-      }
+      const val = lookupClassAttr(clsBits, name, objBits);
+      if (val !== undefined) return val;
     }
   }
   return undefined;
@@ -963,7 +978,19 @@ BASE_IMPORTS = """\
   dataclass_set_class: () => boxNone(),
   class_new: (nameBits) => {
     const name = getStrObj(nameBits);
-    return boxPtr({ type: 'class', name: name ?? '<class>', attrs: new Map() });
+    return boxPtr({
+      type: 'class',
+      name: name ?? '<class>',
+      attrs: new Map(),
+      baseBits: boxNone(),
+    });
+  },
+  class_set_base: (classBits, baseBits) => {
+    const cls = getClass(classBits);
+    if (cls) {
+      cls.baseBits = baseBits;
+    }
+    return boxNone();
   },
   func_new: (fnIdx, arity) =>
     boxPtr({
