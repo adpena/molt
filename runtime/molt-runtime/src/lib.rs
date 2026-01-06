@@ -10343,12 +10343,7 @@ unsafe fn class_attr_lookup(
         }
         let base_bits = class_base_bits(current_ptr);
         let base_obj = obj_from_bits(base_bits);
-        if base_obj.is_none() {
-            return None;
-        }
-        let Some(base_ptr) = base_obj.as_ptr() else {
-            return None;
-        };
+        let base_ptr = base_obj.as_ptr()?;
         if object_type_id(base_ptr) != TYPE_ID_TYPE {
             return None;
         }
