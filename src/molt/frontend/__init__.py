@@ -215,6 +215,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return info["methods"][method], name
         return None, None
 
+    def _resolve_super_method_info(
+        self, class_name: str, method: str
+    ) -> tuple[MethodInfo | None, str | None]:
+        mro = self._class_mro_names(class_name)
+        found_start = False
+        for name in mro:
+            if not found_start:
+                if name == class_name:
+                    found_start = True
+                continue
+            info = self.classes.get(name)
+            if info and "methods" in info and method in info["methods"]:
+                return info["methods"][method], name
+        return None, None
+
     def visit(self, node: ast.AST) -> Any:
         try:
             return super().visit(node)
@@ -3920,7 +3935,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     obj = self._load_local_value(self.current_method_first_param)
                     if obj is None:
                         raise NotImplementedError("super() missing method receiver")
-                    res = MoltValue(self.next_var(), type_hint="super")
+                    super_hint = "super"
+                    if self.current_class is not None:
+                        super_hint = f"super:{self.current_class}"
+                    res = MoltValue(self.next_var(), type_hint=super_hint)
                     self.emit(
                         MoltOp(kind="SUPER_NEW", args=[class_ref, obj], result=res)
                     )
@@ -3930,7 +3948,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     obj_val = self.visit(node.args[1])
                     if type_val is None or obj_val is None:
                         raise NotImplementedError("super expects type and object")
-                    res = MoltValue(self.next_var(), type_hint="super")
+                    super_hint = "super"
+                    if isinstance(node.args[0], ast.Name):
+                        super_hint = f"super:{node.args[0].id}"
+                    res = MoltValue(self.next_var(), type_hint=super_hint)
                     self.emit(
                         MoltOp(kind="SUPER_NEW", args=[type_val, obj_val], result=res)
                     )
@@ -4647,6 +4668,33 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         obj = self.visit(node.value)
         if obj is None:
             obj = MoltValue("unknown_obj", type_hint="Unknown")
+        if obj.type_hint.startswith("super"):
+            super_class = None
+            if obj.type_hint == "super":
+                super_class = self.current_class
+            else:
+                super_class = obj.type_hint.split(":", 1)[1]
+            if super_class:
+                method_info, method_class = self._resolve_super_method_info(
+                    super_class, node.attr
+                )
+                if method_info and method_info["descriptor"] in {
+                    "function",
+                    "classmethod",
+                }:
+                    owner_name = method_class or super_class
+                    res = MoltValue(
+                        self.next_var(),
+                        type_hint=f"BoundMethod:{owner_name}:{node.attr}",
+                    )
+                    self.emit(
+                        MoltOp(
+                            kind="GETATTR_GENERIC_OBJ",
+                            args=[obj, node.attr],
+                            result=res,
+                        )
+                    )
+                    return res
         class_info = self.classes.get(obj.type_hint)
         if class_info and class_info.get("dataclass"):
             field_map = class_info["fields"]

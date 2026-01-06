@@ -11136,16 +11136,16 @@ unsafe fn attr_lookup_ptr(obj_ptr: *mut u8, attr_bits: u64) -> Option<u64> {
     }
     if type_id == TYPE_ID_SUPER {
         let start_bits = super_type_bits(obj_ptr);
-        let obj_bits = super_obj_bits(obj_ptr);
-        let obj = obj_from_bits(obj_bits);
-        let obj_type_bits = if let Some(obj_ptr) = obj.as_ptr() {
-            if object_type_id(obj_ptr) == TYPE_ID_TYPE {
-                obj_bits
+        let target_bits = super_obj_bits(obj_ptr);
+        let target_ptr = maybe_ptr_from_bits(target_bits);
+        let obj_type_bits = if let Some(raw_ptr) = target_ptr {
+            if object_type_id(raw_ptr) == TYPE_ID_TYPE {
+                target_bits
             } else {
-                type_of_bits(obj_bits)
+                type_of_bits(target_bits)
             }
         } else {
-            type_of_bits(obj_bits)
+            type_of_bits(target_bits)
         };
         let obj_type_ptr = obj_from_bits(obj_type_bits).as_ptr()?;
         if object_type_id(obj_type_ptr) != TYPE_ID_TYPE {
@@ -11158,7 +11158,7 @@ unsafe fn attr_lookup_ptr(obj_ptr: *mut u8, attr_bits: u64) -> Option<u64> {
         };
         let mut instance_ptr = None;
         let mut owner_ptr = obj_type_ptr;
-        if let Some(raw_ptr) = obj.as_ptr() {
+        if let Some(raw_ptr) = target_ptr {
             if object_type_id(raw_ptr) == TYPE_ID_TYPE {
                 owner_ptr = raw_ptr;
             } else {
