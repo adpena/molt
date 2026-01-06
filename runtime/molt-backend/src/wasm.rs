@@ -242,6 +242,7 @@ impl WasmBackend {
         add_import("dataclass_set_class", 3, &mut self.import_ids);
         add_import("class_new", 2, &mut self.import_ids);
         add_import("class_set_base", 3, &mut self.import_ids);
+        add_import("super_new", 3, &mut self.import_ids);
         add_import("builtin_type", 2, &mut self.import_ids);
         add_import("type_of", 2, &mut self.import_ids);
         add_import("isinstance", 3, &mut self.import_ids);
@@ -1603,6 +1604,16 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(class_bits));
                         func.instruction(&Instruction::LocalGet(base_bits));
                         func.instruction(&Instruction::Call(import_ids["class_set_base"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "super_new" => {
+                        let args = op.args.as_ref().unwrap();
+                        let type_bits = locals[&args[0]];
+                        let obj_bits = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(type_bits));
+                        func.instruction(&Instruction::LocalGet(obj_bits));
+                        func.instruction(&Instruction::Call(import_ids["super_new"]));
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }

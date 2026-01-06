@@ -69,6 +69,9 @@ class ClassInfo(TypedDict, total=False):
     defaults: dict[str, ast.expr]
     class_attrs: dict[str, ast.expr]
     base: str | None
+    bases: list[str]
+    mro: list[str]
+    dynamic: bool
     dataclass: bool
     frozen: bool
     eq: bool
@@ -142,6 +145,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.func_aliases: dict[str, str] = {}
         self.const_ints: dict[str, int] = {}
         self.in_generator = False
+        self.current_class: str | None = None
+        self.current_method_first_param: str | None = None
         if self.module_name:
             name_val = MoltValue(self.next_var(), type_hint="str")
             self.emit(
@@ -158,6 +163,57 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
             self.module_obj = module_val
         self._apply_type_facts("molt_main")
+
+    def _c3_merge(self, seqs: list[list[str]]) -> list[str] | None:
+        merged: list[str] = []
+        working = [list(seq) for seq in seqs]
+        while True:
+            working = [seq for seq in working if seq]
+            if not working:
+                return merged
+            candidate = None
+            for seq in working:
+                head = seq[0]
+                if any(head in tail[1:] for tail in working):
+                    continue
+                candidate = head
+                break
+            if candidate is None:
+                return None
+            merged.append(candidate)
+            for seq in working:
+                if seq and seq[0] == candidate:
+                    seq.pop(0)
+
+    def _class_mro_names(self, name: str) -> list[str]:
+        if name == "object":
+            return ["object"]
+        info = self.classes.get(name)
+        if info is None:
+            return [name]
+        cached = info.get("mro")
+        if cached:
+            return cached
+        bases = info.get("bases", [])
+        seqs = [self._class_mro_names(base) for base in bases]
+        seqs.append(list(bases))
+        merged = self._c3_merge(seqs)
+        if merged is None:
+            raise NotImplementedError(
+                "Cannot create a consistent method resolution order (MRO) for bases"
+            )
+        mro = [name] + merged
+        info["mro"] = mro
+        return mro
+
+    def _resolve_method_info(
+        self, class_name: str, method: str
+    ) -> tuple[MethodInfo | None, str | None]:
+        for name in self._class_mro_names(class_name):
+            info = self.classes.get(name)
+            if info and "methods" in info and method in info["methods"]:
+                return info["methods"][method], name
+        return None, None
 
     def visit(self, node: ast.AST) -> Any:
         try:
@@ -2383,26 +2439,31 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return res
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        base_name = None
-        base_val = None
+        base_vals: list[MoltValue] = []
+        base_names: list[str] = []
         if node.bases:
             if node.keywords:
                 raise NotImplementedError("Class keywords are not supported")
-            if len(node.bases) != 1:
-                raise NotImplementedError("Multiple inheritance is not supported")
-            base_expr = node.bases[0]
-            if isinstance(base_expr, ast.Name):
-                if base_expr.id != "object":
-                    base_name = base_expr.id
-                    base_val = self.visit(base_expr)
-                    if base_val is None:
-                        raise NotImplementedError(
-                            "Base class must be defined before use"
-                        )
-            else:
-                raise NotImplementedError("Unsupported base class expression")
+            for base_expr in node.bases:
+                if not isinstance(base_expr, ast.Name):
+                    raise NotImplementedError("Unsupported base class expression")
+                base_val = self.visit(base_expr)
+                if base_val is None:
+                    raise NotImplementedError("Base class must be defined before use")
+                base_vals.append(base_val)
+                base_names.append(base_expr.id)
         elif node.keywords:
             raise NotImplementedError("Class keywords are not supported")
+
+        if not base_vals:
+            tag_val = MoltValue(self.next_var(), type_hint="int")
+            self.emit(
+                MoltOp(kind="CONST", args=[BUILTIN_TYPE_TAGS["object"]], result=tag_val)
+            )
+            base_val = MoltValue(self.next_var(), type_hint="type")
+            self.emit(MoltOp(kind="BUILTIN_TYPE", args=[tag_val], result=base_val))
+            base_vals = [base_val]
+            base_names = ["object"]
 
         dataclass_opts = None
         if node.decorator_list:
@@ -2498,9 +2559,27 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
         methods: dict[str, MethodInfo] = {}
         class_attrs: dict[str, ast.expr] = {}
+        if len(base_names) != len(set(base_names)):
+            dup = next(name for name in base_names if base_names.count(name) > 1)
+            raise NotImplementedError(f"Duplicate base class {dup}")
+
+        dynamic = len(base_names) > 1
+        for name in base_names:
+            base_info = self.classes.get(name)
+            if base_info and base_info.get("dynamic"):
+                dynamic = True
+
+        base_mros = [self._class_mro_names(name) for name in base_names]
+        base_mros.append(list(base_names))
+        merged = self._c3_merge(base_mros)
+        if merged is None:
+            raise NotImplementedError(
+                "Cannot create a consistent method resolution order (MRO) for bases"
+            )
+        mro_names = [node.name] + merged
 
         if dataclass_opts is not None:
-            if base_name is not None:
+            if any(name != "object" for name in base_names):
                 raise NotImplementedError("Dataclass inheritance is not supported")
             field_order: list[str] = []
             field_defaults: dict[str, ast.expr] = {}
@@ -2523,7 +2602,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 "field_order": field_order,
                 "defaults": field_defaults,
                 "class_attrs": class_attrs,
-                "base": base_name,
+                "bases": base_names,
+                "mro": mro_names,
+                "dynamic": False,
                 "size": len(field_order) * 8,
                 "dataclass": True,
                 "frozen": dataclass_opts["frozen"],
@@ -2536,13 +2617,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             fields: dict[str, int] = {}
             field_order: list[str] = []
             field_defaults: dict[str, ast.expr] = {}
-            if base_name is not None:
+            for base_name in mro_names[1:]:
                 base_info = self.classes.get(base_name)
                 if base_info is None:
-                    raise NotImplementedError("Base class must be defined before use")
-                fields = dict(base_info.get("fields", {}))
-                field_order = list(base_info.get("field_order", []))
-                field_defaults = dict(base_info.get("defaults", {}))
+                    continue
+                for field in base_info.get("field_order", []):
+                    if field not in fields:
+                        fields[field] = len(field_order) * 8
+                        field_order.append(field)
+                for name, expr in base_info.get("defaults", {}).items():
+                    if name not in field_defaults:
+                        field_defaults[name] = expr
 
             def add_field(name: str) -> None:
                 if name in fields:
@@ -2609,12 +2694,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
             self.classes[node.name] = ClassInfo(
                 fields=fields,
-                size=len(field_order) * 8 + 8,
+                size=(len(field_order) * 8 + 8) if not dynamic else 8,
                 methods=methods,
                 field_order=field_order,
                 defaults=field_defaults,
                 class_attrs=class_attrs,
-                base=base_name,
+                bases=base_names,
+                mro=mro_names,
+                dynamic=dynamic,
             )
 
         def compile_method(item: ast.FunctionDef) -> MethodInfo:
@@ -2668,6 +2755,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
             prev_func = self.current_func_name
             prev_state = self._capture_function_state()
+            prev_class = self.current_class
+            prev_first_param = self.current_method_first_param
+            self.current_class = node.name
+            self.current_method_first_param = params[0] if params else None
             self.start_function(
                 method_symbol,
                 params=params,
@@ -2713,6 +2804,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.emit(MoltOp(kind="ret", args=[res], result=MoltValue("none")))
             self.resume_function(prev_func)
             self._restore_function_state(prev_state)
+            self.current_class = prev_class
+            self.current_method_first_param = prev_first_param
             method_attr = func_val
             if descriptor == "classmethod":
                 wrapped = MoltValue(self.next_var(), type_hint="classmethod")
@@ -2783,6 +2876,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
             prev_func = self.current_func_name
             prev_state = self._capture_function_state()
+            prev_class = self.current_class
+            prev_first_param = self.current_method_first_param
+            self.current_class = node.name
+            self.current_method_first_param = params[0] if params else None
             self.start_function(
                 poll_symbol,
                 params=["self"],
@@ -2827,6 +2924,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             closure_size = self.async_locals_base + len(self.async_locals) * 8
             self.resume_function(prev_func)
             self._restore_function_state(prev_state)
+            self.current_class = prev_class
+            self.current_method_first_param = prev_first_param
 
             func_val = MoltValue(self.next_var(), type_hint=f"Func:{wrapper_symbol}")
             self.emit(
@@ -2933,11 +3032,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="CONST_STR", args=[node.name], result=name_val))
         class_val = MoltValue(self.next_var(), type_hint="type")
         self.emit(MoltOp(kind="CLASS_NEW", args=[name_val], result=class_val))
-        if base_val is not None:
+        if base_vals:
+            if len(base_vals) == 1:
+                bases_arg = base_vals[0]
+            else:
+                bases_arg = MoltValue(self.next_var(), type_hint="tuple")
+                self.emit(MoltOp(kind="TUPLE_NEW", args=base_vals, result=bases_arg))
             self.emit(
                 MoltOp(
                     kind="CLASS_SET_BASE",
-                    args=[class_val, base_val],
+                    args=[class_val, bases_arg],
                     result=MoltValue("none"),
                 )
             )
@@ -3174,12 +3278,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if class_info is None and isinstance(node.func.value, ast.Name):
                 class_name = node.func.value.id
                 class_info = self.classes.get(class_name)
-            if (
-                class_info
-                and "methods" in class_info
-                and method in class_info["methods"]
-            ):
-                method_info = class_info["methods"][method]
+            lookup_class = class_name
+            if lookup_class is None and receiver.type_hint in self.classes:
+                lookup_class = receiver.type_hint
+            method_info = None
+            if lookup_class:
+                method_info, _ = self._resolve_method_info(lookup_class, method)
+            if method_info:
                 func_val = method_info["func"]
                 descriptor = method_info["descriptor"]
                 args = [self.visit(arg) for arg in node.args]
@@ -3642,35 +3747,36 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     name_lit = node.args[1].value
                 if name_lit and obj.type_hint in self.classes:
                     class_info = self.classes[obj.type_hint]
-                    field_map = class_info.get("fields", {})
-                    if name_lit in field_map:
-                        if class_info.get("dataclass"):
-                            idx_val = MoltValue(self.next_var(), type_hint="int")
-                            self.emit(
-                                MoltOp(
-                                    kind="CONST",
-                                    args=[field_map[name_lit]],
-                                    result=idx_val,
+                    if not class_info.get("dynamic"):
+                        field_map = class_info.get("fields", {})
+                        if name_lit in field_map:
+                            if class_info.get("dataclass"):
+                                idx_val = MoltValue(self.next_var(), type_hint="int")
+                                self.emit(
+                                    MoltOp(
+                                        kind="CONST",
+                                        args=[field_map[name_lit]],
+                                        result=idx_val,
+                                    )
                                 )
-                            )
-                            res = MoltValue(self.next_var())
-                            self.emit(
-                                MoltOp(
-                                    kind="DATACLASS_GET",
-                                    args=[obj, idx_val],
-                                    result=res,
+                                res = MoltValue(self.next_var())
+                                self.emit(
+                                    MoltOp(
+                                        kind="DATACLASS_GET",
+                                        args=[obj, idx_val],
+                                        result=res,
+                                    )
                                 )
-                            )
-                        else:
-                            res = MoltValue(self.next_var())
-                            self.emit(
-                                MoltOp(
-                                    kind="GUARDED_GETATTR",
-                                    args=[obj, name_lit, obj.type_hint],
-                                    result=res,
+                            else:
+                                res = MoltValue(self.next_var())
+                                self.emit(
+                                    MoltOp(
+                                        kind="GUARDED_GETATTR",
+                                        args=[obj, name_lit, obj.type_hint],
+                                        result=res,
+                                    )
                                 )
-                            )
-                        return res
+                            return res
                 if name_lit:
                     class_name = None
                     if obj.type_hint in self.classes:
@@ -3679,15 +3785,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         if node.args[0].id in self.classes:
                             class_name = node.args[0].id
                     if class_name:
-                        method_info = (
-                            self.classes.get(class_name, {})
-                            .get("methods", {})
-                            .get(name_lit)
+                        method_info, method_class = self._resolve_method_info(
+                            class_name, name_lit
                         )
                         if method_info:
                             descriptor = method_info["descriptor"]
                             if descriptor in {"function", "classmethod"}:
-                                res_hint = f"BoundMethod:{class_name}:{name_lit}"
+                                method_owner = method_class or class_name
+                                res_hint = f"BoundMethod:{method_owner}:{name_lit}"
                             elif descriptor == "staticmethod":
                                 res_hint = method_info["func"].type_hint
                 res = MoltValue(self.next_var(), type_hint=res_hint)
@@ -3727,36 +3832,39 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 ):
                     attr_name = node.args[1].value
                     class_info = self.classes[obj.type_hint]
-                    field_map = class_info.get("fields", {})
-                    if attr_name in field_map:
-                        if class_info.get("dataclass"):
-                            idx_val = MoltValue(self.next_var(), type_hint="int")
-                            self.emit(
-                                MoltOp(
-                                    kind="CONST",
-                                    args=[field_map[attr_name]],
-                                    result=idx_val,
+                    if not class_info.get("dynamic"):
+                        field_map = class_info.get("fields", {})
+                        if attr_name in field_map:
+                            if class_info.get("dataclass"):
+                                idx_val = MoltValue(self.next_var(), type_hint="int")
+                                self.emit(
+                                    MoltOp(
+                                        kind="CONST",
+                                        args=[field_map[attr_name]],
+                                        result=idx_val,
+                                    )
                                 )
-                            )
-                            self.emit(
-                                MoltOp(
-                                    kind="DATACLASS_SET",
-                                    args=[obj, idx_val, val],
-                                    result=MoltValue("none"),
+                                self.emit(
+                                    MoltOp(
+                                        kind="DATACLASS_SET",
+                                        args=[obj, idx_val, val],
+                                        result=MoltValue("none"),
+                                    )
                                 )
-                            )
-                            res = MoltValue(self.next_var(), type_hint="None")
-                            self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
-                        else:
-                            res = MoltValue(self.next_var(), type_hint="None")
-                            self.emit(
-                                MoltOp(
-                                    kind="SETATTR",
-                                    args=[obj, attr_name, val, obj.type_hint],
-                                    result=res,
+                                res = MoltValue(self.next_var(), type_hint="None")
+                                self.emit(
+                                    MoltOp(kind="CONST_NONE", args=[], result=res)
                                 )
-                            )
-                        return res
+                            else:
+                                res = MoltValue(self.next_var(), type_hint="None")
+                                self.emit(
+                                    MoltOp(
+                                        kind="SETATTR",
+                                        args=[obj, attr_name, val, obj.type_hint],
+                                        result=res,
+                                    )
+                                )
+                            return res
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(
                     MoltOp(
@@ -3779,11 +3887,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     and obj.type_hint in self.classes
                 ):
                     attr_name = node.args[1].value
-                    field_map = self.classes[obj.type_hint].get("fields", {})
-                    if attr_name in field_map:
-                        res = MoltValue(self.next_var(), type_hint="bool")
-                        self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=res))
-                        return res
+                    class_info = self.classes[obj.type_hint]
+                    if not class_info.get("dynamic"):
+                        field_map = class_info.get("fields", {})
+                        if attr_name in field_map:
+                            res = MoltValue(self.next_var(), type_hint="bool")
+                            self.emit(
+                                MoltOp(kind="CONST_BOOL", args=[True], result=res)
+                            )
+                            return res
                 res = MoltValue(self.next_var(), type_hint="bool")
                 self.emit(
                     MoltOp(
@@ -3793,6 +3905,37 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                 )
                 return res
+            if func_id == "super":
+                if node.keywords:
+                    raise NotImplementedError("super does not support keywords")
+                if len(node.args) == 0:
+                    if (
+                        self.current_class is None
+                        or self.current_method_first_param is None
+                    ):
+                        raise NotImplementedError(
+                            "super() without args is only supported inside class methods"
+                        )
+                    class_ref = self._emit_module_attr_get(self.current_class)
+                    obj = self._load_local_value(self.current_method_first_param)
+                    if obj is None:
+                        raise NotImplementedError("super() missing method receiver")
+                    res = MoltValue(self.next_var(), type_hint="super")
+                    self.emit(
+                        MoltOp(kind="SUPER_NEW", args=[class_ref, obj], result=res)
+                    )
+                    return res
+                if len(node.args) == 2:
+                    type_val = self.visit(node.args[0])
+                    obj_val = self.visit(node.args[1])
+                    if type_val is None or obj_val is None:
+                        raise NotImplementedError("super expects type and object")
+                    res = MoltValue(self.next_var(), type_hint="super")
+                    self.emit(
+                        MoltOp(kind="SUPER_NEW", args=[type_val, obj_val], result=res)
+                    )
+                    return res
+                raise NotImplementedError("super expects 0 or 2 arguments")
             if func_id == "classmethod":
                 if len(node.args) != 1 or node.keywords:
                     raise NotImplementedError("classmethod expects 1 argument")
@@ -4115,21 +4258,29 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     else:
                         val = MoltValue(self.next_var(), type_hint="None")
                         self.emit(MoltOp(kind="CONST_NONE", args=[], result=val))
-                    self.emit(
-                        MoltOp(
-                            kind="SETATTR",
-                            args=[res, name, val, class_id],
-                            result=MoltValue("none"),
+                    if class_info.get("dynamic"):
+                        self.emit(
+                            MoltOp(
+                                kind="SETATTR_GENERIC_PTR",
+                                args=[res, name, val],
+                                result=MoltValue("none"),
+                            )
                         )
-                    )
+                    else:
+                        self.emit(
+                            MoltOp(
+                                kind="SETATTR",
+                                args=[res, name, val, class_id],
+                                result=MoltValue("none"),
+                            )
+                        )
                 init_method = class_info.get("methods", {}).get("__init__")
-                base_name = class_info.get("base")
-                while init_method is None and base_name:
-                    base_info = self.classes.get(base_name)
-                    if base_info is None:
-                        break
-                    init_method = base_info.get("methods", {}).get("__init__")
-                    base_name = base_info.get("base")
+                if init_method is None:
+                    for base_name in class_info.get("mro", [])[1:]:
+                        base_info = self.classes.get(base_name)
+                        if base_info and base_info.get("methods", {}).get("__init__"):
+                            init_method = base_info["methods"]["__init__"]
+                            break
                 if init_method is not None:
                     init_func = init_method["func"]
                     target_name = init_func.type_hint.split(":", 1)[1]
@@ -4516,26 +4667,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return res
         method_info = None
         method_class = None
-        if (
-            class_info
-            and "methods" in class_info
-            and node.attr in class_info["methods"]
-        ):
-            method_info = class_info["methods"][node.attr]
-            method_class = obj.type_hint
-        else:
-            base_name = class_info.get("base") if class_info else None
-            while method_info is None and base_name:
-                base_info = self.classes.get(base_name)
-                if (
-                    base_info
-                    and "methods" in base_info
-                    and node.attr in base_info["methods"]
-                ):
-                    method_info = base_info["methods"][node.attr]
-                    method_class = base_name
-                    break
-                base_name = base_info.get("base") if base_info else None
+        if class_info:
+            method_info, method_class = self._resolve_method_info(
+                obj.type_hint, node.attr
+            )
         if method_info and method_info["descriptor"] == "function":
             func_val = method_info["func"]
             class_name = method_class or obj.type_hint
@@ -4563,6 +4698,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(
                 MoltOp(
                     kind="GETATTR_GENERIC_OBJ",
+                    args=[obj, node.attr],
+                    result=res,
+                )
+            )
+            return res
+        if self.classes[expected_class].get("dynamic"):
+            self.emit(
+                MoltOp(
+                    kind="GETATTR_GENERIC_PTR",
                     args=[obj, node.attr],
                     result=res,
                 )
@@ -4651,7 +4795,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         else:
             field_map = class_info.get("fields", {}) if class_info else {}
             if obj is not None and obj.type_hint in self.classes:
-                if node.target.attr in field_map:
+                if class_info and class_info.get("dynamic"):
+                    self.emit(
+                        MoltOp(
+                            kind="SETATTR_GENERIC_PTR",
+                            args=[obj, node.target.attr, value_node],
+                            result=MoltValue("none"),
+                        )
+                    )
+                elif node.target.attr in field_map:
                     self.emit(
                         MoltOp(
                             kind="SETATTR",
@@ -4712,7 +4864,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 else:
                     field_map = class_info.get("fields", {}) if class_info else {}
                     if obj is not None and obj.type_hint in self.classes:
-                        if target.attr in field_map:
+                        if class_info and class_info.get("dynamic"):
+                            self.emit(
+                                MoltOp(
+                                    kind="SETATTR_GENERIC_PTR",
+                                    args=[obj, target.attr, value_node],
+                                    result=MoltValue("none"),
+                                )
+                            )
+                        elif target.attr in field_map:
                             self.emit(
                                 MoltOp(
                                     kind="SETATTR",
@@ -4896,7 +5056,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return None
             field_map = class_info.get("fields", {}) if class_info else {}
             if obj is not None and obj.type_hint in self.classes:
-                if node.target.attr in field_map:
+                if class_info and class_info.get("dynamic"):
+                    self.emit(
+                        MoltOp(
+                            kind="SETATTR_GENERIC_PTR",
+                            args=[obj, node.target.attr, res],
+                            result=MoltValue("none"),
+                        )
+                    )
+                elif node.target.attr in field_map:
                     self.emit(
                         MoltOp(
                             kind="SETATTR",
@@ -7040,6 +7208,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 json_ops.append(
                     {
                         "kind": "class_set_base",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "SUPER_NEW":
+                json_ops.append(
+                    {
+                        "kind": "super_new",
                         "args": [arg.name for arg in op.args],
                         "out": op.result.name,
                     }

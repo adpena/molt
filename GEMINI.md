@@ -60,6 +60,7 @@ The Molt compiler itself is designed to be "AI-friendly". Its modular IR and cle
 - Agents may use `gh` and git over SSH; commit after cohesive changes and run lint/test once at the end rather than in repeated cycles.
 - After any push, monitor CI logs until green; if failures appear, propose fixes, implement them, push again, and repeat until green.
 - Always run tests via `uv run --python 3.12/3.13/3.14`; never use the raw `.venv` interpreter directly.
+- Update `CHECKPOINT.md` after each turn and when nearing context compaction; include a timestamp and the latest git commit info.
 
 ---
 

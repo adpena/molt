@@ -2723,6 +2723,23 @@ impl SimpleBackend {
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
+                "super_new" => {
+                    let args = op.args.as_ref().unwrap();
+                    let type_bits = vars.get(&args[0]).expect("Type not found");
+                    let obj_bits = vars.get(&args[1]).expect("Object not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_super_new", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*type_bits, *obj_bits]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
                 "classmethod_new" => {
                     let args = op.args.as_ref().unwrap();
                     let func_bits = vars.get(&args[0]).expect("Func not found");

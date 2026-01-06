@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import platform
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -13,6 +15,13 @@ def run_uv(args: list[str], python: str | None = None) -> None:
     cmd = ["uv", "run"]
     if python:
         cmd.extend(["--python", python])
+        if (
+            python == "3.14"
+            and sys.platform == "darwin"
+            and platform.machine().lower() in {"arm64", "aarch64"}
+            and shutil.which("python3.14")
+        ):
+            cmd.append("--no-managed-python")
     cmd.extend(args)
     subprocess.check_call(cmd, cwd=ROOT)
 

@@ -69,9 +69,12 @@ const getBuiltinType = (tag) => {
     type: 'class',
     name,
     attrs: new Map(),
-    baseBits,
+    baseBits: boxNone(),
+    basesBits: null,
+    mroBits: null,
   });
   builtinTypes.set(tag, clsBits);
+  setClassBases(clsBits, baseBits);
   return clsBits;
 };
 const heap = new Map();
@@ -173,6 +176,116 @@ const getBytearray = (val) => {
 };
 const listFromArray = (items) => boxPtr({ type: 'list', items });
 const tupleFromArray = (items) => boxPtr({ type: 'tuple', items });
+const classBasesList = (classBits) => {
+  const cls = getClass(classBits);
+  if (!cls) return [];
+  if (cls.basesBits) {
+    const bases = getTuple(cls.basesBits);
+    if (bases) return [...bases.items];
+  }
+  if (cls.baseBits && !isNone(cls.baseBits)) return [cls.baseBits];
+  return [];
+};
+const c3Merge = (seqs) => {
+  const result = [];
+  while (true) {
+    seqs = seqs.filter((seq) => seq.length);
+    if (!seqs.length) return result;
+    let candidate = null;
+    for (const seq of seqs) {
+      const head = seq[0];
+      let inTail = false;
+      for (const other of seqs) {
+        if (other.slice(1).includes(head)) {
+          inTail = true;
+          break;
+        }
+      }
+      if (!inTail) {
+        candidate = head;
+        break;
+      }
+    }
+    if (candidate === null) return null;
+    result.push(candidate);
+    for (const seq of seqs) {
+      if (seq.length && seq[0] === candidate) {
+        seq.shift();
+      }
+    }
+  }
+};
+const classMroList = (classBits) => {
+  const cls = getClass(classBits);
+  if (!cls) return [classBits];
+  if (cls.mroBits) {
+    const mroTuple = getTuple(cls.mroBits);
+    if (mroTuple) return [...mroTuple.items];
+  }
+  const bases = classBasesList(classBits);
+  if (!bases.length) return [classBits];
+  const merged = c3Merge([...bases.map((base) => [...classMroList(base)]), [...bases]]);
+  if (!merged) return [classBits, ...bases];
+  return [classBits, ...merged];
+};
+const setClassBases = (classBits, baseBits) => {
+  const cls = getClass(classBits);
+  if (!cls) return;
+  let basesBits = baseBits;
+  let bases = [];
+  if (basesBits && !isNone(basesBits)) {
+    const tuple = getTuple(basesBits);
+    if (tuple) {
+      bases = [...tuple.items];
+    } else if (getClass(basesBits)) {
+      bases = [basesBits];
+      basesBits = tupleFromArray(bases);
+    } else {
+      throw new Error('TypeError: base must be a type object or tuple of types');
+    }
+  } else {
+    basesBits = tupleFromArray([]);
+  }
+  const seen = new Set();
+  for (const base of bases) {
+    if (seen.has(base)) {
+      throw new Error('TypeError: duplicate base class');
+    }
+    seen.add(base);
+    if (!getClass(base)) {
+      throw new Error('TypeError: base must be a type object');
+    }
+    if (base === classBits) {
+      throw new Error('TypeError: class cannot inherit from itself');
+    }
+  }
+  const mro = c3Merge([...bases.map((base) => [...classMroList(base)]), [...bases]]);
+  if (!mro) {
+    throw new Error(
+      'TypeError: Cannot create a consistent method resolution order (MRO) for bases'
+    );
+  }
+  const mroBits = tupleFromArray([classBits, ...mro]);
+  cls.baseBits = bases.length ? bases[0] : boxNone();
+  cls.basesBits = basesBits;
+  cls.mroBits = mroBits;
+  cls.attrs.set('__bases__', basesBits);
+  cls.attrs.set('__mro__', mroBits);
+};
+let superTypeBits = null;
+const getSuperType = () => {
+  if (superTypeBits) return superTypeBits;
+  superTypeBits = boxPtr({
+    type: 'class',
+    name: 'super',
+    attrs: new Map(),
+    baseBits: boxNone(),
+    basesBits: null,
+    mroBits: null,
+  });
+  setClassBases(superTypeBits, getBuiltinType(100));
+  return superTypeBits;
+};
 const getStr = (val) => {
   const obj = getObj(val);
   if (obj && obj.type === 'str') return obj.value;
@@ -229,12 +342,18 @@ const lookupExceptionAttr = (exc, name) => {
       return undefined;
   }
 };
-const lookupClassAttr = (classBits, name, instanceBits = null) => {
-  let currentBits = classBits;
-  let depth = 0;
-  while (currentBits && !isNone(currentBits)) {
+const lookupClassAttr = (classBits, name, instanceBits = null, startAfter = null) => {
+  const mro = classMroList(classBits);
+  let foundStart = startAfter === null;
+  for (const currentBits of mro) {
+    if (!foundStart) {
+      if (currentBits === startAfter) {
+        foundStart = true;
+      }
+      continue;
+    }
     const cls = getClass(currentBits);
-    if (!cls) return undefined;
+    if (!cls) continue;
     if (cls.attrs.has(name)) {
       const attrVal = cls.attrs.get(name);
       if (instanceBits && getFunction(attrVal)) {
@@ -242,11 +361,6 @@ const lookupClassAttr = (classBits, name, instanceBits = null) => {
       }
       return attrVal;
     }
-    const baseBits = cls.baseBits;
-    if (!baseBits || isNone(baseBits)) return undefined;
-    currentBits = baseBits;
-    depth += 1;
-    if (depth > 64) return undefined;
   }
   return undefined;
 };
@@ -254,6 +368,17 @@ const lookupAttr = (objBits, name) => {
   const exc = getException(objBits);
   if (exc) {
     return lookupExceptionAttr(exc, name);
+  }
+  const superObj = getObj(objBits);
+  if (superObj && superObj.type === 'super') {
+    const startBits = superObj.startBits;
+    const targetBits = superObj.objBits;
+    const targetClass = getClass(targetBits);
+    const objTypeBits = targetClass ? targetBits : typeOfBits(targetBits);
+    const instanceBits = targetClass ? null : targetBits;
+    const val = lookupClassAttr(objTypeBits, name, instanceBits, startBits);
+    if (val !== undefined) return val;
+    return undefined;
   }
   const cls = getClass(objBits);
   if (cls) {
@@ -274,19 +399,8 @@ const lookupAttr = (objBits, name) => {
   return undefined;
 };
 const isSubclass = (subBits, classBits) => {
-  let current = subBits;
-  let depth = 0;
-  while (current && !isNone(current)) {
-    if (current === classBits) return true;
-    const cls = getClass(current);
-    if (!cls) return false;
-    const baseBits = cls.baseBits;
-    if (!baseBits || isNone(baseBits) || baseBits === current) return false;
-    current = baseBits;
-    depth += 1;
-    if (depth > 64) return false;
-  }
-  return false;
+  const mro = classMroList(subBits);
+  return mro.includes(classBits);
 };
 const typeOfBits = (objBits) => {
   if (isTag(objBits, TAG_NONE)) return getBuiltinType(4);
@@ -295,6 +409,7 @@ const typeOfBits = (objBits) => {
   const obj = getObj(objBits);
   if (obj) {
     if (obj.type === 'class') return getBuiltinType(101);
+    if (obj.type === 'super') return getSuperType();
     if (obj.type === 'str') return getBuiltinType(5);
     if (obj.type === 'bytes') return getBuiltinType(6);
     if (obj.type === 'bytearray') return getBuiltinType(7);
@@ -1059,13 +1174,12 @@ BASE_IMPORTS = """\
       name: name ?? '<class>',
       attrs: new Map(),
       baseBits: boxNone(),
+      basesBits: null,
+      mroBits: null,
     });
   },
   class_set_base: (classBits, baseBits) => {
-    const cls = getClass(classBits);
-    if (cls) {
-      cls.baseBits = baseBits;
-    }
+    setClassBases(classBits, baseBits);
     return boxNone();
   },
   builtin_type: (tagBits) => {
@@ -1129,6 +1243,8 @@ BASE_IMPORTS = """\
     }),
   bound_method_new: (funcBits, selfBits) =>
     boxPtr({ type: 'bound_method', func: funcBits, self: selfBits }),
+  super_new: (typeBits, objBits) =>
+    boxPtr({ type: 'super', startBits: typeBits, objBits }),
   classmethod_new: () => boxNone(),
   staticmethod_new: () => boxNone(),
   property_new: () => boxNone(),
