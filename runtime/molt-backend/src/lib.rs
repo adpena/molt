@@ -2232,11 +2232,8 @@ impl SimpleBackend {
                             .module
                             .declare_function("molt_closure_store", Linkage::Import, &store_sig)
                             .unwrap();
-                        let local_callee =
-                            self.module.declare_func_in_func(callee, builder.func);
-                        builder
-                            .ins()
-                            .call(local_callee, &[self_ptr, offset, res]);
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        builder.ins().call(local_callee, &[self_ptr, offset, res]);
                     }
 
                     let pending_const = builder.ins().iconst(types::I64, pending_bits());

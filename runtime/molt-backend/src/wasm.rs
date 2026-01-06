@@ -342,9 +342,7 @@ impl WasmBackend {
             let type_idx = if func_ir.name.ends_with("_poll") {
                 2
             } else {
-                *user_type_map
-                    .get(&func_ir.params.len())
-                    .unwrap_or(&0)
+                *user_type_map.get(&func_ir.params.len()).unwrap_or(&0)
             };
             self.compile_func(
                 func_ir,
@@ -1944,9 +1942,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let name = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(name));
-                        func.instruction(&Instruction::Call(
-                            import_ids["module_cache_get"],
-                        ));
+                        func.instruction(&Instruction::Call(import_ids["module_cache_get"]));
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
@@ -1956,9 +1952,7 @@ impl WasmBackend {
                         let module = locals[&args[1]];
                         func.instruction(&Instruction::LocalGet(name));
                         func.instruction(&Instruction::LocalGet(module));
-                        func.instruction(&Instruction::Call(
-                            import_ids["module_cache_set"],
-                        ));
+                        func.instruction(&Instruction::Call(import_ids["module_cache_set"]));
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
@@ -1968,9 +1962,7 @@ impl WasmBackend {
                         let name = locals[&args[1]];
                         func.instruction(&Instruction::LocalGet(module));
                         func.instruction(&Instruction::LocalGet(name));
-                        func.instruction(&Instruction::Call(
-                            import_ids["module_get_attr"],
-                        ));
+                        func.instruction(&Instruction::Call(import_ids["module_get_attr"]));
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
@@ -1982,9 +1974,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(module));
                         func.instruction(&Instruction::LocalGet(name));
                         func.instruction(&Instruction::LocalGet(val));
-                        func.instruction(&Instruction::Call(
-                            import_ids["module_set_attr"],
-                        ));
+                        func.instruction(&Instruction::Call(import_ids["module_set_attr"]));
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
