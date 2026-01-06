@@ -291,12 +291,12 @@ impl WasmBackend {
                 continue;
             }
             let arity = func_ir.params.len();
-            if !user_type_map.contains_key(&arity) {
+            if let std::collections::hash_map::Entry::Vacant(entry) = user_type_map.entry(arity) {
                 self.types.function(
-                    std::iter::repeat(ValType::I64).take(arity),
+                    std::iter::repeat_n(ValType::I64, arity),
                     std::iter::once(ValType::I64),
                 );
-                user_type_map.insert(arity, next_type_idx);
+                entry.insert(next_type_idx);
                 next_type_idx += 1;
             }
         }
@@ -1900,7 +1900,7 @@ impl WasmBackend {
                     }
                     "func_new" => {
                         let func_name = op.s_value.as_ref().unwrap();
-                        let arity = op.value.unwrap_or(0) as i64;
+                        let arity = op.value.unwrap_or(0);
                         let table_idx = func_map[func_name] as i64;
                         func.instruction(&Instruction::I64Const(table_idx));
                         func.instruction(&Instruction::I64Const(arity));
