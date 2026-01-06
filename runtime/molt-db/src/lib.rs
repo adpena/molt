@@ -89,15 +89,17 @@ impl<T> Pool<T> {
 }
 
 impl<T> Pooled<T> {
-    pub fn as_ref(&self) -> &T {
-        self.value
-            .as_ref()
-            .expect("Pooled value missing (already released)")
-    }
-
     pub fn into_inner(mut self) -> T {
         self.value
             .take()
+            .expect("Pooled value missing (already released)")
+    }
+}
+
+impl<T> AsRef<T> for Pooled<T> {
+    fn as_ref(&self) -> &T {
+        self.value
+            .as_ref()
             .expect("Pooled value missing (already released)")
     }
 }
