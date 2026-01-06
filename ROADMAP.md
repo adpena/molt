@@ -16,6 +16,7 @@
 ## Stdlib
 - Partial: asyncio shim (`run`/`sleep` lowered to runtime); loop/task APIs and delay semantics still pending.
 - Partial: shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pprint`, `string`, `sys`, and `os` (capability-gated env access).
+- Import-only allowlist expanded for `base64`, `binascii`, `pickle`, `unittest`, `site`, and `sysconfig` (API parity pending).
 
 ## Tooling
 - Keep type facts + `ty` validation wired into build/lint flows and surface regressions early.

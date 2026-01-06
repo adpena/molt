@@ -11,6 +11,7 @@
 - **Determinism first:** hashing, ordering, and file/system APIs must preserve deterministic output.
 - **Enforcement:** use `molt.capabilities` to check or require capability tokens in stdlib shims.
 - **Import allowlist:** modules listed in the matrix are importable; missing implementations load empty stubs for dependency tracking.
+- **Import-only stubs:** allowlisted modules may load as empty module objects; attribute access raises `AttributeError` and signals missing coverage rather than crashing the compiler.
 
 ## 1. Policy: Core vs Import vs Gated
 - **Core (always available):** builtins and compiler/runtime intrinsics only.
@@ -57,6 +58,8 @@
 | io | Capability-gated | Partial | P2 | SL3 | stdlib | Native `open`/`read`/`write`/`close` with `fs.read`/`fs.write` gating; streams pending. |
 | os | Capability-gated | Partial | P2 | SL3 | stdlib | Minimal shim: env access gated via `env.read`/`env.write`; path helpers only. |
 | sys | Capability-gated | Partial | P2 | SL3 | stdlib | Minimal shim: argv/version/path/modules + recursion limits; host info gated via `env.read`. |
+| site | Capability-gated | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; path config gated via `env.read`/`fs.read`. |
+| sysconfig | Capability-gated | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; host/path data gated via `env.read`/`fs.read`. |
 | subprocess | Capability-gated | Planned | P3 | SL3 | stdlib | Process spawn control. |
 | socket | Capability-gated | Planned | P2 | SL3 | stdlib | Network sockets. |
 | ssl | Capability-gated | Planned | P3 | SL3 | stdlib | TLS primitives. |
@@ -74,6 +77,10 @@
 | hashlib/hmac | Stdlib | Planned | P2 | SL2 | stdlib/runtime | Hashing primitives (deterministic). |
 | secrets | Stdlib | Planned | P3 | SL3 | stdlib | Crypto RNG (gated). |
 | uuid | Stdlib | Planned | P2 | SL2 | stdlib | UUID generation (deterministic seed). |
+| base64 | Stdlib | Planned | P2 | SL2 | stdlib | Import-only allowlist stub; encoding/decoding parity pending. |
+| binascii | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; low-level codecs pending. |
+| pickle | Stdlib | Planned | P2 | SL2 | stdlib | Import-only allowlist stub; deterministic serialization pending. |
+| unittest | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; runner/assertions parity pending. |
 | argparse | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; CLI parsing parity pending. |
 | ast | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; AST API parity pending. |
 | atexit | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; exit handler semantics pending. |
