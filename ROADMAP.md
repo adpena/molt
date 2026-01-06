@@ -20,6 +20,9 @@
 - Partial: shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pprint`, `string`, `sys`, and `os` (capability-gated env access).
 - Import-only allowlist expanded for `base64`, `binascii`, `pickle`, `unittest`, `site`, and `sysconfig` (API parity pending).
 
+## Offload / IPC
+- Partial: `molt_accel` v0 scaffolding (stdio framing + client + decorator); worker/IPC contract + demo still pending.
+
 ## Tooling
 - Keep type facts + `ty` validation wired into build/lint flows and surface regressions early.
 - Track complex performance work in `OPTIMIZATIONS_PLAN.md` before large refactors.

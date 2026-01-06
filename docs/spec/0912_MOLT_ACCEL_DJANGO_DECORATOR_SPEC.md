@@ -4,6 +4,7 @@
 **Priority:** P0
 **Audience:** Python integrators, AI coding agents
 **Goal:** Provide a minimal, reliable client library that makes offloading one endpoint trivial.
+**Implementation status:** Initial stdio client + decorator scaffolding exists in `src/molt_accel` (framing + JSON/MsgPack payloads). Cancellation/retries/metrics and Django test-client coverage are still pending.
 
 ---
 
