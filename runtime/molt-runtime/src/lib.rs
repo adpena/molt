@@ -2292,10 +2292,10 @@ fn issubclass_bits(sub_bits: u64, class_bits: u64) -> bool {
             return false;
         }
         if let Some(mro) = class_mro_ref(ptr) {
-            return mro.iter().any(|bit| *bit == class_bits);
+            return mro.contains(&class_bits);
         }
     }
-    class_mro_vec(sub_bits).iter().any(|bit| *bit == class_bits)
+    class_mro_vec(sub_bits).contains(&class_bits)
 }
 
 fn isinstance_bits(val_bits: u64, class_bits: u64) -> bool {
@@ -10966,9 +10966,7 @@ unsafe fn class_attr_lookup_raw_mro(class_ptr: *mut u8, attr_bits: u64) -> Optio
         }
         let bases_bits = class_bases_bits(current_ptr);
         let bases = class_bases_vec(bases_bits);
-        let Some(next_bits) = bases.first().copied() else {
-            return None;
-        };
+        let next_bits = bases.first().copied()?;
         let next_obj = obj_from_bits(next_bits);
         let next_ptr = next_obj.as_ptr()?;
         if object_type_id(next_ptr) != TYPE_ID_TYPE {
@@ -11149,9 +11147,7 @@ unsafe fn attr_lookup_ptr(obj_ptr: *mut u8, attr_bits: u64) -> Option<u64> {
         } else {
             type_of_bits(obj_bits)
         };
-        let Some(obj_type_ptr) = obj_from_bits(obj_type_bits).as_ptr() else {
-            return None;
-        };
+        let obj_type_ptr = obj_from_bits(obj_type_bits).as_ptr()?;
         if object_type_id(obj_type_ptr) != TYPE_ID_TYPE {
             return None;
         }
