@@ -93,6 +93,7 @@ Ten-item parity plan details live in `docs/spec/0015_STDLIB_COMPATIBILITY_MATRIX
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3): capability-gated I/O (`io`, `os`, `sys`, `pathlib`).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3): network/process gating (`socket`, `ssl`, `subprocess`, `asyncio`).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3): `typing` runtime helpers + `__annotations__` preservation.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3): import-only allowlisted stdlib modules (`argparse`, `ast`, `atexit`, `collections.abc`, `importlib`, `platform`, `queue`, `shlex`, `shutil`, `textwrap`, `time`, `tomllib`, `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pprint`, `string`, `numbers`, `unicodedata`, `glob`, `tempfile`, `ctypes`) to minimal parity.
 
 ---
 

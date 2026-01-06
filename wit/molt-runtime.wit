@@ -52,6 +52,11 @@ interface intrinsics {
     get_attr_object: func(obj: molt-object, attr_ptr: molt-ptr, attr_len: u64) -> molt-object;
     set_attr_generic: func(obj: molt-ptr, attr_ptr: molt-ptr, attr_len: u64, val: molt-object) -> molt-object;
     set_attr_object: func(obj: molt-object, attr_ptr: molt-ptr, attr_len: u64, val: molt-object) -> molt-object;
+    module_new: func(name: molt-object) -> molt-object;
+    module_cache_get: func(name: molt-object) -> molt-object;
+    module_cache_set: func(name: molt-object, module: molt-object) -> molt-object;
+    module_get_attr: func(module: molt-object, attr: molt-object) -> molt-object;
+    module_set_attr: func(module: molt-object, attr: molt-object, val: molt-object) -> molt-object;
     get_attr_name: func(obj: molt-object, name: molt-object) -> molt-object;
     get_attr_name_default: func(obj: molt-object, name: molt-object, default: molt-object) -> molt-object;
     has_attr_name: func(obj: molt-object, name: molt-object) -> molt-object;
@@ -81,7 +86,9 @@ interface intrinsics {
     tuple_count: func(tuple: molt-object, val: molt-object) -> molt-object;
     tuple_index: func(tuple: molt-object, val: molt-object) -> molt-object;
     iter: func(obj: molt-object) -> molt-object;
+    aiter: func(obj: molt-object) -> molt-object;
     iter_next: func(iter: molt-object) -> molt-object;
+    anext: func(iter: molt-object) -> molt-object;
     generator_send: func(gen: molt-object, val: molt-object) -> molt-object;
     generator_throw: func(gen: molt-object, exc: molt-object) -> molt-object;
     generator_close: func(gen: molt-object) -> molt-object;
@@ -115,6 +122,8 @@ interface intrinsics {
     dataclass_set: func(obj: molt-object, index: molt-object, value: molt-object) -> molt-object;
     dataclass_set_class: func(obj: molt-object, class_obj: molt-object) -> molt-object;
     class_new: func(name: molt-object) -> molt-object;
+    func_new: func(fn_idx: u64, arity: u64) -> molt-object;
+    bound_method_new: func(func: molt-object, self_obj: molt-object) -> molt-object;
     classmethod_new: func(func: molt-object) -> molt-object;
     staticmethod_new: func(func: molt-object) -> molt-object;
     property_new: func(getter: molt-object, setter: molt-object, deleter: molt-object) -> molt-object;

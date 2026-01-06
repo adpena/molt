@@ -214,6 +214,23 @@ def molt_spawn(task: Any) -> None:
     raise TypeError("molt_spawn expects a coroutine or callable")
 
 
+def molt_block_on(task: Any) -> Any:
+    loop = _ensure_loop()
+    if asyncio.iscoroutine(task) or isinstance(task, asyncio.Future):
+        fut = asyncio.run_coroutine_threadsafe(task, loop)
+        return fut.result()
+    if callable(task):
+        return molt_block_on(task())
+    raise TypeError("molt_block_on expects a coroutine or callable")
+
+
+def molt_async_sleep(_delay: float = 0.0) -> Any:
+    async def _sleep() -> None:
+        return None
+
+    return _sleep()
+
+
 def molt_chan_new(maxsize: int = 0) -> Any:
     lib = load_runtime() if _use_runtime_concurrency() else None
     if lib is not None:
@@ -260,6 +277,8 @@ def install() -> None:
     setattr(builtins, "molt_chan_new", molt_chan_new)
     setattr(builtins, "molt_chan_send", molt_chan_send)
     setattr(builtins, "molt_chan_recv", molt_chan_recv)
+    setattr(builtins, "molt_block_on", molt_block_on)
+    setattr(builtins, "molt_async_sleep", molt_async_sleep)
     setattr(builtins, "molt_stream", net_mod.stream)
     setattr(builtins, "molt_stream_channel", net_mod.stream_channel)
     setattr(builtins, "molt_ws_pair", net_mod.ws_pair)

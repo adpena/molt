@@ -1212,6 +1212,21 @@ impl SimpleBackend {
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
+                "aiter" => {
+                    let args = op.args.as_ref().unwrap();
+                    let obj = vars.get(&args[0]).expect("Async iter source not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_aiter", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*obj]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
                 "iter_next" => {
                     let args = op.args.as_ref().unwrap();
                     let iter = vars.get(&args[0]).expect("Iter not found");
@@ -1221,6 +1236,21 @@ impl SimpleBackend {
                     let callee = self
                         .module
                         .declare_function("molt_iter_next", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*iter]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "anext" => {
+                    let args = op.args.as_ref().unwrap();
+                    let iter = vars.get(&args[0]).expect("Async iter not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_anext", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*iter]);
@@ -2165,6 +2195,11 @@ impl SimpleBackend {
                 "state_transition" => {
                     let args = op.args.as_ref().unwrap();
                     let future = vars.get(&args[0]).expect("Future not found");
+                    let slot_bits = if args.len() > 1 {
+                        Some(*vars.get(&args[1]).expect("Await slot not found"))
+                    } else {
+                        None
+                    };
                     let next_state_id = op.value.unwrap();
                     let self_ptr = *vars.get("self").expect("Self not found");
 
@@ -2186,6 +2221,24 @@ impl SimpleBackend {
                         .call_indirect(sig_ref, poll_fn_addr, &[*future]);
                     let res = builder.inst_results(call)[0];
 
+                    if let Some(bits) = slot_bits {
+                        let offset = unbox_int(&mut builder, bits);
+                        let mut store_sig = self.module.make_signature();
+                        store_sig.params.push(AbiParam::new(types::I64));
+                        store_sig.params.push(AbiParam::new(types::I64));
+                        store_sig.params.push(AbiParam::new(types::I64));
+                        store_sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_closure_store", Linkage::Import, &store_sig)
+                            .unwrap();
+                        let local_callee =
+                            self.module.declare_func_in_func(callee, builder.func);
+                        builder
+                            .ins()
+                            .call(local_callee, &[self_ptr, offset, res]);
+                    }
+
                     let pending_const = builder.ins().iconst(types::I64, pending_bits());
                     let is_pending = builder.ins().icmp(IntCC::Equal, res, pending_const);
 
@@ -2204,7 +2257,9 @@ impl SimpleBackend {
 
                     builder.switch_to_block(ready_path);
                     builder.seal_block(ready_path);
-                    vars.insert(op.out.unwrap(), res);
+                    if args.len() <= 1 {
+                        vars.insert(op.out.unwrap(), res);
+                    }
                     builder.ins().jump(next_block, &[]);
 
                     builder.switch_to_block(next_block);

@@ -10,8 +10,12 @@
 - Implemented: class objects + basic descriptors (`classmethod`, `staticmethod`, `property`).
 - Implemented: exception chaining with explicit `__cause__`, implicit `__context__`, and `__suppress_context__`.
 - TODO(type-coverage, owner:runtime, milestone:TC2): inheritance semantics + full descriptor protocol (setters/deleters, `super`).
-- Partial: wasm generator state machines + closure slot intrinsics + channel send/recv intrinsics + async pending/block_on parity landed; remaining generator state object and full async iteration/scheduler semantics.
-- Partial: async iteration builtins `aiter`/`anext` + `async for` lowering over sync iterables; still missing real async iterator protocol.
+- Partial: wasm generator state machines + closure slot intrinsics + channel send/recv intrinsics + async pending/block_on parity landed; remaining generator state object and scheduler semantics.
+- Implemented: async iterator protocol (`__aiter__`/`__anext__`) with `aiter`/`anext` lowering and `async for` support; sync-iter fallback remains for now (awaitable `anext` outside `await` still pending).
+
+## Stdlib
+- Partial: asyncio shim (`run`/`sleep` lowered to runtime); loop/task APIs and delay semantics still pending.
+- Partial: shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pprint`, `string`, `sys`, and `os` (capability-gated env access).
 
 ## Tooling
 - Keep type facts + `ty` validation wired into build/lint flows and surface regressions early.

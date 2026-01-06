@@ -35,7 +35,7 @@
 | Builtin | Required Semantics (short) | Status | Priority | Milestone | Owner |
 | --- | --- | --- | --- | --- | --- |
 | abs | numeric absolute value | Planned | P1 | TC2 | frontend/runtime |
-| aiter | async iterator protocol | Partial | P1 | TC2 | frontend/runtime |
+| aiter | async iterator protocol | Supported | P1 | TC2 | frontend/runtime |
 | all | truthiness reduction | Planned | P1 | TC2 | frontend/runtime |
 | anext | async next with default | Partial | P1 | TC2 | frontend/runtime |
 | any | truthiness reduction | Planned | P1 | TC2 | frontend/runtime |
@@ -122,8 +122,8 @@
   - TODO(type-coverage, owner:frontend, milestone:TC2): builtin iterators (`iter`, `next`, `reversed`, `enumerate`, `zip`, `map`, `filter`).
   - TODO(type-coverage, owner:frontend, milestone:TC2): builtin numeric ops (`abs`, `round`, `pow`, `divmod`, `min`, `max`, `sum`).
   - TODO(type-coverage, owner:frontend, milestone:TC2): builtin conversions (`int`, `float`, `complex`, `str`, `bool`).
-  - Implemented (partial): `aiter`/`anext` + `async for` lowering over sync iterables.
-  - TODO(type-coverage, owner:frontend, milestone:TC2): full async iterator protocol (`__aiter__`/`__anext__`) and async-for parity.
+- Implemented: `aiter`/`anext` lowering + async-for parity with `__aiter__`/`__anext__` support (sync-iter fallback retained for now).
+- TODO(type-coverage, owner:frontend, milestone:TC2): `anext` awaitable support outside `await` expressions.
 - **TC3 (Late):** memoryview, type/object, modules, descriptors.
   - TODO(type-coverage, owner:runtime, milestone:TC3): memoryview format codes, multidimensional shapes, and advanced buffer exports.
   - TODO(type-coverage, owner:stdlib, milestone:TC3): import/module rules + module object model (`__import__`, package resolution, `sys.path` policy).

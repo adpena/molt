@@ -18,21 +18,32 @@ def test_wasm_async_protocol_parity(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "async_protocol.py"
     src.write_text(
+        "class Counter:\n"
+        "    def __init__(self, n):\n"
+        "        self.i = 1\n"
+        "        self.n = n\n"
+        "    def __aiter__(self):\n"
+        "        return self\n"
+        "    async def __anext__(self):\n"
+        "        if self.i > self.n:\n"
+        "            raise StopAsyncIteration\n"
+        "        val = self.i\n"
+        "        self.i += 1\n"
+        "        await asyncio.sleep(0)\n"
+        "        return val\n"
+        "\n"
         "async def main():\n"
-        "    print(1)\n"
-        "    await asyncio.sleep(0)\n"
-        "    print(2)\n"
-        "    await asyncio.sleep(0)\n"
-        "    print(3)\n"
+        "    async for item in Counter(3):\n"
+        "        print(item)\n"
         "    async for item in [20, 30]:\n"
         "        print(item)\n"
-        "    it = aiter([10])\n"
+        "    it = aiter(Counter(1))\n"
         "    print(await anext(it))\n"
         "    try:\n"
         "        await anext(it)\n"
         "    except StopAsyncIteration:\n"
         "        print('done')\n"
-        "    it2 = aiter([])\n"
+        "    it2 = aiter(Counter(0))\n"
         "    print(await anext(it2, 7))\n"
         "\n"
         "asyncio.run(main())\n"
@@ -63,7 +74,7 @@ def test_wasm_async_protocol_parity(tmp_path: Path) -> None:
         )
         assert run.returncode == 0, run.stderr
         assert run.stdout.strip() == "\n".join(
-            ["1", "2", "3", "20", "30", "10", "done", "7"]
+            ["1", "2", "3", "20", "30", "1", "done", "7"]
         )
     finally:
         if not existed and output_wasm.exists():

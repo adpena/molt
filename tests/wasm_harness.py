@@ -35,14 +35,16 @@ const boxBool = (b) => QNAN | TAG_BOOL | (b ? 1n : 0n);
 const boxNone = () => QNAN | TAG_NONE;
 const boxPending = () => QNAN | TAG_PENDING;
 const heap = new Map();
+const instanceClasses = new Map();
 let nextPtr = 1n << 40n;
 let memory = null;
 let table = null;
-let asyncSleepCalled = false;
 const chanQueues = new Map();
 const chanCaps = new Map();
+const moduleCache = new Map();
 let nextChanId = 1n;
 let heapPtr = 1 << 20;
+const HEADER_SIZE = 32;
 const align = (size, align) => (size + (align - 1)) & ~(align - 1);
 const isNone = (val) => isTag(val, TAG_NONE);
 const boxPtrAddr = (addr) => QNAN | TAG_PTR | (BigInt(addr) & POINTER_MASK);
@@ -53,7 +55,52 @@ const boxPtr = (obj) => {
   return QNAN | TAG_PTR | id;
 };
 const getObj = (val) => heap.get(val & POINTER_MASK);
-const isGenerator = (val) => isPtr(val) && !heap.has(val & POINTER_MASK);
+const getFunction = (val) => {
+  const obj = getObj(val);
+  if (obj && obj.type === 'function') return obj;
+  return null;
+};
+const getBoundMethod = (val) => {
+  const obj = getObj(val);
+  if (obj && obj.type === 'bound_method') return obj;
+  return null;
+};
+const getClass = (val) => {
+  const obj = getObj(val);
+  if (obj && obj.type === 'class') return obj;
+  return null;
+};
+const getModule = (val) => {
+  const obj = getObj(val);
+  if (obj && obj.type === 'module') return obj;
+  return null;
+};
+const callFunctionBits = (funcBits, args) => {
+  const func = getFunction(funcBits);
+  if (!func || !table) {
+    throw new Error('TypeError: call expects function object');
+  }
+  const fn = table.get(func.idx);
+  if (!fn) {
+    throw new Error('TypeError: call expects function object');
+  }
+  return fn(...args);
+};
+const callCallable0 = (callableBits) => {
+  const bound = getBoundMethod(callableBits);
+  if (bound) {
+    return callFunctionBits(bound.func, [bound.self]);
+  }
+  const func = getFunction(callableBits);
+  if (func) {
+    return callFunctionBits(callableBits, []);
+  }
+  throw new Error('TypeError: object is not callable');
+};
+const isGenerator = (val) =>
+  isPtr(val) &&
+  !heap.has(val & POINTER_MASK) &&
+  !instanceClasses.has(ptrAddr(val));
 const getList = (val) => {
   const obj = getObj(val);
   if (!obj || obj.type !== 'list') return null;
@@ -147,6 +194,28 @@ const lookupAttr = (objBits, name) => {
   if (exc) {
     return lookupExceptionAttr(exc, name);
   }
+  const cls = getClass(objBits);
+  if (cls && cls.attrs.has(name)) {
+    return cls.attrs.get(name);
+  }
+  const func = getFunction(objBits);
+  if (func && func.attrs && func.attrs.has(name)) {
+    return func.attrs.get(name);
+  }
+  if (isPtr(objBits) && !heap.has(objBits & POINTER_MASK)) {
+    const clsBits = instanceClasses.get(ptrAddr(objBits));
+    if (clsBits !== undefined) {
+      const instClass = getClass(clsBits);
+      if (instClass && instClass.attrs.has(name)) {
+        const attrVal = instClass.attrs.get(name);
+        const func = getFunction(attrVal);
+        if (func) {
+          return boxPtr({ type: 'bound_method', func: attrVal, self: objBits });
+        }
+        return attrVal;
+      }
+    }
+  }
   return undefined;
 };
 const getAttrValue = (objBits, name) => {
@@ -180,6 +249,19 @@ const setExceptionAttr = (exc, name, valBits) => {
 const setAttrValue = (objBits, name, valBits) => {
   const exc = getException(objBits);
   if (exc && setExceptionAttr(exc, name, valBits)) {
+    return boxNone();
+  }
+  const cls = getClass(objBits);
+  if (cls) {
+    cls.attrs.set(name, valBits);
+    return boxNone();
+  }
+  const func = getFunction(objBits);
+  if (func) {
+    if (!func.attrs) {
+      func.attrs = new Map();
+    }
+    func.attrs.set(name, valBits);
     return boxNone();
   }
   return boxNone();
@@ -494,7 +576,7 @@ BASE_IMPORTS = """\
   print_newline: () => console.log(''),
   alloc: (size) => {
     if (!memory) return boxNone();
-    const bytes = align(Number(size), 8);
+    const bytes = align(Number(size) + HEADER_SIZE, 8);
     const addr = heapPtr;
     heapPtr += bytes;
     const needed = heapPtr - memory.buffer.byteLength;
@@ -503,14 +585,10 @@ BASE_IMPORTS = """\
       const pages = Math.ceil(needed / pageSize);
       memory.grow(pages);
     }
-    return boxPtrAddr(addr);
+    new Uint8Array(memory.buffer, addr, bytes).fill(0);
+    return boxPtrAddr(addr + HEADER_SIZE);
   },
   async_sleep: (_taskPtr) => {
-    if (!asyncSleepCalled) {
-      asyncSleepCalled = true;
-      return boxPending();
-    }
-    asyncSleepCalled = false;
     return 0n;
   },
   block_on: (taskPtr) => {
@@ -609,6 +687,40 @@ BASE_IMPORTS = """\
     setAttrValue(obj, readUtf8(namePtr, nameLen), val),
   set_attr_object: (obj, namePtr, nameLen, val) =>
     setAttrValue(obj, readUtf8(namePtr, nameLen), val),
+  module_new: (nameBits) => {
+    const name = getStrObj(nameBits);
+    return boxPtr({
+      type: 'module',
+      name: name ?? '<module>',
+      attrs: new Map(),
+    });
+  },
+  module_cache_get: (nameBits) => {
+    const name = getStrObj(nameBits);
+    if (name === null) return boxNone();
+    const moduleBits = moduleCache.get(name);
+    return moduleBits === undefined ? boxNone() : moduleBits;
+  },
+  module_cache_set: (nameBits, moduleBits) => {
+    const name = getStrObj(nameBits);
+    if (name === null) return boxNone();
+    moduleCache.set(name, moduleBits);
+    return boxNone();
+  },
+  module_get_attr: (moduleBits, nameBits) => {
+    const name = getStrObj(nameBits);
+    const moduleObj = getModule(moduleBits);
+    if (!moduleObj || name === null) return boxNone();
+    const val = moduleObj.attrs.get(name);
+    return val === undefined ? boxNone() : val;
+  },
+  module_set_attr: (moduleBits, nameBits, val) => {
+    const name = getStrObj(nameBits);
+    const moduleObj = getModule(moduleBits);
+    if (!moduleObj || name === null) return boxNone();
+    moduleObj.attrs.set(name, val);
+    return boxNone();
+  },
   get_attr_name: (obj, nameBits) => {
     const name = getStrObj(nameBits);
     if (name === null) {
@@ -766,6 +878,13 @@ BASE_IMPORTS = """\
     }
     return boxNone();
   },
+  aiter: (val) => {
+    const attr = lookupAttr(val, '__aiter__');
+    if (attr === undefined) {
+      throw new Error('TypeError: object is not async iterable');
+    }
+    return callCallable0(attr);
+  },
   iter_next: (val) => {
     if (isGenerator(val)) {
       return generatorSend(val, boxNone());
@@ -783,6 +902,13 @@ BASE_IMPORTS = """\
     const value = items[iter.idx];
     iter.idx += 1;
     return tupleFromArray([value, boxBool(false)]);
+  },
+  anext: (val) => {
+    const attr = lookupAttr(val, '__anext__');
+    if (attr === undefined) {
+      throw new Error('TypeError: object is not an async iterator');
+    }
+    return callCallable0(attr);
   },
   generator_send: (gen, sendVal) => generatorSend(gen, sendVal),
   generator_throw: (gen, exc) => generatorThrow(gen, exc),
@@ -835,11 +961,26 @@ BASE_IMPORTS = """\
   dataclass_get: () => boxNone(),
   dataclass_set: () => boxNone(),
   dataclass_set_class: () => boxNone(),
-  class_new: () => boxNone(),
+  class_new: (nameBits) => {
+    const name = getStrObj(nameBits);
+    return boxPtr({ type: 'class', name: name ?? '<class>', attrs: new Map() });
+  },
+  func_new: (fnIdx, arity) =>
+    boxPtr({
+      type: 'function',
+      idx: Number(fnIdx),
+      arity: Number(arity),
+      attrs: new Map(),
+    }),
+  bound_method_new: (funcBits, selfBits) =>
+    boxPtr({ type: 'bound_method', func: funcBits, self: selfBits }),
   classmethod_new: () => boxNone(),
   staticmethod_new: () => boxNone(),
   property_new: () => boxNone(),
-  object_set_class: () => boxNone(),
+  object_set_class: (objBits, classBits) => {
+    instanceClasses.set(ptrAddr(objBits), classBits);
+    return boxNone();
+  },
   context_null: (val) => val,
   context_enter: (val) => val,
   context_exit: () => boxBool(false),

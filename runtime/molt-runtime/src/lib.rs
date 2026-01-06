@@ -844,6 +844,15 @@ unsafe fn function_arity(ptr: *mut u8) -> u64 {
     *(ptr.add(std::mem::size_of::<u64>()) as *const u64)
 }
 
+#[allow(dead_code)]
+unsafe fn function_dict_bits(ptr: *mut u8) -> u64 {
+    *(ptr.add(2 * std::mem::size_of::<u64>()) as *const u64)
+}
+
+unsafe fn function_set_dict_bits(ptr: *mut u8, bits: u64) {
+    *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = bits;
+}
+
 unsafe fn bound_method_func_bits(ptr: *mut u8) -> u64 {
     *(ptr as *const u64)
 }
@@ -1374,7 +1383,7 @@ fn alloc_context_manager(enter_fn: u64, exit_fn: u64, payload_bits: u64) -> *mut
 }
 
 fn alloc_function_obj(fn_ptr: u64, arity: u64) -> *mut u8 {
-    let total = std::mem::size_of::<MoltHeader>() + 2 * std::mem::size_of::<u64>();
+    let total = std::mem::size_of::<MoltHeader>() + 3 * std::mem::size_of::<u64>();
     let ptr = alloc_object(total, TYPE_ID_FUNCTION);
     if ptr.is_null() {
         return ptr;
@@ -1382,6 +1391,7 @@ fn alloc_function_obj(fn_ptr: u64, arity: u64) -> *mut u8 {
     unsafe {
         *(ptr as *mut u64) = fn_ptr;
         *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = arity;
+        *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = 0;
     }
     ptr
 }
@@ -4054,14 +4064,7 @@ pub unsafe extern "C" fn molt_block_on(task_ptr: *mut u8) -> i64 {
 /// - `_obj_ptr` must be a valid pointer if the runtime associates a future with it.
 #[no_mangle]
 pub unsafe extern "C" fn molt_async_sleep(_obj_ptr: *mut u8) -> i64 {
-    static mut CALLED: bool = false;
-    if !CALLED {
-        CALLED = true;
-        pending_bits_i64()
-    } else {
-        CALLED = false;
-        0
-    }
+    0
 }
 
 // --- NaN-boxed ops ---
@@ -8018,6 +8021,32 @@ pub extern "C" fn molt_iter(iter_bits: u64) -> u64 {
 }
 
 #[no_mangle]
+pub extern "C" fn molt_aiter(obj_bits: u64) -> u64 {
+    unsafe {
+        let obj = obj_from_bits(obj_bits);
+        let name_ptr = alloc_string(b"__aiter__");
+        if name_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let name_bits = MoltObject::from_ptr(name_ptr).bits();
+        let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) else {
+            dec_ref_bits(name_bits);
+            let msg = format!("'{}' object is not async iterable", type_name(obj));
+            raise!("TypeError", &msg);
+        };
+        let Some(call_bits) = attr_lookup_ptr(obj_ptr, name_bits) else {
+            dec_ref_bits(name_bits);
+            let msg = format!("'{}' object is not async iterable", type_name(obj));
+            raise!("TypeError", &msg);
+        };
+        dec_ref_bits(name_bits);
+        let res = call_callable0(call_bits);
+        dec_ref_bits(call_bits);
+        res
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
     if let Some(ptr) = maybe_ptr_from_bits(iter_bits) {
         unsafe {
@@ -8117,6 +8146,32 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
         }
     }
     MoltObject::none().bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_anext(obj_bits: u64) -> u64 {
+    unsafe {
+        let obj = obj_from_bits(obj_bits);
+        let name_ptr = alloc_string(b"__anext__");
+        if name_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let name_bits = MoltObject::from_ptr(name_ptr).bits();
+        let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) else {
+            dec_ref_bits(name_bits);
+            let msg = format!("'{}' object is not an async iterator", type_name(obj));
+            raise!("TypeError", &msg);
+        };
+        let Some(call_bits) = attr_lookup_ptr(obj_ptr, name_bits) else {
+            dec_ref_bits(name_bits);
+            let msg = format!("'{}' object is not an async iterator", type_name(obj));
+            raise!("TypeError", &msg);
+        };
+        dec_ref_bits(name_bits);
+        let res = call_callable0(call_bits);
+        dec_ref_bits(call_bits);
+        res
+    }
 }
 
 #[no_mangle]
@@ -9371,6 +9426,10 @@ pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
                 dec_ref_bits(func_bits);
                 dec_ref_bits(self_bits);
             }
+            TYPE_ID_FUNCTION => {
+                let dict_bits = function_dict_bits(ptr);
+                dec_ref_bits(dict_bits);
+            }
             TYPE_ID_MODULE => {
                 let name_bits = module_name_bits(ptr);
                 let dict_bits = module_dict_bits(ptr);
@@ -10080,6 +10139,23 @@ unsafe fn call_function_obj1(func_bits: u64, arg0_bits: u64) -> u64 {
     func(arg0_bits) as u64
 }
 
+unsafe fn call_function_obj0(func_bits: u64) -> u64 {
+    let func_obj = obj_from_bits(func_bits);
+    let Some(func_ptr) = func_obj.as_ptr() else {
+        raise!("TypeError", "call expects function object");
+    };
+    if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
+        raise!("TypeError", "call expects function object");
+    }
+    let arity = function_arity(func_ptr);
+    if arity != 0 {
+        raise!("TypeError", "call arity mismatch");
+    }
+    let fn_ptr = function_fn_ptr(func_ptr);
+    let func: extern "C" fn() -> i64 = std::mem::transmute(fn_ptr as usize);
+    func() as u64
+}
+
 unsafe fn call_function_obj2(func_bits: u64, arg0_bits: u64, arg1_bits: u64) -> u64 {
     let func_obj = obj_from_bits(func_bits);
     let Some(func_ptr) = func_obj.as_ptr() else {
@@ -10095,6 +10171,22 @@ unsafe fn call_function_obj2(func_bits: u64, arg0_bits: u64, arg1_bits: u64) -> 
     let fn_ptr = function_fn_ptr(func_ptr);
     let func: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
     func(arg0_bits, arg1_bits) as u64
+}
+
+unsafe fn call_callable0(call_bits: u64) -> u64 {
+    let call_obj = obj_from_bits(call_bits);
+    let Some(call_ptr) = call_obj.as_ptr() else {
+        raise!("TypeError", "object is not callable");
+    };
+    match object_type_id(call_ptr) {
+        TYPE_ID_FUNCTION => call_function_obj0(call_bits),
+        TYPE_ID_BOUND_METHOD => {
+            let func_bits = bound_method_func_bits(call_ptr);
+            let self_bits = bound_method_self_bits(call_ptr);
+            call_function_obj1(func_bits, self_bits)
+        }
+        _ => raise!("TypeError", "object is not callable"),
+    }
 }
 
 unsafe fn module_attr_lookup(ptr: *mut u8, attr_bits: u64) -> Option<u64> {
@@ -10203,6 +10295,20 @@ unsafe fn attr_lookup_ptr(obj_ptr: *mut u8, attr_bits: u64) -> Option<u64> {
     }
     if type_id == TYPE_ID_TYPE {
         return class_attr_lookup(obj_ptr, None, attr_bits);
+    }
+    if type_id == TYPE_ID_FUNCTION {
+        let dict_bits = function_dict_bits(obj_ptr);
+        if dict_bits != 0 {
+            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+                if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                    if let Some(val) = dict_get_in_place(dict_ptr, attr_bits) {
+                        inc_ref_bits(val);
+                        return Some(val);
+                    }
+                }
+            }
+        }
+        return None;
     }
     if type_id == TYPE_ID_DATACLASS {
         let desc_ptr = dataclass_desc_ptr(obj_ptr);
@@ -10428,6 +10534,32 @@ pub unsafe extern "C" fn molt_set_attr_generic(
             return MoltObject::none().bits() as i64;
         }
         return attr_error("exception", attr_name);
+    }
+    if type_id == TYPE_ID_FUNCTION {
+        let attr_ptr = alloc_string(slice);
+        if attr_ptr.is_null() {
+            return MoltObject::none().bits() as i64;
+        }
+        let attr_bits = MoltObject::from_ptr(attr_ptr).bits();
+        let mut dict_bits = function_dict_bits(obj_ptr);
+        if dict_bits == 0 {
+            let dict_ptr = alloc_dict_with_pairs(&[]);
+            if dict_ptr.is_null() {
+                dec_ref_bits(attr_bits);
+                return MoltObject::none().bits() as i64;
+            }
+            dict_bits = MoltObject::from_ptr(dict_ptr).bits();
+            function_set_dict_bits(obj_ptr, dict_bits);
+        }
+        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+            if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                dict_set_in_place(dict_ptr, attr_bits, val_bits);
+                dec_ref_bits(attr_bits);
+                return MoltObject::none().bits() as i64;
+            }
+        }
+        dec_ref_bits(attr_bits);
+        return attr_error("function", attr_name);
     }
     if type_id == TYPE_ID_DATACLASS {
         let desc_ptr = dataclass_desc_ptr(obj_ptr);

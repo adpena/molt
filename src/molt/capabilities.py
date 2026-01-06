@@ -10,8 +10,21 @@ def _parse_caps(raw: str) -> set[str]:
     return {cap.strip() for cap in raw.split(",") if cap.strip()}
 
 
+def _raw_getenv(key: str, default: str = "") -> str:
+    getter = getattr(os, "_molt_env_get", None)
+    if getter is not None:
+        try:
+            return getter(key, default)
+        except Exception:
+            return default
+    try:
+        return os.getenv(key, default)
+    except Exception:
+        return default
+
+
 def capabilities() -> set[str]:
-    return _parse_caps(os.getenv("MOLT_CAPABILITIES", ""))
+    return _parse_caps(_raw_getenv("MOLT_CAPABILITIES", ""))
 
 
 def has(capability: str) -> bool:
