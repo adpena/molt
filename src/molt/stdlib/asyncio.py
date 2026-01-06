@@ -8,9 +8,11 @@ __all__ = ["run", "sleep"]
 
 if TYPE_CHECKING:
 
-    def molt_async_sleep() -> Any: ...
+    def molt_async_sleep() -> Any:
+        pass
 
-    def molt_block_on(awaitable: Any) -> Any: ...
+    def molt_block_on(awaitable: Any) -> Any:
+        pass
 
 
 def run(awaitable: Any) -> Any:
