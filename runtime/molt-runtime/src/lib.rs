@@ -2109,7 +2109,10 @@ fn type_of_bits(val_bits: u64) -> u64 {
 fn collect_classinfo_isinstance(class_bits: u64, out: &mut Vec<u64>) {
     let obj = obj_from_bits(class_bits);
     let Some(ptr) = obj.as_ptr() else {
-        raise!("TypeError", "isinstance() arg 2 must be a type or tuple of types");
+        raise!(
+            "TypeError",
+            "isinstance() arg 2 must be a type or tuple of types"
+        );
     };
     unsafe {
         match object_type_id(ptr) {
@@ -2120,7 +2123,10 @@ fn collect_classinfo_isinstance(class_bits: u64, out: &mut Vec<u64>) {
                     collect_classinfo_isinstance(*item, out);
                 }
             }
-            _ => raise!("TypeError", "isinstance() arg 2 must be a type or tuple of types"),
+            _ => raise!(
+                "TypeError",
+                "isinstance() arg 2 must be a type or tuple of types"
+            ),
         }
     }
 }
@@ -2128,7 +2134,10 @@ fn collect_classinfo_isinstance(class_bits: u64, out: &mut Vec<u64>) {
 fn collect_classinfo_issubclass(class_bits: u64, out: &mut Vec<u64>) {
     let obj = obj_from_bits(class_bits);
     let Some(ptr) = obj.as_ptr() else {
-        raise!("TypeError", "issubclass() arg 2 must be a class or tuple of classes");
+        raise!(
+            "TypeError",
+            "issubclass() arg 2 must be a class or tuple of classes"
+        );
     };
     unsafe {
         match object_type_id(ptr) {
@@ -2139,7 +2148,10 @@ fn collect_classinfo_issubclass(class_bits: u64, out: &mut Vec<u64>) {
                     collect_classinfo_issubclass(*item, out);
                 }
             }
-            _ => raise!("TypeError", "issubclass() arg 2 must be a class or tuple of classes"),
+            _ => raise!(
+                "TypeError",
+                "issubclass() arg 2 must be a class or tuple of classes"
+            ),
         }
     }
 }
