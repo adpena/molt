@@ -2,18 +2,15 @@
 
 from __future__ import annotations
 
-import builtins
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 __all__ = ["run", "sleep"]
 
+if TYPE_CHECKING:
 
-def _missing(*_args: Any, **_kwargs: Any) -> Any:
-    raise RuntimeError("molt shims not installed")
+    def molt_async_sleep() -> Any: ...
 
-
-molt_block_on = getattr(builtins, "molt_block_on", _missing)
-molt_async_sleep = getattr(builtins, "molt_async_sleep", _missing)
+    def molt_block_on(awaitable: Any) -> Any: ...
 
 
 def run(awaitable: Any) -> Any:

@@ -969,6 +969,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return local
             global_val = self.globals.get(node.id)
             if global_val is None:
+                if node.id == "TYPE_CHECKING":
+                    res = MoltValue(self.next_var(), type_hint="bool")
+                    self.emit(MoltOp(kind="CONST_BOOL", args=[0], result=res))
+                    return res
                 return None
             if self.current_func_name == "molt_main":
                 return global_val
@@ -6022,6 +6026,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 top_name = module_name.split(".")[0]
                 bound_val = self._emit_module_load(top_name)
             self.locals[bind_name] = bound_val
+            if self.current_func_name == "molt_main":
+                self.globals[bind_name] = bound_val
             self._emit_module_attr_set(bind_name, bound_val)
         return None
 
@@ -6060,7 +6066,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         result=attr_val,
                     )
                 )
+            if module_name == "asyncio" and attr_name in {"run", "sleep"}:
+                module_prefix = f"{self._sanitize_module_name(module_name)}__"
+                attr_val.type_hint = f"Func:{module_prefix}{attr_name}"
             self.locals[bind_name] = attr_val
+            if self.current_func_name == "molt_main":
+                self.globals[bind_name] = attr_val
             self._emit_module_attr_set(bind_name, attr_val)
         return None
 
