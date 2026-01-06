@@ -11780,10 +11780,10 @@ unsafe fn del_attr_ptr(obj_ptr: *mut u8, attr_bits: u64, attr_name: &str) -> i64
     if type_id == TYPE_ID_MODULE {
         let dict_bits = module_dict_bits(obj_ptr);
         if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-            if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                if dict_del_in_place(dict_ptr, attr_bits) {
-                    return MoltObject::none().bits() as i64;
-                }
+            if object_type_id(dict_ptr) == TYPE_ID_DICT
+                && dict_del_in_place(dict_ptr, attr_bits)
+            {
+                return MoltObject::none().bits() as i64;
             }
         }
         let module_name =
@@ -11798,10 +11798,10 @@ unsafe fn del_attr_ptr(obj_ptr: *mut u8, attr_bits: u64, attr_name: &str) -> i64
         }
         let dict_bits = class_dict_bits(obj_ptr);
         if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-            if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                if dict_del_in_place(dict_ptr, attr_bits) {
-                    return MoltObject::none().bits() as i64;
-                }
+            if object_type_id(dict_ptr) == TYPE_ID_DICT
+                && dict_del_in_place(dict_ptr, attr_bits)
+            {
+                return MoltObject::none().bits() as i64;
             }
         }
         let class_name =
@@ -11856,10 +11856,10 @@ unsafe fn del_attr_ptr(obj_ptr: *mut u8, attr_bits: u64, attr_name: &str) -> i64
         let dict_bits = function_dict_bits(obj_ptr);
         if dict_bits != 0 {
             if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                    if dict_del_in_place(dict_ptr, attr_bits) {
-                        return MoltObject::none().bits() as i64;
-                    }
+                if object_type_id(dict_ptr) == TYPE_ID_DICT
+                    && dict_del_in_place(dict_ptr, attr_bits)
+                {
+                    return MoltObject::none().bits() as i64;
                 }
             }
         }
@@ -11922,10 +11922,10 @@ unsafe fn del_attr_ptr(obj_ptr: *mut u8, attr_bits: u64, attr_name: &str) -> i64
         let dict_bits = dataclass_dict_bits(obj_ptr);
         if dict_bits != 0 {
             if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                    if dict_del_in_place(dict_ptr, attr_bits) {
-                        return MoltObject::none().bits() as i64;
-                    }
+                if object_type_id(dict_ptr) == TYPE_ID_DICT
+                    && dict_del_in_place(dict_ptr, attr_bits)
+                {
+                    return MoltObject::none().bits() as i64;
                 }
             }
         }
@@ -11991,10 +11991,10 @@ unsafe fn del_attr_ptr(obj_ptr: *mut u8, attr_bits: u64, attr_name: &str) -> i64
         let dict_bits = instance_dict_bits(obj_ptr);
         if dict_bits != 0 {
             if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                    if dict_del_in_place(dict_ptr, attr_bits) {
-                        return MoltObject::none().bits() as i64;
-                    }
+                if object_type_id(dict_ptr) == TYPE_ID_DICT
+                    && dict_del_in_place(dict_ptr, attr_bits)
+                {
+                    return MoltObject::none().bits() as i64;
                 }
             }
         }
@@ -12213,7 +12213,7 @@ pub extern "C" fn molt_del_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
             return del_attr_ptr(obj_ptr, name_bits, &attr_name) as u64;
         }
         let obj = obj_from_bits(obj_bits);
-        return attr_error(type_name(obj), &attr_name) as u64;
+        attr_error(type_name(obj), &attr_name) as u64
     }
 }
 mod arena;
