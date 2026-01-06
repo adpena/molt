@@ -66,6 +66,8 @@ No stack traces leaked by default.
   - restart worker once (configurable)
   - re-send request only if idempotent flag is set (default false)
 
+**Implementation note:** `MoltClient.call(..., idempotent=True)` will retry once after restarting the worker. The decorator exposes `idempotent=` to opt in.
+
 ---
 
 ## 5. Metrics hooks

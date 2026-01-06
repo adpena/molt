@@ -403,6 +403,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "crossbeam-channel",
+ "molt-db",
  "rmp-serde",
  "serde",
  "serde_bytes",

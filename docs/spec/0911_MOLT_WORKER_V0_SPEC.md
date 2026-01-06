@@ -91,6 +91,8 @@ Entrypoints are invoked by name with a payload.
   - status
 - Optional: emit a JSON line per request for easy parsing
 
+**Implementation note:** responses now include a `metrics` map with `queue_ms` and `exec_ms` fields for basic latency insight.
+
 ---
 
 ## 7. Testing (must)

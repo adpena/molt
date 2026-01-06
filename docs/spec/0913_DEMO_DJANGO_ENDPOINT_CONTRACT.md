@@ -44,7 +44,7 @@ This allows:
 
 Then later swap in real Postgres with the same contract.
 
-**Implementation status:** `molt_worker` currently returns a deterministic fake response for `list_items` (no latency simulation yet). Add latency + decode-cost simulation when cancellation/backpressure hooks land.
+**Implementation status:** `molt_worker` returns a deterministic fake response for `list_items` and supports `MOLT_FAKE_DB_DELAY_MS` to simulate latency; add decode-cost simulation when cancellation/backpressure hooks mature.
 
 ---
 

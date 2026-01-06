@@ -43,12 +43,16 @@ class MoltClient:
         worker_cmd: list[str],
         wire: str | None = None,
         max_frame_size: int = 64 * 1024 * 1024,
+        restart_on_failure: bool = True,
+        max_restarts: int = 1,
         env: dict[str, str] | None = None,
         cwd: str | None = None,
     ) -> None:
         self._worker_cmd = list(worker_cmd)
         self._wire = choose_wire(wire)
         self._max_frame_size = max_frame_size
+        self._restart_on_failure = restart_on_failure
+        self._max_restarts = max(0, max_restarts)
         self._env = env
         self._cwd = cwd
         self._proc: subprocess.Popen[bytes] | None = None
@@ -104,6 +108,34 @@ class MoltClient:
         payload: Any,
         codec: str = "msgpack",
         timeout_ms: int = 250,
+        idempotent: bool = False,
+    ) -> Any:
+        attempts = 0
+        while True:
+            try:
+                return self._call_once(
+                    entry=entry,
+                    payload=payload,
+                    codec=codec,
+                    timeout_ms=timeout_ms,
+                )
+            except MoltWorkerUnavailable:
+                if (
+                    not idempotent
+                    or not self._restart_on_failure
+                    or attempts >= self._max_restarts
+                ):
+                    raise
+                attempts += 1
+                self.close()
+
+    def _call_once(
+        self,
+        *,
+        entry: str,
+        payload: Any,
+        codec: str,
+        timeout_ms: int,
     ) -> Any:
         self._ensure_process()
         if self._stdin is None or self._stdout is None:

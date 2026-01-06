@@ -59,6 +59,7 @@ def molt_offload(
     payload_builder: Callable[..., Any] | None = None,
     response_factory: ResponseFactory | None = None,
     allow_fallback: bool = False,
+    idempotent: bool = False,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorate a handler to offload the core work to a Molt worker."""
 
@@ -75,6 +76,7 @@ def molt_offload(
                     payload=payload,
                     codec=codec,
                     timeout_ms=timeout_ms,
+                    idempotent=idempotent,
                 )
                 return build_response(result, 200)
             except MoltAccelError as exc:

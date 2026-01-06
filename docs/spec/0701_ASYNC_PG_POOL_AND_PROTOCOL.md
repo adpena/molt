@@ -24,6 +24,8 @@
 - `health_check_interval_ms`
 - `statement_cache_size`
 
+**Implementation status:** `molt-db` currently provides a sync, bounded pool skeleton; async acquisition, fairness, and cancellation are still pending.
+
 ### 1.2 Acquire semantics
 Acquire must be:
 - async (task parks; no OS thread block)

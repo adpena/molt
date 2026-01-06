@@ -3,13 +3,16 @@ use base64::Engine;
 use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
 use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::{self, Read, Write};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+
+use molt_db::{Pool, Pooled};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WireCodec {
@@ -47,6 +50,8 @@ struct ResponseEnvelope {
     #[serde(skip_serializing_if = "Option::is_none")]
     payload: Option<Vec<u8>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    metrics: Option<HashMap<String, u64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
 
@@ -57,6 +62,8 @@ struct ResponseEnvelopeJson {
     codec: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     payload_b64: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metrics: Option<HashMap<String, u64>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
@@ -101,14 +108,19 @@ struct ListItemsResponse {
 struct DecodedRequest {
     envelope: RequestEnvelope,
     wire: WireCodec,
+    queued_at: Instant,
 }
 
 type CancelSet = Arc<Mutex<HashSet<u64>>>;
+
+type DbPool = Arc<Pool<FakeDbConn>>;
 
 struct ExecError {
     status: &'static str,
     message: String,
 }
+
+struct FakeDbConn;
 
 fn read_frame<R: Read>(reader: &mut R) -> io::Result<Option<Vec<u8>>> {
     let mut header = [0u8; 4];
@@ -143,6 +155,7 @@ fn decode_request(bytes: &[u8]) -> Result<DecodedRequest, String> {
         return Ok(DecodedRequest {
             envelope: env,
             wire: WireCodec::Msgpack,
+            queued_at: Instant::now(),
         });
     }
     let env = serde_json::from_slice::<RequestEnvelope>(bytes)
@@ -150,6 +163,7 @@ fn decode_request(bytes: &[u8]) -> Result<DecodedRequest, String> {
     Ok(DecodedRequest {
         envelope: env,
         wire: WireCodec::Json,
+        queued_at: Instant::now(),
     })
 }
 
@@ -178,6 +192,7 @@ fn encode_response(response: &ResponseEnvelope, wire: WireCodec) -> Result<Vec<u
                 status: response.status.clone(),
                 codec: response.codec.clone(),
                 payload_b64,
+                metrics: response.metrics.clone(),
                 error: response.error.clone(),
             };
             serde_json::to_vec(&json).map_err(|err| err.to_string())
@@ -200,6 +215,16 @@ fn encode_payload<T: Serialize>(payload: &T, codec: &str) -> Result<Vec<u8>, Str
         "raw" => Ok(Vec::new()),
         _ => Err(format!("Unsupported payload codec '{codec}'")),
     }
+}
+
+fn acquire_connection(
+    pool: &DbPool,
+    timeout: Option<Duration>,
+) -> Result<Pooled<FakeDbConn>, ExecError> {
+    pool.acquire(timeout).ok_or_else(|| ExecError {
+        status: "Busy",
+        message: "DB pool exhausted".to_string(),
+    })
 }
 
 fn is_cancelled(cancelled: &CancelSet, request_id: u64) -> bool {
@@ -233,7 +258,14 @@ fn list_items_response(
     request: &ListItemsRequest,
     cancelled: &CancelSet,
     request_id: u64,
+    pool: &DbPool,
+    timeout: Option<Duration>,
+    fake_delay: Duration,
 ) -> Result<ListItemsResponse, ExecError> {
+    let _conn = acquire_connection(pool, timeout)?;
+    if fake_delay.as_millis() > 0 {
+        thread::sleep(fake_delay);
+    }
     let limit = request.limit.unwrap_or(50).min(500) as usize;
     let q_len = request.q.as_ref().map(|q| q.len()).unwrap_or(0) as i64;
     let status_len = request
@@ -295,6 +327,9 @@ fn list_items_response(
 fn execute_entry(
     envelope: &RequestEnvelope,
     cancelled: &CancelSet,
+    pool: &DbPool,
+    timeout: Option<Duration>,
+    fake_delay: Duration,
 ) -> Result<(String, Vec<u8>), ExecError> {
     // TODO(offload, owner:runtime, milestone:SL1): dispatch to compiled entrypoints.
     let payload_bytes = extract_payload(envelope).map_err(|err| ExecError {
@@ -310,7 +345,14 @@ fn execute_entry(
                     message: err,
                 },
             )?;
-            let response = list_items_response(&req, cancelled, envelope.request_id)?;
+            let response = list_items_response(
+                &req,
+                cancelled,
+                envelope.request_id,
+                pool,
+                timeout,
+                fake_delay,
+            )?;
             let codec = envelope.codec.as_str();
             let encoded = encode_payload(&response, codec).map_err(|err| ExecError {
                 status: "InternalError",
@@ -329,10 +371,19 @@ fn handle_request(
     request: DecodedRequest,
     exports: &HashSet<String>,
     cancelled: &CancelSet,
+    pool: &DbPool,
+    fake_delay: Duration,
 ) -> (WireCodec, ResponseEnvelope) {
     let wire = request.wire;
     let envelope = request.envelope;
     let request_id = envelope.request_id;
+    let exec_start = Instant::now();
+    let queue_ms = exec_start
+        .duration_since(request.queued_at)
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64;
+    let mut metrics = HashMap::new();
+    metrics.insert("queue_ms".to_string(), queue_ms);
     if is_cancelled(cancelled, request_id) {
         return (
             wire,
@@ -341,6 +392,7 @@ fn handle_request(
                 status: "Cancelled".to_string(),
                 codec: "raw".to_string(),
                 payload: None,
+                metrics: Some(metrics),
                 error: Some("Request cancelled".to_string()),
             },
         );
@@ -353,6 +405,7 @@ fn handle_request(
                 status: "InvalidInput".to_string(),
                 codec: "raw".to_string(),
                 payload: None,
+                metrics: Some(metrics),
                 error: Some(format!("Unknown entry '{}'", envelope.entry)),
             },
         );
@@ -363,11 +416,11 @@ fn handle_request(
     } else {
         Some(Duration::from_millis(envelope.timeout_ms as u64))
     };
-    let start = Instant::now();
-
-    let result = execute_entry(&envelope, cancelled);
+    let result = execute_entry(&envelope, cancelled, pool, timeout, fake_delay);
+    let exec_ms = exec_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    metrics.insert("exec_ms".to_string(), exec_ms);
     if let Some(limit) = timeout {
-        if start.elapsed() > limit {
+        if exec_start.elapsed() > limit {
             return (
                 wire,
                 ResponseEnvelope {
@@ -375,6 +428,7 @@ fn handle_request(
                     status: "Timeout".to_string(),
                     codec: "raw".to_string(),
                     payload: None,
+                    metrics: Some(metrics),
                     error: Some("Request timed out".to_string()),
                 },
             );
@@ -389,6 +443,7 @@ fn handle_request(
                 status: "Ok".to_string(),
                 codec,
                 payload: Some(payload),
+                metrics: Some(metrics),
                 error: None,
             },
         ),
@@ -399,6 +454,7 @@ fn handle_request(
                 status: err.status.to_string(),
                 codec: "raw".to_string(),
                 payload: None,
+                metrics: Some(metrics),
                 error: Some(err.message),
             },
         ),
@@ -412,6 +468,7 @@ fn response_with_status(wire: WireCodec, request_id: u64, status: &'static str, 
         status: status.to_string(),
         codec: "raw".to_string(),
         payload: None,
+        metrics: None,
         error: Some(error.to_string()),
     };
     if let Ok(encoded) = encode_response(&response, wire) {
@@ -434,6 +491,10 @@ fn main() -> io::Result<()> {
     let mut exports_path = None;
     let mut max_queue = 64usize;
     let mut threads = None;
+    let fake_delay_ms = env::var("MOLT_FAKE_DB_DELAY_MS")
+        .ok()
+        .and_then(|val| val.parse::<u64>().ok())
+        .unwrap_or(0);
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -476,12 +537,30 @@ fn main() -> io::Result<()> {
             .unwrap_or(4)
     });
 
+    let pool_size = env::var("MOLT_DB_POOL")
+        .ok()
+        .and_then(|val| val.parse::<usize>().ok())
+        .unwrap_or(thread_count.max(1));
+    let conn_counter = Arc::new(AtomicUsize::new(0));
+    let pool = Pool::new(pool_size, {
+        let counter = conn_counter.clone();
+        move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            FakeDbConn
+        }
+    });
+    let fake_delay = Duration::from_millis(fake_delay_ms);
+
     for _ in 0..thread_count {
         let request_rx = request_rx.clone();
         let response_tx = response_tx.clone();
         let exports = exports.clone();
         let cancelled = cancelled.clone();
-        thread::spawn(move || worker_loop(request_rx, response_tx, exports, cancelled));
+        let pool = pool.clone();
+        let delay = fake_delay;
+        thread::spawn(move || {
+            worker_loop(request_rx, response_tx, exports, cancelled, pool, delay)
+        });
     }
 
     let writer = thread::spawn(move || write_loop(response_rx));
@@ -511,6 +590,7 @@ fn main() -> io::Result<()> {
                     status: "Ok".to_string(),
                     codec: "raw".to_string(),
                     payload: None,
+                    metrics: None,
                     error: None,
                 },
                 Err(err) => ResponseEnvelope {
@@ -518,6 +598,7 @@ fn main() -> io::Result<()> {
                     status: err.status.to_string(),
                     codec: "raw".to_string(),
                     payload: None,
+                    metrics: None,
                     error: Some(err.message),
                 },
             };
@@ -549,10 +630,12 @@ fn worker_loop(
     response_tx: Sender<(WireCodec, ResponseEnvelope)>,
     exports: Arc<HashSet<String>>,
     cancelled: CancelSet,
+    pool: DbPool,
+    fake_delay: Duration,
 ) {
     // TODO(offload, owner:runtime, milestone:SL1): propagate cancellation into compiled entrypoints and DB tasks.
     while let Ok(request) = request_rx.recv() {
-        let response = handle_request(request, &exports, &cancelled);
+        let response = handle_request(request, &exports, &cancelled, &pool, fake_delay);
         let _ = response_tx.send(response);
     }
 }
