@@ -2512,6 +2512,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             fields: dict[str, int] = {}
             field_order: list[str] = []
             field_defaults: dict[str, ast.expr] = {}
+            if base_name is not None:
+                base_info = self.classes.get(base_name)
+                if base_info is None:
+                    raise NotImplementedError("Base class must be defined before use")
+                fields = dict(base_info.get("fields", {}))
+                field_order = list(base_info.get("field_order", []))
+                field_defaults = dict(base_info.get("defaults", {}))
 
             def add_field(name: str) -> None:
                 if name in fields:
@@ -4450,22 +4457,37 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             res = MoltValue(self.next_var())
             self.emit(MoltOp(kind="DATACLASS_GET", args=[obj, idx_val], result=res))
             return res
+        method_info = None
+        method_class = None
         if (
             class_info
             and "methods" in class_info
             and node.attr in class_info["methods"]
         ):
             method_info = class_info["methods"][node.attr]
-            if method_info["descriptor"] == "function":
-                func_val = method_info["func"]
-                res = MoltValue(
-                    self.next_var(),
-                    type_hint=f"BoundMethod:{obj.type_hint}:{node.attr}",
-                )
-                self.emit(
-                    MoltOp(kind="BOUND_METHOD_NEW", args=[func_val, obj], result=res)
-                )
-                return res
+            method_class = obj.type_hint
+        else:
+            base_name = class_info.get("base") if class_info else None
+            while method_info is None and base_name:
+                base_info = self.classes.get(base_name)
+                if (
+                    base_info
+                    and "methods" in base_info
+                    and node.attr in base_info["methods"]
+                ):
+                    method_info = base_info["methods"][node.attr]
+                    method_class = base_name
+                    break
+                base_name = base_info.get("base") if base_info else None
+        if method_info and method_info["descriptor"] == "function":
+            func_val = method_info["func"]
+            class_name = method_class or obj.type_hint
+            res = MoltValue(
+                self.next_var(),
+                type_hint=f"BoundMethod:{class_name}:{node.attr}",
+            )
+            self.emit(MoltOp(kind="BOUND_METHOD_NEW", args=[func_val, obj], result=res))
+            return res
         if obj.type_hint.startswith("module"):
             attr_name = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[node.attr], result=attr_name))
