@@ -220,12 +220,11 @@ fn handle_cancel_request(
         status: "InvalidInput",
         message: err,
     })?;
-    let cancel = decode_payload::<CancelRequest>(&payload, &envelope.codec).map_err(|err| {
-        ExecError {
+    let cancel =
+        decode_payload::<CancelRequest>(&payload, &envelope.codec).map_err(|err| ExecError {
             status: "InvalidInput",
             message: err,
-        }
-    })?;
+        })?;
     mark_cancelled(cancelled, cancel.request_id);
     Ok(())
 }
@@ -305,13 +304,12 @@ fn execute_entry(
     match envelope.entry.as_str() {
         "__ping__" => Ok(("raw".to_string(), Vec::new())),
         "list_items" => {
-            let req =
-                decode_payload::<ListItemsRequest>(&payload_bytes, &envelope.codec).map_err(
-                    |err| ExecError {
-                        status: "InvalidInput",
-                        message: err,
-                    },
-                )?;
+            let req = decode_payload::<ListItemsRequest>(&payload_bytes, &envelope.codec).map_err(
+                |err| ExecError {
+                    status: "InvalidInput",
+                    message: err,
+                },
+            )?;
             let response = list_items_response(&req, cancelled, envelope.request_id)?;
             let codec = envelope.codec.as_str();
             let encoded = encode_payload(&response, codec).map_err(|err| ExecError {
