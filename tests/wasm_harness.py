@@ -472,6 +472,40 @@ const setAttrValue = (objBits, name, valBits) => {
   }
   return boxNone();
 };
+const delAttrValue = (objBits, name) => {
+  const exc = getException(objBits);
+  if (exc) {
+    if (name === '__cause__') {
+      exc.causeBits = boxNone();
+      exc.suppressBits = boxBool(false);
+      return boxNone();
+    }
+    if (name === '__context__') {
+      exc.contextBits = boxNone();
+      return boxNone();
+    }
+    if (name === '__suppress_context__') {
+      exc.suppressBits = boxBool(false);
+      return boxNone();
+    }
+  }
+  const cls = getClass(objBits);
+  if (cls) {
+    cls.attrs.delete(name);
+    return boxNone();
+  }
+  const func = getFunction(objBits);
+  if (func && func.attrs) {
+    func.attrs.delete(name);
+    return boxNone();
+  }
+  const moduleObj = getModule(objBits);
+  if (moduleObj) {
+    moduleObj.attrs.delete(name);
+    return boxNone();
+  }
+  return boxNone();
+};
 let lastException = boxNone();
 const exceptionStack = [];
 const activeExceptionStack = [];
@@ -893,6 +927,23 @@ BASE_IMPORTS = """\
     setAttrValue(obj, readUtf8(namePtr, nameLen), val),
   set_attr_object: (obj, namePtr, nameLen, val) =>
     setAttrValue(obj, readUtf8(namePtr, nameLen), val),
+  del_attr_generic: (obj, namePtr, nameLen) =>
+    delAttrValue(obj, readUtf8(namePtr, nameLen)),
+  del_attr_object: (obj, namePtr, nameLen) =>
+    delAttrValue(obj, readUtf8(namePtr, nameLen)),
+  object_field_get: (obj, offset) => {
+    if (!memory) return boxNone();
+    const addr = ptrAddr(obj) + Number(offset);
+    const view = new DataView(memory.buffer);
+    return view.getBigInt64(addr, true);
+  },
+  object_field_set: (obj, offset, val) => {
+    if (!memory) return boxNone();
+    const addr = ptrAddr(obj) + Number(offset);
+    const view = new DataView(memory.buffer);
+    view.setBigInt64(addr, val, true);
+    return boxNone();
+  },
   module_new: (nameBits) => {
     const name = getStrObj(nameBits);
     return boxPtr({
@@ -955,6 +1006,13 @@ BASE_IMPORTS = """\
       throw new Error('TypeError: attribute name must be str');
     }
     return setAttrValue(obj, name, val);
+  },
+  del_attr_name: (obj, nameBits) => {
+    const name = getStrObj(nameBits);
+    if (name === null) {
+      throw new Error('TypeError: attribute name must be str');
+    }
+    return delAttrValue(obj, name);
   },
   is_truthy: (val) => {
     if (isTag(val, TAG_BOOL)) {

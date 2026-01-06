@@ -3767,16 +3767,40 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap();
                     let obj = vars.get(&args[0]).expect("Object not found");
                     let val = vars.get(&args[1]).expect("Value not found");
-                    let offset = op.value.unwrap() as i32;
-                    builder.ins().store(MemFlags::new(), *val, *obj, offset);
+                    let offset = builder.ins().iconst(types::I64, op.value.unwrap());
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_object_field_set", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*obj, offset, *val]);
+                    if let Some(out_name) = op.out.as_ref() {
+                        if out_name != "none" {
+                            let res = builder.inst_results(call)[0];
+                            vars.insert(out_name.clone(), res);
+                        }
+                    }
                 }
                 "load" => {
                     let args = op.args.as_ref().unwrap();
                     let obj = vars.get(&args[0]).expect("Object not found");
-                    let offset = op.value.unwrap() as i32;
-                    let res = builder
-                        .ins()
-                        .load(types::I64, MemFlags::new(), *obj, offset);
+                    let offset = builder.ins().iconst(types::I64, op.value.unwrap());
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_object_field_get", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*obj, offset]);
+                    let res = builder.inst_results(call)[0];
                     let out_name = op.out.unwrap();
                     vars.insert(out_name, res);
                 }
@@ -3822,7 +3846,7 @@ impl SimpleBackend {
                 "guarded_load" => {
                     let args = op.args.as_ref().unwrap();
                     let obj = vars.get(&args[0]).expect("Object not found");
-                    let offset = op.value.unwrap() as i32;
+                    let offset = builder.ins().iconst(types::I64, op.value.unwrap());
                     let out_name = op.out.clone().unwrap();
 
                     let type_id = builder.ins().load(types::I32, MemFlags::new(), *obj, -32);
@@ -3838,9 +3862,17 @@ impl SimpleBackend {
 
                     builder.switch_to_block(fast_path);
                     builder.seal_block(fast_path);
-                    let fast_res = builder
-                        .ins()
-                        .load(types::I64, MemFlags::new(), *obj, offset);
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_object_field_get", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*obj, offset]);
+                    let fast_res = builder.inst_results(call)[0];
                     builder.ins().jump(merge, &[fast_res]);
 
                     builder.switch_to_block(slow_path);
@@ -4115,6 +4147,91 @@ impl SimpleBackend {
                     let call = builder
                         .ins()
                         .call(local_callee, &[*obj, attr_ptr, attr_len, *val]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "del_attr_generic_ptr" => {
+                    let args = op.args.as_ref().unwrap();
+                    let obj = vars.get(&args[0]).expect("Attr object not found");
+                    let attr_name = op.s_value.as_ref().unwrap();
+                    let data_id = self
+                        .module
+                        .declare_data(
+                            &format!("attr_{}_{}", func_ir.name, op_idx),
+                            Linkage::Export,
+                            false,
+                            false,
+                        )
+                        .unwrap();
+                    let mut data_ctx = DataDescription::new();
+                    data_ctx.define(attr_name.as_bytes().to_vec().into_boxed_slice());
+                    self.module.define_data(data_id, &data_ctx).unwrap();
+
+                    let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
+                    let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
+                    let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_del_attr_generic", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*obj, attr_ptr, attr_len]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "del_attr_generic_obj" => {
+                    let args = op.args.as_ref().unwrap();
+                    let obj = vars.get(&args[0]).expect("Attr object not found");
+                    let attr_name = op.s_value.as_ref().unwrap();
+                    let data_id = self
+                        .module
+                        .declare_data(
+                            &format!("attr_{}_{}", func_ir.name, op_idx),
+                            Linkage::Export,
+                            false,
+                            false,
+                        )
+                        .unwrap();
+                    let mut data_ctx = DataDescription::new();
+                    data_ctx.define(attr_name.as_bytes().to_vec().into_boxed_slice());
+                    self.module.define_data(data_id, &data_ctx).unwrap();
+
+                    let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
+                    let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
+                    let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_del_attr_object", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*obj, attr_ptr, attr_len]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "del_attr_name" => {
+                    let args = op.args.as_ref().unwrap();
+                    let obj = vars.get(&args[0]).expect("Attr object not found");
+                    let name = vars.get(&args[1]).expect("Attr name not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_del_attr_name", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*obj, *name]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }

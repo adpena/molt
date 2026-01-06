@@ -50,7 +50,7 @@
 | classmethod | descriptor constructor | Partial | P1 | TC2 | runtime |
 | compile | code object (restricted) | Planned | P2 | TC3 | stdlib |
 | complex | complex constructor | Planned | P1 | TC2 | frontend/runtime |
-| delattr | attribute deletion | Planned | P2 | TC3 | runtime |
+| delattr | attribute deletion | Partial | P2 | TC3 | runtime |
 | dict | dict constructor | Planned | P1 | TC2 | frontend/runtime |
 | dir | attribute listing | Planned | P2 | TC3 | runtime |
 | divmod | quotient/remainder | Planned | P1 | TC2 | frontend/runtime |
@@ -130,7 +130,7 @@
   - TODO(type-coverage, owner:stdlib, milestone:TC3): reflection builtins (`type`, `isinstance`, `issubclass`, `dir`, `vars`, `globals`, `locals`).
   - TODO(type-coverage, owner:stdlib, milestone:TC3): dynamic execution builtins (`eval`, `exec`, `compile`) with sandboxing rules.
   - TODO(type-coverage, owner:stdlib, milestone:TC3): I/O builtins (`open`, `input`, `help`, `breakpoint`) with capability gating.
-  - TODO(type-coverage, owner:runtime, milestone:TC3): descriptor deleter support (`__delete__`, property deleter) + remaining descriptor edge cases.
+  - Implemented: descriptor deleter support (`__delete__`, property deleter) + attribute deletion wiring.
 
 ## 3. Runtime Object Model Expansion
 - Deterministic layouts for all new heap objects (stable header + payload).
@@ -145,7 +145,7 @@
 - TODO(type-coverage, owner:runtime, milestone:TC2): rounding intrinsics (`round`, `floor`, `ceil`, `trunc`) with deterministic semantics.
 - TODO(type-coverage, owner:runtime, milestone:TC2): identity builtins (`hash`, `id`, `callable`).
 - TODO(type-coverage, owner:runtime, milestone:TC1): recursion limits + `RecursionError` guard semantics.
-- TODO(type-coverage, owner:runtime, milestone:TC2): descriptor deleter semantics (`__delete__`, property deleter) + remaining descriptor edge cases.
+- Implemented: descriptor deleter semantics (`__delete__`, property deleter) + attribute deletion wiring.
 
 ## 4. Frontend + IR Coverage
 - Lower literals/ops for set/frozenset, complex, and exceptions.

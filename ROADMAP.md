@@ -11,7 +11,7 @@
 - Implemented: C3 MRO + multiple inheritance for attribute lookup + `super()` resolution + data descriptor precedence.
 - Implemented: reflection builtins (`type`, `isinstance`, `issubclass`, `object`) for base chains (no metaclasses).
 - Implemented: exception chaining with explicit `__cause__`, implicit `__context__`, and `__suppress_context__`.
-- TODO(type-coverage, owner:runtime, milestone:TC2): descriptor deleter semantics (`__delete__`, property deleter) + remaining descriptor edge cases.
+- Implemented: descriptor deleter semantics (`__delete__`, property deleter) + attribute deletion wiring.
 - Partial: wasm generator state machines + closure slot intrinsics + channel send/recv intrinsics + async pending/block_on parity landed; remaining generator state object and scheduler semantics.
 - Implemented: async iterator protocol (`__aiter__`/`__anext__`) with `aiter`/`anext` lowering and `async for` support; sync-iter fallback remains for now (awaitable `anext` outside `await` still pending).
 

@@ -180,6 +180,7 @@ static INTERN_MRO_NAME: OnceLock<u64> = OnceLock::new();
 static INTERN_GET_NAME: OnceLock<u64> = OnceLock::new();
 static INTERN_SET_NAME: OnceLock<u64> = OnceLock::new();
 static INTERN_DELETE_NAME: OnceLock<u64> = OnceLock::new();
+static INTERN_FIELD_OFFSETS_NAME: OnceLock<u64> = OnceLock::new();
 
 trait ExceptionSentinel {
     fn exception_sentinel() -> Self;
@@ -1253,6 +1254,25 @@ unsafe fn dict_get_in_place(ptr: *mut u8, key_bits: u64) -> Option<u64> {
     let order = dict_order(ptr);
     let table = dict_table(ptr);
     dict_find_entry(order, table, key_bits).map(|idx| order[idx * 2 + 1])
+}
+
+unsafe fn dict_del_in_place(ptr: *mut u8, key_bits: u64) -> bool {
+    let order = dict_order(ptr);
+    let table = dict_table(ptr);
+    let Some(entry_idx) = dict_find_entry(order, table, key_bits) else {
+        return false;
+    };
+    let key_idx = entry_idx * 2;
+    let val_idx = key_idx + 1;
+    let key_val = order[key_idx];
+    let val_val = order[val_idx];
+    dec_ref_bits(key_val);
+    dec_ref_bits(val_val);
+    order.drain(key_idx..=val_idx);
+    let entries = order.len() / 2;
+    let capacity = dict_table_capacity(entries.max(1));
+    dict_rebuild(order, table, capacity);
+    true
 }
 
 fn alloc_list_with_capacity(elems: &[u64], capacity: usize) -> *mut u8 {
@@ -3030,6 +3050,34 @@ pub unsafe extern "C" fn molt_object_set_class(obj_ptr: *mut u8, class_bits: u64
     object_set_class_bits(obj_ptr, class_bits);
     if class_bits != 0 {
         inc_ref_bits(class_bits);
+    }
+    MoltObject::none().bits()
+}
+
+/// # Safety
+/// `obj_ptr` must be a valid object pointer with enough payload for `offset`.
+#[no_mangle]
+pub unsafe extern "C" fn molt_object_field_get(obj_ptr: *mut u8, offset: usize) -> u64 {
+    let slot = obj_ptr.add(offset) as *const u64;
+    let bits = *slot;
+    inc_ref_bits(bits);
+    bits
+}
+
+/// # Safety
+/// `obj_ptr` must be a valid object pointer with enough payload for `offset`.
+#[no_mangle]
+pub unsafe extern "C" fn molt_object_field_set(
+    obj_ptr: *mut u8,
+    offset: usize,
+    val_bits: u64,
+) -> u64 {
+    let slot = obj_ptr.add(offset) as *mut u64;
+    let old_bits = *slot;
+    if old_bits != val_bits {
+        dec_ref_bits(old_bits);
+        inc_ref_bits(val_bits);
+        *slot = val_bits;
     }
     MoltObject::none().bits()
 }
@@ -10789,7 +10837,29 @@ fn property_no_setter(attr_name: &str, class_ptr: *mut u8) -> i64 {
     raise!("AttributeError", &msg);
 }
 
+fn property_no_deleter(attr_name: &str, class_ptr: *mut u8) -> i64 {
+    let class_name = if class_ptr.is_null() || unsafe { object_type_id(class_ptr) } != TYPE_ID_TYPE
+    {
+        "object".to_string()
+    } else {
+        string_obj_to_owned(obj_from_bits(unsafe { class_name_bits(class_ptr) }))
+            .unwrap_or_else(|| "object".to_string())
+    };
+    let msg = format!("property '{attr_name}' of '{class_name}' object has no deleter");
+    raise!("AttributeError", &msg);
+}
+
 fn descriptor_no_setter(attr_name: &str, class_ptr: *mut u8) -> i64 {
+    let class_name = if class_ptr.is_null() {
+        "object".to_string()
+    } else {
+        class_name_for_error(MoltObject::from_ptr(class_ptr).bits())
+    };
+    let msg = format!("attribute '{attr_name}' of '{class_name}' object is read-only");
+    raise!("AttributeError", &msg);
+}
+
+fn descriptor_no_deleter(attr_name: &str, class_ptr: *mut u8) -> i64 {
     let class_name = if class_ptr.is_null() {
         "object".to_string()
     } else {
@@ -10983,8 +11053,37 @@ unsafe fn class_attr_lookup_raw_mro(class_ptr: *mut u8, attr_bits: u64) -> Optio
     }
 }
 
+unsafe fn class_field_offset(class_ptr: *mut u8, attr_bits: u64) -> Option<usize> {
+    let dict_bits = class_dict_bits(class_ptr);
+    let dict_ptr = obj_from_bits(dict_bits).as_ptr()?;
+    if object_type_id(dict_ptr) != TYPE_ID_DICT {
+        return None;
+    }
+    let fields_bits =
+        intern_static_name(&INTERN_FIELD_OFFSETS_NAME, b"__molt_field_offsets__");
+    let offsets_bits = dict_get_in_place(dict_ptr, fields_bits)?;
+    let offsets_ptr = obj_from_bits(offsets_bits).as_ptr()?;
+    if object_type_id(offsets_ptr) != TYPE_ID_DICT {
+        return None;
+    }
+    let offset_bits = dict_get_in_place(offsets_ptr, attr_bits)?;
+    obj_from_bits(offset_bits)
+        .as_int()
+        .and_then(|val| if val >= 0 { Some(val as usize) } else { None })
+}
+
 unsafe fn descriptor_method_bits(val_bits: u64, name_bits: u64) -> Option<u64> {
-    let class_bits = type_of_bits(val_bits);
+    let class_bits = if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
+        unsafe {
+            match object_type_id(ptr) {
+                TYPE_ID_TYPE => MoltObject::from_ptr(ptr).bits(),
+                TYPE_ID_OBJECT => object_class_bits(ptr),
+                _ => type_of_bits(val_bits),
+            }
+        }
+    } else {
+        type_of_bits(val_bits)
+    };
     let class_obj = obj_from_bits(class_bits);
     let class_ptr = class_obj.as_ptr()?;
     if object_type_id(class_ptr) != TYPE_ID_TYPE {
@@ -11015,8 +11114,7 @@ unsafe fn descriptor_bind(
     owner_ptr: *mut u8,
     instance_ptr: Option<*mut u8>,
 ) -> Option<u64> {
-    let val_obj = obj_from_bits(val_bits);
-    let Some(val_ptr) = val_obj.as_ptr() else {
+    let Some(val_ptr) = maybe_ptr_from_bits(val_bits) else {
         inc_ref_bits(val_bits);
         return Some(val_bits);
     };
@@ -11256,6 +11354,10 @@ unsafe fn attr_lookup_ptr(obj_ptr: *mut u8, attr_bits: u64) -> Option<u64> {
                         if descriptor_is_data(val_bits) {
                             return descriptor_bind(val_bits, class_ptr, Some(obj_ptr));
                         }
+                    }
+                    if let Some(offset) = class_field_offset(class_ptr, attr_bits) {
+                        let bits = molt_object_field_get(obj_ptr, offset);
+                        return Some(bits);
                     }
                 }
             }
@@ -11644,6 +11746,10 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                             return descriptor_no_setter(attr_name, class_ptr);
                         }
                     }
+                    if let Some(offset) = class_field_offset(class_ptr, attr_bits) {
+                        dec_ref_bits(attr_bits);
+                        return molt_object_field_set(obj_ptr, offset, val_bits) as i64;
+                    }
                 }
             }
         }
@@ -11668,6 +11774,258 @@ pub unsafe extern "C" fn molt_set_attr_generic(
         return attr_error("object", attr_name);
     }
     attr_error(type_name(MoltObject::from_ptr(obj_ptr)), attr_name)
+}
+
+unsafe fn del_attr_ptr(obj_ptr: *mut u8, attr_bits: u64, attr_name: &str) -> i64 {
+    let type_id = object_type_id(obj_ptr);
+    if type_id == TYPE_ID_MODULE {
+        let dict_bits = module_dict_bits(obj_ptr);
+        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+            if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                if dict_del_in_place(dict_ptr, attr_bits) {
+                    return MoltObject::none().bits() as i64;
+                }
+            }
+        }
+        let module_name =
+            string_obj_to_owned(obj_from_bits(module_name_bits(obj_ptr))).unwrap_or_default();
+        let msg = format!("module '{module_name}' has no attribute '{attr_name}'");
+        raise!("AttributeError", &msg);
+    }
+    if type_id == TYPE_ID_TYPE {
+        let class_bits = MoltObject::from_ptr(obj_ptr).bits();
+        if is_builtin_class_bits(class_bits) {
+            raise!("TypeError", "cannot delete attributes on builtin type");
+        }
+        let dict_bits = class_dict_bits(obj_ptr);
+        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+            if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                if dict_del_in_place(dict_ptr, attr_bits) {
+                    return MoltObject::none().bits() as i64;
+                }
+            }
+        }
+        let class_name =
+            string_obj_to_owned(obj_from_bits(class_name_bits(obj_ptr))).unwrap_or_default();
+        let msg = format!("type object '{class_name}' has no attribute '{attr_name}'");
+        raise!("AttributeError", &msg);
+    }
+    if type_id == TYPE_ID_EXCEPTION {
+        if attr_name == "__cause__" || attr_name == "__context__" {
+            unsafe {
+                let slot = if attr_name == "__cause__" {
+                    obj_ptr.add(2 * std::mem::size_of::<u64>())
+                } else {
+                    obj_ptr.add(3 * std::mem::size_of::<u64>())
+                } as *mut u64;
+                let old_bits = *slot;
+                if !obj_from_bits(old_bits).is_none() {
+                    dec_ref_bits(old_bits);
+                    let none_bits = MoltObject::none().bits();
+                    inc_ref_bits(none_bits);
+                    *slot = none_bits;
+                }
+                if attr_name == "__cause__" {
+                    let suppress_bits = MoltObject::from_bool(false).bits();
+                    let suppress_slot =
+                        obj_ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64;
+                    let old_bits = *suppress_slot;
+                    if old_bits != suppress_bits {
+                        dec_ref_bits(old_bits);
+                        inc_ref_bits(suppress_bits);
+                        *suppress_slot = suppress_bits;
+                    }
+                }
+            }
+            return MoltObject::none().bits() as i64;
+        }
+        if attr_name == "__suppress_context__" {
+            unsafe {
+                let suppress_bits = MoltObject::from_bool(false).bits();
+                let slot = obj_ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64;
+                let old_bits = *slot;
+                if old_bits != suppress_bits {
+                    dec_ref_bits(old_bits);
+                    inc_ref_bits(suppress_bits);
+                    *slot = suppress_bits;
+                }
+            }
+            return MoltObject::none().bits() as i64;
+        }
+        return attr_error("exception", attr_name);
+    }
+    if type_id == TYPE_ID_FUNCTION {
+        let dict_bits = function_dict_bits(obj_ptr);
+        if dict_bits != 0 {
+            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+                if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                    if dict_del_in_place(dict_ptr, attr_bits) {
+                        return MoltObject::none().bits() as i64;
+                    }
+                }
+            }
+        }
+        return attr_error("function", attr_name);
+    }
+    if type_id == TYPE_ID_DATACLASS {
+        let desc_ptr = dataclass_desc_ptr(obj_ptr);
+        if !desc_ptr.is_null() && (*desc_ptr).frozen {
+            raise!("TypeError", "cannot delete frozen dataclass field");
+        }
+        if !desc_ptr.is_null() {
+            let class_bits = (*desc_ptr).class_bits;
+            if class_bits != 0 {
+                if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
+                    if object_type_id(class_ptr) == TYPE_ID_TYPE {
+                        if let Some(desc_bits) = class_attr_lookup_raw_mro(class_ptr, attr_bits) {
+                            if let Some(desc_ptr) = maybe_ptr_from_bits(desc_bits) {
+                                if object_type_id(desc_ptr) == TYPE_ID_PROPERTY {
+                                    let del_bits = property_del_bits(desc_ptr);
+                                    if obj_from_bits(del_bits).is_none() {
+                                        return property_no_deleter(attr_name, class_ptr);
+                                    }
+                                    let inst_bits = instance_bits_for_call(obj_ptr);
+                                    let _ = call_function_obj1(del_bits, inst_bits);
+                                    return MoltObject::none().bits() as i64;
+                                }
+                            }
+                            let del_bits = intern_static_name(&INTERN_DELETE_NAME, b"__delete__");
+                            if let Some(method_bits) = descriptor_method_bits(desc_bits, del_bits) {
+                                let method_obj = obj_from_bits(method_bits);
+                                let Some(method_ptr) = method_obj.as_ptr() else {
+                                    raise!("TypeError", "__delete__ must be a function");
+                                };
+                                if object_type_id(method_ptr) != TYPE_ID_FUNCTION {
+                                    raise!("TypeError", "__delete__ must be a function");
+                                }
+                                let self_bits = desc_bits;
+                                let inst_bits = instance_bits_for_call(obj_ptr);
+                                let _ = call_function_obj2(method_bits, self_bits, inst_bits);
+                                return MoltObject::none().bits() as i64;
+                            }
+                            let set_bits = intern_static_name(&INTERN_SET_NAME, b"__set__");
+                            if descriptor_method_bits(desc_bits, set_bits).is_some() {
+                                return descriptor_no_deleter(attr_name, class_ptr);
+                            }
+                        }
+                    }
+                }
+            }
+            if (*desc_ptr).slots {
+                let name = &(*desc_ptr).name;
+                let type_label = if name.is_empty() {
+                    "dataclass"
+                } else {
+                    name.as_str()
+                };
+                return attr_error(type_label, attr_name);
+            }
+        }
+        let dict_bits = dataclass_dict_bits(obj_ptr);
+        if dict_bits != 0 {
+            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+                if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                    if dict_del_in_place(dict_ptr, attr_bits) {
+                        return MoltObject::none().bits() as i64;
+                    }
+                }
+            }
+        }
+        let type_label = if !desc_ptr.is_null() {
+            let name = &(*desc_ptr).name;
+            if name.is_empty() {
+                "dataclass"
+            } else {
+                name.as_str()
+            }
+        } else {
+            "dataclass"
+        };
+        return attr_error(type_label, attr_name);
+    }
+    if type_id == TYPE_ID_OBJECT {
+        let header = header_from_obj_ptr(obj_ptr);
+        if (*header).poll_fn != 0 {
+            return attr_error("object", attr_name);
+        }
+        let payload = object_payload_size(obj_ptr);
+        if payload < std::mem::size_of::<u64>() {
+            return attr_error("object", attr_name);
+        }
+        let class_bits = object_class_bits(obj_ptr);
+        if class_bits != 0 {
+            if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
+                if object_type_id(class_ptr) == TYPE_ID_TYPE {
+                    if let Some(desc_bits) = class_attr_lookup_raw_mro(class_ptr, attr_bits) {
+                        if let Some(desc_ptr) = maybe_ptr_from_bits(desc_bits) {
+                            if object_type_id(desc_ptr) == TYPE_ID_PROPERTY {
+                                let del_bits = property_del_bits(desc_ptr);
+                                if obj_from_bits(del_bits).is_none() {
+                                    return property_no_deleter(attr_name, class_ptr);
+                                }
+                                let inst_bits = instance_bits_for_call(obj_ptr);
+                                let _ = call_function_obj1(del_bits, inst_bits);
+                                return MoltObject::none().bits() as i64;
+                            }
+                        }
+                        let del_bits = intern_static_name(&INTERN_DELETE_NAME, b"__delete__");
+                        if let Some(method_bits) = descriptor_method_bits(desc_bits, del_bits) {
+                            let method_obj = obj_from_bits(method_bits);
+                            let Some(method_ptr) = method_obj.as_ptr() else {
+                                raise!("TypeError", "__delete__ must be a function");
+                            };
+                            if object_type_id(method_ptr) != TYPE_ID_FUNCTION {
+                                raise!("TypeError", "__delete__ must be a function");
+                            }
+                            let self_bits = desc_bits;
+                            let inst_bits = instance_bits_for_call(obj_ptr);
+                            let _ = call_function_obj2(method_bits, self_bits, inst_bits);
+                            return MoltObject::none().bits() as i64;
+                        }
+                        let set_bits = intern_static_name(&INTERN_SET_NAME, b"__set__");
+                        if descriptor_method_bits(desc_bits, set_bits).is_some() {
+                            return descriptor_no_deleter(attr_name, class_ptr);
+                        }
+                    }
+                }
+            }
+        }
+        let dict_bits = instance_dict_bits(obj_ptr);
+        if dict_bits != 0 {
+            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+                if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                    if dict_del_in_place(dict_ptr, attr_bits) {
+                        return MoltObject::none().bits() as i64;
+                    }
+                }
+            }
+        }
+        return attr_error("object", attr_name);
+    }
+    attr_error(type_name(MoltObject::from_ptr(obj_ptr)), attr_name)
+}
+
+/// # Safety
+/// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn molt_del_attr_generic(
+    obj_ptr: *mut u8,
+    attr_name_ptr: *const u8,
+    attr_name_len: usize,
+) -> i64 {
+    if obj_ptr.is_null() {
+        raise!("AttributeError", "object has no attribute");
+    }
+    let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
+    let attr_name = std::str::from_utf8(slice).unwrap_or("<attr>");
+    let attr_ptr = alloc_string(slice);
+    if attr_ptr.is_null() {
+        return MoltObject::none().bits() as i64;
+    }
+    let attr_bits = MoltObject::from_ptr(attr_ptr).bits();
+    let res = del_attr_ptr(obj_ptr, attr_bits, attr_name);
+    dec_ref_bits(attr_bits);
+    res
 }
 
 /// # Safety
@@ -11698,6 +12056,23 @@ pub unsafe extern "C" fn molt_set_attr_object(
 ) -> i64 {
     if let Some(ptr) = maybe_ptr_from_bits(obj_bits) {
         return molt_set_attr_generic(ptr, attr_name_ptr, attr_name_len, val_bits);
+    }
+    let obj = obj_from_bits(obj_bits);
+    let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
+    let attr_name = std::str::from_utf8(slice).unwrap_or("<attr>");
+    attr_error(type_name(obj), attr_name)
+}
+
+/// # Safety
+/// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn molt_del_attr_object(
+    obj_bits: u64,
+    attr_name_ptr: *const u8,
+    attr_name_len: usize,
+) -> i64 {
+    if let Some(ptr) = maybe_ptr_from_bits(obj_bits) {
+        return molt_del_attr_generic(ptr, attr_name_ptr, attr_name_len);
     }
     let obj = obj_from_bits(obj_bits);
     let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
@@ -11822,6 +12197,26 @@ pub extern "C" fn molt_set_attr_name(obj_bits: u64, name_bits: u64, val_bits: u6
     let name =
         string_obj_to_owned(obj_from_bits(name_bits)).unwrap_or_else(|| "<attr>".to_string());
     attr_error(type_name(obj), &name) as u64
+}
+
+#[no_mangle]
+pub extern "C" fn molt_del_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
+    let name_obj = obj_from_bits(name_bits);
+    let Some(name_ptr) = name_obj.as_ptr() else {
+        raise!("TypeError", "attribute name must be str");
+    };
+    unsafe {
+        if object_type_id(name_ptr) != TYPE_ID_STRING {
+            raise!("TypeError", "attribute name must be str");
+        }
+        let attr_name =
+            string_obj_to_owned(obj_from_bits(name_bits)).unwrap_or_else(|| "<attr>".to_string());
+        if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
+            return del_attr_ptr(obj_ptr, name_bits, &attr_name) as u64;
+        }
+        let obj = obj_from_bits(obj_bits);
+        return attr_error(type_name(obj), &attr_name) as u64;
+    }
 }
 mod arena;
 use arena::TempArena;

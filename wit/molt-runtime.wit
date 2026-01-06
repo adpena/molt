@@ -52,6 +52,10 @@ interface intrinsics {
     get_attr_object: func(obj: molt-object, attr_ptr: molt-ptr, attr_len: u64) -> molt-object;
     set_attr_generic: func(obj: molt-ptr, attr_ptr: molt-ptr, attr_len: u64, val: molt-object) -> molt-object;
     set_attr_object: func(obj: molt-object, attr_ptr: molt-ptr, attr_len: u64, val: molt-object) -> molt-object;
+    del_attr_generic: func(obj: molt-ptr, attr_ptr: molt-ptr, attr_len: u64) -> molt-object;
+    del_attr_object: func(obj: molt-object, attr_ptr: molt-ptr, attr_len: u64) -> molt-object;
+    object_field_get: func(obj: molt-ptr, offset: u64) -> molt-object;
+    object_field_set: func(obj: molt-ptr, offset: u64, val: molt-object) -> molt-object;
     module_new: func(name: molt-object) -> molt-object;
     module_cache_get: func(name: molt-object) -> molt-object;
     module_cache_set: func(name: molt-object, module: molt-object) -> molt-object;
@@ -61,6 +65,7 @@ interface intrinsics {
     get_attr_name_default: func(obj: molt-object, name: molt-object, default: molt-object) -> molt-object;
     has_attr_name: func(obj: molt-object, name: molt-object) -> molt-object;
     set_attr_name: func(obj: molt-object, name: molt-object, val: molt-object) -> molt-object;
+    del_attr_name: func(obj: molt-object, name: molt-object) -> molt-object;
     len: func(val: molt-object) -> molt-object;
     slice: func(obj: molt-object, start: molt-object, end: molt-object) -> molt-object;
     slice_new: func(start: molt-object, stop: molt-object, step: molt-object) -> molt-object;

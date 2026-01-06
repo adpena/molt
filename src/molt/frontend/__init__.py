@@ -3063,6 +3063,35 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.globals[node.name] = class_val
         self._emit_module_attr_set(node.name, class_val)
 
+        class_info = self.classes[node.name]
+        if (
+            not class_info.get("dataclass")
+            and not class_info.get("dynamic")
+            and class_info.get("fields")
+        ):
+            field_items: list[MoltValue] = []
+            for field in sorted(class_info["fields"]):
+                key_val = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=[field], result=key_val))
+                offset_val = MoltValue(self.next_var(), type_hint="int")
+                self.emit(
+                    MoltOp(
+                        kind="CONST",
+                        args=[class_info["fields"][field]],
+                        result=offset_val,
+                    )
+                )
+                field_items.extend([key_val, offset_val])
+            offsets_dict = MoltValue(self.next_var(), type_hint="dict")
+            self.emit(MoltOp(kind="DICT_NEW", args=field_items, result=offsets_dict))
+            self.emit(
+                MoltOp(
+                    kind="SETATTR_GENERIC_OBJ",
+                    args=[class_val, "__molt_field_offsets__", offsets_dict],
+                    result=MoltValue("none"),
+                )
+            )
+
         for attr_name, expr in class_attrs.items():
             val = self.visit(expr)
             if val is None:
@@ -3885,6 +3914,44 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     MoltOp(
                         kind="SETATTR_NAME",
                         args=[obj, name, val],
+                        result=res,
+                    )
+                )
+                return res
+            if func_id == "delattr":
+                if len(node.args) != 2 or node.keywords:
+                    raise NotImplementedError("delattr expects 2 arguments")
+                obj = self.visit(node.args[0])
+                name = self.visit(node.args[1])
+                if obj is None or name is None:
+                    raise NotImplementedError("delattr expects object and name")
+                if isinstance(node.args[1], ast.Constant) and isinstance(
+                    node.args[1].value, str
+                ):
+                    res = MoltValue(self.next_var(), type_hint="None")
+                    attr_name = node.args[1].value
+                    if obj.type_hint in self.classes:
+                        self.emit(
+                            MoltOp(
+                                kind="DELATTR_GENERIC_PTR",
+                                args=[obj, attr_name],
+                                result=res,
+                            )
+                        )
+                    else:
+                        self.emit(
+                            MoltOp(
+                                kind="DELATTR_GENERIC_OBJ",
+                                args=[obj, attr_name],
+                                result=res,
+                            )
+                        )
+                    return res
+                res = MoltValue(self.next_var(), type_hint="None")
+                self.emit(
+                    MoltOp(
+                        kind="DELATTR_NAME",
+                        args=[obj, name],
                         result=res,
                     )
                 )
@@ -5013,6 +5080,32 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         kind="STORE_INDEX",
                         args=[target_obj, index_val, value_node],
                         result=MoltValue("none"),
+                    )
+                )
+        return None
+
+    def visit_Delete(self, node: ast.Delete) -> None:
+        for target in node.targets:
+            if not isinstance(target, ast.Attribute):
+                raise NotImplementedError("del only supports attribute deletion")
+            obj = self.visit(target.value)
+            if obj is None:
+                raise NotImplementedError("del expects attribute owner")
+            res = MoltValue(self.next_var(), type_hint="None")
+            if obj.type_hint in self.classes:
+                self.emit(
+                    MoltOp(
+                        kind="DELATTR_GENERIC_PTR",
+                        args=[obj, target.attr],
+                        result=res,
+                    )
+                )
+            else:
+                self.emit(
+                    MoltOp(
+                        kind="DELATTR_GENERIC_OBJ",
+                        args=[obj, target.attr],
+                        result=res,
                     )
                 )
         return None
@@ -7604,6 +7697,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "out": op.result.name,
                     }
                 )
+            elif op.kind == "DELATTR_GENERIC_PTR":
+                json_ops.append(
+                    {
+                        "kind": "del_attr_generic_ptr",
+                        "args": [op.args[0].name],
+                        "s_value": op.args[1],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "DELATTR_GENERIC_OBJ":
+                json_ops.append(
+                    {
+                        "kind": "del_attr_generic_obj",
+                        "args": [op.args[0].name],
+                        "s_value": op.args[1],
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "DATACLASS_GET":
                 json_ops.append(
                     {
@@ -7698,6 +7809,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 json_ops.append(
                     {
                         "kind": "set_attr_name",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "DELATTR_NAME":
+                json_ops.append(
+                    {
+                        "kind": "del_attr_name",
                         "args": [arg.name for arg in op.args],
                         "out": op.result.name,
                     }

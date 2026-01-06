@@ -163,6 +163,10 @@ impl WasmBackend {
         add_import("get_attr_object", 5, &mut self.import_ids);
         add_import("set_attr_generic", 7, &mut self.import_ids);
         add_import("set_attr_object", 7, &mut self.import_ids);
+        add_import("del_attr_generic", 5, &mut self.import_ids);
+        add_import("del_attr_object", 5, &mut self.import_ids);
+        add_import("object_field_get", 3, &mut self.import_ids);
+        add_import("object_field_set", 5, &mut self.import_ids);
         add_import("module_new", 2, &mut self.import_ids);
         add_import("module_cache_get", 2, &mut self.import_ids);
         add_import("module_cache_set", 3, &mut self.import_ids);
@@ -172,6 +176,7 @@ impl WasmBackend {
         add_import("get_attr_name_default", 5, &mut self.import_ids);
         add_import("has_attr_name", 3, &mut self.import_ids);
         add_import("set_attr_name", 5, &mut self.import_ids);
+        add_import("del_attr_name", 3, &mut self.import_ids);
         add_import("is_truthy", 2, &mut self.import_ids);
         add_import("json_parse_scalar", 4, &mut self.import_ids);
         add_import("msgpack_parse_scalar", 4, &mut self.import_ids);
@@ -1776,6 +1781,44 @@ impl WasmBackend {
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
+                    "del_attr_generic_ptr" => {
+                        let args = op.args.as_ref().unwrap();
+                        let obj = locals[&args[0]];
+                        let attr = op.s_value.as_ref().unwrap();
+                        let bytes = attr.as_bytes();
+                        let offset = self.data_offset;
+                        self.data.active(
+                            0,
+                            &ConstExpr::i32_const(offset as i32),
+                            bytes.iter().copied(),
+                        );
+                        self.data_offset = (self.data_offset + bytes.len() as u32 + 7) & !7;
+                        func.instruction(&Instruction::LocalGet(obj));
+                        func.instruction(&Instruction::I64Const(offset as i64));
+                        func.instruction(&Instruction::I64Const(bytes.len() as i64));
+                        func.instruction(&Instruction::Call(import_ids["del_attr_generic"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "del_attr_generic_obj" => {
+                        let args = op.args.as_ref().unwrap();
+                        let obj = locals[&args[0]];
+                        let attr = op.s_value.as_ref().unwrap();
+                        let bytes = attr.as_bytes();
+                        let offset = self.data_offset;
+                        self.data.active(
+                            0,
+                            &ConstExpr::i32_const(offset as i32),
+                            bytes.iter().copied(),
+                        );
+                        self.data_offset = (self.data_offset + bytes.len() as u32 + 7) & !7;
+                        func.instruction(&Instruction::LocalGet(obj));
+                        func.instruction(&Instruction::I64Const(offset as i64));
+                        func.instruction(&Instruction::I64Const(bytes.len() as i64));
+                        func.instruction(&Instruction::Call(import_ids["del_attr_object"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
                     "get_attr_name" => {
                         let args = op.args.as_ref().unwrap();
                         let obj = locals[&args[0]];
@@ -1820,26 +1863,37 @@ impl WasmBackend {
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
+                    "del_attr_name" => {
+                        let args = op.args.as_ref().unwrap();
+                        let obj = locals[&args[0]];
+                        let name = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(obj));
+                        func.instruction(&Instruction::LocalGet(name));
+                        func.instruction(&Instruction::Call(import_ids["del_attr_name"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
                     "store" => {
                         let args = op.args.as_ref().unwrap();
                         func.instruction(&Instruction::LocalGet(locals[&args[0]]));
-                        func.instruction(&Instruction::I32WrapI64);
+                        func.instruction(&Instruction::I64Const(op.value.unwrap()));
                         func.instruction(&Instruction::LocalGet(locals[&args[1]]));
-                        func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: op.value.unwrap() as u64,
-                            memory_index: 0,
-                        }));
+                        func.instruction(&Instruction::Call(import_ids["object_field_set"]));
+                        if let Some(out) = op.out.as_ref() {
+                            if out != "none" {
+                                func.instruction(&Instruction::LocalSet(locals[out]));
+                            } else {
+                                func.instruction(&Instruction::Drop);
+                            }
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
                     }
                     "load" => {
                         let args = op.args.as_ref().unwrap();
                         func.instruction(&Instruction::LocalGet(locals[&args[0]]));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: op.value.unwrap() as u64,
-                            memory_index: 0,
-                        }));
+                        func.instruction(&Instruction::I64Const(op.value.unwrap()));
+                        func.instruction(&Instruction::Call(import_ids["object_field_get"]));
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                     }
                     "closure_load" => {
@@ -1864,12 +1918,8 @@ impl WasmBackend {
                     "guarded_load" => {
                         let args = op.args.as_ref().unwrap();
                         func.instruction(&Instruction::LocalGet(locals[&args[0]]));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: op.value.unwrap() as u64,
-                            memory_index: 0,
-                        }));
+                        func.instruction(&Instruction::I64Const(op.value.unwrap()));
+                        func.instruction(&Instruction::Call(import_ids["object_field_get"]));
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                     }
                     "state_switch" => {}
