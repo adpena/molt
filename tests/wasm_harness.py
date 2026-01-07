@@ -1155,6 +1155,13 @@ BASE_IMPORTS = """\
   list_remove: () => boxNone(),
   list_count: () => boxNone(),
   list_index: () => boxNone(),
+  tuple_from_list: (val) => {
+    const list = getList(val);
+    if (list) return tupleFromArray([...list.items]);
+    const tup = getTuple(val);
+    if (tup) return val;
+    return boxNone();
+  },
   dict_new: () => boxNone(),
   dict_set: () => boxNone(),
   dict_get: () => boxNone(),
@@ -1251,6 +1258,15 @@ BASE_IMPORTS = """\
   string_replace: () => boxNone(),
   bytes_replace: () => boxNone(),
   bytearray_replace: () => boxNone(),
+  bytes_from_obj: (val) => {
+    const bytes = getBytes(val);
+    if (bytes) return val;
+    const bytearray = getBytearray(val);
+    if (bytearray) {
+      return boxPtr({ type: 'bytes', data: Uint8Array.from(bytearray.data) });
+    }
+    return boxNone();
+  },
   bytearray_from_obj: () => boxNone(),
   intarray_from_seq: () => boxNone(),
   buffer2d_new: () => boxNone(),

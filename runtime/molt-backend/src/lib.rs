@@ -240,6 +240,7 @@ impl SimpleBackend {
         let mut tracked_vars = Vec::new();
         let mut tracked_obj_vars = Vec::new();
         let mut state_blocks = HashMap::new();
+        let mut resume_states: HashSet<i64> = HashSet::new();
         let mut is_block_filled = false;
         let mut if_stack: Vec<IfFrame> = Vec::new();
         let mut loop_stack: Vec<LoopFrame> = Vec::new();
@@ -293,6 +294,7 @@ impl SimpleBackend {
                 || op.kind == "chan_send_yield"
                 || op.kind == "chan_recv_yield"
                 || op.kind == "label"
+                || op.kind == "state_label"
             {
                 op.value.unwrap()
             } else {
@@ -301,6 +303,9 @@ impl SimpleBackend {
             state_blocks
                 .entry(state_id)
                 .or_insert_with(|| builder.create_block());
+            if op.kind == "state_yield" || op.kind == "state_label" {
+                resume_states.insert(state_id);
+            }
         }
 
         // 2. Implementation
@@ -346,7 +351,7 @@ impl SimpleBackend {
                     }
                 }
                 match op.kind.as_str() {
-                    "label" | "else" | "end_if" | "loop_end" => {}
+                    "label" | "state_label" | "else" | "end_if" | "loop_end" => {}
                     _ => continue,
                 }
             }
@@ -1069,6 +1074,21 @@ impl SimpleBackend {
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
+                "tuple_from_list" => {
+                    let args = op.args.as_ref().unwrap();
+                    let list = vars.get(&args[0]).expect("Tuple source not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_tuple_from_list", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*list]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
                 "dict_new" => {
                     let args = op.args.as_ref().unwrap();
                     let out_name = op.out.unwrap();
@@ -1690,6 +1710,21 @@ impl SimpleBackend {
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
+                "bytes_from_obj" => {
+                    let args = op.args.as_ref().unwrap();
+                    let src = vars.get(&args[0]).expect("Bytes source not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_bytes_from_obj", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*src]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
                 "bytearray_from_obj" => {
                     let args = op.args.as_ref().unwrap();
                     let src = vars.get(&args[0]).expect("Bytearray source not found");
@@ -2205,11 +2240,12 @@ impl SimpleBackend {
                         .load(types::I64, MemFlags::new(), self_ptr, -16);
                     vars.insert("self".to_string(), self_ptr);
 
-                    let mut sorted_states: Vec<_> = state_blocks.iter().collect();
-                    sorted_states.sort_by_key(|k| k.0);
+                    let mut sorted_states: Vec<_> = resume_states.iter().copied().collect();
+                    sorted_states.sort();
 
-                    for (id, &block) in sorted_states {
-                        let id_const = builder.ins().iconst(types::I64, *id);
+                    for id in sorted_states {
+                        let block = state_blocks[&id];
+                        let id_const = builder.ins().iconst(types::I64, id);
                         let is_state = builder.ins().icmp(IntCC::Equal, state, id_const);
                         let next_check = builder.create_block();
                         if let Some(current_block) = builder.current_block() {
@@ -4450,7 +4486,7 @@ impl SimpleBackend {
                     builder.switch_to_block(fallthrough_block);
                     builder.seal_block(fallthrough_block);
                 }
-                "label" => {
+                "label" | "state_label" => {
                     let label_id = op.value.unwrap();
                     let block = state_blocks[&label_id];
 
@@ -4532,6 +4568,13 @@ impl SimpleBackend {
 
         builder.seal_all_blocks();
         builder.finalize();
+
+        if let Ok(filter) = std::env::var("MOLT_DUMP_CLIF") {
+            if filter == "1" || filter == func_ir.name || func_ir.name.contains(&filter)
+            {
+                eprintln!("CLIF {}:\n{}", func_ir.name, self.ctx.func.display());
+            }
+        }
 
         let id = self
             .module

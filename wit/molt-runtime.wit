@@ -82,6 +82,7 @@ interface intrinsics {
     list_remove: func(list: molt-object, val: molt-object) -> molt-object;
     list_count: func(list: molt-object, val: molt-object) -> molt-object;
     list_index: func(list: molt-object, val: molt-object) -> molt-object;
+    tuple_from_list: func(obj: molt-object) -> molt-object;
     dict_new: func(capacity: u64) -> molt-object;
     dict_set: func(dict: molt-object, key: molt-object, val: molt-object) -> molt-object;
     dict_get: func(dict: molt-object, key: molt-object, default: molt-object) -> molt-object;
@@ -115,6 +116,7 @@ interface intrinsics {
     string_replace: func(haystack: molt-object, needle: molt-object, replacement: molt-object) -> molt-object;
     bytes_replace: func(haystack: molt-object, needle: molt-object, replacement: molt-object) -> molt-object;
     bytearray_replace: func(haystack: molt-object, needle: molt-object, replacement: molt-object) -> molt-object;
+    bytes_from_obj: func(obj: molt-object) -> molt-object;
     bytearray_from_obj: func(obj: molt-object) -> molt-object;
     intarray_from_seq: func(obj: molt-object) -> molt-object;
     memoryview_new: func(obj: molt-object) -> molt-object;

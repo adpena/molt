@@ -203,6 +203,7 @@ impl WasmBackend {
         add_import("list_remove", 3, &mut self.import_ids);
         add_import("list_count", 3, &mut self.import_ids);
         add_import("list_index", 3, &mut self.import_ids);
+        add_import("tuple_from_list", 2, &mut self.import_ids);
         add_import("dict_new", 2, &mut self.import_ids);
         add_import("dict_set", 5, &mut self.import_ids);
         add_import("dict_get", 5, &mut self.import_ids);
@@ -237,6 +238,7 @@ impl WasmBackend {
         add_import("string_replace", 5, &mut self.import_ids);
         add_import("bytes_replace", 5, &mut self.import_ids);
         add_import("bytearray_replace", 5, &mut self.import_ids);
+        add_import("bytes_from_obj", 2, &mut self.import_ids);
         add_import("bytearray_from_obj", 2, &mut self.import_ids);
         add_import("buffer2d_new", 5, &mut self.import_ids);
         add_import("buffer2d_get", 5, &mut self.import_ids);
@@ -1104,6 +1106,14 @@ impl WasmBackend {
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
+                    "tuple_from_list" => {
+                        let args = op.args.as_ref().unwrap();
+                        let list = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(list));
+                        func.instruction(&Instruction::Call(import_ids["tuple_from_list"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
                     "dict_new" => {
                         let args = op.args.as_ref().unwrap();
                         let out = locals[op.out.as_ref().unwrap()];
@@ -1461,6 +1471,14 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(needle));
                         func.instruction(&Instruction::LocalGet(replacement));
                         func.instruction(&Instruction::Call(import_ids["bytearray_replace"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "bytes_from_obj" => {
+                        let args = op.args.as_ref().unwrap();
+                        let src = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(src));
+                        func.instruction(&Instruction::Call(import_ids["bytes_from_obj"]));
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
@@ -2607,7 +2625,7 @@ impl WasmBackend {
             let op_count = func_ir.ops.len();
             let mut label_to_index: HashMap<i64, usize> = HashMap::new();
             for (idx, op) in func_ir.ops.iter().enumerate() {
-                if op.kind == "label" {
+                if op.kind == "label" || op.kind == "state_label" {
                     if let Some(label_id) = op.value {
                         label_to_index.insert(label_id, idx);
                     }
@@ -2679,14 +2697,7 @@ impl WasmBackend {
             let mut state_map: HashMap<i64, usize> = HashMap::new();
             state_map.insert(0, 0);
             for (idx, op) in func_ir.ops.iter().enumerate() {
-                if matches!(
-                    op.kind.as_str(),
-                    "state_transition"
-                        | "state_yield"
-                        | "chan_send_yield"
-                        | "chan_recv_yield"
-                        | "label"
-                ) {
+                if matches!(op.kind.as_str(), "state_yield" | "state_label") {
                     if let Some(state_id) = op.value {
                         state_map.insert(state_id, idx + 1);
                     }
@@ -3016,7 +3027,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalSet(state_local));
                         func.instruction(&Instruction::Br(depth));
                     }
-                    "try_start" | "try_end" | "label" => {
+                    "try_start" | "try_end" | "label" | "state_label" => {
                         func.instruction(&Instruction::I64Const((idx + 1) as i64));
                         func.instruction(&Instruction::LocalSet(state_local));
                         func.instruction(&Instruction::Br(depth));

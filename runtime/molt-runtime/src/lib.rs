@@ -10,7 +10,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::OpenOptions;
 use std::io::{Cursor, Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
@@ -60,6 +60,12 @@ struct MoltFileHandle {
 struct Utf8IndexCache {
     block: usize,
     prefix: Vec<i64>,
+    count_cache: Mutex<Option<Utf8CountCache>>,
+}
+
+struct Utf8CountCache {
+    needle: Vec<u8>,
+    count: i64,
 }
 
 struct Utf8CacheStore {
@@ -182,6 +188,25 @@ static INTERN_SET_NAME: OnceLock<u64> = OnceLock::new();
 static INTERN_DELETE_NAME: OnceLock<u64> = OnceLock::new();
 static INTERN_SET_NAME_METHOD: OnceLock<u64> = OnceLock::new();
 static INTERN_FIELD_OFFSETS_NAME: OnceLock<u64> = OnceLock::new();
+static PROFILE_ENABLED: OnceLock<bool> = OnceLock::new();
+static CALL_DISPATCH_COUNT: AtomicU64 = AtomicU64::new(0);
+static STRING_COUNT_CACHE_HIT: AtomicU64 = AtomicU64::new(0);
+static STRING_COUNT_CACHE_MISS: AtomicU64 = AtomicU64::new(0);
+static STRUCT_FIELD_STORE_COUNT: AtomicU64 = AtomicU64::new(0);
+
+fn profile_enabled() -> bool {
+    *PROFILE_ENABLED.get_or_init(|| {
+        std::env::var("MOLT_PROFILE")
+            .map(|val| !val.is_empty() && val != "0")
+            .unwrap_or(false)
+    })
+}
+
+fn profile_hit(counter: &AtomicU64) {
+    if profile_enabled() {
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+}
 
 trait ExceptionSentinel {
     fn exception_sentinel() -> Self;
@@ -3124,6 +3149,7 @@ pub unsafe extern "C" fn molt_object_field_set(obj_bits: u64, offset: usize, val
     let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
         raise!("TypeError", "object field access on non-object");
     };
+    profile_hit(&STRUCT_FIELD_STORE_COUNT);
     let slot = obj_ptr.add(offset) as *mut u64;
     let old_bits = *slot;
     if old_bits != val_bits {
@@ -5242,6 +5268,21 @@ pub extern "C" fn molt_not(val: u64) -> u64 {
     MoltObject::from_bool(!is_truthy(obj_from_bits(val))).bits()
 }
 
+#[no_mangle]
+pub extern "C" fn molt_profile_dump() {
+    if !profile_enabled() {
+        return;
+    }
+    let call_dispatch = CALL_DISPATCH_COUNT.load(Ordering::Relaxed);
+    let cache_hit = STRING_COUNT_CACHE_HIT.load(Ordering::Relaxed);
+    let cache_miss = STRING_COUNT_CACHE_MISS.load(Ordering::Relaxed);
+    let struct_stores = STRUCT_FIELD_STORE_COUNT.load(Ordering::Relaxed);
+    eprintln!(
+        "molt_profile call_dispatch={} string_count_cache_hit={} string_count_cache_miss={} struct_field_store={}",
+        call_dispatch, cache_hit, cache_miss, struct_stores
+    );
+}
+
 fn vec_sum_result(sum_bits: u64, ok: bool) -> u64 {
     let ok_bits = MoltObject::from_bool(ok).bits();
     let tuple_ptr = alloc_tuple(&[sum_bits, ok_bits]);
@@ -7070,6 +7111,15 @@ pub extern "C" fn molt_string_count(hay_bits: u64, needle_bits: u64) -> u64 {
                 let count = utf8_codepoint_count_cached(hay_bytes, Some(hay_ptr as usize)) + 1;
                 return MoltObject::from_int(count).bits();
             }
+            if let Some(cache) = utf8_cache_get_or_build(hay_ptr as usize, hay_bytes) {
+                if let Some(count) = utf8_count_cache_lookup(&cache, needle_bytes) {
+                    return MoltObject::from_int(count).bits();
+                }
+                profile_hit(&STRING_COUNT_CACHE_MISS);
+                let count = bytes_count_impl(hay_bytes, needle_bytes);
+                utf8_count_cache_store(&cache, needle_bytes, count);
+                return MoltObject::from_int(count).bits();
+            }
             let count = bytes_count_impl(hay_bytes, needle_bytes);
             return MoltObject::from_int(count).bits();
         }
@@ -7361,6 +7411,7 @@ fn build_utf8_cache(bytes: &[u8]) -> Utf8IndexCache {
     Utf8IndexCache {
         block: UTF8_CACHE_BLOCK,
         prefix,
+        count_cache: Mutex::new(None),
     }
 }
 
@@ -7386,6 +7437,25 @@ fn utf8_cache_get_or_build(key: usize, bytes: &[u8]) -> Option<Arc<Utf8IndexCach
 fn utf8_cache_remove(key: usize) {
     if let Ok(mut store) = UTF8_INDEX_CACHE.lock() {
         store.remove(key);
+    }
+}
+
+fn utf8_count_cache_lookup(cache: &Utf8IndexCache, needle: &[u8]) -> Option<i64> {
+    let guard = cache.count_cache.lock().ok()?;
+    let entry = guard.as_ref()?;
+    if entry.needle == needle {
+        profile_hit(&STRING_COUNT_CACHE_HIT);
+        return Some(entry.count);
+    }
+    None
+}
+
+fn utf8_count_cache_store(cache: &Utf8IndexCache, needle: &[u8], count: i64) {
+    if let Ok(mut guard) = cache.count_cache.lock() {
+        *guard = Some(Utf8CountCache {
+            needle: needle.to_vec(),
+            count,
+        });
     }
 }
 
@@ -7858,6 +7928,59 @@ pub extern "C" fn molt_intarray_from_seq(bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             return MoltObject::from_ptr(out_ptr).bits();
+        }
+    }
+    MoltObject::none().bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_tuple_from_list(bits: u64) -> u64 {
+    let obj = obj_from_bits(bits);
+    if let Some(ptr) = obj.as_ptr() {
+        unsafe {
+            let type_id = object_type_id(ptr);
+            if type_id == TYPE_ID_TUPLE {
+                inc_ref_bits(bits);
+                return bits;
+            }
+            if type_id == TYPE_ID_LIST {
+                let elems = seq_vec_ref(ptr);
+                let out_ptr = alloc_tuple(elems);
+                if out_ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                return MoltObject::from_ptr(out_ptr).bits();
+            }
+        }
+    }
+    MoltObject::none().bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_bytes_from_obj(bits: u64) -> u64 {
+    let obj = obj_from_bits(bits);
+    if let Some(ptr) = obj.as_ptr() {
+        unsafe {
+            if object_type_id(ptr) == TYPE_ID_BYTES {
+                inc_ref_bits(bits);
+                return bits;
+            }
+            if let Some(slice) = bytes_like_slice(ptr) {
+                let out_ptr = alloc_bytes(slice);
+                if out_ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                return MoltObject::from_ptr(out_ptr).bits();
+            }
+            if object_type_id(ptr) == TYPE_ID_MEMORYVIEW {
+                if let Some(out) = memoryview_collect_bytes(ptr) {
+                    let out_ptr = alloc_bytes(&out);
+                    if out_ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    return MoltObject::from_ptr(out_ptr).bits();
+                }
+            }
         }
     }
     MoltObject::none().bits()
@@ -11030,6 +11153,7 @@ fn maybe_ptr_from_bits(bits: u64) -> Option<*mut u8> {
 }
 
 unsafe fn call_function_obj1(func_bits: u64, arg0_bits: u64) -> u64 {
+    profile_hit(&CALL_DISPATCH_COUNT);
     let func_obj = obj_from_bits(func_bits);
     let Some(func_ptr) = func_obj.as_ptr() else {
         raise!("TypeError", "call expects function object");
@@ -11047,6 +11171,7 @@ unsafe fn call_function_obj1(func_bits: u64, arg0_bits: u64) -> u64 {
 }
 
 unsafe fn call_function_obj0(func_bits: u64) -> u64 {
+    profile_hit(&CALL_DISPATCH_COUNT);
     let func_obj = obj_from_bits(func_bits);
     let Some(func_ptr) = func_obj.as_ptr() else {
         raise!("TypeError", "call expects function object");
@@ -11064,6 +11189,7 @@ unsafe fn call_function_obj0(func_bits: u64) -> u64 {
 }
 
 unsafe fn call_function_obj2(func_bits: u64, arg0_bits: u64, arg1_bits: u64) -> u64 {
+    profile_hit(&CALL_DISPATCH_COUNT);
     let func_obj = obj_from_bits(func_bits);
     let Some(func_ptr) = func_obj.as_ptr() else {
         raise!("TypeError", "call expects function object");
@@ -11086,6 +11212,7 @@ unsafe fn call_function_obj3(
     arg1_bits: u64,
     arg2_bits: u64,
 ) -> u64 {
+    profile_hit(&CALL_DISPATCH_COUNT);
     let func_obj = obj_from_bits(func_bits);
     let Some(func_ptr) = func_obj.as_ptr() else {
         raise!("TypeError", "call expects function object");
