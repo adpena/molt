@@ -2604,7 +2604,11 @@ impl WasmBackend {
             for (idx, op) in func_ir.ops.iter().enumerate() {
                 if matches!(
                     op.kind.as_str(),
-                    "state_transition" | "state_yield" | "chan_send_yield" | "chan_recv_yield"
+                    "state_transition"
+                        | "state_yield"
+                        | "chan_send_yield"
+                        | "chan_recv_yield"
+                        | "label"
                 ) {
                     if let Some(state_id) = op.value {
                         state_map.insert(state_id, idx + 1);
@@ -2661,7 +2665,11 @@ impl WasmBackend {
                     "state_transition" => {
                         let args = op.args.as_ref().unwrap();
                         let future = locals[&args[0]];
-                        let slot_bits = args.get(1).map(|name| locals[name]);
+                        let (slot_bits, pending_state) = if args.len() == 2 {
+                            (None, locals[&args[1]])
+                        } else {
+                            (Some(locals[&args[1]]), locals[&args[2]])
+                        };
                         let next_state_id = op.value.unwrap();
                         func.instruction(&Instruction::I64Const((idx + 1) as i64));
                         func.instruction(&Instruction::LocalSet(state_local));
@@ -2669,7 +2677,9 @@ impl WasmBackend {
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(-16));
                         func.instruction(&Instruction::I32Add);
-                        func.instruction(&Instruction::I64Const(next_state_id));
+                        func.instruction(&Instruction::LocalGet(pending_state));
+                        func.instruction(&Instruction::I64Const(INT_MASK as i64));
+                        func.instruction(&Instruction::I64And);
                         func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
                             align: 3,
                             offset: 0,
@@ -2688,6 +2698,13 @@ impl WasmBackend {
                         func.instruction(&Instruction::CallIndirect { ty: 2, table: 0 });
                         let out = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(out));
+                        func.instruction(&Instruction::LocalGet(out));
+                        func.instruction(&Instruction::I64Const(box_pending()));
+                        func.instruction(&Instruction::I64Eq);
+                        func.instruction(&Instruction::If(BlockType::Empty));
+                        func.instruction(&Instruction::I64Const(box_pending()));
+                        func.instruction(&Instruction::Return);
+                        func.instruction(&Instruction::End);
                         if let Some(slot) = slot_bits {
                             func.instruction(&Instruction::LocalGet(self_param));
                             func.instruction(&Instruction::LocalGet(slot));
@@ -2697,13 +2714,16 @@ impl WasmBackend {
                             func.instruction(&Instruction::Call(import_ids["closure_store"]));
                             func.instruction(&Instruction::Drop);
                         }
-                        func.instruction(&Instruction::LocalGet(out));
-                        func.instruction(&Instruction::I64Const(box_pending()));
-                        func.instruction(&Instruction::I64Eq);
-                        func.instruction(&Instruction::If(BlockType::Empty));
-                        func.instruction(&Instruction::I64Const(box_pending()));
-                        func.instruction(&Instruction::Return);
-                        func.instruction(&Instruction::End);
+                        func.instruction(&Instruction::LocalGet(self_param));
+                        func.instruction(&Instruction::I32WrapI64);
+                        func.instruction(&Instruction::I32Const(-16));
+                        func.instruction(&Instruction::I32Add);
+                        func.instruction(&Instruction::I64Const(next_state_id));
+                        func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
+                            align: 3,
+                            offset: 0,
+                            memory_index: 0,
+                        }));
                         func.instruction(&Instruction::Br(depth));
                     }
                     "state_yield" => {
@@ -2728,6 +2748,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let chan = locals[&args[0]];
                         let val = locals[&args[1]];
+                        let pending_state = locals[&args[2]];
                         let next_state_id = op.value.unwrap();
                         func.instruction(&Instruction::I64Const((idx + 1) as i64));
                         func.instruction(&Instruction::LocalSet(state_local));
@@ -2735,7 +2756,9 @@ impl WasmBackend {
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(-16));
                         func.instruction(&Instruction::I32Add);
-                        func.instruction(&Instruction::I64Const(next_state_id));
+                        func.instruction(&Instruction::LocalGet(pending_state));
+                        func.instruction(&Instruction::I64Const(INT_MASK as i64));
+                        func.instruction(&Instruction::I64And);
                         func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
                             align: 3,
                             offset: 0,
@@ -2753,11 +2776,22 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(box_pending()));
                         func.instruction(&Instruction::Return);
                         func.instruction(&Instruction::End);
+                        func.instruction(&Instruction::LocalGet(self_param));
+                        func.instruction(&Instruction::I32WrapI64);
+                        func.instruction(&Instruction::I32Const(-16));
+                        func.instruction(&Instruction::I32Add);
+                        func.instruction(&Instruction::I64Const(next_state_id));
+                        func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
+                            align: 3,
+                            offset: 0,
+                            memory_index: 0,
+                        }));
                         func.instruction(&Instruction::Br(depth));
                     }
                     "chan_recv_yield" => {
                         let args = op.args.as_ref().unwrap();
                         let chan = locals[&args[0]];
+                        let pending_state = locals[&args[1]];
                         let next_state_id = op.value.unwrap();
                         func.instruction(&Instruction::I64Const((idx + 1) as i64));
                         func.instruction(&Instruction::LocalSet(state_local));
@@ -2765,7 +2799,9 @@ impl WasmBackend {
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(-16));
                         func.instruction(&Instruction::I32Add);
-                        func.instruction(&Instruction::I64Const(next_state_id));
+                        func.instruction(&Instruction::LocalGet(pending_state));
+                        func.instruction(&Instruction::I64Const(INT_MASK as i64));
+                        func.instruction(&Instruction::I64And);
                         func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
                             align: 3,
                             offset: 0,
@@ -2782,6 +2818,16 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(box_pending()));
                         func.instruction(&Instruction::Return);
                         func.instruction(&Instruction::End);
+                        func.instruction(&Instruction::LocalGet(self_param));
+                        func.instruction(&Instruction::I32WrapI64);
+                        func.instruction(&Instruction::I32Const(-16));
+                        func.instruction(&Instruction::I32Add);
+                        func.instruction(&Instruction::I64Const(next_state_id));
+                        func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
+                            align: 3,
+                            offset: 0,
+                            memory_index: 0,
+                        }));
                         func.instruction(&Instruction::Br(depth));
                     }
                     "if" => {

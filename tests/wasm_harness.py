@@ -85,6 +85,7 @@ let table = null;
 const chanQueues = new Map();
 const chanCaps = new Map();
 const moduleCache = new Map();
+const sleepPending = new Set();
 let nextChanId = 1n;
 let heapPtr = 1 << 20;
 const HEADER_SIZE = 32;
@@ -839,8 +840,14 @@ BASE_IMPORTS = """\
     new Uint8Array(memory.buffer, addr, bytes).fill(0);
     return boxPtrAddr(addr + HEADER_SIZE);
   },
-  async_sleep: (_taskPtr) => {
-    return 0n;
+  async_sleep: (taskPtr) => {
+    if (taskPtr === 0n) return boxNone();
+    const key = taskPtr.toString();
+    if (!sleepPending.has(key)) {
+      sleepPending.add(key);
+      return boxPending();
+    }
+    return boxNone();
   },
   block_on: (taskPtr) => {
     if (!memory || !table) return 0n;

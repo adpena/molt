@@ -55,6 +55,7 @@
 - Keep native and wasm feature sets in lockstep; treat wasm parity gaps as blockers and call them out immediately.
 - Do not "fix" tests by weakening coverage when functionality is missing; surface the missing capability and implement it properly.
 - Proactively read and update `ROADMAP.md` and relevant files under `docs/spec/` when behavior or scope changes.
+- Treat `docs/spec/STATUS.md` as the canonical source of truth for current capabilities/limits; sync README/ROADMAP after changes.
 - Proactively and aggressively plan for native support of popular and growing Python packages written in Rust, with a bias toward production-quality integrations.
 - Treat the long-term vision as full Python compatibility: all types, syntax, and dependencies.
 - Prioritize extending features; update existing implementations when needed to hit roadmap/spec goals, even if it requires refactors.

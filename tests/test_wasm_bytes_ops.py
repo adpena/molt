@@ -100,7 +100,7 @@ BYTES_IMPORT_OVERRIDES = textwrap.dedent(
     },
     print_newline: () => console.log(''),
     alloc: () => 0n,
-    async_sleep: () => 0n,
+    async_sleep: () => boxNone(),
     block_on: () => 0n,
     add: (a, b) => {
       if (isTag(a, TAG_INT) && isTag(b, TAG_INT)) {

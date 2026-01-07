@@ -2228,18 +2228,24 @@ impl SimpleBackend {
                 "state_transition" => {
                     let args = op.args.as_ref().unwrap();
                     let future = vars.get(&args[0]).expect("Future not found");
-                    let slot_bits = if args.len() > 1 {
-                        Some(*vars.get(&args[1]).expect("Await slot not found"))
+                    let (slot_bits, pending_state_bits) = if args.len() == 2 {
+                        (
+                            None,
+                            *vars.get(&args[1]).expect("Pending state not found"),
+                        )
                     } else {
-                        None
+                        (
+                            Some(*vars.get(&args[1]).expect("Await slot not found")),
+                            *vars.get(&args[2]).expect("Pending state not found"),
+                        )
                     };
                     let next_state_id = op.value.unwrap();
                     let self_ptr = *vars.get("self").expect("Self not found");
 
-                    let state_val = builder.ins().iconst(types::I64, next_state_id);
+                    let pending_state_id = unbox_int(&mut builder, pending_state_bits);
                     builder
                         .ins()
-                        .store(MemFlags::new(), state_val, self_ptr, -16);
+                        .store(MemFlags::new(), pending_state_id, self_ptr, -16);
 
                     let poll_fn_addr =
                         builder
@@ -2253,21 +2259,6 @@ impl SimpleBackend {
                         .ins()
                         .call_indirect(sig_ref, poll_fn_addr, &[*future]);
                     let res = builder.inst_results(call)[0];
-
-                    if let Some(bits) = slot_bits {
-                        let offset = unbox_int(&mut builder, bits);
-                        let mut store_sig = self.module.make_signature();
-                        store_sig.params.push(AbiParam::new(types::I64));
-                        store_sig.params.push(AbiParam::new(types::I64));
-                        store_sig.params.push(AbiParam::new(types::I64));
-                        store_sig.returns.push(AbiParam::new(types::I64));
-                        let callee = self
-                            .module
-                            .declare_function("molt_closure_store", Linkage::Import, &store_sig)
-                            .unwrap();
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        builder.ins().call(local_callee, &[self_ptr, offset, res]);
-                    }
 
                     let pending_const = builder.ins().iconst(types::I64, pending_bits());
                     let is_pending = builder.ins().icmp(IntCC::Equal, res, pending_const);
@@ -2287,6 +2278,24 @@ impl SimpleBackend {
 
                     builder.switch_to_block(ready_path);
                     builder.seal_block(ready_path);
+                    if let Some(bits) = slot_bits {
+                        let offset = unbox_int(&mut builder, bits);
+                        let mut store_sig = self.module.make_signature();
+                        store_sig.params.push(AbiParam::new(types::I64));
+                        store_sig.params.push(AbiParam::new(types::I64));
+                        store_sig.params.push(AbiParam::new(types::I64));
+                        store_sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_closure_store", Linkage::Import, &store_sig)
+                            .unwrap();
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        builder.ins().call(local_callee, &[self_ptr, offset, res]);
+                    }
+                    let state_val = builder.ins().iconst(types::I64, next_state_id);
+                    builder
+                        .ins()
+                        .store(MemFlags::new(), state_val, self_ptr, -16);
                     if args.len() <= 1 {
                         vars.insert(op.out.unwrap(), res);
                     }
@@ -2322,13 +2331,15 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap();
                     let chan = vars.get(&args[0]).expect("Chan not found");
                     let val = vars.get(&args[1]).expect("Val not found");
+                    let pending_state_bits =
+                        *vars.get(&args[2]).expect("Pending state not found");
                     let next_state_id = op.value.unwrap();
                     let self_ptr = *vars.get("self").expect("Self not found");
 
-                    let state_val = builder.ins().iconst(types::I64, next_state_id);
+                    let pending_state_id = unbox_int(&mut builder, pending_state_bits);
                     builder
                         .ins()
-                        .store(MemFlags::new(), state_val, self_ptr, 16);
+                        .store(MemFlags::new(), pending_state_id, self_ptr, -16);
 
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -2360,6 +2371,10 @@ impl SimpleBackend {
 
                     builder.switch_to_block(ready_path);
                     builder.seal_block(ready_path);
+                    let state_val = builder.ins().iconst(types::I64, next_state_id);
+                    builder
+                        .ins()
+                        .store(MemFlags::new(), state_val, self_ptr, -16);
                     vars.insert(op.out.unwrap(), res);
                     builder.ins().jump(next_block, &[]);
 
@@ -2370,13 +2385,15 @@ impl SimpleBackend {
                 "chan_recv_yield" => {
                     let args = op.args.as_ref().unwrap();
                     let chan = vars.get(&args[0]).expect("Chan not found");
+                    let pending_state_bits =
+                        *vars.get(&args[1]).expect("Pending state not found");
                     let next_state_id = op.value.unwrap();
                     let self_ptr = *vars.get("self").expect("Self not found");
 
-                    let state_val = builder.ins().iconst(types::I64, next_state_id);
+                    let pending_state_id = unbox_int(&mut builder, pending_state_bits);
                     builder
                         .ins()
-                        .store(MemFlags::new(), state_val, self_ptr, 16);
+                        .store(MemFlags::new(), pending_state_id, self_ptr, -16);
 
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -2407,6 +2424,10 @@ impl SimpleBackend {
 
                     builder.switch_to_block(ready_path);
                     builder.seal_block(ready_path);
+                    let state_val = builder.ins().iconst(types::I64, next_state_id);
+                    builder
+                        .ins()
+                        .store(MemFlags::new(), state_val, self_ptr, -16);
                     vars.insert(op.out.unwrap(), res);
                     builder.ins().jump(next_block, &[]);
 

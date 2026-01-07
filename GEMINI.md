@@ -40,6 +40,7 @@ The Molt compiler itself is designed to be "AI-friendly". Its modular IR and cle
 - Standardize naming: Python modules use `snake_case`, Rust crates use `kebab-case`, and paths reflect module names.
 - Do not weaken or contort tests to mask missing functionality; surface the gap, ask for priority/plan, and implement the correct behavior.
 - Aggressively and proactively update `ROADMAP.md` and the specs in `docs/spec/` when scope or behavior changes.
+- Treat `docs/spec/STATUS.md` as the canonical source of truth for current capabilities/limits; sync README/ROADMAP after changes.
 - Proactively and aggressively plan for native support of popular and growing Python packages written in Rust.
 - The project vision is full Python compatibility: all types, syntax, and dependencies.
 - Prioritize extending features and refactor current implementations when required to meet roadmap/spec goals.

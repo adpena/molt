@@ -4,10 +4,12 @@ from __future__ import annotations
 
 __all__ = [
     "asyncio",
+    "collections",
     "contextlib",
     "copy",
     "dataclasses",
     "fnmatch",
+    "importlib",
     "inspect",
     "io",
     "os",

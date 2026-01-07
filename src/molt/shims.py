@@ -226,6 +226,7 @@ def molt_block_on(task: Any) -> Any:
 
 def molt_async_sleep(_delay: float = 0.0) -> Any:
     async def _sleep() -> None:
+        await asyncio.sleep(0)
         return None
 
     return _sleep()

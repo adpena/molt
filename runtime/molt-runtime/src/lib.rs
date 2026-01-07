@@ -4901,7 +4901,15 @@ pub unsafe extern "C" fn molt_block_on(task_ptr: *mut u8) -> i64 {
 /// - `_obj_ptr` must be a valid pointer if the runtime associates a future with it.
 #[no_mangle]
 pub unsafe extern "C" fn molt_async_sleep(_obj_ptr: *mut u8) -> i64 {
-    0
+    if _obj_ptr.is_null() {
+        return MoltObject::none().bits() as i64;
+    }
+    let header = header_from_obj_ptr(_obj_ptr);
+    if (*header).state == 0 {
+        (*header).state = 1;
+        return pending_bits_i64();
+    }
+    MoltObject::none().bits() as i64
 }
 
 // --- NaN-boxed ops ---

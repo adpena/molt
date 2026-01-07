@@ -90,9 +90,9 @@
 | locale | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; locale data pending. |
 | ast | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; AST API parity pending. |
 | atexit | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; exit handler semantics pending. |
-| collections.abc | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; ABC registration pending. |
-| importlib | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; dynamic import hooks pending. |
-| importlib.util | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; loader helpers pending. |
+| collections.abc | Stdlib | Partial | P3 | SL3 | stdlib | Import-only stub with minimal ABC shells; registration pending. |
+| importlib | Stdlib | Partial | P3 | SL3 | stdlib | Import-only stub; dynamic import hooks pending. |
+| importlib.util | Stdlib | Partial | P3 | SL3 | stdlib | Import-only stub; loader helpers pending. |
 | queue | Stdlib | Planned | P3 | SL3 | stdlib/runtime | Import-only allowlist stub; threading integration pending. |
 | shlex | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; POSIX parsing parity pending. |
 | shutil | Capability-gated | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; `fs.read`/`fs.write` gating. |

@@ -5,6 +5,8 @@ with strict reproducibility, rigorous testing, and staged compatibility.
 
 > Molt = Python shedding its skin into native code.
 
+Canonical status lives in `docs/spec/STATUS.md` (README and ROADMAP are kept in sync).
+
 ## Capabilities (Current)
 
 - **Tier 0 Structification**: Compiles typed Python classes to native structs with fixed-offset access.
@@ -21,7 +23,7 @@ with strict reproducibility, rigorous testing, and staged compatibility.
 - **Dataclasses**: compile-time lowering for frozen/eq/repr/slots; no `default_factory`, `kw_only`, or `order`; runtime `dataclasses` module provides metadata only.
 - **Exceptions**: `try/except/else/finally` + `raise`/reraise support; still partial vs full BaseException semantics (see `docs/spec/0014_TYPE_COVERAGE_MATRIX.md`).
 - **Imports**: static module graph only; no dynamic import hooks or full package resolution; allowlisted stdlib modules (e.g., `math`, `random`, `time`, `json`, `re`, `collections`, `itertools`, `functools`, `operator`, `base64`, `pickle`, `unittest`, `site`, `sysconfig`) may load empty stubs for dependency tracking unless implemented.
-- **Stdlib**: partial shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pprint`, `string`, `typing`, `sys`, and `os`; full API parity pending.
+- **Stdlib**: partial shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pprint`, `string`, `typing`, `sys`, and `os`; import-only stubs for `collections.abc` and `importlib` (dynamic import hooks pending).
 - **Reflection**: `type`, `isinstance`, `issubclass`, and `object` are supported with single-inheritance base chains; no metaclasses or dynamic `type()` construction.
 - **Async iteration**: `anext` is await-only, and `__aiter__` must return an async iterator (awaitable `__aiter__` still pending).
 - **Asyncio**: shim covers `run`/`sleep` only (no loop/task APIs; sleep delay ignored).

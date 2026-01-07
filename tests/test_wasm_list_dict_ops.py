@@ -28,7 +28,7 @@ LIST_DICT_IMPORT_OVERRIDES = textwrap.dedent(
     },
     print_newline: () => console.log(''),
     alloc: () => 0n,
-    async_sleep: () => 0n,
+    async_sleep: () => boxNone(),
     block_on: () => 0n,
     add: (a, b) => boxInt(unboxInt(a) + unboxInt(b)),
     vec_sum_int: (seqBits, accBits) => {

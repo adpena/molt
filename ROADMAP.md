@@ -1,5 +1,7 @@
 # Molt Roadmap (Active)
 
+Canonical current status: `docs/spec/STATUS.md`. This roadmap is forward-looking.
+
 ## Performance
 - Vector reduction kernels now cover `sum`/`prod`/`min`/`max` with trusted fast paths; next up: float reductions and typed-buffer kernels.
 - String kernel SIMD paths cover find/split/replace with Unicode-safe index translation; next: Unicode index caches and wider SIMD.
@@ -18,7 +20,7 @@
 ## Stdlib
 - Partial: asyncio shim (`run`/`sleep` lowered to runtime); loop/task APIs and delay semantics still pending.
 - Partial: shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pprint`, `string`, `typing`, `sys`, and `os` (capability-gated env access).
-- Import-only allowlist expanded for `base64`, `binascii`, `pickle`, `unittest`, `site`, and `sysconfig` (API parity pending).
+- Import-only allowlist expanded for `base64`, `binascii`, `pickle`, `unittest`, `site`, `sysconfig`, `collections.abc`, and `importlib` (API parity pending).
 
 ## Offload / IPC
 - Partial: `molt_accel` v0 scaffolding (stdio framing + client + decorator) + initial `molt_worker` stdio shell (built-in `list_items` demo handler).

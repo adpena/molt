@@ -141,6 +141,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.return_label: int | None = None
         self.return_slot: MoltValue | None = None
         self.return_slot_index: MoltValue | None = None
+        self.return_slot_offset: int | None = None
         self.active_exceptions: list[MoltValue] = []
         self.func_aliases: dict[str, str] = {}
         self.const_ints: dict[str, int] = {}
@@ -454,6 +455,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.return_label = None
         self.return_slot = None
         self.return_slot_index = None
+        self.return_slot_offset = None
         if needs_return_slot:
             self._init_return_slot()
         self._apply_type_facts(type_facts_name or name)
@@ -505,6 +507,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "return_label": self.return_label,
             "return_slot": self.return_slot,
             "return_slot_index": self.return_slot_index,
+            "return_slot_offset": self.return_slot_offset,
             "defer_module_attrs": self.defer_module_attrs,
             "deferred_module_attrs": self.deferred_module_attrs,
         }
@@ -531,6 +534,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.return_label = state["return_label"]
         self.return_slot = state["return_slot"]
         self.return_slot_index = state["return_slot_index"]
+        self.return_slot_offset = state["return_slot_offset"]
         self.defer_module_attrs = state["defer_module_attrs"]
         self.deferred_module_attrs = state["deferred_module_attrs"]
 
@@ -560,19 +564,59 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.return_slot = MoltValue(self.next_var(), type_hint="list")
         self.emit(MoltOp(kind="LIST_NEW", args=[init], result=self.return_slot))
 
-    def _emit_return_value(self, value: MoltValue) -> None:
-        if self.return_slot is None or self.return_label is None:
-            self.emit(MoltOp(kind="ret", args=[value], result=MoltValue("none")))
+    def _store_return_slot_for_stateful(self) -> None:
+        if not self.is_async() or self.return_slot is None:
             return
+        if self.return_slot_offset is None:
+            self.return_slot_offset = self._async_local_offset("__molt_return_slot")
+        self.emit(
+            MoltOp(
+                kind="STORE_CLOSURE",
+                args=["self", self.return_slot_offset, self.return_slot],
+                result=MoltValue("none"),
+            )
+        )
+
+    def _load_return_slot(self) -> MoltValue | None:
+        if self.return_slot is None:
+            return None
+        if self.is_async() and self.return_slot_offset is not None:
+            slot_val = MoltValue(self.next_var(), type_hint="list")
+            self.emit(
+                MoltOp(
+                    kind="LOAD_CLOSURE",
+                    args=["self", self.return_slot_offset],
+                    result=slot_val,
+                )
+            )
+            return slot_val
+        return self.return_slot
+
+    def _load_return_slot_index(self) -> MoltValue:
+        if self.is_async():
+            idx = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[0], result=idx))
+            return idx
         idx = self.return_slot_index
         if idx is None:
             idx = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="CONST", args=[0], result=idx))
             self.return_slot_index = idx
+        return idx
+
+    def _emit_return_value(self, value: MoltValue) -> None:
+        if self.return_slot is None or self.return_label is None:
+            self.emit(MoltOp(kind="ret", args=[value], result=MoltValue("none")))
+            return
+        slot = self._load_return_slot()
+        if slot is None:
+            self.emit(MoltOp(kind="ret", args=[value], result=MoltValue("none")))
+            return
+        idx = self._load_return_slot_index()
         self.emit(
             MoltOp(
                 kind="STORE_INDEX",
-                args=[self.return_slot, idx, value],
+                args=[slot, idx, value],
                 result=MoltValue("none"),
             )
         )
@@ -583,16 +627,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _emit_return_label(self) -> None:
         if self.return_label is None or self.return_slot is None:
             return
-        idx = self.return_slot_index
-        if idx is None:
-            idx = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=idx))
-            self.return_slot_index = idx
         self.emit(
             MoltOp(kind="LABEL", args=[self.return_label], result=MoltValue("none"))
         )
+        slot = self._load_return_slot()
+        if slot is None:
+            return
+        idx = self._load_return_slot_index()
         res = MoltValue(self.next_var())
-        self.emit(MoltOp(kind="INDEX", args=[self.return_slot, idx], result=res))
+        self.emit(MoltOp(kind="INDEX", args=[slot, idx], result=res))
         self.emit(MoltOp(kind="ret", args=[res], result=MoltValue("none")))
 
     def _ends_with_return_jump(self) -> bool:
@@ -2918,6 +2961,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         hint = explicit
                 if hint is not None:
                     self.async_local_hints[arg.arg] = hint
+            self._store_return_slot_for_stateful()
             self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
             if self.type_hint_policy == "check":
                 for arg in item.args.args:
@@ -4210,27 +4254,151 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             elif func_id == "molt_chan_send":
                 chan = self.visit(node.args[0])
                 val = self.visit(node.args[1])
+                chan_slot = None
+                val_slot = None
+                chan_for_send = chan
+                val_for_send = val
+                if self.is_async():
+                    chan_slot = self._async_local_offset(
+                        f"__chan_send_{len(self.async_locals)}"
+                    )
+                    self.emit(
+                        MoltOp(
+                            kind="STORE_CLOSURE",
+                            args=["self", chan_slot, chan],
+                            result=MoltValue("none"),
+                        )
+                    )
+                    val_slot = self._async_local_offset(
+                        f"__chan_send_val_{len(self.async_locals)}"
+                    )
+                    self.emit(
+                        MoltOp(
+                            kind="STORE_CLOSURE",
+                            args=["self", val_slot, val],
+                            result=MoltValue("none"),
+                        )
+                    )
                 self.state_count += 1
+                pending_state_id = self.state_count
+                self.emit(
+                    MoltOp(
+                        kind="LABEL", args=[pending_state_id], result=MoltValue("none")
+                    )
+                )
+                pending_state_val = MoltValue(self.next_var(), type_hint="int")
+                self.emit(
+                    MoltOp(
+                        kind="CONST", args=[pending_state_id], result=pending_state_val
+                    )
+                )
+                if self.is_async() and chan_slot is not None and val_slot is not None:
+                    chan_for_send = MoltValue(self.next_var(), type_hint="Channel")
+                    self.emit(
+                        MoltOp(
+                            kind="LOAD_CLOSURE",
+                            args=["self", chan_slot],
+                            result=chan_for_send,
+                        )
+                    )
+                    val_for_send = MoltValue(self.next_var(), type_hint="Any")
+                    self.emit(
+                        MoltOp(
+                            kind="LOAD_CLOSURE",
+                            args=["self", val_slot],
+                            result=val_for_send,
+                        )
+                    )
+                self.state_count += 1
+                next_state_id = self.state_count
                 res = MoltValue(self.next_var(), type_hint="int")
                 self.emit(
                     MoltOp(
                         kind="CHAN_SEND_YIELD",
-                        args=[chan, val, self.state_count],
+                        args=[
+                            chan_for_send,
+                            val_for_send,
+                            pending_state_val,
+                            next_state_id,
+                        ],
                         result=res,
                     )
                 )
+                if self.is_async() and chan_slot is not None and val_slot is not None:
+                    cleared_val = MoltValue(self.next_var(), type_hint="None")
+                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=cleared_val))
+                    self.emit(
+                        MoltOp(
+                            kind="STORE_CLOSURE",
+                            args=["self", chan_slot, cleared_val],
+                            result=MoltValue("none"),
+                        )
+                    )
+                    self.emit(
+                        MoltOp(
+                            kind="STORE_CLOSURE",
+                            args=["self", val_slot, cleared_val],
+                            result=MoltValue("none"),
+                        )
+                    )
                 return res
             elif func_id == "molt_chan_recv":
                 chan = self.visit(node.args[0])
+                chan_slot = None
+                chan_for_recv = chan
+                if self.is_async():
+                    chan_slot = self._async_local_offset(
+                        f"__chan_recv_{len(self.async_locals)}"
+                    )
+                    self.emit(
+                        MoltOp(
+                            kind="STORE_CLOSURE",
+                            args=["self", chan_slot, chan],
+                            result=MoltValue("none"),
+                        )
+                    )
                 self.state_count += 1
+                pending_state_id = self.state_count
+                self.emit(
+                    MoltOp(
+                        kind="LABEL", args=[pending_state_id], result=MoltValue("none")
+                    )
+                )
+                pending_state_val = MoltValue(self.next_var(), type_hint="int")
+                self.emit(
+                    MoltOp(
+                        kind="CONST", args=[pending_state_id], result=pending_state_val
+                    )
+                )
+                if self.is_async() and chan_slot is not None:
+                    chan_for_recv = MoltValue(self.next_var(), type_hint="Channel")
+                    self.emit(
+                        MoltOp(
+                            kind="LOAD_CLOSURE",
+                            args=["self", chan_slot],
+                            result=chan_for_recv,
+                        )
+                    )
+                self.state_count += 1
+                next_state_id = self.state_count
                 res = MoltValue(self.next_var(), type_hint="int")
                 self.emit(
                     MoltOp(
                         kind="CHAN_RECV_YIELD",
-                        args=[chan, self.state_count],
+                        args=[chan_for_recv, pending_state_val, next_state_id],
                         result=res,
                     )
                 )
+                if self.is_async() and chan_slot is not None:
+                    cleared_val = MoltValue(self.next_var(), type_hint="None")
+                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=cleared_val))
+                    self.emit(
+                        MoltOp(
+                            kind="STORE_CLOSURE",
+                            args=["self", chan_slot, cleared_val],
+                            result=MoltValue("none"),
+                        )
+                    )
                 return res
             class_id = None
             if func_id in self.classes:
@@ -6260,6 +6428,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         self.explicit_type_hints[arg.arg] = hint
                 if hint is not None:
                     self.async_local_hints[arg.arg] = hint
+        self._store_return_slot_for_stateful()
         self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
         if self.type_hint_policy == "check":
             for arg in node.args.args:
@@ -6400,6 +6569,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         hint = self._annotation_to_hint(arg.annotation)
                         if hint is not None:
                             self.explicit_type_hints[arg.arg] = hint
+            self._store_return_slot_for_stateful()
             self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
             if self.type_hint_policy == "check":
                 for arg in node.args.args:
@@ -6701,8 +6871,71 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return res
 
         self.emit(MoltOp(kind="EXCEPTION_PUSH", args=[], result=MoltValue("none")))
-        awaitable = MoltValue(self.next_var(), type_hint="Future")
-        self.emit(MoltOp(kind="ANEXT", args=[iter_obj], result=awaitable))
+        awaitable_slot = None
+        if self.is_async():
+            awaitable_slot = self._async_local_offset(
+                f"__anext_future_{len(self.async_locals)}"
+            )
+            awaitable_cached = MoltValue(self.next_var(), type_hint="Any")
+            self.emit(
+                MoltOp(
+                    kind="LOAD_CLOSURE",
+                    args=["self", awaitable_slot],
+                    result=awaitable_cached,
+                )
+            )
+            none_cached = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_cached))
+            is_none_cached = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(
+                MoltOp(
+                    kind="IS",
+                    args=[awaitable_cached, none_cached],
+                    result=is_none_cached,
+                )
+            )
+            zero_cached = MoltValue(self.next_var(), type_hint="float")
+            self.emit(MoltOp(kind="CONST_FLOAT", args=[0.0], result=zero_cached))
+            is_zero_cached = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(
+                MoltOp(
+                    kind="IS",
+                    args=[awaitable_cached, zero_cached],
+                    result=is_zero_cached,
+                )
+            )
+            is_empty_cached = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(
+                MoltOp(
+                    kind="OR",
+                    args=[is_none_cached, is_zero_cached],
+                    result=is_empty_cached,
+                )
+            )
+            self.emit(
+                MoltOp(kind="IF", args=[is_empty_cached], result=MoltValue("none"))
+            )
+            awaitable_new = MoltValue(self.next_var(), type_hint="Future")
+            self.emit(MoltOp(kind="ANEXT", args=[iter_obj], result=awaitable_new))
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", awaitable_slot, awaitable_new],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            awaitable = MoltValue(self.next_var(), type_hint="Future")
+            self.emit(
+                MoltOp(
+                    kind="LOAD_CLOSURE",
+                    args=["self", awaitable_slot],
+                    result=awaitable,
+                )
+            )
+        else:
+            awaitable = MoltValue(self.next_var(), type_hint="Future")
+            self.emit(MoltOp(kind="ANEXT", args=[iter_obj], result=awaitable))
         if has_default:
             if default_val is None:
                 default_val = MoltValue(self.next_var(), type_hint="None")
@@ -6753,6 +6986,26 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
         self.state_count += 1
+        pending_state_id = self.state_count
+        self.emit(
+            MoltOp(kind="LABEL", args=[pending_state_id], result=MoltValue("none"))
+        )
+        pending_state_val = MoltValue(self.next_var(), type_hint="int")
+        self.emit(
+            MoltOp(kind="CONST", args=[pending_state_id], result=pending_state_val)
+        )
+        awaitable_for_poll = awaitable
+        if awaitable_slot is not None:
+            awaitable_for_poll = MoltValue(self.next_var(), type_hint="Future")
+            self.emit(
+                MoltOp(
+                    kind="LOAD_CLOSURE",
+                    args=["self", awaitable_slot],
+                    result=awaitable_for_poll,
+                )
+            )
+        self.state_count += 1
+        next_state_id = self.state_count
         await_result_slot = self._async_local_offset(
             f"__anext_result_{len(self.async_locals)}"
         )
@@ -6762,10 +7015,25 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(
             MoltOp(
                 kind="STATE_TRANSITION",
-                args=[awaitable, await_slot_val, self.state_count],
+                args=[
+                    awaitable_for_poll,
+                    await_slot_val,
+                    pending_state_val,
+                    next_state_id,
+                ],
                 result=awaited,
             )
         )
+        if awaitable_slot is not None:
+            cleared_val = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=cleared_val))
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", awaitable_slot, cleared_val],
+                    result=MoltValue("none"),
+                )
+            )
         awaited_val = MoltValue(self.next_var(), type_hint="Any")
         self.emit(
             MoltOp(
@@ -6869,21 +7137,103 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return self._emit_await_anext(
                 iter_obj, default_val=default_val, has_default=has_default
             )
-        coro = self.visit(node.value)
+        awaitable_slot = None
+        if self.is_async():
+            awaitable_slot = self._async_local_offset(
+                f"__await_future_{len(self.async_locals)}"
+            )
+            awaitable_cached = MoltValue(self.next_var(), type_hint="Any")
+            self.emit(
+                MoltOp(
+                    kind="LOAD_CLOSURE",
+                    args=["self", awaitable_slot],
+                    result=awaitable_cached,
+                )
+            )
+            none_cached = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_cached))
+            is_none_cached = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(
+                MoltOp(
+                    kind="IS",
+                    args=[awaitable_cached, none_cached],
+                    result=is_none_cached,
+                )
+            )
+            zero_cached = MoltValue(self.next_var(), type_hint="float")
+            self.emit(MoltOp(kind="CONST_FLOAT", args=[0.0], result=zero_cached))
+            is_zero_cached = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(
+                MoltOp(
+                    kind="IS",
+                    args=[awaitable_cached, zero_cached],
+                    result=is_zero_cached,
+                )
+            )
+            is_empty_cached = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(
+                MoltOp(
+                    kind="OR",
+                    args=[is_none_cached, is_zero_cached],
+                    result=is_empty_cached,
+                )
+            )
+            self.emit(
+                MoltOp(kind="IF", args=[is_empty_cached], result=MoltValue("none"))
+            )
+            awaitable_new = self.visit(node.value)
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", awaitable_slot, awaitable_new],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            self.state_count += 1
+            pending_state_id = self.state_count
+            self.emit(
+                MoltOp(kind="LABEL", args=[pending_state_id], result=MoltValue("none"))
+            )
+            pending_state_val = MoltValue(self.next_var(), type_hint="int")
+            self.emit(
+                MoltOp(kind="CONST", args=[pending_state_id], result=pending_state_val)
+            )
+            coro = MoltValue(self.next_var(), type_hint="Future")
+            self.emit(
+                MoltOp(
+                    kind="LOAD_CLOSURE",
+                    args=["self", awaitable_slot],
+                    result=coro,
+                )
+            )
+        else:
+            coro = self.visit(node.value)
         result_slot = self._async_local_offset(
             f"__await_result_{len(self.async_locals)}"
         )
         result_slot_val = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[result_slot], result=result_slot_val))
         self.state_count += 1
+        next_state_id = self.state_count
         res_placeholder = MoltValue(self.next_var(), type_hint="Any")
         self.emit(
             MoltOp(
                 kind="STATE_TRANSITION",
-                args=[coro, result_slot_val, self.state_count],
+                args=[coro, result_slot_val, pending_state_val, next_state_id],
                 result=res_placeholder,
             )
         )
+        if awaitable_slot is not None:
+            cleared_val = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=cleared_val))
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", awaitable_slot, cleared_val],
+                    result=MoltValue("none"),
+                )
+            )
         res = MoltValue(self.next_var(), type_hint="Any")
         self.emit(
             MoltOp(
@@ -8490,17 +8840,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             elif op.kind == "STATE_SWITCH":
                 json_ops.append({"kind": "state_switch"})
             elif op.kind == "STATE_TRANSITION":
-                if len(op.args) == 2:
-                    future, next_state = op.args
+                if len(op.args) == 3:
+                    future, pending_state, next_state = op.args
                     slot_arg = None
                 else:
-                    future, slot_arg, next_state = op.args
+                    future, slot_arg, pending_state, next_state = op.args
+                args = [future.name]
+                if slot_arg is not None:
+                    args.append(slot_arg.name)
+                args.append(pending_state.name)
                 json_ops.append(
                     {
                         "kind": "state_transition",
-                        "args": [future.name]
-                        if slot_arg is None
-                        else [future.name, slot_arg.name],
+                        "args": args,
                         "value": next_state,
                         "out": op.result.name,
                     }
@@ -8526,21 +8878,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     }
                 )
             elif op.kind == "CHAN_SEND_YIELD":
-                chan, val, next_state = op.args
+                chan, val, pending_state, next_state = op.args
                 json_ops.append(
                     {
                         "kind": "chan_send_yield",
-                        "args": [chan.name, val.name],
+                        "args": [chan.name, val.name, pending_state.name],
                         "value": next_state,
                         "out": op.result.name,
                     }
                 )
             elif op.kind == "CHAN_RECV_YIELD":
-                chan, next_state = op.args
+                chan, pending_state, next_state = op.args
                 json_ops.append(
                     {
                         "kind": "chan_recv_yield",
-                        "args": [chan.name],
+                        "args": [chan.name, pending_state.name],
                         "value": next_state,
                         "out": op.result.name,
                     }
