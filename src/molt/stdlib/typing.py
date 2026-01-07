@@ -29,71 +29,53 @@ __all__ = [
 TYPE_CHECKING = False
 
 
-class _TypingForm:
-    __slots__ = ("__name__", "__args__", "__origin__")
+class _TypingStub:
+    __slots__ = ("__name__",)
 
-    def __init__(
-        self, name: str, args: tuple[object, ...] | None = None, origin=None
-    ) -> None:
+    def __init__(self, name: str) -> None:
         self.__name__ = name
-        self.__args__ = args or ()
-        self.__origin__ = origin if origin is not None else self
 
     def __repr__(self) -> str:
-        if not self.__args__:
-            return f"typing.{self.__name__}"
-        args = ", ".join(repr(arg) for arg in self.__args__)
-        return f"typing.{self.__name__}[{args}]"
+        return "typing." + self.__name__
 
-    def __getitem__(self, args: object) -> "_TypingForm":
-        if not isinstance(args, tuple):
-            args = (args,)
-        return _TypingForm(self.__name__, args, origin=self)
+    def __getitem__(self, _args: object) -> "_TypingStub":
+        return self
 
 
-class TypeVar:
-    def __init__(
-        self,
-        name: str,
-        *constraints: object,
-        bound: object | None = None,
-        covariant: bool = False,
-        contravariant: bool = False,
-    ) -> None:
-        self.__name__ = name
-        self.__constraints__ = constraints
-        self.__bound__ = bound
-        self.__covariant__ = covariant
-        self.__contravariant__ = contravariant
+def _make(name: str) -> _TypingStub:
+    return _TypingStub(name)
 
-    def __repr__(self) -> str:
-        return f"~{self.__name__}"
+
+Any = _make("Any")
+Union = _make("Union")
+Optional = _make("Optional")
+Callable = _make("Callable")
+ClassVar = _make("ClassVar")
+Final = _make("Final")
+Literal = _make("Literal")
+Self = _make("Self")
+
+
+def TypeVar(
+    name: str,
+    bound: object | None = None,
+    covariant: bool = False,
+    contravariant: bool = False,
+) -> _TypingStub:
+    _ = (bound, covariant, contravariant)
+    return _TypingStub(name)
 
 
 class Generic:
     @classmethod
-    def __class_getitem__(cls, params: object) -> _TypingForm:
-        if not isinstance(params, tuple):
-            params = (params,)
-        return _TypingForm(cls.__name__, params)
+    def __class_getitem__(cls, _params: object) -> _TypingStub:
+        return _make("Generic")
 
 
 class Protocol:
     @classmethod
-    def __class_getitem__(cls, params: object) -> _TypingForm:
-        if not isinstance(params, tuple):
-            params = (params,)
-        return _TypingForm("Protocol", params)
-
-
-Any = _TypingForm("Any")
-Union = _TypingForm("Union")
-Optional = _TypingForm("Optional")
-Callable = _TypingForm("Callable")
-ClassVar = _TypingForm("ClassVar")
-Final = _TypingForm("Final")
-Literal = _TypingForm("Literal")
-Self = _TypingForm("Self")
+    def __class_getitem__(cls, _params: object) -> _TypingStub:
+        return _make("Protocol")
 
 
 def cast(_typ: object, value: object) -> object:
