@@ -10874,19 +10874,11 @@ fn maybe_ptr_from_bits(bits: u64) -> Option<*mut u8> {
     if let Some(ptr) = obj.as_ptr() {
         return Some(ptr);
     }
-    let ptr = bits as *mut u8;
-    if ptr.is_null() {
+    if !obj.is_float() {
         return None;
     }
-    unsafe {
-        let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>());
-        let header = header_ptr as *const MoltHeader;
-        if header.is_null() {
-            return None;
-        }
-        if (*header).type_id == TYPE_ID_OBJECT || (*header).type_id == TYPE_ID_GENERATOR {
-            return Some(ptr);
-        }
+    if is_raw_object(bits) {
+        return Some(bits as *mut u8);
     }
     None
 }
