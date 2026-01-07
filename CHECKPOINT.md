@@ -1,11 +1,12 @@
-Checkpoint: 2026-01-07 12:51:11 CST
-Git: d0347b3 opt: start 0005/0006/0007
+Checkpoint: 2026-01-07 12:52:30 CST
+Git: 5e75019 runtime: fix clippy map_entry
 
 Summary
 - Added guarded direct-call lowering (`CALL_GUARDED`) for named functions (non-async) and backend support.
 - Decoupled Unicode count cache from UTF-8 index cache to avoid expensive prefix builds on first count.
 - Added exact-local tracking to skip guarded setattr for constructor-bound locals with fixed layouts (non-dataclass).
 - Fixed clippy `map_entry` warning in new UTF-8 count cache store.
+- Ran `cargo fmt` to satisfy CI formatting on runtime updates.
 
 Files touched (uncommitted)
 - runtime/molt-runtime/src/lib.rs

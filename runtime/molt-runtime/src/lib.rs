@@ -85,9 +85,7 @@ impl Utf8CountCacheStore {
     }
 
     fn insert(&mut self, key: usize, cache: Utf8CountCache) {
-        if let std::collections::hash_map::Entry::Occupied(mut entry) =
-            self.entries.entry(key)
-        {
+        if let std::collections::hash_map::Entry::Occupied(mut entry) = self.entries.entry(key) {
             entry.insert(cache);
             return;
         }
