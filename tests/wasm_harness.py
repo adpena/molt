@@ -112,6 +112,11 @@ const boxPtr = (obj) => {
   heap.set(id, obj);
   return QNAN | TAG_PTR | id;
 };
+const normalizePtrBits = (val) => {
+  if (val === 0n) return val;
+  if (isPtr(val)) return val;
+  return boxPtrAddr(val);
+};
 const getObj = (val) => heap.get(val & POINTER_MASK);
 const getFunction = (val) => {
   const obj = getObj(val);
@@ -951,15 +956,15 @@ BASE_IMPORTS = """\
     return 0n;
   },
   get_attr_generic: (obj, namePtr, nameLen) =>
-    getAttrValue(obj, readUtf8(namePtr, nameLen)),
+    getAttrValue(normalizePtrBits(obj), readUtf8(namePtr, nameLen)),
   get_attr_object: (obj, namePtr, nameLen) =>
     getAttrValue(obj, readUtf8(namePtr, nameLen)),
   set_attr_generic: (obj, namePtr, nameLen, val) =>
-    setAttrValue(obj, readUtf8(namePtr, nameLen), val),
+    setAttrValue(normalizePtrBits(obj), readUtf8(namePtr, nameLen), val),
   set_attr_object: (obj, namePtr, nameLen, val) =>
     setAttrValue(obj, readUtf8(namePtr, nameLen), val),
   del_attr_generic: (obj, namePtr, nameLen) =>
-    delAttrValue(obj, readUtf8(namePtr, nameLen)),
+    delAttrValue(normalizePtrBits(obj), readUtf8(namePtr, nameLen)),
   del_attr_object: (obj, namePtr, nameLen) =>
     delAttrValue(obj, readUtf8(namePtr, nameLen)),
   object_field_get: (obj, offset) => {

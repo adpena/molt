@@ -64,7 +64,8 @@
 
 ## 6. Error Message Contract
 - Guard failure message: `TypeError: type guard mismatch`.
-- Invalid hints are ignored (no compile-time error).
+- Invalid hints are ignored (no compile-time error or warning).
+- No deopt messages are emitted yet; guard failures are terminal.
 
 ## 7. Roadmap Links
 - Type facts pipeline: `docs/spec/0920_TYPE_FACTS_ARTIFACT_TY_INTEGRATION.md`.

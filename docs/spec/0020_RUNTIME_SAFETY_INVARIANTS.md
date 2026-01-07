@@ -57,3 +57,7 @@ Use `tools/runtime_safety.py` for standardized checks:
 Notes:
 - The miri entrypoint sets `MIRIFLAGS=-Zmiri-disable-isolation` by default so
   runtime tests can access time/filesystem APIs. Override as needed.
+
+## 9. Tooling Prerequisites
+- `cargo +nightly miri setup` must be run once per toolchain install.
+- `cargo install cargo-fuzz` is required for `tools/runtime_safety.py fuzz`.

@@ -26,6 +26,9 @@ jobs:
         run: uv run ruff check .
       - name: Type check
         run: uv run ty check src
+      - name: Verified subset manifest
+        if: matrix.python-version == '3.12'
+        run: uv run python tools/verified_subset.py check
       - name: Run tests
         run: uv run pytest
       - name: Install Rust

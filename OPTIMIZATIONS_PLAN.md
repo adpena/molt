@@ -206,3 +206,61 @@ and regression control.
 - Miri strict provenance passes with `-Zmiri-strict-provenance`.
 - <2% overhead on hot-path microbenchmarks after lock-free/sharded lookup.
 - Updated runtime spec, README/ROADMAP, and CI gates reflect the new object model.
+
+### OPT-0004: Sharded/Lock-Free Handle Resolve Fast Path
+
+**Problem**
+- The current handle table uses a global lock on lookup, adding overhead to
+  hot paths (attribute access, list/dict ops, method dispatch).
+- Preliminary handle-table benchmarks show small but measurable deltas; we need
+  a scalable fast path before widening the verified subset.
+
+**Hypotheses**
+- H1: Sharded tables with per-shard locks cut lookup contention to <2% overhead.
+- H2: Lock-free reads with atomic generation checks bring lookup overhead under 1%.
+- H3: A small thread-local handle cache reduces repeated lookups in tight loops.
+
+**Alternatives**
+1) Sharded `RwLock` table keyed by handle index (moderate complexity, good wins).
+2) Lock-free slab with atomic generation + epoch GC (higher complexity, best perf).
+3) Thread-local cache + fallback to global lock (low risk, partial win).
+
+**Research References**
+- Generational index slabs: https://cglab.ca/~abeinges/blah/slab-allocators/
+- Crossbeam epoch-based reclamation: https://docs.rs/crossbeam-epoch/
+- Folly AtomicHashMap (lock-free reads): https://github.com/facebook/folly
+
+**Plan**
+- Phase 0: Re-run handle-table benchmarks (`bench_handle_lock.json`) and expand to
+  a wider suite to quantify overhead.
+- Phase 1: Prototype sharded table with lock striping; measure deltas.
+- Phase 2: Add optional lock-free read path + generation validation.
+- Phase 3: Stabilize with correctness tests + Miri + fuzz.
+
+**Benchmark Matrix**
+- bench_sum.py: expected <=1% overhead vs baseline
+- bench_bytes_find.py: expected <=1% overhead vs baseline
+- bench_list_append.py: expected <=2% overhead
+- bench_dict_set.py: expected <=2% overhead
+- bench_attr_access.py: expected <=2% overhead
+
+**Correctness Plan**
+- New unit tests: generation mismatch, tombstone reuse, concurrent lookup.
+- Differential cases: attribute-heavy class tests + list/dict ops.
+- Guard/fallback behavior: invalid handle always raises or returns None; never
+  dereference freed memory.
+
+**Risk + Rollback**
+- Risk: subtle data races or ABA bugs in lock-free path.
+- Rollback: keep sharded locks only; disable lock-free reads behind feature flag.
+
+**Success Criteria**
+- Handle lookup overhead <=1% on hot-path benchmarks.
+- Miri clean under strict provenance; fuzz targets green.
+- Documented tradeoffs in `docs/spec/0020_RUNTIME_SAFETY_INVARIANTS.md`.
+
+**Latest Results (2026-01-07, partial suite)**
+- `bench_handle_lock.json` vs `bench_handle_sharded.json`:
+  - bench_sum.py: 0.01177s -> 0.01084s (~8% faster)
+  - bench_bytes_find.py: 0.01334s -> 0.01358s (~2% slower)
+- Next: run full bench matrix to confirm net impact.

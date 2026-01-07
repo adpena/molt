@@ -42,7 +42,13 @@ true:
 - `docs/spec/0007-testing.md` defines the differential testing harness.
 - `docs/spec/0211_COMPATIBILITY_AND_FALLBACK_CONTRACT.md` defines fallback tiers.
 
-## 7. Verification Targets (machine readable)
+## 7. Tooling + CI Enforcement
+- `tools/verified_subset.py check` validates the manifest and referenced paths.
+- `tools/verified_subset.py run` executes the listed differential suites.
+- CI must run the `check` command at minimum; `run` is recommended when suite
+  duration is acceptable.
+
+## 8. Verification Targets (machine readable)
 ```json
 {
   "python_version": "3.12",
@@ -53,6 +59,6 @@ true:
 }
 ```
 
-## 8. Non-Goals
+## 9. Non-Goals
 - Proving full Python equivalence across all stdlib modules.
 - Guaranteeing behavior for dynamic metaprogramming outside the manifest.

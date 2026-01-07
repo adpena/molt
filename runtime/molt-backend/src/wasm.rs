@@ -1708,6 +1708,7 @@ impl WasmBackend {
                         let obj = locals[&args[0]];
                         let class_obj = locals[&args[1]];
                         func.instruction(&Instruction::LocalGet(obj));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::LocalGet(class_obj));
                         func.instruction(&Instruction::Call(import_ids["object_set_class"]));
                         let res = locals[op.out.as_ref().unwrap()];
@@ -1726,6 +1727,7 @@ impl WasmBackend {
                         );
                         self.data_offset = (self.data_offset + bytes.len() as u32 + 7) & !7;
                         func.instruction(&Instruction::LocalGet(obj));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::I64Const(offset as i64));
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
                         func.instruction(&Instruction::Call(import_ids["get_attr_generic"]));
@@ -1765,6 +1767,7 @@ impl WasmBackend {
                         );
                         self.data_offset = (self.data_offset + bytes.len() as u32 + 7) & !7;
                         func.instruction(&Instruction::LocalGet(obj));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::I64Const(offset as i64));
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
                         func.instruction(&Instruction::LocalGet(val));
@@ -1806,6 +1809,7 @@ impl WasmBackend {
                         );
                         self.data_offset = (self.data_offset + bytes.len() as u32 + 7) & !7;
                         func.instruction(&Instruction::LocalGet(obj));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::I64Const(offset as i64));
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
                         func.instruction(&Instruction::Call(import_ids["del_attr_generic"]));
@@ -1888,6 +1892,7 @@ impl WasmBackend {
                     "store" => {
                         let args = op.args.as_ref().unwrap();
                         func.instruction(&Instruction::LocalGet(locals[&args[0]]));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::I64Const(op.value.unwrap()));
                         func.instruction(&Instruction::LocalGet(locals[&args[1]]));
                         func.instruction(&Instruction::Call(import_ids["object_field_set"]));
@@ -1904,6 +1909,7 @@ impl WasmBackend {
                     "load" => {
                         let args = op.args.as_ref().unwrap();
                         func.instruction(&Instruction::LocalGet(locals[&args[0]]));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::I64Const(op.value.unwrap()));
                         func.instruction(&Instruction::Call(import_ids["object_field_get"]));
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
@@ -1911,6 +1917,7 @@ impl WasmBackend {
                     "closure_load" => {
                         let args = op.args.as_ref().unwrap();
                         func.instruction(&Instruction::LocalGet(locals[&args[0]]));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::I64Const(op.value.unwrap()));
                         func.instruction(&Instruction::Call(import_ids["closure_load"]));
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
@@ -1918,6 +1925,7 @@ impl WasmBackend {
                     "closure_store" => {
                         let args = op.args.as_ref().unwrap();
                         func.instruction(&Instruction::LocalGet(locals[&args[0]]));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::I64Const(op.value.unwrap()));
                         func.instruction(&Instruction::LocalGet(locals[&args[1]]));
                         func.instruction(&Instruction::Call(import_ids["closure_store"]));
@@ -1930,6 +1938,7 @@ impl WasmBackend {
                     "guarded_load" => {
                         let args = op.args.as_ref().unwrap();
                         func.instruction(&Instruction::LocalGet(locals[&args[0]]));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::I64Const(op.value.unwrap()));
                         func.instruction(&Instruction::Call(import_ids["object_field_get"]));
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
