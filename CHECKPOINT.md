@@ -1,5 +1,5 @@
-Checkpoint: 2026-01-07 08:58:36 CST
-Git: da13910 wasm: resolve handle ops + add MRO tests
+Checkpoint: 2026-01-07 09:00:17 CST
+Git: 0d492c4 chore: refresh checkpoint
 
 Summary
 - Added handle_resolve before wasm pointer-based ops (load/store/closure/guarded_load, get_attr_generic_ptr, object_set_class) and normalized raw ptrs in the wasm harness.
@@ -7,7 +7,7 @@ Summary
 - Expanded verified subset contract/tooling notes, runtime safety prerequisites, and added a CI step for verified subset manifest checks.
 - Added OPT-0004 plan with preliminary handle-table benchmark notes.
 - Adjusted super/descriptor test to avoid unsupported ternary expression and to use getattr-based fallback.
-- Committed and pushed as da13910.
+- Committed and pushed as da13910; latest commit updates this checkpoint.
 
 Files touched (committed in da13910)
 - runtime/molt-backend/src/wasm.rs
@@ -29,6 +29,9 @@ Tests run
 
 Known gaps
 - None noted after the latest test pass.
+
+Pending changes
+- CHECKPOINT.md (this update)
 
 Next 5-step plan
 1) Monitor CI for da13910 and fix any regressions.
