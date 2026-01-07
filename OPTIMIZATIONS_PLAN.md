@@ -264,3 +264,132 @@ and regression control.
   - bench_sum.py: 0.01177s -> 0.01084s (~8% faster)
   - bench_bytes_find.py: 0.01334s -> 0.01358s (~2% slower)
 - Next: run full bench matrix to confirm net impact.
+
+### OPT-0005: Monomorphic Direct-Call Fast Path for Recursion (bench_fib)
+
+**Problem**
+- `bench_fib.py` is ~4x slower than CPython, dominated by dynamic call dispatch
+  for a simple self-recursive function.
+
+**Hypotheses**
+- H1: Emitting a direct call to a known local function with an identity guard
+  reduces overhead enough to beat CPython on `bench_fib.py`.
+- H2: A small inline-cache for function objects handles the common case without
+  affecting dynamic semantics.
+
+**Alternatives**
+1) Direct-call lowering with function-identity guard + fallback to generic call.
+2) Inline caching for local/global call sites (guarded, deopt to generic).
+3) Inline expansion for self-recursive calls (higher complexity, code size risk).
+
+**Research References**
+- Deutsch & Schiffman (1984) inline caching (Smalltalk-80).
+- PEP 659 (Specializing Adaptive Interpreter) for call-site specialization ideas.
+
+**Plan**
+- Phase 0: Profile call overhead in `bench_fib.py` and other call-heavy benches.
+- Phase 1: Add IR op for direct call when callee is a known local/global symbol.
+- Phase 2: Guard on function identity; fallback to generic call on mismatch.
+- Phase 3: Evaluate optional inline-cache and recursion inlining.
+
+**Benchmark Matrix**
+- bench_fib.py: expected >=2x improvement
+- bench_deeply_nested_loop.py: no regression (<=3%)
+- bench_struct.py: no regression (<=3%)
+
+**Correctness Plan**
+- Differential tests for function reassignment and recursion correctness.
+- Guard/fallback behavior: identity mismatch falls back to generic call.
+
+**Risk + Rollback**
+- Risk: invalid specialization when functions are rebound.
+- Rollback: keep generic call path as default; gate direct-call behind a flag.
+
+**Success Criteria**
+- `bench_fib.py` >=1.0x vs CPython without regressions elsewhere.
+
+### OPT-0006: Unicode Count Warm-Cache Fast Path
+
+**Problem**
+- `bench_str_count_unicode_warm.py` is ~4x slower than CPython even with a warm
+  cache, indicating cached index map reuse is not amortizing correctly.
+
+**Hypotheses**
+- H1: Store a prefix codepoint-count table in the cache to make `count` O(n)
+  over matches rather than O(n) over translation each call.
+- H2: Avoid reallocating or recomputing byte->codepoint maps on warm paths.
+
+**Alternatives**
+1) Prefix count table stored alongside the UTF-8 index cache.
+2) SIMD codepoint counting for each call (simpler, more CPU).
+3) Cache per-slice metadata to reuse byte->codepoint offsets.
+
+**Research References**
+- PEP 393 (flexible string representation).
+- simdutf UTF-8 counting/validation (https://github.com/simdutf/simdutf).
+
+**Plan**
+- Phase 0: Inspect cache hit/miss behavior and measure translation overhead.
+- Phase 1: Extend cache entries with prefix count metadata.
+- Phase 2: Add fast path for repeated `count` on same string/haystack.
+- Phase 3: Validate against Unicode differential cases.
+
+**Benchmark Matrix**
+- bench_str_count_unicode_warm.py: expected >=2x improvement
+- bench_str_count_unicode.py: no regression (<=5%)
+- bench_str_find_unicode_warm.py: no regression (<=5%)
+
+**Correctness Plan**
+- Differential tests with mixed-width Unicode and combining characters.
+- Validate count semantics on overlapping patterns.
+
+**Risk + Rollback**
+- Risk: cache memory overhead grows on large strings.
+- Rollback: disable prefix-count caching behind size threshold.
+
+**Success Criteria**
+- `bench_str_count_unicode_warm.py` >=1.0x vs CPython.
+
+### OPT-0007: Structified Class Fast Path + Optional Scalar Replacement
+
+**Problem**
+- `bench_struct.py` shows attribute store and object allocation overhead for a
+  simple annotated class, suggesting struct field stores are not hitting a
+  direct slot path.
+
+**Hypotheses**
+- H1: Precompute a fixed layout for classes with field annotations and lower
+  attribute stores to direct slot writes.
+- H2: If objects do not escape the loop, scalar replacement can eliminate
+  allocations entirely.
+
+**Alternatives**
+1) Force structification for annotated classes without dynamic features.
+2) Escape analysis + scalar replacement (higher complexity, best perf).
+3) Inline cache on attribute store for monomorphic classes.
+
+**Research References**
+- "Escape Analysis for Java" (Choi et al.) and similar scalar replacement work.
+- HotSpot scalar replacement notes (public JVM documentation).
+
+**Plan**
+- Phase 0: Confirm class layout inference for annotated classes without __init__.
+- Phase 1: Lower SETATTR to direct slot stores when layout is fixed.
+- Phase 2: Add escape analysis prototype to elide allocations in loops.
+- Phase 3: Validate correctness + update structification rules in docs/spec.
+
+**Benchmark Matrix**
+- bench_struct.py: expected >=2x improvement
+- bench_sum_list.py: no regression (<=3%)
+- bench_deeply_nested_loop.py: no regression (<=3%)
+
+**Correctness Plan**
+- Differential tests for attribute assignment order and class mutation.
+- Guard/fallback behavior: dynamic class changes fall back to generic store.
+
+**Risk + Rollback**
+- Risk: misclassification of dynamic classes leading to wrong attribute behavior.
+- Rollback: require explicit "frozen layout" flag or dataclass lowering.
+
+**Success Criteria**
+- `bench_struct.py` >=1.0x vs CPython with no semantic regressions.

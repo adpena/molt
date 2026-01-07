@@ -33,6 +33,7 @@
 - Avoid excessive lint/test loops while implementing; validate once after a cohesive set of changes is complete unless debugging a failure.
 - If tests fail due to missing functionality, stop and call out the missing feature; ask for priority/plan before changing tests, then implement the correct behavior instead.
 - Treat benchmark regressions as failures; run `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json`, `tools/dev.py lint`, and `tools/dev.py test` after the fix is in, then iterate on optimization until the regression is removed without introducing new regressions.
+- Run `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json` for every commit and commit the updated `bench/results/bench.json` (document blockers in `CHECKPOINT.md`).
 - Sound the alarm immediately on performance regressions and trigger an optimization-first feedback loop (bench → lint → test → optimize) until green, but avoid repeated cycles before the implementation is complete.
 - Prefer performance wins even if they increase compile time or binary size; document tradeoffs explicitly.
 - Always run tests via `uv run --python 3.12/3.13/3.14`; never use the raw `.venv` interpreter directly.
