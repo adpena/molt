@@ -4570,8 +4570,7 @@ impl SimpleBackend {
         builder.finalize();
 
         if let Ok(filter) = std::env::var("MOLT_DUMP_CLIF") {
-            if filter == "1" || filter == func_ir.name || func_ir.name.contains(&filter)
-            {
+            if filter == "1" || filter == func_ir.name || func_ir.name.contains(&filter) {
                 eprintln!("CLIF {}:\n{}", func_ir.name, self.ctx.func.display());
             }
         }
