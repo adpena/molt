@@ -19,6 +19,7 @@ target/
 *.d
 hello_molt
 bench/results/
+!bench/results/bench.json
 bench/cython/
 bench/numba/
 runtime/molt-runtime/fuzz/corpus/
