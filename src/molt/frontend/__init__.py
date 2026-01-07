@@ -5970,6 +5970,92 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return self._emit_not(operand)
         raise NotImplementedError("Unary operator not supported")
 
+    def visit_IfExp(self, node: ast.IfExp) -> Any:
+        cond = self.visit(node.test)
+        if cond is None:
+            raise NotImplementedError("Unsupported if expression condition")
+        use_phi = self.enable_phi and not self.is_async()
+        if use_phi:
+            self.emit(MoltOp(kind="IF", args=[cond], result=MoltValue("none")))
+            true_val = self.visit(node.body)
+            if true_val is None:
+                raise NotImplementedError("Unsupported if expression true branch")
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+            false_val = self.visit(node.orelse)
+            if false_val is None:
+                raise NotImplementedError("Unsupported if expression false branch")
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            res_type = "Any"
+            if true_val.type_hint == false_val.type_hint:
+                res_type = true_val.type_hint
+            merged = MoltValue(self.next_var(), type_hint=res_type)
+            self.emit(MoltOp(kind="PHI", args=[true_val, false_val], result=merged))
+            return merged
+
+        placeholder = MoltValue(self.next_var(), type_hint="None")
+        self.emit(MoltOp(kind="CONST_NONE", args=[], result=placeholder))
+        cell = MoltValue(self.next_var(), type_hint="list")
+        self.emit(MoltOp(kind="LIST_NEW", args=[placeholder], result=cell))
+        idx = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[0], result=idx))
+        cell_slot: int | None = None
+        idx_slot: int | None = None
+        if self.is_async() and (
+            self._expr_may_yield(node.body) or self._expr_may_yield(node.orelse)
+        ):
+            cell_slot = self._spill_async_value(
+                cell, f"__ifexp_cell_{len(self.async_locals)}"
+            )
+            idx_slot = self._spill_async_value(
+                idx, f"__ifexp_idx_{len(self.async_locals)}"
+            )
+
+        self.emit(MoltOp(kind="IF", args=[cond], result=MoltValue("none")))
+        true_val = self.visit(node.body)
+        if true_val is None:
+            raise NotImplementedError("Unsupported if expression true branch")
+        store_cell = cell
+        store_idx = idx
+        if cell_slot is not None and idx_slot is not None:
+            store_cell = self._reload_async_value(cell_slot, "list")
+            store_idx = self._reload_async_value(idx_slot, "int")
+        self.emit(
+            MoltOp(
+                kind="STORE_INDEX",
+                args=[store_cell, store_idx, true_val],
+                result=MoltValue("none"),
+            )
+        )
+        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+        false_val = self.visit(node.orelse)
+        if false_val is None:
+            raise NotImplementedError("Unsupported if expression false branch")
+        store_cell = cell
+        store_idx = idx
+        if cell_slot is not None and idx_slot is not None:
+            store_cell = self._reload_async_value(cell_slot, "list")
+            store_idx = self._reload_async_value(idx_slot, "int")
+        self.emit(
+            MoltOp(
+                kind="STORE_INDEX",
+                args=[store_cell, store_idx, false_val],
+                result=MoltValue("none"),
+            )
+        )
+        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+
+        final_cell = cell
+        final_idx = idx
+        if cell_slot is not None and idx_slot is not None:
+            final_cell = self._reload_async_value(cell_slot, "list")
+            final_idx = self._reload_async_value(idx_slot, "int")
+        res_type = "Any"
+        if true_val.type_hint == false_val.type_hint:
+            res_type = true_val.type_hint
+        result = MoltValue(self.next_var(), type_hint=res_type)
+        self.emit(MoltOp(kind="INDEX", args=[final_cell, final_idx], result=result))
+        return result
+
     def visit_If(self, node: ast.If) -> None:
         cond = self.visit(node.test)
         self.emit(MoltOp(kind="IF", args=[cond], result=MoltValue("none")))

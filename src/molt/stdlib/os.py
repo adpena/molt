@@ -32,13 +32,7 @@ __all__ = [
 ]
 
 
-def _os_name(py_os: Any) -> str:
-    if py_os is not None:
-        return getattr(py_os, "name", "posix")
-    return "posix"
-
-
-name = _os_name(_py_os)
+name = getattr(_py_os, "name", "posix") if _py_os is not None else "posix"
 sep = "/"
 pathsep = ":"
 linesep = "\n"
@@ -52,9 +46,11 @@ _ENV_STORE: dict[str, str] = {}
 
 
 def _molt_env_get(key: str, default: Any = None) -> Any:
-    if _py_os is not None:
-        return _py_os.environ.get(key, default)
-    return _ENV_STORE.get(key, default)
+    return (
+        _py_os.environ.get(key, default)
+        if _py_os is not None
+        else _ENV_STORE.get(key, default)
+    )
 
 
 def _capabilities() -> set[str]:
