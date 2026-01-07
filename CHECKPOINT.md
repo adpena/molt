@@ -1,19 +1,15 @@
-Checkpoint: 2026-01-07 12:46:44 CST
-Git: 9557241 docs: refresh checkpoint
+Checkpoint: 2026-01-07 12:51:11 CST
+Git: d0347b3 opt: start 0005/0006/0007
 
 Summary
 - Added guarded direct-call lowering (`CALL_GUARDED`) for named functions (non-async) and backend support.
 - Decoupled Unicode count cache from UTF-8 index cache to avoid expensive prefix builds on first count.
 - Added exact-local tracking to skip guarded setattr for constructor-bound locals with fixed layouts (non-dataclass).
+- Fixed clippy `map_entry` warning in new UTF-8 count cache store.
 
 Files touched (uncommitted)
-- src/molt/frontend/__init__.py
-- tests/differential/basic/async_yield_spill.py
-- runtime/molt-backend/src/lib.rs
 - runtime/molt-runtime/src/lib.rs
-- src/molt/cli.py
-- main_stub.c
-- OPTIMIZATIONS_PLAN.md
+- CHECKPOINT.md
 
 Tests run
 - PYTHONPATH=src uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic
@@ -24,13 +20,7 @@ Known gaps
 
 Pending changes
 - CHECKPOINT.md (this update)
-- OPTIMIZATIONS_PLAN.md
-- main_stub.c
-- runtime/molt-backend/src/lib.rs
 - runtime/molt-runtime/src/lib.rs
-- src/molt/cli.py
-- src/molt/frontend/__init__.py
-- tests/differential/basic/async_yield_spill.py
 
 Next 5-step plan
 1) Re-run differential suites covering async/coroutine semantics after any further yield-spill changes.
