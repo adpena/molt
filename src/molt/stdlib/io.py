@@ -2,13 +2,31 @@
 
 from __future__ import annotations
 
-import builtins
 import os
-from collections.abc import Iterator
 from typing import IO, Any
 
 from molt import capabilities
 from molt import net
+
+
+class _StreamIter:
+    def __init__(self, handle, chunk_size: int) -> None:
+        self._handle = handle
+        self._chunk_size = chunk_size
+        self._done = False
+
+    def __iter__(self) -> _StreamIter:
+        return self
+
+    def __next__(self) -> bytes | str:
+        if self._done:
+            raise StopIteration
+        chunk = self._handle.read(self._chunk_size)
+        if not chunk:
+            self._done = True
+            self._handle.close()
+            raise StopIteration
+        return chunk
 
 
 def _require_caps_for_mode(mode: str) -> None:
@@ -23,30 +41,21 @@ def _require_caps_for_mode(mode: str) -> None:
 def open(
     file: str | bytes | int | os.PathLike[str] | os.PathLike[bytes],
     mode: str = "r",
-    *args: Any,
-    **kwargs: Any,
 ) -> IO[Any]:
     _require_caps_for_mode(mode)
-    return builtins.open(file, mode, *args, **kwargs)
+    import builtins as _builtins
+
+    return _builtins.open(file, mode)
 
 
 def stream(
     file: str | bytes | int | os.PathLike[str] | os.PathLike[bytes],
-    *,
     mode: str = "rb",
     chunk_size: int = 65536,
 ) -> net.Stream:
     _require_caps_for_mode(mode)
-    if "b" not in mode and "t" not in mode:
-        mode = f"{mode}b"
-    handle = builtins.open(file, mode)
+    import builtins as _builtins
 
-    def _iter() -> Iterator[bytes | str]:
-        with handle:
-            while True:
-                chunk = handle.read(chunk_size)
-                if not chunk:
-                    break
-                yield chunk
+    handle = _builtins.open(file, mode)
 
-    return net.Stream(_iter())
+    return net.Stream(_StreamIter(handle, chunk_size))

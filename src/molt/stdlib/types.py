@@ -10,20 +10,27 @@ __all__ = ["SimpleNamespace", "MappingProxyType"]
 
 
 class SimpleNamespace:
-    def __init__(self, **kwargs: Any) -> None:
-        for key, val in kwargs.items():
+    def __init__(self, mapping: dict[str, Any] | None = None) -> None:
+        if mapping is None:
+            return
+        for item in mapping.items():
+            key = item[0]
+            val = item[1]
             setattr(self, key, val)
 
     def __repr__(self) -> str:
         items = sorted(self.__dict__.items())
         if not items:
             return "namespace()"
-        parts = ", ".join(f"{k}={v!r}" for k, v in items)
-        return f"namespace({parts})"
+        parts_list: list[str] = []
+        for item in items:
+            key = item[0]
+            val = item[1]
+            parts_list.append(str(key) + "=" + repr(val))
+        parts = ", ".join(parts_list)
+        return "namespace(" + parts + ")"
 
     def __eq__(self, other: Any) -> bool:
-        if type(other) is not SimpleNamespace:
-            return False
         return self.__dict__ == other.__dict__
 
 

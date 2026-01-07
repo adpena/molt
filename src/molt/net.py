@@ -10,11 +10,77 @@ import asyncio
 import ctypes
 from collections.abc import AsyncIterable, AsyncIterator, Iterable
 from dataclasses import dataclass, field
-from typing import Any, Protocol, cast
+from typing import Any, cast
 
 from molt import capabilities
 
-Payload = bytes | str
+Payload = object
+
+
+class _SyncAsyncIter:
+    def __init__(self, source: Iterable[Payload]) -> None:
+        self._iter = iter(source)
+
+    def __aiter__(self) -> AsyncIterator[Payload]:
+        return self
+
+    async def __anext__(self) -> Payload:
+        try:
+            return next(self._iter)
+        except StopIteration:
+            raise StopAsyncIteration
+
+
+class _WebSocketIter:
+    def __init__(self, socket: WebSocket) -> None:
+        self._socket = socket
+
+    def __aiter__(self) -> AsyncIterator[Payload]:
+        return self
+
+    async def __anext__(self) -> Payload:
+        try:
+            return await self._socket.recv()
+        except RuntimeError:
+            raise StopAsyncIteration
+
+
+class _RuntimeStreamIter:
+    def __init__(self, handle: ctypes.c_void_p, lib: Any) -> None:
+        self._handle = handle
+        self._lib = lib
+
+    def __aiter__(self) -> AsyncIterator[Payload]:
+        return self
+
+    async def __anext__(self) -> Payload:
+        from molt_json import _decode_molt_object
+
+        pending = _pending_bits()
+        while True:
+            res = int(self._lib.molt_stream_recv(self._handle))
+            if res == pending:
+                await asyncio.sleep(0)
+                continue
+            obj = _decode_molt_object(res)
+            if obj is None:
+                raise StopAsyncIteration
+            return obj
+
+
+class _QueueStreamIter:
+    def __init__(self, queue: asyncio.Queue[Payload | None]) -> None:
+        self._queue = queue
+
+    def __aiter__(self) -> AsyncIterator[Payload]:
+        return self
+
+    async def __anext__(self) -> Payload:
+        getter = self._queue.get
+        item = await getter()
+        if item is None:
+            raise StopAsyncIteration
+        return item
 
 
 class Stream:
@@ -24,13 +90,8 @@ class Stream:
     def __aiter__(self) -> AsyncIterator[Payload]:
         if isinstance(self._source, AsyncIterable):
             return self._source.__aiter__()
-
-        async def _iter_sync() -> AsyncIterator[Payload]:
-            source = cast(Iterable[Payload], self._source)
-            for item in source:
-                yield item
-
-        return _iter_sync()
+        source = cast(Iterable[Payload], self._source)
+        return _SyncAsyncIter(source)
 
 
 @dataclass(slots=True)
@@ -50,8 +111,8 @@ class Response:
 
 class WebSocket:
     def __init__(self, maxsize: int = 0) -> None:
-        self._incoming: asyncio.Queue[Payload | None] = asyncio.Queue(maxsize=maxsize)
-        self._outgoing: asyncio.Queue[Payload | None] = asyncio.Queue(maxsize=maxsize)
+        self._incoming: asyncio.Queue[Payload | None] = asyncio.Queue(maxsize)
+        self._outgoing: asyncio.Queue[Payload | None] = asyncio.Queue(maxsize)
         self._closed = False
 
     async def send(self, msg: Payload) -> None:
@@ -60,7 +121,8 @@ class WebSocket:
         await self._outgoing.put(msg)
 
     async def recv(self) -> Payload:
-        msg = await self._incoming.get()
+        getter = self._incoming.get
+        msg = await getter()
         if msg is None:
             self._closed = True
             raise RuntimeError("WebSocket closed")
@@ -73,14 +135,7 @@ class WebSocket:
             await self._outgoing.put(None)
 
     def __aiter__(self) -> AsyncIterator[Payload]:
-        async def _iter() -> AsyncIterator[Payload]:
-            while True:
-                try:
-                    yield await self.recv()
-                except RuntimeError:
-                    break
-
-        return _iter()
+        return _WebSocketIter(self)
 
 
 def stream(source: AsyncIterable[Payload] | Iterable[Payload]) -> Stream:
@@ -93,31 +148,30 @@ class RuntimeStream(Stream):
         self._lib = lib
 
     def __aiter__(self) -> AsyncIterator[Payload]:
-        async def _iter() -> AsyncIterator[Payload]:
-            from molt_json import _decode_molt_object
-
-            pending = _pending_bits()
-            while True:
-                res = int(self._lib.molt_stream_recv(self._handle))
-                if res == pending:
-                    await asyncio.sleep(0)
-                    continue
-                obj = _decode_molt_object(res)
-                if obj is None:
-                    break
-                yield obj
-
-        return _iter()
+        return _RuntimeStreamIter(self._handle, self._lib)
 
 
-class RuntimeStreamSender:
+class StreamSenderBase:
+    async def send(self, payload: Payload) -> None:
+        raise NotImplementedError
+
+    async def close(self) -> None:
+        raise NotImplementedError
+
+
+class RuntimeStreamSender(StreamSenderBase):
     def __init__(self, handle: ctypes.c_void_p, lib: Any) -> None:
         self._handle = handle
         self._lib = lib
 
     async def send(self, payload: Payload) -> None:
         pending = _pending_bits()
-        data = payload.encode("utf-8") if isinstance(payload, str) else payload
+        if isinstance(payload, str):
+            data = payload.encode("utf-8")
+        elif isinstance(payload, bytes):
+            data = payload
+        else:
+            raise TypeError("Stream payload must be bytes or str")
         while True:
             res = int(self._lib.molt_stream_send(self._handle, data, len(data)))
             if res != pending:
@@ -129,7 +183,7 @@ class RuntimeStreamSender:
             self._lib.molt_stream_close(self._handle)
 
 
-class StreamSender:
+class StreamSender(StreamSenderBase):
     def __init__(self, queue: asyncio.Queue[Payload | None]) -> None:
         self._queue = queue
 
@@ -140,12 +194,6 @@ class StreamSender:
         await self._queue.put(None)
 
 
-class StreamSenderBase(Protocol):
-    async def send(self, payload: Payload) -> None: ...
-
-    async def close(self) -> None: ...
-
-
 def stream_channel(maxsize: int = 1) -> tuple[Stream, StreamSenderBase]:
     from molt import shims
 
@@ -154,16 +202,9 @@ def stream_channel(maxsize: int = 1) -> tuple[Stream, StreamSenderBase]:
         handle = ctypes.c_void_p(lib.molt_stream_new(maxsize))
         return RuntimeStream(handle, lib), RuntimeStreamSender(handle, lib)
 
-    queue: asyncio.Queue[Payload | None] = asyncio.Queue(maxsize=maxsize)
+    queue: asyncio.Queue[Payload | None] = asyncio.Queue(maxsize)
 
-    async def _iter() -> AsyncIterator[Payload]:
-        while True:
-            item = await queue.get()
-            if item is None:
-                break
-            yield item
-
-    return Stream(_iter()), StreamSender(queue)
+    return Stream(_QueueStreamIter(queue)), StreamSender(queue)
 
 
 class RuntimeWebSocket(WebSocket):
@@ -173,7 +214,12 @@ class RuntimeWebSocket(WebSocket):
 
     async def send(self, msg: Payload) -> None:
         pending = _pending_bits()
-        data = msg.encode("utf-8") if isinstance(msg, str) else msg
+        if isinstance(msg, str):
+            data = msg.encode("utf-8")
+        elif isinstance(msg, bytes):
+            data = msg
+        else:
+            raise TypeError("WebSocket payload must be bytes or str")
         while True:
             res = int(self._lib.molt_ws_send(self._handle, data, len(data)))
             if res != pending:
@@ -217,8 +263,8 @@ def ws_pair(maxsize: int = 0) -> tuple[WebSocket, WebSocket]:
             return RuntimeWebSocket(left_handle, lib), RuntimeWebSocket(
                 right_handle, lib
             )
-    left = WebSocket(maxsize=maxsize)
-    right = WebSocket(maxsize=maxsize)
+    left = WebSocket(maxsize)
+    right = WebSocket(maxsize)
     left._incoming = right._outgoing
     right._incoming = left._outgoing
     return left, right

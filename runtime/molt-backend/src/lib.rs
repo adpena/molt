@@ -783,8 +783,12 @@ impl SimpleBackend {
                 }
                 "sub" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).expect("LHS not found");
-                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let lhs = vars.get(&args[0]).unwrap_or_else(|| {
+                        panic!("LHS not found in {} op {}", func_ir.name, op_idx)
+                    });
+                    let rhs = vars.get(&args[1]).unwrap_or_else(|| {
+                        panic!("RHS not found in {} op {}", func_ir.name, op_idx)
+                    });
                     let res = if op.fast_int.unwrap_or(false) {
                         let lhs_val = unbox_int(&mut builder, *lhs);
                         let rhs_val = unbox_int(&mut builder, *rhs);
@@ -871,7 +875,9 @@ impl SimpleBackend {
                         .module
                         .declare_func_in_func(append_callee, builder.func);
                     for name in args {
-                        let val = vars.get(name).expect("List elem not found");
+                        let val = vars.get(name).unwrap_or_else(|| {
+                            panic!("List elem not found in {} op {}", func_ir.name, op_idx)
+                        });
                         builder.ins().call(append_local, &[builder_ptr, *val]);
                     }
 
@@ -1388,9 +1394,15 @@ impl SimpleBackend {
                 }
                 "store_index" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Obj not found");
-                    let idx = vars.get(&args[1]).expect("Index not found");
-                    let val = vars.get(&args[2]).expect("Value not found");
+                    let obj = vars.get(&args[0]).unwrap_or_else(|| {
+                        panic!("Obj not found in {} op {}", func_ir.name, op_idx)
+                    });
+                    let idx = vars.get(&args[1]).unwrap_or_else(|| {
+                        panic!("Index not found in {} op {}", func_ir.name, op_idx)
+                    });
+                    let val = vars.get(&args[2]).unwrap_or_else(|| {
+                        panic!("Value not found in {} op {}", func_ir.name, op_idx)
+                    });
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -3010,7 +3022,12 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap();
                     let module_bits = vars.get(&args[0]).expect("Module not found");
                     let attr_bits = vars.get(&args[1]).expect("Attr not found");
-                    let val_bits = vars.get(&args[2]).expect("Value not found");
+                    let val_bits = vars.get(&args[2]).unwrap_or_else(|| {
+                        panic!(
+                            "Value not found for module_set_attr in {} op {}",
+                            func_ir.name, op_idx
+                        )
+                    });
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4110,7 +4127,9 @@ impl SimpleBackend {
                 }
                 "get_attr_generic_ptr" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Attr object not found");
+                    let obj = vars.get(&args[0]).unwrap_or_else(|| {
+                        panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
+                    });
                     let attr_name = op.s_value.as_ref().unwrap();
                     let data_id = self
                         .module
@@ -4158,7 +4177,9 @@ impl SimpleBackend {
                 }
                 "get_attr_generic_obj" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Attr object not found");
+                    let obj = vars.get(&args[0]).unwrap_or_else(|| {
+                        panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
+                    });
                     let attr_name = op.s_value.as_ref().unwrap();
                     let data_id = self
                         .module
@@ -4194,7 +4215,9 @@ impl SimpleBackend {
                 }
                 "get_attr_name" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Attr object not found");
+                    let obj = vars.get(&args[0]).unwrap_or_else(|| {
+                        panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
+                    });
                     let name = vars.get(&args[1]).expect("Attr name not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -4211,7 +4234,9 @@ impl SimpleBackend {
                 }
                 "get_attr_name_default" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Attr object not found");
+                    let obj = vars.get(&args[0]).unwrap_or_else(|| {
+                        panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
+                    });
                     let name = vars.get(&args[1]).expect("Attr name not found");
                     let default = vars.get(&args[2]).expect("Attr default not found");
                     let mut sig = self.module.make_signature();
@@ -4230,7 +4255,9 @@ impl SimpleBackend {
                 }
                 "has_attr_name" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Attr object not found");
+                    let obj = vars.get(&args[0]).unwrap_or_else(|| {
+                        panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
+                    });
                     let name = vars.get(&args[1]).expect("Attr name not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -4247,7 +4274,9 @@ impl SimpleBackend {
                 }
                 "set_attr_name" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Attr object not found");
+                    let obj = vars.get(&args[0]).unwrap_or_else(|| {
+                        panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
+                    });
                     let name = vars.get(&args[1]).expect("Attr name not found");
                     let val = vars.get(&args[2]).expect("Attr value not found");
                     let mut sig = self.module.make_signature();
@@ -4266,7 +4295,9 @@ impl SimpleBackend {
                 }
                 "set_attr_generic_ptr" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Attr object not found");
+                    let obj = vars.get(&args[0]).unwrap_or_else(|| {
+                        panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
+                    });
                     let val = vars.get(&args[1]).expect("Attr value not found");
                     let attr_name = op.s_value.as_ref().unwrap();
                     let data_id = self
@@ -4316,7 +4347,9 @@ impl SimpleBackend {
                 }
                 "set_attr_generic_obj" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Attr object not found");
+                    let obj = vars.get(&args[0]).unwrap_or_else(|| {
+                        panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
+                    });
                     let val = vars.get(&args[1]).expect("Attr value not found");
                     let attr_name = op.s_value.as_ref().unwrap();
                     let data_id = self
@@ -4354,7 +4387,9 @@ impl SimpleBackend {
                 }
                 "del_attr_generic_ptr" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Attr object not found");
+                    let obj = vars.get(&args[0]).unwrap_or_else(|| {
+                        panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
+                    });
                     let attr_name = op.s_value.as_ref().unwrap();
                     let data_id = self
                         .module
@@ -4402,7 +4437,9 @@ impl SimpleBackend {
                 }
                 "del_attr_generic_obj" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Attr object not found");
+                    let obj = vars.get(&args[0]).unwrap_or_else(|| {
+                        panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
+                    });
                     let attr_name = op.s_value.as_ref().unwrap();
                     let data_id = self
                         .module
@@ -4438,7 +4475,9 @@ impl SimpleBackend {
                 }
                 "del_attr_name" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Attr object not found");
+                    let obj = vars.get(&args[0]).unwrap_or_else(|| {
+                        panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
+                    });
                     let name = vars.get(&args[1]).expect("Attr name not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));

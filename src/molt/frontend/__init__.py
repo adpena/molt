@@ -1279,6 +1279,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 ):
                     self.exact_locals[name] = class_id
                     return
+        if isinstance(value, ast.Name):
+            if value.id in self.exact_locals and (
+                self.current_func_name == "molt_main"
+                or value.id not in self.global_decls
+            ):
+                self.exact_locals[name] = self.exact_locals[value.id]
+                return
         self.exact_locals.pop(name, None)
 
     def _load_local_value(self, name: str) -> MoltValue | None:
@@ -6051,6 +6058,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return None
         if not isinstance(node.target, ast.Name):
             raise NotImplementedError("Only simple for targets are supported")
+        self.exact_locals.pop(node.target.id, None)
         assigned = self._collect_assigned_names(node.body)
         assigned.add(node.target.id)
         for name in sorted(assigned):
@@ -6185,6 +6193,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             raise NotImplementedError("async for-else is not supported")
         if not isinstance(node.target, ast.Name):
             raise NotImplementedError("Only simple async for targets are supported")
+        self.exact_locals.pop(node.target.id, None)
         iterable = self.visit(node.iter)
         if iterable is None:
             raise NotImplementedError("Unsupported iterable in async for loop")

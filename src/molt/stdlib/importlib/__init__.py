@@ -4,7 +4,7 @@ from __future__ import annotations
 
 # TODO(stdlib-compat, owner:stdlib, milestone:SL3): implement import hooks + loaders.
 
-from . import util
+import importlib.util as util
 
 __all__ = [
     "import_module",

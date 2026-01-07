@@ -16,7 +16,10 @@ __all__ = [
     "Generator",
     "Hashable",
     "Iterable",
+    "ItemsView",
     "Iterator",
+    "KeysView",
+    "MappingView",
     "Mapping",
     "MutableMapping",
     "MutableSequence",
@@ -25,6 +28,7 @@ __all__ = [
     "Sequence",
     "Set",
     "Sized",
+    "ValuesView",
 ]
 
 
@@ -84,6 +88,22 @@ class MutableSet(Set):
 
 
 class Mapping(Collection):
+    pass
+
+
+class MappingView(_ABCBase):
+    pass
+
+
+class KeysView(MappingView):
+    pass
+
+
+class ItemsView(MappingView):
+    pass
+
+
+class ValuesView(MappingView):
     pass
 
 

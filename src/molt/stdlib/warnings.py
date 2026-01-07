@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import builtins
 import fnmatch
 
 __all__ = [
@@ -28,10 +27,10 @@ _record_stack: list[list[dict[str, Any]]] = []
 
 def _normalize_category(category: Any) -> type:
     if category is None:
-        return builtins.UserWarning
+        return UserWarning
     if isinstance(category, type):
         return category
-    return builtins.UserWarning
+    return UserWarning
 
 
 def _get_frame(stacklevel: int) -> Any | None:
@@ -193,7 +192,7 @@ def warn_explicit(
 def filterwarnings(
     action: str = "default",
     message: str = "",
-    category: Any | None = builtins.Warning,
+    category: Any | None = Warning,
     module: str = "",
     lineno: int = 0,
     append: bool = False,
@@ -208,7 +207,7 @@ def filterwarnings(
 
 def simplefilter(
     action: str = "default",
-    category: Any | None = builtins.Warning,
+    category: Any | None = Warning,
     lineno: int = 0,
     append: bool = False,
 ) -> None:

@@ -7,7 +7,12 @@ from collections.abc import Iterable
 
 
 def _parse_caps(raw: str) -> set[str]:
-    return {cap.strip() for cap in raw.split(",") if cap.strip()}
+    caps: set[str] = set()
+    for part in raw.split(","):
+        stripped = part.strip()
+        if stripped:
+            caps.add(stripped)
+    return caps
 
 
 def _raw_getenv(key: str, default: str = "") -> str:

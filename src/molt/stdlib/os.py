@@ -5,12 +5,17 @@ from __future__ import annotations
 from collections.abc import ItemsView, KeysView, ValuesView
 from typing import Any, Iterator, MutableMapping
 
-try:
-    import importlib as _importlib
 
-    _py_os = _importlib.import_module("os")
-except Exception:
-    _py_os = None
+def _load_py_os() -> Any:
+    try:
+        import importlib as _importlib
+
+        return _importlib.import_module("os")
+    except Exception:
+        return None
+
+
+_py_os = _load_py_os()
 
 __all__ = [
     "name",
@@ -26,7 +31,14 @@ __all__ = [
     "path",
 ]
 
-name = getattr(_py_os, "name", "posix") if _py_os is not None else "posix"
+
+def _os_name(py_os: Any) -> str:
+    if py_os is not None:
+        return getattr(py_os, "name", "posix")
+    return "posix"
+
+
+name = _os_name(_py_os)
 sep = "/"
 pathsep = ":"
 linesep = "\n"
@@ -47,7 +59,12 @@ def _molt_env_get(key: str, default: Any = None) -> Any:
 
 def _capabilities() -> set[str]:
     raw = str(_molt_env_get("MOLT_CAPABILITIES", ""))
-    return {cap.strip() for cap in raw.split(",") if cap.strip()}
+    caps: set[str] = set()
+    for cap in raw.split(","):
+        stripped = cap.strip()
+        if stripped:
+            caps.add(stripped)
+    return caps
 
 
 def _require_cap(name: str) -> None:
@@ -61,7 +78,7 @@ def _require_cap(name: str) -> None:
             raise PermissionError("Missing capability")
 
 
-class _Environ(MutableMapping[str, str]):
+class _Environ:
     def __init__(self) -> None:
         self._store = _ENV_STORE
 
@@ -80,7 +97,7 @@ class _Environ(MutableMapping[str, str]):
 
     def __delitem__(self, key: str) -> None:
         _require_cap("env.write")
-        del self._backend()[key]
+        self._backend().pop(key)
 
     def __iter__(self) -> Iterator[str]:
         _require_cap("env.read")
@@ -115,14 +132,25 @@ class _Path:
     extsep = extsep
 
     @staticmethod
-    def join(*parts: str) -> str:
+    def join(
+        first: str,
+        second: str | None = None,
+        third: str | None = None,
+        fourth: str | None = None,
+    ) -> str:
+        parts: list[str] = []
+        if first:
+            parts.append(first)
+        if second:
+            parts.append(second)
+        if third:
+            parts.append(third)
+        if fourth:
+            parts.append(fourth)
         if not parts:
             return ""
-        cleaned = [p for p in parts if p]
-        if not cleaned:
-            return ""
-        path = cleaned[0]
-        for part in cleaned[1:]:
+        path = parts[0]
+        for part in parts[1:]:
             if part.startswith(sep):
                 path = part
             else:
@@ -190,9 +218,15 @@ class _Path:
                     parts.append(part)
                 continue
             parts.append(part)
-        prefix = sep if absolute else ""
-        normalized = prefix + sep.join(parts)
-        return normalized or (sep if absolute else ".")
+        if absolute:
+            normalized = sep + sep.join(parts)
+            if normalized:
+                return normalized
+            return sep
+        normalized = sep.join(parts)
+        if normalized:
+            return normalized
+        return "."
 
     @staticmethod
     def abspath(path: str) -> str:
