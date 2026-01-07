@@ -23,7 +23,7 @@ def run_molt(file_path):
     env = os.environ.copy()
     env["PYTHONPATH"] = "src"
     build_res = subprocess.run(
-        ["python3", "-m", "molt.cli", "build", file_path],
+        [sys.executable, "-m", "molt.cli", "build", file_path],
         env=env,
         capture_output=True,
         text=True,

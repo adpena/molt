@@ -20,6 +20,8 @@ Basic parity cases live in `tests/differential/basic/`. Run the full suite via:
 ```
 python tests/molt_diff.py tests/differential/basic
 ```
+The verified subset contract uses `tools/verified_subset.py` to validate and run
+these suites in CI.
 
 ## 2. Automated Test Generation (Hypothesis)
 We use `Hypothesis` to generate random Python ASTs that fall within the Molt Tier 0 subset.

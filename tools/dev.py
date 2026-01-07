@@ -32,9 +32,11 @@ def main() -> None:
         run_uv(["ruff", "check", "."], python=TEST_PYTHONS[0])
         run_uv(["ruff", "format", "--check", "."], python=TEST_PYTHONS[0])
         run_uv(["ty", "check", "src"], python=TEST_PYTHONS[0])
+        run_uv(["python3", "tools/verified_subset.py", "check"], python=TEST_PYTHONS[0])
     elif cmd[0] == "test":
         for python in TEST_PYTHONS:
             run_uv(["pytest", "-q"], python=python)
+        run_uv(["python3", "tools/verified_subset.py", "run"], python=TEST_PYTHONS[0])
     else:
         print("Usage: tools/dev.py [lint|test]")
 

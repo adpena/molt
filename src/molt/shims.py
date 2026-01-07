@@ -128,6 +128,9 @@ def load_runtime() -> ctypes.CDLL | None:
             ctypes.POINTER(ctypes.c_uint64),
         ]
         lib.molt_cbor_parse_scalar.restype = ctypes.c_int
+    if hasattr(lib, "molt_handle_resolve"):
+        lib.molt_handle_resolve.argtypes = [ctypes.c_uint64]
+        lib.molt_handle_resolve.restype = ctypes.c_uint64
     if hasattr(lib, "molt_bytes_from_bytes"):
         lib.molt_bytes_from_bytes.argtypes = [
             ctypes.c_char_p,

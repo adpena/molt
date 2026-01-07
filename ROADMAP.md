@@ -32,3 +32,4 @@ Canonical current status: `docs/spec/STATUS.md`. This roadmap is forward-looking
 ## Tooling
 - Keep type facts + `ty` validation wired into build/lint flows and surface regressions early.
 - Track complex performance work in `OPTIMIZATIONS_PLAN.md` before large refactors.
+- TODO(runtime-provenance, owner:runtime, milestone:RT1): replace handle-table locks with sharded or lock-free lookups once handle migration lands.

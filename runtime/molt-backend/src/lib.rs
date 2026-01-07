@@ -2570,8 +2570,17 @@ impl SimpleBackend {
                         args.push(*vars.get(name).expect("Arg not found"));
                     }
 
-                    let mask = builder.ins().iconst(types::I64, POINTER_MASK as i64);
-                    let func_ptr = builder.ins().band(*func_bits, mask);
+                    let mut resolve_sig = self.module.make_signature();
+                    resolve_sig.params.push(AbiParam::new(types::I64));
+                    resolve_sig.returns.push(AbiParam::new(types::I64));
+                    let resolve_callee = self
+                        .module
+                        .declare_function("molt_handle_resolve", Linkage::Import, &resolve_sig)
+                        .unwrap();
+                    let resolve_local =
+                        self.module.declare_func_in_func(resolve_callee, builder.func);
+                    let resolve_call = builder.ins().call(resolve_local, &[*func_bits]);
+                    let func_ptr = builder.inst_results(resolve_call)[0];
                     let fn_ptr = builder.ins().load(types::I64, MemFlags::new(), func_ptr, 0);
 
                     let mut sig = self.module.make_signature();
@@ -2591,15 +2600,25 @@ impl SimpleBackend {
                     for name in &args_names[1..] {
                         extra_args.push(*vars.get(name).expect("Arg not found"));
                     }
-                    let mask = builder.ins().iconst(types::I64, POINTER_MASK as i64);
-                    let method_ptr = builder.ins().band(*method_bits, mask);
+                    let mut resolve_sig = self.module.make_signature();
+                    resolve_sig.params.push(AbiParam::new(types::I64));
+                    resolve_sig.returns.push(AbiParam::new(types::I64));
+                    let resolve_callee = self
+                        .module
+                        .declare_function("molt_handle_resolve", Linkage::Import, &resolve_sig)
+                        .unwrap();
+                    let resolve_local =
+                        self.module.declare_func_in_func(resolve_callee, builder.func);
+                    let resolve_call = builder.ins().call(resolve_local, &[*method_bits]);
+                    let method_ptr = builder.inst_results(resolve_call)[0];
                     let func_bits = builder
                         .ins()
                         .load(types::I64, MemFlags::new(), method_ptr, 0);
                     let self_bits = builder
                         .ins()
                         .load(types::I64, MemFlags::new(), method_ptr, 8);
-                    let func_ptr = builder.ins().band(func_bits, mask);
+                    let resolve_call = builder.ins().call(resolve_local, &[func_bits]);
+                    let func_ptr = builder.inst_results(resolve_call)[0];
                     let fn_ptr = builder.ins().load(types::I64, MemFlags::new(), func_ptr, 0);
 
                     let mut args = Vec::with_capacity(extra_args.len() + 1);
@@ -3777,7 +3796,17 @@ impl SimpleBackend {
                     let gen_local = self.module.declare_func_in_func(gen_callee, builder.func);
                     let call = builder.ins().call(gen_local, &[poll_addr, size]);
                     let obj = builder.inst_results(call)[0];
-                    let obj_ptr = unbox_ptr_value(&mut builder, obj);
+                    let mut resolve_sig = self.module.make_signature();
+                    resolve_sig.params.push(AbiParam::new(types::I64));
+                    resolve_sig.returns.push(AbiParam::new(types::I64));
+                    let resolve_callee = self
+                        .module
+                        .declare_function("molt_handle_resolve", Linkage::Import, &resolve_sig)
+                        .unwrap();
+                    let resolve_local =
+                        self.module.declare_func_in_func(resolve_callee, builder.func);
+                    let resolve_call = builder.ins().call(resolve_local, &[obj]);
+                    let obj_ptr = builder.inst_results(resolve_call)[0];
 
                     if let Some(args_names) = &op.args {
                         for (i, name) in args_names.iter().enumerate() {
@@ -3879,16 +3908,35 @@ impl SimpleBackend {
                     let obj = vars.get(&args[0]).expect("Object not found");
                     let offset = builder.ins().iconst(types::I64, op.value.unwrap());
                     let out_name = op.out.clone().unwrap();
+                    let mut resolve_sig = self.module.make_signature();
+                    resolve_sig.params.push(AbiParam::new(types::I64));
+                    resolve_sig.returns.push(AbiParam::new(types::I64));
+                    let resolve_callee = self
+                        .module
+                        .declare_function("molt_handle_resolve", Linkage::Import, &resolve_sig)
+                        .unwrap();
+                    let resolve_local =
+                        self.module.declare_func_in_func(resolve_callee, builder.func);
+                    let resolve_call = builder.ins().call(resolve_local, &[*obj]);
+                    let obj_ptr = builder.inst_results(resolve_call)[0];
+                    let zero_ptr = builder.ins().iconst(types::I64, 0);
+                    let has_ptr = builder.ins().icmp(IntCC::NotEqual, obj_ptr, zero_ptr);
 
-                    let type_id = builder.ins().load(types::I32, MemFlags::new(), *obj, -32);
-                    let expected_type_id = builder.ins().iconst(types::I32, 100);
-                    let is_match = builder.ins().icmp(IntCC::Equal, type_id, expected_type_id);
-
+                    let ptr_check = builder.create_block();
                     let fast_path = builder.create_block();
                     let slow_path = builder.create_block();
                     let merge = builder.create_block();
 
                     builder.append_block_param(merge, types::I64);
+                    builder
+                        .ins()
+                        .brif(has_ptr, ptr_check, &[], slow_path, &[]);
+
+                    builder.switch_to_block(ptr_check);
+                    builder.seal_block(ptr_check);
+                    let type_id = builder.ins().load(types::I32, MemFlags::new(), obj_ptr, -32);
+                    let expected_type_id = builder.ins().iconst(types::I32, 100);
+                    let is_match = builder.ins().icmp(IntCC::Equal, type_id, expected_type_id);
                     builder.ins().brif(is_match, fast_path, &[], slow_path, &[]);
 
                     builder.switch_to_block(fast_path);
@@ -3932,7 +3980,7 @@ impl SimpleBackend {
                     sig.returns.push(AbiParam::new(types::I64));
                     let callee = self
                         .module
-                        .declare_function("molt_get_attr_generic", Linkage::Import, &sig)
+                        .declare_function("molt_get_attr_object", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
@@ -3981,6 +4029,17 @@ impl SimpleBackend {
                     let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
                     let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
                     let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
+                    let mut resolve_sig = self.module.make_signature();
+                    resolve_sig.params.push(AbiParam::new(types::I64));
+                    resolve_sig.returns.push(AbiParam::new(types::I64));
+                    let resolve_callee = self
+                        .module
+                        .declare_function("molt_handle_resolve", Linkage::Import, &resolve_sig)
+                        .unwrap();
+                    let resolve_local =
+                        self.module.declare_func_in_func(resolve_callee, builder.func);
+                    let resolve_call = builder.ins().call(resolve_local, &[*obj]);
+                    let obj_ptr = builder.inst_results(resolve_call)[0];
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -3993,7 +4052,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
-                        .call(local_callee, &[*obj, attr_ptr, attr_len]);
+                        .call(local_callee, &[obj_ptr, attr_ptr, attr_len]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
@@ -4126,6 +4185,17 @@ impl SimpleBackend {
                     let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
                     let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
                     let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
+                    let mut resolve_sig = self.module.make_signature();
+                    resolve_sig.params.push(AbiParam::new(types::I64));
+                    resolve_sig.returns.push(AbiParam::new(types::I64));
+                    let resolve_callee = self
+                        .module
+                        .declare_function("molt_handle_resolve", Linkage::Import, &resolve_sig)
+                        .unwrap();
+                    let resolve_local =
+                        self.module.declare_func_in_func(resolve_callee, builder.func);
+                    let resolve_call = builder.ins().call(resolve_local, &[*obj]);
+                    let obj_ptr = builder.inst_results(resolve_call)[0];
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4139,7 +4209,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
-                        .call(local_callee, &[*obj, attr_ptr, attr_len, *val]);
+                        .call(local_callee, &[obj_ptr, attr_ptr, attr_len, *val]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
@@ -4201,6 +4271,17 @@ impl SimpleBackend {
                     let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
                     let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
                     let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
+                    let mut resolve_sig = self.module.make_signature();
+                    resolve_sig.params.push(AbiParam::new(types::I64));
+                    resolve_sig.returns.push(AbiParam::new(types::I64));
+                    let resolve_callee = self
+                        .module
+                        .declare_function("molt_handle_resolve", Linkage::Import, &resolve_sig)
+                        .unwrap();
+                    let resolve_local =
+                        self.module.declare_func_in_func(resolve_callee, builder.func);
+                    let resolve_call = builder.ins().call(resolve_local, &[*obj]);
+                    let obj_ptr = builder.inst_results(resolve_call)[0];
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4213,7 +4294,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
-                        .call(local_callee, &[*obj, attr_ptr, attr_len]);
+                        .call(local_callee, &[obj_ptr, attr_ptr, attr_len]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }

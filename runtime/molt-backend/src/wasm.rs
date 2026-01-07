@@ -159,6 +159,7 @@ impl WasmBackend {
         add_import("not", 2, &mut self.import_ids);
         add_import("contains", 3, &mut self.import_ids);
         add_import("guard_type", 3, &mut self.import_ids);
+        add_import("handle_resolve", 2, &mut self.import_ids);
         add_import("get_attr_generic", 5, &mut self.import_ids);
         add_import("get_attr_object", 5, &mut self.import_ids);
         add_import("set_attr_generic", 7, &mut self.import_ids);
@@ -363,6 +364,7 @@ impl WasmBackend {
                 &func_to_table_idx,
                 &func_to_index,
                 &import_ids,
+                &user_type_map,
             );
         }
 
@@ -386,6 +388,7 @@ impl WasmBackend {
         func_map: &HashMap<String, u32>,
         func_indices: &HashMap<String, u32>,
         import_ids: &HashMap<String, u32>,
+        user_type_map: &HashMap<usize, u32>,
     ) {
         self.funcs.function(type_idx);
         self.exports
@@ -2045,10 +2048,77 @@ impl WasmBackend {
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
-                    "call_func" | "call_method" => {
-                        func.instruction(&Instruction::I64Const(box_none()));
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                    "call_func" => {
+                        let args_names = op.args.as_ref().unwrap();
+                        let func_bits = locals[&args_names[0]];
+                        let out = locals[op.out.as_ref().unwrap()];
+                        let arity = args_names.len().saturating_sub(1);
+                        let call_type = *user_type_map
+                            .get(&arity)
+                            .expect("call_func type missing");
+                        for arg_name in &args_names[1..] {
+                            let arg = locals[arg_name];
+                            func.instruction(&Instruction::LocalGet(arg));
+                        }
+                        func.instruction(&Instruction::LocalGet(func_bits));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
+                        func.instruction(&Instruction::I32WrapI64);
+                        func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                            align: 3,
+                            offset: 0,
+                            memory_index: 0,
+                        }));
+                        func.instruction(&Instruction::I32WrapI64);
+                        func.instruction(&Instruction::CallIndirect {
+                            ty: call_type,
+                            table: 0,
+                        });
+                        func.instruction(&Instruction::LocalSet(out));
+                    }
+                    "call_method" => {
+                        let args_names = op.args.as_ref().unwrap();
+                        let method_bits = locals[&args_names[0]];
+                        let out = locals[op.out.as_ref().unwrap()];
+                        let extra_arity = args_names.len().saturating_sub(1);
+                        let call_type = *user_type_map
+                            .get(&(extra_arity + 1))
+                            .expect("call_method type missing");
+
+                        func.instruction(&Instruction::LocalGet(method_bits));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
+                        func.instruction(&Instruction::I32WrapI64);
+                        func.instruction(&Instruction::I32Const(8));
+                        func.instruction(&Instruction::I32Add);
+                        func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                            align: 3,
+                            offset: 0,
+                            memory_index: 0,
+                        }));
+                        for arg_name in &args_names[1..] {
+                            let arg = locals[arg_name];
+                            func.instruction(&Instruction::LocalGet(arg));
+                        }
+                        func.instruction(&Instruction::LocalGet(method_bits));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
+                        func.instruction(&Instruction::I32WrapI64);
+                        func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                            align: 3,
+                            offset: 0,
+                            memory_index: 0,
+                        }));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
+                        func.instruction(&Instruction::I32WrapI64);
+                        func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                            align: 3,
+                            offset: 0,
+                            memory_index: 0,
+                        }));
+                        func.instruction(&Instruction::I32WrapI64);
+                        func.instruction(&Instruction::CallIndirect {
+                            ty: call_type,
+                            table: 0,
+                        });
+                        func.instruction(&Instruction::LocalSet(out));
                     }
                     "chan_new" => {
                         let args = op.args.as_ref().unwrap();

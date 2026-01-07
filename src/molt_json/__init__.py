@@ -82,8 +82,11 @@ def _prepare_iter_runtime(lib: ctypes.CDLL) -> None:
     _ITER_READY = True
 
 
-def _decode_iterable_runtime(bits: int, kind: str) -> Any | None:
-    lib = shims.load_runtime()
+def _decode_iterable_runtime(
+    bits: int, kind: str, lib: ctypes.CDLL | None
+) -> Any | None:
+    if lib is None:
+        lib = shims.load_runtime()
     if (
         lib is None
         or not hasattr(lib, "molt_iter")
@@ -111,7 +114,7 @@ def _decode_iterable_runtime(bits: int, kind: str) -> Any | None:
     try:
         while True:
             pair_bits = lib.molt_iter_next(iter_bits)
-            pair = _decode_molt_object(pair_bits)
+            pair = _decode_molt_object(pair_bits, lib)
             if hasattr(lib, "molt_dec_ref_obj"):
                 lib.molt_dec_ref_obj(pair_bits)
             if not isinstance(pair, tuple) or len(pair) != 2:
@@ -138,7 +141,7 @@ def _decode_iterable_runtime(bits: int, kind: str) -> Any | None:
     return items
 
 
-def _decode_molt_object(bits: int) -> Any:
+def _decode_molt_object(bits: int, lib: ctypes.CDLL | None = None) -> Any:
     if (bits & _QNAN) != _QNAN:
         packed = bits.to_bytes(8, byteorder="little", signed=False)
         return struct.unpack("d", packed)[0]
@@ -155,7 +158,13 @@ def _decode_molt_object(bits: int) -> Any:
     if (bits & (_QNAN | _TAG_MASK)) == (_QNAN | _TAG_PENDING):
         raise RuntimeError("molt_json parse returned pending")
     if (bits & (_QNAN | _TAG_MASK)) == (_QNAN | _TAG_PTR):
-        ptr = bits & _POINTER_MASK
+        if lib is None:
+            lib = shims.load_runtime()
+        if lib is None or not hasattr(lib, "molt_handle_resolve"):
+            raise RuntimeError("molt runtime handle resolver not available")
+        ptr = lib.molt_handle_resolve(bits)
+        if not ptr:
+            raise RuntimeError("invalid molt handle")
         header_ptr = ptr - ctypes.sizeof(MoltHeader)
         header = MoltHeader.from_address(header_ptr)
         if header.type_id == _TYPE_STRING:
@@ -168,7 +177,7 @@ def _decode_molt_object(bits: int) -> Any:
             data_ptr = ptr + ctypes.sizeof(ctypes.c_size_t)
             return ctypes.string_at(data_ptr, length)
         if header.type_id == _TYPE_LIST:
-            decoded = _decode_iterable_runtime(bits, "list")
+            decoded = _decode_iterable_runtime(bits, "list", lib)
             if decoded is not None:
                 return decoded
             vec_ptr = ctypes.c_void_p.from_address(ptr).value
@@ -180,10 +189,10 @@ def _decode_molt_object(bits: int) -> Any:
                 elem_bits = ctypes.c_uint64.from_address(
                     vec.data + idx * ctypes.sizeof(ctypes.c_uint64)
                 ).value
-                list_out.append(_decode_molt_object(elem_bits))
+                list_out.append(_decode_molt_object(elem_bits, lib))
             return list_out
         if header.type_id == _TYPE_DICT:
-            decoded = _decode_iterable_runtime(bits, "dict")
+            decoded = _decode_iterable_runtime(bits, "dict", lib)
             if decoded is not None:
                 return decoded
             order_ptr = ctypes.c_void_p.from_address(ptr).value
@@ -198,10 +207,12 @@ def _decode_molt_object(bits: int) -> Any:
                 val_bits = ctypes.c_uint64.from_address(
                     vec.data + (idx + 1) * ctypes.sizeof(ctypes.c_uint64)
                 ).value
-                dict_out[_decode_molt_object(key_bits)] = _decode_molt_object(val_bits)
+                dict_out[_decode_molt_object(key_bits, lib)] = _decode_molt_object(
+                    val_bits, lib
+                )
             return dict_out
         if header.type_id == _TYPE_TUPLE:
-            decoded = _decode_iterable_runtime(bits, "tuple")
+            decoded = _decode_iterable_runtime(bits, "tuple", lib)
             if decoded is not None:
                 return decoded
             vec_ptr = ctypes.c_void_p.from_address(ptr).value
@@ -213,7 +224,7 @@ def _decode_molt_object(bits: int) -> Any:
                 elem_bits = ctypes.c_uint64.from_address(
                     vec.data + idx * ctypes.sizeof(ctypes.c_uint64)
                 ).value
-                items.append(_decode_molt_object(elem_bits))
+                items.append(_decode_molt_object(elem_bits, lib))
             return tuple(items)
         raise RuntimeError(f"Unsupported MoltObject type_id {header.type_id}")
     raise RuntimeError("Unsupported MoltObject encoding")
@@ -228,7 +239,7 @@ def _parse_scalar_runtime(data: str) -> Any:
     rc = lib.molt_json_parse_scalar(buf, len(buf), ctypes.byref(out_ptr_c))
     if rc != 0:
         raise RuntimeError("molt_json scalar parse failed")
-    return _decode_molt_object(out_ptr_c.value)
+    return _decode_molt_object(out_ptr_c.value, lib)
 
 
 def parse(data: str) -> Any:

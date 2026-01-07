@@ -1,0 +1,21 @@
+[package]
+name = "molt-runtime-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[dependencies]
+libfuzzer-sys = "0.4"
+molt-runtime = { path = ".." }
+
+[package.metadata]
+cargo-fuzz = true
+
+[[bin]]
+name = "string_ops"
+path = "fuzz_targets/string_ops.rs"
+test = false
+doc = false
+
+[workspace]
+members = ["."]

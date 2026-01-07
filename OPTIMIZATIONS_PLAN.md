@@ -156,3 +156,53 @@ and regression control.
 **Success Criteria**
 - >=1.5x speedup on typed reductions with zero-copy interop.
 - Spec + roadmap updates and regression gates in README.
+
+### OPT-0003: Provenance-Safe Handle Table for NaN-Boxed Objects
+
+**Problem**
+- NaN-boxed heap pointers currently lose provenance by packing raw addresses into 48 bits.
+- Strict provenance tooling (Miri) flags integer-to-pointer casts and can miss real bugs.
+- We need a production-grade representation that preserves correctness without slowing hot paths.
+
+**Hypotheses**
+- H1: A handle table with generation checks removes provenance UB and prevents stale handle reuse.
+- H2: Sharded or lock-free handle lookup keeps overhead <2% on attribute/collection hot paths.
+- H3: Storing handles (not raw addresses) unlocks future GC/compaction without ABI churn.
+
+**Alternatives**
+1) Status quo pointer tagging + `with_exposed_provenance` (fast but provenance-unsafe; Miri warnings remain).
+2) Global handle table with locking (simple, safe, but likely slower on hot path).
+3) Sharded handle table with lock-free reads + generation checks (more complex, best perf).
+4) Arena + offset scheme (bounds-checked offsets; high complexity and migration cost).
+
+**Research References**
+- Rust strict provenance docs: https://doc.rust-lang.org/std/ptr/index.html#strict-provenance
+- Miri provenance model notes: https://github.com/rust-lang/miri
+- Generational indices: https://cglab.ca/~abeinges/blah/slab-allocators/
+- CHERI capability pointers overview: https://www.cl.cam.ac.uk/research/security/ctsrd/cheri/
+
+**Plan**
+- Phase 0: Define handle encoding (index + generation) and table invariants in spec.
+- Phase 1: Implement handle table + pointer map in `molt-obj-model`, wire `MoltObject` through it.
+- Phase 2: Add unregister hooks on object free; validate with Miri strict provenance.
+- Phase 3: Optimize lookup (sharding/lock-free read path) and profile against CPython/Molt baselines.
+
+**Benchmark Matrix**
+- bench_deeply_nested_loop.py: expected <=2% change after lock-free read path.
+- bench_sum_list.py: expected <=2% change (handle lookup on list elements).
+- bench_str_find.py: expected <=2% change (string object access).
+- cross-bench risks: attribute access, dict lookup, and method dispatch regressions.
+
+**Correctness Plan**
+- New unit tests for handle reuse (generation mismatch => None).
+- Differential cases: handle-heavy list/dict operations and attribute access.
+- Guard/fallback behavior: invalid handle returns `None`/error, never dereference freed memory.
+
+**Risk + Rollback**
+- Risk: lookup contention or handle table growth hurting perf/memory.
+- Rollback: keep handle table behind a feature flag and revert to pointer tagging.
+
+**Success Criteria**
+- Miri strict provenance passes with `-Zmiri-strict-provenance`.
+- <2% overhead on hot-path microbenchmarks after lock-free/sharded lookup.
+- Updated runtime spec, README/ROADMAP, and CI gates reflect the new object model.

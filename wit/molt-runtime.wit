@@ -48,6 +48,7 @@ interface intrinsics {
     bytes_from_bytes: func(ptr: molt-ptr, len: u64, out: molt-ptr) -> s32;
     str_from_obj: func(val: molt-object) -> molt-object;
     guard_type: func(val: molt-object, expected: molt-object) -> molt-object;
+    handle_resolve: func(bits: molt-object) -> molt-ptr;
     get_attr_generic: func(obj: molt-ptr, attr_ptr: molt-ptr, attr_len: u64) -> molt-object;
     get_attr_object: func(obj: molt-object, attr_ptr: molt-ptr, attr_len: u64) -> molt-object;
     set_attr_generic: func(obj: molt-ptr, attr_ptr: molt-ptr, attr_len: u64, val: molt-object) -> molt-object;

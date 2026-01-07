@@ -684,6 +684,33 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return None, None
         return parts[0], parts[1]
 
+    def _expr_is_data_descriptor(self, expr: ast.expr) -> bool:
+        if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name):
+            if expr.func.id == "property":
+                return True
+            class_info = self.classes.get(expr.func.id)
+            if class_info:
+                methods = class_info.get("methods", {})
+                return "__set__" in methods or "__delete__" in methods
+        return False
+
+    def _class_attr_is_data_descriptor(self, class_name: str, attr: str) -> bool:
+        class_info = self.classes.get(class_name)
+        if not class_info:
+            return False
+        for mro_name in class_info.get("mro", [class_name]):
+            mro_info = self.classes.get(mro_name)
+            if not mro_info:
+                continue
+            class_attrs = mro_info.get("class_attrs", {})
+            expr = class_attrs.get(attr)
+            if expr is not None and self._expr_is_data_descriptor(expr):
+                return True
+            method_info = mro_info.get("methods", {}).get(attr)
+            if method_info and method_info["descriptor"] == "property":
+                return True
+        return False
+
     def _async_local_offset(self, name: str) -> int:
         if name not in self.async_locals:
             self.async_locals[name] = (
@@ -3953,13 +3980,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                 )
                             else:
                                 res = MoltValue(self.next_var(), type_hint="None")
-                                self.emit(
-                                    MoltOp(
-                                        kind="SETATTR",
-                                        args=[obj, attr_name, val, obj.type_hint],
-                                        result=res,
+                                if self._class_attr_is_data_descriptor(
+                                    obj.type_hint, attr_name
+                                ):
+                                    self.emit(
+                                        MoltOp(
+                                            kind="SETATTR_GENERIC_PTR",
+                                            args=[obj, attr_name, val],
+                                            result=res,
+                                        )
                                     )
-                                )
+                                else:
+                                    self.emit(
+                                        MoltOp(
+                                            kind="SETATTR",
+                                            args=[obj, attr_name, val, obj.type_hint],
+                                            result=res,
+                                        )
+                                    )
                             return res
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(
@@ -5013,6 +5051,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             )
             return res
+        if self._class_attr_is_data_descriptor(expected_class, node.attr):
+            self.emit(
+                MoltOp(
+                    kind="GETATTR_GENERIC_PTR",
+                    args=[obj, node.attr],
+                    result=res,
+                )
+            )
+            return res
         self.emit(
             MoltOp(
                 kind="GUARDED_GETATTR",
@@ -5095,13 +5142,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                     )
                 elif node.target.attr in field_map:
-                    self.emit(
-                        MoltOp(
-                            kind="SETATTR",
-                            args=[obj, node.target.attr, value_node, obj.type_hint],
-                            result=MoltValue("none"),
+                    if self._class_attr_is_data_descriptor(
+                        obj.type_hint, node.target.attr
+                    ):
+                        self.emit(
+                            MoltOp(
+                                kind="SETATTR_GENERIC_PTR",
+                                args=[obj, node.target.attr, value_node],
+                                result=MoltValue("none"),
+                            )
                         )
-                    )
+                    else:
+                        self.emit(
+                            MoltOp(
+                                kind="SETATTR",
+                                args=[obj, node.target.attr, value_node, obj.type_hint],
+                                result=MoltValue("none"),
+                            )
+                        )
                 else:
                     self.emit(
                         MoltOp(
@@ -5164,18 +5222,29 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                 )
                             )
                         elif target.attr in field_map:
-                            self.emit(
-                                MoltOp(
-                                    kind="SETATTR",
-                                    args=[
-                                        obj,
-                                        target.attr,
-                                        value_node,
-                                        obj.type_hint,
-                                    ],
-                                    result=MoltValue("none"),
+                            if self._class_attr_is_data_descriptor(
+                                obj.type_hint, target.attr
+                            ):
+                                self.emit(
+                                    MoltOp(
+                                        kind="SETATTR_GENERIC_PTR",
+                                        args=[obj, target.attr, value_node],
+                                        result=MoltValue("none"),
+                                    )
                                 )
-                            )
+                            else:
+                                self.emit(
+                                    MoltOp(
+                                        kind="SETATTR",
+                                        args=[
+                                            obj,
+                                            target.attr,
+                                            value_node,
+                                            obj.type_hint,
+                                        ],
+                                        result=MoltValue("none"),
+                                    )
+                                )
                         else:
                             self.emit(
                                 MoltOp(
@@ -5382,13 +5451,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                     )
                 elif node.target.attr in field_map:
-                    self.emit(
-                        MoltOp(
-                            kind="SETATTR",
-                            args=[obj, node.target.attr, res, obj.type_hint],
-                            result=MoltValue("none"),
+                    if self._class_attr_is_data_descriptor(
+                        obj.type_hint, node.target.attr
+                    ):
+                        self.emit(
+                            MoltOp(
+                                kind="SETATTR_GENERIC_PTR",
+                                args=[obj, node.target.attr, res],
+                                result=MoltValue("none"),
+                            )
                         )
-                    )
+                    else:
+                        self.emit(
+                            MoltOp(
+                                kind="SETATTR",
+                                args=[obj, node.target.attr, res, obj.type_hint],
+                                result=MoltValue("none"),
+                            )
+                        )
                 else:
                     self.emit(
                         MoltOp(

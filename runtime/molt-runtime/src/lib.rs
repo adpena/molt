@@ -4,7 +4,7 @@
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
 use crossbeam_deque::{Injector, Stealer, Worker};
 use memchr::{memchr, memmem};
-use molt_obj_model::MoltObject;
+use molt_obj_model::{unregister_ptr as unregister_handle_ptr, MoltObject};
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -835,16 +835,16 @@ unsafe fn exception_suppress_bits(ptr: *mut u8) -> u64 {
     *(ptr.add(4 * std::mem::size_of::<u64>()) as *const u64)
 }
 
-unsafe fn context_enter_fn(ptr: *mut u8) -> u64 {
-    *(ptr as *const u64)
+unsafe fn context_enter_fn(ptr: *mut u8) -> *const () {
+    *(ptr as *const *const ())
 }
 
-unsafe fn context_exit_fn(ptr: *mut u8) -> u64 {
-    *(ptr.add(std::mem::size_of::<u64>()) as *const u64)
+unsafe fn context_exit_fn(ptr: *mut u8) -> *const () {
+    *(ptr.add(std::mem::size_of::<*const ()>()) as *const *const ())
 }
 
 unsafe fn context_payload_bits(ptr: *mut u8) -> u64 {
-    *(ptr.add(2 * std::mem::size_of::<u64>()) as *const u64)
+    *(ptr.add(2 * std::mem::size_of::<*const ()>()) as *const u64)
 }
 
 #[allow(dead_code)]
@@ -1419,16 +1419,18 @@ fn alloc_exception_obj(kind_bits: u64, msg_bits: u64) -> *mut u8 {
     ptr
 }
 
-fn alloc_context_manager(enter_fn: u64, exit_fn: u64, payload_bits: u64) -> *mut u8 {
-    let total = std::mem::size_of::<MoltHeader>() + 3 * std::mem::size_of::<u64>();
+fn alloc_context_manager(enter_fn: *const (), exit_fn: *const (), payload_bits: u64) -> *mut u8 {
+    let total = std::mem::size_of::<MoltHeader>()
+        + 2 * std::mem::size_of::<*const ()>()
+        + std::mem::size_of::<u64>();
     let ptr = alloc_object(total, TYPE_ID_CONTEXT_MANAGER);
     if ptr.is_null() {
         return ptr;
     }
     unsafe {
-        *(ptr as *mut u64) = enter_fn;
-        *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = exit_fn;
-        *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = payload_bits;
+        *(ptr as *mut *const ()) = enter_fn;
+        *(ptr.add(std::mem::size_of::<*const ()>()) as *mut *const ()) = exit_fn;
+        *(ptr.add(2 * std::mem::size_of::<*const ()>()) as *mut u64) = payload_bits;
         inc_ref_bits(payload_bits);
     }
     ptr
@@ -1639,11 +1641,11 @@ unsafe fn context_exit_unchecked(ctx_bits: u64, exc_bits: u64) {
     let type_id = object_type_id(ptr);
     if type_id == TYPE_ID_CONTEXT_MANAGER {
         let exit_fn_addr = context_exit_fn(ptr);
-        if exit_fn_addr == 0 {
+        if exit_fn_addr.is_null() {
             return;
         }
         let exit_fn =
-            std::mem::transmute::<usize, extern "C" fn(u64, u64) -> u64>(exit_fn_addr as usize);
+            std::mem::transmute::<*const (), extern "C" fn(u64, u64) -> u64>(exit_fn_addr);
         exit_fn(context_payload_bits(ptr), exc_bits);
         return;
     }
@@ -3092,10 +3094,23 @@ pub unsafe extern "C" fn molt_object_set_class(obj_ptr: *mut u8, class_bits: u64
     MoltObject::none().bits()
 }
 
+fn resolve_obj_ptr(bits: u64) -> Option<*mut u8> {
+    if let Some(ptr) = obj_from_bits(bits).as_ptr() {
+        return Some(ptr);
+    }
+    if is_raw_object(bits) {
+        return Some(bits as *mut u8);
+    }
+    None
+}
+
 /// # Safety
-/// `obj_ptr` must be a valid object pointer with enough payload for `offset`.
+/// `obj_bits` must reference a valid object with enough payload for `offset`.
 #[no_mangle]
-pub unsafe extern "C" fn molt_object_field_get(obj_ptr: *mut u8, offset: usize) -> u64 {
+pub unsafe extern "C" fn molt_object_field_get(obj_bits: u64, offset: usize) -> u64 {
+    let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
+        raise!("TypeError", "object field access on non-object");
+    };
     let slot = obj_ptr.add(offset) as *const u64;
     let bits = *slot;
     inc_ref_bits(bits);
@@ -3103,13 +3118,16 @@ pub unsafe extern "C" fn molt_object_field_get(obj_ptr: *mut u8, offset: usize) 
 }
 
 /// # Safety
-/// `obj_ptr` must be a valid object pointer with enough payload for `offset`.
+/// `obj_bits` must reference a valid object with enough payload for `offset`.
 #[no_mangle]
 pub unsafe extern "C" fn molt_object_field_set(
-    obj_ptr: *mut u8,
+    obj_bits: u64,
     offset: usize,
     val_bits: u64,
 ) -> u64 {
+    let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
+        raise!("TypeError", "object field access on non-object");
+    };
     let slot = obj_ptr.add(offset) as *mut u64;
     let old_bits = *slot;
     if old_bits != val_bits {
@@ -3758,8 +3776,12 @@ pub extern "C" fn molt_raise(exc_bits: u64) -> u64 {
 }
 
 #[no_mangle]
-pub extern "C" fn molt_context_new(enter_fn: u64, exit_fn: u64, payload_bits: u64) -> u64 {
-    if enter_fn == 0 || exit_fn == 0 {
+pub extern "C" fn molt_context_new(
+    enter_fn: *const (),
+    exit_fn: *const (),
+    payload_bits: u64,
+) -> u64 {
+    if enter_fn.is_null() || exit_fn.is_null() {
         raise!("TypeError", "context manager hooks must be non-null");
     }
     let ptr = alloc_context_manager(enter_fn, exit_fn, payload_bits);
@@ -3780,11 +3802,11 @@ pub extern "C" fn molt_context_enter(ctx_bits: u64) -> u64 {
         let type_id = object_type_id(ptr);
         if type_id == TYPE_ID_CONTEXT_MANAGER {
             let enter_fn_addr = context_enter_fn(ptr);
-            if enter_fn_addr == 0 {
+            if enter_fn_addr.is_null() {
                 raise!("TypeError", "context manager missing __enter__");
             }
             let enter_fn =
-                std::mem::transmute::<usize, extern "C" fn(u64) -> u64>(enter_fn_addr as usize);
+                std::mem::transmute::<*const (), extern "C" fn(u64) -> u64>(enter_fn_addr);
             let res = enter_fn(context_payload_bits(ptr));
             context_stack_push(ctx_bits);
             return res;
@@ -3808,11 +3830,13 @@ pub extern "C" fn molt_context_exit(ctx_bits: u64, exc_bits: u64) -> u64 {
         let type_id = object_type_id(ptr);
         if type_id == TYPE_ID_CONTEXT_MANAGER {
             let exit_fn_addr = context_exit_fn(ptr);
-            if exit_fn_addr == 0 {
+            if exit_fn_addr.is_null() {
                 raise!("TypeError", "context manager missing __exit__");
             }
             let exit_fn =
-                std::mem::transmute::<usize, extern "C" fn(u64, u64) -> u64>(exit_fn_addr as usize);
+                std::mem::transmute::<*const (), extern "C" fn(u64, u64) -> u64>(
+                    exit_fn_addr,
+                );
             context_stack_pop(ctx_bits);
             return exit_fn(context_payload_bits(ptr), exc_bits);
         }
@@ -3848,8 +3872,8 @@ pub extern "C" fn molt_context_unwind_to(depth_bits: u64, exc_bits: u64) -> u64 
 
 #[no_mangle]
 pub extern "C" fn molt_context_null(payload_bits: u64) -> u64 {
-    let enter_fn = context_null_enter as usize as u64;
-    let exit_fn = context_null_exit as usize as u64;
+    let enter_fn = context_null_enter as *const ();
+    let exit_fn = context_null_exit as *const ();
     let ptr = alloc_context_manager(enter_fn, exit_fn, payload_bits);
     if ptr.is_null() {
         MoltObject::none().bits()
@@ -3860,8 +3884,8 @@ pub extern "C" fn molt_context_null(payload_bits: u64) -> u64 {
 
 #[no_mangle]
 pub extern "C" fn molt_context_closing(payload_bits: u64) -> u64 {
-    let enter_fn = context_closing_enter as usize as u64;
-    let exit_fn = context_closing_exit as usize as u64;
+    let enter_fn = context_closing_enter as *const ();
+    let exit_fn = context_closing_exit as *const ();
     let ptr = alloc_context_manager(enter_fn, exit_fn, payload_bits);
     if ptr.is_null() {
         MoltObject::none().bits()
@@ -10131,6 +10155,7 @@ pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
     let header = &mut *header_ptr;
     header.ref_count -= 1;
     if header.ref_count == 0 {
+        unregister_handle_ptr(ptr);
         if header.type_id == TYPE_ID_OBJECT {
             unregister_raw_object(ptr);
         }
@@ -10332,6 +10357,11 @@ pub extern "C" fn molt_inc_ref_obj(bits: u64) {
 }
 
 #[no_mangle]
+pub extern "C" fn molt_handle_resolve(bits: u64) -> u64 {
+    resolve_obj_ptr(bits).map_or(0, |ptr| ptr as u64)
+}
+
+#[no_mangle]
 pub extern "C" fn molt_dec_ref_obj(bits: u64) {
     if let Some(ptr) = obj_from_bits(bits).as_ptr() {
         unsafe { molt_dec_ref(ptr) };
@@ -10358,8 +10388,8 @@ mod tests {
     fn context_unwind_runs_exit() {
         EXIT_CALLED.store(false, Ordering::SeqCst);
         let ctx_bits = molt_context_new(
-            test_enter as usize as u64,
-            test_exit as usize as u64,
+            test_enter as *const (),
+            test_exit as *const (),
             MoltObject::none().bits(),
         );
         let _ = molt_context_enter(ctx_bits);
@@ -10813,6 +10843,9 @@ pub unsafe extern "C" fn molt_string_from_bytes(ptr: *const u8, len: usize, out:
         return 1;
     }
     let slice = std::slice::from_raw_parts(ptr, len);
+    if std::str::from_utf8(slice).is_err() {
+        return 1;
+    }
     let obj_ptr = alloc_string(slice);
     if obj_ptr.is_null() {
         return 2;
@@ -11118,11 +11151,7 @@ unsafe fn module_attr_lookup(ptr: *mut u8, attr_bits: u64) -> Option<u64> {
 }
 
 unsafe fn instance_bits_for_call(ptr: *mut u8) -> u64 {
-    if object_type_id(ptr) == TYPE_ID_OBJECT {
-        ptr as u64
-    } else {
-        MoltObject::from_ptr(ptr).bits()
-    }
+    MoltObject::from_ptr(ptr).bits()
 }
 
 unsafe fn class_attr_lookup_raw_mro(class_ptr: *mut u8, attr_bits: u64) -> Option<u64> {
@@ -11223,8 +11252,7 @@ unsafe fn descriptor_has_method(val_bits: u64, name_bits: u64) -> bool {
 }
 
 unsafe fn descriptor_is_data(val_bits: u64) -> bool {
-    let val_obj = obj_from_bits(val_bits);
-    let Some(val_ptr) = val_obj.as_ptr() else {
+    let Some(val_ptr) = maybe_ptr_from_bits(val_bits) else {
         return false;
     };
     if object_type_id(val_ptr) == TYPE_ID_PROPERTY {
@@ -11482,7 +11510,7 @@ unsafe fn attr_lookup_ptr(obj_ptr: *mut u8, attr_bits: u64) -> Option<u64> {
                         }
                     }
                     if let Some(offset) = class_field_offset(class_ptr, attr_bits) {
-                        let bits = molt_object_field_get(obj_ptr, offset);
+                        let bits = molt_object_field_get(obj_ptr as u64, offset);
                         return Some(bits);
                     }
                 }
@@ -11874,7 +11902,7 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                     }
                     if let Some(offset) = class_field_offset(class_ptr, attr_bits) {
                         dec_ref_bits(attr_bits);
-                        return molt_object_field_set(obj_ptr, offset, val_bits) as i64;
+                        return molt_object_field_set(obj_ptr as u64, offset, val_bits) as i64;
                     }
                 }
             }

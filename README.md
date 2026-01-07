@@ -52,6 +52,7 @@ See `docs/spec/` for detailed architectural decisions.
 - `0002-architecture.md`: IR Stack & Pipeline
 - `0003-runtime.md`: NaN-boxed Object Model & Memory Management
 - `0005-wasm-interop.md`: WASM & FFI Strategy
+- `wit/molt-runtime.wit`: WASM runtime intrinsics contract (WIT)
 - `0009_GC_DESIGN.md`: Hybrid RC + Generational GC
 - `0012_MOLT_COMMANDS.md`: CLI command specification
 - `0013_PYTHON_DEPENDENCIES.md`: Dependency compatibility strategy

@@ -6,9 +6,11 @@ The Molt runtime is a minimal, high-performance library written in Rust. It prov
 ## 2. Object Representation: NaN-Boxing
 Molt uses 64-bit NaN-boxing for all objects. This allows small primitives to be stored inline without heap allocation.
 
+Heap objects are referenced via a compact handle table to preserve pointer provenance and enable safe reuse checks.
+
 ### 2.1 The Bit Scheme (64-bit)
 - **NaN Space**: `0x7FF0000000000000` to `0xFFFF000000000000`
-- **Pointer (Heap)**: Bits 48-63 = `0x0001` (or similar tag). Payload is a 48-bit address.
+- **Pointer (Heap)**: Bits 48-63 = `0x0001` (or similar tag). Payload is a 48-bit handle (index + generation) resolved via the handle table to a heap pointer.
 - **Int (64-bit)**: If it fits in 48 bits, stored inline. Otherwise, a heap pointer to a `BigInt`.
 - **Float**: Standard IEEE 754 double (non-NaN values).
 - **Bool/None**: Specific bit patterns in the NaN space.
@@ -19,7 +21,7 @@ pub enum MoltObject {
     Float(f64),
     Boolean(bool),
     None,
-    Pointer(*mut MoltHeader), // Strings, bytes, lists, dicts, etc.
+    PointerHandle(u64), // 48-bit handle -> heap pointer (strings, bytes, lists, dicts, etc.)
 }
 ```
 

@@ -5,6 +5,10 @@
 #[repr(transparent)]
 pub struct MoltObject(u64);
 
+mod handle_table;
+pub use handle_table::unregister_ptr;
+use handle_table::{register_ptr, resolve_ptr};
+
 const QNAN: u64 = 0x7ff8_0000_0000_0000;
 const TAG_INT: u64 = 0x0001_0000_0000_0000;
 const TAG_BOOL: u64 = 0x0002_0000_0000_0000;
@@ -50,9 +54,9 @@ impl MoltObject {
     }
 
     pub fn from_ptr(ptr: *mut u8) -> Self {
-        let addr = ptr as u64;
-        assert!(addr <= POINTER_MASK, "Pointer exceeds 48 bits");
-        Self(QNAN | TAG_PTR | addr)
+        let handle = register_ptr(ptr);
+        debug_assert!(handle <= POINTER_MASK, "Handle exceeds 48 bits");
+        Self(QNAN | TAG_PTR | handle)
     }
 
     pub fn is_float(&self) -> bool {
@@ -97,7 +101,8 @@ impl MoltObject {
 
     pub fn as_ptr(&self) -> Option<*mut u8> {
         if self.is_ptr() {
-            Some((self.0 & POINTER_MASK) as *mut u8)
+            let handle = self.0 & POINTER_MASK;
+            resolve_ptr(handle)
         } else {
             None
         }

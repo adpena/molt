@@ -21,6 +21,8 @@ hello_molt
 bench/results/
 bench/cython/
 bench/numba/
+runtime/molt-runtime/fuzz/corpus/
+runtime/molt-runtime/fuzz/artifacts/
 *.md
 !/README.md
 !/AGENTS.md
