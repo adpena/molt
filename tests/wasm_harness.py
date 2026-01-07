@@ -90,6 +90,20 @@ let nextChanId = 1n;
 let heapPtr = 1 << 20;
 const HEADER_SIZE = 32;
 const align = (size, align) => (size + (align - 1)) & ~(align - 1);
+const allocRaw = (payload) => {
+  if (!memory) return 0;
+  const bytes = align(Number(payload) + HEADER_SIZE, 8);
+  const addr = heapPtr;
+  heapPtr += bytes;
+  const needed = heapPtr - memory.buffer.byteLength;
+  if (needed > 0) {
+    const pageSize = 65536;
+    const pages = Math.ceil(needed / pageSize);
+    memory.grow(pages);
+  }
+  new Uint8Array(memory.buffer, addr, bytes).fill(0);
+  return addr + HEADER_SIZE;
+};
 const isNone = (val) => isTag(val, TAG_NONE);
 const boxPtrAddr = (addr) => QNAN | TAG_PTR | (BigInt(addr) & POINTER_MASK);
 const ptrAddr = (val) => Number(val & POINTER_MASK);
@@ -827,18 +841,9 @@ BASE_IMPORTS = """\
   },
   print_newline: () => console.log(''),
   alloc: (size) => {
-    if (!memory) return boxNone();
-    const bytes = align(Number(size) + HEADER_SIZE, 8);
-    const addr = heapPtr;
-    heapPtr += bytes;
-    const needed = heapPtr - memory.buffer.byteLength;
-    if (needed > 0) {
-      const pageSize = 65536;
-      const pages = Math.ceil(needed / pageSize);
-      memory.grow(pages);
-    }
-    new Uint8Array(memory.buffer, addr, bytes).fill(0);
-    return boxPtrAddr(addr + HEADER_SIZE);
+    const addr = allocRaw(size);
+    if (!addr) return boxNone();
+    return boxPtrAddr(addr);
   },
   async_sleep: (taskPtr) => {
     if (taskPtr === 0n) return boxNone();
@@ -937,6 +942,14 @@ BASE_IMPORTS = """\
   },
   contains: () => boxBool(false),
   guard_type: (val, expected) => val,
+  handle_resolve: (bits) => {
+    if (!isPtr(bits)) return 0n;
+    const id = bits & POINTER_MASK;
+    const obj = heap.get(id);
+    if (obj && obj.memAddr) return BigInt(obj.memAddr);
+    if (!obj) return BigInt(ptrAddr(bits));
+    return 0n;
+  },
   get_attr_generic: (obj, namePtr, nameLen) =>
     getAttrValue(obj, readUtf8(namePtr, nameLen)),
   get_attr_object: (obj, namePtr, nameLen) =>
@@ -1322,15 +1335,35 @@ BASE_IMPORTS = """\
     instanceClasses.set(ptrAddr(objBits), getBuiltinType(100));
     return objBits;
   },
-  func_new: (fnIdx, arity) =>
-    boxPtr({
+  func_new: (fnIdx, arity) => {
+    const addr = allocRaw(16);
+    if (addr && memory) {
+      const view = new DataView(memory.buffer);
+      view.setBigInt64(addr, fnIdx, true);
+      view.setBigInt64(addr + 8, arity, true);
+    }
+    return boxPtr({
       type: 'function',
       idx: Number(fnIdx),
       arity: Number(arity),
       attrs: new Map(),
-    }),
-  bound_method_new: (funcBits, selfBits) =>
-    boxPtr({ type: 'bound_method', func: funcBits, self: selfBits }),
+      memAddr: addr || null,
+    });
+  },
+  bound_method_new: (funcBits, selfBits) => {
+    const addr = allocRaw(16);
+    if (addr && memory) {
+      const view = new DataView(memory.buffer);
+      view.setBigInt64(addr, funcBits, true);
+      view.setBigInt64(addr + 8, selfBits, true);
+    }
+    return boxPtr({
+      type: 'bound_method',
+      func: funcBits,
+      self: selfBits,
+      memAddr: addr || null,
+    });
+  },
   super_new: (typeBits, objBits) =>
     boxPtr({ type: 'super', startBits: typeBits, objBits }),
   classmethod_new: () => boxNone(),

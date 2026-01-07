@@ -41,7 +41,11 @@ static HANDLE_TABLE: OnceLock<Vec<RwLock<HandleTable>>> = OnceLock::new();
 
 fn table() -> &'static [RwLock<HandleTable>] {
     HANDLE_TABLE
-        .get_or_init(|| (0..HANDLE_SHARDS).map(|_| RwLock::new(HandleTable::new())).collect())
+        .get_or_init(|| {
+            (0..HANDLE_SHARDS)
+                .map(|_| RwLock::new(HandleTable::new()))
+                .collect()
+        })
         .as_slice()
 }
 
@@ -66,7 +70,11 @@ fn decode_handle(handle: u64) -> Option<(u8, u32, u16)> {
 
 fn next_gen(gen: u16) -> u16 {
     let next = gen.wrapping_add(1);
-    if next == 0 { 1 } else { next }
+    if next == 0 {
+        1
+    } else {
+        next
+    }
 }
 
 fn shard_for_addr(addr: usize) -> usize {

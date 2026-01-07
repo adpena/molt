@@ -3120,11 +3120,7 @@ pub unsafe extern "C" fn molt_object_field_get(obj_bits: u64, offset: usize) -> 
 /// # Safety
 /// `obj_bits` must reference a valid object with enough payload for `offset`.
 #[no_mangle]
-pub unsafe extern "C" fn molt_object_field_set(
-    obj_bits: u64,
-    offset: usize,
-    val_bits: u64,
-) -> u64 {
+pub unsafe extern "C" fn molt_object_field_set(obj_bits: u64, offset: usize, val_bits: u64) -> u64 {
     let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
         raise!("TypeError", "object field access on non-object");
     };
@@ -3834,9 +3830,7 @@ pub extern "C" fn molt_context_exit(ctx_bits: u64, exc_bits: u64) -> u64 {
                 raise!("TypeError", "context manager missing __exit__");
             }
             let exit_fn =
-                std::mem::transmute::<*const (), extern "C" fn(u64, u64) -> u64>(
-                    exit_fn_addr,
-                );
+                std::mem::transmute::<*const (), extern "C" fn(u64, u64) -> u64>(exit_fn_addr);
             context_stack_pop(ctx_bits);
             return exit_fn(context_payload_bits(ptr), exc_bits);
         }

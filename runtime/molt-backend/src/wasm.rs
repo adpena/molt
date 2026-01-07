@@ -2053,9 +2053,7 @@ impl WasmBackend {
                         let func_bits = locals[&args_names[0]];
                         let out = locals[op.out.as_ref().unwrap()];
                         let arity = args_names.len().saturating_sub(1);
-                        let call_type = *user_type_map
-                            .get(&arity)
-                            .expect("call_func type missing");
+                        let call_type = *user_type_map.get(&arity).expect("call_func type missing");
                         for arg_name in &args_names[1..] {
                             let arg = locals[arg_name];
                             func.instruction(&Instruction::LocalGet(arg));
