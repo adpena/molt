@@ -63,11 +63,6 @@ fn box_bool_value(builder: &mut FunctionBuilder, val: Value) -> Value {
     builder.ins().bor(tag, bool_val)
 }
 
-fn unbox_ptr_value(builder: &mut FunctionBuilder, val: Value) -> Value {
-    let mask = builder.ins().iconst(types::I64, POINTER_MASK as i64);
-    builder.ins().band(val, mask)
-}
-
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SimpleIR {
     pub functions: Vec<FunctionIR>,
