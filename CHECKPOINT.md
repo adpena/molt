@@ -1,47 +1,40 @@
-Checkpoint: 2026-01-07 11:36:33 CST
-Git: 3fc8408 rustfmt: fix backend clif dump
+Checkpoint: 2026-01-07 12:46:44 CST
+Git: 9557241 docs: refresh checkpoint
 
 Summary
-- Fixed async channel resume dominance by introducing STATE_LABEL and limiting state-switch resume targets; added MOLT_DUMP_CLIF for backend IR dumps.
-- Reloaded async locals after channel yields in augmented assignment via _expr_may_yield detection.
-- Implemented tuple()/bytes() conversions and TUPLE_FROM_LIST/BYTES_FROM_OBJ ops with runtime helpers and iterator guard paths.
-- Added bench coverage (async await, channel throughput, dict views, list/tuple slice/pack, bytearray find/replace) and updated BENCHMARKS + bench/results/bench.json.
-- rustfmt cleanup for the CLIF dump condition; CI run 20790552040 green.
+- Added guarded direct-call lowering (`CALL_GUARDED`) for named functions (non-async) and backend support.
+- Decoupled Unicode count cache from UTF-8 index cache to avoid expensive prefix builds on first count.
+- Added exact-local tracking to skip guarded setattr for constructor-bound locals with fixed layouts (non-dataclass).
 
-Files touched (committed in 7670b9f + 3fc8408)
-- runtime/molt-backend/src/lib.rs
-- runtime/molt-backend/src/wasm.rs
-- runtime/molt-runtime/src/lib.rs
+Files touched (uncommitted)
 - src/molt/frontend/__init__.py
-- tests/wasm_harness.py
-- wit/molt-runtime.wit
-- tools/bench.py
-- tests/benchmarks/bench_async_await.py
-- tests/benchmarks/bench_bytearray_find.py
-- tests/benchmarks/bench_bytearray_replace.py
-- tests/benchmarks/bench_channel_throughput.py
-- tests/benchmarks/bench_dict_views.py
-- tests/benchmarks/bench_list_slice.py
-- tests/benchmarks/bench_tuple_pack.py
-- tests/benchmarks/bench_tuple_slice.py
-- bench/results/bench.json
+- tests/differential/basic/async_yield_spill.py
+- runtime/molt-backend/src/lib.rs
+- runtime/molt-runtime/src/lib.rs
+- src/molt/cli.py
+- main_stub.c
+- OPTIMIZATIONS_PLAN.md
 
 Tests run
-- uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json
-- uv run --python 3.12 python3 tools/dev.py lint
-- uv run --python 3.12 python3 tools/dev.py test
-- cargo test
-- cargo fmt
+- PYTHONPATH=src uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic
 
 Known gaps
-- Async yield spill coverage beyond augmented assignment still needs audit/tests.
+- Async yield spill audit still pending for deeper compare chains and wasm parity.
+- OPT-0005/6/7 needs benchmark validation (fib/struct/unicode count benches).
 
 Pending changes
 - CHECKPOINT.md (this update)
+- OPTIMIZATIONS_PLAN.md
+- main_stub.c
+- runtime/molt-backend/src/lib.rs
+- runtime/molt-runtime/src/lib.rs
+- src/molt/cli.py
+- src/molt/frontend/__init__.py
+- tests/differential/basic/async_yield_spill.py
 
 Next 5-step plan
-1) Monitor CI for 3fc8408 and fix any regressions.
-2) Audit async yield spill across binops/calls and add coverage for await + channel cases.
-3) Revisit fib/struct benches with OPT-0005/6/7 follow-through and profiling counters.
-4) Refresh STATUS/README/ROADMAP if async semantics scope shifts.
-5) Check wasm parity for any state_label/resume edge cases.
+1) Re-run differential suites covering async/coroutine semantics after any further yield-spill changes.
+2) Continue OPT-0005/6/7 implementation (direct-call lowering, unicode count cache metadata, struct slot stores).
+3) Add more async yield spill probes (compare chains, nested boolops, call args) and fix dominance gaps.
+4) Decide on keeping main_stub.c in sync with CLI or removing to avoid divergence.
+5) Update docs/spec/STATUS.md if global/async semantics scope expanded.

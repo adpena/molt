@@ -308,6 +308,14 @@ and regression control.
 **Success Criteria**
 - `bench_fib.py` >=1.0x vs CPython without regressions elsewhere.
 
+**Latest Profile (2026-01-07)**
+- `bench_fib.py` with `MOLT_PROFILE=1`:
+  - call_dispatch=0 (direct calls are already used)
+  - string_count_cache_hit=0 / miss=0
+  - struct_field_store=0
+- Next: `CALL_GUARDED` op landed to guard direct name calls by fn_ptr; re-benchmark
+  fib and consider arity-checked fallback for mismatched globals.
+
 ### OPT-0006: Unicode Count Warm-Cache Fast Path
 
 **Problem**
@@ -350,6 +358,14 @@ and regression control.
 **Success Criteria**
 - `bench_str_count_unicode_warm.py` >=1.0x vs CPython.
 
+**Latest Profile (2026-01-07)**
+- `bench_str_count_unicode_warm.py` with `MOLT_PROFILE=1`:
+  - string_count_cache_hit=25
+  - string_count_cache_miss=1
+  - call_dispatch=0 / struct_field_store=0
+- Next: count cache moved to a dedicated store to avoid UTF-8 index builds; run
+  unicode count benches to quantify first-call vs warm-path deltas.
+
 ### OPT-0007: Structified Class Fast Path + Optional Scalar Replacement
 
 **Problem**
@@ -377,6 +393,15 @@ and regression control.
 - Phase 1: Lower SETATTR to direct slot stores when layout is fixed.
 - Phase 2: Add escape analysis prototype to elide allocations in loops.
 - Phase 3: Validate correctness + update structification rules in docs/spec.
+
+**Latest Profile (2026-01-07)**
+- `bench_struct.py` with `MOLT_PROFILE=1`:
+  - struct_field_store=4,000,000
+  - call_dispatch=0
+- Next: reduce store overhead (guard cost vs direct slot writes) and consider
+  escape-analysis gating for allocation removal.
+- Update: exact-local class tracking now skips guarded setattr for constructor-bound
+  locals with fixed layouts; measure impact on `bench_struct.py`.
 
 **Benchmark Matrix**
 - bench_struct.py: expected >=2x improvement

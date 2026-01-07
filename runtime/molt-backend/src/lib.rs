@@ -2593,6 +2593,70 @@ impl SimpleBackend {
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
+                "call_guarded" => {
+                    let target_name = op.s_value.as_ref().unwrap();
+                    let args_names = op.args.as_ref().unwrap();
+                    let callee_bits = vars.get(&args_names[0]).expect("Callee not found");
+                    let mut args = Vec::new();
+                    for name in &args_names[1..] {
+                        args.push(*vars.get(name).expect("Arg not found"));
+                    }
+
+                    let mut sig = self.module.make_signature();
+                    for _ in 0..args.len() {
+                        sig.params.push(AbiParam::new(types::I64));
+                    }
+                    sig.returns.push(AbiParam::new(types::I64));
+
+                    let callee = self
+                        .module
+                        .declare_function(target_name, Linkage::Export, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let expected_addr = builder.ins().func_addr(types::I64, local_callee);
+
+                    let mut resolve_sig = self.module.make_signature();
+                    resolve_sig.params.push(AbiParam::new(types::I64));
+                    resolve_sig.returns.push(AbiParam::new(types::I64));
+                    let resolve_callee = self
+                        .module
+                        .declare_function("molt_handle_resolve", Linkage::Import, &resolve_sig)
+                        .unwrap();
+                    let resolve_local = self
+                        .module
+                        .declare_func_in_func(resolve_callee, builder.func);
+                    let resolve_call = builder.ins().call(resolve_local, &[*callee_bits]);
+                    let func_ptr = builder.inst_results(resolve_call)[0];
+                    let fn_ptr = builder.ins().load(types::I64, MemFlags::new(), func_ptr, 0);
+
+                    let matches = builder.ins().icmp(IntCC::Equal, fn_ptr, expected_addr);
+                    let then_block = builder.create_block();
+                    let else_block = builder.create_block();
+                    let merge_block = builder.create_block();
+                    builder.append_block_param(merge_block, types::I64);
+
+                    builder
+                        .ins()
+                        .brif(matches, then_block, &[], else_block, &[]);
+
+                    builder.switch_to_block(then_block);
+                    builder.seal_block(then_block);
+                    let direct_call = builder.ins().call(local_callee, &args);
+                    let direct_res = builder.inst_results(direct_call)[0];
+                    builder.ins().jump(merge_block, &[direct_res]);
+
+                    builder.switch_to_block(else_block);
+                    builder.seal_block(else_block);
+                    let sig_ref = builder.import_signature(sig);
+                    let fallback_call = builder.ins().call_indirect(sig_ref, fn_ptr, &args);
+                    let fallback_res = builder.inst_results(fallback_call)[0];
+                    builder.ins().jump(merge_block, &[fallback_res]);
+
+                    builder.switch_to_block(merge_block);
+                    builder.seal_block(merge_block);
+                    let res = builder.block_params(merge_block)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
                 "call_func" => {
                     let args_names = op.args.as_ref().unwrap();
                     let func_bits = vars.get(&args_names[0]).expect("Func not found");

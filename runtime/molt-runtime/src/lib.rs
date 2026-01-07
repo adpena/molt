@@ -60,12 +60,50 @@ struct MoltFileHandle {
 struct Utf8IndexCache {
     block: usize,
     prefix: Vec<i64>,
-    count_cache: Mutex<Option<Utf8CountCache>>,
 }
 
 struct Utf8CountCache {
     needle: Vec<u8>,
     count: i64,
+}
+
+struct Utf8CountCacheStore {
+    entries: HashMap<usize, Utf8CountCache>,
+    order: VecDeque<usize>,
+}
+
+impl Utf8CountCacheStore {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    fn get(&self, key: usize) -> Option<&Utf8CountCache> {
+        self.entries.get(&key)
+    }
+
+    fn insert(&mut self, key: usize, cache: Utf8CountCache) {
+        if self.entries.contains_key(&key) {
+            self.entries.insert(key, cache);
+            return;
+        }
+        self.entries.insert(key, cache);
+        self.order.push_back(key);
+        while self.entries.len() > UTF8_CACHE_MAX_ENTRIES {
+            if let Some(evict) = self.order.pop_front() {
+                self.entries.remove(&evict);
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn remove(&mut self, key: usize) {
+        self.entries.remove(&key);
+        self.order.retain(|entry| *entry != key);
+    }
 }
 
 struct Utf8CacheStore {
@@ -4908,6 +4946,8 @@ impl Default for MoltScheduler {
 lazy_static::lazy_static! {
     static ref SCHEDULER: MoltScheduler = MoltScheduler::new();
     static ref UTF8_INDEX_CACHE: Mutex<Utf8CacheStore> = Mutex::new(Utf8CacheStore::new());
+    static ref UTF8_COUNT_CACHE: Mutex<Utf8CountCacheStore> =
+        Mutex::new(Utf8CountCacheStore::new());
 }
 
 /// # Safety
@@ -7111,16 +7151,12 @@ pub extern "C" fn molt_string_count(hay_bits: u64, needle_bits: u64) -> u64 {
                 let count = utf8_codepoint_count_cached(hay_bytes, Some(hay_ptr as usize)) + 1;
                 return MoltObject::from_int(count).bits();
             }
-            if let Some(cache) = utf8_cache_get_or_build(hay_ptr as usize, hay_bytes) {
-                if let Some(count) = utf8_count_cache_lookup(&cache, needle_bytes) {
-                    return MoltObject::from_int(count).bits();
-                }
-                profile_hit(&STRING_COUNT_CACHE_MISS);
-                let count = bytes_count_impl(hay_bytes, needle_bytes);
-                utf8_count_cache_store(&cache, needle_bytes, count);
+            if let Some(count) = utf8_count_cache_lookup(hay_ptr as usize, needle_bytes) {
                 return MoltObject::from_int(count).bits();
             }
+            profile_hit(&STRING_COUNT_CACHE_MISS);
             let count = bytes_count_impl(hay_bytes, needle_bytes);
+            utf8_count_cache_store(hay_ptr as usize, needle_bytes, count);
             return MoltObject::from_int(count).bits();
         }
     }
@@ -7411,7 +7447,6 @@ fn build_utf8_cache(bytes: &[u8]) -> Utf8IndexCache {
     Utf8IndexCache {
         block: UTF8_CACHE_BLOCK,
         prefix,
-        count_cache: Mutex::new(None),
     }
 }
 
@@ -7438,11 +7473,14 @@ fn utf8_cache_remove(key: usize) {
     if let Ok(mut store) = UTF8_INDEX_CACHE.lock() {
         store.remove(key);
     }
+    if let Ok(mut store) = UTF8_COUNT_CACHE.lock() {
+        store.remove(key);
+    }
 }
 
-fn utf8_count_cache_lookup(cache: &Utf8IndexCache, needle: &[u8]) -> Option<i64> {
-    let guard = cache.count_cache.lock().ok()?;
-    let entry = guard.as_ref()?;
+fn utf8_count_cache_lookup(key: usize, needle: &[u8]) -> Option<i64> {
+    let store = UTF8_COUNT_CACHE.lock().ok()?;
+    let entry = store.get(key)?;
     if entry.needle == needle {
         profile_hit(&STRING_COUNT_CACHE_HIT);
         return Some(entry.count);
@@ -7450,12 +7488,15 @@ fn utf8_count_cache_lookup(cache: &Utf8IndexCache, needle: &[u8]) -> Option<i64>
     None
 }
 
-fn utf8_count_cache_store(cache: &Utf8IndexCache, needle: &[u8], count: i64) {
-    if let Ok(mut guard) = cache.count_cache.lock() {
-        *guard = Some(Utf8CountCache {
-            needle: needle.to_vec(),
-            count,
-        });
+fn utf8_count_cache_store(key: usize, needle: &[u8], count: i64) {
+    if let Ok(mut store) = UTF8_COUNT_CACHE.lock() {
+        store.insert(
+            key,
+            Utf8CountCache {
+                needle: needle.to_vec(),
+                count,
+            },
+        );
     }
 }
 
