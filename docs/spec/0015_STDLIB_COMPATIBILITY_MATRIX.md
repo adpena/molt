@@ -48,7 +48,7 @@
 | pathlib | Stdlib | Planned | P2 | SL2 | stdlib | Path abstraction (gated I/O). |
 | enum | Stdlib | Planned | P2 | SL2 | stdlib | Enum base types. |
 | dataclasses | Stdlib | Partial | P2 | SL2 | stdlib | Dataclass lowering (frozen/eq/repr/field order, slots flag); defaults/kw-only/order/default_factory pending. |
-| typing | Stdlib | Planned | P3 | SL3 | stdlib | Runtime typing helpers + annotations. |
+| typing | Stdlib | Partial | P3 | SL3 | stdlib | Minimal shim: `Any`/`Union`/`Optional`/`Callable` + `TypeVar`/`Generic`/`Protocol` + `cast`/`get_origin`/`get_args`. |
 | abc | Stdlib | Planned | P3 | SL3 | stdlib | Abstract base classes. |
 | contextlib | Stdlib | Partial | P2 | SL2 | stdlib | `nullcontext` + `closing` lowered; `contextmanager` pending. |
 | weakref | Stdlib | Planned | P3 | SL3 | runtime | Weak references (GC-aware). |

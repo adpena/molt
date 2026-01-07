@@ -7,7 +7,7 @@
 ## Type Coverage
 - memoryview (Partial): constructor, slicing, `tobytes`, writable views, strides, buffer export.
 - TODO(type-coverage, owner:runtime, milestone:TC3): memoryview format codes and multidimensional shapes.
-- Implemented: class objects + basic descriptors (`classmethod`, `staticmethod`, `property`).
+- Implemented: class objects + basic descriptors (`classmethod`, `staticmethod`, `property`) + `__set_name__` hook.
 - Implemented: C3 MRO + multiple inheritance for attribute lookup + `super()` resolution + data descriptor precedence.
 - Implemented: reflection builtins (`type`, `isinstance`, `issubclass`, `object`) for base chains (no metaclasses).
 - Implemented: exception chaining with explicit `__cause__`, implicit `__context__`, and `__suppress_context__`.
@@ -17,7 +17,7 @@
 
 ## Stdlib
 - Partial: asyncio shim (`run`/`sleep` lowered to runtime); loop/task APIs and delay semantics still pending.
-- Partial: shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pprint`, `string`, `sys`, and `os` (capability-gated env access).
+- Partial: shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pprint`, `string`, `typing`, `sys`, and `os` (capability-gated env access).
 - Import-only allowlist expanded for `base64`, `binascii`, `pickle`, `unittest`, `site`, and `sysconfig` (API parity pending).
 
 ## Offload / IPC

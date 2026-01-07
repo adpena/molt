@@ -180,6 +180,7 @@ static INTERN_MRO_NAME: OnceLock<u64> = OnceLock::new();
 static INTERN_GET_NAME: OnceLock<u64> = OnceLock::new();
 static INTERN_SET_NAME: OnceLock<u64> = OnceLock::new();
 static INTERN_DELETE_NAME: OnceLock<u64> = OnceLock::new();
+static INTERN_SET_NAME_METHOD: OnceLock<u64> = OnceLock::new();
 static INTERN_FIELD_OFFSETS_NAME: OnceLock<u64> = OnceLock::new();
 
 trait ExceptionSentinel {
@@ -2950,6 +2951,43 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
 }
 
 #[no_mangle]
+pub extern "C" fn molt_class_apply_set_name(class_bits: u64) -> u64 {
+    let class_obj = obj_from_bits(class_bits);
+    let Some(class_ptr) = class_obj.as_ptr() else {
+        raise!("TypeError", "class must be a type object");
+    };
+    unsafe {
+        if object_type_id(class_ptr) != TYPE_ID_TYPE {
+            raise!("TypeError", "class must be a type object");
+        }
+        let dict_bits = class_dict_bits(class_ptr);
+        let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        if object_type_id(dict_ptr) != TYPE_ID_DICT {
+            return MoltObject::none().bits();
+        }
+        let entries = dict_order(dict_ptr).clone();
+        let set_name_bits = intern_static_name(&INTERN_SET_NAME_METHOD, b"__set_name__");
+        for pair in entries.chunks(2) {
+            if pair.len() != 2 {
+                continue;
+            }
+            let name_bits = pair[0];
+            let val_bits = pair[1];
+            let Some(val_ptr) = maybe_ptr_from_bits(val_bits) else {
+                continue;
+            };
+            if let Some(set_name) = attr_lookup_ptr(val_ptr, set_name_bits) {
+                let _ = call_callable2(set_name, class_bits, name_bits);
+                dec_ref_bits(set_name);
+            }
+        }
+    }
+    MoltObject::none().bits()
+}
+
+#[no_mangle]
 pub extern "C" fn molt_super_new(type_bits: u64, obj_bits: u64) -> u64 {
     let type_obj = obj_from_bits(type_bits);
     let Some(type_ptr) = type_obj.as_ptr() else {
@@ -4639,6 +4677,75 @@ pub unsafe extern "C" fn molt_ws_close(ws_ptr: *mut u8) {
 
 // --- Scheduler ---
 
+struct AsyncHangProbe {
+    threshold: usize,
+    pending_counts: Mutex<HashMap<usize, usize>>,
+}
+
+impl AsyncHangProbe {
+    fn new(threshold: usize) -> Self {
+        Self {
+            threshold,
+            pending_counts: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+static ASYNC_HANG_PROBE: OnceLock<Option<AsyncHangProbe>> = OnceLock::new();
+
+fn async_hang_probe() -> Option<&'static AsyncHangProbe> {
+    ASYNC_HANG_PROBE
+        .get_or_init(|| {
+            let value = std::env::var("MOLT_ASYNC_HANG_PROBE").ok()?;
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let threshold = match trimmed.parse::<usize>() {
+                Ok(0) => return None,
+                Ok(val) => val,
+                Err(_) => 100_000,
+            };
+            Some(AsyncHangProbe::new(threshold))
+        })
+        .as_ref()
+}
+
+fn record_async_poll(task_ptr: *mut u8, pending: bool, site: &str) {
+    let Some(probe) = async_hang_probe() else {
+        return;
+    };
+    if task_ptr.is_null() {
+        return;
+    }
+    if !pending {
+        probe
+            .pending_counts
+            .lock()
+            .unwrap()
+            .remove(&(task_ptr as usize));
+        return;
+    }
+    let mut counts = probe.pending_counts.lock().unwrap();
+    let count = counts.entry(task_ptr as usize).or_insert(0);
+    *count += 1;
+    if *count != probe.threshold && *count % probe.threshold != 0 {
+        return;
+    }
+    unsafe {
+        let header = header_from_obj_ptr(task_ptr);
+        eprintln!(
+            "Molt async hang probe: site={} polls={} ptr=0x{:x} type={} state={} poll=0x{:x}",
+            site,
+            count,
+            task_ptr as usize,
+            (*header).type_id,
+            (*header).state,
+            (*header).poll_fn
+        );
+    }
+}
+
 pub struct MoltTask {
     pub future_ptr: *mut u8,
 }
@@ -4738,7 +4845,9 @@ impl MoltScheduler {
                 let poll_fn: extern "C" fn(*mut u8) -> i64 =
                     std::mem::transmute(poll_fn_addr as usize);
                 let res = poll_fn(task_ptr);
-                if res == pending_bits_i64() {
+                let pending = res == pending_bits_i64();
+                record_async_poll(task_ptr, pending, "scheduler");
+                if pending {
                     injector.push(task);
                 }
             }
@@ -4778,7 +4887,9 @@ pub unsafe extern "C" fn molt_block_on(task_ptr: *mut u8) -> i64 {
     let poll_fn: extern "C" fn(*mut u8) -> i64 = std::mem::transmute(poll_fn_addr as usize);
     loop {
         let res = poll_fn(task_ptr);
-        if res == pending_bits_i64() {
+        let pending = res == pending_bits_i64();
+        record_async_poll(task_ptr, pending, "block_on");
+        if pending {
             std::thread::yield_now();
             continue;
         }
@@ -4787,9 +4898,17 @@ pub unsafe extern "C" fn molt_block_on(task_ptr: *mut u8) -> i64 {
 }
 
 /// # Safety
-/// - `_obj_ptr` must be a valid pointer if the runtime associates a future with it.
+/// - `obj_ptr` must be a valid pointer if the runtime associates a future with it.
 #[no_mangle]
-pub unsafe extern "C" fn molt_async_sleep(_obj_ptr: *mut u8) -> i64 {
+pub unsafe extern "C" fn molt_async_sleep(obj_ptr: *mut u8) -> i64 {
+    if obj_ptr.is_null() {
+        return pending_bits_i64();
+    }
+    let header = header_from_obj_ptr(obj_ptr);
+    if (*header).state == 0 {
+        (*header).state = 1;
+        return pending_bits_i64();
+    }
     0
 }
 
@@ -10967,6 +11086,22 @@ unsafe fn call_callable0(call_bits: u64) -> u64 {
             let func_bits = bound_method_func_bits(call_ptr);
             let self_bits = bound_method_self_bits(call_ptr);
             call_function_obj1(func_bits, self_bits)
+        }
+        _ => raise!("TypeError", "object is not callable"),
+    }
+}
+
+unsafe fn call_callable2(call_bits: u64, arg0_bits: u64, arg1_bits: u64) -> u64 {
+    let call_obj = obj_from_bits(call_bits);
+    let Some(call_ptr) = call_obj.as_ptr() else {
+        raise!("TypeError", "object is not callable");
+    };
+    match object_type_id(call_ptr) {
+        TYPE_ID_FUNCTION => call_function_obj2(call_bits, arg0_bits, arg1_bits),
+        TYPE_ID_BOUND_METHOD => {
+            let func_bits = bound_method_func_bits(call_ptr);
+            let self_bits = bound_method_self_bits(call_ptr);
+            call_function_obj3(func_bits, self_bits, arg0_bits, arg1_bits)
         }
         _ => raise!("TypeError", "object is not callable"),
     }

@@ -140,6 +140,17 @@ const callCallable0 = (callableBits) => {
   }
   throw new Error('TypeError: object is not callable');
 };
+const callCallable2 = (callableBits, arg0, arg1) => {
+  const bound = getBoundMethod(callableBits);
+  if (bound) {
+    return callFunctionBits(bound.func, [bound.self, arg0, arg1]);
+  }
+  const func = getFunction(callableBits);
+  if (func) {
+    return callFunctionBits(callableBits, [arg0, arg1]);
+  }
+  throw new Error('TypeError: object is not callable');
+};
 const isGenerator = (val) =>
   isPtr(val) &&
   !heap.has(val & POINTER_MASK) &&
@@ -1238,6 +1249,18 @@ BASE_IMPORTS = """\
   },
   class_set_base: (classBits, baseBits) => {
     setClassBases(classBits, baseBits);
+    return boxNone();
+  },
+  class_apply_set_name: (classBits) => {
+    const cls = getClass(classBits);
+    if (!cls) return boxNone();
+    for (const [name, valBits] of cls.attrs.entries()) {
+      const setName = lookupAttr(valBits, '__set_name__');
+      if (setName !== undefined) {
+        const nameBits = boxPtr({ type: 'str', value: name });
+        callCallable2(setName, classBits, nameBits);
+      }
+    }
     return boxNone();
   },
   builtin_type: (tagBits) => {

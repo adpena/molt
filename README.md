@@ -16,12 +16,12 @@ with strict reproducibility, rigorous testing, and staged compatibility.
 
 ## Limitations (Current)
 
-- **Classes & object model**: single inheritance with base attribute lookup + base `__init__` dispatch; no multiple inheritance, metaclasses, MRO/`super()`, or full descriptor protocol (`@classmethod`/`@staticmethod`/`@property` are partial).
+- **Classes & object model**: C3 MRO + multiple inheritance + `super()` resolution for attribute lookup; no metaclasses or dynamic `type()` construction; descriptor protocol still partial.
 - **Attributes**: instances use fixed struct fields with a dynamic instance-dict fallback; no `__getattr__`/`__setattr__` hooks and no user-defined `__slots__` beyond dataclass lowering.
 - **Dataclasses**: compile-time lowering for frozen/eq/repr/slots; no `default_factory`, `kw_only`, or `order`; runtime `dataclasses` module provides metadata only.
 - **Exceptions**: `try/except/else/finally` + `raise`/reraise support; still partial vs full BaseException semantics (see `docs/spec/0014_TYPE_COVERAGE_MATRIX.md`).
 - **Imports**: static module graph only; no dynamic import hooks or full package resolution; allowlisted stdlib modules (e.g., `math`, `random`, `time`, `json`, `re`, `collections`, `itertools`, `functools`, `operator`, `base64`, `pickle`, `unittest`, `site`, `sysconfig`) may load empty stubs for dependency tracking unless implemented.
-- **Stdlib**: partial shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pprint`, `string`, `sys`, and `os`; full API parity pending.
+- **Stdlib**: partial shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pprint`, `string`, `typing`, `sys`, and `os`; full API parity pending.
 - **Reflection**: `type`, `isinstance`, `issubclass`, and `object` are supported with single-inheritance base chains; no metaclasses or dynamic `type()` construction.
 - **Async iteration**: `anext` is await-only, and `__aiter__` must return an async iterator (awaitable `__aiter__` still pending).
 - **Asyncio**: shim covers `run`/`sleep` only (no loop/task APIs; sleep delay ignored).

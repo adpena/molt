@@ -128,6 +128,7 @@ interface intrinsics {
     dataclass_set_class: func(obj: molt-object, class_obj: molt-object) -> molt-object;
     class_new: func(name: molt-object) -> molt-object;
     class_set_base: func(class_obj: molt-object, base_obj: molt-object) -> molt-object;
+    class_apply_set_name: func(class_obj: molt-object) -> molt-object;
     super_new: func(type_obj: molt-object, obj: molt-object) -> molt-object;
     builtin_type: func(tag: molt-object) -> molt-object;
     type_of: func(obj: molt-object) -> molt-object;

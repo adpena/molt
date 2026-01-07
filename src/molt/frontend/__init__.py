@@ -3114,6 +3114,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             )
 
+        self.emit(
+            MoltOp(
+                kind="CLASS_APPLY_SET_NAME",
+                args=[class_val],
+                result=MoltValue("none"),
+            )
+        )
+
         return None
 
     def visit_Call(self, node: ast.Call) -> Any:
@@ -7349,6 +7357,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 json_ops.append(
                     {
                         "kind": "class_set_base",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "CLASS_APPLY_SET_NAME":
+                json_ops.append(
+                    {
+                        "kind": "class_apply_set_name",
                         "args": [arg.name for arg in op.args],
                         "out": op.result.name,
                     }
