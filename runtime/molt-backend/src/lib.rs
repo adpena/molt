@@ -2229,10 +2229,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap();
                     let future = vars.get(&args[0]).expect("Future not found");
                     let (slot_bits, pending_state_bits) = if args.len() == 2 {
-                        (
-                            None,
-                            *vars.get(&args[1]).expect("Pending state not found"),
-                        )
+                        (None, *vars.get(&args[1]).expect("Pending state not found"))
                     } else {
                         (
                             Some(*vars.get(&args[1]).expect("Await slot not found")),
@@ -2331,8 +2328,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap();
                     let chan = vars.get(&args[0]).expect("Chan not found");
                     let val = vars.get(&args[1]).expect("Val not found");
-                    let pending_state_bits =
-                        *vars.get(&args[2]).expect("Pending state not found");
+                    let pending_state_bits = *vars.get(&args[2]).expect("Pending state not found");
                     let next_state_id = op.value.unwrap();
                     let self_ptr = *vars.get("self").expect("Self not found");
 
@@ -2385,8 +2381,7 @@ impl SimpleBackend {
                 "chan_recv_yield" => {
                     let args = op.args.as_ref().unwrap();
                     let chan = vars.get(&args[0]).expect("Chan not found");
-                    let pending_state_bits =
-                        *vars.get(&args[1]).expect("Pending state not found");
+                    let pending_state_bits = *vars.get(&args[1]).expect("Pending state not found");
                     let next_state_id = op.value.unwrap();
                     let self_ptr = *vars.get("self").expect("Self not found");
 
