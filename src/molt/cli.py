@@ -221,6 +221,28 @@ def _detect_macos_arch(obj_path: Path) -> str | None:
     return archs[0] if archs else None
 
 
+def _detect_macos_deployment_target() -> str | None:
+    env_target = os.environ.get("MOLT_MACOSX_DEPLOYMENT_TARGET")
+    if env_target:
+        return env_target
+    env_target = os.environ.get("MACOSX_DEPLOYMENT_TARGET")
+    if env_target:
+        return env_target
+    try:
+        result = subprocess.run(
+            ["xcrun", "--show-sdk-version"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    version = result.stdout.strip()
+    return version or None
+
+
 def build(
     file_path: str,
     target: Target = "native",
@@ -411,6 +433,9 @@ int main() {
             or platform.machine()
         )
         link_cmd.extend(["-arch", arch])
+        deployment_target = _detect_macos_deployment_target()
+        if deployment_target:
+            link_cmd.append(f"-mmacosx-version-min={deployment_target}")
     link_cmd.extend(["main_stub.c", "output.o", str(runtime_lib), "-o", output_binary])
     if sys.platform == "darwin":
         link_cmd.append("-lc++")

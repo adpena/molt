@@ -29,6 +29,7 @@
 ## 3. Compatibility Matrix
 | Module | Tier | Status | Priority | Milestone | Owner | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
+| builtins | Core | Partial | P0 | SL1 | runtime/frontend | Importable module binds supported builtins; missing names raise `AttributeError`. |
 | functools | Core-adjacent | Planned | P1 | SL1 | stdlib/runtime | Promote `lru_cache`, `partial`, `reduce` fast paths. |
 | itertools | Core-adjacent | Planned | P1 | SL1 | stdlib/runtime | Iterator kernels; tie into vectorization. |
 | operator | Core-adjacent | Planned | P1 | SL1 | stdlib/runtime | Low-level op dispatch helpers. |

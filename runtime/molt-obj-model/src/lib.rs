@@ -20,6 +20,7 @@ const POINTER_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
 const INT_SIGN_BIT: u64 = 1 << 46;
 const INT_WIDTH: u64 = 47;
 const INT_MASK: u64 = (1u64 << INT_WIDTH) - 1;
+const CANONICAL_NAN_BITS: u64 = 0x7ff0_0000_0000_0001;
 
 impl MoltObject {
     pub fn from_bits(bits: u64) -> Self {
@@ -31,7 +32,11 @@ impl MoltObject {
     }
 
     pub fn from_float(f: f64) -> Self {
-        Self(f.to_bits())
+        if f.is_nan() {
+            Self(CANONICAL_NAN_BITS)
+        } else {
+            Self(f.to_bits())
+        }
     }
 
     pub fn from_int(i: i64) -> Self {

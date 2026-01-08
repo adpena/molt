@@ -192,7 +192,7 @@ def normalize_type_hint(value: str | None) -> str | None:
         inner = inner[:-1].strip()
         inner = inner.replace("typing.", "").replace("builtins.", "")
         inner_lower = inner.lower()
-        if base in {"list", "tuple"}:
+        if base in {"list", "tuple", "set", "frozenset"}:
             inner_mapping = {
                 "int": "int",
                 "float": "float",
@@ -246,6 +246,8 @@ def normalize_type_hint(value: str | None) -> str | None:
         "list": "list",
         "tuple": "tuple",
         "dict": "dict",
+        "set": "set",
+        "frozenset": "frozenset",
         "range": "range",
         "slice": "slice",
         "memoryview": "memoryview",

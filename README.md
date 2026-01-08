@@ -15,6 +15,10 @@ Canonical status lives in `docs/spec/STATUS.md` (README and ROADMAP are kept in 
 - **Molt Packages**: First-class support for Rust-backed packages, with production wire formats (MsgPack/CBOR) and Arrow IPC for tabular data; JSON is a compatibility/debug format.
 - **AOT Compilation**: Uses Cranelift to generate high-performance machine code.
 - **Differential Testing**: Verified against CPython 3.12.
+- **Sets**: literals + constructor with add/contains/iter/len + algebra (`|`, `&`, `-`, `^`); `frozenset` constructor + algebra.
+- **Numeric builtins**: `int()`/`round()`/`math.trunc()` with `__int__`/`__index__`/`__round__`/`__trunc__` hooks and base parsing for string/bytes.
+- **String count slices**: `str.count` supports start/end slices with Unicode-aware offsets.
+- **Importable builtins**: `import builtins` binds supported builtins for compiled code.
 
 ## Limitations (Current)
 
@@ -27,6 +31,10 @@ Canonical status lives in `docs/spec/STATUS.md` (README and ROADMAP are kept in 
 - **Reflection**: `type`, `isinstance`, `issubclass`, and `object` are supported with single-inheritance base chains; no metaclasses or dynamic `type()` construction.
 - **Async iteration**: `anext` is await-only, and `__aiter__` must return an async iterator (awaitable `__aiter__` still pending).
 - **Asyncio**: shim covers `run`/`sleep` only (no loop/task APIs; sleep delay ignored).
+- **Matmul**: `@` is supported only for `molt_buffer`/`buffer2d`; other types raise `TypeError`.
+- **Numeric tower**: BigInt heap fallback for large ints; complex/decimal not implemented; missing int helpers (e.g., `bit_length`, `to_bytes`).
+- **Format protocol**: conversion flags + numeric mini-language for ints/floats supported; `__format__` fallback, named fields, and locale-aware grouping pending.
+- **memoryview**: partial buffer protocol with 1D `format`/`shape`/`strides`; no multidimensional shapes or advanced buffer exports.
 - **Offload demo**: `molt_accel` scaffolding exists and a `molt_worker` stdio shell returns a deterministic `list_items` response; compiled entrypoint dispatch, cancellation, and Django demo wiring are still pending.
 - **DB layer**: `molt-db` pool skeleton exists; async drivers and Postgres protocol integration are not implemented yet.
 

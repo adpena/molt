@@ -40,6 +40,7 @@ BUILTIN_TYPE_TAGS = {
     "list": 8,
     "tuple": 9,
     "dict": 10,
+    "set": 17,
     "range": 11,
     "slice": 12,
     "memoryview": 15,
@@ -112,6 +113,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.exact_locals: dict[str, str] = {}
         self.globals: dict[str, MoltValue] = {}
         self.func_symbol_names: dict[str, str] = {}
+        self.stable_module_funcs: set[str] = set()
+        self.mutated_classes: set[str] = set()
         self.async_locals: dict[str, int] = {}
         self.async_locals_base: int = 0
         self.async_local_hints: dict[str, str] = {}
@@ -479,6 +482,263 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     return False
         return True
 
+    def _collect_global_rebinds(self, node: ast.AST) -> set[str]:
+        names: set[str] = set()
+        for current in ast.walk(node):
+            if isinstance(current, ast.Global):
+                names.update(current.names)
+        return names
+
+    def _collect_module_assignments(
+        self, node: ast.Module
+    ) -> tuple[dict[str, int], set[str], bool]:
+        counts: dict[str, int] = {}
+        func_defs: set[str] = set()
+        has_dynamic_bind = False
+
+        def record(name: str) -> None:
+            counts[name] = counts.get(name, 0) + 1
+
+        def record_target(target: ast.AST) -> None:
+            if isinstance(target, ast.Name):
+                record(target.id)
+            elif isinstance(target, (ast.Tuple, ast.List)):
+                for elt in target.elts:
+                    record_target(elt)
+            elif isinstance(target, ast.Starred):
+                record_target(target.value)
+
+        def record_pattern(pattern: ast.pattern) -> None:
+            if isinstance(pattern, ast.MatchAs):
+                if pattern.name:
+                    record(pattern.name)
+                if pattern.pattern is not None:
+                    record_pattern(pattern.pattern)
+            elif isinstance(pattern, ast.MatchStar):
+                if pattern.name:
+                    record(pattern.name)
+            elif isinstance(pattern, ast.MatchMapping):
+                for sub in pattern.patterns:
+                    record_pattern(sub)
+                if pattern.rest:
+                    record(pattern.rest)
+            elif isinstance(pattern, ast.MatchSequence):
+                for sub in pattern.patterns:
+                    record_pattern(sub)
+            elif isinstance(pattern, ast.MatchClass):
+                for sub in pattern.patterns:
+                    record_pattern(sub)
+                for sub in pattern.kwd_patterns:
+                    record_pattern(sub)
+            elif isinstance(pattern, ast.MatchOr):
+                for sub in pattern.patterns:
+                    record_pattern(sub)
+
+        class Collector(ast.NodeVisitor):
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> Any:
+                func_defs.add(node.name)
+                record(node.name)
+                return None
+
+            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> Any:
+                func_defs.add(node.name)
+                record(node.name)
+                return None
+
+            def visit_ClassDef(self, node: ast.ClassDef) -> Any:
+                record(node.name)
+                return None
+
+            def visit_Lambda(self, node: ast.Lambda) -> Any:
+                return None
+
+            def visit_ListComp(self, node: ast.ListComp) -> Any:
+                return None
+
+            def visit_SetComp(self, node: ast.SetComp) -> Any:
+                return None
+
+            def visit_DictComp(self, node: ast.DictComp) -> Any:
+                return None
+
+            def visit_GeneratorExp(self, node: ast.GeneratorExp) -> Any:
+                return None
+
+            def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+                record_target(node.target)
+                self.visit(node.value)
+
+            def visit_Assign(self, node: ast.Assign) -> None:
+                for target in node.targets:
+                    record_target(target)
+                self.visit(node.value)
+
+            def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+                record_target(node.target)
+                if node.value is not None:
+                    self.visit(node.value)
+
+            def visit_AugAssign(self, node: ast.AugAssign) -> None:
+                record_target(node.target)
+                self.visit(node.value)
+
+            def visit_For(self, node: ast.For) -> None:
+                record_target(node.target)
+                self.visit(node.iter)
+                for stmt in node.body:
+                    self.visit(stmt)
+                for stmt in node.orelse:
+                    self.visit(stmt)
+
+            def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+                record_target(node.target)
+                self.visit(node.iter)
+                for stmt in node.body:
+                    self.visit(stmt)
+                for stmt in node.orelse:
+                    self.visit(stmt)
+
+            def visit_While(self, node: ast.While) -> None:
+                self.visit(node.test)
+                for stmt in node.body:
+                    self.visit(stmt)
+                for stmt in node.orelse:
+                    self.visit(stmt)
+
+            def visit_If(self, node: ast.If) -> None:
+                self.visit(node.test)
+                for stmt in node.body:
+                    self.visit(stmt)
+                for stmt in node.orelse:
+                    self.visit(stmt)
+
+            def visit_With(self, node: ast.With) -> None:
+                for item in node.items:
+                    self.visit(item.context_expr)
+                    if item.optional_vars is not None:
+                        record_target(item.optional_vars)
+                for stmt in node.body:
+                    self.visit(stmt)
+
+            def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
+                for item in node.items:
+                    self.visit(item.context_expr)
+                    if item.optional_vars is not None:
+                        record_target(item.optional_vars)
+                for stmt in node.body:
+                    self.visit(stmt)
+
+            def visit_Try(self, node: ast.Try) -> None:
+                for stmt in node.body:
+                    self.visit(stmt)
+                for handler in node.handlers:
+                    self.visit(handler)
+                for stmt in node.orelse:
+                    self.visit(stmt)
+                for stmt in node.finalbody:
+                    self.visit(stmt)
+
+            def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+                if node.name:
+                    record(node.name)
+                for stmt in node.body:
+                    self.visit(stmt)
+
+            def visit_Match(self, node: ast.Match) -> None:
+                self.visit(node.subject)
+                for case in node.cases:
+                    record_pattern(case.pattern)
+                    if case.guard is not None:
+                        self.visit(case.guard)
+                    for stmt in case.body:
+                        self.visit(stmt)
+
+            def visit_Import(self, node: ast.Import) -> None:
+                for alias in node.names:
+                    name = alias.asname or alias.name.split(".", 1)[0]
+                    record(name)
+
+            def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+                nonlocal has_dynamic_bind
+                for alias in node.names:
+                    if alias.name == "*":
+                        has_dynamic_bind = True
+                        continue
+                    name = alias.asname or alias.name
+                    record(name)
+
+            def visit_Delete(self, node: ast.Delete) -> None:
+                for target in node.targets:
+                    record_target(target)
+
+        Collector().visit(node)
+        return counts, func_defs, has_dynamic_bind
+
+    def _module_stable_funcs(self, node: ast.Module) -> set[str]:
+        counts, funcs, dynamic = self._collect_module_assignments(node)
+        if dynamic:
+            return set()
+        global_rebinds = self._collect_global_rebinds(node)
+        return {
+            name
+            for name in funcs
+            if counts.get(name, 0) == 1 and name not in global_rebinds
+        }
+
+    def _collect_module_class_mutations(self, node: ast.Module) -> set[str]:
+        class_names = {
+            stmt.name for stmt in node.body if isinstance(stmt, ast.ClassDef)
+        }
+        if not class_names:
+            return set()
+        mutated: set[str] = set()
+
+        def record_target(target: ast.AST) -> None:
+            if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name):
+                if target.value.id in class_names:
+                    mutated.add(target.value.id)
+            elif isinstance(target, (ast.Tuple, ast.List)):
+                for elt in target.elts:
+                    record_target(elt)
+            elif isinstance(target, ast.Starred):
+                record_target(target.value)
+
+        class Collector(ast.NodeVisitor):
+            def visit_ClassDef(self, node: ast.ClassDef) -> None:
+                return
+
+            def visit_Assign(self, node: ast.Assign) -> None:
+                for target in node.targets:
+                    record_target(target)
+                self.visit(node.value)
+
+            def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+                record_target(node.target)
+                if node.value is not None:
+                    self.visit(node.value)
+
+            def visit_AugAssign(self, node: ast.AugAssign) -> None:
+                record_target(node.target)
+                self.visit(node.value)
+
+            def visit_Delete(self, node: ast.Delete) -> None:
+                for target in node.targets:
+                    record_target(target)
+
+            def visit_Call(self, node: ast.Call) -> None:
+                if (
+                    isinstance(node.func, ast.Name)
+                    and node.func.id in {"setattr", "delattr"}
+                    and node.args
+                ):
+                    target = node.args[0]
+                    if isinstance(target, ast.Name) and target.id in class_names:
+                        mutated.add(target.id)
+                self.generic_visit(node)
+
+        Collector().visit(node)
+        return mutated
+
     def _flush_deferred_module_attrs(self) -> None:
         if not self.deferred_module_attrs or self.module_obj is None:
             return
@@ -553,6 +813,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         defer = self._module_can_defer_attrs(node)
         prev_defer = self.defer_module_attrs
         prev_dirty = self.deferred_module_attrs
+        prev_stable = self.stable_module_funcs
+        prev_mutated = self.mutated_classes
+        self.stable_module_funcs = self._module_stable_funcs(node)
+        self.mutated_classes = self._collect_module_class_mutations(node)
         if defer:
             self.defer_module_attrs = True
             self.deferred_module_attrs = set()
@@ -562,6 +826,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self._flush_deferred_module_attrs()
         self.defer_module_attrs = prev_defer
         self.deferred_module_attrs = prev_dirty
+        self.stable_module_funcs = prev_stable
+        self.mutated_classes = prev_mutated
         return None
 
     def _init_return_slot(self) -> None:
@@ -2122,6 +2388,76 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="TUPLE_FROM_LIST", args=[items], result=res))
         return res
 
+    def _emit_set_from_iter(self, iterable: MoltValue) -> MoltValue:
+        res = MoltValue(self.next_var(), type_hint="set")
+        self.emit(MoltOp(kind="SET_NEW", args=[], result=res))
+        iter_obj = self._emit_iter_new(iterable)
+        zero = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[0], result=zero))
+        one = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[1], result=one))
+        self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
+        pair = MoltValue(self.next_var(), type_hint="tuple")
+        self.emit(MoltOp(kind="ITER_NEXT", args=[iter_obj], result=pair))
+        done = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="INDEX", args=[pair, one], result=done))
+        self.emit(
+            MoltOp(kind="LOOP_BREAK_IF_TRUE", args=[done], result=MoltValue("none"))
+        )
+        item = MoltValue(self.next_var(), type_hint="Any")
+        self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=item))
+        self.emit(MoltOp(kind="SET_ADD", args=[res, item], result=MoltValue("none")))
+        self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+        self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+        return res
+
+    def _emit_set_update_from_iter(
+        self, target: MoltValue, iterable: MoltValue
+    ) -> None:
+        iter_obj = self._emit_iter_new(iterable)
+        zero = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[0], result=zero))
+        one = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[1], result=one))
+        self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
+        pair = MoltValue(self.next_var(), type_hint="tuple")
+        self.emit(MoltOp(kind="ITER_NEXT", args=[iter_obj], result=pair))
+        done = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="INDEX", args=[pair, one], result=done))
+        self.emit(
+            MoltOp(kind="LOOP_BREAK_IF_TRUE", args=[done], result=MoltValue("none"))
+        )
+        item = MoltValue(self.next_var(), type_hint="Any")
+        self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=item))
+        self.emit(MoltOp(kind="SET_ADD", args=[target, item], result=MoltValue("none")))
+        self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+        self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+
+    def _emit_frozenset_from_iter(self, iterable: MoltValue) -> MoltValue:
+        res = MoltValue(self.next_var(), type_hint="frozenset")
+        self.emit(MoltOp(kind="FROZENSET_NEW", args=[], result=res))
+        iter_obj = self._emit_iter_new(iterable)
+        zero = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[0], result=zero))
+        one = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[1], result=one))
+        self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
+        pair = MoltValue(self.next_var(), type_hint="tuple")
+        self.emit(MoltOp(kind="ITER_NEXT", args=[iter_obj], result=pair))
+        done = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="INDEX", args=[pair, one], result=done))
+        self.emit(
+            MoltOp(kind="LOOP_BREAK_IF_TRUE", args=[done], result=MoltValue("none"))
+        )
+        item = MoltValue(self.next_var(), type_hint="Any")
+        self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=item))
+        self.emit(
+            MoltOp(kind="FROZENSET_ADD", args=[res, item], result=MoltValue("none"))
+        )
+        self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+        self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+        return res
+
     def _emit_intarray_from_seq(self, seq: MoltValue) -> MoltValue:
         res = MoltValue(self.next_var(), type_hint="intarray")
         self.emit(MoltOp(kind="INTARRAY_FROM_SEQ", args=[seq], result=res))
@@ -2348,6 +2684,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 res_type = "int"
             elif "float" in {left.type_hint, right.type_hint}:
                 res_type = "float"
+            elif left.type_hint in {"set", "frozenset"} and right.type_hint in {
+                "set",
+                "frozenset",
+            }:
+                res_type = left.type_hint
         elif isinstance(node.op, ast.Mult):
             op_kind = "MUL"
             if left.type_hint == right.type_hint == "int":
@@ -2360,6 +2701,70 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             elif right.type_hint in {"list", "tuple"} and left.type_hint == "int":
                 res_type = right.type_hint
                 hint_src = right
+        elif isinstance(node.op, ast.Div):
+            op_kind = "DIV"
+            res_type = "float"
+        elif isinstance(node.op, ast.FloorDiv):
+            op_kind = "FLOORDIV"
+            if left.type_hint == right.type_hint == "int":
+                res_type = "int"
+            elif "float" in {left.type_hint, right.type_hint}:
+                res_type = "float"
+        elif isinstance(node.op, ast.Mod):
+            op_kind = "MOD"
+            if left.type_hint == right.type_hint == "int":
+                res_type = "int"
+            elif "float" in {left.type_hint, right.type_hint}:
+                res_type = "float"
+        elif isinstance(node.op, ast.Pow):
+            op_kind = "POW"
+            if "float" in {left.type_hint, right.type_hint}:
+                res_type = "float"
+        elif isinstance(node.op, ast.BitOr):
+            op_kind = "BIT_OR"
+            if left.type_hint == right.type_hint == "bool":
+                res_type = "bool"
+            elif {left.type_hint, right.type_hint}.issubset({"int", "bool"}):
+                res_type = "int"
+            elif left.type_hint in {"set", "frozenset"} and right.type_hint in {
+                "set",
+                "frozenset",
+            }:
+                res_type = left.type_hint
+        elif isinstance(node.op, ast.BitAnd):
+            op_kind = "BIT_AND"
+            if left.type_hint == right.type_hint == "bool":
+                res_type = "bool"
+            elif {left.type_hint, right.type_hint}.issubset({"int", "bool"}):
+                res_type = "int"
+            elif left.type_hint in {"set", "frozenset"} and right.type_hint in {
+                "set",
+                "frozenset",
+            }:
+                res_type = left.type_hint
+        elif isinstance(node.op, ast.BitXor):
+            op_kind = "BIT_XOR"
+            if left.type_hint == right.type_hint == "bool":
+                res_type = "bool"
+            elif {left.type_hint, right.type_hint}.issubset({"int", "bool"}):
+                res_type = "int"
+            elif left.type_hint in {"set", "frozenset"} and right.type_hint in {
+                "set",
+                "frozenset",
+            }:
+                res_type = left.type_hint
+        elif isinstance(node.op, ast.LShift):
+            op_kind = "LSHIFT"
+            if {left.type_hint, right.type_hint}.issubset({"int", "bool"}):
+                res_type = "int"
+        elif isinstance(node.op, ast.RShift):
+            op_kind = "RSHIFT"
+            if {left.type_hint, right.type_hint}.issubset({"int", "bool"}):
+                res_type = "int"
+        elif isinstance(node.op, ast.MatMult):
+            op_kind = "MATMUL"
+            if left.type_hint == right.type_hint == "buffer2d":
+                res_type = "buffer2d"
         else:
             op_kind = "UNKNOWN"
         res = MoltValue(self.next_var(), type_hint=res_type)
@@ -2376,6 +2781,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if isinstance(node.value, bool):
             res = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="CONST_BOOL", args=[node.value], result=res))
+            return res
+        if isinstance(node.value, int):
+            inline_min = -(1 << 46)
+            inline_max = (1 << 46) - 1
+            res = MoltValue(self.next_var(), type_hint="int")
+            if inline_min <= node.value <= inline_max:
+                self.emit(MoltOp(kind="CONST", args=[node.value], result=res))
+            else:
+                self.emit(
+                    MoltOp(kind="CONST_BIGINT", args=[str(node.value)], result=res)
+                )
             return res
         if isinstance(node.value, bytes):
             res = MoltValue(self.next_var(), type_hint="bytes")
@@ -2396,6 +2812,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _emit_str_from_obj(self, value: MoltValue) -> MoltValue:
         res = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="STR_FROM_OBJ", args=[value], result=res))
+        return res
+
+    def _emit_repr_from_obj(self, value: MoltValue) -> MoltValue:
+        res = MoltValue(self.next_var(), type_hint="str")
+        self.emit(MoltOp(kind="REPR_FROM_OBJ", args=[value], result=res))
+        return res
+
+    def _emit_ascii_from_obj(self, value: MoltValue) -> MoltValue:
+        res = MoltValue(self.next_var(), type_hint="str")
+        self.emit(MoltOp(kind="ASCII_FROM_OBJ", args=[value], result=res))
         return res
 
     def _emit_string_join(self, parts: list[MoltValue]) -> MoltValue:
@@ -2445,13 +2871,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="LT", args=[left, right], result=res))
             return res
         if isinstance(op, ast.Gt):
-            return self._emit_compare_op(ast.Lt(), right, left)
+            res = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="GT", args=[left, right], result=res))
+            return res
         if isinstance(op, ast.LtE):
-            lt_val = self._emit_compare_op(ast.Lt(), right, left)
-            return self._emit_not(lt_val)
+            res = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="LE", args=[left, right], result=res))
+            return res
         if isinstance(op, ast.GtE):
-            lt_val = self._emit_compare_op(ast.Lt(), left, right)
-            return self._emit_not(lt_val)
+            res = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="GE", args=[left, right], result=res))
+            return res
         if isinstance(op, ast.Is):
             res = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="IS", args=[left, right], result=res))
@@ -2666,13 +3096,23 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 parts.append(lit)
                 continue
             if isinstance(item, ast.FormattedValue):
-                if item.conversion != -1:
-                    raise NotImplementedError(
-                        "Formatted value conversion not supported"
-                    )
                 value = self.visit(item.value)
+                if item.conversion != -1:
+                    if item.conversion == ord("r"):
+                        value = self._emit_repr_from_obj(value)
+                    elif item.conversion == ord("s"):
+                        value = self._emit_str_from_obj(value)
+                    elif item.conversion == ord("a"):
+                        value = self._emit_ascii_from_obj(value)
+                    else:
+                        raise NotImplementedError(
+                            "Formatted value conversion not supported"
+                        )
                 if item.format_spec is None:
-                    parts.append(self._emit_str_from_obj(value))
+                    if item.conversion != -1:
+                        parts.append(value)
+                    else:
+                        parts.append(self._emit_str_from_obj(value))
                     continue
                 spec_text = self._format_spec_to_str(item.format_spec)
                 parts.append(self._emit_string_format(value, spec_text))
@@ -2699,6 +3139,25 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         elems = [self.visit(elt) for elt in node.elts]
         res = MoltValue(self.next_var(), type_hint="tuple")
         self.emit(MoltOp(kind="TUPLE_NEW", args=elems, result=res))
+        if elems:
+            first = elems[0].type_hint
+            if first in {"int", "float", "str", "bytes", "bytearray", "bool"} and all(
+                elem.type_hint == first for elem in elems
+            ):
+                if self.current_func_name == "molt_main":
+                    self.global_elem_hints[res.name] = first
+                else:
+                    self.container_elem_hints[res.name] = first
+        return res
+
+    def visit_Set(self, node: ast.Set) -> Any:
+        elems: list[MoltValue] = []
+        for elt in node.elts:
+            if isinstance(elt, ast.Starred):
+                raise NotImplementedError("Set unpacking is not supported")
+            elems.append(self.visit(elt))
+        res = MoltValue(self.next_var(), type_hint="set")
+        self.emit(MoltOp(kind="SET_NEW", args=elems, result=res))
         if elems:
             first = elems[0].type_hint
             if first in {"int", "float", "str", "bytes", "bytearray", "bool"} and all(
@@ -2870,6 +3329,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             base_info = self.classes.get(name)
             if base_info and base_info.get("dynamic"):
                 dynamic = True
+        if node.name in self.mutated_classes:
+            dynamic = True
 
         base_mros = [self._class_mro_names(name) for name in base_names]
         base_mros.append(list(base_names))
@@ -3457,6 +3918,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return res
             if (
                 isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "math"
+                and node.func.attr == "trunc"
+            ):
+                if len(node.args) != 1:
+                    raise NotImplementedError("math.trunc expects 1 argument")
+                value = self.visit(node.args[0])
+                if value is None:
+                    raise NotImplementedError("Unsupported math.trunc input")
+                res = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="TRUNC", args=[value], result=res))
+                return res
+            if (
+                isinstance(node.func.value, ast.Name)
                 and node.func.value.id == "molt_json"
             ):
                 if node.func.attr == "parse":
@@ -3656,6 +4130,124 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         MoltOp(kind="CALL", args=[target_name] + args, result=res)
                     )
                     return res
+            if method == "add" and receiver.type_hint == "set":
+                if len(node.args) != 1:
+                    raise NotImplementedError("set.add expects 1 argument")
+                arg = self.visit(node.args[0])
+                res = MoltValue(self.next_var(), type_hint="None")
+                self.emit(MoltOp(kind="SET_ADD", args=[receiver, arg], result=res))
+                return res
+            if method == "discard" and receiver.type_hint == "set":
+                if len(node.args) != 1:
+                    raise NotImplementedError("set.discard expects 1 argument")
+                arg = self.visit(node.args[0])
+                res = MoltValue(self.next_var(), type_hint="None")
+                self.emit(MoltOp(kind="SET_DISCARD", args=[receiver, arg], result=res))
+                return res
+            if method == "remove" and receiver.type_hint == "set":
+                if len(node.args) != 1:
+                    raise NotImplementedError("set.remove expects 1 argument")
+                arg = self.visit(node.args[0])
+                res = MoltValue(self.next_var(), type_hint="None")
+                self.emit(MoltOp(kind="SET_REMOVE", args=[receiver, arg], result=res))
+                return res
+            if method in {
+                "union",
+                "intersection",
+                "difference",
+                "symmetric_difference",
+            } and receiver.type_hint in {"set", "frozenset"}:
+                if method == "symmetric_difference":
+                    if len(node.args) != 1:
+                        raise NotImplementedError(
+                            "set.symmetric_difference expects 1 argument"
+                        )
+                    other = self.visit(node.args[0])
+                    if other is None:
+                        raise NotImplementedError("Unsupported set operation input")
+                    if other.type_hint not in {"set", "frozenset"}:
+                        other = self._emit_set_from_iter(other)
+                    op_kind = "BIT_XOR"
+                    res = MoltValue(self.next_var(), type_hint=receiver.type_hint)
+                    self.emit(MoltOp(kind=op_kind, args=[receiver, other], result=res))
+                    return res
+                if len(node.args) == 0:
+                    if receiver.type_hint == "frozenset":
+                        return self._emit_frozenset_from_iter(receiver)
+                    return self._emit_set_from_iter(receiver)
+                if method == "union":
+                    res = self._emit_set_from_iter(receiver)
+                    for arg in node.args:
+                        other = self.visit(arg)
+                        if other is None:
+                            raise NotImplementedError("Unsupported set operation input")
+                        if other.type_hint in {"set", "frozenset"}:
+                            self.emit(
+                                MoltOp(
+                                    kind="SET_UPDATE",
+                                    args=[res, other],
+                                    result=MoltValue("none"),
+                                )
+                            )
+                        else:
+                            self._emit_set_update_from_iter(res, other)
+                    if receiver.type_hint == "frozenset":
+                        return self._emit_frozenset_from_iter(res)
+                    return res
+                res = receiver
+                for arg in node.args:
+                    other = self.visit(arg)
+                    if other is None:
+                        raise NotImplementedError("Unsupported set operation input")
+                    if other.type_hint not in {"set", "frozenset"}:
+                        other = self._emit_set_from_iter(other)
+                    op_kind = {
+                        "intersection": "BIT_AND",
+                        "difference": "SUB",
+                    }[method]
+                    next_res = MoltValue(self.next_var(), type_hint=receiver.type_hint)
+                    self.emit(MoltOp(kind=op_kind, args=[res, other], result=next_res))
+                    res = next_res
+                return res
+            if (
+                method
+                in {
+                    "update",
+                    "intersection_update",
+                    "difference_update",
+                    "symmetric_difference_update",
+                }
+                and receiver.type_hint == "set"
+            ):
+                if method == "symmetric_difference_update":
+                    if len(node.args) != 1:
+                        raise NotImplementedError(
+                            "set.symmetric_difference_update expects 1 argument"
+                        )
+                if len(node.args) == 0:
+                    res = MoltValue(self.next_var(), type_hint="None")
+                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
+                    return res
+                res = MoltValue(self.next_var(), type_hint="None")
+                op_kind = {
+                    "update": "SET_UPDATE",
+                    "intersection_update": "SET_INTERSECTION_UPDATE",
+                    "difference_update": "SET_DIFFERENCE_UPDATE",
+                    "symmetric_difference_update": "SET_SYMDIFF_UPDATE",
+                }[method]
+                for arg in node.args:
+                    other = self.visit(arg)
+                    if other is None:
+                        raise NotImplementedError("Unsupported set operation input")
+                    if other.type_hint in {"set", "frozenset"} or method != "update":
+                        if other.type_hint not in {"set", "frozenset"}:
+                            other = self._emit_set_from_iter(other)
+                        self.emit(
+                            MoltOp(kind=op_kind, args=[receiver, other], result=res)
+                        )
+                    else:
+                        self._emit_set_update_from_iter(receiver, other)
+                return res
             if method == "append":
                 if len(node.args) != 1:
                     raise NotImplementedError("list.append expects 1 argument")
@@ -3730,6 +4322,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             result=res,
                         )
                     )
+                    return res
+                if receiver.type_hint == "set":
+                    if node.args:
+                        raise NotImplementedError("set.pop expects 0 arguments")
+                    res = MoltValue(self.next_var(), type_hint="Any")
+                    self.emit(MoltOp(kind="SET_POP", args=[receiver], result=res))
                     return res
                 if len(node.args) > 1:
                     raise NotImplementedError("list.pop expects 0 or 1 argument")
@@ -3830,8 +4428,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                     return res
             if method == "count":
-                if len(node.args) != 1:
-                    raise NotImplementedError("count expects 1 argument")
+                if len(node.args) not in (1, 2, 3):
+                    raise NotImplementedError("count expects 1-3 arguments")
                 needle = self.visit(node.args[0])
                 if (
                     receiver.type_hint in {"Any", "Unknown"}
@@ -3840,8 +4438,39 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     receiver.type_hint = "str"
                 if receiver.type_hint == "str":
                     res = MoltValue(self.next_var(), type_hint="int")
+                    if len(node.args) == 1:
+                        self.emit(
+                            MoltOp(
+                                kind="STRING_COUNT", args=[receiver, needle], result=res
+                            )
+                        )
+                        return res
+                    start = self.visit(node.args[1])
+                    if start is None:
+                        raise NotImplementedError("Unsupported count start argument")
+                    if len(node.args) == 3:
+                        end = self.visit(node.args[2])
+                        if end is None:
+                            raise NotImplementedError("Unsupported count end argument")
+                        has_end = MoltValue(self.next_var(), type_hint="bool")
+                        self.emit(
+                            MoltOp(kind="CONST_BOOL", args=[True], result=has_end)
+                        )
+                    else:
+                        end = MoltValue(self.next_var(), type_hint="None")
+                        self.emit(MoltOp(kind="CONST_NONE", args=[], result=end))
+                        has_end = MoltValue(self.next_var(), type_hint="bool")
+                        self.emit(
+                            MoltOp(kind="CONST_BOOL", args=[False], result=has_end)
+                        )
+                    has_start = MoltValue(self.next_var(), type_hint="bool")
+                    self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=has_start))
                     self.emit(
-                        MoltOp(kind="STRING_COUNT", args=[receiver, needle], result=res)
+                        MoltOp(
+                            kind="STRING_COUNT_SLICE",
+                            args=[receiver, needle, start, end, has_start, has_end],
+                            result=res,
+                        )
                     )
                     return res
             if method == "startswith":
@@ -4776,6 +5405,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 defaults = class_info.get("defaults", {})
                 for name in field_order:
                     default_expr = defaults.get(name)
+                    use_init = False
+                    if not class_info.get("dynamic"):
+                        if default_expr is None:
+                            use_init = True
+                        elif isinstance(default_expr, ast.Constant):
+                            const_val = default_expr.value
+                            if const_val is None or isinstance(
+                                const_val, (int, float, bool)
+                            ):
+                                use_init = True
                     if default_expr is not None:
                         val = self.visit(default_expr)
                         if val is None:
@@ -4789,6 +5428,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             MoltOp(
                                 kind="SETATTR_GENERIC_PTR",
                                 args=[res, name, val],
+                                result=MoltValue("none"),
+                            )
+                        )
+                    elif use_init:
+                        self.emit(
+                            MoltOp(
+                                kind="SETATTR_INIT",
+                                args=[res, name, val, class_id],
                                 result=MoltValue("none"),
                             )
                         )
@@ -4875,7 +5522,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 target_name = target_info.type_hint.split(":")[1]
                 args = self._emit_call_args(node.args)
                 res = MoltValue(self.next_var(), type_hint="int")
-                if self.is_async():
+                if self.is_async() or (
+                    isinstance(node.func, ast.Name)
+                    and node.func.id in self.stable_module_funcs
+                ):
                     self.emit(
                         MoltOp(kind="CALL", args=[target_name] + args, result=res)
                     )
@@ -5103,6 +5753,170 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         MoltOp(kind="TUPLE_FROM_LIST", args=[iterable], result=res)
                     )
                     return res
+            if func_id == "float":
+                if len(node.args) > 1:
+                    raise NotImplementedError("float expects 0 or 1 arguments")
+                if not node.args:
+                    res = MoltValue(self.next_var(), type_hint="float")
+                    self.emit(MoltOp(kind="CONST_FLOAT", args=[0.0], result=res))
+                    return res
+                value = self.visit(node.args[0])
+                if value is None:
+                    raise NotImplementedError("Unsupported float input")
+                res = MoltValue(self.next_var(), type_hint="float")
+                self.emit(MoltOp(kind="FLOAT_FROM_OBJ", args=[value], result=res))
+                return res
+            if func_id == "int":
+                if node.keywords:
+                    raise NotImplementedError("int does not support keywords")
+                if len(node.args) > 2:
+                    raise NotImplementedError("int expects 0-2 arguments")
+                if not node.args:
+                    res = MoltValue(self.next_var(), type_hint="int")
+                    self.emit(MoltOp(kind="CONST", args=[0], result=res))
+                    return res
+                value = self.visit(node.args[0])
+                if value is None:
+                    raise NotImplementedError("Unsupported int input")
+                if len(node.args) == 2:
+                    base = self.visit(node.args[1])
+                    if base is None:
+                        base = MoltValue(self.next_var(), type_hint="None")
+                        self.emit(MoltOp(kind="CONST_NONE", args=[], result=base))
+                    has_base = MoltValue(self.next_var(), type_hint="bool")
+                    self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=has_base))
+                else:
+                    base = MoltValue(self.next_var(), type_hint="None")
+                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=base))
+                    has_base = MoltValue(self.next_var(), type_hint="bool")
+                    self.emit(MoltOp(kind="CONST_BOOL", args=[False], result=has_base))
+                res = MoltValue(self.next_var(), type_hint="int")
+                self.emit(
+                    MoltOp(
+                        kind="INT_FROM_OBJ", args=[value, base, has_base], result=res
+                    )
+                )
+                return res
+            if func_id == "pow":
+                if node.keywords:
+                    raise NotImplementedError("pow does not support keywords")
+                if len(node.args) not in (2, 3):
+                    raise NotImplementedError("pow expects 2 or 3 arguments")
+                base = self.visit(node.args[0])
+                exp = self.visit(node.args[1])
+                if base is None or exp is None:
+                    raise NotImplementedError("Unsupported pow inputs")
+                if len(node.args) == 2:
+                    res_type = (
+                        "float"
+                        if "float" in {base.type_hint, exp.type_hint}
+                        else "Unknown"
+                    )
+                    res = MoltValue(self.next_var(), type_hint=res_type)
+                    self.emit(MoltOp(kind="POW", args=[base, exp], result=res))
+                    return res
+                mod = self.visit(node.args[2])
+                if mod is None:
+                    raise NotImplementedError("Unsupported pow mod input")
+                int_like = {"int", "bool"}
+                res_type = (
+                    "int"
+                    if {
+                        base.type_hint,
+                        exp.type_hint,
+                        mod.type_hint,
+                    }.issubset(int_like)
+                    else "Unknown"
+                )
+                res = MoltValue(self.next_var(), type_hint=res_type)
+                self.emit(MoltOp(kind="POW_MOD", args=[base, exp, mod], result=res))
+                return res
+            if func_id == "round":
+                if node.keywords:
+                    raise NotImplementedError("round does not support keywords")
+                if len(node.args) not in (1, 2):
+                    raise NotImplementedError("round expects 1 or 2 arguments")
+                value = self.visit(node.args[0])
+                if value is None:
+                    raise NotImplementedError("Unsupported round input")
+                if len(node.args) == 2:
+                    ndigits = self.visit(node.args[1])
+                    if ndigits is None:
+                        ndigits = MoltValue(self.next_var(), type_hint="None")
+                        self.emit(MoltOp(kind="CONST_NONE", args=[], result=ndigits))
+                    has_ndigits = MoltValue(self.next_var(), type_hint="bool")
+                    self.emit(
+                        MoltOp(kind="CONST_BOOL", args=[True], result=has_ndigits)
+                    )
+                    if value.type_hint == "float":
+                        res_type = "float"
+                    elif value.type_hint in {"int", "bool"}:
+                        res_type = "int"
+                    else:
+                        res_type = "Unknown"
+                else:
+                    ndigits = MoltValue(self.next_var(), type_hint="None")
+                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=ndigits))
+                    has_ndigits = MoltValue(self.next_var(), type_hint="bool")
+                    self.emit(
+                        MoltOp(kind="CONST_BOOL", args=[False], result=has_ndigits)
+                    )
+                    res_type = (
+                        "int"
+                        if value.type_hint in {"int", "bool", "float"}
+                        else "Unknown"
+                    )
+                res = MoltValue(self.next_var(), type_hint=res_type)
+                self.emit(
+                    MoltOp(kind="ROUND", args=[value, ndigits, has_ndigits], result=res)
+                )
+                return res
+            if func_id == "set":
+                if len(node.args) > 1:
+                    raise NotImplementedError("set expects 0 or 1 arguments")
+                if not node.args:
+                    res = MoltValue(self.next_var(), type_hint="set")
+                    self.emit(MoltOp(kind="SET_NEW", args=[], result=res))
+                    return res
+                range_args = self._parse_range_call(node.args[0])
+                if range_args is not None:
+                    start, stop, step = range_args
+                    range_obj = MoltValue(self.next_var(), type_hint="range")
+                    self.emit(
+                        MoltOp(
+                            kind="RANGE_NEW",
+                            args=[start, stop, step],
+                            result=range_obj,
+                        )
+                    )
+                    return self._emit_set_from_iter(range_obj)
+                iterable = self.visit(node.args[0])
+                if iterable is None:
+                    raise NotImplementedError("Unsupported set input")
+                return self._emit_set_from_iter(iterable)
+            if func_id == "frozenset":
+                if len(node.args) > 1:
+                    raise NotImplementedError("frozenset expects 0 or 1 arguments")
+                if not node.args:
+                    res = MoltValue(self.next_var(), type_hint="frozenset")
+                    self.emit(MoltOp(kind="FROZENSET_NEW", args=[], result=res))
+                    return res
+                range_args = self._parse_range_call(node.args[0])
+                if range_args is not None:
+                    start, stop, step = range_args
+                    range_obj = MoltValue(self.next_var(), type_hint="range")
+                    self.emit(
+                        MoltOp(
+                            kind="RANGE_NEW",
+                            args=[start, stop, step],
+                            result=range_obj,
+                        )
+                    )
+                    return self._emit_frozenset_from_iter(range_obj)
+                iterable = self.visit(node.args[0])
+                if iterable is None:
+                    raise NotImplementedError("Unsupported frozenset input")
+                return self._emit_frozenset_from_iter(iterable)
                 return self._emit_tuple_from_iter(iterable)
             if func_id == "bytes":
                 if len(node.args) > 1:
@@ -5961,9 +6775,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if isinstance(node.op, ast.UAdd):
             return operand
         if isinstance(node.op, ast.USub):
-            zero = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-            res = MoltValue(self.next_var(), type_hint="int")
+            if operand.type_hint == "float":
+                zero = MoltValue(self.next_var(), type_hint="float")
+                self.emit(MoltOp(kind="CONST_FLOAT", args=[0.0], result=zero))
+                res = MoltValue(self.next_var(), type_hint="float")
+            else:
+                zero = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="CONST", args=[0], result=zero))
+                res = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="SUB", args=[zero, operand], result=res))
             return res
         if isinstance(node.op, ast.Not):
@@ -8224,6 +9043,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 json_ops.append(
                     {"kind": "const", "value": value, "out": op.result.name}
                 )
+            elif op.kind == "CONST_BIGINT":
+                json_ops.append(
+                    {
+                        "kind": "const_bigint",
+                        "s_value": op.args[0],
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "CONST_BOOL":
                 value = 1 if op.args[0] else 0
                 json_ops.append(
@@ -8278,6 +9105,110 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if self._should_fast_int(op):
                     mul_entry["fast_int"] = True
                 json_ops.append(mul_entry)
+            elif op.kind == "DIV":
+                json_ops.append(
+                    {
+                        "kind": "div",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "FLOORDIV":
+                json_ops.append(
+                    {
+                        "kind": "floordiv",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "MOD":
+                json_ops.append(
+                    {
+                        "kind": "mod",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "POW":
+                json_ops.append(
+                    {
+                        "kind": "pow",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "BIT_OR":
+                json_ops.append(
+                    {
+                        "kind": "bit_or",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "BIT_AND":
+                json_ops.append(
+                    {
+                        "kind": "bit_and",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "BIT_XOR":
+                json_ops.append(
+                    {
+                        "kind": "bit_xor",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "LSHIFT":
+                json_ops.append(
+                    {
+                        "kind": "lshift",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "RSHIFT":
+                json_ops.append(
+                    {
+                        "kind": "rshift",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "MATMUL":
+                json_ops.append(
+                    {
+                        "kind": "matmul",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "POW_MOD":
+                json_ops.append(
+                    {
+                        "kind": "pow_mod",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "ROUND":
+                json_ops.append(
+                    {
+                        "kind": "round",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "TRUNC":
+                json_ops.append(
+                    {
+                        "kind": "trunc",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "LT":
                 lt_entry: dict[str, Any] = {
                     "kind": "lt",
@@ -8287,6 +9218,30 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if self._should_fast_int(op):
                     lt_entry["fast_int"] = True
                 json_ops.append(lt_entry)
+            elif op.kind == "LE":
+                json_ops.append(
+                    {
+                        "kind": "le",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "GT":
+                json_ops.append(
+                    {
+                        "kind": "gt",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "GE":
+                json_ops.append(
+                    {
+                        "kind": "ge",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "EQ":
                 eq_entry: dict[str, Any] = {
                     "kind": "eq",
@@ -8740,6 +9695,20 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 json_ops.append(
                     {"kind": "store", "args": [obj.name, val.name], "value": offset}
                 )
+            elif op.kind == "SETATTR_INIT":
+                obj, attr, val, *rest = op.args
+                if rest:
+                    expected_class = rest[0]
+                else:
+                    expected_class = list(self.classes.keys())[-1]
+                offset = self.classes[expected_class]["fields"][attr]
+                json_ops.append(
+                    {
+                        "kind": "store_init",
+                        "args": [obj.name, val.name],
+                        "value": offset,
+                    }
+                )
             elif op.kind == "SETATTR_GENERIC_PTR":
                 json_ops.append(
                     {
@@ -9045,6 +10014,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "out": op.result.name,
                     }
                 )
+            elif op.kind == "FLOAT_FROM_OBJ":
+                json_ops.append(
+                    {
+                        "kind": "float_from_obj",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "INT_FROM_OBJ":
+                json_ops.append(
+                    {
+                        "kind": "int_from_obj",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "MEMORYVIEW_NEW":
                 json_ops.append(
                     {
@@ -9069,6 +10054,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "out": op.result.name,
                     }
                 )
+            elif op.kind == "SET_NEW":
+                json_ops.append(
+                    {
+                        "kind": "set_new",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "FROZENSET_NEW":
+                json_ops.append(
+                    {
+                        "kind": "frozenset_new",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "DICT_GET":
                 json_ops.append(
                     {
@@ -9081,6 +10082,78 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 json_ops.append(
                     {
                         "kind": "dict_pop",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "SET_ADD":
+                json_ops.append(
+                    {
+                        "kind": "set_add",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "FROZENSET_ADD":
+                json_ops.append(
+                    {
+                        "kind": "frozenset_add",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "SET_DISCARD":
+                json_ops.append(
+                    {
+                        "kind": "set_discard",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "SET_REMOVE":
+                json_ops.append(
+                    {
+                        "kind": "set_remove",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "SET_POP":
+                json_ops.append(
+                    {
+                        "kind": "set_pop",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "SET_UPDATE":
+                json_ops.append(
+                    {
+                        "kind": "set_update",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "SET_INTERSECTION_UPDATE":
+                json_ops.append(
+                    {
+                        "kind": "set_intersection_update",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "SET_DIFFERENCE_UPDATE":
+                json_ops.append(
+                    {
+                        "kind": "set_difference_update",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "SET_SYMDIFF_UPDATE":
+                json_ops.append(
+                    {
+                        "kind": "set_symdiff_update",
                         "args": [arg.name for arg in op.args],
                         "out": op.result.name,
                     }
@@ -9371,6 +10444,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "out": op.result.name,
                     }
                 )
+            elif op.kind == "REPR_FROM_OBJ":
+                json_ops.append(
+                    {
+                        "kind": "repr_from_obj",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "ASCII_FROM_OBJ":
+                json_ops.append(
+                    {
+                        "kind": "ascii_from_obj",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "STRING_FIND":
                 json_ops.append(
                     {
@@ -9439,6 +10528,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 json_ops.append(
                     {
                         "kind": "string_count",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "STRING_COUNT_SLICE":
+                json_ops.append(
+                    {
+                        "kind": "string_count_slice",
                         "args": [arg.name for arg in op.args],
                         "out": op.result.name,
                     }

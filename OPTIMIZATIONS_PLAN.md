@@ -315,6 +315,13 @@ and regression control.
   - struct_field_store=0
 - Next: `CALL_GUARDED` op landed to guard direct name calls by fn_ptr; re-benchmark
   fib and consider arity-checked fallback for mismatched globals.
+- Re-run (2026-01-07): call_dispatch=0 / string_count_cache_hit=0 / miss=0 / struct_field_store=0.
+- Execution checklist:
+  - [x] Re-run `bench_fib.py` with `MOLT_PROFILE=1` and record call_dispatch deltas.
+  - [x] Add differential coverage for rebinding a guarded local/global and verify fallback.
+  - [ ] Decide whether to add arity checks on the guarded fast path.
+- Update (2026-01-07): added stable-module direct-call lowering (no guard) when a function name
+  is only bound once at module scope and not declared global elsewhere; see `call_rebind.py`.
 
 ### OPT-0006: Unicode Count Warm-Cache Fast Path
 
@@ -358,13 +365,24 @@ and regression control.
 **Success Criteria**
 - `bench_str_count_unicode_warm.py` >=1.0x vs CPython.
 
-**Latest Profile (2026-01-07)**
+**Latest Profile (2026-01-08)**
 - `bench_str_count_unicode_warm.py` with `MOLT_PROFILE=1`:
   - string_count_cache_hit=25
   - string_count_cache_miss=1
   - call_dispatch=0 / struct_field_store=0
-- Next: count cache moved to a dedicated store to avoid UTF-8 index builds; run
-  unicode count benches to quantify first-call vs warm-path deltas.
+- Update (2026-01-07): added a thread-local fast path for count cache hits to avoid
+  global lock overhead on warm loops.
+- Update (2026-01-08): sharded UTF-8 count cache store to reduce lock contention.
+- Update (2026-01-07): aligned UTF-8 cache block offsets to codepoint boundaries and
+  added `str.count` start/end slicing support with Unicode combining tests.
+- Targeted bench run (2026-01-08, `bench/results/bench_tls_struct.json`):
+  - `bench_str_count_unicode.py`: 0.0296s (Molt) vs 0.0287s (CPython), 1.03x.
+  - `bench_str_count_unicode_warm.py`: 0.2359s (Molt) vs 0.0289s (CPython), 8.16x.
+  - `bench_struct.py`: 0.2188s (Molt) vs 1.6611s (CPython), 0.13x.
+- Execution checklist:
+  - [x] Run unicode count benches and capture warm vs cold delta with `MOLT_PROFILE=1`.
+  - [ ] Prototype prefix-count metadata in cache entries and record memory overhead.
+  - [ ] Add Unicode differential cases that exercise combining characters.
 
 ### OPT-0007: Structified Class Fast Path + Optional Scalar Replacement
 
@@ -402,6 +420,13 @@ and regression control.
   escape-analysis gating for allocation removal.
 - Update: exact-local class tracking now skips guarded setattr for constructor-bound
   locals with fixed layouts; measure impact on `bench_struct.py`.
+- Re-run (2026-01-07): call_dispatch=0 / struct_field_store=2,000,000 (after store_init defaults).
+- Execution checklist:
+  - [ ] Measure guard vs direct-slot store cost on `bench_struct.py` and record.
+  - [ ] Add differential tests for dynamic class mutation that must deopt.
+  - [ ] Decide whether to gate structified stores behind a layout-stability flag.
+- Update (2026-01-07): added `store_init` lowering for immediate defaults to avoid
+  refcount work on freshly allocated objects.
 
 **Benchmark Matrix**
 - bench_struct.py: expected >=2x improvement

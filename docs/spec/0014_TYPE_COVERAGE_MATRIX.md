@@ -19,10 +19,11 @@
 | list | literals, index/slice, methods, iter | Partial | P0 | TC1 | runtime/frontend |
 | tuple | literals, index/slice, hash, iter | Partial | P0 | TC1 | runtime/frontend |
 | dict | literals, index/set, views, iter | Partial | P0 | TC1 | runtime/frontend |
-| set/frozenset | literals, ops, hash (frozen) | Planned | P1 | TC2 | runtime/frontend |
+| set | literals, constructor, add/remove/contains/iter/len, algebra (`|`, `&`, `-`, `^`) | Partial | P1 | TC2 | runtime/frontend |
+| frozenset | constructor, hash, contains/iter/len, algebra (`|`, `&`, `-`, `^`) | Partial | P1 | TC2 | runtime/frontend |
 | range | len/index/iter; step==0 error | Partial | P0 | TC1 | runtime/frontend |
 | slice | slice objects + normalization + step | Partial | P1 | TC2 | runtime/frontend |
-| memoryview | buffer protocol, slicing, writable views, strides | Partial | P2 | TC3 | runtime |
+| memoryview | buffer protocol (1D format/shape/strides), slicing, writable views | Partial | P2 | TC3 | runtime |
 | iterator | iter/next protocol, StopIteration | Partial | P0 | TC1 | runtime |
 | generator/coroutine | send/throw/close, await | Partial | P0 | TC2 | runtime/frontend |
 | exceptions | BaseException hierarchy, raise/try, chaining | Partial | P0 | TC1 | frontend/runtime |
@@ -58,9 +59,9 @@
 | eval | eval (restricted) | Planned | P2 | TC3 | stdlib |
 | exec | exec (restricted) | Planned | P2 | TC3 | stdlib |
 | filter | lazy iterator predicate | Planned | P1 | TC2 | frontend/runtime |
-| float | float constructor | Planned | P1 | TC2 | frontend/runtime |
+| float | float constructor | Supported | P1 | TC2 | frontend/runtime |
 | format | format protocol | Partial | P2 | TC3 | runtime |
-| frozenset | frozenset constructor | Planned | P1 | TC2 | frontend/runtime |
+| frozenset | frozenset constructor | Partial | P1 | TC2 | frontend/runtime |
 | getattr | attribute lookup | Partial | P1 | TC2 | runtime |
 | globals | globals dict | Planned | P2 | TC3 | stdlib |
 | hasattr | attribute predicate | Partial | P1 | TC2 | runtime |
@@ -69,7 +70,7 @@
 | hex | integer to hex string | Planned | P2 | TC3 | runtime |
 | id | identity (deterministic) | Planned | P2 | TC3 | runtime |
 | input | stdin (gated) | Planned | P2 | TC3 | stdlib |
-| int | int constructor | Planned | P1 | TC2 | frontend/runtime |
+| int | int constructor | Partial | P1 | TC2 | frontend/runtime |
 | isinstance | type check + tuple-of-types | Partial | P2 | TC3 | runtime |
 | issubclass | type check + tuple-of-types | Partial | P2 | TC3 | runtime |
 | iter | iterator construction | Planned | P1 | TC2 | frontend/runtime |
@@ -85,14 +86,14 @@
 | oct | integer to octal string | Planned | P2 | TC3 | runtime |
 | open | file I/O (gated) | Planned | P2 | TC3 | stdlib |
 | ord | char to int | Planned | P2 | TC3 | runtime |
-| pow | power with mod | Planned | P1 | TC2 | frontend/runtime |
+| pow | power with mod | Partial | P1 | TC2 | frontend/runtime |
 | print | output formatting | Supported | P0 | TC0 | runtime |
 | property | descriptor constructor | Partial | P1 | TC2 | runtime |
 | range | range object construction + errors | Partial | P0 | TC1 | frontend/runtime |
 | repr | repr protocol | Partial | P1 | TC2 | runtime |
 | reversed | reverse iterator | Planned | P1 | TC2 | frontend/runtime |
-| round | rounding | Planned | P1 | TC2 | frontend/runtime |
-| set | set constructor | Planned | P1 | TC2 | frontend/runtime |
+| round | rounding | Partial | P1 | TC2 | frontend/runtime |
+| set | set constructor | Partial | P1 | TC2 | frontend/runtime |
 | setattr | attribute set | Partial | P1 | TC2 | runtime |
 | slice | slice constructor | Partial | P1 | TC2 | frontend/runtime |
 | sorted | stable sort + key/reverse | Planned | P2 | TC3 | frontend/runtime |
@@ -120,12 +121,14 @@
   - TODO(type-coverage, owner:runtime, milestone:TC2): generator state objects + StopIteration.
   - TODO(type-coverage, owner:frontend, milestone:TC2): comprehension lowering to iterators.
   - TODO(type-coverage, owner:frontend, milestone:TC2): builtin iterators (`iter`, `next`, `reversed`, `enumerate`, `zip`, `map`, `filter`).
-  - TODO(type-coverage, owner:frontend, milestone:TC2): builtin numeric ops (`abs`, `round`, `pow`, `divmod`, `min`, `max`, `sum`).
-  - TODO(type-coverage, owner:frontend, milestone:TC2): builtin conversions (`int`, `float`, `complex`, `str`, `bool`).
+  - TODO(type-coverage, owner:frontend, milestone:TC2): builtin numeric ops (`abs`, `divmod`, `min`, `max`, `sum`).
+  - TODO(type-coverage, owner:frontend, milestone:TC2): builtin conversions (`complex`, `str`, `bool`).
+  - Implemented (partial): `round`/`trunc` lowering with `__round__`/`__trunc__` hooks.
+  - Implemented (partial): `int` conversion from int/float/str/bytes + `__int__`/`__index__` hooks.
 - Implemented: `aiter`/`anext` lowering + async-for parity with `__aiter__`/`__anext__` support (sync-iter fallback retained for now).
 - TODO(type-coverage, owner:frontend, milestone:TC2): `anext` awaitable support outside `await` expressions.
 - **TC3 (Late):** memoryview, type/object, modules, descriptors.
-  - TODO(type-coverage, owner:runtime, milestone:TC3): memoryview format codes, multidimensional shapes, and advanced buffer exports.
+  - TODO(type-coverage, owner:runtime, milestone:TC3): memoryview multidimensional shapes + advanced buffer exports.
   - TODO(type-coverage, owner:stdlib, milestone:TC3): import/module rules + module object model (`__import__`, package resolution, `sys.path` policy).
   - TODO(type-coverage, owner:stdlib, milestone:TC3): reflection builtins (`type`, `isinstance`, `issubclass`, `dir`, `vars`, `globals`, `locals`).
   - TODO(type-coverage, owner:stdlib, milestone:TC3): dynamic execution builtins (`eval`, `exec`, `compile`) with sandboxing rules.
@@ -138,17 +141,18 @@
 - Implemented: instance dict fallback for structified objects + dynamic attrs on non-slot dataclasses.
 - Implemented: class objects + basic descriptors (`classmethod`, `staticmethod`, `property`).
 - Implemented: C3 MRO + multiple inheritance for attribute lookup + `super()` resolution + data descriptor precedence.
-- TODO(type-coverage, owner:runtime, milestone:TC2): set/frozenset hashing + deterministic ordering.
+- Implemented: frozenset hashing (order-insensitive) + set/frozenset algebra intrinsics.
 - Implemented: exception objects with cause/context/suppress fields.
 - TODO(type-coverage, owner:runtime, milestone:TC1): exception stack trace capture.
-- TODO(type-coverage, owner:runtime, milestone:TC2): formatting builtins (`repr`, `ascii`, `bin`, `hex`, `oct`, `chr`, `ord`) + full `format` protocol (format specs, named fields, conversion flags).
-- TODO(type-coverage, owner:runtime, milestone:TC2): rounding intrinsics (`round`, `floor`, `ceil`, `trunc`) with deterministic semantics.
+- TODO(type-coverage, owner:runtime, milestone:TC2): formatting builtins (`repr`, `ascii`, `bin`, `hex`, `oct`, `chr`, `ord`) + full `format` protocol (`__format__`, named fields, locale-aware grouping).
+- TODO(type-coverage, owner:runtime, milestone:TC2): rounding intrinsics (`floor`, `ceil`) + full deterministic semantics for edge cases.
 - TODO(type-coverage, owner:runtime, milestone:TC2): identity builtins (`hash`, `id`, `callable`).
+- Implemented: BigInt heap fallback + arithmetic parity beyond 47-bit inline ints.
 - TODO(type-coverage, owner:runtime, milestone:TC1): recursion limits + `RecursionError` guard semantics.
 - Implemented: descriptor deleter semantics (`__delete__`, property deleter) + attribute deletion wiring.
 
 ## 4. Frontend + IR Coverage
-- Lower literals/ops for set/frozenset, complex, and exceptions.
+- Lower set literals/constructors + set algebra + frozenset; complex and exceptions remain.
 - Add IR ops for raise, try/except, unpacking, and dunder dispatch.
 - TODO(type-coverage, owner:frontend, milestone:TC2): iterable unpacking + starred targets.
 
@@ -158,7 +162,7 @@
 - Partial: wasm backend covers generator state machines, closure slot intrinsics, channel send/recv intrinsics, and basic async pending semantics; remaining async parity gaps include async iteration/scheduler semantics.
 
 ## 6. Stdlib + Interop
-- Expand builtins (e.g., `set`, `range`, `slice`, exceptions).
+- Expand builtins (e.g., `range`, `slice`, exceptions).
 - Document staged/unsupported behaviors explicitly.
 - TODO(type-coverage, owner:stdlib, milestone:TC2): `builtins` module parity notes.
 
@@ -166,4 +170,4 @@
 - Differential tests per type with edge cases (errors, hashing, iteration).
 - Hypothesis‑driven generators for container/exception semantics.
 - Perf gates for container hot paths + memory churn.
-- TODO(type-coverage, owner:tests, milestone:TC1): add exception + set coverage to molt_diff.
+- TODO(type-coverage, owner:tests, milestone:TC1): add exception coverage to molt_diff.

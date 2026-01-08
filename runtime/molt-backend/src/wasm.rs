@@ -114,6 +114,11 @@ impl WasmBackend {
         // Type 8: () -> () (print_newline)
         self.types
             .function(std::iter::empty::<ValType>(), std::iter::empty());
+        // Type 9: (i64, i64, i64, i64, i64, i64) -> i64 (string_count_slice)
+        self.types.function(
+            std::iter::repeat_n(ValType::I64, 6),
+            std::iter::once(ValType::I64),
+        );
 
         let mut import_idx = 0;
         let mut add_import = |name: &str, ty: u32, ids: &mut HashMap<String, u32>| {
@@ -151,7 +156,23 @@ impl WasmBackend {
         add_import("vec_max_int_range_trusted", 5, &mut self.import_ids);
         add_import("sub", 3, &mut self.import_ids);
         add_import("mul", 3, &mut self.import_ids);
+        add_import("bit_or", 3, &mut self.import_ids);
+        add_import("bit_and", 3, &mut self.import_ids);
+        add_import("bit_xor", 3, &mut self.import_ids);
+        add_import("lshift", 3, &mut self.import_ids);
+        add_import("rshift", 3, &mut self.import_ids);
+        add_import("matmul", 3, &mut self.import_ids);
+        add_import("div", 3, &mut self.import_ids);
+        add_import("floordiv", 3, &mut self.import_ids);
+        add_import("mod", 3, &mut self.import_ids);
+        add_import("pow", 3, &mut self.import_ids);
+        add_import("pow_mod", 5, &mut self.import_ids);
+        add_import("round", 5, &mut self.import_ids);
+        add_import("trunc", 2, &mut self.import_ids);
         add_import("lt", 3, &mut self.import_ids);
+        add_import("le", 3, &mut self.import_ids);
+        add_import("gt", 3, &mut self.import_ids);
+        add_import("ge", 3, &mut self.import_ids);
         add_import("eq", 3, &mut self.import_ids);
         add_import("is", 3, &mut self.import_ids);
         add_import("closure_load", 3, &mut self.import_ids);
@@ -168,6 +189,7 @@ impl WasmBackend {
         add_import("del_attr_object", 5, &mut self.import_ids);
         add_import("object_field_get", 3, &mut self.import_ids);
         add_import("object_field_set", 5, &mut self.import_ids);
+        add_import("object_field_init", 5, &mut self.import_ids);
         add_import("module_new", 2, &mut self.import_ids);
         add_import("module_cache_get", 2, &mut self.import_ids);
         add_import("module_cache_set", 3, &mut self.import_ids);
@@ -184,7 +206,12 @@ impl WasmBackend {
         add_import("cbor_parse_scalar", 4, &mut self.import_ids);
         add_import("string_from_bytes", 4, &mut self.import_ids);
         add_import("bytes_from_bytes", 4, &mut self.import_ids);
+        add_import("bigint_from_str", 3, &mut self.import_ids);
         add_import("str_from_obj", 2, &mut self.import_ids);
+        add_import("repr_from_obj", 2, &mut self.import_ids);
+        add_import("ascii_from_obj", 2, &mut self.import_ids);
+        add_import("int_from_obj", 5, &mut self.import_ids);
+        add_import("float_from_obj", 2, &mut self.import_ids);
         add_import("memoryview_new", 2, &mut self.import_ids);
         add_import("memoryview_tobytes", 2, &mut self.import_ids);
         add_import("intarray_from_seq", 2, &mut self.import_ids);
@@ -211,6 +238,17 @@ impl WasmBackend {
         add_import("dict_keys", 2, &mut self.import_ids);
         add_import("dict_values", 2, &mut self.import_ids);
         add_import("dict_items", 2, &mut self.import_ids);
+        add_import("set_new", 2, &mut self.import_ids);
+        add_import("set_add", 3, &mut self.import_ids);
+        add_import("set_discard", 3, &mut self.import_ids);
+        add_import("set_remove", 3, &mut self.import_ids);
+        add_import("set_pop", 2, &mut self.import_ids);
+        add_import("set_update", 3, &mut self.import_ids);
+        add_import("set_intersection_update", 3, &mut self.import_ids);
+        add_import("set_difference_update", 3, &mut self.import_ids);
+        add_import("set_symdiff_update", 3, &mut self.import_ids);
+        add_import("frozenset_new", 2, &mut self.import_ids);
+        add_import("frozenset_add", 3, &mut self.import_ids);
         add_import("tuple_count", 3, &mut self.import_ids);
         add_import("tuple_index", 3, &mut self.import_ids);
         add_import("iter", 2, &mut self.import_ids);
@@ -230,6 +268,7 @@ impl WasmBackend {
         add_import("string_startswith", 3, &mut self.import_ids);
         add_import("string_endswith", 3, &mut self.import_ids);
         add_import("string_count", 3, &mut self.import_ids);
+        add_import("string_count_slice", 9, &mut self.import_ids);
         add_import("env_get", 3, &mut self.import_ids);
         add_import("string_join", 3, &mut self.import_ids);
         add_import("string_split", 3, &mut self.import_ids);
@@ -301,7 +340,7 @@ impl WasmBackend {
         let mut user_type_map: HashMap<usize, u32> = HashMap::new();
         user_type_map.insert(0, 0);
         user_type_map.insert(1, 2);
-        let mut next_type_idx = 9u32;
+        let mut next_type_idx = 10u32;
         for func_ir in &ir.functions {
             if func_ir.name.ends_with("_poll") {
                 continue;
@@ -422,7 +461,8 @@ impl WasmBackend {
                     local_types.push(ValType::I64);
                     local_count += 1;
                 }
-                if op.kind == "const_str" || op.kind == "const_bytes" {
+                if op.kind == "const_str" || op.kind == "const_bytes" || op.kind == "const_bigint"
+                {
                     let ptr_name = format!("{out}_ptr");
                     if let std::collections::hash_map::Entry::Vacant(entry) = locals.entry(ptr_name)
                     {
@@ -536,6 +576,31 @@ impl WasmBackend {
                             offset: 0,
                             memory_index: 0,
                         }));
+                        func.instruction(&Instruction::LocalSet(out_local));
+                    }
+                    "const_bigint" => {
+                        let s = op.s_value.as_ref().unwrap();
+                        let out_name = op.out.as_ref().unwrap();
+                        let bytes = s.as_bytes();
+                        let offset = self.data_offset;
+                        self.data.active(
+                            0,
+                            &ConstExpr::i32_const(offset as i32),
+                            bytes.iter().copied(),
+                        );
+                        self.data_offset = (self.data_offset + bytes.len() as u32 + 7) & !7;
+
+                        let ptr_local = locals[&format!("{out_name}_ptr")];
+                        let len_local = locals[&format!("{out_name}_len")];
+                        func.instruction(&Instruction::I64Const(offset as i64));
+                        func.instruction(&Instruction::LocalSet(ptr_local));
+                        func.instruction(&Instruction::I64Const(bytes.len() as i64));
+                        func.instruction(&Instruction::LocalSet(len_local));
+
+                        func.instruction(&Instruction::LocalGet(ptr_local));
+                        func.instruction(&Instruction::LocalGet(len_local));
+                        func.instruction(&Instruction::Call(import_ids["bigint_from_str"]));
+                        let out_local = locals[out_name];
                         func.instruction(&Instruction::LocalSet(out_local));
                     }
                     "const_bytes" => {
@@ -790,6 +855,138 @@ impl WasmBackend {
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
+                    "bit_or" => {
+                        let args = op.args.as_ref().unwrap();
+                        let lhs = locals[&args[0]];
+                        let rhs = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(lhs));
+                        func.instruction(&Instruction::LocalGet(rhs));
+                        func.instruction(&Instruction::Call(import_ids["bit_or"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "bit_and" => {
+                        let args = op.args.as_ref().unwrap();
+                        let lhs = locals[&args[0]];
+                        let rhs = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(lhs));
+                        func.instruction(&Instruction::LocalGet(rhs));
+                        func.instruction(&Instruction::Call(import_ids["bit_and"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "bit_xor" => {
+                        let args = op.args.as_ref().unwrap();
+                        let lhs = locals[&args[0]];
+                        let rhs = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(lhs));
+                        func.instruction(&Instruction::LocalGet(rhs));
+                        func.instruction(&Instruction::Call(import_ids["bit_xor"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "lshift" => {
+                        let args = op.args.as_ref().unwrap();
+                        let lhs = locals[&args[0]];
+                        let rhs = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(lhs));
+                        func.instruction(&Instruction::LocalGet(rhs));
+                        func.instruction(&Instruction::Call(import_ids["lshift"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "rshift" => {
+                        let args = op.args.as_ref().unwrap();
+                        let lhs = locals[&args[0]];
+                        let rhs = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(lhs));
+                        func.instruction(&Instruction::LocalGet(rhs));
+                        func.instruction(&Instruction::Call(import_ids["rshift"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "matmul" => {
+                        let args = op.args.as_ref().unwrap();
+                        let lhs = locals[&args[0]];
+                        let rhs = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(lhs));
+                        func.instruction(&Instruction::LocalGet(rhs));
+                        func.instruction(&Instruction::Call(import_ids["matmul"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "div" => {
+                        let args = op.args.as_ref().unwrap();
+                        let lhs = locals[&args[0]];
+                        let rhs = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(lhs));
+                        func.instruction(&Instruction::LocalGet(rhs));
+                        func.instruction(&Instruction::Call(import_ids["div"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "floordiv" => {
+                        let args = op.args.as_ref().unwrap();
+                        let lhs = locals[&args[0]];
+                        let rhs = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(lhs));
+                        func.instruction(&Instruction::LocalGet(rhs));
+                        func.instruction(&Instruction::Call(import_ids["floordiv"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "mod" => {
+                        let args = op.args.as_ref().unwrap();
+                        let lhs = locals[&args[0]];
+                        let rhs = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(lhs));
+                        func.instruction(&Instruction::LocalGet(rhs));
+                        func.instruction(&Instruction::Call(import_ids["mod"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "pow" => {
+                        let args = op.args.as_ref().unwrap();
+                        let lhs = locals[&args[0]];
+                        let rhs = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(lhs));
+                        func.instruction(&Instruction::LocalGet(rhs));
+                        func.instruction(&Instruction::Call(import_ids["pow"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "pow_mod" => {
+                        let args = op.args.as_ref().unwrap();
+                        let lhs = locals[&args[0]];
+                        let rhs = locals[&args[1]];
+                        let modulus = locals[&args[2]];
+                        func.instruction(&Instruction::LocalGet(lhs));
+                        func.instruction(&Instruction::LocalGet(rhs));
+                        func.instruction(&Instruction::LocalGet(modulus));
+                        func.instruction(&Instruction::Call(import_ids["pow_mod"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "round" => {
+                        let args = op.args.as_ref().unwrap();
+                        let val = locals[&args[0]];
+                        let ndigits = locals[&args[1]];
+                        let has_ndigits = locals[&args[2]];
+                        func.instruction(&Instruction::LocalGet(val));
+                        func.instruction(&Instruction::LocalGet(ndigits));
+                        func.instruction(&Instruction::LocalGet(has_ndigits));
+                        func.instruction(&Instruction::Call(import_ids["round"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "trunc" => {
+                        let args = op.args.as_ref().unwrap();
+                        let val = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(val));
+                        func.instruction(&Instruction::Call(import_ids["trunc"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
                     "lt" => {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
@@ -797,6 +994,36 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(lhs));
                         func.instruction(&Instruction::LocalGet(rhs));
                         func.instruction(&Instruction::Call(import_ids["lt"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "le" => {
+                        let args = op.args.as_ref().unwrap();
+                        let lhs = locals[&args[0]];
+                        let rhs = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(lhs));
+                        func.instruction(&Instruction::LocalGet(rhs));
+                        func.instruction(&Instruction::Call(import_ids["le"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "gt" => {
+                        let args = op.args.as_ref().unwrap();
+                        let lhs = locals[&args[0]];
+                        let rhs = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(lhs));
+                        func.instruction(&Instruction::LocalGet(rhs));
+                        func.instruction(&Instruction::Call(import_ids["gt"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "ge" => {
+                        let args = op.args.as_ref().unwrap();
+                        let lhs = locals[&args[0]];
+                        let rhs = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(lhs));
+                        func.instruction(&Instruction::LocalGet(rhs));
+                        func.instruction(&Instruction::Call(import_ids["ge"]));
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
@@ -1130,6 +1357,34 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalSet(out));
                         }
                     }
+                    "set_new" => {
+                        let args = op.args.as_ref().unwrap();
+                        let out = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::I64Const(args.len() as i64));
+                        func.instruction(&Instruction::Call(import_ids["set_new"]));
+                        func.instruction(&Instruction::LocalSet(out));
+                        for name in args {
+                            let val = locals[name];
+                            func.instruction(&Instruction::LocalGet(out));
+                            func.instruction(&Instruction::LocalGet(val));
+                            func.instruction(&Instruction::Call(import_ids["set_add"]));
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
+                    "frozenset_new" => {
+                        let args = op.args.as_ref().unwrap();
+                        let out = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::I64Const(args.len() as i64));
+                        func.instruction(&Instruction::Call(import_ids["frozenset_new"]));
+                        func.instruction(&Instruction::LocalSet(out));
+                        for name in args {
+                            let val = locals[name];
+                            func.instruction(&Instruction::LocalGet(out));
+                            func.instruction(&Instruction::LocalGet(val));
+                            func.instruction(&Instruction::Call(import_ids["frozenset_add"]));
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
                     "dict_get" => {
                         let args = op.args.as_ref().unwrap();
                         let dict = locals[&args[0]];
@@ -1153,6 +1408,100 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(default));
                         func.instruction(&Instruction::LocalGet(has_default));
                         func.instruction(&Instruction::Call(import_ids["dict_pop"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "set_add" => {
+                        let args = op.args.as_ref().unwrap();
+                        let set_bits = locals[&args[0]];
+                        let key = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(set_bits));
+                        func.instruction(&Instruction::LocalGet(key));
+                        func.instruction(&Instruction::Call(import_ids["set_add"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "frozenset_add" => {
+                        let args = op.args.as_ref().unwrap();
+                        let set_bits = locals[&args[0]];
+                        let key = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(set_bits));
+                        func.instruction(&Instruction::LocalGet(key));
+                        func.instruction(&Instruction::Call(import_ids["frozenset_add"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "set_discard" => {
+                        let args = op.args.as_ref().unwrap();
+                        let set_bits = locals[&args[0]];
+                        let key = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(set_bits));
+                        func.instruction(&Instruction::LocalGet(key));
+                        func.instruction(&Instruction::Call(import_ids["set_discard"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "set_remove" => {
+                        let args = op.args.as_ref().unwrap();
+                        let set_bits = locals[&args[0]];
+                        let key = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(set_bits));
+                        func.instruction(&Instruction::LocalGet(key));
+                        func.instruction(&Instruction::Call(import_ids["set_remove"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "set_pop" => {
+                        let args = op.args.as_ref().unwrap();
+                        let set_bits = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(set_bits));
+                        func.instruction(&Instruction::Call(import_ids["set_pop"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "set_update" => {
+                        let args = op.args.as_ref().unwrap();
+                        let set_bits = locals[&args[0]];
+                        let other = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(set_bits));
+                        func.instruction(&Instruction::LocalGet(other));
+                        func.instruction(&Instruction::Call(import_ids["set_update"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "set_intersection_update" => {
+                        let args = op.args.as_ref().unwrap();
+                        let set_bits = locals[&args[0]];
+                        let other = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(set_bits));
+                        func.instruction(&Instruction::LocalGet(other));
+                        func.instruction(&Instruction::Call(
+                            import_ids["set_intersection_update"],
+                        ));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "set_difference_update" => {
+                        let args = op.args.as_ref().unwrap();
+                        let set_bits = locals[&args[0]];
+                        let other = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(set_bits));
+                        func.instruction(&Instruction::LocalGet(other));
+                        func.instruction(&Instruction::Call(
+                            import_ids["set_difference_update"],
+                        ));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "set_symdiff_update" => {
+                        let args = op.args.as_ref().unwrap();
+                        let set_bits = locals[&args[0]];
+                        let other = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(set_bits));
+                        func.instruction(&Instruction::LocalGet(other));
+                        func.instruction(&Instruction::Call(
+                            import_ids["set_symdiff_update"],
+                        ));
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
@@ -1388,6 +1737,24 @@ impl WasmBackend {
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
+                    "string_count_slice" => {
+                        let args = op.args.as_ref().unwrap();
+                        let hay = locals[&args[0]];
+                        let needle = locals[&args[1]];
+                        let start = locals[&args[2]];
+                        let end = locals[&args[3]];
+                        let has_start = locals[&args[4]];
+                        let has_end = locals[&args[5]];
+                        func.instruction(&Instruction::LocalGet(hay));
+                        func.instruction(&Instruction::LocalGet(needle));
+                        func.instruction(&Instruction::LocalGet(start));
+                        func.instruction(&Instruction::LocalGet(end));
+                        func.instruction(&Instruction::LocalGet(has_start));
+                        func.instruction(&Instruction::LocalGet(has_end));
+                        func.instruction(&Instruction::Call(import_ids["string_count_slice"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
                     "env_get" => {
                         let args = op.args.as_ref().unwrap();
                         let key = locals[&args[0]];
@@ -1490,6 +1857,26 @@ impl WasmBackend {
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
+                    "float_from_obj" => {
+                        let args = op.args.as_ref().unwrap();
+                        let src = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(src));
+                        func.instruction(&Instruction::Call(import_ids["float_from_obj"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "int_from_obj" => {
+                        let args = op.args.as_ref().unwrap();
+                        let val = locals[&args[0]];
+                        let base = locals[&args[1]];
+                        let has_base = locals[&args[2]];
+                        func.instruction(&Instruction::LocalGet(val));
+                        func.instruction(&Instruction::LocalGet(base));
+                        func.instruction(&Instruction::LocalGet(has_base));
+                        func.instruction(&Instruction::Call(import_ids["int_from_obj"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
                     "intarray_from_seq" => {
                         let args = op.args.as_ref().unwrap();
                         let src = locals[&args[0]];
@@ -1567,6 +1954,22 @@ impl WasmBackend {
                         let src = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(src));
                         func.instruction(&Instruction::Call(import_ids["str_from_obj"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "repr_from_obj" => {
+                        let args = op.args.as_ref().unwrap();
+                        let src = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(src));
+                        func.instruction(&Instruction::Call(import_ids["repr_from_obj"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "ascii_from_obj" => {
+                        let args = op.args.as_ref().unwrap();
+                        let src = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(src));
+                        func.instruction(&Instruction::Call(import_ids["ascii_from_obj"]));
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
@@ -1914,6 +2317,23 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(op.value.unwrap()));
                         func.instruction(&Instruction::LocalGet(locals[&args[1]]));
                         func.instruction(&Instruction::Call(import_ids["object_field_set"]));
+                        if let Some(out) = op.out.as_ref() {
+                            if out != "none" {
+                                func.instruction(&Instruction::LocalSet(locals[out]));
+                            } else {
+                                func.instruction(&Instruction::Drop);
+                            }
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
+                    "store_init" => {
+                        let args = op.args.as_ref().unwrap();
+                        func.instruction(&Instruction::LocalGet(locals[&args[0]]));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
+                        func.instruction(&Instruction::I64Const(op.value.unwrap()));
+                        func.instruction(&Instruction::LocalGet(locals[&args[1]]));
+                        func.instruction(&Instruction::Call(import_ids["object_field_init"]));
                         if let Some(out) = op.out.as_ref() {
                             if out != "none" {
                                 func.instruction(&Instruction::LocalSet(locals[out]));

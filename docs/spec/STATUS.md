@@ -13,6 +13,13 @@ README/ROADMAP in sync.
 - AOT compilation via Cranelift for native targets.
 - Differential testing vs CPython 3.12 for supported constructs.
 - Molt packages for Rust-backed deps using MsgPack/CBOR and Arrow IPC.
+- Sets: literals + constructor with add/contains/iter/len + algebra (`|`, `&`, `-`, `^`); `frozenset` constructor + algebra.
+- Numeric builtins: `int()`/`round()`/`math.trunc()` with `__int__`/`__index__`/`__round__`/`__trunc__` hooks and base parsing for string/bytes.
+- BigInt heap fallback for ints beyond inline range (arithmetic/bitwise/shift parity for large ints).
+- Format mini-language for ints/floats + f-string conversion flags (`!r`, `!s`, `!a`).
+- memoryview exposes 1D `format`/`shape`/`strides`/`nbytes` for bytes/bytearray views.
+- `str.count` supports start/end slices with Unicode-aware offsets.
+- Importable `builtins` module binds supported builtins (see stdlib matrix).
 
 ## Limitations (Current)
 - Classes/object model: C3 MRO + multiple inheritance + `super()` resolution for
@@ -29,6 +36,15 @@ README/ROADMAP in sync.
   resolution.
 - Asyncio: shim exposes `run`/`sleep` only; loop/task APIs and delay semantics
   still pending.
+- Matmul (`@`): supported only for `molt_buffer`/`buffer2d`; other types raise
+  `TypeError` (TODO(type-coverage, owner:runtime, milestone:TC2): consider
+  `__matmul__`/`__rmatmul__` fallback for custom types).
+- Numeric tower: complex/decimal pending; `int` still missing full method surface
+  (e.g., `bit_length`, `to_bytes`, `from_bytes`).
+- Format protocol: no `__format__` fallback or named fields; locale-aware grouping
+  still pending.
+- memoryview: partial buffer protocol (no multidimensional shapes or advanced
+  buffer exports).
 
 ## Async + Concurrency Notes
 - Awaitables that return pending now resume at a labeled state to avoid

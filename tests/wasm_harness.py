@@ -31,9 +31,28 @@ const boxInt = (n) => {
   const v = BigInt(n) & INT_MASK;
   return QNAN | TAG_INT | v;
 };
+const FLOAT_BUF = new ArrayBuffer(8);
+const FLOAT_VIEW = new DataView(FLOAT_BUF);
+const CANONICAL_NAN = 0x7ff0000000000001n;
+const isFloat = (val) => (val & QNAN) !== QNAN;
+const boxFloat = (val) => floatToBits(val);
+const bitsToFloat = (bits) => {
+  FLOAT_VIEW.setBigUint64(0, bits, true);
+  return FLOAT_VIEW.getFloat64(0, true);
+};
+const floatToBits = (val) => {
+  if (Number.isNaN(val)) return CANONICAL_NAN;
+  FLOAT_VIEW.setFloat64(0, val, true);
+  return FLOAT_VIEW.getBigUint64(0, true);
+};
 const boxBool = (b) => QNAN | TAG_BOOL | (b ? 1n : 0n);
 const boxNone = () => QNAN | TAG_NONE;
 const boxPending = () => QNAN | TAG_PENDING;
+const isIntLike = (val) => isTag(val, TAG_INT) || isTag(val, TAG_BOOL);
+const unboxIntLike = (val) => {
+  if (isTag(val, TAG_INT)) return unboxInt(val);
+  return (val & 1n) === 1n ? 1n : 0n;
+};
 const BUILTIN_TYPE_TAGS = new Map([
   [1, 'int'],
   [2, 'float'],
@@ -45,6 +64,8 @@ const BUILTIN_TYPE_TAGS = new Map([
   [8, 'list'],
   [9, 'tuple'],
   [10, 'dict'],
+  [17, 'set'],
+  [18, 'frozenset'],
   [11, 'range'],
   [12, 'slice'],
   [15, 'memoryview'],
@@ -160,6 +181,17 @@ const callCallable0 = (callableBits) => {
   }
   throw new Error('TypeError: object is not callable');
 };
+const callCallable1 = (callableBits, arg0) => {
+  const bound = getBoundMethod(callableBits);
+  if (bound) {
+    return callFunctionBits(bound.func, [bound.self, arg0]);
+  }
+  const func = getFunction(callableBits);
+  if (func) {
+    return callFunctionBits(callableBits, [arg0]);
+  }
+  throw new Error('TypeError: object is not callable');
+};
 const callCallable2 = (callableBits, arg0, arg1) => {
   const bound = getBoundMethod(callableBits);
   if (bound) {
@@ -170,6 +202,69 @@ const callCallable2 = (callableBits, arg0, arg1) => {
     return callFunctionBits(callableBits, [arg0, arg1]);
   }
   throw new Error('TypeError: object is not callable');
+};
+const callableArity = (callableBits) => {
+  const bound = getBoundMethod(callableBits);
+  if (bound) {
+    const func = getFunction(bound.func);
+    if (func && table) {
+      const fn = table.get(func.idx);
+      if (fn) return fn.length;
+    }
+  }
+  const func = getFunction(callableBits);
+  if (func && table) {
+    const fn = table.get(func.idx);
+    if (fn) return fn.length;
+  }
+  return 0;
+};
+const numberFromVal = (val) => {
+  if (isTag(val, TAG_INT)) return Number(unboxInt(val));
+  if (isTag(val, TAG_BOOL)) return (val & 1n) === 1n ? 1 : 0;
+  if (isFloat(val)) return bitsToFloat(val);
+  return null;
+};
+const typeName = (val) => {
+  if (isTag(val, TAG_NONE)) return 'NoneType';
+  if (isTag(val, TAG_BOOL)) return 'bool';
+  if (isTag(val, TAG_INT)) return 'int';
+  if (isFloat(val)) return 'float';
+  const obj = getObj(val);
+  if (obj) {
+    if (obj.type === 'class') return obj.name ?? 'type';
+    if (obj.type === 'str') return 'str';
+    if (obj.type === 'bytes') return 'bytes';
+    if (obj.type === 'bytearray') return 'bytearray';
+    if (obj.type === 'list') return 'list';
+    if (obj.type === 'tuple') return 'tuple';
+    if (obj.type === 'set') return 'set';
+    if (obj.type === 'frozenset') return 'frozenset';
+    if (obj.type === 'dict') return 'dict';
+    if (obj.type === 'module') return 'module';
+    if (obj.type === 'function') return 'function';
+  }
+  if (isPtr(val) && !heap.has(val & POINTER_MASK)) {
+    const clsBits = instanceClasses.get(ptrAddr(val));
+    if (clsBits !== undefined) {
+      const cls = getClass(clsBits);
+      if (cls && cls.name) return cls.name;
+    }
+  }
+  return 'object';
+};
+const compareTypeError = (op, left, right) => {
+  throw new Error(
+    `TypeError: '${op}' not supported between instances of '${typeName(
+      left,
+    )}' and '${typeName(right)}'`
+  );
+};
+const formatFloat = (val) => {
+  if (Number.isNaN(val)) return 'nan';
+  if (!Number.isFinite(val)) return val < 0 ? '-inf' : 'inf';
+  if (Number.isInteger(val)) return val.toFixed(1);
+  return val.toString();
 };
 const isGenerator = (val) =>
   isPtr(val) &&
@@ -195,6 +290,21 @@ const getDict = (val) => {
   if (!obj || obj.type !== 'dict') return null;
   return obj;
 };
+const getSet = (val) => {
+  const obj = getObj(val);
+  if (!obj || obj.type !== 'set') return null;
+  return obj;
+};
+const getFrozenSet = (val) => {
+  const obj = getObj(val);
+  if (!obj || obj.type !== 'frozenset') return null;
+  return obj;
+};
+const getSetLike = (val) => {
+  const obj = getObj(val);
+  if (!obj || (obj.type !== 'set' && obj.type !== 'frozenset')) return null;
+  return obj;
+};
 const getBytes = (val) => {
   const obj = getObj(val);
   if (!obj || obj.type !== 'bytes') return null;
@@ -207,6 +317,20 @@ const getBytearray = (val) => {
 };
 const listFromArray = (items) => boxPtr({ type: 'list', items });
 const tupleFromArray = (items) => boxPtr({ type: 'tuple', items });
+const setFromArray = (items) => {
+  const set = new Set();
+  for (const item of items) {
+    set.add(item);
+  }
+  return boxPtr({ type: 'set', items: set });
+};
+const frozensetFromArray = (items) => {
+  const set = new Set();
+  for (const item of items) {
+    set.add(item);
+  }
+  return boxPtr({ type: 'frozenset', items: set });
+};
 const classBasesList = (classBits) => {
   const cls = getClass(classBits);
   if (!cls) return [];
@@ -437,6 +561,7 @@ const typeOfBits = (objBits) => {
   if (isTag(objBits, TAG_NONE)) return getBuiltinType(4);
   if (isTag(objBits, TAG_BOOL)) return getBuiltinType(3);
   if (isTag(objBits, TAG_INT)) return getBuiltinType(1);
+  if (isFloat(objBits)) return getBuiltinType(2);
   const obj = getObj(objBits);
   if (obj) {
     if (obj.type === 'class') return getBuiltinType(101);
@@ -447,6 +572,8 @@ const typeOfBits = (objBits) => {
     if (obj.type === 'list') return getBuiltinType(8);
     if (obj.type === 'tuple') return getBuiltinType(9);
     if (obj.type === 'dict') return getBuiltinType(10);
+    if (obj.type === 'set') return getBuiltinType(17);
+    if (obj.type === 'frozenset') return getBuiltinType(18);
     if (obj.type === 'memoryview') return getBuiltinType(15);
   }
   if (isPtr(objBits) && !heap.has(objBits & POINTER_MASK)) {
@@ -827,6 +954,10 @@ BASE_IMPORTS = """\
       console.log(unboxInt(val).toString());
       return;
     }
+    if (isFloat(val)) {
+      console.log(formatFloat(bitsToFloat(val)));
+      return;
+    }
     if (isTag(val, TAG_BOOL)) {
       console.log((val & 1n) === 1n ? 'True' : 'False');
       return;
@@ -892,7 +1023,43 @@ BASE_IMPORTS = """\
     if (!queue || queue.length === 0) return boxPending();
     return queue.shift();
   },
-  add: (a, b) => boxInt(unboxInt(a) + unboxInt(b)),
+  add: (a, b) => {
+    if (isIntLike(a) && isIntLike(b)) {
+      return boxInt(unboxIntLike(a) + unboxIntLike(b));
+    }
+    const lf = numberFromVal(a);
+    const rf = numberFromVal(b);
+    if (lf !== null && rf !== null) {
+      return boxFloat(lf + rf);
+    }
+    const lstr = getStrObj(a);
+    const rstr = getStrObj(b);
+    if (lstr !== null && rstr !== null) {
+      return boxPtr({ type: 'str', value: `${lstr}${rstr}` });
+    }
+    const lbytes = getBytes(a);
+    const rbytes = getBytes(b);
+    if (lbytes && rbytes) {
+      return boxPtr({
+        type: 'bytes',
+        data: Uint8Array.from([...lbytes.data, ...rbytes.data]),
+      });
+    }
+    const lba = getBytearray(a);
+    const rba = getBytearray(b);
+    if (lba && rba) {
+      return boxPtr({
+        type: 'bytearray',
+        data: Uint8Array.from([...lba.data, ...rba.data]),
+      });
+    }
+    const llist = getList(a);
+    const rlist = getList(b);
+    if (llist && rlist) {
+      return listFromArray([...llist.items, ...rlist.items]);
+    }
+    return boxNone();
+  },
   vec_sum_int: () => boxNone(),
   vec_sum_int_trusted: () => boxNone(),
   vec_sum_int_range: () => boxNone(),
@@ -909,15 +1076,503 @@ BASE_IMPORTS = """\
   vec_max_int_trusted: () => boxNone(),
   vec_max_int_range: () => boxNone(),
   vec_max_int_range_trusted: () => boxNone(),
-  sub: (a, b) => boxInt(unboxInt(a) - unboxInt(b)),
-  mul: (a, b) => boxInt(unboxInt(a) * unboxInt(b)),
-  lt: (a, b) => boxBool(unboxInt(a) < unboxInt(b)),
+  sub: (a, b) => {
+    if (isIntLike(a) && isIntLike(b)) {
+      return boxInt(unboxIntLike(a) - unboxIntLike(b));
+    }
+    const lf = numberFromVal(a);
+    const rf = numberFromVal(b);
+    if (lf !== null && rf !== null) {
+      return boxFloat(lf - rf);
+    }
+    const lset = getSetLike(a);
+    const rset = getSetLike(b);
+    if (lset && rset) {
+      const outItems = new Set();
+      for (const item of lset.items) {
+        if (!rset.items.has(item)) {
+          outItems.add(item);
+        }
+      }
+      return boxPtr({ type: lset.type, items: outItems });
+    }
+    return boxNone();
+  },
+  bit_or: (a, b) => {
+    if (isIntLike(a) && isIntLike(b)) {
+      const li = unboxIntLike(a);
+      const ri = unboxIntLike(b);
+      if (isTag(a, TAG_BOOL) && isTag(b, TAG_BOOL)) {
+        return boxBool((li | ri) !== 0n);
+      }
+      return boxInt(li | ri);
+    }
+    const lset = getSetLike(a);
+    const rset = getSetLike(b);
+    if (lset && rset) {
+      const outItems = new Set(lset.items);
+      for (const item of rset.items) {
+        outItems.add(item);
+      }
+      return boxPtr({ type: lset.type, items: outItems });
+    }
+    return boxNone();
+  },
+  bit_and: (a, b) => {
+    if (isIntLike(a) && isIntLike(b)) {
+      const li = unboxIntLike(a);
+      const ri = unboxIntLike(b);
+      if (isTag(a, TAG_BOOL) && isTag(b, TAG_BOOL)) {
+        return boxBool((li & ri) !== 0n);
+      }
+      return boxInt(li & ri);
+    }
+    const lset = getSetLike(a);
+    const rset = getSetLike(b);
+    if (lset && rset) {
+      const outItems = new Set();
+      for (const item of lset.items) {
+        if (rset.items.has(item)) {
+          outItems.add(item);
+        }
+      }
+      return boxPtr({ type: lset.type, items: outItems });
+    }
+    return boxNone();
+  },
+  bit_xor: (a, b) => {
+    if (isIntLike(a) && isIntLike(b)) {
+      const li = unboxIntLike(a);
+      const ri = unboxIntLike(b);
+      if (isTag(a, TAG_BOOL) && isTag(b, TAG_BOOL)) {
+        return boxBool((li ^ ri) !== 0n);
+      }
+      return boxInt(li ^ ri);
+    }
+    const lset = getSetLike(a);
+    const rset = getSetLike(b);
+    if (lset && rset) {
+      const outItems = new Set();
+      for (const item of lset.items) {
+        if (!rset.items.has(item)) {
+          outItems.add(item);
+        }
+      }
+      for (const item of rset.items) {
+        if (!lset.items.has(item)) {
+          outItems.add(item);
+        }
+      }
+      return boxPtr({ type: lset.type, items: outItems });
+    }
+    return boxNone();
+  },
+  lshift: (a, b) => {
+    if (!isIntLike(a) || !isIntLike(b)) {
+      throw new Error(
+        `TypeError: unsupported operand type(s) for <<: '${typeName(a)}' and '${typeName(
+          b,
+        )}'`,
+      );
+    }
+    const shift = unboxIntLike(b);
+    if (shift < 0n) {
+      throw new Error('ValueError: negative shift count');
+    }
+    if (shift >= 63n) {
+      return boxInt(0);
+    }
+    return boxInt(unboxIntLike(a) << shift);
+  },
+  rshift: (a, b) => {
+    if (!isIntLike(a) || !isIntLike(b)) {
+      throw new Error(
+        `TypeError: unsupported operand type(s) for >>: '${typeName(a)}' and '${typeName(
+          b,
+        )}'`,
+      );
+    }
+    const shift = unboxIntLike(b);
+    if (shift < 0n) {
+      throw new Error('ValueError: negative shift count');
+    }
+    if (shift >= 63n) {
+      return unboxIntLike(a) >= 0n ? boxInt(0) : boxInt(-1);
+    }
+    return boxInt(unboxIntLike(a) >> shift);
+  },
+  matmul: (a, b) => {
+    const la = getObj(a);
+    const lb = getObj(b);
+    if (la && lb && la.type === 'buffer2d' && lb.type === 'buffer2d') {
+      return boxNone();
+    }
+    throw new Error(
+      `TypeError: unsupported operand type(s) for @: '${typeName(a)}' and '${typeName(
+        b,
+      )}'`,
+    );
+  },
+  mul: (a, b) => {
+    if (isIntLike(a) && isIntLike(b)) {
+      return boxInt(unboxIntLike(a) * unboxIntLike(b));
+    }
+    const lf = numberFromVal(a);
+    const rf = numberFromVal(b);
+    if (lf !== null && rf !== null) {
+      return boxFloat(lf * rf);
+    }
+    return boxNone();
+  },
+  div: (a, b) => {
+    const lf = numberFromVal(a);
+    const rf = numberFromVal(b);
+    if (lf === null || rf === null) {
+      throw new Error('TypeError: unsupported operand type(s) for /');
+    }
+    if (rf === 0) {
+      throw new Error('ZeroDivisionError: division by zero');
+    }
+    return boxFloat(lf / rf);
+  },
+  floordiv: (a, b) => {
+    if (isIntLike(a) && isIntLike(b)) {
+      const li = unboxIntLike(a);
+      const ri = unboxIntLike(b);
+      if (ri === 0n) {
+        throw new Error('ZeroDivisionError: integer division or modulo by zero');
+      }
+      let q = li / ri;
+      const r = li % ri;
+      if (r !== 0n && (r > 0n) !== (ri > 0n)) {
+        q -= 1n;
+      }
+      return boxInt(q);
+    }
+    const lf = numberFromVal(a);
+    const rf = numberFromVal(b);
+    if (lf === null || rf === null) {
+      throw new Error('TypeError: unsupported operand type(s) for //');
+    }
+    if (rf === 0) {
+      throw new Error('ZeroDivisionError: float floor division by zero');
+    }
+    return boxFloat(Math.floor(lf / rf));
+  },
+  mod: (a, b) => {
+    if (isIntLike(a) && isIntLike(b)) {
+      const li = unboxIntLike(a);
+      const ri = unboxIntLike(b);
+      if (ri === 0n) {
+        throw new Error('ZeroDivisionError: integer division or modulo by zero');
+      }
+      let rem = li % ri;
+      if (rem !== 0n && (rem > 0n) !== (ri > 0n)) {
+        rem += ri;
+      }
+      return boxInt(rem);
+    }
+    const lf = numberFromVal(a);
+    const rf = numberFromVal(b);
+    if (lf === null || rf === null) {
+      throw new Error('TypeError: unsupported operand type(s) for %');
+    }
+    if (rf === 0) {
+      throw new Error('ZeroDivisionError: float modulo');
+    }
+    let rem = lf % rf;
+    if (rem !== 0 && (rem > 0) !== (rf > 0)) {
+      rem += rf;
+    }
+    return boxFloat(rem);
+  },
+  pow: (a, b) => {
+    const isIntPair = isIntLike(a) && isIntLike(b);
+    if (isIntPair) {
+      const base = unboxIntLike(a);
+      const exp = unboxIntLike(b);
+      if (exp >= 0n) {
+        let result = 1n;
+        let baseVal = base;
+        let expVal = exp;
+        const max = (1n << 46n) - 1n;
+        const min = -(1n << 46n);
+        while (expVal > 0n) {
+          if (expVal & 1n) {
+            result *= baseVal;
+            if (result > max || result < min) {
+              result = null;
+              break;
+            }
+          }
+          expVal >>= 1n;
+          if (expVal) {
+            baseVal *= baseVal;
+            if (baseVal > max || baseVal < min) {
+              result = null;
+              break;
+            }
+          }
+        }
+        if (result !== null) {
+          return boxInt(result);
+        }
+      }
+      const lf = Number(base);
+      const rf = Number(exp);
+      if (lf === 0 && rf < 0) {
+        throw new Error('ZeroDivisionError: 0.0 cannot be raised to a negative power');
+      }
+      return boxFloat(Math.pow(lf, rf));
+    }
+    const lf = numberFromVal(a);
+    const rf = numberFromVal(b);
+    if (lf === null || rf === null) {
+      throw new Error('TypeError: unsupported operand type(s) for **');
+    }
+    if (lf === 0 && rf < 0) {
+      throw new Error('ZeroDivisionError: 0.0 cannot be raised to a negative power');
+    }
+    return boxFloat(Math.pow(lf, rf));
+  },
+  pow_mod: (a, b, m) => {
+    if (!isIntLike(a) || !isIntLike(b) || !isIntLike(m)) {
+      throw new Error(
+        'TypeError: pow() 3rd argument not allowed unless all arguments are integers',
+      );
+    }
+    const base = unboxIntLike(a);
+    const exp = unboxIntLike(b);
+    const mod = unboxIntLike(m);
+    if (mod === 0n) {
+      throw new Error('ValueError: pow() 3rd argument cannot be 0');
+    }
+    const modPy = (val, modulus) => {
+      let rem = val % modulus;
+      if (rem !== 0n && (rem > 0n) !== (modulus > 0n)) {
+        rem += modulus;
+      }
+      return rem;
+    };
+    const modPow = (baseVal, expVal, modulus) => {
+      let result = 1n;
+      let baseMod = modPy(baseVal, modulus);
+      let expBits = expVal;
+      while (expBits > 0n) {
+        if (expBits & 1n) {
+          result = modPy(result * baseMod, modulus);
+        }
+        expBits >>= 1n;
+        if (expBits > 0n) {
+          baseMod = modPy(baseMod * baseMod, modulus);
+        }
+      }
+      return modPy(result, modulus);
+    };
+    if (exp < 0n) {
+      const modAbs = mod < 0n ? -mod : mod;
+      const baseMod = modPy(base, modAbs);
+      const egcd = (x, y) => {
+        if (y === 0n) return [x, 1n, 0n];
+        const [g, a1, b1] = egcd(y, x % y);
+        return [g, b1, a1 - (x / y) * b1];
+      };
+      const [g, x] = egcd(baseMod, modAbs);
+      if (g !== 1n && g !== -1n) {
+        throw new Error('ValueError: base is not invertible for the given modulus');
+      }
+      const inv = modPy(x, modAbs);
+      const invMod = modPy(inv, mod);
+      return boxInt(modPow(invMod, -exp, mod));
+    }
+    return boxInt(modPow(base, exp, mod));
+  },
+  round: (val, ndigits, hasNdigits) => {
+    const hasDigits = isTag(hasNdigits, TAG_BOOL) && (hasNdigits & 1n) === 1n;
+    if (isIntLike(val)) {
+      if (!hasDigits) return boxInt(unboxIntLike(val));
+      if (isNone(ndigits)) return boxInt(unboxIntLike(val));
+      if (!isIntLike(ndigits)) {
+        throw new Error('TypeError: round() ndigits must be int');
+      }
+      const nd = unboxIntLike(ndigits);
+      if (nd >= 0n) return boxInt(unboxIntLike(val));
+      const exp = Number(-nd);
+      if (exp > 38) return boxInt(0);
+      let pow = 1n;
+      for (let i = 0; i < exp; i += 1) {
+        pow *= 10n;
+      }
+      const value = unboxIntLike(val);
+      const div = value / pow;
+      const rem = value % pow;
+      const absRem = rem < 0n ? -rem : rem;
+      const twice = absRem * 2n;
+      let rounded = div;
+      if (twice > pow) {
+        rounded += value >= 0n ? 1n : -1n;
+      } else if (twice === pow && (div & 1n) !== 0n) {
+        rounded += value >= 0n ? 1n : -1n;
+      }
+      return boxInt(rounded * pow);
+    }
+    if (isFloat(val)) {
+      const num = bitsToFloat(val);
+      const roundHalfEven = (x) => {
+        if (!Number.isFinite(x)) return x;
+        const floor = Math.floor(x);
+        const ceil = Math.ceil(x);
+        const diffFloor = Math.abs(x - floor);
+        const diffCeil = Math.abs(ceil - x);
+        if (diffFloor < diffCeil) return floor;
+        if (diffCeil < diffFloor) return ceil;
+        if (Math.abs(floor) > Number.MAX_SAFE_INTEGER) return floor;
+        return floor % 2 === 0 ? floor : ceil;
+      };
+      if (!hasDigits || isNone(ndigits)) {
+        if (Number.isNaN(num)) {
+          throw new Error('ValueError: cannot convert float NaN to integer');
+        }
+        if (!Number.isFinite(num)) {
+          throw new Error('OverflowError: cannot convert float infinity to integer');
+        }
+        return boxInt(BigInt(Math.trunc(roundHalfEven(num))));
+      }
+      if (!isIntLike(ndigits)) {
+        throw new Error('TypeError: round() ndigits must be int');
+      }
+      const nd = Number(unboxIntLike(ndigits));
+      if (!Number.isFinite(num)) return boxFloat(num);
+      if (nd === 0) return boxFloat(roundHalfEven(num));
+      if (nd > 0) {
+        if (nd > 308) return boxFloat(num);
+        const text = num.toFixed(nd);
+        const parsed = Number.parseFloat(text);
+        return boxFloat(Number.isNaN(parsed) ? num : parsed);
+      }
+      const factor = 10 ** -nd;
+      if (!Number.isFinite(factor)) {
+        return boxFloat(num < 0 ? -0.0 : 0.0);
+      }
+      if (factor === 0) return boxFloat(num);
+      const scaled = num / factor;
+      return boxFloat(roundHalfEven(scaled) * factor);
+    }
+    const roundAttr = lookupAttr(val, '__round__');
+    if (roundAttr !== undefined) {
+      const arity = callableArity(roundAttr);
+      if (arity <= 1) {
+        if (hasDigits && !isNone(ndigits)) {
+          return callCallable1(roundAttr, ndigits);
+        }
+        return callCallable0(roundAttr);
+      }
+      const arg = hasDigits && !isNone(ndigits) ? ndigits : boxNone();
+      return callCallable1(roundAttr, arg);
+    }
+    throw new Error('TypeError: round() expects a real number');
+  },
+  trunc: (val) => {
+    if (isIntLike(val)) return boxInt(unboxIntLike(val));
+    if (isFloat(val)) {
+      const num = bitsToFloat(val);
+      if (Number.isNaN(num)) {
+        throw new Error('ValueError: cannot convert float NaN to integer');
+      }
+      if (!Number.isFinite(num)) {
+        throw new Error('OverflowError: cannot convert float infinity to integer');
+      }
+      return boxInt(BigInt(Math.trunc(num)));
+    }
+    const truncAttr = lookupAttr(val, '__trunc__');
+    if (truncAttr !== undefined) {
+      return callCallable0(truncAttr);
+    }
+    throw new Error('TypeError: trunc() expects a real number');
+  },
+  lt: (a, b) => {
+    if (isIntLike(a) && isIntLike(b)) {
+      return boxBool(unboxIntLike(a) < unboxIntLike(b));
+    }
+    const lf = numberFromVal(a);
+    const rf = numberFromVal(b);
+    if (lf !== null && rf !== null) {
+      if (Number.isNaN(lf) || Number.isNaN(rf)) return boxBool(false);
+      return boxBool(lf < rf);
+    }
+    return compareTypeError('<', a, b);
+  },
+  le: (a, b) => {
+    if (isIntLike(a) && isIntLike(b)) {
+      return boxBool(unboxIntLike(a) <= unboxIntLike(b));
+    }
+    const lf = numberFromVal(a);
+    const rf = numberFromVal(b);
+    if (lf !== null && rf !== null) {
+      if (Number.isNaN(lf) || Number.isNaN(rf)) return boxBool(false);
+      return boxBool(lf <= rf);
+    }
+    return compareTypeError('<=', a, b);
+  },
+  gt: (a, b) => {
+    if (isIntLike(a) && isIntLike(b)) {
+      return boxBool(unboxIntLike(a) > unboxIntLike(b));
+    }
+    const lf = numberFromVal(a);
+    const rf = numberFromVal(b);
+    if (lf !== null && rf !== null) {
+      if (Number.isNaN(lf) || Number.isNaN(rf)) return boxBool(false);
+      return boxBool(lf > rf);
+    }
+    return compareTypeError('>', a, b);
+  },
+  ge: (a, b) => {
+    if (isIntLike(a) && isIntLike(b)) {
+      return boxBool(unboxIntLike(a) >= unboxIntLike(b));
+    }
+    const lf = numberFromVal(a);
+    const rf = numberFromVal(b);
+    if (lf !== null && rf !== null) {
+      if (Number.isNaN(lf) || Number.isNaN(rf)) return boxBool(false);
+      return boxBool(lf >= rf);
+    }
+    return compareTypeError('>=', a, b);
+  },
   eq: (a, b) => {
+    const ln = numberFromVal(a);
+    const rn = numberFromVal(b);
+    if (ln !== null && rn !== null) {
+      if (Number.isNaN(ln) || Number.isNaN(rn)) return boxBool(false);
+      return boxBool(ln === rn);
+    }
+    if (isTag(a, TAG_NONE) && isTag(b, TAG_NONE)) return boxBool(true);
     if (isPtr(a) && isPtr(b)) {
       const left = getObj(a);
       const right = getObj(b);
-      if (left && right && left.type === 'str' && right.type === 'str') {
-        return boxBool(left.value === right.value);
+      if (left && right) {
+        if (left.type === 'str' && right.type === 'str') {
+          return boxBool(left.value === right.value);
+        }
+        if (left.type === 'bytes' && right.type === 'bytes') {
+          return boxBool(
+            Buffer.from(left.data).equals(Buffer.from(right.data)),
+          );
+        }
+        if (left.type === 'bytearray' && right.type === 'bytearray') {
+          return boxBool(
+            Buffer.from(left.data).equals(Buffer.from(right.data)),
+          );
+        }
+        if (left.type === 'bytes' && right.type === 'bytearray') {
+          return boxBool(
+            Buffer.from(left.data).equals(Buffer.from(right.data)),
+          );
+        }
+        if (left.type === 'bytearray' && right.type === 'bytes') {
+          return boxBool(
+            Buffer.from(left.data).equals(Buffer.from(right.data)),
+          );
+        }
       }
     }
     return boxBool(a === b);
@@ -945,7 +1600,15 @@ BASE_IMPORTS = """\
     }
     return boxBool(true);
   },
-  contains: () => boxBool(false),
+  contains: (container, item) => {
+    const list = getList(container);
+    if (list) return boxBool(list.items.includes(item));
+    const tup = getTuple(container);
+    if (tup) return boxBool(tup.items.includes(item));
+    const setLike = getSetLike(container);
+    if (setLike) return boxBool(setLike.items.has(item));
+    return boxBool(false);
+  },
   guard_type: (val, expected) => val,
   handle_resolve: (bits) => {
     if (!isPtr(bits)) return 0n;
@@ -974,6 +1637,13 @@ BASE_IMPORTS = """\
     return view.getBigInt64(addr, true);
   },
   object_field_set: (obj, offset, val) => {
+    if (!memory) return boxNone();
+    const addr = ptrAddr(obj) + Number(offset);
+    const view = new DataView(memory.buffer);
+    view.setBigInt64(addr, val, true);
+    return boxNone();
+  },
+  object_field_init: (obj, offset, val) => {
     if (!memory) return boxNone();
     const addr = ptrAddr(obj) + Number(offset);
     const view = new DataView(memory.buffer);
@@ -1057,6 +1727,10 @@ BASE_IMPORTS = """\
     if (isTag(val, TAG_INT)) {
       return unboxInt(val) !== 0n ? 1n : 0n;
     }
+    if (isFloat(val)) {
+      const num = bitsToFloat(val);
+      return num !== 0 ? 1n : 0n;
+    }
     if (isTag(val, TAG_NONE)) {
       return 0n;
     }
@@ -1064,11 +1738,13 @@ BASE_IMPORTS = """\
       const obj = getObj(val);
       if (obj && obj.type === 'str') return obj.value.length ? 1n : 0n;
       if (obj && obj.type === 'bytes') return obj.data.length ? 1n : 0n;
-      if (obj && obj.type === 'bytearray') return obj.data.length ? 1n : 0n;
-      if (obj && obj.type === 'list') return obj.items.length ? 1n : 0n;
-      if (obj && obj.type === 'tuple') return obj.items.length ? 1n : 0n;
-      if (obj && obj.type === 'iter') return 1n;
-    }
+    if (obj && obj.type === 'bytearray') return obj.data.length ? 1n : 0n;
+    if (obj && obj.type === 'list') return obj.items.length ? 1n : 0n;
+    if (obj && obj.type === 'tuple') return obj.items.length ? 1n : 0n;
+    if (obj && (obj.type === 'set' || obj.type === 'frozenset'))
+      return obj.items.size ? 1n : 0n;
+    if (obj && obj.type === 'iter') return 1n;
+  }
     return 0n;
   },
   json_parse_scalar: () => 0,
@@ -1097,11 +1773,26 @@ BASE_IMPORTS = """\
     view.setBigInt64(outAddr, boxed, true);
     return 0;
   },
+  bigint_from_str: (ptr, len) => {
+    if (!memory) return boxNone();
+    const addr = Number(ptr);
+    const size = Number(len);
+    const bytes = new Uint8Array(memory.buffer, addr, size);
+    const text = Buffer.from(bytes).toString('utf8').trim();
+    try {
+      return boxPtr({ type: 'bigint', value: BigInt(text) });
+    } catch {
+      return boxNone();
+    }
+  },
   memoryview_new: () => boxNone(),
   memoryview_tobytes: () => boxNone(),
   str_from_obj: (val) => {
     if (isTag(val, TAG_INT)) {
       return boxPtr({ type: 'str', value: unboxInt(val).toString() });
+    }
+    if (isFloat(val)) {
+      return boxPtr({ type: 'str', value: formatFloat(bitsToFloat(val)) });
     }
     if (isTag(val, TAG_BOOL)) {
       return boxPtr({ type: 'str', value: (val & 1n) === 1n ? 'True' : 'False' });
@@ -1113,13 +1804,248 @@ BASE_IMPORTS = """\
     if (obj && obj.type === 'str') {
       return val;
     }
+    if (obj && obj.type === 'bigint') {
+      return boxPtr({ type: 'str', value: obj.value.toString() });
+    }
     return boxPtr({ type: 'str', value: '<obj>' });
+  },
+  repr_from_obj: (val) => {
+    if (isTag(val, TAG_INT)) {
+      return boxPtr({ type: 'str', value: unboxInt(val).toString() });
+    }
+    if (isFloat(val)) {
+      return boxPtr({ type: 'str', value: formatFloat(bitsToFloat(val)) });
+    }
+    if (isTag(val, TAG_BOOL)) {
+      return boxPtr({ type: 'str', value: (val & 1n) === 1n ? 'True' : 'False' });
+    }
+    if (isTag(val, TAG_NONE)) {
+      return boxPtr({ type: 'str', value: 'None' });
+    }
+    const obj = getObj(val);
+    if (obj && obj.type === 'str') {
+      return val;
+    }
+    if (obj && obj.type === 'bigint') {
+      return boxPtr({ type: 'str', value: obj.value.toString() });
+    }
+    return boxPtr({ type: 'str', value: '<obj>' });
+  },
+  ascii_from_obj: (val) => {
+    if (isTag(val, TAG_INT)) {
+      return boxPtr({ type: 'str', value: unboxInt(val).toString() });
+    }
+    if (isFloat(val)) {
+      return boxPtr({ type: 'str', value: formatFloat(bitsToFloat(val)) });
+    }
+    if (isTag(val, TAG_BOOL)) {
+      return boxPtr({ type: 'str', value: (val & 1n) === 1n ? 'True' : 'False' });
+    }
+    if (isTag(val, TAG_NONE)) {
+      return boxPtr({ type: 'str', value: 'None' });
+    }
+    const obj = getObj(val);
+    if (obj && obj.type === 'str') {
+      return val;
+    }
+    if (obj && obj.type === 'bigint') {
+      return boxPtr({ type: 'str', value: obj.value.toString() });
+    }
+    return boxPtr({ type: 'str', value: '<obj>' });
+  },
+  int_from_obj: (val, baseBits, hasBase) => {
+    const hasB = isTag(hasBase, TAG_BOOL) && (hasBase & 1n) === 1n;
+    const parseLiteral = (text, base) => {
+      let trimmed = text.trim();
+      if (!trimmed) throw new Error('ValueError: invalid literal for int()');
+      let sign = 1n;
+      if (trimmed.startsWith('+')) {
+        trimmed = trimmed.slice(1);
+      } else if (trimmed.startsWith('-')) {
+        sign = -1n;
+        trimmed = trimmed.slice(1);
+      }
+      let baseVal = base;
+      if (baseVal === 0) {
+        if (trimmed.startsWith('0x') || trimmed.startsWith('0X')) {
+          baseVal = 16;
+          trimmed = trimmed.slice(2);
+        } else if (trimmed.startsWith('0o') || trimmed.startsWith('0O')) {
+          baseVal = 8;
+          trimmed = trimmed.slice(2);
+        } else if (trimmed.startsWith('0b') || trimmed.startsWith('0B')) {
+          baseVal = 2;
+          trimmed = trimmed.slice(2);
+        } else {
+          baseVal = 10;
+        }
+      } else if (baseVal === 16 && (trimmed.startsWith('0x') || trimmed.startsWith('0X'))) {
+        trimmed = trimmed.slice(2);
+      } else if (baseVal === 8 && (trimmed.startsWith('0o') || trimmed.startsWith('0O'))) {
+        trimmed = trimmed.slice(2);
+      } else if (baseVal === 2 && (trimmed.startsWith('0b') || trimmed.startsWith('0B'))) {
+        trimmed = trimmed.slice(2);
+      }
+      trimmed = trimmed.replace(/_/g, '');
+      if (!trimmed) throw new Error('ValueError: invalid literal for int()');
+      const digits = '0123456789abcdefghijklmnopqrstuvwxyz';
+      let acc = 0n;
+      const baseBig = BigInt(baseVal);
+      const lower = trimmed.toLowerCase();
+      for (const ch of lower) {
+        const val = digits.indexOf(ch);
+        if (val < 0 || val >= baseVal) {
+          throw new Error('ValueError: invalid literal for int()');
+        }
+        acc = acc * baseBig + BigInt(val);
+      }
+      return acc * sign;
+    };
+    let baseVal = 10;
+    if (hasB) {
+      if (!isIntLike(baseBits)) {
+        throw new Error('TypeError: int() base must be int');
+      }
+      baseVal = Number(unboxIntLike(baseBits));
+      if (baseVal !== 0 && (baseVal < 2 || baseVal > 36)) {
+        throw new Error('ValueError: base must be 0 or between 2 and 36');
+      }
+    }
+    if (hasB) {
+      const obj = getObj(val);
+      if (!obj || (obj.type !== 'str' && obj.type !== 'bytes' && obj.type !== 'bytearray')) {
+        throw new Error('TypeError: int() can\\'t convert non-string with explicit base');
+      }
+    }
+    if (!hasB) {
+      if (isIntLike(val)) return boxInt(unboxIntLike(val));
+      if (isFloat(val)) {
+        const num = bitsToFloat(val);
+        if (Number.isNaN(num)) {
+          throw new Error('ValueError: cannot convert float NaN to integer');
+        }
+        if (!Number.isFinite(num)) {
+          throw new Error('OverflowError: cannot convert float infinity to integer');
+        }
+        return boxInt(BigInt(Math.trunc(num)));
+      }
+    }
+    const obj = getObj(val);
+    if (obj && (obj.type === 'str' || obj.type === 'bytes' || obj.type === 'bytearray')) {
+      const text =
+        obj.type === 'str' ? obj.value : Buffer.from(obj.data).toString('utf8');
+      const num = parseLiteral(text, hasB ? baseVal : 10);
+      return boxInt(num);
+    }
+    if (!hasB) {
+      const intAttr = lookupAttr(val, '__int__');
+      if (intAttr !== undefined) {
+        const res = callCallable0(intAttr);
+        if (!isIntLike(res)) {
+          throw new Error(`TypeError: __int__ returned non-int (type ${typeName(res)})`);
+        }
+        return boxInt(unboxIntLike(res));
+      }
+      const indexAttr = lookupAttr(val, '__index__');
+      if (indexAttr !== undefined) {
+        const res = callCallable0(indexAttr);
+        if (!isIntLike(res)) {
+          throw new Error(`TypeError: __index__ returned non-int (type ${typeName(res)})`);
+        }
+        return boxInt(unboxIntLike(res));
+      }
+    }
+    if (hasB) {
+      throw new Error('ValueError: invalid literal for int()');
+    }
+    throw new Error('TypeError: int() argument must be a string or a number');
+  },
+  float_from_obj: (val) => {
+    if (isFloat(val)) return val;
+    if (isIntLike(val)) return boxFloat(Number(unboxIntLike(val)));
+    const obj = getObj(val);
+    if (obj && obj.type === 'str') {
+      const text = obj.value.trim();
+      const lowered = text.toLowerCase();
+      if (lowered === 'nan' || lowered === '+nan' || lowered === '-nan') {
+        return boxFloat(NaN);
+      }
+      if (
+        lowered === 'inf' ||
+        lowered === '+inf' ||
+        lowered === 'infinity' ||
+        lowered === '+infinity'
+      ) {
+        return boxFloat(Infinity);
+      }
+      if (lowered === '-inf' || lowered === '-infinity') {
+        return boxFloat(-Infinity);
+      }
+      const parsed = Number(text);
+      if (!Number.isNaN(parsed)) {
+        return boxFloat(parsed);
+      }
+      throw new Error(`ValueError: could not convert string to float: '${obj.value}'`);
+    }
+    if (obj && (obj.type === 'bytes' || obj.type === 'bytearray')) {
+      const bytes = Buffer.from(obj.data);
+      const text = bytes.toString('utf8').trim();
+      const lowered = text.toLowerCase();
+      if (lowered === 'nan' || lowered === '+nan' || lowered === '-nan') {
+        return boxFloat(NaN);
+      }
+      if (
+        lowered === 'inf' ||
+        lowered === '+inf' ||
+        lowered === 'infinity' ||
+        lowered === '+infinity'
+      ) {
+        return boxFloat(Infinity);
+      }
+      if (lowered === '-inf' || lowered === '-infinity') {
+        return boxFloat(-Infinity);
+      }
+      const parsed = Number(text);
+      if (!Number.isNaN(parsed)) {
+        return boxFloat(parsed);
+      }
+      throw new Error(
+        `ValueError: could not convert string to float: '${bytes.toString('utf8')}'`,
+      );
+    }
+    if (isPtr(val)) {
+      const floatAttr = lookupAttr(val, '__float__');
+      if (floatAttr !== undefined) {
+        const res = callCallable0(floatAttr);
+        if (!isFloat(res)) {
+          throw new Error(
+            `TypeError: ${typeName(val)}.__float__ returned non-float (type ${typeName(
+              res,
+            )})`,
+          );
+        }
+        return res;
+      }
+      const indexAttr = lookupAttr(val, '__index__');
+      if (indexAttr !== undefined) {
+        const res = callCallable0(indexAttr);
+        if (!isIntLike(res)) {
+          throw new Error(
+            `TypeError: __index__ returned non-int (type ${typeName(res)})`,
+          );
+        }
+        return boxFloat(Number(unboxIntLike(res)));
+      }
+    }
+    throw new Error('TypeError: float() argument must be a string or a number');
   },
   len: (val) => {
     const list = getList(val);
     if (list) return boxInt(list.items.length);
     const tup = getTuple(val);
     if (tup) return boxInt(tup.items.length);
+    const setLike = getSetLike(val);
+    if (setLike) return boxInt(BigInt(setLike.items.size));
     const bytes = getBytes(val);
     if (bytes) return boxInt(bytes.data.length);
     return boxInt(0);
@@ -1169,6 +2095,101 @@ BASE_IMPORTS = """\
   dict_keys: () => boxNone(),
   dict_values: () => boxNone(),
   dict_items: () => boxNone(),
+  set_new: () => boxPtr({ type: 'set', items: new Set() }),
+  set_add: (setBits, keyBits) => {
+    const set = getSet(setBits);
+    if (set) {
+      set.items.add(keyBits);
+    }
+    return boxNone();
+  },
+  frozenset_new: () => boxPtr({ type: 'frozenset', items: new Set() }),
+  frozenset_add: (setBits, keyBits) => {
+    const set = getFrozenSet(setBits);
+    if (set) {
+      set.items.add(keyBits);
+    }
+    return boxNone();
+  },
+  set_discard: (setBits, keyBits) => {
+    const set = getSet(setBits);
+    if (set) {
+      set.items.delete(keyBits);
+    }
+    return boxNone();
+  },
+  set_remove: (setBits, keyBits) => {
+    const set = getSet(setBits);
+    if (set && set.items.has(keyBits)) {
+      set.items.delete(keyBits);
+      return boxNone();
+    }
+    throw new Error('KeyError: set.remove(x): x not in set');
+  },
+  set_pop: (setBits) => {
+    const set = getSet(setBits);
+    if (!set || !set.items.size) {
+      throw new Error('KeyError: pop from an empty set');
+    }
+    const iter = set.items.values();
+    const value = iter.next().value;
+    set.items.delete(value);
+    return value;
+  },
+  set_update: (setBits, otherBits) => {
+    const set = getSet(setBits);
+    const other = getSet(otherBits) || getFrozenSet(otherBits);
+    if (set && other) {
+      for (const item of other.items) {
+        set.items.add(item);
+      }
+    }
+    return boxNone();
+  },
+  set_intersection_update: (setBits, otherBits) => {
+    const set = getSet(setBits);
+    const other = getSet(otherBits) || getFrozenSet(otherBits);
+    if (set && other) {
+      for (const item of [...set.items]) {
+        if (!other.items.has(item)) {
+          set.items.delete(item);
+        }
+      }
+    }
+    return boxNone();
+  },
+  set_difference_update: (setBits, otherBits) => {
+    const set = getSet(setBits);
+    const other = getSet(otherBits) || getFrozenSet(otherBits);
+    if (set && other) {
+      for (const item of other.items) {
+        set.items.delete(item);
+      }
+    }
+    return boxNone();
+  },
+  set_symdiff_update: (setBits, otherBits) => {
+    const set = getSet(setBits);
+    const other = getSet(otherBits) || getFrozenSet(otherBits);
+    if (set && other) {
+      const leftItems = [...set.items];
+      const rightItems = [...other.items];
+      const leftLookup = new Set(leftItems);
+      const newItems = new Set();
+      for (const item of leftItems) {
+        if (!other.items.has(item)) {
+          newItems.add(item);
+        }
+      }
+      for (const item of rightItems) {
+        if (!leftLookup.has(item)) {
+          newItems.add(item);
+        }
+      }
+      set.items = newItems;
+    }
+    return boxNone();
+  },
   tuple_count: () => boxNone(),
   tuple_index: () => boxNone(),
   iter: (val) => {
@@ -1181,6 +2202,10 @@ BASE_IMPORTS = """\
     }
     const tup = getTuple(val);
     if (tup) {
+      return boxPtr({ type: 'iter', target: val, idx: 0 });
+    }
+    const setLike = getSetLike(val);
+    if (setLike) {
       return boxPtr({ type: 'iter', target: val, idx: 0 });
     }
     return boxNone();
@@ -1201,7 +2226,8 @@ BASE_IMPORTS = """\
     const target = iter.target;
     const list = getList(target);
     const tup = getTuple(target);
-    const items = list ? list.items : tup ? tup.items : null;
+    const setLike = getSetLike(target);
+    const items = list ? list.items : tup ? tup.items : setLike ? [...setLike.items] : null;
     if (!items) return boxNone();
     if (iter.idx >= items.length) {
       return tupleFromArray([boxNone(), boxBool(true)]);
@@ -1251,6 +2277,7 @@ BASE_IMPORTS = """\
   string_startswith: () => boxBool(false),
   string_endswith: () => boxBool(false),
   string_count: () => boxInt(0),
+  string_count_slice: () => boxInt(0),
   string_join: () => boxNone(),
   string_split: () => boxNone(),
   bytes_split: () => boxNone(),
