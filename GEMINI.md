@@ -50,7 +50,7 @@ The Molt compiler itself is designed to be "AI-friendly". Its modular IR and cle
 - When major features or optimizations land, run benchmarks with JSON output (`python3 tools/bench.py --json`) and update the Performance & Comparisons section in `README.md` with summarized results.
 - Install optional benchmark deps with `uv sync --group bench --python 3.12` before recording Cython/Numba baselines (Numba requires <3.13).
 - Treat benchmark regressions as build breakers; iterate on optimization + `tools/dev.py lint` + `tools/dev.py test` + benchmarks (`uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json`) until the regression is gone and no new regressions appear, but avoid repeated cycles before the implementation is complete.
-- Run `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json` for every commit and commit the updated `bench/results/bench.json` (document blockers in `CHECKPOINT.md`).
+- Run `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json` for every commit and commit the updated `bench/results/bench.json` (document blockers in `CHECKPOINT.md`). On Apple Silicon, prefer an arm64 interpreter (e.g., `--python /opt/homebrew/bin/python3.14`) so Codon baselines link.
 - Sound the alarm immediately on performance regressions; prioritize optimization feedback loops before shipping other work without overfitting to tests mid-implementation.
 - Favor runtime performance over compile-time speed or binary size unless explicitly directed otherwise.
 - Treat `docs/spec/0015_STDLIB_COMPATIBILITY_MATRIX.md` as the source of truth for stdlib scope, tiering, and promotion rules.

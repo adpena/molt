@@ -111,7 +111,8 @@
 - **TC0 (Now):** ints/bools/None/float + core containers in MVP.
 - **TC1 (Near):** exceptions, full container semantics, range/slice polish.
   - Implemented: `try/except/else/finally` lowering + exception chaining (explicit `__cause__`, implicit `__context__`, `__suppress_context__`).
-  - TODO(type-coverage, owner:runtime, milestone:TC1): BaseException hierarchy + typed matching (beyond name string checks).
+  - Implemented: exception type objects for `type()`/`__name__` via kind-based classes (base `Exception`).
+  - TODO(type-coverage, owner:runtime, milestone:TC1): BaseException hierarchy + typed matching (beyond kind-name classes).
 - Implemented: comparison ops (`==`, `!=`, `<`, `<=`, `>`, `>=`, `is`, `in`, chained comparisons) + lowering rules for core types (list/tuple/dict/str/bytes/bytearray/range).
   - TODO(type-coverage, owner:frontend, milestone:TC1): builtin reductions (`sum/min/max`) and `len` parity.
   - TODO(type-coverage, owner:frontend, milestone:TC1): builtin constructors for `tuple`, `dict`, `bytes`, `bytearray`.
@@ -143,6 +144,7 @@
 - Implemented: C3 MRO + multiple inheritance for attribute lookup + `super()` resolution + data descriptor precedence.
 - Implemented: frozenset hashing (order-insensitive) + set/frozenset algebra intrinsics.
 - Implemented: exception objects with cause/context/suppress fields.
+  - Implemented: exception class objects derived from `Exception` for typed `type(exc)`.
 - TODO(type-coverage, owner:runtime, milestone:TC1): exception stack trace capture.
 - TODO(type-coverage, owner:runtime, milestone:TC2): formatting builtins (`repr`, `ascii`, `bin`, `hex`, `oct`, `chr`, `ord`) + full `format` protocol (`__format__`, named fields, locale-aware grouping).
 - TODO(type-coverage, owner:runtime, milestone:TC2): rounding intrinsics (`floor`, `ceil`) + full deterministic semantics for edge cases.

@@ -1,30 +1,39 @@
-class DataDesc:
-    def __get__(self, obj, objtype=None) -> str:
-        return "data"
-
-    def __set__(self, obj, val) -> None:
-        obj._set = val
+class C:
+    def x(self) -> int:
+        return 1
 
 
-class NonDataDesc:
-    def __get__(self, obj, objtype=None) -> str:
-        if obj is None:
-            return "nondata-class"
-        return "nondata"
+c = C()
+c.x = 7
+print(c.x)
 
 
-class Holder:
-    data = DataDesc()
-    nondata = NonDataDesc()
+class D:
+    @property
+    def y(self) -> int:
+        return 2
 
+
+d = D()
+try:
+    d.y = 3
+except Exception as exc:
+    print(type(exc).__name__)
+print(d.y)
+
+
+class E:
     def __init__(self) -> None:
-        self._set = "unset"
-        self.data = "instance-data"
-        self.nondata = "instance-nondata"
+        self.z = 4
 
 
-h = Holder()
-print(h._set)
-print(h.data)
-print(h.nondata)
-print(Holder.nondata)
+e = E()
+print(e.z)
+
+
+def get_z(self):
+    return 9
+
+
+E.z = property(get_z)
+print(e.z)

@@ -79,6 +79,7 @@ class ClassInfo(TypedDict, total=False):
     repr: bool
     slots: bool
     methods: dict[str, MethodInfo]
+    layout_version: int
 
 
 class FuncInfo(TypedDict):
@@ -115,6 +116,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.func_symbol_names: dict[str, str] = {}
         self.stable_module_funcs: set[str] = set()
         self.mutated_classes: set[str] = set()
+        self.instance_attr_mutations: dict[str, set[str]] = {}
         self.async_locals: dict[str, int] = {}
         self.async_locals_base: int = 0
         self.async_local_hints: dict[str, str] = {}
@@ -739,6 +741,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         Collector().visit(node)
         return mutated
 
+    def _record_instance_attr_mutation(self, class_name: str, attr: str) -> None:
+        if class_name not in self.classes:
+            return
+        self.instance_attr_mutations.setdefault(class_name, set()).add(attr)
+
+    def _instance_attr_mutated(self, class_name: str, attr: str) -> bool:
+        return attr in self.instance_attr_mutations.get(class_name, set())
+
     def _flush_deferred_module_attrs(self) -> None:
         if not self.deferred_module_attrs or self.module_obj is None:
             return
@@ -987,6 +997,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if method_info and method_info["descriptor"] == "property":
                 return True
         return False
+
+    def _class_layout_version(
+        self,
+        class_name: str,
+        class_attrs: dict[str, ast.expr],
+        methods: dict[str, MethodInfo],
+    ) -> int:
+        class_info = self.classes[class_name]
+        field_offsets = (
+            1
+            if class_info.get("fields")
+            and not class_info.get("dynamic")
+            and not class_info.get("dataclass")
+            else 0
+        )
+        return 1 + field_offsets + len(class_attrs) + len(methods)
 
     def _async_local_offset(self, name: str) -> int:
         if name not in self.async_locals:
@@ -2478,30 +2504,53 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return res
 
     def _emit_guarded_setattr(
-        self, obj: MoltValue, attr: str, value: MoltValue, expected_class: str
+        self,
+        obj: MoltValue,
+        attr: str,
+        value: MoltValue,
+        expected_class: str,
+        *,
+        use_init: bool = False,
     ) -> None:
         class_ref = self._emit_module_attr_get(expected_class)
-        obj_type = MoltValue(self.next_var(), type_hint="type")
-        self.emit(MoltOp(kind="TYPE_OF", args=[obj], result=obj_type))
-        matches = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="IS", args=[obj_type, class_ref], result=matches))
-        self.emit(MoltOp(kind="IF", args=[matches], result=MoltValue("none")))
+        expected_version = MoltValue(self.next_var(), type_hint="int")
         self.emit(
             MoltOp(
-                kind="SETATTR",
-                args=[obj, attr, value, expected_class],
+                kind="CONST",
+                args=[self.classes[expected_class].get("layout_version", 0)],
+                result=expected_version,
+            )
+        )
+        setattr_kind = "GUARDED_SETATTR_INIT" if use_init else "GUARDED_SETATTR"
+        self.emit(
+            MoltOp(
+                kind=setattr_kind,
+                args=[obj, class_ref, expected_version, attr, value, expected_class],
                 result=MoltValue("none"),
             )
         )
-        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+
+    def _emit_guarded_getattr(
+        self, obj: MoltValue, attr: str, expected_class: str
+    ) -> MoltValue:
+        class_ref = self._emit_module_attr_get(expected_class)
+        expected_version = MoltValue(self.next_var(), type_hint="int")
         self.emit(
             MoltOp(
-                kind="SETATTR_GENERIC_OBJ",
-                args=[obj, attr, value],
-                result=MoltValue("none"),
+                kind="CONST",
+                args=[self.classes[expected_class].get("layout_version", 0)],
+                result=expected_version,
             )
         )
-        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        res = MoltValue(self.next_var())
+        self.emit(
+            MoltOp(
+                kind="GUARDED_GETATTR",
+                args=[obj, class_ref, expected_version, attr, expected_class],
+                result=res,
+            )
+        )
+        return res
 
     def _emit_aiter(self, iterable: MoltValue) -> MoltValue:
         if iterable.type_hint in {
@@ -3792,6 +3841,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             elif isinstance(item, ast.AsyncFunctionDef):
                 methods[item.name] = compile_async_method(item)
 
+        self.classes[node.name]["layout_version"] = self._class_layout_version(
+            node.name, class_attrs, methods
+        )
+
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[node.name], result=name_val))
         class_val = MoltValue(self.next_var(), type_hint="type")
@@ -4736,16 +4789,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                         result=res,
                                     )
                                 )
+                                return res
                             else:
-                                res = MoltValue(self.next_var())
-                                self.emit(
-                                    MoltOp(
-                                        kind="GUARDED_GETATTR",
-                                        args=[obj, name_lit, obj.type_hint],
-                                        result=res,
-                                    )
+                                return self._emit_guarded_getattr(
+                                    obj, name_lit, obj.type_hint
                                 )
-                            return res
                 if name_lit:
                     class_name = None
                     if obj.type_hint in self.classes:
@@ -4794,6 +4842,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 val = self.visit(node.args[2])
                 if obj is None or name is None or val is None:
                     raise NotImplementedError("setattr expects object, name, value")
+                attr_name = None
+                if isinstance(node.args[1], ast.Constant) and isinstance(
+                    node.args[1].value, str
+                ):
+                    attr_name = node.args[1].value
+                if attr_name:
+                    exact_class = None
+                    if isinstance(node.args[0], ast.Name):
+                        exact_class = self.exact_locals.get(node.args[0].id)
+                    if exact_class is not None:
+                        self._record_instance_attr_mutation(exact_class, attr_name)
+                    elif obj.type_hint in self.classes:
+                        self._record_instance_attr_mutation(obj.type_hint, attr_name)
                 if (
                     isinstance(node.args[1], ast.Constant)
                     and isinstance(node.args[1].value, str)
@@ -4867,6 +4928,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if isinstance(node.args[1], ast.Constant) and isinstance(
                     node.args[1].value, str
                 ):
+                    attr_name = node.args[1].value
+                    exact_class = None
+                    if isinstance(node.args[0], ast.Name):
+                        exact_class = self.exact_locals.get(node.args[0].id)
+                    if exact_class is not None:
+                        self._record_instance_attr_mutation(exact_class, attr_name)
+                    elif obj.type_hint in self.classes:
+                        self._record_instance_attr_mutation(obj.type_hint, attr_name)
                     res = MoltValue(self.next_var(), type_hint="None")
                     attr_name = node.args[1].value
                     if obj.type_hint in self.classes:
@@ -5432,21 +5501,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             )
                         )
                     elif use_init:
-                        self.emit(
-                            MoltOp(
-                                kind="SETATTR_INIT",
-                                args=[res, name, val, class_id],
-                                result=MoltValue("none"),
-                            )
+                        self._emit_guarded_setattr(
+                            res, name, val, class_id, use_init=True
                         )
                     else:
-                        self.emit(
-                            MoltOp(
-                                kind="SETATTR",
-                                args=[res, name, val, class_id],
-                                result=MoltValue("none"),
-                            )
-                        )
+                        self._emit_guarded_setattr(res, name, val, class_id)
                 init_method = class_info.get("methods", {}).get("__init__")
                 if init_method is None:
                     for base_name in class_info.get("mro", [])[1:]:
@@ -6140,14 +6199,23 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 obj.type_hint, node.attr
             )
         if method_info and method_info["descriptor"] == "function":
-            func_val = method_info["func"]
-            class_name = method_class or obj.type_hint
-            res = MoltValue(
-                self.next_var(),
-                type_hint=f"BoundMethod:{class_name}:{node.attr}",
-            )
-            self.emit(MoltOp(kind="BOUND_METHOD_NEW", args=[func_val, obj], result=res))
-            return res
+            fields = class_info.get("fields", {}) if class_info else {}
+            if (
+                class_info
+                and not class_info.get("dynamic")
+                and node.attr not in fields
+                and not self._instance_attr_mutated(obj.type_hint, node.attr)
+            ):
+                func_val = method_info["func"]
+                class_name = method_class or obj.type_hint
+                res = MoltValue(
+                    self.next_var(),
+                    type_hint=f"BoundMethod:{class_name}:{node.attr}",
+                )
+                self.emit(
+                    MoltOp(kind="BOUND_METHOD_NEW", args=[func_val, obj], result=res)
+                )
+                return res
         if obj.type_hint.startswith("module"):
             attr_name = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[node.attr], result=attr_name))
@@ -6161,8 +6229,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
             return res
         expected_class = obj.type_hint if obj.type_hint in self.classes else None
-        res = MoltValue(self.next_var())
         if expected_class is None:
+            res = MoltValue(self.next_var())
             self.emit(
                 MoltOp(
                     kind="GETATTR_GENERIC_OBJ",
@@ -6172,6 +6240,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
             return res
         if self.classes[expected_class].get("dynamic"):
+            res = MoltValue(self.next_var())
             self.emit(
                 MoltOp(
                     kind="GETATTR_GENERIC_PTR",
@@ -6182,6 +6251,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return res
         field_map = self.classes[expected_class].get("fields", {})
         if node.attr not in field_map:
+            res = MoltValue(self.next_var())
             self.emit(
                 MoltOp(
                     kind="GETATTR_GENERIC_PTR",
@@ -6191,6 +6261,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
             return res
         if self._class_attr_is_data_descriptor(expected_class, node.attr):
+            res = MoltValue(self.next_var())
             self.emit(
                 MoltOp(
                     kind="GETATTR_GENERIC_PTR",
@@ -6199,14 +6270,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             )
             return res
-        self.emit(
-            MoltOp(
-                kind="GUARDED_GETATTR",
-                args=[obj, node.attr, expected_class],
-                result=res,
-            )
-        )
-        return res
+        return self._emit_guarded_getattr(obj, node.attr, expected_class)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if not isinstance(node.target, (ast.Name, ast.Attribute)):
@@ -6252,6 +6316,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         class_info = None
         if obj is not None:
             class_info = self.classes.get(obj.type_hint)
+        if exact_class is not None:
+            self._record_instance_attr_mutation(exact_class, node.target.attr)
+        elif obj is not None and obj.type_hint in self.classes:
+            self._record_instance_attr_mutation(obj.type_hint, node.target.attr)
         if exact_class is not None and obj is not None:
             exact_info = self.classes.get(exact_class)
             if (
@@ -6266,12 +6334,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         exact_class, node.target.attr
                     )
                 ):
-                    self.emit(
-                        MoltOp(
-                            kind="SETATTR",
-                            args=[obj, node.target.attr, value_node, exact_class],
-                            result=MoltValue("none"),
-                        )
+                    self._emit_guarded_setattr(
+                        obj, node.target.attr, value_node, exact_class
                     )
                     return None
         if class_info and class_info.get("dataclass"):
@@ -6351,6 +6415,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 class_info = None
                 if obj is not None:
                     class_info = self.classes.get(obj.type_hint)
+                if exact_class is not None:
+                    self._record_instance_attr_mutation(exact_class, target.attr)
+                elif obj is not None and obj.type_hint in self.classes:
+                    self._record_instance_attr_mutation(obj.type_hint, target.attr)
                 if exact_class is not None and obj is not None:
                     exact_info = self.classes.get(exact_class)
                     if (
@@ -6365,12 +6433,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                 exact_class, target.attr
                             )
                         ):
-                            self.emit(
-                                MoltOp(
-                                    kind="SETATTR",
-                                    args=[obj, target.attr, value_node, exact_class],
-                                    result=MoltValue("none"),
-                                )
+                            self._emit_guarded_setattr(
+                                obj, target.attr, value_node, exact_class
                             )
                             continue
                 if class_info and class_info.get("dataclass"):
@@ -6514,6 +6578,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             obj = self.visit(target.value)
             if obj is None:
                 raise NotImplementedError("del expects attribute owner")
+            exact_class = None
+            if isinstance(target.value, ast.Name):
+                exact_class = self.exact_locals.get(target.value.id)
+            if exact_class is not None:
+                self._record_instance_attr_mutation(exact_class, target.attr)
+            elif obj.type_hint in self.classes:
+                self._record_instance_attr_mutation(obj.type_hint, target.attr)
             res = MoltValue(self.next_var(), type_hint="None")
             if obj.type_hint in self.classes:
                 self.emit(
@@ -6595,6 +6666,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             class_info = None
             if obj is not None:
                 class_info = self.classes.get(obj.type_hint)
+            if exact_class is not None:
+                self._record_instance_attr_mutation(exact_class, node.target.attr)
+            elif obj is not None and obj.type_hint in self.classes:
+                self._record_instance_attr_mutation(obj.type_hint, node.target.attr)
             if exact_class is not None and obj is not None:
                 exact_info = self.classes.get(exact_class)
                 if (
@@ -6609,12 +6684,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             exact_class, node.target.attr
                         )
                     ):
-                        self.emit(
-                            MoltOp(
-                                kind="SETATTR",
-                                args=[obj, node.target.attr, res, exact_class],
-                                result=MoltValue("none"),
-                            )
+                        self._emit_guarded_setattr(
+                            obj, node.target.attr, res, exact_class
                         )
                         return None
             if class_info and class_info.get("dataclass"):
@@ -9391,6 +9462,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "out": op.result.name,
                     }
                 )
+            elif op.kind == "CLASS_VERSION":
+                json_ops.append(
+                    {
+                        "kind": "class_layout_version",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "GUARD_LAYOUT":
+                json_ops.append(
+                    {
+                        "kind": "guard_layout",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "ISINSTANCE":
                 json_ops.append(
                     {
@@ -9709,6 +9796,40 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "value": offset,
                     }
                 )
+            elif op.kind == "GUARDED_SETATTR":
+                obj, class_ref, expected_version, attr, val, expected_class = op.args
+                offset = self.classes[expected_class]["fields"][attr]
+                json_ops.append(
+                    {
+                        "kind": "guarded_field_set",
+                        "args": [
+                            obj.name,
+                            class_ref.name,
+                            expected_version.name,
+                            val.name,
+                        ],
+                        "s_value": attr,
+                        "value": offset,
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "GUARDED_SETATTR_INIT":
+                obj, class_ref, expected_version, attr, val, expected_class = op.args
+                offset = self.classes[expected_class]["fields"][attr]
+                json_ops.append(
+                    {
+                        "kind": "guarded_field_init",
+                        "args": [
+                            obj.name,
+                            class_ref.name,
+                            expected_version.name,
+                            val.name,
+                        ],
+                        "s_value": attr,
+                        "value": offset,
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "SETATTR_GENERIC_PTR":
                 json_ops.append(
                     {
@@ -9781,12 +9902,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     }
                 )
             elif op.kind == "GUARDED_GETATTR":
-                obj, attr, expected_class = op.args
+                obj, class_ref, expected_version, attr, expected_class = op.args
                 offset = self.classes[expected_class]["fields"][attr]
                 json_ops.append(
                     {
-                        "kind": "guarded_load",
-                        "args": [obj.name],
+                        "kind": "guarded_field_get",
+                        "args": [obj.name, class_ref.name, expected_version.name],
                         "s_value": attr,
                         "value": offset,
                         "out": op.result.name,

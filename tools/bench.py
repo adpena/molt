@@ -66,7 +66,7 @@ SMOKE_BENCHMARKS = [
 @dataclass(frozen=True)
 class BenchRunner:
     cmd: list[str]
-    script: str
+    script: str | None
     env: dict[str, str]
 
 
@@ -254,6 +254,42 @@ def _prepare_numba_runner(
     return BenchRunner([sys.executable], str(runner_path), env)
 
 
+def _prepare_codon_runner(
+    script_path: Path, build_root: Path, base_env: dict[str, str]
+) -> BenchRunner | None:
+    codon = shutil.which("codon")
+    if not codon:
+        return None
+    module_name = f"bench_codon_{script_path.stem}"
+    module_dir = build_root / module_name
+    module_dir.mkdir(parents=True, exist_ok=True)
+    binary_path = module_dir / module_name
+    env = base_env.copy()
+    codon_home: str | None = None
+    if "CODON_HOME" not in env:
+        codon_path = Path(codon).resolve()
+        candidate = codon_path.parent.parent
+        if (candidate / "lib" / "codon").exists():
+            codon_home = str(candidate)
+            env["CODON_HOME"] = codon_home
+    else:
+        codon_home = env.get("CODON_HOME")
+    build = subprocess.run(
+        [codon, "build", "-release", str(script_path), "-o", str(binary_path)],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    if build.returncode != 0:
+        return None
+    if codon_home:
+        libomp = Path(codon_home) / "lib" / "codon" / "libomp.dylib"
+        target = module_dir / "libomp.dylib"
+        if libomp.exists() and not target.exists():
+            shutil.copy2(libomp, target)
+    return BenchRunner([str(binary_path)], None, env)
+
+
 def _pypy_command() -> list[str] | None:
     if not shutil.which("uv"):
         print("Skipping PyPy: uv not found.", file=sys.stderr)
@@ -280,7 +316,7 @@ def _pypy_command() -> list[str] | None:
     return ["uv", "run", "--no-project", "--python", "pypy@3.11", "python"]
 
 
-def bench_results(benchmarks, samples, use_pypy, use_cython, use_numba):
+def bench_results(benchmarks, samples, use_pypy, use_cython, use_numba, use_codon):
     runtimes = {"CPython": [sys.executable]}
     if use_pypy:
         pypy_cmd = _pypy_command()
@@ -293,10 +329,14 @@ def bench_results(benchmarks, samples, use_pypy, use_cython, use_numba):
     if use_numba and not _module_available("numba"):
         print("Skipping Numba: numba not available.", file=sys.stderr)
         use_numba = False
+    if use_codon and not shutil.which("codon"):
+        print("Skipping Codon: codon not found.", file=sys.stderr)
+        use_codon = False
 
     header = (
         f"{'Benchmark':<30} | {'CPython (s)':<12} | {'PyPy (s)':<12} | "
-        f"{'Cython (s)':<12} | {'Numba (s)':<12} | {'Molt (s)':<10} | "
+        f"{'Cython (s)':<12} | {'Numba (s)':<12} | {'Codon (s)':<12} | "
+        f"{'Molt/Codon':<12} | {'Molt (s)':<10} | "
         f"{'Molt Speedup':<12} | {'Molt Size'}"
     )
     print(header)
@@ -305,6 +345,7 @@ def bench_results(benchmarks, samples, use_pypy, use_cython, use_numba):
     base_env = _base_python_env()
     cython_root = Path("bench/cython")
     numba_root = Path("bench/numba")
+    codon_root = Path("bench/codon")
 
     data = {}
     for script in benchmarks:
@@ -342,6 +383,18 @@ def bench_results(benchmarks, samples, use_pypy, use_cython, use_numba):
             else:
                 print(f"Skipping Numba for {name}.", file=sys.stderr)
 
+        codon_time = 0.0
+        codon_ok = False
+        if use_codon:
+            runner = _prepare_codon_runner(Path(script), codon_root, base_env)
+            if runner is not None:
+                codon_time, codon_ok = collect_samples(
+                    lambda: measure_runtime(runner.cmd, runner.script, env=runner.env),
+                    samples,
+                )
+            else:
+                print(f"Skipping Codon for {name}.", file=sys.stderr)
+
         molt_time, molt_size = 0.0, 0.0
         molt_runs = [measure_molt(script) for _ in range(samples)]
         valid_molt = [r[0] for r in molt_runs if r[0] is not None]
@@ -358,6 +411,11 @@ def bench_results(benchmarks, samples, use_pypy, use_cython, use_numba):
             if molt_ok and results.get("CPython", 0.0) > 0
             else None
         )
+        codon_ratio = (
+            (molt_time / codon_time)
+            if molt_ok and codon_ok and codon_time > 0
+            else None
+        )
 
         cpython_cell = (
             f"{results.get('CPython', 0.0):<12.4f}"
@@ -371,10 +429,15 @@ def bench_results(benchmarks, samples, use_pypy, use_cython, use_numba):
         )
         cython_cell = f"{cython_time:<12.4f}" if cython_ok else f"{'n/a':<12}"
         numba_cell = f"{numba_time:<12.4f}" if numba_ok else f"{'n/a':<12}"
+        codon_cell = f"{codon_time:<12.4f}" if codon_ok else f"{'n/a':<12}"
+        codon_ratio_cell = (
+            f"{codon_ratio:<12.2f}x" if codon_ratio is not None else f"{'n/a':<12}"
+        )
 
         print(
             f"{name:<30} | {cpython_cell} | {pypy_cell} | {cython_cell} | "
-            f"{numba_cell} | {molt_time:<10.4f} | {speedup:<12.2f}x | "
+            f"{numba_cell} | {codon_cell} | {codon_ratio_cell} | "
+            f"{molt_time:<10.4f} | {speedup:<12.2f}x | "
             f"{molt_size:.1f} KB"
         )
 
@@ -383,13 +446,16 @@ def bench_results(benchmarks, samples, use_pypy, use_cython, use_numba):
             "pypy_time_s": results.get("PyPy", 0.0),
             "cython_time_s": cython_time,
             "numba_time_s": numba_time,
+            "codon_time_s": codon_time,
             "molt_time_s": molt_time,
             "molt_size_kb": molt_size,
             "molt_speedup": speedup,
             "molt_cpython_ratio": ratio,
+            "molt_codon_ratio": codon_ratio,
             "molt_ok": molt_ok,
             "cython_ok": cython_ok,
             "numba_ok": numba_ok,
+            "codon_ok": codon_ok,
         }
 
     return data
@@ -430,6 +496,7 @@ def main():
     parser.add_argument("--no-pypy", action="store_true")
     parser.add_argument("--no-cython", action="store_true")
     parser.add_argument("--no-numba", action="store_true")
+    parser.add_argument("--no-codon", action="store_true")
     args = parser.parse_args()
 
     benchmarks = SMOKE_BENCHMARKS if args.smoke else BENCHMARKS
@@ -437,8 +504,11 @@ def main():
     use_pypy = not args.no_pypy
     use_cython = not args.no_cython
     use_numba = not args.no_numba
+    use_codon = not args.no_codon
 
-    results = bench_results(benchmarks, samples, use_pypy, use_cython, use_numba)
+    results = bench_results(
+        benchmarks, samples, use_pypy, use_cython, use_numba, use_codon
+    )
 
     payload = {
         "schema_version": 1,

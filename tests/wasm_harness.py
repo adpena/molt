@@ -94,12 +94,15 @@ const getBuiltinType = (tag) => {
     basesBits: null,
     mroBits: null,
   });
+  classLayoutVersions.set(clsBits, 0n);
   builtinTypes.set(tag, clsBits);
   setClassBases(clsBits, baseBits);
   return clsBits;
 };
 const heap = new Map();
 const instanceClasses = new Map();
+const classLayoutVersions = new Map();
+const instanceAttrs = new Map();
 let nextPtr = 1n << 40n;
 let memory = null;
 let table = null;
@@ -154,10 +157,33 @@ const getClass = (val) => {
   if (obj && obj.type === 'class') return obj;
   return null;
 };
+const classLayoutVersion = (classBits) => {
+  if (!getClass(classBits)) return null;
+  const current = classLayoutVersions.get(classBits);
+  if (current !== undefined) return current;
+  classLayoutVersions.set(classBits, 0n);
+  return 0n;
+};
+const bumpClassLayoutVersion = (classBits) => {
+  const current = classLayoutVersion(classBits);
+  if (current === null) return;
+  classLayoutVersions.set(classBits, current + 1n);
+};
 const getModule = (val) => {
   const obj = getObj(val);
   if (obj && obj.type === 'module') return obj;
   return null;
+};
+const getInstanceAttrMap = (objBits) => {
+  if (!isPtr(objBits)) return null;
+  if (heap.has(objBits & POINTER_MASK)) return null;
+  const key = ptrAddr(objBits);
+  let attrs = instanceAttrs.get(key);
+  if (!attrs) {
+    attrs = new Map();
+    instanceAttrs.set(key, attrs);
+  }
+  return attrs;
 };
 const callFunctionBits = (funcBits, args) => {
   const func = getFunction(funcBits);
@@ -426,6 +452,7 @@ const setClassBases = (classBits, baseBits) => {
   cls.mroBits = mroBits;
   cls.attrs.set('__bases__', basesBits);
   cls.attrs.set('__mro__', mroBits);
+  bumpClassLayoutVersion(classBits);
 };
 let superTypeBits = null;
 const getSuperType = () => {
@@ -438,6 +465,7 @@ const getSuperType = () => {
     basesBits: null,
     mroBits: null,
   });
+  classLayoutVersions.set(superTypeBits, 0n);
   setClassBases(superTypeBits, getBuiltinType(100));
   return superTypeBits;
 };
@@ -545,7 +573,12 @@ const lookupAttr = (objBits, name) => {
     return func.attrs.get(name);
   }
   if (isPtr(objBits) && !heap.has(objBits & POINTER_MASK)) {
-    const clsBits = instanceClasses.get(ptrAddr(objBits));
+    const key = ptrAddr(objBits);
+    const attrs = instanceAttrs.get(key);
+    if (attrs && attrs.has(name)) {
+      return attrs.get(name);
+    }
+    const clsBits = instanceClasses.get(key);
     if (clsBits !== undefined) {
       const val = lookupClassAttr(clsBits, name, objBits);
       if (val !== undefined) return val;
@@ -618,6 +651,7 @@ const setAttrValue = (objBits, name, valBits) => {
   const cls = getClass(objBits);
   if (cls) {
     cls.attrs.set(name, valBits);
+    bumpClassLayoutVersion(objBits);
     return boxNone();
   }
   const func = getFunction(objBits);
@@ -626,6 +660,11 @@ const setAttrValue = (objBits, name, valBits) => {
       func.attrs = new Map();
     }
     func.attrs.set(name, valBits);
+    return boxNone();
+  }
+  const instanceAttrsMap = getInstanceAttrMap(objBits);
+  if (instanceAttrsMap) {
+    instanceAttrsMap.set(name, valBits);
     return boxNone();
   }
   return boxNone();
@@ -650,6 +689,7 @@ const delAttrValue = (objBits, name) => {
   const cls = getClass(objBits);
   if (cls) {
     cls.attrs.delete(name);
+    bumpClassLayoutVersion(objBits);
     return boxNone();
   }
   const func = getFunction(objBits);
@@ -660,6 +700,11 @@ const delAttrValue = (objBits, name) => {
   const moduleObj = getModule(objBits);
   if (moduleObj) {
     moduleObj.attrs.delete(name);
+    return boxNone();
+  }
+  const instanceAttrsMap = getInstanceAttrMap(objBits);
+  if (instanceAttrsMap) {
+    instanceAttrsMap.delete(name);
     return boxNone();
   }
   return boxNone();
@@ -1610,6 +1655,121 @@ BASE_IMPORTS = """\
     return boxBool(false);
   },
   guard_type: (val, expected) => val,
+  guard_layout_ptr: (obj, classBits, expected) => {
+    if (obj === 0n) return boxBool(false);
+    if (!getClass(classBits)) return boxBool(false);
+    const ptrBits = normalizePtrBits(obj);
+    const clsBits = instanceClasses.get(ptrAddr(ptrBits));
+    if (clsBits === undefined || clsBits !== classBits) return boxBool(false);
+    const version = classLayoutVersion(classBits);
+    if (version === null) return boxBool(false);
+    let expectedVersion = expected;
+    if (isTag(expected, TAG_INT)) {
+      expectedVersion = unboxInt(expected);
+    } else if (isTag(expected, TAG_BOOL)) {
+      expectedVersion = unboxIntLike(expected);
+    }
+    return boxBool(version === expectedVersion);
+  },
+  guarded_field_get_ptr: (obj, classBits, expected, offset, namePtr, nameLen) => {
+    if (obj === 0n || !getClass(classBits)) {
+      return getAttrValue(normalizePtrBits(obj), readUtf8(namePtr, nameLen));
+    }
+    const ptrBits = normalizePtrBits(obj);
+    const clsBits = instanceClasses.get(ptrAddr(ptrBits));
+    if (clsBits === undefined || clsBits !== classBits) {
+      return getAttrValue(ptrBits, readUtf8(namePtr, nameLen));
+    }
+    const version = classLayoutVersion(classBits);
+    if (version === null) {
+      return getAttrValue(ptrBits, readUtf8(namePtr, nameLen));
+    }
+    let expectedVersion = expected;
+    if (isTag(expected, TAG_INT)) {
+      expectedVersion = unboxInt(expected);
+    } else if (isTag(expected, TAG_BOOL)) {
+      expectedVersion = unboxIntLike(expected);
+    }
+    if (version !== expectedVersion) {
+      return getAttrValue(ptrBits, readUtf8(namePtr, nameLen));
+    }
+    if (!memory) return boxNone();
+    const addr = ptrAddr(ptrBits) + Number(offset);
+    const view = new DataView(memory.buffer);
+    return view.getBigInt64(addr, true);
+  },
+  guarded_field_set_ptr: (
+    obj,
+    classBits,
+    expected,
+    offset,
+    val,
+    namePtr,
+    nameLen,
+  ) => {
+    if (obj === 0n || !getClass(classBits)) {
+      return setAttrValue(normalizePtrBits(obj), readUtf8(namePtr, nameLen), val);
+    }
+    const ptrBits = normalizePtrBits(obj);
+    const clsBits = instanceClasses.get(ptrAddr(ptrBits));
+    if (clsBits === undefined || clsBits !== classBits) {
+      return setAttrValue(ptrBits, readUtf8(namePtr, nameLen), val);
+    }
+    const version = classLayoutVersion(classBits);
+    if (version === null) {
+      return setAttrValue(ptrBits, readUtf8(namePtr, nameLen), val);
+    }
+    let expectedVersion = expected;
+    if (isTag(expected, TAG_INT)) {
+      expectedVersion = unboxInt(expected);
+    } else if (isTag(expected, TAG_BOOL)) {
+      expectedVersion = unboxIntLike(expected);
+    }
+    if (version !== expectedVersion) {
+      return setAttrValue(ptrBits, readUtf8(namePtr, nameLen), val);
+    }
+    if (!memory) return boxNone();
+    const addr = ptrAddr(ptrBits) + Number(offset);
+    const view = new DataView(memory.buffer);
+    view.setBigInt64(addr, val, true);
+    return boxNone();
+  },
+  guarded_field_init_ptr: (
+    obj,
+    classBits,
+    expected,
+    offset,
+    val,
+    namePtr,
+    nameLen,
+  ) => {
+    if (obj === 0n || !getClass(classBits)) {
+      return setAttrValue(normalizePtrBits(obj), readUtf8(namePtr, nameLen), val);
+    }
+    const ptrBits = normalizePtrBits(obj);
+    const clsBits = instanceClasses.get(ptrAddr(ptrBits));
+    if (clsBits === undefined || clsBits !== classBits) {
+      return setAttrValue(ptrBits, readUtf8(namePtr, nameLen), val);
+    }
+    const version = classLayoutVersion(classBits);
+    if (version === null) {
+      return setAttrValue(ptrBits, readUtf8(namePtr, nameLen), val);
+    }
+    let expectedVersion = expected;
+    if (isTag(expected, TAG_INT)) {
+      expectedVersion = unboxInt(expected);
+    } else if (isTag(expected, TAG_BOOL)) {
+      expectedVersion = unboxIntLike(expected);
+    }
+    if (version !== expectedVersion) {
+      return setAttrValue(ptrBits, readUtf8(namePtr, nameLen), val);
+    }
+    if (!memory) return boxNone();
+    const addr = ptrAddr(ptrBits) + Number(offset);
+    const view = new DataView(memory.buffer);
+    view.setBigInt64(addr, val, true);
+    return boxNone();
+  },
   handle_resolve: (bits) => {
     if (!isPtr(bits)) return 0n;
     const id = bits & POINTER_MASK;
@@ -1618,14 +1778,20 @@ BASE_IMPORTS = """\
     if (!obj) return BigInt(ptrAddr(bits));
     return 0n;
   },
+  get_attr_ptr: (obj, namePtr, nameLen) =>
+    getAttrValue(normalizePtrBits(obj), readUtf8(namePtr, nameLen)),
   get_attr_generic: (obj, namePtr, nameLen) =>
     getAttrValue(normalizePtrBits(obj), readUtf8(namePtr, nameLen)),
   get_attr_object: (obj, namePtr, nameLen) =>
     getAttrValue(obj, readUtf8(namePtr, nameLen)),
+  set_attr_ptr: (obj, namePtr, nameLen, val) =>
+    setAttrValue(normalizePtrBits(obj), readUtf8(namePtr, nameLen), val),
   set_attr_generic: (obj, namePtr, nameLen, val) =>
     setAttrValue(normalizePtrBits(obj), readUtf8(namePtr, nameLen), val),
   set_attr_object: (obj, namePtr, nameLen, val) =>
     setAttrValue(obj, readUtf8(namePtr, nameLen), val),
+  del_attr_ptr: (obj, namePtr, nameLen) =>
+    delAttrValue(normalizePtrBits(obj), readUtf8(namePtr, nameLen)),
   del_attr_generic: (obj, namePtr, nameLen) =>
     delAttrValue(normalizePtrBits(obj), readUtf8(namePtr, nameLen)),
   del_attr_object: (obj, namePtr, nameLen) =>
@@ -1646,6 +1812,26 @@ BASE_IMPORTS = """\
   object_field_init: (obj, offset, val) => {
     if (!memory) return boxNone();
     const addr = ptrAddr(obj) + Number(offset);
+    const view = new DataView(memory.buffer);
+    view.setBigInt64(addr, val, true);
+    return boxNone();
+  },
+  object_field_get_ptr: (obj, offset) => {
+    if (!memory) return boxNone();
+    const addr = ptrAddr(normalizePtrBits(obj)) + Number(offset);
+    const view = new DataView(memory.buffer);
+    return view.getBigInt64(addr, true);
+  },
+  object_field_set_ptr: (obj, offset, val) => {
+    if (!memory) return boxNone();
+    const addr = ptrAddr(normalizePtrBits(obj)) + Number(offset);
+    const view = new DataView(memory.buffer);
+    view.setBigInt64(addr, val, true);
+    return boxNone();
+  },
+  object_field_init_ptr: (obj, offset, val) => {
+    if (!memory) return boxNone();
+    const addr = ptrAddr(normalizePtrBits(obj)) + Number(offset);
     const view = new DataView(memory.buffer);
     view.setBigInt64(addr, val, true);
     return boxNone();
@@ -2306,7 +2492,7 @@ BASE_IMPORTS = """\
   dataclass_set_class: () => boxNone(),
   class_new: (nameBits) => {
     const name = getStrObj(nameBits);
-    return boxPtr({
+    const classBits = boxPtr({
       type: 'class',
       name: name ?? '<class>',
       attrs: new Map(),
@@ -2314,6 +2500,8 @@ BASE_IMPORTS = """\
       basesBits: null,
       mroBits: null,
     });
+    classLayoutVersions.set(classBits, 0n);
+    return classBits;
   },
   class_set_base: (classBits, baseBits) => {
     setClassBases(classBits, baseBits);
@@ -2339,6 +2527,13 @@ BASE_IMPORTS = """\
     return getBuiltinType(tag);
   },
   type_of: (objBits) => typeOfBits(objBits),
+  class_layout_version: (classBits) => {
+    if (!getClass(classBits)) {
+      throw new Error('TypeError: class must be a type object');
+    }
+    const version = classLayoutVersion(classBits);
+    return boxInt(version ?? 0n);
+  },
   isinstance: (objBits, classBits) => {
     const tuple = getTuple(classBits);
     if (tuple) {

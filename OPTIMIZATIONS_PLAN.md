@@ -392,6 +392,9 @@ and regression control.
   - `bench_str_count_unicode.py`: 0.0223s (Molt) vs 0.0449s (CPython), 2.02x.
 - Update (2026-01-08): added prefix-count metadata to `Utf8CountCache` with lazy
   promotion on slice paths to avoid penalizing full-count hot paths.
+- Update (2026-01-08): current bench run confirms warm/cold wins:
+  - `bench_str_count_unicode_warm.py`: 0.0334s (Molt) vs 0.1453s (CPython), 4.36x.
+  - `bench_str_count_unicode.py`: 0.0347s (Molt) vs 0.0660s (CPython), 1.90x.
 
 ### OPT-0007: Structified Class Fast Path + Optional Scalar Replacement
 
@@ -433,13 +436,17 @@ and regression control.
 - Execution checklist:
   - [ ] Measure guard vs direct-slot store cost on `bench_struct.py` and record.
   - [x] Add differential tests for dynamic class mutation that must deopt.
-  - [ ] Decide whether to gate structified stores behind a layout-stability flag.
+  - [x] Gate structified stores behind a layout-stability guard.
 - Update (2026-01-07): added `store_init` lowering for immediate defaults to avoid
   refcount work on freshly allocated objects.
 - Update (2026-01-08): regression still severe after latest benches:
   - `bench_struct.py`: 1.7825s (Molt) vs 0.5453s (CPython), 0.31x.
   - Priority: eliminate guard overhead on hot struct stores or move to monomorphic
     slot stores with layout-stability checks.
+- Update (2026-01-08): added class layout version tracking and guarded slot
+  loads/stores; class mutations now bump version and deopt to generic paths.
+- Update (2026-01-08): fused guarded field ops reduced guard+store calls, but
+  `bench_struct.py` is still 0.07x and `bench_attr_access.py` 0.13x vs CPython.
 
 **Benchmark Matrix**
 - bench_struct.py: expected >=2x improvement
@@ -481,6 +488,10 @@ and regression control.
 - Phase 1: Add an attribute lookup IC keyed by (class, attr_name) with descriptor kind.
 - Phase 2: Add guarded direct-call for property getters.
 - Phase 3: Deopt on class mutation (mro/attrs change).
+ - Update (2026-01-08): added TLS attribute-name cache and descriptor IC keyed by
+   (class bits, attr bits, layout version), with class mutation version bumping.
+ - Update (2026-01-08): bench still regresses (`bench_descriptor_property.py` 0.12x);
+   need direct-call lowering and IC that avoids repeated generic lookups.
 
 **Benchmark Matrix**
 - bench_descriptor_property.py: expected >=2x improvement
@@ -522,6 +533,15 @@ and regression control.
 - Phase 1: Pre-scan and reserve list capacity; avoid per-element reallocs.
 - Phase 2: ASCII fast paths using memchr/memmem.
 - Phase 3: Validate whitespace split semantics.
+ - Update (2026-01-08): removed positions vector in split; now two-pass count +
+   split with memchr/memmem to reduce allocations.
+ - Update (2026-01-08): `bench_str_split.py` remains 0.43x and `bench_str_join.py`
+   0.75x; new plan needed for string builder fast paths.
+ - Update (2026-01-08): restored single-scan delimiter index capture for split
+   (avoid double memmem pass) and cache join element pointers/lengths for a
+   single copy loop.
+ - Update (2026-01-08): `bench_str_join.py` improved to 0.52x; `bench_str_split.py`
+   still 0.27x after keeping the single-byte separator on the count+split path.
 
 **Benchmark Matrix**
 - bench_str_split.py: expected >=2x improvement

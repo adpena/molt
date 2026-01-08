@@ -82,6 +82,20 @@ struct Utf8CountCacheEntry {
     cache: Arc<Utf8CountCache>,
 }
 
+struct AttrNameCacheEntry {
+    bytes: Vec<u8>,
+    bits: u64,
+}
+
+#[derive(Clone)]
+struct DescriptorCacheEntry {
+    class_bits: u64,
+    attr_bits: u64,
+    version: u64,
+    data_desc_bits: Option<u64>,
+    class_attr_bits: Option<u64>,
+}
+
 struct Utf8CountCacheStore {
     entries: HashMap<usize, Arc<Utf8CountCache>>,
     order: VecDeque<usize>,
@@ -245,6 +259,7 @@ thread_local! {
 
 static LAST_EXCEPTION: OnceLock<Mutex<Option<usize>>> = OnceLock::new();
 static MODULE_CACHE: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+static EXCEPTION_TYPE_CACHE: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
 static RAW_OBJECTS: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
 static BUILTIN_CLASSES: OnceLock<BuiltinClasses> = OnceLock::new();
 static INTERN_BASES_NAME: OnceLock<u64> = OnceLock::new();
@@ -1238,6 +1253,19 @@ unsafe fn class_set_mro_bits(ptr: *mut u8, bits: u64) {
     *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64) = bits;
 }
 
+unsafe fn class_layout_version_bits(ptr: *mut u8) -> u64 {
+    *(ptr.add(4 * std::mem::size_of::<u64>()) as *const u64)
+}
+
+unsafe fn class_set_layout_version_bits(ptr: *mut u8, bits: u64) {
+    *(ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64) = bits;
+}
+
+unsafe fn class_bump_layout_version(ptr: *mut u8) {
+    let current = class_layout_version_bits(ptr);
+    class_set_layout_version_bits(ptr, current.wrapping_add(1));
+}
+
 unsafe fn classmethod_func_bits(ptr: *mut u8) -> u64 {
     *(ptr as *const u64)
 }
@@ -1366,6 +1394,19 @@ fn hash_frozenset(ptr: *mut u8) -> u64 {
     mix_hash(hash)
 }
 
+fn hash_bytes_cached(ptr: *mut u8, bytes: &[u8]) -> u64 {
+    let header = unsafe { header_from_obj_ptr(ptr) };
+    let cached = unsafe { (*header).state as u64 };
+    if cached != 0 {
+        return cached.wrapping_sub(1);
+    }
+    let hash = hash_bytes(bytes);
+    unsafe {
+        (*header).state = hash.wrapping_add(1) as i64;
+    }
+    hash
+}
+
 fn hash_bits(bits: u64) -> u64 {
     let obj = obj_from_bits(bits);
     if let Some(i) = obj.as_int() {
@@ -1386,12 +1427,12 @@ fn hash_bits(bits: u64) -> u64 {
             if type_id == TYPE_ID_STRING {
                 let len = string_len(ptr);
                 let bytes = std::slice::from_raw_parts(string_bytes(ptr), len);
-                return hash_bytes(bytes);
+                return hash_bytes_cached(ptr, bytes);
             }
             if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
                 let len = bytes_len(ptr);
                 let bytes = std::slice::from_raw_parts(bytes_data(ptr), len);
-                return hash_bytes(bytes);
+                return hash_bytes_cached(ptr, bytes);
             }
             if type_id == TYPE_ID_BIGINT {
                 let bytes = bigint_ref(ptr).to_signed_bytes_le();
@@ -1962,7 +2003,7 @@ fn alloc_class_obj(name_bits: u64) -> *mut u8 {
     let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
     let bases_bits = MoltObject::none().bits();
     let mro_bits = MoltObject::none().bits();
-    let total = std::mem::size_of::<MoltHeader>() + 4 * std::mem::size_of::<u64>();
+    let total = std::mem::size_of::<MoltHeader>() + 5 * std::mem::size_of::<u64>();
     let ptr = alloc_object(total, TYPE_ID_TYPE);
     if ptr.is_null() {
         dec_ref_bits(dict_bits);
@@ -1973,6 +2014,7 @@ fn alloc_class_obj(name_bits: u64) -> *mut u8 {
         *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = dict_bits;
         *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = bases_bits;
         *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64) = mro_bits;
+        *(ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         inc_ref_bits(name_bits);
         inc_ref_bits(dict_bits);
         inc_ref_bits(bases_bits);
@@ -2408,6 +2450,43 @@ fn module_cache() -> &'static Mutex<HashMap<String, u64>> {
     MODULE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn exception_type_cache() -> &'static Mutex<HashMap<String, u64>> {
+    EXCEPTION_TYPE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn exception_type_bits(kind_bits: u64) -> u64 {
+    let fallback = builtin_classes().exception;
+    let name = string_obj_to_owned(obj_from_bits(kind_bits)).unwrap_or_else(|| {
+        "Exception".to_string()
+    });
+    let cache = exception_type_cache();
+    if let Some(bits) = cache.lock().unwrap().get(&name).copied() {
+        return bits;
+    }
+
+    let name_ptr = alloc_string(name.as_bytes());
+    if name_ptr.is_null() {
+        return fallback;
+    }
+    let name_bits = MoltObject::from_ptr(name_ptr).bits();
+    let class_ptr = alloc_class_obj(name_bits);
+    dec_ref_bits(name_bits);
+    if class_ptr.is_null() {
+        return fallback;
+    }
+    let class_bits = MoltObject::from_ptr(class_ptr).bits();
+    let _ = molt_class_set_base(class_bits, fallback);
+
+    let mut cache = exception_type_cache().lock().unwrap();
+    if let Some(bits) = cache.get(&name).copied() {
+        dec_ref_bits(class_bits);
+        return bits;
+    }
+    inc_ref_bits(class_bits);
+    cache.insert(name, class_bits);
+    class_bits
+}
+
 fn raw_objects() -> &'static Mutex<HashSet<usize>> {
     RAW_OBJECTS.get_or_init(|| Mutex::new(HashSet::new()))
 }
@@ -2445,6 +2524,7 @@ struct BuiltinClasses {
     object: u64,
     type_obj: u64,
     none_type: u64,
+    exception: u64,
     int: u64,
     float: u64,
     bool: u64,
@@ -2483,6 +2563,7 @@ fn builtin_classes() -> &'static BuiltinClasses {
         let object = make_builtin_class("object");
         let type_obj = make_builtin_class("type");
         let none_type = make_builtin_class("NoneType");
+        let exception = make_builtin_class("Exception");
         let int = make_builtin_class("int");
         let float = make_builtin_class("float");
         let bool = make_builtin_class("bool");
@@ -2504,6 +2585,7 @@ fn builtin_classes() -> &'static BuiltinClasses {
         let _ = molt_class_set_base(object, MoltObject::none().bits());
         let _ = molt_class_set_base(type_obj, object);
         let _ = molt_class_set_base(none_type, object);
+        let _ = molt_class_set_base(exception, object);
         let _ = molt_class_set_base(int, object);
         let _ = molt_class_set_base(float, object);
         let _ = molt_class_set_base(bool, int);
@@ -2526,6 +2608,7 @@ fn builtin_classes() -> &'static BuiltinClasses {
             object,
             type_obj,
             none_type,
+            exception,
             int,
             float,
             bool,
@@ -2576,6 +2659,7 @@ fn is_builtin_class_bits(bits: u64) -> bool {
     bits == builtins.object
         || bits == builtins.type_obj
         || bits == builtins.none_type
+        || bits == builtins.exception
         || bits == builtins.int
         || bits == builtins.float
         || bits == builtins.bool
@@ -2698,6 +2782,7 @@ fn type_of_bits(val_bits: u64) -> u64 {
                 TYPE_ID_RANGE => builtins.range,
                 TYPE_ID_SLICE => builtins.slice,
                 TYPE_ID_MEMORYVIEW => builtins.memoryview,
+                TYPE_ID_EXCEPTION => exception_type_bits(exception_kind_bits(ptr)),
                 TYPE_ID_FUNCTION => builtins.function,
                 TYPE_ID_MODULE => builtins.module,
                 TYPE_ID_TYPE => builtins.type_obj,
@@ -3441,15 +3526,18 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
     unsafe {
         let old_bases = class_bases_bits(class_ptr);
         let old_mro = class_mro_bits(class_ptr);
+        let mut updated = false;
         if old_bases != bases_bits {
             dec_ref_bits(old_bases);
             inc_ref_bits(bases_bits);
             class_set_bases_bits(class_ptr, bases_bits);
+            updated = true;
         }
         if old_mro != mro_bits {
             dec_ref_bits(old_mro);
             inc_ref_bits(mro_bits);
             class_set_mro_bits(class_ptr, mro_bits);
+            updated = true;
         }
         let dict_bits = class_dict_bits(class_ptr);
         if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
@@ -3459,6 +3547,9 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
                 dict_set_in_place(dict_ptr, bases_name, bases_bits);
                 dict_set_in_place(dict_ptr, mro_name, mro_bits);
             }
+        }
+        if updated {
+            class_bump_layout_version(class_ptr);
         }
     }
     MoltObject::none().bits()
@@ -3499,6 +3590,20 @@ pub extern "C" fn molt_class_apply_set_name(class_bits: u64) -> u64 {
         }
     }
     MoltObject::none().bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_class_layout_version(class_bits: u64) -> u64 {
+    let class_obj = obj_from_bits(class_bits);
+    let Some(class_ptr) = class_obj.as_ptr() else {
+        raise!("TypeError", "class must be a type object");
+    };
+    unsafe {
+        if object_type_id(class_ptr) != TYPE_ID_TYPE {
+            raise!("TypeError", "class must be a type object");
+        }
+        MoltObject::from_int(class_layout_version_bits(class_ptr) as i64).bits()
+    }
 }
 
 #[no_mangle]
@@ -3614,6 +3719,154 @@ fn resolve_obj_ptr(bits: u64) -> Option<*mut u8> {
         return Some(bits as *mut u8);
     }
     None
+}
+
+/// # Safety
+/// `obj_ptr` must point to a valid object with enough payload for `offset`.
+#[no_mangle]
+pub unsafe extern "C" fn molt_object_field_get_ptr(obj_ptr: *mut u8, offset: usize) -> u64 {
+    if obj_ptr.is_null() {
+        raise!("TypeError", "object field access on non-object");
+    }
+    let slot = obj_ptr.add(offset) as *const u64;
+    let bits = *slot;
+    inc_ref_bits(bits);
+    bits
+}
+
+/// # Safety
+/// `obj_ptr` must point to a valid object with enough payload for `offset`.
+#[no_mangle]
+pub unsafe extern "C" fn molt_object_field_set_ptr(
+    obj_ptr: *mut u8,
+    offset: usize,
+    val_bits: u64,
+) -> u64 {
+    if obj_ptr.is_null() {
+        raise!("TypeError", "object field access on non-object");
+    }
+    profile_hit(&STRUCT_FIELD_STORE_COUNT);
+    let slot = obj_ptr.add(offset) as *mut u64;
+    let old_bits = *slot;
+    if old_bits != val_bits {
+        dec_ref_bits(old_bits);
+        inc_ref_bits(val_bits);
+        *slot = val_bits;
+    }
+    MoltObject::none().bits()
+}
+
+/// # Safety
+/// `obj_ptr` must point to a valid object with enough payload for `offset`.
+/// Intended for initializing freshly allocated objects with immediate values.
+#[no_mangle]
+pub unsafe extern "C" fn molt_object_field_init_ptr(
+    obj_ptr: *mut u8,
+    offset: usize,
+    val_bits: u64,
+) -> u64 {
+    if obj_ptr.is_null() {
+        raise!("TypeError", "object field access on non-object");
+    }
+    let slot = obj_ptr.add(offset) as *mut u64;
+    let old_bits = *slot;
+    debug_assert!(
+        old_bits == 0 || obj_from_bits(old_bits).as_ptr().is_none(),
+        "object_field_init used on slot with pointer contents"
+    );
+    *slot = val_bits;
+    MoltObject::none().bits()
+}
+
+unsafe fn guard_layout_match(obj_ptr: *mut u8, class_bits: u64, expected_version: u64) -> bool {
+    if obj_ptr.is_null() {
+        return false;
+    }
+    let header = header_from_obj_ptr(obj_ptr);
+    if (*header).type_id != TYPE_ID_OBJECT {
+        return false;
+    }
+    let obj_class_bits = object_class_bits(obj_ptr);
+    if obj_class_bits == 0 || obj_class_bits != class_bits {
+        return false;
+    }
+    let class_obj = obj_from_bits(class_bits);
+    let Some(class_ptr) = class_obj.as_ptr() else {
+        return false;
+    };
+    if object_type_id(class_ptr) != TYPE_ID_TYPE {
+        return false;
+    }
+    let version = class_layout_version_bits(class_ptr);
+    let expected = match to_i64(obj_from_bits(expected_version)) {
+        Some(val) if val >= 0 => val as u64,
+        _ => return false,
+    };
+    version == expected
+}
+
+/// # Safety
+/// `obj_ptr` must point to a valid object with a class.
+#[no_mangle]
+pub unsafe extern "C" fn molt_guard_layout_ptr(
+    obj_ptr: *mut u8,
+    class_bits: u64,
+    expected_version: u64,
+) -> u64 {
+    MoltObject::from_bool(guard_layout_match(obj_ptr, class_bits, expected_version)).bits()
+}
+
+/// # Safety
+/// `obj_ptr` must point to a valid object with enough payload for `offset`.
+#[no_mangle]
+pub unsafe extern "C" fn molt_guarded_field_get_ptr(
+    obj_ptr: *mut u8,
+    class_bits: u64,
+    expected_version: u64,
+    offset: usize,
+    attr_name_ptr: *const u8,
+    attr_name_len: usize,
+) -> u64 {
+    if guard_layout_match(obj_ptr, class_bits, expected_version) {
+        return molt_object_field_get_ptr(obj_ptr, offset);
+    }
+    molt_get_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len) as u64
+}
+
+/// # Safety
+/// `obj_ptr` must point to a valid object with enough payload for `offset`.
+#[no_mangle]
+pub unsafe extern "C" fn molt_guarded_field_set_ptr(
+    obj_ptr: *mut u8,
+    class_bits: u64,
+    expected_version: u64,
+    offset: usize,
+    val_bits: u64,
+    attr_name_ptr: *const u8,
+    attr_name_len: usize,
+) -> u64 {
+    if guard_layout_match(obj_ptr, class_bits, expected_version) {
+        return molt_object_field_set_ptr(obj_ptr, offset, val_bits);
+    }
+    molt_set_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len, val_bits) as u64
+}
+
+/// # Safety
+/// `obj_ptr` must point to a valid object with enough payload for `offset`.
+#[no_mangle]
+pub unsafe extern "C" fn molt_guarded_field_init_ptr(
+    obj_ptr: *mut u8,
+    class_bits: u64,
+    expected_version: u64,
+    offset: usize,
+    val_bits: u64,
+    attr_name_ptr: *const u8,
+    attr_name_len: usize,
+) -> u64 {
+    if guard_layout_match(obj_ptr, class_bits, expected_version) {
+        return molt_object_field_init_ptr(obj_ptr, offset, val_bits);
+    }
+    molt_set_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len, val_bits) as u64
 }
 
 /// # Safety
@@ -5524,6 +5777,8 @@ lazy_static::lazy_static! {
 }
 
 thread_local! {
+    static ATTR_NAME_TLS: RefCell<Option<AttrNameCacheEntry>> = const { RefCell::new(None) };
+    static DESCRIPTOR_CACHE_TLS: RefCell<Option<DescriptorCacheEntry>> = const { RefCell::new(None) };
     static UTF8_COUNT_TLS: RefCell<Option<Utf8CountCacheEntry>> = const { RefCell::new(None) };
 }
 
@@ -9160,6 +9415,7 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
         };
         let sep_bytes = std::slice::from_raw_parts(string_bytes(sep_ptr), string_len(sep_ptr));
         let mut total_len = 0usize;
+        let mut parts = Vec::with_capacity(elems.len());
         for &elem_bits in elems.iter() {
             let elem_obj = obj_from_bits(elem_bits);
             let elem_ptr = match elem_obj.as_ptr() {
@@ -9169,30 +9425,27 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
             if object_type_id(elem_ptr) != TYPE_ID_STRING {
                 raise!("TypeError", "join expects a list or tuple of str");
             }
-            total_len += string_len(elem_ptr);
+            let len = string_len(elem_ptr);
+            total_len += len;
+            let data = string_bytes(elem_ptr) as *const u8;
+            parts.push((data, len));
         }
-        if !elems.is_empty() {
-            total_len = total_len.saturating_add(sep_bytes.len() * (elems.len() - 1));
+        if !parts.is_empty() {
+            let sep_total = sep_bytes.len().saturating_mul(parts.len().saturating_sub(1));
+            total_len = total_len.saturating_add(sep_total);
         }
         let out_ptr = alloc_bytes_like_with_len(total_len, TYPE_ID_STRING);
         if out_ptr.is_null() {
             return MoltObject::none().bits();
         }
-        let data_ptr = out_ptr.add(std::mem::size_of::<usize>());
-        let out_slice = std::slice::from_raw_parts_mut(data_ptr, total_len);
-        let mut offset = 0usize;
-        for (idx, &elem_bits) in elems.iter().enumerate() {
+        let mut cursor = out_ptr.add(std::mem::size_of::<usize>());
+        for (idx, (elem_ptr, elem_len)) in parts.iter().enumerate() {
             if idx > 0 {
-                let end = offset + sep_bytes.len();
-                out_slice[offset..end].copy_from_slice(sep_bytes);
-                offset = end;
+                std::ptr::copy_nonoverlapping(sep_bytes.as_ptr(), cursor, sep_bytes.len());
+                cursor = cursor.add(sep_bytes.len());
             }
-            let elem_ptr = obj_from_bits(elem_bits).as_ptr().unwrap();
-            let elem_bytes =
-                std::slice::from_raw_parts(string_bytes(elem_ptr), string_len(elem_ptr));
-            let end = offset + elem_bytes.len();
-            out_slice[offset..end].copy_from_slice(elem_bytes);
-            offset = end;
+            std::ptr::copy_nonoverlapping(*elem_ptr, cursor, *elem_len);
+            cursor = cursor.add(*elem_len);
         }
         MoltObject::from_ptr(out_ptr).bits()
     }
@@ -9931,20 +10184,49 @@ fn split_bytes_to_list<F>(hay: &[u8], needle: &[u8], mut alloc: F) -> Option<u64
 where
     F: FnMut(&[u8]) -> *mut u8,
 {
-    let mut positions = Vec::new();
     if needle.len() == 1 {
-        positions.extend(memchr::memchr_iter(needle[0], hay));
-    } else {
-        let finder = memmem::Finder::new(needle);
-        positions.extend(finder.find_iter(hay));
+        let count = memchr::memchr_iter(needle[0], hay).count();
+        let list_ptr = alloc_list_empty_with_capacity(count + 1);
+        if list_ptr.is_null() {
+            return None;
+        }
+        let list_bits = MoltObject::from_ptr(list_ptr).bits();
+        let mut start = 0usize;
+        for idx in memchr::memchr_iter(needle[0], hay) {
+            let part = &hay[start..idx];
+            let ptr = alloc(part);
+            if ptr.is_null() {
+                dec_ref_bits(list_bits);
+                return None;
+            }
+            unsafe {
+                list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
+            }
+            start = idx + needle.len();
+        }
+        let part = &hay[start..];
+        let ptr = alloc(part);
+        if ptr.is_null() {
+            dec_ref_bits(list_bits);
+            return None;
+        }
+        unsafe {
+            list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
+        }
+        return Some(list_bits);
     }
-    let list_ptr = alloc_list_empty_with_capacity(positions.len() + 1);
+    let mut indices = Vec::new();
+    let finder = memmem::Finder::new(needle);
+    for idx in finder.find_iter(hay) {
+        indices.push(idx);
+    }
+    let list_ptr = alloc_list_empty_with_capacity(indices.len() + 1);
     if list_ptr.is_null() {
         return None;
     }
     let list_bits = MoltObject::from_ptr(list_ptr).bits();
     let mut start = 0usize;
-    for idx in positions {
+    for idx in indices {
         let part = &hay[start..idx];
         let ptr = alloc(part);
         if ptr.is_null() {
@@ -14129,6 +14411,9 @@ unsafe fn module_attr_lookup(ptr: *mut u8, attr_bits: u64) -> Option<u64> {
 }
 
 unsafe fn instance_bits_for_call(ptr: *mut u8) -> u64 {
+    if is_raw_object(ptr as u64) {
+        return ptr as u64;
+    }
     MoltObject::from_ptr(ptr).bits()
 }
 
@@ -14203,6 +14488,58 @@ unsafe fn class_field_offset(class_ptr: *mut u8, attr_bits: u64) -> Option<usize
     obj_from_bits(offset_bits)
         .as_int()
         .and_then(|val| if val >= 0 { Some(val as usize) } else { None })
+}
+
+fn attr_name_bits_from_bytes(slice: &[u8]) -> Option<u64> {
+    if let Some(bits) = ATTR_NAME_TLS.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .filter(|entry| entry.bytes == slice)
+            .map(|entry| entry.bits)
+    }) {
+        inc_ref_bits(bits);
+        return Some(bits);
+    }
+    let ptr = alloc_string(slice);
+    if ptr.is_null() {
+        return None;
+    }
+    let bits = MoltObject::from_ptr(ptr).bits();
+    ATTR_NAME_TLS.with(|cell| {
+        let mut entry = cell.borrow_mut();
+        if let Some(prev) = entry.take() {
+            dec_ref_bits(prev.bits);
+        }
+        inc_ref_bits(bits);
+        *entry = Some(AttrNameCacheEntry {
+            bytes: slice.to_vec(),
+            bits,
+        });
+    });
+    Some(bits)
+}
+
+fn descriptor_cache_lookup(
+    class_bits: u64,
+    attr_bits: u64,
+    version: u64,
+) -> Option<DescriptorCacheEntry> {
+    DESCRIPTOR_CACHE_TLS.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .filter(|entry| {
+                entry.class_bits == class_bits
+                    && entry.attr_bits == attr_bits
+                    && entry.version == version
+            })
+            .cloned()
+    })
+}
+
+fn descriptor_cache_store(entry: DescriptorCacheEntry) {
+    DESCRIPTOR_CACHE_TLS.with(|cell| {
+        *cell.borrow_mut() = Some(entry);
+    });
 }
 
 unsafe fn descriptor_method_bits(val_bits: u64, name_bits: u64) -> Option<u64> {
@@ -14510,12 +14847,48 @@ unsafe fn attr_lookup_ptr(obj_ptr: *mut u8, attr_bits: u64) -> Option<u64> {
     }
     if type_id == TYPE_ID_OBJECT {
         let class_bits = object_class_bits(obj_ptr);
+        let mut cached_attr_bits: Option<u64> = None;
+        let mut class_version = 0u64;
         if class_bits != 0 {
             if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
                 if object_type_id(class_ptr) == TYPE_ID_TYPE {
-                    if let Some(val_bits) = class_attr_lookup_raw_mro(class_ptr, attr_bits) {
-                        if descriptor_is_data(val_bits) {
-                            return descriptor_bind(val_bits, class_ptr, Some(obj_ptr));
+                    class_version = class_layout_version_bits(class_ptr);
+                    if let Some(entry) =
+                        descriptor_cache_lookup(class_bits, attr_bits, class_version)
+                    {
+                        if let Some(bits) = entry.data_desc_bits {
+                            return descriptor_bind(bits, class_ptr, Some(obj_ptr));
+                        }
+                        cached_attr_bits = entry.class_attr_bits;
+                    }
+                    if cached_attr_bits.is_none() {
+                        if let Some(val_bits) = class_attr_lookup_raw_mro(class_ptr, attr_bits) {
+                            if descriptor_is_data(val_bits) {
+                                descriptor_cache_store(DescriptorCacheEntry {
+                                    class_bits,
+                                    attr_bits,
+                                    version: class_version,
+                                    data_desc_bits: Some(val_bits),
+                                    class_attr_bits: None,
+                                });
+                                return descriptor_bind(val_bits, class_ptr, Some(obj_ptr));
+                            }
+                            cached_attr_bits = Some(val_bits);
+                            descriptor_cache_store(DescriptorCacheEntry {
+                                class_bits,
+                                attr_bits,
+                                version: class_version,
+                                data_desc_bits: None,
+                                class_attr_bits: Some(val_bits),
+                            });
+                        } else {
+                            descriptor_cache_store(DescriptorCacheEntry {
+                                class_bits,
+                                attr_bits,
+                                version: class_version,
+                                data_desc_bits: None,
+                                class_attr_bits: None,
+                            });
                         }
                     }
                     if let Some(offset) = class_field_offset(class_ptr, attr_bits) {
@@ -14539,7 +14912,19 @@ unsafe fn attr_lookup_ptr(obj_ptr: *mut u8, attr_bits: u64) -> Option<u64> {
         if class_bits != 0 {
             if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
                 if object_type_id(class_ptr) == TYPE_ID_TYPE {
-                    if let Some(val_bits) = class_attr_lookup_raw_mro(class_ptr, attr_bits) {
+                    if cached_attr_bits.is_none() {
+                        if let Some(val_bits) = class_attr_lookup_raw_mro(class_ptr, attr_bits) {
+                            cached_attr_bits = Some(val_bits);
+                            descriptor_cache_store(DescriptorCacheEntry {
+                                class_bits,
+                                attr_bits,
+                                version: class_version,
+                                data_desc_bits: None,
+                                class_attr_bits: Some(val_bits),
+                            });
+                        }
+                    }
+                    if let Some(val_bits) = cached_attr_bits {
                         return descriptor_bind(val_bits, class_ptr, Some(obj_ptr));
                     }
                 }
@@ -14563,11 +14948,9 @@ pub unsafe extern "C" fn molt_get_attr_generic(
     }
     let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
     let attr_name = std::str::from_utf8(slice).unwrap_or("<attr>");
-    let attr_ptr = alloc_string(slice);
-    if attr_ptr.is_null() {
+    let Some(attr_bits) = attr_name_bits_from_bytes(slice) else {
         return MoltObject::none().bits() as i64;
-    }
-    let attr_bits = MoltObject::from_ptr(attr_ptr).bits();
+    };
     let found = attr_lookup_ptr(obj_ptr, attr_bits);
     dec_ref_bits(attr_bits);
     if let Some(val) = found {
@@ -14609,6 +14992,17 @@ pub unsafe extern "C" fn molt_get_attr_generic(
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
 #[no_mangle]
+pub unsafe extern "C" fn molt_get_attr_ptr(
+    obj_ptr: *mut u8,
+    attr_name_ptr: *const u8,
+    attr_name_len: usize,
+) -> i64 {
+    molt_get_attr_generic(obj_ptr, attr_name_ptr, attr_name_len)
+}
+
+/// # Safety
+/// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
+#[no_mangle]
 pub unsafe extern "C" fn molt_set_attr_generic(
     obj_ptr: *mut u8,
     attr_name_ptr: *const u8,
@@ -14622,11 +15016,9 @@ pub unsafe extern "C" fn molt_set_attr_generic(
     let attr_name = std::str::from_utf8(slice).unwrap_or("<attr>");
     let type_id = object_type_id(obj_ptr);
     if type_id == TYPE_ID_MODULE {
-        let attr_ptr = alloc_string(slice);
-        if attr_ptr.is_null() {
+        let Some(attr_bits) = attr_name_bits_from_bytes(slice) else {
             return MoltObject::none().bits() as i64;
-        }
-        let attr_bits = MoltObject::from_ptr(attr_ptr).bits();
+        };
         let module_bits = MoltObject::from_ptr(obj_ptr).bits();
         let res = molt_module_set_attr(module_bits, attr_bits, val_bits);
         dec_ref_bits(attr_bits);
@@ -14637,15 +15029,14 @@ pub unsafe extern "C" fn molt_set_attr_generic(
         if is_builtin_class_bits(class_bits) {
             raise!("TypeError", "cannot set attributes on builtin type");
         }
-        let attr_ptr = alloc_string(slice);
-        if attr_ptr.is_null() {
+        let Some(attr_bits) = attr_name_bits_from_bytes(slice) else {
             return MoltObject::none().bits() as i64;
-        }
-        let attr_bits = MoltObject::from_ptr(attr_ptr).bits();
+        };
         let dict_bits = class_dict_bits(obj_ptr);
         if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
             if object_type_id(dict_ptr) == TYPE_ID_DICT {
                 dict_set_in_place(dict_ptr, attr_bits, val_bits);
+                class_bump_layout_version(obj_ptr);
                 dec_ref_bits(attr_bits);
                 return MoltObject::none().bits() as i64;
             }
@@ -14654,11 +15045,9 @@ pub unsafe extern "C" fn molt_set_attr_generic(
         return attr_error("type", attr_name);
     }
     if type_id == TYPE_ID_EXCEPTION {
-        let attr_ptr = alloc_string(slice);
-        if attr_ptr.is_null() {
+        let Some(attr_bits) = attr_name_bits_from_bytes(slice) else {
             return MoltObject::none().bits() as i64;
-        }
-        let attr_bits = MoltObject::from_ptr(attr_ptr).bits();
+        };
         let name = string_obj_to_owned(obj_from_bits(attr_bits)).unwrap_or_default();
         dec_ref_bits(attr_bits);
         if name == "__cause__" || name == "__context__" {
@@ -14729,11 +15118,9 @@ pub unsafe extern "C" fn molt_set_attr_generic(
         return attr_error("exception", attr_name);
     }
     if type_id == TYPE_ID_FUNCTION {
-        let attr_ptr = alloc_string(slice);
-        if attr_ptr.is_null() {
+        let Some(attr_bits) = attr_name_bits_from_bytes(slice) else {
             return MoltObject::none().bits() as i64;
-        }
-        let attr_bits = MoltObject::from_ptr(attr_ptr).bits();
+        };
         let mut dict_bits = function_dict_bits(obj_ptr);
         if dict_bits == 0 {
             let dict_ptr = alloc_dict_with_pairs(&[]);
@@ -14759,11 +15146,9 @@ pub unsafe extern "C" fn molt_set_attr_generic(
         if !desc_ptr.is_null() && (*desc_ptr).frozen {
             raise!("TypeError", "cannot assign to frozen dataclass field");
         }
-        let attr_ptr = alloc_string(slice);
-        if attr_ptr.is_null() {
+        let Some(attr_bits) = attr_name_bits_from_bytes(slice) else {
             return MoltObject::none().bits() as i64;
-        }
-        let attr_bits = MoltObject::from_ptr(attr_ptr).bits();
+        };
         if !desc_ptr.is_null() {
             let class_bits = (*desc_ptr).class_bits;
             if class_bits != 0 {
@@ -14864,11 +15249,9 @@ pub unsafe extern "C" fn molt_set_attr_generic(
         if payload < std::mem::size_of::<u64>() {
             return attr_error("object", attr_name);
         }
-        let attr_ptr = alloc_string(slice);
-        if attr_ptr.is_null() {
+        let Some(attr_bits) = attr_name_bits_from_bytes(slice) else {
             return MoltObject::none().bits() as i64;
-        }
-        let attr_bits = MoltObject::from_ptr(attr_ptr).bits();
+        };
         let class_bits = object_class_bits(obj_ptr);
         if class_bits != 0 {
             if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
@@ -14961,6 +15344,7 @@ unsafe fn del_attr_ptr(obj_ptr: *mut u8, attr_bits: u64, attr_name: &str) -> i64
         let dict_bits = class_dict_bits(obj_ptr);
         if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
             if object_type_id(dict_ptr) == TYPE_ID_DICT && dict_del_in_place(dict_ptr, attr_bits) {
+                class_bump_layout_version(obj_ptr);
                 return MoltObject::none().bits() as i64;
             }
         }
@@ -15166,6 +15550,18 @@ unsafe fn del_attr_ptr(obj_ptr: *mut u8, attr_bits: u64, attr_name: &str) -> i64
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
 #[no_mangle]
+pub unsafe extern "C" fn molt_set_attr_ptr(
+    obj_ptr: *mut u8,
+    attr_name_ptr: *const u8,
+    attr_name_len: usize,
+    val_bits: u64,
+) -> i64 {
+    molt_set_attr_generic(obj_ptr, attr_name_ptr, attr_name_len, val_bits)
+}
+
+/// # Safety
+/// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
+#[no_mangle]
 pub unsafe extern "C" fn molt_del_attr_generic(
     obj_ptr: *mut u8,
     attr_name_ptr: *const u8,
@@ -15176,14 +15572,23 @@ pub unsafe extern "C" fn molt_del_attr_generic(
     }
     let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
     let attr_name = std::str::from_utf8(slice).unwrap_or("<attr>");
-    let attr_ptr = alloc_string(slice);
-    if attr_ptr.is_null() {
+    let Some(attr_bits) = attr_name_bits_from_bytes(slice) else {
         return MoltObject::none().bits() as i64;
-    }
-    let attr_bits = MoltObject::from_ptr(attr_ptr).bits();
+    };
     let res = del_attr_ptr(obj_ptr, attr_bits, attr_name);
     dec_ref_bits(attr_bits);
     res
+}
+
+/// # Safety
+/// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn molt_del_attr_ptr(
+    obj_ptr: *mut u8,
+    attr_name_ptr: *const u8,
+    attr_name_len: usize,
+) -> i64 {
+    molt_del_attr_generic(obj_ptr, attr_name_ptr, attr_name_len)
 }
 
 /// # Safety

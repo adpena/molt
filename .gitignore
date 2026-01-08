@@ -22,6 +22,8 @@ bench/results/
 !bench/results/bench.json
 bench/cython/
 bench/numba/
+bench/codon/
+bench/codon_probe/
 runtime/molt-runtime/fuzz/corpus/
 runtime/molt-runtime/fuzz/artifacts/
 *.md
