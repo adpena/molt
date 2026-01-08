@@ -322,6 +322,10 @@ and regression control.
   - [ ] Decide whether to add arity checks on the guarded fast path.
 - Update (2026-01-07): added stable-module direct-call lowering (no guard) when a function name
   is only bound once at module scope and not declared global elsewhere; see `call_rebind.py`.
+- Update (2026-01-08): benchmark regression persists despite direct calls:
+  - `bench_fib.py`: 0.9290s (Molt) vs 0.2168s (CPython), 0.23x.
+  - Priority: inspect call dispatch and recursion prologue/epilogue costs; verify IR emits fast
+    path for local recursion and avoid tuple/list allocations for argument passing.
 
 ### OPT-0006: Unicode Count Warm-Cache Fast Path
 
@@ -381,8 +385,13 @@ and regression control.
   - `bench_struct.py`: 0.2188s (Molt) vs 1.6611s (CPython), 0.13x.
 - Execution checklist:
   - [x] Run unicode count benches and capture warm vs cold delta with `MOLT_PROFILE=1`.
-  - [ ] Prototype prefix-count metadata in cache entries and record memory overhead.
+  - [x] Prototype prefix-count metadata in cache entries and record memory overhead.
   - [ ] Add Unicode differential cases that exercise combining characters.
+- Update (2026-01-08): full bench run shows warm count ahead of CPython:
+  - `bench_str_count_unicode_warm.py`: 0.0228s (Molt) vs 0.0954s (CPython), 4.18x.
+  - `bench_str_count_unicode.py`: 0.0223s (Molt) vs 0.0449s (CPython), 2.02x.
+- Update (2026-01-08): added prefix-count metadata to `Utf8CountCache` with lazy
+  promotion on slice paths to avoid penalizing full-count hot paths.
 
 ### OPT-0007: Structified Class Fast Path + Optional Scalar Replacement
 
@@ -423,10 +432,14 @@ and regression control.
 - Re-run (2026-01-07): call_dispatch=0 / struct_field_store=2,000,000 (after store_init defaults).
 - Execution checklist:
   - [ ] Measure guard vs direct-slot store cost on `bench_struct.py` and record.
-  - [ ] Add differential tests for dynamic class mutation that must deopt.
+  - [x] Add differential tests for dynamic class mutation that must deopt.
   - [ ] Decide whether to gate structified stores behind a layout-stability flag.
 - Update (2026-01-07): added `store_init` lowering for immediate defaults to avoid
   refcount work on freshly allocated objects.
+- Update (2026-01-08): regression still severe after latest benches:
+  - `bench_struct.py`: 1.7825s (Molt) vs 0.5453s (CPython), 0.31x.
+  - Priority: eliminate guard overhead on hot struct stores or move to monomorphic
+    slot stores with layout-stability checks.
 
 **Benchmark Matrix**
 - bench_struct.py: expected >=2x improvement
@@ -443,3 +456,126 @@ and regression control.
 
 **Success Criteria**
 - `bench_struct.py` >=1.0x vs CPython with no semantic regressions.
+
+### OPT-0008: Descriptor/Property Access Fast Path (bench_descriptor_property)
+
+**Problem**
+- `bench_descriptor_property.py` is ~4x slower than CPython, dominated by repeated
+  descriptor lookup and attribute resolution overhead.
+
+**Hypotheses**
+- H1: Cache descriptor resolution for monomorphic classes and inline property getter calls.
+- H2: Split data vs non-data descriptor paths earlier to avoid extra dictionary probes.
+
+**Alternatives**
+1) Inline cache for attribute lookup with descriptor classification (data vs non-data).
+2) Pre-resolved descriptor slots on class creation (update on class mutation).
+3) Guarded direct-call lowering for `property.__get__` on known fields.
+
+**Research References**
+- CPython descriptor protocol and attribute lookup order (Objects/typeobject.c).
+- Inline caching for attribute lookup (PIC/IC literature).
+
+**Plan**
+- Phase 0: Profile attribute resolution in `bench_descriptor_property.py`.
+- Phase 1: Add an attribute lookup IC keyed by (class, attr_name) with descriptor kind.
+- Phase 2: Add guarded direct-call for property getters.
+- Phase 3: Deopt on class mutation (mro/attrs change).
+
+**Benchmark Matrix**
+- bench_descriptor_property.py: expected >=2x improvement
+- bench_attr_access.py: expected >=1.5x improvement
+- bench_struct.py: no regression (<=3%)
+
+**Correctness Plan**
+- Differential tests for data vs non-data descriptors.
+- Class mutation tests to ensure deopt correctness.
+
+**Risk + Rollback**
+- Risk: stale IC entries after class mutation.
+- Rollback: guard IC behind class version and disable on mutation.
+
+**Success Criteria**
+- `bench_descriptor_property.py` >=1.0x vs CPython without regressions.
+
+### OPT-0009: String Split/Join Builder Fast Path (bench_str_split, bench_str_join)
+
+**Problem**
+- `bench_str_split.py` and `bench_str_join.py` are <1.0x vs CPython, indicating
+  list builder and allocation overhead for common split/join patterns.
+
+**Hypotheses**
+- H1: Pre-size list/byte buffers and use a single allocation per split.
+- H2: Fast-path ASCII delimiter and whitespace splitting to avoid UTF-8 scanning.
+
+**Alternatives**
+1) Pre-scan delimiter positions + single allocation list builder.
+2) Use memchr/memmem for ASCII delimiter and fall back for Unicode.
+3) Specialized whitespace split (CPython-like) for the default separator.
+
+**Research References**
+- CPython `unicode_split` and `unicode_join` implementations.
+- memchr/memmem optimized substring search techniques.
+
+**Plan**
+- Phase 0: Profile allocation counts in split/join benches.
+- Phase 1: Pre-scan and reserve list capacity; avoid per-element reallocs.
+- Phase 2: ASCII fast paths using memchr/memmem.
+- Phase 3: Validate whitespace split semantics.
+
+**Benchmark Matrix**
+- bench_str_split.py: expected >=2x improvement
+- bench_str_join.py: expected >=1.5x improvement
+- bench_str_count.py: no regression (<=3%)
+
+**Correctness Plan**
+- Differential tests for whitespace vs explicit separator.
+- Unicode edge cases with multi-byte separators.
+
+**Risk + Rollback**
+- Risk: incorrect split behavior on Unicode or empty separators.
+- Rollback: fall back to generic path for non-ASCII separators.
+
+**Success Criteria**
+- `bench_str_split.py` >=1.0x and `bench_str_join.py` >=1.0x vs CPython.
+
+### OPT-0010: Vector Reduction Regressions (bench_min_list/bench_max_list/bench_sum_list)
+
+**Problem**
+- Recent benches show regressions on vector reductions vs CPython, indicating
+  that reduction fast paths are not triggering or have overhead regressions.
+
+**Hypotheses**
+- H1: Reduction fast path disabled by type guards or iterator conversions.
+- H2: Avoid boxing/unboxing in hot loops to restore expected speedups.
+
+**Alternatives**
+1) Rework reduction IR to specialize on list/tuple of ints with tight loops.
+2) Add guarded fast path in runtime for homogeneous int vectors.
+3) Inline reduction in frontend with static specialization.
+
+**Research References**
+- CPython `sum`/`min`/`max` C implementations.
+- Loop vectorization and unboxing techniques in JITs.
+
+**Plan**
+- Phase 0: Instrument reduction path to confirm guard hits.
+- Phase 1: Restore direct int vector fast path (no iterator allocations).
+- Phase 2: Add fast path for small tuples/ranges.
+- Phase 3: Update perf gates and regression tests.
+
+**Benchmark Matrix**
+- bench_sum_list.py: expected >=1.5x improvement
+- bench_min_list.py: expected >=1.5x improvement
+- bench_max_list.py: expected >=1.5x improvement
+
+**Correctness Plan**
+- Differential tests for NaN/None comparisons and mixed types.
+- Guard/fallback for non-int sequences.
+
+**Risk + Rollback**
+- Risk: incorrect behavior on mixed-type sequences.
+- Rollback: guard fast path to int-only lists/tuples.
+
+**Success Criteria**
+- Each reduction bench >=1.0x vs CPython with no semantic regressions.

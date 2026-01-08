@@ -73,16 +73,17 @@ struct Utf8IndexCache {
 struct Utf8CountCache {
     needle: Vec<u8>,
     count: i64,
+    prefix: Vec<i64>,
+    hay_len: usize,
 }
 
 struct Utf8CountCacheEntry {
     key: usize,
-    needle: Vec<u8>,
-    count: i64,
+    cache: Arc<Utf8CountCache>,
 }
 
 struct Utf8CountCacheStore {
-    entries: HashMap<usize, Utf8CountCache>,
+    entries: HashMap<usize, Arc<Utf8CountCache>>,
     order: VecDeque<usize>,
     capacity: usize,
 }
@@ -96,11 +97,11 @@ impl Utf8CountCacheStore {
         }
     }
 
-    fn get(&self, key: usize) -> Option<&Utf8CountCache> {
-        self.entries.get(&key)
+    fn get(&self, key: usize) -> Option<Arc<Utf8CountCache>> {
+        self.entries.get(&key).cloned()
     }
 
-    fn insert(&mut self, key: usize, cache: Utf8CountCache) {
+    fn insert(&mut self, key: usize, cache: Arc<Utf8CountCache>) {
         if let std::collections::hash_map::Entry::Occupied(mut entry) = self.entries.entry(key) {
             entry.insert(cache);
             return;
@@ -206,6 +207,7 @@ const GEN_EXC_DEPTH_OFFSET: usize = 24;
 const GEN_CONTROL_SIZE: usize = 32;
 const UTF8_CACHE_BLOCK: usize = 4096;
 const UTF8_CACHE_MIN_LEN: usize = 16 * 1024;
+const UTF8_COUNT_PREFIX_MIN_LEN: usize = UTF8_CACHE_BLOCK;
 const UTF8_CACHE_MAX_ENTRIES: usize = 128;
 const UTF8_COUNT_CACHE_SHARDS: usize = 8;
 const TYPE_TAG_ANY: i64 = 0;
@@ -9045,12 +9047,12 @@ pub extern "C" fn molt_string_count(hay_bits: u64, needle_bits: u64) -> u64 {
                 let count = utf8_codepoint_count_cached(hay_bytes, Some(hay_ptr as usize)) + 1;
                 return MoltObject::from_int(count).bits();
             }
-            if let Some(count) = utf8_count_cache_lookup(hay_ptr as usize, needle_bytes) {
-                return MoltObject::from_int(count).bits();
+            if let Some(cache) = utf8_count_cache_lookup(hay_ptr as usize, needle_bytes) {
+                return MoltObject::from_int(cache.count).bits();
             }
             profile_hit(&STRING_COUNT_CACHE_MISS);
             let count = bytes_count_impl(hay_bytes, needle_bytes);
-            utf8_count_cache_store(hay_ptr as usize, needle_bytes, count);
+            utf8_count_cache_store(hay_ptr as usize, hay_bytes, needle_bytes, count, Vec::new());
             return MoltObject::from_int(count).bits();
         }
     }
@@ -9118,8 +9120,14 @@ pub extern "C" fn molt_string_count_slice(
             }
             let start_byte =
                 utf8_char_to_byte_index_cached(hay_bytes, start, Some(hay_ptr as usize));
-            let end_byte = utf8_char_to_byte_index_cached(hay_bytes, end, Some(hay_ptr as usize));
-            let slice = &hay_bytes[start_byte..end_byte.min(hay_bytes.len())];
+            let end_byte = utf8_char_to_byte_index_cached(hay_bytes, end, Some(hay_ptr as usize))
+                .min(hay_bytes.len());
+            if let Some(cache) = utf8_count_cache_lookup(hay_ptr as usize, needle_bytes) {
+                let cache = utf8_count_cache_upgrade_prefix(hay_ptr as usize, &cache, hay_bytes);
+                let count = utf8_count_cache_count_slice(&cache, hay_bytes, start_byte, end_byte);
+                return MoltObject::from_int(count).bits();
+            }
+            let slice = &hay_bytes[start_byte..end_byte];
             let count = bytes_count_impl(slice, needle_bytes);
             return MoltObject::from_int(count).bits();
         }
@@ -9461,50 +9469,113 @@ fn utf8_count_cache_remove(key: usize) {
     }
 }
 
-fn utf8_count_cache_lookup(key: usize, needle: &[u8]) -> Option<i64> {
-    if let Some(count) = UTF8_COUNT_TLS.with(|cell| {
+fn utf8_count_cache_lookup(key: usize, needle: &[u8]) -> Option<Arc<Utf8CountCache>> {
+    if let Some(cache) = UTF8_COUNT_TLS.with(|cell| {
         cell.borrow().as_ref().and_then(|entry| {
-            if entry.key == key && entry.needle == needle {
-                Some(entry.count)
+            if entry.key == key && entry.cache.needle == needle {
+                Some(entry.cache.clone())
             } else {
                 None
             }
         })
     }) {
         profile_hit(&STRING_COUNT_CACHE_HIT);
-        return Some(count);
+        return Some(cache);
     }
     let shard = utf8_count_cache_shard(key);
     let store = UTF8_COUNT_CACHE.get(shard)?.lock().ok()?;
-    let entry = store.get(key)?;
-    if entry.needle == needle {
+    let cache = store.get(key)?;
+    if cache.needle == needle {
         profile_hit(&STRING_COUNT_CACHE_HIT);
-        return Some(entry.count);
+        return Some(cache);
     }
     None
 }
 
-fn utf8_count_cache_store(key: usize, needle: &[u8], count: i64) {
-    let needle_vec = needle.to_vec();
+fn build_utf8_count_prefix(hay_bytes: &[u8], needle: &[u8]) -> Vec<i64> {
+    if hay_bytes.len() < UTF8_COUNT_PREFIX_MIN_LEN || needle.is_empty() {
+        return Vec::new();
+    }
+    let blocks = hay_bytes.len().div_ceil(UTF8_CACHE_BLOCK);
+    let mut prefix = vec![0i64; blocks + 1];
+    let mut count = 0i64;
+    let mut idx = 1usize;
+    let mut next_boundary = UTF8_CACHE_BLOCK.min(hay_bytes.len());
+    let finder = memmem::Finder::new(needle);
+    for pos in finder.find_iter(hay_bytes) {
+        while pos >= next_boundary && idx < prefix.len() {
+            prefix[idx] = count;
+            idx += 1;
+            next_boundary = (next_boundary + UTF8_CACHE_BLOCK).min(hay_bytes.len());
+        }
+        count += 1;
+    }
+    while idx < prefix.len() {
+        prefix[idx] = count;
+        idx += 1;
+    }
+    prefix
+}
+
+fn utf8_count_cache_store(
+    key: usize,
+    hay_bytes: &[u8],
+    needle: &[u8],
+    count: i64,
+    prefix: Vec<i64>,
+) {
+    let cache = Arc::new(Utf8CountCache {
+        needle: needle.to_vec(),
+        count,
+        prefix,
+        hay_len: hay_bytes.len(),
+    });
     let shard = utf8_count_cache_shard(key);
     if let Some(store) = UTF8_COUNT_CACHE.get(shard) {
         if let Ok(mut guard) = store.lock() {
-            guard.insert(
-                key,
-                Utf8CountCache {
-                    needle: needle_vec.clone(),
-                    count,
-                },
-            );
+            guard.insert(key, cache.clone());
+        }
+    }
+    UTF8_COUNT_TLS.with(|cell| {
+        *cell.borrow_mut() = Some(Utf8CountCacheEntry { key, cache });
+    });
+}
+
+fn utf8_count_cache_upgrade_prefix(
+    key: usize,
+    cache: &Arc<Utf8CountCache>,
+    hay_bytes: &[u8],
+) -> Arc<Utf8CountCache> {
+    if !cache.prefix.is_empty()
+        || cache.hay_len != hay_bytes.len()
+        || hay_bytes.len() < UTF8_COUNT_PREFIX_MIN_LEN
+        || cache.needle.is_empty()
+    {
+        return cache.clone();
+    }
+    let prefix = build_utf8_count_prefix(hay_bytes, &cache.needle);
+    if prefix.is_empty() {
+        return cache.clone();
+    }
+    let upgraded = Arc::new(Utf8CountCache {
+        needle: cache.needle.clone(),
+        count: cache.count,
+        prefix,
+        hay_len: cache.hay_len,
+    });
+    let shard = utf8_count_cache_shard(key);
+    if let Some(store) = UTF8_COUNT_CACHE.get(shard) {
+        if let Ok(mut guard) = store.lock() {
+            guard.insert(key, upgraded.clone());
         }
     }
     UTF8_COUNT_TLS.with(|cell| {
         *cell.borrow_mut() = Some(Utf8CountCacheEntry {
             key,
-            needle: needle_vec,
-            count,
+            cache: upgraded.clone(),
         });
     });
+    upgraded
 }
 
 fn utf8_count_cache_tls_remove(key: usize) {
@@ -9514,6 +9585,78 @@ fn utf8_count_cache_tls_remove(key: usize) {
             *guard = None;
         }
     });
+}
+
+fn count_matches_range(
+    hay_bytes: &[u8],
+    needle: &[u8],
+    window_start: usize,
+    window_end: usize,
+    start_min: usize,
+    start_max: usize,
+) -> i64 {
+    if window_end <= window_start || start_min > start_max {
+        return 0;
+    }
+    let finder = memmem::Finder::new(needle);
+    let mut count = 0i64;
+    for pos in finder.find_iter(&hay_bytes[window_start..window_end]) {
+        let abs = window_start + pos;
+        if abs < start_min {
+            continue;
+        }
+        if abs > start_max {
+            break;
+        }
+        count += 1;
+    }
+    count
+}
+
+fn utf8_count_cache_count_slice(
+    cache: &Utf8CountCache,
+    hay_bytes: &[u8],
+    start: usize,
+    end: usize,
+) -> i64 {
+    let needle = &cache.needle;
+    let needle_len = needle.len();
+    if needle_len == 0 || end <= start {
+        return 0;
+    }
+    if end - start < needle_len {
+        return 0;
+    }
+    if cache.prefix.is_empty() || cache.hay_len != hay_bytes.len() {
+        return bytes_count_impl(&hay_bytes[start..end], needle);
+    }
+    let end_limit = end - needle_len;
+    let block = UTF8_CACHE_BLOCK;
+    let start_block = start / block;
+    let end_block = end_limit / block;
+    if start_block == end_block {
+        return bytes_count_impl(&hay_bytes[start..end], needle);
+    }
+    let mut total = 0i64;
+    let block_end = ((start_block + 1) * block).min(hay_bytes.len());
+    let left_scan_end = (block_end + needle_len - 1).min(end);
+    let left_max = (block_end.saturating_sub(1)).min(end_limit);
+    total += count_matches_range(hay_bytes, needle, start, left_scan_end, start, left_max);
+    if end_block > start_block + 1 {
+        total += cache.prefix[end_block] - cache.prefix[start_block + 1];
+    }
+    let right_block_start = (end_block * block).min(hay_bytes.len());
+    if right_block_start <= end_limit {
+        total += count_matches_range(
+            hay_bytes,
+            needle,
+            right_block_start,
+            end,
+            right_block_start,
+            end_limit,
+        );
+    }
+    total
 }
 
 fn utf8_count_prefix_cached(bytes: &[u8], cache: &Utf8IndexCache, prefix_len: usize) -> i64 {
@@ -13168,7 +13311,7 @@ pub extern "C" fn molt_dec_ref_obj(bits: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::AtomicBool;
 
     static EXIT_CALLED: AtomicBool = AtomicBool::new(false);
 
