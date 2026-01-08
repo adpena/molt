@@ -1,5 +1,5 @@
-Checkpoint: 2026-01-08 12:00:11 CST
-Git: 1dd3104 chore: rustfmt
+Checkpoint: 2026-01-08 12:05:03 CST
+Git: 55f12a6 runtime: fix clippy cast
 
 Summary
 - Restored single-byte split to the count+split path and cached join element pointers for a faster copy loop.
@@ -7,6 +7,7 @@ Summary
 - Re-ran arm64 benchmarks and refreshed README + OPT-0009 notes with updated perf numbers.
 - Ran lint/test across 3.12/3.13/3.14 plus molt-runtime cargo tests; reformatted the frontend IR file.
 - Applied cargo fmt fixes after CI rustfmt failure.
+- Fixed clippy unnecessary cast in the string join hot path and re-ran cargo clippy.
 
 Files touched (uncommitted)
 - .gitignore
@@ -31,6 +32,7 @@ Tests run
 - uv run --python /opt/homebrew/bin/python3.14 python3 tools/bench.py --json-out bench/results/bench.json
 - uv run --python 3.12 python3 tools/dev.py lint
 - uv run --python 3.12 python3 tools/dev.py test
+- cargo clippy -- -D warnings
 - cargo test -p molt-runtime
 
 Known gaps
