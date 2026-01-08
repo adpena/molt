@@ -1,11 +1,12 @@
-Checkpoint: 2026-01-08 11:57:21 CST
-Git: d1c4a28 runtime: optimize guarded fields and update benches
+Checkpoint: 2026-01-08 12:00:11 CST
+Git: 1dd3104 chore: rustfmt
 
 Summary
 - Restored single-byte split to the count+split path and cached join element pointers for a faster copy loop.
 - Fixed wasm user function type allocation after adding guarded field ops to resolve the async protocol failure.
 - Re-ran arm64 benchmarks and refreshed README + OPT-0009 notes with updated perf numbers.
 - Ran lint/test across 3.12/3.13/3.14 plus molt-runtime cargo tests; reformatted the frontend IR file.
+- Applied cargo fmt fixes after CI rustfmt failure.
 
 Files touched (uncommitted)
 - .gitignore
