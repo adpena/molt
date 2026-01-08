@@ -9426,7 +9426,7 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
             }
             let len = string_len(elem_ptr);
             total_len += len;
-            let data = string_bytes(elem_ptr) as *const u8;
+            let data = string_bytes(elem_ptr);
             parts.push((data, len));
         }
         if !parts.is_empty() {
