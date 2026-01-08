@@ -1,58 +1,36 @@
-Checkpoint: 2026-01-07 14:45:40 CST
-Git: 66769a9 runtime: cargo fmt
+Checkpoint: 2026-01-07 23:56:18 CST
+Git: 6e26d94 runtime: expand bigint/format/memoryview parity
 
 Summary
-- Refactored shims runtime binding setup and concurrency branches to avoid backend SSA/dominance failures.
-- Reworked stdlib os/io/warnings/collections shims (init helpers, normpath early-return, capability parsing loop, view stubs, deferred builtins usage) to unblock compiled runs.
-- Adjusted net runtime senders and typing (StreamSenderBase hierarchy, payload validation) and clarified backend attr errors.
-- Bench channel throughput now builds/runs; refreshed bench results.
+- Fixed wasm type table indexing so user function types don’t alias the 6-arg string_count_slice signature (async parity build now validates).
+- Revalidated wasm async protocol parity and ran full lint/test/differential passes across supported Python versions.
+- Ran miri and string_ops fuzz (bounded run completed; long fuzz run interrupted manually after coverage settled).
+- Committed BigInt heap fallback, format mini-language expansion, memoryview metadata, and corresponding tests/docs updates.
 
 Files touched (uncommitted)
-- bench/results/bench.json
-- runtime/molt-backend/src/lib.rs
-- src/molt/capabilities.py
-- src/molt/frontend/__init__.py
-- src/molt/net.py
-- src/molt/shims.py
-- src/molt/stdlib/collections/__init__.py
-- src/molt/stdlib/collections/abc.py
-- src/molt/stdlib/importlib/__init__.py
-- src/molt/stdlib/io.py
-- src/molt/stdlib/os.py
-- src/molt/stdlib/pathlib.py
-- src/molt/stdlib/types.py
-- src/molt/stdlib/warnings.py
+- CHECKPOINT.md
 
 Tests run
-- PYTHONPATH=src uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic
-- PYTHONPATH=src uv run --python 3.12 pytest tests/test_wasm_control_flow.py
-- PYTHONPATH=src uv run --python 3.12 python3 tools/dev.py lint
-- PYTHONPATH=src uv run --python 3.12 python3 tools/dev.py test
-- PYTHONPATH=src uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json
+- `uv run --python 3.12 pytest tests/test_wasm_async_protocol.py -q`
+- `uv run --python 3.12 python3 tools/dev.py lint`
+- `uv run --python 3.12 python3 tools/dev.py test`
+- `python3 tools/runtime_safety.py miri`
+- `python3 tools/runtime_safety.py fuzz --target string_ops` (interrupted)
+- `cargo +nightly fuzz run string_ops -- -max_total_time=10`
 
 Known gaps
-- OPT-0005/6/7 perf follow-through still pending (bench_fib/bench_struct/str_count_unicode_warm remain slow vs CPython).
-- Builtins module import remains unimplemented; stdlib shims now avoid module-level builtins imports but a proper builtins module should still land.
+- Format protocol still lacks `__format__` fallback, named field formatting, and locale-aware grouping.
+- memoryview remains 1D only (no multidimensional shapes or advanced buffer exports).
+- Numeric tower still missing complex/decimal and int helpers (`bit_length`, `to_bytes`, `from_bytes`).
+- Matmul remains buffer2d-only; no `__matmul__`/`__rmatmul__` for arbitrary types.
+- OPT-0005/6/7 perf follow-through still pending; benches not rerun.
 
 Pending changes
-- bench/results/bench.json
-- runtime/molt-backend/src/lib.rs
-- src/molt/capabilities.py
-- src/molt/frontend/__init__.py
-- src/molt/net.py
-- src/molt/shims.py
-- src/molt/stdlib/collections/__init__.py
-- src/molt/stdlib/collections/abc.py
-- src/molt/stdlib/importlib/__init__.py
-- src/molt/stdlib/io.py
-- src/molt/stdlib/os.py
-- src/molt/stdlib/pathlib.py
-- src/molt/stdlib/types.py
-- src/molt/stdlib/warnings.py
+- CHECKPOINT.md
 
 Next 5-step plan
-1) Commit the compiler/shim fixes plus refreshed bench.json and push.
-2) Monitor CI and fix any failures until green.
-3) Start OPT-0005/6/7 work on fib/struct/str-count warm path hotspots.
-4) Add async yield spill probes (compare chains, call args) and verify wasm parity.
-5) Update docs/spec/STATUS.md and ROADMAP.md if behavior scope changes.
+1) Re-run benches and update `bench/results/bench.json`, then summarize in README/ROADMAP if deltas are significant.
+2) Implement OPT-0006 prefix-count metadata for Unicode count cache and re-benchmark warm/cold.
+3) Implement OPT-0007 struct store fast-path with deopt guards and add a mutation differential test.
+4) Extend format/memoryview parity: `__format__` fallback and multidimensional buffer exports.
+5) Revisit STATUS/ROADMAP after perf work and update any newly closed gaps.
