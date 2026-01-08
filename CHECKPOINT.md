@@ -1,11 +1,12 @@
-Checkpoint: 2026-01-07 23:56:18 CST
-Git: 6e26d94 runtime: expand bigint/format/memoryview parity
+Checkpoint: 2026-01-07 23:56:45 CST
+Git: 01145cc chore: cargo fmt
 
 Summary
 - Fixed wasm type table indexing so user function types don’t alias the 6-arg string_count_slice signature (async parity build now validates).
 - Revalidated wasm async protocol parity and ran full lint/test/differential passes across supported Python versions.
 - Ran miri and string_ops fuzz (bounded run completed; long fuzz run interrupted manually after coverage settled).
 - Committed BigInt heap fallback, format mini-language expansion, memoryview metadata, and corresponding tests/docs updates.
+- Applied cargo fmt cleanup after CI reported rustfmt drift.
 
 Files touched (uncommitted)
 - CHECKPOINT.md
@@ -17,6 +18,8 @@ Tests run
 - `python3 tools/runtime_safety.py miri`
 - `python3 tools/runtime_safety.py fuzz --target string_ops` (interrupted)
 - `cargo +nightly fuzz run string_ops -- -max_total_time=10`
+- `cargo fmt --check` (failed before reformat)
+- `cargo fmt`
 
 Known gaps
 - Format protocol still lacks `__format__` fallback, named field formatting, and locale-aware grouping.
