@@ -4708,9 +4708,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap();
                     let obj = vars.get(&args[0]).expect("Object not found");
                     let class_bits = vars.get(&args[1]).expect("Class not found");
-                    let expected_version = vars
-                        .get(&args[2])
-                        .expect("Expected version not found");
+                    let expected_version = vars.get(&args[2]).expect("Expected version not found");
                     let attr_name = op.s_value.as_ref().unwrap();
                     let data_id = self
                         .module
@@ -4744,7 +4742,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(
                         local_callee,
-                        &[*obj, *class_bits, *expected_version, offset, attr_ptr, attr_len],
+                        &[
+                            *obj,
+                            *class_bits,
+                            *expected_version,
+                            offset,
+                            attr_ptr,
+                            attr_len,
+                        ],
                     );
                     let res = builder.inst_results(call)[0];
                     let out_name = op.out.unwrap();
@@ -4754,9 +4759,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap();
                     let obj = vars.get(&args[0]).expect("Object not found");
                     let class_bits = vars.get(&args[1]).expect("Class not found");
-                    let expected_version = vars
-                        .get(&args[2])
-                        .expect("Expected version not found");
+                    let expected_version = vars.get(&args[2]).expect("Expected version not found");
                     let val = vars.get(&args[3]).expect("Value not found");
                     let attr_name = op.s_value.as_ref().unwrap();
                     let data_id = self
@@ -4813,9 +4816,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap();
                     let obj = vars.get(&args[0]).expect("Object not found");
                     let class_bits = vars.get(&args[1]).expect("Class not found");
-                    let expected_version = vars
-                        .get(&args[2])
-                        .expect("Expected version not found");
+                    let expected_version = vars.get(&args[2]).expect("Expected version not found");
                     let val = vars.get(&args[3]).expect("Value not found");
                     let attr_name = op.s_value.as_ref().unwrap();
                     let data_id = self
@@ -4887,8 +4888,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap();
                     let obj = vars.get(&args[0]).expect("Guard object not found");
                     let class_bits = vars.get(&args[1]).expect("Guard class not found");
-                    let expected_version =
-                        vars.get(&args[2]).expect("Guard version not found");
+                    let expected_version = vars.get(&args[2]).expect("Guard version not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4937,7 +4937,9 @@ impl SimpleBackend {
                         .declare_function("molt_get_attr_ptr", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*obj, attr_ptr, attr_len]);
+                    let call = builder
+                        .ins()
+                        .call(local_callee, &[*obj, attr_ptr, attr_len]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
@@ -5171,7 +5173,9 @@ impl SimpleBackend {
                         .declare_function("molt_del_attr_ptr", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*obj, attr_ptr, attr_len]);
+                    let call = builder
+                        .ins()
+                        .call(local_callee, &[*obj, attr_ptr, attr_len]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }

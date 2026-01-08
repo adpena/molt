@@ -2456,9 +2456,8 @@ fn exception_type_cache() -> &'static Mutex<HashMap<String, u64>> {
 
 fn exception_type_bits(kind_bits: u64) -> u64 {
     let fallback = builtin_classes().exception;
-    let name = string_obj_to_owned(obj_from_bits(kind_bits)).unwrap_or_else(|| {
-        "Exception".to_string()
-    });
+    let name =
+        string_obj_to_owned(obj_from_bits(kind_bits)).unwrap_or_else(|| "Exception".to_string());
     let cache = exception_type_cache();
     if let Some(bits) = cache.lock().unwrap().get(&name).copied() {
         return bits;
@@ -9431,7 +9430,9 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
             parts.push((data, len));
         }
         if !parts.is_empty() {
-            let sep_total = sep_bytes.len().saturating_mul(parts.len().saturating_sub(1));
+            let sep_total = sep_bytes
+                .len()
+                .saturating_mul(parts.len().saturating_sub(1));
             total_len = total_len.saturating_add(sep_total);
         }
         let out_ptr = alloc_bytes_like_with_len(total_len, TYPE_ID_STRING);
