@@ -1,5 +1,5 @@
-Checkpoint: 2026-01-07 23:56:45 CST
-Git: 01145cc chore: cargo fmt
+Checkpoint: 2026-01-08 00:04:29 CST
+Git: ecfab0f runtime: fix clippy and linux link
 
 Summary
 - Fixed wasm type table indexing so user function types don’t alias the 6-arg string_count_slice signature (async parity build now validates).
@@ -7,6 +7,7 @@ Summary
 - Ran miri and string_ops fuzz (bounded run completed; long fuzz run interrupted manually after coverage settled).
 - Committed BigInt heap fallback, format mini-language expansion, memoryview metadata, and corresponding tests/docs updates.
 - Applied cargo fmt cleanup after CI reported rustfmt drift.
+- Addressed clippy warnings in runtime helpers and added `-lm` on Linux link to fix CI linker failures.
 
 Files touched (uncommitted)
 - CHECKPOINT.md
@@ -20,6 +21,7 @@ Tests run
 - `cargo +nightly fuzz run string_ops -- -max_total_time=10`
 - `cargo fmt --check` (failed before reformat)
 - `cargo fmt`
+- `cargo clippy -- -D warnings`
 
 Known gaps
 - Format protocol still lacks `__format__` fallback, named field formatting, and locale-aware grouping.
