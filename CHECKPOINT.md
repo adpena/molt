@@ -1,5 +1,5 @@
-Checkpoint: 2026-01-08 00:04:29 CST
-Git: ecfab0f runtime: fix clippy and linux link
+Checkpoint: 2026-01-08 00:15:48 CST
+Git: 9809387 bench: update results
 
 Summary
 - Fixed wasm type table indexing so user function types don’t alias the 6-arg string_count_slice signature (async parity build now validates).
@@ -8,6 +8,7 @@ Summary
 - Committed BigInt heap fallback, format mini-language expansion, memoryview metadata, and corresponding tests/docs updates.
 - Applied cargo fmt cleanup after CI reported rustfmt drift.
 - Addressed clippy warnings in runtime helpers and added `-lm` on Linux link to fix CI linker failures.
+- Ran benches and refreshed README performance summary and `bench/results/bench.json`.
 
 Files touched (uncommitted)
 - CHECKPOINT.md
@@ -22,6 +23,7 @@ Tests run
 - `cargo fmt --check` (failed before reformat)
 - `cargo fmt`
 - `cargo clippy -- -D warnings`
+- `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json`
 
 Known gaps
 - Format protocol still lacks `__format__` fallback, named field formatting, and locale-aware grouping.
