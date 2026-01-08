@@ -66,7 +66,6 @@ struct MoltFileHandle {
 }
 
 struct Utf8IndexCache {
-    block: usize,
     offsets: Vec<usize>,
     prefix: Vec<i64>,
 }
@@ -755,7 +754,7 @@ fn pending_bits_i64() -> i64 {
 }
 
 fn inline_int_from_i128(val: i128) -> Option<i64> {
-    if val >= INLINE_INT_MIN_I128 && val <= INLINE_INT_MAX_I128 {
+    if (INLINE_INT_MIN_I128..=INLINE_INT_MAX_I128).contains(&val) {
         Some(val as i64)
     } else {
         None
@@ -834,10 +833,6 @@ unsafe fn object_set_class_bits(ptr: *mut u8, bits: u64) {
 
 unsafe fn bigint_ref(ptr: *mut u8) -> &'static BigInt {
     &*(ptr as *const BigInt)
-}
-
-unsafe fn bigint_mut(ptr: *mut u8) -> &'static mut BigInt {
-    &mut *(ptr as *mut BigInt)
 }
 
 unsafe fn string_len(ptr: *mut u8) -> usize {
@@ -2870,10 +2865,6 @@ fn alloc_set_like_with_entries(entries: &[u64], type_id: u32) -> *mut u8 {
 
 fn alloc_set_with_entries(entries: &[u64]) -> *mut u8 {
     alloc_set_like_with_entries(entries, TYPE_ID_SET)
-}
-
-fn alloc_frozenset_with_entries(entries: &[u64]) -> *mut u8 {
-    alloc_set_like_with_entries(entries, TYPE_ID_FROZENSET)
 }
 
 #[no_mangle]
@@ -5531,7 +5522,7 @@ lazy_static::lazy_static! {
 }
 
 thread_local! {
-    static UTF8_COUNT_TLS: RefCell<Option<Utf8CountCacheEntry>> = RefCell::new(None);
+    static UTF8_COUNT_TLS: RefCell<Option<Utf8CountCacheEntry>> = const { RefCell::new(None) };
 }
 
 /// # Safety
@@ -6214,13 +6205,7 @@ pub extern "C" fn molt_round(val_bits: u64, ndigits_bits: u64, has_ndigits_bits:
         let rem = value.mod_floor(&pow);
         let twice = &rem * 2;
         let mut rounded = div;
-        if twice > pow {
-            if value.is_negative() {
-                rounded -= 1;
-            } else {
-                rounded += 1;
-            }
-        } else if twice == pow && !rounded.is_even() {
+        if twice > pow || (twice == pow && !rounded.is_even()) {
             if value.is_negative() {
                 rounded -= 1;
             } else {
@@ -6289,12 +6274,8 @@ pub extern "C" fn molt_round(val_bits: u64, ndigits_bits: u64, has_ndigits_bits:
         let abs_rem = rem.abs();
         let twice = abs_rem.saturating_mul(2);
         let mut rounded = div;
-        if twice > pow {
+        if twice > pow || (twice == pow && (div & 1) != 0) {
             rounded += if value >= 0 { 1 } else { -1 };
-        } else if twice == pow {
-            if (div & 1) != 0 {
-                rounded += if value >= 0 { 1 } else { -1 };
-            }
         }
         let result = rounded.saturating_mul(pow);
         return MoltObject::from_int(result as i64).bits();
@@ -6901,8 +6882,10 @@ fn parse_int_from_str(text: &str, base: i64) -> Result<(BigInt, i64), ()> {
     Ok((parsed, base_val))
 }
 
+/// # Safety
+/// - `ptr` must be null or valid for `len` bytes.
 #[no_mangle]
-pub extern "C" fn molt_bigint_from_str(ptr: *const u8, len: usize) -> u64 {
+pub unsafe extern "C" fn molt_bigint_from_str(ptr: *const u8, len: usize) -> u64 {
     if ptr.is_null() {
         return MoltObject::none().bits();
     }
@@ -7002,7 +6985,7 @@ pub extern "C" fn molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits
     let has_base = to_i64(obj_from_bits(has_base_bits)).unwrap_or(0) != 0;
     let base_val = if has_base {
         let base = index_i64_from_obj(base_bits, "int() base must be int");
-        if base != 0 && (base < 2 || base > 36) {
+        if base != 0 && !(2..=36).contains(&base) {
             raise!("ValueError", "base must be 0 or between 2 and 36");
         }
         base
@@ -9431,11 +9414,7 @@ fn build_utf8_cache(bytes: &[u8]) -> Utf8IndexCache {
         prefix.push(total);
         idx = end;
     }
-    Utf8IndexCache {
-        block: UTF8_CACHE_BLOCK,
-        offsets,
-        prefix,
-    }
+    Utf8IndexCache { offsets, prefix }
 }
 
 fn utf8_cache_get_or_build(key: usize, bytes: &[u8]) -> Option<Arc<Utf8IndexCache>> {
@@ -9619,7 +9598,7 @@ fn utf8_char_to_byte_index_cached(bytes: &[u8], char_idx: i64, cache_key: Option
             let mut lo = 0usize;
             let mut hi = cache.prefix.len().saturating_sub(1);
             while lo < hi {
-                let mid = (lo + hi + 1) / 2;
+                let mid = (lo + hi).div_ceil(2);
                 if (cache.prefix.get(mid).copied().unwrap_or(0) as usize) <= target {
                     lo = mid;
                 } else {
@@ -12073,19 +12052,6 @@ fn format_float(f: f64) -> String {
     }
 }
 
-fn format_float_with_precision(val: f64, prec: usize) -> String {
-    if val.is_nan() {
-        return "nan".to_string();
-    }
-    if val.is_infinite() {
-        if val.is_sign_negative() {
-            return "-inf".to_string();
-        }
-        return "inf".to_string();
-    }
-    format!("{:.*}", prec, val)
-}
-
 fn format_range(start: i64, stop: i64, step: i64) -> String {
     if step == 1 {
         format!("range({start}, {stop})")
@@ -12639,13 +12605,11 @@ fn parse_format_spec(spec: &str) -> Result<FormatSpec, &'static str> {
 
 fn apply_grouping(text: &str, group: usize, sep: char) -> String {
     let mut out = String::with_capacity(text.len() + text.len() / group);
-    let mut count = 0usize;
-    for ch in text.chars().rev() {
-        if count > 0 && count % group == 0 {
+    for (count, ch) in text.chars().rev().enumerate() {
+        if count > 0 && count.is_multiple_of(group) {
             out.push(sep);
         }
         out.push(ch);
-        count += 1;
     }
     out.chars().rev().collect()
 }
@@ -12689,9 +12653,7 @@ fn trim_float_trailing(text: &str, alternate: bool) -> String {
     if alternate {
         return text.to_string();
     }
-    let exp_pos = text
-        .find(|c| c == 'e' || c == 'E')
-        .unwrap_or_else(|| text.len());
+    let exp_pos = text.find(['e', 'E']).unwrap_or(text.len());
     let (mantissa, exp) = text.split_at(exp_pos);
     let mut end = mantissa.len();
     if let Some(dot) = mantissa.find('.') {
@@ -13981,9 +13943,7 @@ unsafe fn call_callable1(call_bits: u64, arg0_bits: u64) -> u64 {
 
 unsafe fn callable_arity(call_bits: u64) -> Option<usize> {
     let call_obj = obj_from_bits(call_bits);
-    let Some(call_ptr) = call_obj.as_ptr() else {
-        return None;
-    };
+    let call_ptr = call_obj.as_ptr()?;
     match object_type_id(call_ptr) {
         TYPE_ID_FUNCTION => Some(function_arity(call_ptr) as usize),
         TYPE_ID_BOUND_METHOD => {

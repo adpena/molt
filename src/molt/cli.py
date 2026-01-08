@@ -441,6 +441,7 @@ int main() {
         link_cmd.append("-lc++")
     elif sys.platform.startswith("linux"):
         link_cmd.append("-lstdc++")
+        link_cmd.append("-lm")
 
     link_process = subprocess.run(link_cmd)
 
