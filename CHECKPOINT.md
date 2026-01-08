@@ -1,43 +1,36 @@
-Checkpoint: 2026-01-08 00:15:48 CST
-Git: 9809387 bench: update results
+Checkpoint: 2026-01-08 07:00:45 CST
+Git: b37a241 runtime: lazy utf8 count prefix cache
 
 Summary
-- Fixed wasm type table indexing so user function types don’t alias the 6-arg string_count_slice signature (async parity build now validates).
-- Revalidated wasm async protocol parity and ran full lint/test/differential passes across supported Python versions.
-- Ran miri and string_ops fuzz (bounded run completed; long fuzz run interrupted manually after coverage settled).
-- Committed BigInt heap fallback, format mini-language expansion, memoryview metadata, and corresponding tests/docs updates.
-- Applied cargo fmt cleanup after CI reported rustfmt drift.
-- Addressed clippy warnings in runtime helpers and added `-lm` on Linux link to fix CI linker failures.
-- Ran benches and refreshed README performance summary and `bench/results/bench.json`.
+- Made UTF-8 count cache prefix metadata lazy to avoid full-count regressions while keeping slice paths fast.
+- Added struct layout mutation differential coverage for class layout deopts.
+- Refreshed OPT-0006 notes and updated README performance summary with new bench results.
+- Re-ran benches; str.count unicode warm is back to 4.18x with no major regressions.
 
 Files touched (uncommitted)
 - CHECKPOINT.md
 
 Tests run
-- `uv run --python 3.12 pytest tests/test_wasm_async_protocol.py -q`
 - `uv run --python 3.12 python3 tools/dev.py lint`
 - `uv run --python 3.12 python3 tools/dev.py test`
+- `cargo test -p molt-runtime`
 - `python3 tools/runtime_safety.py miri`
-- `python3 tools/runtime_safety.py fuzz --target string_ops` (interrupted)
-- `cargo +nightly fuzz run string_ops -- -max_total_time=10`
-- `cargo fmt --check` (failed before reformat)
-- `cargo fmt`
-- `cargo clippy -- -D warnings`
+- `cargo +nightly fuzz run string_ops -- -max_total_time=30`
 - `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json`
 
 Known gaps
-- Format protocol still lacks `__format__` fallback, named field formatting, and locale-aware grouping.
-- memoryview remains 1D only (no multidimensional shapes or advanced buffer exports).
-- Numeric tower still missing complex/decimal and int helpers (`bit_length`, `to_bytes`, `from_bytes`).
-- Matmul remains buffer2d-only; no `__matmul__`/`__rmatmul__` for arbitrary types.
-- OPT-0005/6/7 perf follow-through still pending; benches not rerun.
+- OPT-0007 struct store fast path + layout-stability guard still pending (bench_struct ~0.31x).
+- OPT-0008 descriptor/property fast path still pending (bench_descriptor_property ~0.25x).
+- OPT-0009 string split/join builder still below parity (bench_str_split ~0.42x).
+- Class layout stability guard for structified classes not implemented yet.
+- See `docs/spec/STATUS.md` and `docs/spec/0015_STDLIB_COMPATIBILITY_MATRIX.md` for remaining stdlib gaps.
 
 Pending changes
 - CHECKPOINT.md
 
 Next 5-step plan
-1) Re-run benches and update `bench/results/bench.json`, then summarize in README/ROADMAP if deltas are significant.
-2) Implement OPT-0006 prefix-count metadata for Unicode count cache and re-benchmark warm/cold.
-3) Implement OPT-0007 struct store fast-path with deopt guards and add a mutation differential test.
-4) Extend format/memoryview parity: `__format__` fallback and multidimensional buffer exports.
-5) Revisit STATUS/ROADMAP after perf work and update any newly closed gaps.
+1) Audit bench regressions >5% (sum_list/attr_access/str_split) and log deltas in `OPTIMIZATIONS_PLAN.md` if real.
+2) Implement OPT-0007 layout-stability guard + monomorphic slot stores to cut bench_struct overhead.
+3) Implement OPT-0008 descriptor/property lookup IC and add targeted diffs.
+4) Implement OPT-0009 split/join builder fast paths and re-bench.
+5) Re-run benches, then sync README/ROADMAP/STATUS with updated performance + coverage.
