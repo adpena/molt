@@ -461,8 +461,7 @@ impl WasmBackend {
                     local_types.push(ValType::I64);
                     local_count += 1;
                 }
-                if op.kind == "const_str" || op.kind == "const_bytes" || op.kind == "const_bigint"
-                {
+                if op.kind == "const_str" || op.kind == "const_bytes" || op.kind == "const_bigint" {
                     let ptr_name = format!("{out}_ptr");
                     if let std::collections::hash_map::Entry::Vacant(entry) = locals.entry(ptr_name)
                     {
@@ -1475,9 +1474,7 @@ impl WasmBackend {
                         let other = locals[&args[1]];
                         func.instruction(&Instruction::LocalGet(set_bits));
                         func.instruction(&Instruction::LocalGet(other));
-                        func.instruction(&Instruction::Call(
-                            import_ids["set_intersection_update"],
-                        ));
+                        func.instruction(&Instruction::Call(import_ids["set_intersection_update"]));
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
@@ -1487,9 +1484,7 @@ impl WasmBackend {
                         let other = locals[&args[1]];
                         func.instruction(&Instruction::LocalGet(set_bits));
                         func.instruction(&Instruction::LocalGet(other));
-                        func.instruction(&Instruction::Call(
-                            import_ids["set_difference_update"],
-                        ));
+                        func.instruction(&Instruction::Call(import_ids["set_difference_update"]));
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
@@ -1499,9 +1494,7 @@ impl WasmBackend {
                         let other = locals[&args[1]];
                         func.instruction(&Instruction::LocalGet(set_bits));
                         func.instruction(&Instruction::LocalGet(other));
-                        func.instruction(&Instruction::Call(
-                            import_ids["set_symdiff_update"],
-                        ));
+                        func.instruction(&Instruction::Call(import_ids["set_symdiff_update"]));
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }

@@ -1059,9 +1059,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap();
                     let val = vars.get(&args[0]).expect("Round arg not found");
                     let ndigits = vars.get(&args[1]).expect("Round ndigits not found");
-                    let has_ndigits = vars
-                        .get(&args[2])
-                        .expect("Round ndigits flag not found");
+                    let has_ndigits = vars.get(&args[2]).expect("Round ndigits flag not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -1072,8 +1070,9 @@ impl SimpleBackend {
                         .declare_function("molt_round", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call =
-                        builder.ins().call(local_callee, &[*val, *ndigits, *has_ndigits]);
+                    let call = builder
+                        .ins()
+                        .call(local_callee, &[*val, *ndigits, *has_ndigits]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
@@ -1453,10 +1452,7 @@ impl SimpleBackend {
                         let add_local = self.module.declare_func_in_func(add_callee, builder.func);
                         for name in args {
                             let val = vars.get(name).unwrap_or_else(|| {
-                                panic!(
-                                    "Frozenset elem not found in {} op {}",
-                                    func_ir.name, op_idx
-                                )
+                                panic!("Frozenset elem not found in {} op {}", func_ir.name, op_idx)
                             });
                             builder.ins().call(add_local, &[set_bits, *val]);
                         }
