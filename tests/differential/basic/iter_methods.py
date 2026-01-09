@@ -35,3 +35,23 @@ sumv = 0
 for x in d2.values():
     sumv = sumv + x
 print(sumv)
+
+
+def sum_items(mapping):
+    total = 0
+    for pair in mapping.items():
+        total = total + pair[1]
+    return total
+
+
+print(sum_items(d2))
+
+
+def dict_methods_dynamic(mapping):
+    print(mapping.get("missing"))
+    print(mapping.get("missing", 99))
+    print(mapping.pop("a"))
+    print(mapping.pop("missing", 123))
+
+
+dict_methods_dynamic({"a": 1})

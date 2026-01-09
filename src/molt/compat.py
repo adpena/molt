@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 import sys
 from typing import Literal
 
@@ -74,6 +75,9 @@ class CompatibilityReporter:
         return f"<unknown>:{lineno}:{col or 0}"
 
     def warn(self, issue: CompatibilityIssue) -> None:
+        disabled = os.environ.get("MOLT_COMPAT_WARNINGS", "").strip().lower()
+        if disabled in {"0", "false", "no", "off"}:
+            return
         print(issue.format_warning(), file=sys.stderr)
 
     def error(self, issue: CompatibilityIssue) -> CompatibilityError:

@@ -66,7 +66,7 @@ def format_exception(
     lines: list[str] = []
     if tb is not None:
         lines.append("Traceback (most recent call last):\n")
-        lines.extend(format_tb(tb, limit=limit))
+        lines.extend(format_tb(tb, limit))
     lines.extend(format_exception_only(exc_type, value))
     return lines
 
@@ -79,19 +79,19 @@ def print_exception(
     file: Any | None = None,
     chain: bool = True,
 ) -> None:
-    out = "".join(format_exception(exc_type, value, tb, limit=limit, chain=chain))
+    out = "".join(format_exception(exc_type, value, tb, limit, chain))
     if file is not None and hasattr(file, "write"):
         file.write(out)
         return
-    print(out, end="")
+    print(out)
 
 
 def print_tb(tb: Any, limit: int | None = None, file: Any | None = None) -> None:
-    out = "".join(format_tb(tb, limit=limit))
+    out = "".join(format_tb(tb, limit))
     if file is not None and hasattr(file, "write"):
         file.write(out)
         return
-    print(out, end="")
+    print(out)
 
 
 def format_exc(limit: int | None = None) -> str:
@@ -101,7 +101,7 @@ def format_exc(limit: int | None = None) -> str:
         exc_type, value, tb = sys.exc_info()
     except Exception:
         return ""
-    return "".join(format_exception(exc_type, value, tb, limit=limit))
+    return "".join(format_exception(exc_type, value, tb, limit))
 
 
 def print_exc(limit: int | None = None, file: Any | None = None) -> None:
@@ -111,4 +111,4 @@ def print_exc(limit: int | None = None, file: Any | None = None) -> None:
         exc_type, value, tb = sys.exc_info()
     except Exception:
         return None
-    print_exception(exc_type, value, tb, limit=limit, file=file)
+    print_exception(exc_type, value, tb, limit, file)

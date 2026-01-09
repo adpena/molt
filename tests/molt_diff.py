@@ -8,8 +8,17 @@ def run_cpython(file_path, python_exe=sys.executable):
     env = os.environ.copy()
     paths = [env.get("PYTHONPATH", ""), ".", "src"]
     env["PYTHONPATH"] = os.pathsep.join(p for p in paths if p)
+    bootstrap = (
+        "import runpy, sys; "
+        "import molt.shims as shims; "
+        "shims.install(); "
+        "runpy.run_path(sys.argv[1], run_name='__main__')"
+    )
     result = subprocess.run(
-        [python_exe, file_path], capture_output=True, text=True, env=env
+        [python_exe, "-c", bootstrap, file_path],
+        capture_output=True,
+        text=True,
+        env=env,
     )
     return result.stdout, result.stderr, result.returncode
 

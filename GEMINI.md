@@ -41,6 +41,7 @@ The Molt compiler itself is designed to be "AI-friendly". Its modular IR and cle
 - Do not weaken or contort tests to mask missing functionality; surface the gap, ask for priority/plan, and implement the correct behavior.
 - Aggressively and proactively update `ROADMAP.md` and the specs in `docs/spec/` when scope or behavior changes.
 - Treat `docs/spec/STATUS.md` as the canonical source of truth for current capabilities/limits; sync README/ROADMAP after changes.
+- Update docs/spec and tests each turn as appropriate to reflect new behavior; if no updates are needed, note that in `CHECKPOINT.md`.
 - Proactively and aggressively plan for native support of popular and growing Python packages written in Rust.
 - The project vision is full Python compatibility: all types, syntax, and dependencies.
 - Prioritize extending features and refactor current implementations when required to meet roadmap/spec goals.
@@ -51,6 +52,7 @@ The Molt compiler itself is designed to be "AI-friendly". Its modular IR and cle
 - Install optional benchmark deps with `uv sync --group bench --python 3.12` before recording Cython/Numba baselines (Numba requires <3.13).
 - Treat benchmark regressions as build breakers; iterate on optimization + `tools/dev.py lint` + `tools/dev.py test` + benchmarks (`uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json`) until the regression is gone and no new regressions appear, but avoid repeated cycles before the implementation is complete.
 - Run `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json` for every commit and commit the updated `bench/results/bench.json` (document blockers in `CHECKPOINT.md`). On Apple Silicon, prefer an arm64 interpreter (e.g., `--python /opt/homebrew/bin/python3.14`) so Codon baselines link.
+- Run `uv run --python 3.14 python3 tools/bench_wasm.py --json-out bench/results/bench_wasm.json` for every commit and commit the updated `bench/results/bench_wasm.json` (document blockers in `CHECKPOINT.md`).
 - Sound the alarm immediately on performance regressions; prioritize optimization feedback loops before shipping other work without overfitting to tests mid-implementation.
 - Favor runtime performance over compile-time speed or binary size unless explicitly directed otherwise.
 - Treat `docs/spec/0015_STDLIB_COMPATIBILITY_MATRIX.md` as the source of truth for stdlib scope, tiering, and promotion rules.
@@ -61,6 +63,8 @@ The Molt compiler itself is designed to be "AI-friendly". Its modular IR and cle
 - Use `AGENT_LOCKS.md` for multi-agent coordination and keep communication explicit about scope, touched files, and tests.
 - Agents may use `gh` and git over SSH; commit after cohesive changes and run lint/test once at the end rather than in repeated cycles.
 - After any push, monitor CI logs until green; if failures appear, propose fixes, implement them, push again, and repeat until green.
+- Avoid infinite commit/push/CI loops: only repeat when there are new changes or an explicit request to re-run; otherwise stop and ask before looping again.
+- If a user request implies repeating commit/push/CI without new changes, pause and ask before re-running.
 - Always run tests via `uv run --python 3.12/3.13/3.14`; never use the raw `.venv` interpreter directly.
 - Always update `CHECKPOINT.md` after each assistant turn and when nearing context compaction; include a timestamp and the latest git commit info for freshness checks.
 

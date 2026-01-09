@@ -25,6 +25,11 @@ _QNAN = 0x7FF8_0000_0000_0000
 _TAG_INT = 0x0001_0000_0000_0000
 _INT_MASK = 140737488355327
 _PENDING = 0x7FFD_0000_0000_0000
+_CANCEL_TOKENS: dict[int, dict[str, int | bool]] = {
+    1: {"parent": 0, "cancelled": False, "refs": 1}
+}
+_CANCEL_NEXT_ID = 2
+_CANCEL_CURRENT = 1
 
 
 def _box_int(value: int) -> int:
@@ -101,6 +106,25 @@ def _configure_runtime_lib(lib: ctypes.CDLL) -> None:
     )
     _bind_required(lib, "molt_chan_recv", [ctypes.c_void_p], ctypes.c_longlong)
     _bind_required(lib, "molt_spawn", [ctypes.c_void_p], None)
+    _bind_required(lib, "molt_cancel_token_new", [ctypes.c_longlong], ctypes.c_longlong)
+    _bind_required(
+        lib, "molt_cancel_token_clone", [ctypes.c_longlong], ctypes.c_longlong
+    )
+    _bind_required(
+        lib, "molt_cancel_token_drop", [ctypes.c_longlong], ctypes.c_longlong
+    )
+    _bind_required(
+        lib, "molt_cancel_token_cancel", [ctypes.c_longlong], ctypes.c_longlong
+    )
+    _bind_required(
+        lib, "molt_cancel_token_is_cancelled", [ctypes.c_longlong], ctypes.c_longlong
+    )
+    _bind_required(
+        lib, "molt_cancel_token_set_current", [ctypes.c_longlong], ctypes.c_longlong
+    )
+    _bind_required(lib, "molt_cancel_token_get_current", [], ctypes.c_longlong)
+    _bind_required(lib, "molt_cancelled", [], ctypes.c_longlong)
+    _bind_required(lib, "molt_cancel_current", [], ctypes.c_longlong)
     _bind_required(
         lib,
         "molt_json_parse_int",
@@ -199,12 +223,157 @@ def load_runtime() -> ctypes.CDLL | None:
     return _runtime_lib
 
 
+def stream_new_handle(lib: ctypes.CDLL | None, maxsize: int) -> ctypes.c_void_p | None:
+    if lib is None or not hasattr(lib, "molt_stream_new"):
+        return None
+    handle = lib.molt_stream_new(maxsize)
+    if isinstance(handle, ctypes.c_void_p):
+        return handle
+    if isinstance(handle, int):
+        return ctypes.c_void_p(handle)
+    return None
+
+
+def ws_pair_handles(
+    lib: ctypes.CDLL | None, maxsize: int
+) -> tuple[ctypes.c_void_p, ctypes.c_void_p] | None:
+    if lib is None or not hasattr(lib, "molt_ws_pair"):
+        return None
+    left_handle = ctypes.c_void_p()
+    right_handle = ctypes.c_void_p()
+    rc = lib.molt_ws_pair(
+        maxsize,
+        ctypes.byref(left_handle),
+        ctypes.byref(right_handle),
+    )
+    if rc == 0 and left_handle.value and right_handle.value:
+        return left_handle, right_handle
+    return None
+
+
+def ws_connect_handle(lib: ctypes.CDLL | None, url: str) -> ctypes.c_void_p | None:
+    if lib is None or not hasattr(lib, "molt_ws_connect"):
+        return None
+    buf = url.encode("utf-8")
+    handle = ctypes.c_void_p()
+    rc = lib.molt_ws_connect(buf, len(buf), ctypes.byref(handle))
+    if rc != 0 or not handle.value:
+        return None
+    return handle
+
+
 def _chan_ptr(chan: Any) -> ctypes.c_void_p | None:
     if isinstance(chan, ctypes.c_void_p):
         return chan
     if isinstance(chan, int):
         return ctypes.c_void_p(chan)
     return None
+
+
+def _ensure_cancel_root() -> None:
+    global _CANCEL_CURRENT
+    if 1 not in _CANCEL_TOKENS:
+        _CANCEL_TOKENS[1] = {"parent": 0, "cancelled": False, "refs": 1}
+    if _CANCEL_CURRENT <= 0:
+        _CANCEL_CURRENT = 1
+
+
+def _retain_token(token_id: int) -> None:
+    if token_id <= 1:
+        return
+    entry = _CANCEL_TOKENS.get(token_id)
+    if entry is not None:
+        entry["refs"] = int(entry["refs"]) + 1
+
+
+def _release_token(token_id: int) -> None:
+    if token_id <= 1:
+        return
+    entry = _CANCEL_TOKENS.get(token_id)
+    if entry is None:
+        return
+    entry["refs"] = int(entry["refs"]) - 1
+    if int(entry["refs"]) <= 0:
+        if token_id in _CANCEL_TOKENS:
+            _CANCEL_TOKENS.pop(token_id)
+
+
+def _token_is_cancelled(token_id: int) -> bool:
+    _ensure_cancel_root()
+    current = token_id
+    depth = 0
+    while current != 0 and depth < 64:
+        entry = _CANCEL_TOKENS.get(current)
+        if entry is None:
+            return False
+        if bool(entry["cancelled"]):
+            return True
+        current = int(entry["parent"])
+        depth += 1
+    return False
+
+
+def molt_cancel_token_new(parent: int | None = None) -> int:
+    _ensure_cancel_root()
+    if parent is None:
+        parent_id = _CANCEL_CURRENT
+    else:
+        parent_id = parent
+    if parent_id < 0:
+        raise ValueError("cancel token parent must be non-negative")
+    global _CANCEL_NEXT_ID
+    token_id = _CANCEL_NEXT_ID
+    _CANCEL_NEXT_ID += 1
+    _CANCEL_TOKENS[token_id] = {
+        "parent": parent_id,
+        "cancelled": False,
+        "refs": 1,
+    }
+    return token_id
+
+
+def molt_cancel_token_clone(token_id: int) -> None:
+    _retain_token(token_id)
+
+
+def molt_cancel_token_drop(token_id: int) -> None:
+    _release_token(token_id)
+
+
+def molt_cancel_token_cancel(token_id: int) -> None:
+    entry = _CANCEL_TOKENS.get(token_id)
+    if entry is not None:
+        entry["cancelled"] = True
+
+
+def molt_cancel_token_is_cancelled(token_id: int) -> bool:
+    return _token_is_cancelled(token_id)
+
+
+def molt_cancel_token_set_current(token_id: int | None) -> int:
+    _ensure_cancel_root()
+    global _CANCEL_CURRENT
+    new_id = 1 if token_id in (None, 0) else token_id
+    prev = _CANCEL_CURRENT
+    _retain_token(new_id)
+    _release_token(prev)
+    _CANCEL_CURRENT = new_id
+    return prev
+
+
+def molt_cancel_token_get_current() -> int:
+    _ensure_cancel_root()
+    return _CANCEL_CURRENT
+
+
+def molt_cancelled() -> bool:
+    return _token_is_cancelled(_CANCEL_CURRENT)
+
+
+def molt_cancel_current() -> None:
+    entry = _CANCEL_TOKENS.get(_CANCEL_CURRENT)
+    if entry is not None:
+        entry["cancelled"] = True
 
 
 def molt_spawn(task: Any) -> None:
@@ -235,10 +404,10 @@ def molt_block_on(task: Any) -> Any:
     raise TypeError("molt_block_on expects a coroutine or callable")
 
 
-def molt_async_sleep(_delay: float = 0.0) -> Any:
-    async def _sleep() -> None:
-        await asyncio.sleep(0)
-        return None
+def molt_async_sleep(_delay: float = 0.0, _result: Any | None = None) -> Any:
+    async def _sleep() -> Any:
+        await asyncio.sleep(_delay)
+        return _result
 
     return _sleep()
 
@@ -265,8 +434,11 @@ def molt_chan_send(chan: Any, val: Any) -> int:
                     time.sleep(0)
                 raise RuntimeError("molt_chan_send pending")
     if isinstance(chan, queue.Queue):
-        chan.put(val)
-        return 0
+        try:
+            chan.put_nowait(val)
+            return 0
+        except queue.Full:
+            return _PENDING
     raise TypeError("molt_chan_send expected a channel handle")
 
 
@@ -283,8 +455,10 @@ def molt_chan_recv(chan: Any) -> Any:
                     time.sleep(0)
                 raise RuntimeError("molt_chan_recv pending")
     if isinstance(chan, queue.Queue):
-        getter = chan.get
-        return getter()
+        try:
+            return chan.get_nowait()
+        except queue.Empty:
+            return _PENDING
     raise TypeError("molt_chan_recv expected a channel handle")
 
 
@@ -297,6 +471,15 @@ def install() -> None:
     setattr(builtins, "molt_chan_recv", molt_chan_recv)
     setattr(builtins, "molt_block_on", molt_block_on)
     setattr(builtins, "molt_async_sleep", molt_async_sleep)
+    setattr(builtins, "molt_cancel_token_new", molt_cancel_token_new)
+    setattr(builtins, "molt_cancel_token_clone", molt_cancel_token_clone)
+    setattr(builtins, "molt_cancel_token_drop", molt_cancel_token_drop)
+    setattr(builtins, "molt_cancel_token_cancel", molt_cancel_token_cancel)
+    setattr(builtins, "molt_cancel_token_is_cancelled", molt_cancel_token_is_cancelled)
+    setattr(builtins, "molt_cancel_token_set_current", molt_cancel_token_set_current)
+    setattr(builtins, "molt_cancel_token_get_current", molt_cancel_token_get_current)
+    setattr(builtins, "molt_cancelled", molt_cancelled)
+    setattr(builtins, "molt_cancel_current", molt_cancel_current)
     setattr(builtins, "molt_stream", net_mod.stream)
     setattr(builtins, "molt_stream_channel", net_mod.stream_channel)
     setattr(builtins, "molt_ws_pair", net_mod.ws_pair)

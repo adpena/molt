@@ -38,20 +38,26 @@ def deepcopy(obj: Any, memo: dict[int, Any] | None = None) -> Any:
     if isinstance(obj, list):
         result: list[Any] = []
         memo[obj_id] = result
-        result.extend(deepcopy(item, memo) for item in obj)
+        for item in obj:
+            result.append(deepcopy(item, memo))
         return result
     if isinstance(obj, dict):
         result: dict[Any, Any] = {}
         memo[obj_id] = result
-        for key, val in obj.items():
-            result[deepcopy(key, memo)] = deepcopy(val, memo)
+        for key, value in obj.items():
+            result[deepcopy(key, memo)] = deepcopy(value, memo)
         return result
     if isinstance(obj, tuple):
-        result = tuple(deepcopy(item, memo) for item in obj)
+        items: list[Any] = []
+        for item in obj:
+            items.append(deepcopy(item, memo))
+        result = tuple(items)
         memo[obj_id] = result
         return result
     if isinstance(obj, set):
-        result = {deepcopy(item, memo) for item in obj}
+        result: set[Any] = set()
+        for item in obj:
+            result.add(deepcopy(item, memo))
         memo[obj_id] = result
         return result
     memo[obj_id] = obj

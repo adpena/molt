@@ -1,6 +1,15 @@
 """Molt: Python → Native/WASM compiler research project."""
 
-from molt.concurrency import Channel, channel, spawn
+from molt.concurrency import (
+    CancellationToken,
+    Channel,
+    cancel_current,
+    cancelled,
+    channel,
+    current_token,
+    set_current_token,
+    spawn,
+)
 from molt.net import (
     Request,
     Response,
@@ -15,12 +24,17 @@ from molt.net import (
 
 __all__ = [
     "Channel",
+    "CancellationToken",
     "Request",
     "Response",
     "Stream",
     "StreamSender",
     "WebSocket",
+    "cancel_current",
+    "cancelled",
     "channel",
+    "current_token",
+    "set_current_token",
     "spawn",
     "stream",
     "stream_channel",

@@ -12,6 +12,9 @@ __all__ = [
     "ClassVar",
     "Final",
     "Generic",
+    "IO",
+    "Iterable",
+    "Iterator",
     "Literal",
     "Optional",
     "Protocol",
@@ -19,6 +22,7 @@ __all__ = [
     "TYPE_CHECKING",
     "TypeVar",
     "Union",
+    "MutableMapping",
     "cast",
     "get_args",
     "get_origin",
@@ -54,6 +58,10 @@ ClassVar = _make("ClassVar")
 Final = _make("Final")
 Literal = _make("Literal")
 Self = _make("Self")
+Iterable = _make("Iterable")
+Iterator = _make("Iterator")
+MutableMapping = _make("MutableMapping")
+IO = _make("IO")
 
 
 def TypeVar(

@@ -57,6 +57,7 @@ DI can explode complexity. Keep minimal:
 - explicit `ctx` object
 - app-scoped state container
 - request-scoped context
+- `ctx.cancelled()` reflects the request token; spawned work inherits unless overridden
 
 ---
 

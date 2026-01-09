@@ -10,31 +10,38 @@ Canonical status lives in `docs/spec/STATUS.md` (README and ROADMAP are kept in 
 ## Capabilities (Current)
 
 - **Tier 0 Structification**: Compiles typed Python classes to native structs with fixed-offset access.
-- **Native Async**: Compiles `async/await` syntax (currently flattened for MVP).
+- **Native Async**: Lowers `async/await` into state-machine poll loops.
 - **Async iteration**: Supports `__aiter__`/`__anext__`, `aiter`/`anext`, and `async for` (sync-iter fallback enabled for now).
+- **Async context managers**: `async with` lowering for `__aenter__`/`__aexit__`.
+- **Async defaults**: `anext(..., default)` awaitable creation outside `await`.
+- **Cancellation tokens**: request-scoped defaults with task overrides; cooperative checks via `molt.cancelled()`.
 - **Molt Packages**: First-class support for Rust-backed packages, with production wire formats (MsgPack/CBOR) and Arrow IPC for tabular data; JSON is a compatibility/debug format.
 - **AOT Compilation**: Uses Cranelift to generate high-performance machine code.
 - **Differential Testing**: Verified against CPython 3.12.
 - **Sets**: literals + constructor with add/contains/iter/len + algebra (`|`, `&`, `-`, `^`); `frozenset` constructor + algebra.
 - **Numeric builtins**: `int()`/`round()`/`math.trunc()` with `__int__`/`__index__`/`__round__`/`__trunc__` hooks and base parsing for string/bytes.
+- **BigInt fallback**: heap-backed ints for values beyond inline range.
+- **Format mini-language**: conversion flags + numeric formatting for ints/floats (f-strings included).
+- **memoryview**: 1D buffer protocol with `format`/`shape`/`strides`/`nbytes`.
 - **String count slices**: `str.count` supports start/end slices with Unicode-aware offsets.
 - **Importable builtins**: `import builtins` binds supported builtins for compiled code.
 
 ## Limitations (Current)
 
-- **Classes & object model**: C3 MRO + multiple inheritance + `super()` resolution for attribute lookup; no metaclasses or dynamic `type()` construction; descriptor protocol still partial.
+- **Classes & object model**: C3 MRO + multiple inheritance + `super()` resolution for attribute lookup; no metaclasses or dynamic `type()` construction.
 - **Attributes**: instances use fixed struct fields with a dynamic instance-dict fallback; no `__getattr__`/`__setattr__` hooks and no user-defined `__slots__` beyond dataclass lowering.
 - **Dataclasses**: compile-time lowering for frozen/eq/repr/slots; no `default_factory`, `kw_only`, or `order`; runtime `dataclasses` module provides metadata only.
 - **Exceptions**: `try/except/else/finally` + `raise`/reraise support; still partial vs full BaseException semantics (see `docs/spec/0014_TYPE_COVERAGE_MATRIX.md`).
-- **Imports**: static module graph only; no dynamic import hooks or full package resolution; allowlisted stdlib modules (e.g., `math`, `random`, `time`, `json`, `re`, `collections`, `itertools`, `functools`, `operator`, `base64`, `pickle`, `unittest`, `site`, `sysconfig`) may load empty stubs for dependency tracking unless implemented.
-- **Stdlib**: partial shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pprint`, `string`, `typing`, `sys`, and `os`; import-only stubs for `collections.abc` and `importlib` (dynamic import hooks pending).
+- **Imports**: static module graph only; no dynamic import hooks or full package resolution.
+- **Stdlib**: partial shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pprint`, `string`, `typing`, `sys`, `os`, `asyncio`; import-only stubs for `collections.abc`, `importlib`, `importlib.util` (dynamic import hooks pending).
 - **Reflection**: `type`, `isinstance`, `issubclass`, and `object` are supported with single-inheritance base chains; no metaclasses or dynamic `type()` construction.
-- **Async iteration**: `anext` is await-only, and `__aiter__` must return an async iterator (awaitable `__aiter__` still pending).
-- **Asyncio**: shim covers `run`/`sleep` only (no loop/task APIs; sleep delay ignored).
+- **Async iteration**: `anext` returns an awaitable; `__aiter__` must return an async iterator (awaitable `__aiter__` still pending).
+- **Asyncio**: shim exposes `run`/`sleep` only (no loop/task APIs).
+- **Async with**: only a single context manager and simple name binding are supported.
 - **Matmul**: `@` is supported only for `molt_buffer`/`buffer2d`; other types raise `TypeError`.
-- **Numeric tower**: BigInt heap fallback for large ints; complex/decimal not implemented; missing int helpers (e.g., `bit_length`, `to_bytes`).
-- **Format protocol**: conversion flags + numeric mini-language for ints/floats supported; `__format__` fallback, named fields, and locale-aware grouping pending.
-- **memoryview**: partial buffer protocol with 1D `format`/`shape`/`strides`; no multidimensional shapes or advanced buffer exports.
+- **Numeric tower**: complex/decimal not implemented; missing int helpers (e.g., `bit_length`, `to_bytes`, `from_bytes`).
+- **Format protocol**: no `__format__` fallback or named fields; locale-aware grouping still pending.
+- **memoryview**: partial buffer protocol (no multidimensional shapes or advanced buffer exports).
 - **Offload demo**: `molt_accel` scaffolding exists and a `molt_worker` stdio shell returns a deterministic `list_items` response; compiled entrypoint dispatch, cancellation, and Django demo wiring are still pending.
 - **DB layer**: `molt-db` pool skeleton exists; async drivers and Postgres protocol integration are not implemented yet.
 
@@ -77,11 +84,13 @@ See `docs/spec/` for detailed architectural decisions.
 - Differential: `python tests/molt_diff.py <case.py>`
 - Bench setup (optional): `uv sync --group bench --python 3.12` (Numba requires <3.13)
 - Codon baseline (optional): install `codon` and run benches with an arm64 interpreter on Apple Silicon (e.g., `uv run --python /opt/homebrew/bin/python3.14 python3 tools/bench.py --json-out bench/results/bench.json`).
+- WASM bench: `uv run --python 3.14 python3 tools/bench_wasm.py --json-out bench/results/bench_wasm.json`.
 
 ## Performance & Comparisons
 
-After major features or optimizations, run `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json` and update this
-section with a short summary (date/host, top speedups, regressions, and any build failures).
+After major features or optimizations, run `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json` and
+`uv run --python 3.14 python3 tools/bench_wasm.py --json-out bench/results/bench_wasm.json`, then update this
+section with a short summary (date/host, top speedups, regressions, and any build failures) for both native and WASM.
 Install optional baselines with `uv sync --group bench --python 3.12` to enable Cython/Numba
 columns. PyPy baselines use `uv run --no-project --python pypy@3.11` to bypass
 `requires-python` and remain comparable.

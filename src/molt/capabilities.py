@@ -42,4 +42,6 @@ def require(capability: str) -> None:
 
 
 def format_caps(caps: Iterable[str]) -> str:
-    return ",".join(sorted(set(caps)))
+    items = list(set(caps))
+    items.sort()
+    return ",".join(items)

@@ -108,6 +108,7 @@ Key types:
 - each request has a deadline (default configurable)
 - client disconnect cancels request token
 - handler code can await `ctx.cancelled()` or check token
+- handler code may override the current token for sub-work (task-scoped override)
 - on cancel, server must stop reading body and abort writes safely
 
 ---

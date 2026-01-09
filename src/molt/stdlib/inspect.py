@@ -70,7 +70,9 @@ class Signature:
     def __init__(
         self, parameters: list[Parameter], return_annotation: Any = _empty
     ) -> None:
-        self._parameters = {param.name: param for param in parameters}
+        self._parameters: dict[str, Parameter] = {}
+        for param in parameters:
+            self._parameters[param.name] = param
         self._order = list(parameters)
         self.return_annotation = return_annotation
 
@@ -83,12 +85,21 @@ class Signature:
 
     def __str__(self) -> str:
         parts: list[str] = []
+        saw_posonly = False
+        posonly_done = False
         saw_kwonly = False
         for param in self._order:
+            if param.kind == Parameter.POSITIONAL_ONLY:
+                saw_posonly = True
+            elif saw_posonly and not posonly_done:
+                parts.append("/")
+                posonly_done = True
             if param.kind == Parameter.KEYWORD_ONLY and not saw_kwonly:
                 parts.append("*")
                 saw_kwonly = True
             parts.append(str(param))
+        if saw_posonly and not posonly_done:
+            parts.append("/")
         return f"({', '.join(parts)})"
 
 
@@ -155,16 +166,33 @@ def _signature_from_molt(obj: Any) -> Signature | None:
     arg_names = getattr(obj, "__molt_arg_names__", None)
     if arg_names is None:
         return None
-    defaults = getattr(obj, "__defaults__", None)
-    if defaults is None:
-        defaults = ()
+    posonly = getattr(obj, "__molt_posonly__", 0) or 0
+    kwonly_names = getattr(obj, "__molt_kwonly_names__", None) or ()
+    vararg = getattr(obj, "__molt_vararg__", None)
+    varkw = getattr(obj, "__molt_varkw__", None)
+    defaults = getattr(obj, "__defaults__", None) or ()
+    kwdefaults = getattr(obj, "__kwdefaults__", None)
+    if kwdefaults is None:
+        kwdefaults = {}
     params: list[Parameter] = []
     default_start = len(arg_names) - len(defaults)
     for idx, name in enumerate(arg_names):
         default = _empty
         if idx >= default_start:
             default = defaults[idx - default_start]
-        params.append(Parameter(name, default=default))
+        kind = (
+            Parameter.POSITIONAL_ONLY
+            if idx < posonly
+            else Parameter.POSITIONAL_OR_KEYWORD
+        )
+        params.append(Parameter(name, kind, default))
+    if vararg:
+        params.append(Parameter(vararg, Parameter.VAR_POSITIONAL, _empty))
+    for name in kwonly_names:
+        default = kwdefaults.get(name, _empty)
+        params.append(Parameter(name, Parameter.KEYWORD_ONLY, default))
+    if varkw:
+        params.append(Parameter(varkw, Parameter.VAR_KEYWORD, _empty))
     return Signature(params)
 
 
@@ -184,32 +212,33 @@ def _signature_from_code(obj: Any) -> Signature | None:
     total_pos = argcount
     pos_names = varnames[:total_pos]
     pos_defaults_start = total_pos - len(defaults)
-    for idx, name in enumerate(pos_names):
-        kind = (
-            Parameter.POSITIONAL_ONLY
-            if idx < posonly
-            else Parameter.POSITIONAL_OR_KEYWORD
-        )
+    idx = 0
+    for name in pos_names:
+        if idx < posonly:
+            kind = Parameter.POSITIONAL_ONLY
+        else:
+            kind = Parameter.POSITIONAL_OR_KEYWORD
         default = _empty
         if idx >= pos_defaults_start:
             default = defaults[idx - pos_defaults_start]
-        params.append(Parameter(name, kind=kind, default=default))
+        params.append(Parameter(name, kind, default))
+        idx += 1
 
     var_pos = bool(flags & 0x04)
     var_kw = bool(flags & 0x08)
     offset = total_pos
     if var_pos:
-        params.append(Parameter(varnames[offset], kind=Parameter.VAR_POSITIONAL))
+        params.append(Parameter(varnames[offset], Parameter.VAR_POSITIONAL))
         offset += 1
 
     kw_names = varnames[offset : offset + kwonly]
     for name in kw_names:
         default = kwdefaults.get(name, _empty)
-        params.append(Parameter(name, kind=Parameter.KEYWORD_ONLY, default=default))
+        params.append(Parameter(name, Parameter.KEYWORD_ONLY, default))
     offset += kwonly
 
     if var_kw:
-        params.append(Parameter(varnames[offset], kind=Parameter.VAR_KEYWORD))
+        params.append(Parameter(varnames[offset], Parameter.VAR_KEYWORD))
 
     return Signature(params)
 

@@ -13,12 +13,12 @@
 | int | arithmetic, comparisons, hash | Supported | P0 | TC0 | runtime |
 | float | arithmetic, comparisons, repr | Supported | P0 | TC0 | runtime |
 | complex | arithmetic, comparisons, repr | Planned | P1 | TC2 | runtime |
-| str | len, slice, find/split/replace/startswith/endswith/count/join, concat, repr | Partial | P0 | TC1 | runtime/frontend |
+| str | len, slice, find/split/replace/startswith/endswith/count/join/lower/upper, concat, repr | Partial | P0 | TC1 | runtime/frontend |
 | bytes | len, slice, find/split/replace, concat | Partial | P0 | TC1 | runtime |
 | bytearray | mutability, find/split/replace, concat | Partial | P0 | TC1 | runtime |
-| list | literals, index/slice, methods, iter | Partial | P0 | TC1 | runtime/frontend |
+| list | literals, index/slice, append/extend/insert/remove/pop/count/index/clear/copy/reverse, iter | Partial | P0 | TC1 | runtime/frontend |
 | tuple | literals, index/slice, hash, iter | Partial | P0 | TC1 | runtime/frontend |
-| dict | literals, index/set, views, iter | Partial | P0 | TC1 | runtime/frontend |
+| dict | literals, index/set, views, iter, basic methods (keys/values/items/get/pop/clear/copy/popitem/setdefault/update) | Partial | P0 | TC1 | runtime/frontend |
 | set | literals, constructor, add/remove/contains/iter/len, algebra (`|`, `&`, `-`, `^`) | Partial | P1 | TC2 | runtime/frontend |
 | frozenset | constructor, hash, contains/iter/len, algebra (`|`, `&`, `-`, `^`) | Partial | P1 | TC2 | runtime/frontend |
 | range | len/index/iter; step==0 error | Partial | P0 | TC1 | runtime/frontend |
@@ -55,7 +55,7 @@
 | dict | dict constructor | Planned | P1 | TC2 | frontend/runtime |
 | dir | attribute listing | Planned | P2 | TC3 | runtime |
 | divmod | quotient/remainder | Planned | P1 | TC2 | frontend/runtime |
-| enumerate | lazy iterator with index | Planned | P1 | TC2 | frontend/runtime |
+| enumerate | lazy iterator with index | Partial | P1 | TC2 | frontend/runtime |
 | eval | eval (restricted) | Planned | P2 | TC3 | stdlib |
 | exec | exec (restricted) | Planned | P2 | TC3 | stdlib |
 | filter | lazy iterator predicate | Planned | P1 | TC2 | frontend/runtime |
@@ -73,7 +73,7 @@
 | int | int constructor | Partial | P1 | TC2 | frontend/runtime |
 | isinstance | type check + tuple-of-types | Partial | P2 | TC3 | runtime |
 | issubclass | type check + tuple-of-types | Partial | P2 | TC3 | runtime |
-| iter | iterator construction | Planned | P1 | TC2 | frontend/runtime |
+| iter | iterator construction | Partial | P1 | TC2 | frontend/runtime |
 | len | container/sequence length | Partial | P0 | TC1 | frontend/runtime |
 | list | list constructor | Partial | P0 | TC1 | frontend/runtime |
 | locals | locals dict | Planned | P2 | TC3 | stdlib |
@@ -81,7 +81,7 @@
 | max | reduction with key/default | Planned | P1 | TC2 | frontend/runtime |
 | memoryview | memoryview constructor | Partial | P2 | TC3 | runtime |
 | min | reduction with key/default | Planned | P1 | TC2 | frontend/runtime |
-| next | iterator next with default | Planned | P1 | TC2 | frontend/runtime |
+| next | iterator next with default | Partial | P1 | TC2 | frontend/runtime |
 | object | base object constructor | Partial | P2 | TC3 | runtime |
 | oct | integer to octal string | Planned | P2 | TC3 | runtime |
 | open | file I/O (gated) | Planned | P2 | TC3 | stdlib |
@@ -118,16 +118,17 @@
   - TODO(type-coverage, owner:frontend, milestone:TC1): builtin constructors for `tuple`, `dict`, `bytes`, `bytearray`.
 - **TC2 (Mid):** set/frozenset, generators/coroutines, callable objects.
   - Implemented: generator protocol (`send`/`throw`/`close`, `yield from`) + closure slot load/store intrinsics across native + wasm backends.
-  - Implemented: async state machine (`await`, `asyncio.run`/`asyncio.sleep`) with pending sentinel across native + wasm harness.
+- Implemented: async state machine (`await`, `asyncio.run`/`asyncio.sleep`) with delay/result semantics and pending sentinel across native + wasm harness.
+  - Implemented: `async with` lowering for `__aenter__`/`__aexit__` (single manager, simple name binding).
   - TODO(type-coverage, owner:runtime, milestone:TC2): generator state objects + StopIteration.
   - TODO(type-coverage, owner:frontend, milestone:TC2): comprehension lowering to iterators.
-  - TODO(type-coverage, owner:frontend, milestone:TC2): builtin iterators (`iter`, `next`, `reversed`, `enumerate`, `zip`, `map`, `filter`).
+  - TODO(type-coverage, owner:frontend, milestone:TC2): builtin iterators (`iter`, `next`, `reversed`, `zip`, `map`, `filter`).
   - TODO(type-coverage, owner:frontend, milestone:TC2): builtin numeric ops (`abs`, `divmod`, `min`, `max`, `sum`).
   - TODO(type-coverage, owner:frontend, milestone:TC2): builtin conversions (`complex`, `str`, `bool`).
   - Implemented (partial): `round`/`trunc` lowering with `__round__`/`__trunc__` hooks.
   - Implemented (partial): `int` conversion from int/float/str/bytes + `__int__`/`__index__` hooks.
 - Implemented: `aiter`/`anext` lowering + async-for parity with `__aiter__`/`__anext__` support (sync-iter fallback retained for now).
-- TODO(type-coverage, owner:frontend, milestone:TC2): `anext` awaitable support outside `await` expressions.
+- Implemented: `anext` default handling outside `await` expressions.
 - **TC3 (Late):** memoryview, type/object, modules, descriptors.
   - TODO(type-coverage, owner:runtime, milestone:TC3): memoryview multidimensional shapes + advanced buffer exports.
   - TODO(type-coverage, owner:stdlib, milestone:TC3): import/module rules + module object model (`__import__`, package resolution, `sys.path` policy).

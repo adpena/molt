@@ -35,6 +35,11 @@ If a task is cancelled:
   - attempt rollback
   - if rollback fails, discard the connection from pool
 
+**Token model:** cancellation flows through request-scoped tokens by default.
+Handlers may override the current token for sub-operations (task-scoped
+override) and must check `molt.cancelled()` (or the explicit token) at safe
+points to abort promptly.
+
 ---
 
 ## 3. Nested transactions

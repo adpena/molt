@@ -46,11 +46,16 @@ _ENV_STORE: dict[str, str] = {}
 
 
 def _molt_env_get(key: str, default: Any = None) -> Any:
-    return (
-        _py_os.environ.get(key, default)
-        if _py_os is not None
-        else _ENV_STORE.get(key, default)
-    )
+    if _py_os is not None:
+        try:
+            env = getattr(_py_os, "environ", None)
+            if env is not None and hasattr(env, "get"):
+                return env.get(key, default)
+        except Exception:
+            pass
+    if key in _ENV_STORE:
+        return _ENV_STORE[key]
+    return default
 
 
 def _capabilities() -> set[str]:

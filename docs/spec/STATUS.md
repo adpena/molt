@@ -1,6 +1,6 @@
 # STATUS (Canonical)
 
-Last updated: 2026-01-07
+Last updated: 2026-01-09
 
 This document is the source of truth for Molt's current capabilities and
 limitations. Update this file whenever behavior or scope changes, and keep
@@ -9,7 +9,10 @@ README/ROADMAP in sync.
 ## Capabilities (Current)
 - Tier 0 structification for typed classes (fixed layout).
 - Native async/await lowering with state-machine poll loops.
+- Call argument binding for Molt-defined functions: positional/keyword/`*args`/`**kwargs` with pos-only/kw-only enforcement.
 - Async iteration: `__aiter__`/`__anext__`, `aiter`/`anext`, and `async for`.
+- Async context managers: `async with` lowering for `__aenter__`/`__aexit__`.
+- `anext(..., default)` awaitable creation outside `await`.
 - AOT compilation via Cranelift for native targets.
 - Differential testing vs CPython 3.12 for supported constructs.
 - Molt packages for Rust-backed deps using MsgPack/CBOR and Arrow IPC.
@@ -19,7 +22,10 @@ README/ROADMAP in sync.
 - Format mini-language for ints/floats + f-string conversion flags (`!r`, `!s`, `!a`).
 - memoryview exposes 1D `format`/`shape`/`strides`/`nbytes` for bytes/bytearray views.
 - `str.count` supports start/end slices with Unicode-aware offsets.
+- `str.lower`/`str.upper`, `list.clear`/`list.copy`/`list.reverse`, and `dict.setdefault`/`dict.update`.
+- Dict/set key hashability parity for common unhashable types (list/dict/set/bytearray/memoryview).
 - Importable `builtins` module binds supported builtins (see stdlib matrix).
+- `enumerate` builtin returns an iterator over `(index, value)` with optional `start`.
 
 ## Limitations (Current)
 - Classes/object model: C3 MRO + multiple inheritance + `super()` resolution for
@@ -30,12 +36,14 @@ README/ROADMAP in sync.
   `__setattr__` hooks yet.
 - Dataclasses: compile-time lowering for frozen/eq/repr/slots; no
   `default_factory`, `kw_only`, or `order`.
+- Call binding: allowlisted module functions still reject keyword/variadic calls; binder supports up to 8 arguments before fallback work is added.
 - Exceptions: `try/except/else/finally` + `raise`/reraise; partial BaseException
   semantics (see type coverage matrix).
 - Imports: static module graph only; no dynamic import hooks or full package
   resolution.
-- Asyncio: shim exposes `run`/`sleep` only; loop/task APIs and delay semantics
-  still pending.
+- Asyncio: shim exposes `run`/`sleep` only; loop/task APIs still pending and no
+  full event-loop/task surface.
+- Async with: only a single context manager and simple name binding are supported.
 - Matmul (`@`): supported only for `molt_buffer`/`buffer2d`; other types raise
   `TypeError` (TODO(type-coverage, owner:runtime, milestone:TC2): consider
   `__matmul__`/`__rmatmul__` fallback for custom types).
@@ -45,11 +53,19 @@ README/ROADMAP in sync.
   still pending.
 - memoryview: partial buffer protocol (no multidimensional shapes or advanced
   buffer exports).
+- Cancellation: cooperative checks only; automatic cancellation injection into
+  awaits and I/O still pending.
 
 ## Async + Concurrency Notes
 - Awaitables that return pending now resume at a labeled state to avoid
   re-running pre-await side effects.
+- Pending await resume targets are encoded in the state slot (negative, bitwise
+  NOT of the resume op index) and decoded before dispatch.
 - Channel send/recv yield on pending and resume at labeled states.
+- `asyncio.sleep` honors delay/result and avoids busy-spin via scheduler sleep
+  registration.
+- Cancellation tokens are available with request-scoped defaults and task-scoped
+  overrides; cancellation is cooperative via `molt.cancelled()` checks.
 
 ## Stdlib Coverage
 - Partial shims: `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`,

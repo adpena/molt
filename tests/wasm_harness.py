@@ -110,6 +110,11 @@ const chanQueues = new Map();
 const chanCaps = new Map();
 const moduleCache = new Map();
 const sleepPending = new Set();
+const cancelTokens = new Map();
+const taskTokens = new Map();
+let nextCancelTokenId = 2n;
+let currentTokenId = 1n;
+let currentTaskPtr = 0n;
 let nextChanId = 1n;
 let heapPtr = 1 << 20;
 const HEADER_SIZE = 32;
@@ -142,6 +147,82 @@ const normalizePtrBits = (val) => {
   return boxPtrAddr(val);
 };
 const getObj = (val) => heap.get(val & POINTER_MASK);
+const ensureRootToken = () => {
+  if (!cancelTokens.has(1n)) {
+    cancelTokens.set(1n, { parent: 0n, cancelled: false, refs: 1n });
+  }
+};
+const tokenIdFromBits = (bits) => {
+  if (isTag(bits, TAG_NONE)) return 0n;
+  if (!isTag(bits, TAG_INT)) {
+    throw new Error('TypeError: cancel token id must be int');
+  }
+  const id = unboxInt(bits);
+  if (id < 0n) {
+    throw new Error('TypeError: cancel token id must be non-negative');
+  }
+  return id;
+};
+const retainToken = (id) => {
+  if (id <= 1n) return;
+  const entry = cancelTokens.get(id);
+  if (entry) entry.refs += 1n;
+};
+const releaseToken = (id) => {
+  if (id <= 1n) return;
+  const entry = cancelTokens.get(id);
+  if (!entry) return;
+  entry.refs -= 1n;
+  if (entry.refs <= 0n) {
+    cancelTokens.delete(id);
+  }
+};
+const registerTaskToken = (taskPtr, tokenId) => {
+  const key = taskPtr.toString();
+  const prev = taskTokens.get(key);
+  if (prev !== undefined) {
+    releaseToken(prev);
+  }
+  taskTokens.set(key, tokenId);
+  retainToken(tokenId);
+};
+const ensureTaskToken = (taskPtr) => {
+  const key = taskPtr.toString();
+  const existing = taskTokens.get(key);
+  if (existing !== undefined) return existing;
+  registerTaskToken(taskPtr, currentTokenId);
+  return currentTokenId;
+};
+const clearTaskToken = (taskPtr) => {
+  const key = taskPtr.toString();
+  const existing = taskTokens.get(key);
+  if (existing !== undefined) {
+    releaseToken(existing);
+    taskTokens.delete(key);
+  }
+};
+const tokenIsCancelled = (id) => {
+  ensureRootToken();
+  let current = id;
+  let depth = 0;
+  while (current !== 0n && depth < 64) {
+    const entry = cancelTokens.get(current);
+    if (!entry) return false;
+    if (entry.cancelled) return true;
+    current = entry.parent;
+    depth += 1;
+  }
+  return false;
+};
+const setCurrentTokenId = (id) => {
+  ensureRootToken();
+  const next = id === 0n ? 1n : id;
+  retainToken(next);
+  const prev = currentTokenId;
+  currentTokenId = next;
+  releaseToken(prev);
+  return prev;
+};
 const getFunction = (val) => {
   const obj = getObj(val);
   if (obj && obj.type === 'function') return obj;
@@ -152,6 +233,7 @@ const getBoundMethod = (val) => {
   if (obj && obj.type === 'bound_method') return obj;
   return null;
 };
+const isBoundMethod = (val) => getBoundMethod(val) !== null;
 const getClass = (val) => {
   const obj = getObj(val);
   if (obj && obj.type === 'class') return obj;
@@ -311,6 +393,11 @@ const getIter = (val) => {
   if (!obj || obj.type !== 'iter') return null;
   return obj;
 };
+const getEnumerate = (val) => {
+  const obj = getObj(val);
+  if (!obj || obj.type !== 'enumerate') return null;
+  return obj;
+};
 const getDict = (val) => {
   const obj = getObj(val);
   if (!obj || obj.type !== 'dict') return null;
@@ -341,8 +428,69 @@ const getBytearray = (val) => {
   if (!obj || obj.type !== 'bytearray') return null;
   return obj;
 };
+const getCallArgs = (val) => {
+  const obj = getObj(val);
+  if (!obj || obj.type !== 'callargs') return null;
+  return obj;
+};
 const listFromArray = (items) => boxPtr({ type: 'list', items });
 const tupleFromArray = (items) => boxPtr({ type: 'tuple', items });
+const iterNextInternal = (val) => {
+  if (isGenerator(val)) {
+    return generatorSend(val, boxNone());
+  }
+  const iter = getIter(val);
+  if (!iter) return boxNone();
+  const target = iter.target;
+  const list = getList(target);
+  const tup = getTuple(target);
+  const setLike = getSetLike(target);
+  const items = list ? list.items : tup ? tup.items : setLike ? [...setLike.items] : null;
+  if (!items) return boxNone();
+  if (iter.idx >= items.length) {
+    return tupleFromArray([boxNone(), boxBool(true)]);
+  }
+  const value = items[iter.idx];
+  iter.idx += 1;
+  return tupleFromArray([value, boxBool(false)]);
+};
+const dictKey = (bits) => {
+  if (isTag(bits, TAG_NONE)) return 'n:None';
+  if (isTag(bits, TAG_INT) || isTag(bits, TAG_BOOL)) {
+    return `i:${unboxIntLike(bits)}`;
+  }
+  if (isFloat(bits)) return `f:${bits.toString()}`;
+  const str = getStrObj(bits);
+  if (str !== null) return `s:${str}`;
+  return `p:${bits.toString()}`;
+};
+const dictGetIndex = (dict, keyBits) => dict.lookup.get(dictKey(keyBits));
+const dictGetValue = (dict, keyBits) => {
+  const idx = dictGetIndex(dict, keyBits);
+  if (idx === undefined) return null;
+  return dict.entries[idx][1];
+};
+const dictSetValue = (dict, keyBits, valBits) => {
+  const key = dictKey(keyBits);
+  const idx = dict.lookup.get(key);
+  if (idx === undefined) {
+    dict.lookup.set(key, dict.entries.length);
+    dict.entries.push([keyBits, valBits]);
+  } else {
+    dict.entries[idx][1] = valBits;
+  }
+};
+const dictDelete = (dict, keyBits) => {
+  const key = dictKey(keyBits);
+  const idx = dict.lookup.get(key);
+  if (idx === undefined) return false;
+  dict.entries.splice(idx, 1);
+  dict.lookup = new Map();
+  for (let i = 0; i < dict.entries.length; i++) {
+    dict.lookup.set(dictKey(dict.entries[i][0]), i);
+  }
+  return true;
+};
 const setFromArray = (items) => {
   const set = new Set();
   for (const item of items) {
@@ -586,6 +734,37 @@ const lookupAttr = (objBits, name) => {
   }
   return undefined;
 };
+const lookupSpecialAttr = (objBits, name) => {
+  const exc = getException(objBits);
+  if (exc) {
+    return lookupExceptionAttr(exc, name);
+  }
+  const superObj = getObj(objBits);
+  if (superObj && superObj.type === 'super') {
+    const startBits = superObj.startBits;
+    const targetBits = superObj.objBits;
+    const targetClass = getClass(targetBits);
+    const objTypeBits = targetClass ? targetBits : typeOfBits(targetBits);
+    const instanceBits = targetClass ? null : targetBits;
+    const val = lookupClassAttr(objTypeBits, name, instanceBits, startBits);
+    if (val !== undefined) return val;
+    return undefined;
+  }
+  const cls = getClass(objBits);
+  if (cls) {
+    const val = lookupClassAttr(objBits, name);
+    if (val !== undefined) return val;
+  }
+  if (isPtr(objBits) && !heap.has(objBits & POINTER_MASK)) {
+    const key = ptrAddr(objBits);
+    const clsBits = instanceClasses.get(key);
+    if (clsBits !== undefined) {
+      const val = lookupClassAttr(clsBits, name, objBits);
+      if (val !== undefined) return val;
+    }
+  }
+  return undefined;
+};
 const isSubclass = (subBits, classBits) => {
   const mro = classMroList(subBits);
   return mro.includes(classBits);
@@ -617,6 +796,11 @@ const typeOfBits = (objBits) => {
 };
 const getAttrValue = (objBits, name) => {
   const val = lookupAttr(objBits, name);
+  if (val === undefined) return boxNone();
+  return val;
+};
+const getAttrSpecialValue = (objBits, name) => {
+  const val = lookupSpecialAttr(objBits, name);
   if (val === undefined) return boxNone();
   return val;
 };
@@ -1035,6 +1219,68 @@ BASE_IMPORTS = """\
     }
     return boxNone();
   },
+  anext_default_poll: (taskPtr) => {
+    if (taskPtr === 0n || !memory || !table) return boxNone();
+    const addr = ptrAddr(taskPtr);
+    const view = new DataView(memory.buffer);
+    const state = Number(view.getBigInt64(addr - 16, true));
+    const iterBits = view.getBigInt64(addr + 0, true);
+    const defaultBits = view.getBigInt64(addr + 8, true);
+    if (state === 0) {
+    const attr = lookupAttr(normalizePtrBits(iterBits), '__anext__');
+      if (attr === undefined) {
+        throw new Error('TypeError: object is not an async iterator');
+      }
+      const awaitBits = callCallable0(attr);
+      view.setBigInt64(addr + 16, awaitBits, true);
+      view.setBigInt64(addr - 16, 1n, true);
+    }
+    const awaitBits = view.getBigInt64(addr + 16, true);
+    const awaitPtrBits = normalizePtrBits(awaitBits);
+    if (!isPtr(awaitPtrBits) || heap.has(awaitPtrBits & POINTER_MASK)) return boxNone();
+    const awaitAddr = ptrAddr(awaitPtrBits);
+    const pollIdx = view.getUint32(awaitAddr - 24, true);
+    const poll = table.get(pollIdx);
+    if (!poll) return boxNone();
+    const res = poll(awaitBits);
+    if (isPending(res)) return res;
+    if (exceptionPending() !== 0n) {
+      const excBits = exceptionLast();
+      const kindBits = exceptionKind(excBits);
+      if (getStr(kindBits) === 'StopAsyncIteration') {
+        exceptionClear();
+        return defaultBits;
+      }
+    }
+    return res;
+  },
+  future_poll_fn: (futureBits) => {
+    const ptrBits = normalizePtrBits(futureBits);
+    if (!isPtr(ptrBits) || heap.has(ptrBits & POINTER_MASK) || !memory || !table) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        boxPtr({ type: 'str', value: 'object is not awaitable' }),
+      );
+      raiseException(exc);
+      return -1n;
+    }
+    const addr = ptrAddr(ptrBits);
+    const view = new DataView(memory.buffer);
+    const pollIdx = view.getUint32(addr - 24, true);
+    const poll = table.get(pollIdx);
+    if (!poll) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        boxPtr({ type: 'str', value: 'object is not awaitable' }),
+      );
+      raiseException(exc);
+      return -1n;
+    }
+    return BigInt(pollIdx);
+  },
+  sleep_register: (taskPtr, _futurePtr) => {
+    return 0n;
+  },
   block_on: (taskPtr) => {
     if (!memory || !table) return 0n;
     const addr = ptrAddr(taskPtr);
@@ -1042,11 +1288,65 @@ BASE_IMPORTS = """\
     const pollIdx = view.getUint32(addr - 24, true);
     const poll = table.get(pollIdx);
     if (!poll) return 0n;
+    const prevTask = currentTaskPtr;
+    const prevToken = currentTokenId;
+    currentTaskPtr = taskPtr;
+    const token = ensureTaskToken(taskPtr);
+    setCurrentTokenId(token);
     while (true) {
       const res = poll(taskPtr);
       if (isPending(res)) continue;
+      setCurrentTokenId(prevToken);
+      currentTaskPtr = prevTask;
+      clearTaskToken(taskPtr);
       return res;
     }
+  },
+  cancel_token_new: (parentBits) => {
+    ensureRootToken();
+    const parentId = tokenIdFromBits(parentBits);
+    const resolved = parentId === 0n ? currentTokenId : parentId;
+    const id = nextCancelTokenId++;
+    cancelTokens.set(id, { parent: resolved, cancelled: false, refs: 1n });
+    return boxInt(id);
+  },
+  cancel_token_clone: (tokenBits) => {
+    const id = tokenIdFromBits(tokenBits);
+    retainToken(id);
+    return boxNone();
+  },
+  cancel_token_drop: (tokenBits) => {
+    const id = tokenIdFromBits(tokenBits);
+    releaseToken(id);
+    return boxNone();
+  },
+  cancel_token_cancel: (tokenBits) => {
+    const id = tokenIdFromBits(tokenBits);
+    const entry = cancelTokens.get(id);
+    if (entry) entry.cancelled = true;
+    return boxNone();
+  },
+  cancel_token_is_cancelled: (tokenBits) => {
+    const id = tokenIdFromBits(tokenBits);
+    return boxBool(tokenIsCancelled(id));
+  },
+  cancel_token_set_current: (tokenBits) => {
+    const id = tokenIdFromBits(tokenBits);
+    const prev = setCurrentTokenId(id);
+    if (currentTaskPtr !== 0n) {
+      registerTaskToken(currentTaskPtr, currentTokenId);
+    }
+    return boxInt(prev);
+  },
+  cancel_token_get_current: () => {
+    ensureRootToken();
+    return boxInt(currentTokenId);
+  },
+  cancelled: () => boxBool(tokenIsCancelled(currentTokenId)),
+  cancel_current: () => {
+    const entry = cancelTokens.get(currentTokenId);
+    if (entry) entry.cancelled = true;
+    return boxNone();
   },
   chan_new: (capacity) => {
     const id = nextChanId++;
@@ -1784,6 +2084,8 @@ BASE_IMPORTS = """\
     getAttrValue(normalizePtrBits(obj), readUtf8(namePtr, nameLen)),
   get_attr_object: (obj, namePtr, nameLen) =>
     getAttrValue(obj, readUtf8(namePtr, nameLen)),
+  get_attr_special: (obj, namePtr, nameLen) =>
+    getAttrSpecialValue(obj, readUtf8(namePtr, nameLen)),
   set_attr_ptr: (obj, namePtr, nameLen, val) =>
     setAttrValue(normalizePtrBits(obj), readUtf8(namePtr, nameLen), val),
   set_attr_generic: (obj, namePtr, nameLen, val) =>
@@ -2260,13 +2562,93 @@ BASE_IMPORTS = """\
     }
     return boxNone();
   },
-  list_append: () => boxNone(),
-  list_pop: () => boxNone(),
-  list_extend: () => boxNone(),
-  list_insert: () => boxNone(),
-  list_remove: () => boxNone(),
-  list_count: () => boxNone(),
-  list_index: () => boxNone(),
+  list_append: (listBits, valBits) => {
+    const list = getList(listBits);
+    if (!list) return boxNone();
+    list.items.push(valBits);
+    return boxNone();
+  },
+  list_pop: (listBits, indexBits) => {
+    const list = getList(listBits);
+    if (!list) return boxNone();
+    let idx;
+    if (isNone(indexBits)) {
+      idx = list.items.length - 1;
+    } else if (isIntLike(indexBits)) {
+      idx = Number(unboxIntLike(indexBits));
+    } else {
+      return boxNone();
+    }
+    if (idx < 0) idx += list.items.length;
+    if (idx < 0 || idx >= list.items.length) return boxNone();
+    return list.items.splice(idx, 1)[0] ?? boxNone();
+  },
+  list_extend: (listBits, otherBits) => {
+    const list = getList(listBits);
+    if (!list) return boxNone();
+    const otherList = getList(otherBits);
+    const otherTuple = getTuple(otherBits);
+    if (otherList) {
+      list.items.push(...otherList.items);
+      return boxNone();
+    }
+    if (otherTuple) {
+      list.items.push(...otherTuple.items);
+      return boxNone();
+    }
+    return boxNone();
+  },
+  list_insert: (listBits, indexBits, valBits) => {
+    const list = getList(listBits);
+    if (!list) return boxNone();
+    if (!isIntLike(indexBits)) return boxNone();
+    let idx = Number(unboxIntLike(indexBits));
+    if (idx < 0) idx += list.items.length;
+    if (idx < 0) idx = 0;
+    if (idx > list.items.length) idx = list.items.length;
+    list.items.splice(idx, 0, valBits);
+    return boxNone();
+  },
+  list_remove: (listBits, valBits) => {
+    const list = getList(listBits);
+    if (!list) return boxNone();
+    const idx = list.items.findIndex((item) => item === valBits);
+    if (idx >= 0) list.items.splice(idx, 1);
+    return boxNone();
+  },
+  list_clear: (listBits) => {
+    const list = getList(listBits);
+    if (!list) return boxNone();
+    list.items.length = 0;
+    return boxNone();
+  },
+  list_copy: (listBits) => {
+    const list = getList(listBits);
+    if (!list) return boxNone();
+    return listFromArray([...list.items]);
+  },
+  list_reverse: (listBits) => {
+    const list = getList(listBits);
+    if (!list) return boxNone();
+    list.items.reverse();
+    return boxNone();
+  },
+  list_count: (listBits, valBits) => {
+    const list = getList(listBits);
+    if (!list) return boxNone();
+    let count = 0;
+    for (const item of list.items) {
+      if (item === valBits) count += 1;
+    }
+    return boxInt(count);
+  },
+  list_index: (listBits, valBits) => {
+    const list = getList(listBits);
+    if (!list) return boxNone();
+    const idx = list.items.findIndex((item) => item === valBits);
+    if (idx < 0) return boxNone();
+    return boxInt(idx);
+  },
   tuple_from_list: (val) => {
     const list = getList(val);
     if (list) return tupleFromArray([...list.items]);
@@ -2274,13 +2656,74 @@ BASE_IMPORTS = """\
     if (tup) return val;
     return boxNone();
   },
-  dict_new: () => boxNone(),
-  dict_set: () => boxNone(),
-  dict_get: () => boxNone(),
-  dict_pop: () => boxNone(),
-  dict_keys: () => boxNone(),
-  dict_values: () => boxNone(),
-  dict_items: () => boxNone(),
+  dict_new: () => boxPtr({ type: 'dict', entries: [], lookup: new Map() }),
+  dict_from_obj: (val) => {
+    const dict = getDict(val);
+    if (dict) return val;
+    return boxNone();
+  },
+  dict_set: (dictBits, keyBits, valBits) => {
+    const dict = getDict(dictBits);
+    if (!dict) return boxNone();
+    dictSetValue(dict, keyBits, valBits);
+    return dictBits;
+  },
+  dict_get: (dictBits, keyBits, defaultBits) => {
+    const dict = getDict(dictBits);
+    if (!dict) return boxNone();
+    const val = dictGetValue(dict, keyBits);
+    return val === null ? defaultBits : val;
+  },
+  dict_pop: (dictBits, keyBits, defaultBits, hasDefaultBits) => {
+    const dict = getDict(dictBits);
+    if (!dict) return boxNone();
+    const val = dictGetValue(dict, keyBits);
+    if (val === null) {
+      const hasDefault = isTruthyBits(hasDefaultBits);
+      if (hasDefault) return defaultBits;
+      throw new Error('KeyError: dict.pop missing key');
+    }
+    dictDelete(dict, keyBits);
+    return val;
+  },
+  dict_setdefault: (dictBits, keyBits, defaultBits) => {
+    const dict = getDict(dictBits);
+    if (!dict) return boxNone();
+    const val = dictGetValue(dict, keyBits);
+    if (val === null) {
+      dictSetValue(dict, keyBits, defaultBits);
+      return defaultBits;
+    }
+    return val;
+  },
+  dict_update: (dictBits, otherBits) => {
+    const dict = getDict(dictBits);
+    if (!dict) return boxNone();
+    const other = getDict(otherBits);
+    if (!other) return boxNone();
+    for (const [keyBits, valBits] of other.entries) {
+      dictSetValue(dict, keyBits, valBits);
+    }
+    return boxNone();
+  },
+  dict_keys: (dictBits) => {
+    const dict = getDict(dictBits);
+    if (!dict) return boxNone();
+    const keys = dict.entries.map((entry) => entry[0]);
+    return listFromArray(keys);
+  },
+  dict_values: (dictBits) => {
+    const dict = getDict(dictBits);
+    if (!dict) return boxNone();
+    const values = dict.entries.map((entry) => entry[1]);
+    return listFromArray(values);
+  },
+  dict_items: (dictBits) => {
+    const dict = getDict(dictBits);
+    if (!dict) return boxNone();
+    const items = dict.entries.map((entry) => tupleFromArray([entry[0], entry[1]]));
+    return listFromArray(items);
+  },
   set_new: () => boxPtr({ type: 'set', items: new Set() }),
   set_add: (setBits, keyBits) => {
     const set = getSet(setBits);
@@ -2382,6 +2825,10 @@ BASE_IMPORTS = """\
     if (isGenerator(val)) {
       return val;
     }
+    const enumObj = getEnumerate(val);
+    if (enumObj) {
+      return val;
+    }
     const list = getList(val);
     if (list) {
       return boxPtr({ type: 'iter', target: val, idx: 0 });
@@ -2396,34 +2843,57 @@ BASE_IMPORTS = """\
     }
     return boxNone();
   },
+  enumerate: (iterable, startBits, hasStartBits) => {
+    let start = 0n;
+    if (isTruthyBits(hasStartBits)) {
+      if (isIntLike(startBits)) {
+        start = unboxIntLike(startBits);
+      } else {
+        const indexAttr = lookupAttr(startBits, '__index__');
+        if (indexAttr !== undefined) {
+          const res = callCallable0(indexAttr);
+          if (!isIntLike(res)) {
+            throw new Error(
+              `TypeError: __index__ returned non-int (type ${typeName(res)})`,
+            );
+          }
+          start = unboxIntLike(res);
+        } else {
+          throw new Error('TypeError: enumerate() start must be an integer');
+        }
+      }
+    }
+    const iterBits = isGenerator(iterable)
+      ? iterable
+      : boxPtr({ type: 'iter', target: iterable, idx: 0 });
+    return boxPtr({ type: 'enumerate', iterBits, index: start });
+  },
   aiter: (val) => {
-    const attr = lookupAttr(val, '__aiter__');
+    const attr = lookupAttr(normalizePtrBits(val), '__aiter__');
     if (attr === undefined) {
       throw new Error('TypeError: object is not async iterable');
     }
     return callCallable0(attr);
   },
   iter_next: (val) => {
-    if (isGenerator(val)) {
-      return generatorSend(val, boxNone());
+    const enumObj = getEnumerate(val);
+    if (enumObj) {
+      const next = iterNextInternal(enumObj.iterBits);
+      const nextTuple = getTuple(next);
+      if (!nextTuple || nextTuple.items.length < 2) return next;
+      const done = nextTuple.items[1];
+      if (isTag(done, TAG_BOOL) && (done & 1n) === 1n) {
+        return next;
+      }
+      const indexBits = boxInt(enumObj.index);
+      enumObj.index += 1n;
+      const pair = tupleFromArray([indexBits, nextTuple.items[0]]);
+      return tupleFromArray([pair, boxBool(false)]);
     }
-    const iter = getIter(val);
-    if (!iter) return boxNone();
-    const target = iter.target;
-    const list = getList(target);
-    const tup = getTuple(target);
-    const setLike = getSetLike(target);
-    const items = list ? list.items : tup ? tup.items : setLike ? [...setLike.items] : null;
-    if (!items) return boxNone();
-    if (iter.idx >= items.length) {
-      return tupleFromArray([boxNone(), boxBool(true)]);
-    }
-    const value = items[iter.idx];
-    iter.idx += 1;
-    return tupleFromArray([value, boxBool(false)]);
+    return iterNextInternal(val);
   },
   anext: (val) => {
-    const attr = lookupAttr(val, '__anext__');
+    const attr = lookupAttr(normalizePtrBits(val), '__anext__');
     if (attr === undefined) {
       throw new Error('TypeError: object is not an async iterator');
     }
@@ -2433,6 +2903,245 @@ BASE_IMPORTS = """\
   generator_throw: (gen, exc) => generatorThrow(gen, exc),
   generator_close: (gen) => generatorClose(gen),
   is_generator: (val) => boxBool(isGenerator(val)),
+  is_bound_method: (val) => boxBool(isBoundMethod(val)),
+  function_default_kind: (val) => {
+    const func = getFunction(val);
+    return func && typeof func.defaultKind === 'number'
+      ? BigInt(func.defaultKind)
+      : 0n;
+  },
+  call_arity_error: (expected, got) => {
+    throw new Error(`TypeError: call arity mismatch (expected ${expected}, got ${got})`);
+  },
+  callargs_new: (_posCap, _kwCap) =>
+    boxPtr({ type: 'callargs', pos: [], kwNames: [], kwValues: [] }),
+  callargs_push_pos: (builder, val) => {
+    const args = getCallArgs(builder);
+    if (!args) return boxNone();
+    args.pos.push(val);
+    return boxNone();
+  },
+  callargs_push_kw: (builder, nameBits, valBits) => {
+    const args = getCallArgs(builder);
+    if (!args) return boxNone();
+    const name = getStrObj(nameBits);
+    if (name === null) {
+      throw new Error('TypeError: keywords must be strings');
+    }
+    for (const existing of args.kwNames) {
+      const existingName = getStrObj(existing);
+      if (existingName === name) {
+        throw new Error(`TypeError: got multiple values for keyword argument '${name}'`);
+      }
+    }
+    args.kwNames.push(nameBits);
+    args.kwValues.push(valBits);
+    return boxNone();
+  },
+  callargs_expand_star: (builder, iterable) => {
+    const args = getCallArgs(builder);
+    if (!args) return boxNone();
+    let iterBits = boxNone();
+    if (isGenerator(iterable)) {
+      iterBits = iterable;
+    } else if (getEnumerate(iterable)) {
+      iterBits = iterable;
+    } else if (getList(iterable) || getTuple(iterable) || getSetLike(iterable)) {
+      iterBits = boxPtr({ type: 'iter', target: iterable, idx: 0 });
+    }
+    if (isNone(iterBits)) {
+      throw new Error('TypeError: object is not iterable');
+    }
+    while (true) {
+      const pair = iterNextInternal(iterBits);
+      const tuple = getTuple(pair);
+      if (!tuple || tuple.items.length < 2) return boxNone();
+      const done = tuple.items[1];
+      if (isTruthyBits(done)) break;
+      args.pos.push(tuple.items[0]);
+    }
+    return boxNone();
+  },
+  callargs_expand_kwstar: (builder, mapping) => {
+    const args = getCallArgs(builder);
+    if (!args) return boxNone();
+    const dict = getDict(mapping);
+    if (!dict) {
+      throw new Error('TypeError: argument after ** must be a dict');
+    }
+    for (const entry of dict.entries) {
+      const nameBits = entry[0];
+      const valBits = entry[1];
+      const name = getStrObj(nameBits);
+      if (name === null) {
+        throw new Error('TypeError: keywords must be strings');
+      }
+      for (const existing of args.kwNames) {
+        const existingName = getStrObj(existing);
+        if (existingName === name) {
+          throw new Error(`TypeError: got multiple values for keyword argument '${name}'`);
+        }
+      }
+      args.kwNames.push(nameBits);
+      args.kwValues.push(valBits);
+    }
+    return boxNone();
+  },
+  call_bind: (callBits, builderBits) => {
+    const args = getCallArgs(builderBits);
+    if (!args) return boxNone();
+    let funcBits = callBits;
+    let selfBits = null;
+    const bound = getBoundMethod(callBits);
+    if (bound) {
+      funcBits = bound.func;
+      selfBits = bound.self;
+    } else if (!getFunction(callBits)) {
+      throw new Error('TypeError: object is not callable');
+    }
+    const func = getFunction(funcBits);
+    if (!func) {
+      throw new Error('TypeError: call expects function object');
+    }
+    const attrs = func.attrs || new Map();
+    const argNamesBits = attrs.get('__molt_arg_names__');
+    const argNamesTuple = getTuple(argNamesBits);
+    if (!argNamesTuple) {
+      throw new Error('TypeError: call expects function object');
+    }
+    const argNameBits = [...argNamesTuple.items];
+    const argNames = argNameBits.map((bit) => {
+      const name = getStrObj(bit);
+      if (name === null) {
+        throw new Error('TypeError: call expects function object');
+      }
+      return name;
+    });
+    const posonlyBits = attrs.get('__molt_posonly__') ?? boxInt(0);
+    const posonly = Number(unboxIntLike(posonlyBits));
+    const kwonlyBits = attrs.get('__molt_kwonly_names__') ?? boxNone();
+    const kwonlyTuple = isNone(kwonlyBits) ? null : getTuple(kwonlyBits);
+    const kwonlyNameBits = kwonlyTuple ? [...kwonlyTuple.items] : [];
+    const kwonlyNames = kwonlyNameBits.map((bit) => {
+      const name = getStrObj(bit);
+      if (name === null) {
+        throw new Error('TypeError: call expects function object');
+      }
+      return name;
+    });
+    const varargBits = attrs.get('__molt_vararg__') ?? boxNone();
+    const varkwBits = attrs.get('__molt_varkw__') ?? boxNone();
+    const hasVararg = !isNone(varargBits);
+    const hasVarkw = !isNone(varkwBits);
+    const defaultsBits = attrs.get('__defaults__') ?? boxNone();
+    const defaultsTuple = isNone(defaultsBits) ? null : getTuple(defaultsBits);
+    const defaults = defaultsTuple ? [...defaultsTuple.items] : [];
+    const kwdefaultsBits = attrs.get('__kwdefaults__') ?? boxNone();
+    const kwdefaults = isNone(kwdefaultsBits) ? null : getDict(kwdefaultsBits);
+    const totalPos = argNames.length;
+    const kwonlyStart = totalPos + (hasVararg ? 1 : 0);
+    const totalParams = kwonlyStart + kwonlyNames.length + (hasVarkw ? 1 : 0);
+    const slots = new Array(totalParams).fill(undefined);
+    const extraPos = [];
+    const posArgs = [...args.pos];
+    if (selfBits !== null) {
+      posArgs.unshift(selfBits);
+    }
+    for (let i = 0; i < posArgs.length; i++) {
+      if (i < totalPos) {
+        slots[i] = posArgs[i];
+      } else if (hasVararg) {
+        extraPos.push(posArgs[i]);
+      } else {
+        throw new Error('TypeError: too many positional arguments');
+      }
+    }
+    const extraKwPairs = [];
+    for (let i = 0; i < args.kwNames.length; i++) {
+      const nameBits = args.kwNames[i];
+      const valBits = args.kwValues[i];
+      const name = getStrObj(nameBits);
+      if (name === null) {
+        throw new Error('TypeError: keywords must be strings');
+      }
+      let matched = false;
+      const posIdx = argNames.indexOf(name);
+      if (posIdx !== -1) {
+        if (posIdx < posonly) {
+          throw new Error(`TypeError: got positional-only argument '${name}' passed as keyword`);
+        }
+        if (slots[posIdx] !== undefined) {
+          throw new Error(`TypeError: got multiple values for argument '${name}'`);
+        }
+        slots[posIdx] = valBits;
+        matched = true;
+      }
+      if (!matched) {
+        const kwIdx = kwonlyNames.indexOf(name);
+        if (kwIdx !== -1) {
+          const slotIdx = kwonlyStart + kwIdx;
+          if (slots[slotIdx] !== undefined) {
+            throw new Error(`TypeError: got multiple values for argument '${name}'`);
+          }
+          slots[slotIdx] = valBits;
+          matched = true;
+        }
+      }
+      if (!matched) {
+        if (hasVarkw) {
+          extraKwPairs.push([nameBits, valBits]);
+        } else {
+          throw new Error(`TypeError: got an unexpected keyword '${name}'`);
+        }
+      }
+    }
+    const defaultStart = Math.max(0, totalPos - defaults.length);
+    for (let i = 0; i < totalPos; i++) {
+      if (slots[i] !== undefined) continue;
+      if (i >= defaultStart) {
+        slots[i] = defaults[i - defaultStart];
+      } else {
+        throw new Error(`TypeError: missing required argument '${argNames[i]}'`);
+      }
+    }
+    for (let i = 0; i < kwonlyNames.length; i++) {
+      const slotIdx = kwonlyStart + i;
+      if (slots[slotIdx] !== undefined) continue;
+      let val = null;
+      if (kwdefaults) {
+        val = dictGetValue(kwdefaults, kwonlyNameBits[i]);
+      }
+      if (val !== null) {
+        slots[slotIdx] = val;
+      } else {
+        throw new Error(
+          `TypeError: missing required keyword-only argument '${kwonlyNames[i]}'`,
+        );
+      }
+    }
+    if (hasVararg) {
+      slots[totalPos] = tupleFromArray(extraPos);
+    }
+    if (hasVarkw) {
+      const dict = { type: 'dict', entries: [], lookup: new Map() };
+      for (const [nameBits, valBits] of extraKwPairs) {
+        dictSetValue(dict, nameBits, valBits);
+      }
+      slots[kwonlyStart + kwonlyNames.length] = boxPtr(dict);
+    }
+    const finalArgs = slots.map((val) => val ?? boxNone());
+    if (func.arity !== undefined && func.arity !== finalArgs.length) {
+      throw new Error(
+        `TypeError: call arity mismatch (expected ${func.arity}, got ${finalArgs.length})`,
+      );
+    }
+    return callFunctionBits(funcBits, finalArgs);
+  },
+  is_callable: (val) => {
+    if (getFunction(val) || getBoundMethod(val)) return boxBool(true);
+    const attr = lookupAttr(normalizePtrBits(val), '__call__');
+    return boxBool(attr !== undefined);
+  },
   index: (seq, idxBits) => {
     const idx = Number(unboxInt(idxBits));
     const list = getList(seq);
@@ -2466,6 +3175,30 @@ BASE_IMPORTS = """\
   string_count_slice: () => boxInt(0),
   string_join: () => boxNone(),
   string_split: () => boxNone(),
+  string_lower: (haystack) => {
+    const str = getStrObj(haystack);
+    if (str === null) return boxNone();
+    return boxPtr({ type: 'str', value: str.toLowerCase() });
+  },
+  string_upper: (haystack) => {
+    const str = getStrObj(haystack);
+    if (str === null) return boxNone();
+    return boxPtr({ type: 'str', value: str.toUpperCase() });
+  },
+  string_capitalize: (haystack) => {
+    const str = getStrObj(haystack);
+    if (str === null) return boxNone();
+    if (!str.length) return boxPtr({ type: 'str', value: '' });
+    const chars = Array.from(str);
+    const first = chars[0].toUpperCase();
+    const rest = chars.slice(1).join('').toLowerCase();
+    return boxPtr({ type: 'str', value: first + rest });
+  },
+  string_strip: (haystack) => {
+    const str = getStrObj(haystack);
+    if (str === null) return boxNone();
+    return boxPtr({ type: 'str', value: str.trim() });
+  },
   bytes_split: () => boxNone(),
   bytearray_split: () => boxNone(),
   string_replace: () => boxNone(),
@@ -2617,6 +3350,60 @@ BASE_IMPORTS = """\
     return boxNone();
   },
   context_null: (val) => val,
+  id: (val) => val,
+  ord: (val) => {
+    const str = getStrObj(val);
+    if (str !== null) {
+      const chars = Array.from(str);
+      if (chars.length !== 1) {
+        throw new Error(
+          `TypeError: ord() expected a character, but string of length ${chars.length} found`,
+        );
+      }
+      return boxInt(BigInt(chars[0].codePointAt(0)));
+    }
+    const bytes = getBytes(val);
+    if (bytes) {
+      if (bytes.data.length !== 1) {
+        throw new Error(
+          `TypeError: ord() expected a character, but string of length ${bytes.data.length} found`,
+        );
+      }
+      return boxInt(BigInt(bytes.data[0]));
+    }
+    const bytearray = getBytearray(val);
+    if (bytearray) {
+      if (bytearray.data.length !== 1) {
+        throw new Error(
+          `TypeError: ord() expected a character, but string of length ${bytearray.data.length} found`,
+        );
+      }
+      return boxInt(BigInt(bytearray.data[0]));
+    }
+    throw new Error(`TypeError: ord() expected string of length 1, but ${typeName(val)} found`);
+  },
+  chr: (val) => {
+    let codePoint = null;
+    if (isIntLike(val)) {
+      codePoint = unboxIntLike(val);
+    } else {
+      const indexAttr = lookupAttr(val, '__index__');
+      if (indexAttr !== undefined) {
+        const res = callCallable0(indexAttr);
+        if (!isIntLike(res)) {
+          throw new Error(`TypeError: __index__ returned non-int (type ${typeName(res)})`);
+        }
+        codePoint = unboxIntLike(res);
+      }
+    }
+    if (codePoint === null) {
+      throw new Error(`TypeError: an integer is required (got type ${typeName(val)})`);
+    }
+    if (codePoint < 0n || codePoint > 0x10ffffn) {
+      throw new Error('ValueError: chr() arg not in range(0x110000)');
+    }
+    return boxPtr({ type: 'str', value: String.fromCodePoint(Number(codePoint)) });
+  },
   context_enter: (val) => val,
   context_exit: () => boxBool(false),
   context_unwind: () => boxBool(false),

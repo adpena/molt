@@ -37,7 +37,11 @@ entrypoints used to validate them.
 - `descriptor_is_data` must accept raw pointers via `maybe_ptr_from_bits`.
 
 ## 6. Async/Generator Invariants
-- `state` values are monotonic and only advanced by poll loops.
+- `state` stores either a logical state id (non-negative) or an encoded resume
+  target (negative) for pending awaits; encoded values use bitwise NOT of the
+  resume op index.
+- `state` is only advanced by poll loops; pending encodings must be decoded
+  before dispatch.
 - Return slots for async/generators are stored in closures and loaded after
   state labels.
 

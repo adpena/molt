@@ -3,6 +3,8 @@ import builtins
 
 import pytest
 
+_PENDING = 0x7FFD_0000_0000_0000
+
 
 def _lookup_magic(name: str):
     return getattr(builtins, name, globals().get(name))
@@ -25,6 +27,10 @@ def test_magic_concurrency():
     async def main():
         chan = funcs["molt_chan_new"]()
         funcs["molt_spawn"](worker(chan))
-        assert funcs["molt_chan_recv"](chan) == 42
+        while True:
+            res = funcs["molt_chan_recv"](chan)
+            if res != _PENDING:
+                assert res == 42
+                return
 
     asyncio.run(main())

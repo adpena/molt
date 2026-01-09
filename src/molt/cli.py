@@ -92,6 +92,63 @@ def _collect_imports(tree: ast.AST) -> list[str]:
     return imports
 
 
+def _module_dependencies(
+    tree: ast.AST, module_name: str, module_graph: dict[str, Path]
+) -> set[str]:
+    deps: set[str] = set()
+    for name in _collect_imports(tree):
+        for candidate in _expand_module_chain(name):
+            if candidate == "molt" and module_name.startswith("molt."):
+                continue
+            if candidate in module_graph and candidate != module_name:
+                deps.add(candidate)
+    return deps
+
+
+def _collect_func_defaults(tree: ast.AST) -> dict[str, dict[str, Any]]:
+    defaults: dict[str, dict[str, Any]] = {}
+    if not isinstance(tree, ast.Module):
+        return defaults
+    for stmt in tree.body:
+        if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if stmt.args.vararg or stmt.args.kwarg or stmt.args.kwonlyargs:
+            continue
+        params = [arg.arg for arg in stmt.args.args]
+        default_specs: list[dict[str, Any]] = []
+        for expr in stmt.args.defaults:
+            if isinstance(expr, ast.Constant):
+                default_specs.append({"const": True, "value": expr.value})
+            else:
+                default_specs.append({"const": False})
+        defaults[stmt.name] = {"params": len(params), "defaults": default_specs}
+    return defaults
+
+
+def _topo_sort_modules(
+    module_graph: dict[str, Path], module_deps: dict[str, set[str]]
+) -> list[str]:
+    in_degree = {name: 0 for name in module_graph}
+    dependents: dict[str, set[str]] = {name: set() for name in module_graph}
+    for name, deps in module_deps.items():
+        for dep in deps:
+            dependents[dep].add(name)
+            in_degree[name] += 1
+    ready = sorted(name for name, degree in in_degree.items() if degree == 0)
+    order: list[str] = []
+    while ready:
+        name = ready.pop(0)
+        order.append(name)
+        for child in sorted(dependents[name]):
+            in_degree[child] -= 1
+            if in_degree[child] == 0:
+                ready.append(child)
+    if len(order) != len(module_graph):
+        remaining = sorted(name for name in module_graph if name not in order)
+        order.extend(remaining)
+    return order
+
+
 def _stdlib_allowlist() -> set[str]:
     allowlist: set[str] = set()
     spec_path = Path("docs/spec/0015_STDLIB_COMPATIBILITY_MATRIX.md")
@@ -153,7 +210,12 @@ def _discover_module_graph(
                     continue
                 if candidate.split(".", 1)[0] in skip_modules:
                     continue
-                resolved = _resolve_module_path(candidate, roots)
+                resolved = None
+                if candidate.startswith("molt.stdlib."):
+                    stdlib_candidate = candidate[len("molt.stdlib.") :]
+                    resolved = _resolve_module_path(stdlib_candidate, [stdlib_root])
+                if resolved is None:
+                    resolved = _resolve_module_path(candidate, roots)
                 if resolved is not None:
                     queue.append(resolved)
     return graph, explicit_imports
@@ -293,6 +355,22 @@ def build(
     stdlib_allowlist.update(STUB_MODULES)
     stdlib_allowlist.update(stub_parents)
     stdlib_allowlist.add("molt.stdlib")
+    module_deps: dict[str, set[str]] = {}
+    known_func_defaults: dict[str, dict[str, dict[str, Any]]] = {}
+    for module_name, module_path in module_graph.items():
+        try:
+            source = module_path.read_text()
+        except OSError as exc:
+            print(f"Failed to read module {module_path}: {exc}", file=sys.stderr)
+            return 2
+        try:
+            tree = ast.parse(source)
+        except SyntaxError as exc:
+            print(f"Syntax error in {module_path}: {exc}", file=sys.stderr)
+            return 2
+        module_deps[module_name] = _module_dependencies(tree, module_name, module_graph)
+        known_func_defaults[module_name] = _collect_func_defaults(tree)
+    module_order = _topo_sort_modules(module_graph, module_deps)
     type_facts = None
     if type_facts_path is None and type_hint_policy in {"trust", "check"}:
         type_facts, ty_ok = _collect_type_facts_for_build(
@@ -322,7 +400,8 @@ def build(
 
     functions: list[dict[str, Any]] = []
     enable_phi = target != "wasm"
-    for module_name in sorted(module_graph.keys()):
+    known_classes: dict[str, Any] = {}
+    for module_name in module_order:
         module_path = module_graph[module_name]
         try:
             source = module_path.read_text()
@@ -344,7 +423,9 @@ def build(
             entry_module=entry_module,
             enable_phi=enable_phi,
             known_modules=known_modules,
+            known_classes=known_classes,
             stdlib_allowlist=stdlib_allowlist,
+            known_func_defaults=known_func_defaults,
         )
         try:
             gen.visit(tree)
@@ -357,6 +438,8 @@ def build(
             if func["name"] == "molt_main":
                 func["name"] = init_symbol
         functions.extend(ir["functions"])
+        for class_name in gen.local_class_names:
+            known_classes[class_name] = gen.classes[class_name]
 
     entry_init = SimpleTIRGenerator.module_init_symbol(entry_module)
     functions.append(

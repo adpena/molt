@@ -27,7 +27,7 @@ def pprint(
     depth: int | None = None,
     compact: bool = False,
 ) -> None:
-    print(pformat(obj, indent=indent, width=width, depth=depth, compact=compact))
+    print(pformat(obj, indent, width, depth, compact))
 
 
 pp = pprint

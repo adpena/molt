@@ -34,6 +34,14 @@ def main():
 - `molt.spawn()` dispatches to `molt_spawn` or falls back to a background event loop.
 - Async-friendly helpers: `Channel.send_async()` / `Channel.recv_async()` for event-loop usage.
 
+### Cancellation Tokens (Structured)
+- Each task runs with a **current cancellation token**; by default tasks inherit
+  the token from their parent (request-scoped default).
+- Tokens can be overridden inside a task (task-scoped override) by setting a new
+  current token; the new token becomes the inherited token for any spawned work.
+- Cancellation is **cooperative**: handlers should check `molt.cancelled()` or
+  call `token.cancelled()` at safe points and abort work promptly.
+
 ## Runtime
 - Work-stealing scheduler (multicore scaling)
 - OS threads

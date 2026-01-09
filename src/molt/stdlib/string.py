@@ -30,5 +30,11 @@ printable = digits + ascii_letters + punctuation + whitespace
 
 def capwords(s: str, sep: str | None = None) -> str:
     if sep is None:
-        return " ".join(part.capitalize() for part in s.split())
-    return sep.join(part.capitalize() for part in s.split(sep))
+        parts: list[str] = []
+        for part in s.split():
+            parts.append(part.capitalize())
+        return " ".join(parts)
+    parts: list[str] = []
+    for part in s.split(sep):
+        parts.append(part.capitalize())
+    return sep.join(parts)
