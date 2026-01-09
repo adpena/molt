@@ -3712,7 +3712,7 @@ impl SimpleBackend {
                 }
                 "call_async" => {
                     let poll_func_name = op.s_value.as_ref().unwrap();
-                    let args = op.args.as_ref().map(|args| args.as_slice());
+                    let args = op.args.as_deref();
                     let payload_len = args.map(|vals| vals.len()).unwrap_or(0);
                     let size = builder.ins().iconst(types::I64, (payload_len * 8) as i64);
                     let mut sig = self.module.make_signature();
@@ -3994,10 +3994,8 @@ impl SimpleBackend {
                     let default_kind_call =
                         builder.ins().call(default_kind_local, &[bound_func_bits]);
                     let default_kind_val = builder.inst_results(default_kind_call)[0];
-                    let default_none = builder.ins().iconst(types::I64, FUNC_DEFAULT_NONE as i64);
-                    let default_pop = builder
-                        .ins()
-                        .iconst(types::I64, FUNC_DEFAULT_DICT_POP as i64);
+                    let default_none = builder.ins().iconst(types::I64, FUNC_DEFAULT_NONE);
+                    let default_pop = builder.ins().iconst(types::I64, FUNC_DEFAULT_DICT_POP);
 
                     let bound_exact_block = builder.create_block();
                     let bound_missing_one_block = builder.create_block();
@@ -6408,8 +6406,9 @@ impl SimpleBackend {
                         let start = center.saturating_sub(3);
                         let end = (center + 3).min(lines.len().saturating_sub(1));
                         eprintln!("CLIF snippet for {} around {}:", func_ir.name, needle);
-                        for idx in start..=end {
-                            eprintln!("{:04}: {}", idx + 1, lines[idx]);
+                        for (offset, line) in lines[start..=end].iter().enumerate() {
+                            let idx = start + offset;
+                            eprintln!("{:04}: {}", idx + 1, line);
                         }
                     } else if flag == "full" {
                         eprintln!("CLIF {}:\n{}", func_ir.name, clif);

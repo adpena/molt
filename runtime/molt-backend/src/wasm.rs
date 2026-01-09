@@ -570,7 +570,6 @@ impl WasmBackend {
         let poll_local = {
             let idx = local_count;
             local_types.push(ValType::I64);
-            local_count += 1;
             idx
         };
 

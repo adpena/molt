@@ -3229,6 +3229,9 @@ pub extern "C" fn molt_callargs_new(pos_capacity: usize, kw_capacity: usize) -> 
     ptr
 }
 
+/// # Safety
+/// `builder_ptr` must be a valid pointer returned by `molt_callargs_new` and
+/// remain owned by the caller for the duration of this call.
 #[no_mangle]
 pub unsafe extern "C" fn molt_callargs_push_pos(builder_ptr: *mut u8, val: u64) -> u64 {
     if builder_ptr.is_null() {
@@ -3268,6 +3271,9 @@ unsafe fn callargs_push_kw(builder_ptr: *mut u8, name_bits: u64, val_bits: u64) 
     MoltObject::none().bits()
 }
 
+/// # Safety
+/// `builder_ptr` must be a valid pointer returned by `molt_callargs_new`.
+/// `name_bits` must reference a Molt string object.
 #[no_mangle]
 pub unsafe extern "C" fn molt_callargs_push_kw(
     builder_ptr: *mut u8,
@@ -3280,6 +3286,8 @@ pub unsafe extern "C" fn molt_callargs_push_kw(
     callargs_push_kw(builder_ptr, name_bits, val_bits)
 }
 
+/// # Safety
+/// `builder_ptr` must be a valid pointer returned by `molt_callargs_new`.
 #[no_mangle]
 pub unsafe extern "C" fn molt_callargs_expand_star(
     builder_ptr: *mut u8,
@@ -3318,6 +3326,8 @@ pub unsafe extern "C" fn molt_callargs_expand_star(
     MoltObject::none().bits()
 }
 
+/// # Safety
+/// `builder_ptr` must be a valid pointer returned by `molt_callargs_new`.
 #[no_mangle]
 pub unsafe extern "C" fn molt_callargs_expand_kwstar(
     builder_ptr: *mut u8,
@@ -5498,7 +5508,7 @@ pub extern "C" fn molt_dict_from_obj(obj_bits: u64) -> u64 {
     if let Some(ptr) = obj.as_ptr() {
         unsafe {
             if object_type_id(ptr) == TYPE_ID_DICT {
-                capacity = dict_len(ptr) as usize;
+                capacity = dict_len(ptr);
                 iter_bits = molt_dict_items(obj_bits);
                 if obj_from_bits(iter_bits).is_none() {
                     return MoltObject::none().bits();
@@ -6071,8 +6081,8 @@ static NEXT_CANCEL_TOKEN_ID: AtomicU64 = AtomicU64::new(2);
 static TASK_TOKENS: OnceLock<Mutex<HashMap<usize, u64>>> = OnceLock::new();
 
 thread_local! {
-    static CURRENT_TASK: Cell<usize> = Cell::new(0);
-    static CURRENT_TOKEN: Cell<u64> = Cell::new(1);
+    static CURRENT_TASK: Cell<usize> = const { Cell::new(0) };
+    static CURRENT_TOKEN: Cell<u64> = const { Cell::new(1) };
 }
 
 fn cancel_tokens() -> &'static Mutex<HashMap<u64, CancelTokenEntry>> {
@@ -6515,6 +6525,8 @@ thread_local! {
     static BLOCK_ON_TASK: Cell<usize> = const { Cell::new(0) };
 }
 
+/// # Safety
+/// `parent_bits` must be either `None` or an integer token id.
 #[no_mangle]
 pub unsafe extern "C" fn molt_cancel_token_new(parent_bits: u64) -> u64 {
     cancel_tokens();
@@ -6536,6 +6548,8 @@ pub unsafe extern "C" fn molt_cancel_token_new(parent_bits: u64) -> u64 {
     MoltObject::from_int(id as i64).bits()
 }
 
+/// # Safety
+/// `token_bits` must be an integer token id.
 #[no_mangle]
 pub unsafe extern "C" fn molt_cancel_token_clone(token_bits: u64) -> u64 {
     let id = match token_id_from_bits(token_bits) {
@@ -6546,6 +6560,8 @@ pub unsafe extern "C" fn molt_cancel_token_clone(token_bits: u64) -> u64 {
     MoltObject::none().bits()
 }
 
+/// # Safety
+/// `token_bits` must be an integer token id.
 #[no_mangle]
 pub unsafe extern "C" fn molt_cancel_token_drop(token_bits: u64) -> u64 {
     let id = match token_id_from_bits(token_bits) {
@@ -6556,6 +6572,8 @@ pub unsafe extern "C" fn molt_cancel_token_drop(token_bits: u64) -> u64 {
     MoltObject::none().bits()
 }
 
+/// # Safety
+/// `token_bits` must be an integer token id.
 #[no_mangle]
 pub unsafe extern "C" fn molt_cancel_token_cancel(token_bits: u64) -> u64 {
     let id = match token_id_from_bits(token_bits) {
@@ -6569,6 +6587,8 @@ pub unsafe extern "C" fn molt_cancel_token_cancel(token_bits: u64) -> u64 {
     MoltObject::none().bits()
 }
 
+/// # Safety
+/// `token_bits` must be an integer token id.
 #[no_mangle]
 pub unsafe extern "C" fn molt_cancel_token_is_cancelled(token_bits: u64) -> u64 {
     let id = match token_id_from_bits(token_bits) {
@@ -6578,6 +6598,8 @@ pub unsafe extern "C" fn molt_cancel_token_is_cancelled(token_bits: u64) -> u64 
     MoltObject::from_bool(token_is_cancelled(id)).bits()
 }
 
+/// # Safety
+/// `token_bits` must be an integer token id or `None`.
 #[no_mangle]
 pub unsafe extern "C" fn molt_cancel_token_set_current(token_bits: u64) -> u64 {
     let id = match token_id_from_bits(token_bits) {
@@ -6595,18 +6617,24 @@ pub unsafe extern "C" fn molt_cancel_token_set_current(token_bits: u64) -> u64 {
     MoltObject::from_int(prev as i64).bits()
 }
 
+/// # Safety
+/// Requires the cancel token tables to be initialized by the runtime.
 #[no_mangle]
 pub unsafe extern "C" fn molt_cancel_token_get_current() -> u64 {
     cancel_tokens();
     MoltObject::from_int(current_token_id() as i64).bits()
 }
 
+/// # Safety
+/// Requires the cancel token tables to be initialized by the runtime.
 #[no_mangle]
 pub unsafe extern "C" fn molt_cancelled() -> u64 {
     cancel_tokens();
     MoltObject::from_bool(token_is_cancelled(current_token_id())).bits()
 }
 
+/// # Safety
+/// Requires the cancel token tables to be initialized by the runtime.
 #[no_mangle]
 pub unsafe extern "C" fn molt_cancel_current() -> u64 {
     cancel_tokens();
@@ -6680,14 +6708,14 @@ pub unsafe extern "C" fn molt_block_on(task_ptr: *mut u8) -> i64 {
 #[no_mangle]
 pub extern "C" fn molt_future_poll_fn(future_bits: u64) -> u64 {
     let Some(ptr) = maybe_ptr_from_bits(future_bits) else {
-        let _ = raise_exception::<()>("TypeError", "object is not awaitable");
+        raise_exception::<()>("TypeError", "object is not awaitable");
         return 0;
     };
     unsafe {
         let header = header_from_obj_ptr(ptr);
         let poll_fn_addr = (*header).poll_fn;
         if poll_fn_addr == 0 {
-            let _ = raise_exception::<()>("TypeError", "object is not awaitable");
+            raise_exception::<()>("TypeError", "object is not awaitable");
             return 0;
         }
         poll_fn_addr
@@ -10084,7 +10112,7 @@ pub extern "C" fn molt_chr(val: u64) -> u64 {
     let Some(code) = obj.as_int() else {
         return MoltObject::none().bits();
     };
-    if code < 0 || code > 0x10FFFF {
+    if !(0..=0x10FFFF).contains(&code) {
         return MoltObject::none().bits();
     }
     let Some(ch) = std::char::from_u32(code as u32) else {
@@ -10092,7 +10120,7 @@ pub extern "C" fn molt_chr(val: u64) -> u64 {
     };
     let mut buf = [0u8; 4];
     let s = ch.encode_utf8(&mut buf);
-    let out = unsafe { alloc_string(s.as_bytes()) };
+    let out = alloc_string(s.as_bytes());
     if out.is_null() {
         return MoltObject::none().bits();
     }
@@ -11388,7 +11416,7 @@ fn split_string_whitespace_to_list(hay: &[u8]) -> Option<u64> {
     }
     let list_bits = MoltObject::from_ptr(list_ptr).bits();
     for part in hay_str.split_whitespace() {
-        let ptr = unsafe { alloc_string(part.as_bytes()) };
+        let ptr = alloc_string(part.as_bytes());
         if ptr.is_null() {
             dec_ref_bits(list_bits);
             return None;
@@ -12831,7 +12859,7 @@ extern "C" fn dict_copy_method(self_bits: u64) -> i64 {
         if out_ptr.is_null() {
             return MoltObject::none().bits() as i64;
         }
-        return MoltObject::from_ptr(out_ptr).bits() as i64;
+        MoltObject::from_ptr(out_ptr).bits() as i64
     }
 }
 
@@ -16091,6 +16119,7 @@ unsafe fn call_function_obj6(
     ) as u64
 }
 
+#[allow(clippy::too_many_arguments)]
 unsafe fn call_function_obj7(
     func_bits: u64,
     arg0_bits: u64,
@@ -16121,6 +16150,7 @@ unsafe fn call_function_obj7(
     ) as u64
 }
 
+#[allow(clippy::too_many_arguments)]
 unsafe fn call_function_obj8(
     func_bits: u64,
     arg0_bits: u64,
