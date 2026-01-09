@@ -541,8 +541,7 @@ impl WasmBackend {
         }
 
         for name in ["__molt_tmp0", "__molt_tmp1", "__molt_tmp2"] {
-            if let std::collections::hash_map::Entry::Vacant(entry) =
-                locals.entry(name.to_string())
+            if let std::collections::hash_map::Entry::Vacant(entry) = locals.entry(name.to_string())
             {
                 entry.insert(local_count);
                 local_types.push(ValType::I64);
@@ -3615,18 +3614,24 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let token = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(token));
-                        func.instruction(&Instruction::Call(import_ids["cancel_token_is_cancelled"]));
+                        func.instruction(&Instruction::Call(
+                            import_ids["cancel_token_is_cancelled"],
+                        ));
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                     }
                     "cancel_token_set_current" => {
                         let args = op.args.as_ref().unwrap();
                         let token = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(token));
-                        func.instruction(&Instruction::Call(import_ids["cancel_token_set_current"]));
+                        func.instruction(&Instruction::Call(
+                            import_ids["cancel_token_set_current"],
+                        ));
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                     }
                     "cancel_token_get_current" => {
-                        func.instruction(&Instruction::Call(import_ids["cancel_token_get_current"]));
+                        func.instruction(&Instruction::Call(
+                            import_ids["cancel_token_get_current"],
+                        ));
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                     }
                     "cancelled" => {
@@ -3920,11 +3925,7 @@ impl WasmBackend {
                         } else {
                             (Some(locals[&args[1]]), locals[&args[2]])
                         };
-                        let pending_state_name = if args.len() == 2 {
-                            &args[1]
-                        } else {
-                            &args[2]
-                        };
+                        let pending_state_name = if args.len() == 2 { &args[1] } else { &args[2] };
                         let pending_target_idx = const_ints
                             .get(pending_state_name)
                             .and_then(|state_id| state_map.get(state_id).copied())

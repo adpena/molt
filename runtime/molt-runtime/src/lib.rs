@@ -3281,7 +3281,10 @@ pub unsafe extern "C" fn molt_callargs_push_kw(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn molt_callargs_expand_star(builder_ptr: *mut u8, iterable_bits: u64) -> u64 {
+pub unsafe extern "C" fn molt_callargs_expand_star(
+    builder_ptr: *mut u8,
+    iterable_bits: u64,
+) -> u64 {
     if builder_ptr.is_null() {
         return MoltObject::none().bits();
     }
@@ -6353,10 +6356,7 @@ fn sleep_worker(queue: Arc<SleepQueue>) {
 static START_TIME: OnceLock<Instant> = OnceLock::new();
 
 fn monotonic_now_secs() -> f64 {
-    START_TIME
-        .get_or_init(Instant::now)
-        .elapsed()
-        .as_secs_f64()
+    START_TIME.get_or_init(Instant::now).elapsed().as_secs_f64()
 }
 
 fn instant_from_monotonic_secs(secs: f64) -> Instant {
@@ -12161,8 +12161,7 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                 }
                 if let Some(idx) = key.as_int() {
                     if type_id == TYPE_ID_STRING {
-                        let bytes =
-                            std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
+                        let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
                         let Ok(text) = std::str::from_utf8(bytes) else {
                             return MoltObject::none().bits();
                         };
@@ -12940,11 +12939,7 @@ pub extern "C" fn molt_dict_pop(
 }
 
 #[no_mangle]
-pub extern "C" fn molt_dict_setdefault(
-    dict_bits: u64,
-    key_bits: u64,
-    default_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_dict_setdefault(dict_bits: u64, key_bits: u64, default_bits: u64) -> u64 {
     let dict_obj = obj_from_bits(dict_bits);
     let Some(ptr) = dict_obj.as_ptr() else {
         raise!("TypeError", "dict.setdefault expects dict");
@@ -13221,11 +13216,7 @@ pub extern "C" fn molt_set_symdiff_update(set_bits: u64, other_bits: u64) -> u64
 }
 
 #[no_mangle]
-pub extern "C" fn molt_enumerate(
-    iterable_bits: u64,
-    start_bits: u64,
-    has_start_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_enumerate(iterable_bits: u64, start_bits: u64, has_start_bits: u64) -> u64 {
     let has_start = is_truthy(obj_from_bits(has_start_bits));
     let iter_bits = molt_iter(iterable_bits);
     if obj_from_bits(iter_bits).is_none() {
@@ -16042,8 +16033,7 @@ unsafe fn call_function_obj4(
         raise!("TypeError", "call arity mismatch");
     }
     let fn_ptr = function_fn_ptr(func_ptr);
-    let func: extern "C" fn(u64, u64, u64, u64) -> i64 =
-        std::mem::transmute(fn_ptr as usize);
+    let func: extern "C" fn(u64, u64, u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
     func(arg0_bits, arg1_bits, arg2_bits, arg3_bits) as u64
 }
 
@@ -16068,8 +16058,7 @@ unsafe fn call_function_obj5(
         raise!("TypeError", "call arity mismatch");
     }
     let fn_ptr = function_fn_ptr(func_ptr);
-    let func: extern "C" fn(u64, u64, u64, u64, u64) -> i64 =
-        std::mem::transmute(fn_ptr as usize);
+    let func: extern "C" fn(u64, u64, u64, u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
     func(arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits) as u64
 }
 
@@ -16097,7 +16086,9 @@ unsafe fn call_function_obj6(
     let fn_ptr = function_fn_ptr(func_ptr);
     let func: extern "C" fn(u64, u64, u64, u64, u64, u64) -> i64 =
         std::mem::transmute(fn_ptr as usize);
-    func(arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits) as u64
+    func(
+        arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
+    ) as u64
 }
 
 unsafe fn call_function_obj7(
@@ -16125,8 +16116,9 @@ unsafe fn call_function_obj7(
     let fn_ptr = function_fn_ptr(func_ptr);
     let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> i64 =
         std::mem::transmute(fn_ptr as usize);
-    func(arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits)
-        as u64
+    func(
+        arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
+    ) as u64
 }
 
 unsafe fn call_function_obj8(
@@ -16156,8 +16148,7 @@ unsafe fn call_function_obj8(
     let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
         std::mem::transmute(fn_ptr as usize);
     func(
-        arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
-        arg7_bits,
+        arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits, arg7_bits,
     ) as u64
 }
 
@@ -16176,8 +16167,7 @@ unsafe fn call_function_obj_vec(func_bits: u64, args: &[u64]) -> u64 {
             func_bits, args[0], args[1], args[2], args[3], args[4], args[5], args[6],
         ),
         8 => call_function_obj8(
-            func_bits, args[0], args[1], args[2], args[3], args[4], args[5], args[6],
-            args[7],
+            func_bits, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7],
         ),
         _ => raise!("TypeError", "call arity mismatch"),
     }
@@ -16399,14 +16389,20 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
         }
 
         let mut extra_kwargs: Vec<u64> = Vec::new();
-        for (name_bits, val_bits) in args.kw_names.iter().copied().zip(args.kw_values.iter().copied()) {
+        for (name_bits, val_bits) in args
+            .kw_names
+            .iter()
+            .copied()
+            .zip(args.kw_values.iter().copied())
+        {
             let name_obj = obj_from_bits(name_bits);
             let mut matched = false;
             for (idx, param_bits) in arg_names.iter().copied().enumerate() {
                 if obj_eq(name_obj, obj_from_bits(param_bits)) {
                     if idx < posonly {
                         let name = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
-                        let msg = format!("got positional-only argument '{name}' passed as keyword");
+                        let msg =
+                            format!("got positional-only argument '{name}' passed as keyword");
                         raise!("TypeError", &msg);
                     }
                     if slots[idx].is_some() {
@@ -16477,8 +16473,8 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                 slots[slot_idx] = Some(val);
                 continue;
             }
-            let name = string_obj_to_owned(obj_from_bits(name_bits))
-                .unwrap_or_else(|| "?".to_string());
+            let name =
+                string_obj_to_owned(obj_from_bits(name_bits)).unwrap_or_else(|| "?".to_string());
             let msg = format!("missing required keyword-only argument '{name}'");
             raise!("TypeError", &msg);
         }

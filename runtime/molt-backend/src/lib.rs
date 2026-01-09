@@ -133,8 +133,7 @@ fn dump_ir_ops(func_ir: &FunctionIR, mode: &str) {
             let kind = op.kind.as_str();
             let is_control = matches!(
                 kind,
-                "if"
-                    | "else"
+                "if" | "else"
                     | "end_if"
                     | "phi"
                     | "label"
@@ -178,12 +177,7 @@ fn dump_ir_ops(func_ir: &FunctionIR, mode: &str) {
         if let Some(fast_int) = op.fast_int {
             detail.push(format!("fast_int={fast_int}"));
         }
-        let _ = writeln!(
-            out,
-            "{idx:04}: {:<20} {}",
-            op.kind,
-            detail.join(" ")
-        );
+        let _ = writeln!(out, "{idx:04}: {:<20} {}", op.kind, detail.join(" "));
         last_written = idx;
     }
     if last_written == 0 && func_ir.ops.is_empty() {
@@ -2075,9 +2069,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap();
                     let iterable = vars.get(&args[0]).expect("Enumerate iterable not found");
                     let start = vars.get(&args[1]).expect("Enumerate start not found");
-                    let has_start = vars
-                        .get(&args[2])
-                        .expect("Enumerate has_start not found");
+                    let has_start = vars.get(&args[2]).expect("Enumerate has_start not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -2088,7 +2080,9 @@ impl SimpleBackend {
                         .declare_function("molt_enumerate", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*iterable, *start, *has_start]);
+                    let call = builder
+                        .ins()
+                        .call(local_callee, &[*iterable, *start, *has_start]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
@@ -3353,8 +3347,7 @@ impl SimpleBackend {
                         .module
                         .declare_function("molt_future_poll_fn", Linkage::Import, &poll_sig)
                         .unwrap();
-                    let local_poll =
-                        self.module.declare_func_in_func(poll_callee, builder.func);
+                    let local_poll = self.module.declare_func_in_func(poll_callee, builder.func);
                     let poll_call = builder.ins().call(local_poll, &[*future]);
                     let poll_fn_addr = builder.inst_results(poll_call)[0];
                     let zero = builder.ins().iconst(types::I64, 0);
@@ -3397,7 +3390,9 @@ impl SimpleBackend {
                     if let Some(current_block) = builder.current_block() {
                         builder.insert_block_after(ready_path, current_block);
                     }
-                    builder.ins().brif(is_pending, pending_path, &[], ready_path, &[]);
+                    builder
+                        .ins()
+                        .brif(is_pending, pending_path, &[], ready_path, &[]);
 
                     builder.switch_to_block(pending_path);
                     builder.seal_block(pending_path);
@@ -3409,8 +3404,7 @@ impl SimpleBackend {
                         .module
                         .declare_function("molt_sleep_register", Linkage::Import, &sleep_sig)
                         .unwrap();
-                    let local_sleep =
-                        self.module.declare_func_in_func(sleep_callee, builder.func);
+                    let local_sleep = self.module.declare_func_in_func(sleep_callee, builder.func);
                     builder.ins().call(local_sleep, &[self_ptr, *future]);
                     builder.ins().jump(master_return_block, &[pending_const]);
 
@@ -3720,9 +3714,7 @@ impl SimpleBackend {
                     let poll_func_name = op.s_value.as_ref().unwrap();
                     let args = op.args.as_ref().map(|args| args.as_slice());
                     let payload_len = args.map(|vals| vals.len()).unwrap_or(0);
-                    let size = builder
-                        .ins()
-                        .iconst(types::I64, (payload_len * 8) as i64);
+                    let size = builder.ins().iconst(types::I64, (payload_len * 8) as i64);
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -3746,12 +3738,9 @@ impl SimpleBackend {
                                 self.module.declare_func_in_func(inc_callee, builder.func);
                             for (idx, arg_name) in arg_names.iter().enumerate() {
                                 let val = vars.get(arg_name).expect("Arg not found");
-                                builder.ins().store(
-                                    MemFlags::new(),
-                                    *val,
-                                    obj,
-                                    (idx * 8) as i32,
-                                );
+                                builder
+                                    .ins()
+                                    .store(MemFlags::new(), *val, obj, (idx * 8) as i32);
                                 builder.ins().call(local_inc, &[*val]);
                             }
                         }
@@ -3937,8 +3926,7 @@ impl SimpleBackend {
                         .module
                         .declare_function("molt_is_bound_method", Linkage::Import, &check_sig)
                         .unwrap();
-                    let is_bound_local =
-                        self.module.declare_func_in_func(is_bound, builder.func);
+                    let is_bound_local = self.module.declare_func_in_func(is_bound, builder.func);
                     let truthy = self
                         .module
                         .declare_function("molt_is_truthy", Linkage::Import, &check_sig)
@@ -3946,11 +3934,7 @@ impl SimpleBackend {
                     let truthy_local = self.module.declare_func_in_func(truthy, builder.func);
                     let default_kind = self
                         .module
-                        .declare_function(
-                            "molt_function_default_kind",
-                            Linkage::Import,
-                            &check_sig,
-                        )
+                        .declare_function("molt_function_default_kind", Linkage::Import, &check_sig)
                         .unwrap();
                     let default_kind_local =
                         self.module.declare_func_in_func(default_kind, builder.func);
@@ -3968,8 +3952,7 @@ impl SimpleBackend {
                     let is_bound_bits = builder.inst_results(is_bound_call)[0];
                     let truthy_call = builder.ins().call(truthy_local, &[is_bound_bits]);
                     let truthy_bits = builder.inst_results(truthy_call)[0];
-                    let is_bound_bool =
-                        builder.ins().icmp_imm(IntCC::NotEqual, truthy_bits, 0);
+                    let is_bound_bool = builder.ins().icmp_imm(IntCC::NotEqual, truthy_bits, 0);
 
                     let bound_block = builder.create_block();
                     let direct_block = builder.create_block();
@@ -3984,17 +3967,23 @@ impl SimpleBackend {
                     let method_resolve = builder.ins().call(resolve_local, &[*func_bits]);
                     let method_ptr = builder.inst_results(method_resolve)[0];
                     let bound_func_bits =
-                        builder.ins().load(types::I64, MemFlags::new(), method_ptr, 0);
-                    let self_bits =
-                        builder.ins().load(types::I64, MemFlags::new(), method_ptr, 8);
+                        builder
+                            .ins()
+                            .load(types::I64, MemFlags::new(), method_ptr, 0);
+                    let self_bits = builder
+                        .ins()
+                        .load(types::I64, MemFlags::new(), method_ptr, 8);
                     let bound_resolve = builder.ins().call(resolve_local, &[bound_func_bits]);
                     let bound_func_ptr = builder.inst_results(bound_resolve)[0];
                     let bound_fn_ptr =
-                        builder.ins().load(types::I64, MemFlags::new(), bound_func_ptr, 0);
+                        builder
+                            .ins()
+                            .load(types::I64, MemFlags::new(), bound_func_ptr, 0);
                     let bound_arity =
-                        builder.ins().load(types::I64, MemFlags::new(), bound_func_ptr, 8);
-                    let provided_arity =
-                        builder.ins().iconst(types::I64, (args.len() + 1) as i64);
+                        builder
+                            .ins()
+                            .load(types::I64, MemFlags::new(), bound_func_ptr, 8);
+                    let provided_arity = builder.ins().iconst(types::I64, (args.len() + 1) as i64);
                     let missing = builder.ins().isub(bound_arity, provided_arity);
                     let zero = builder.ins().iconst(types::I64, 0);
                     let one = builder.ins().iconst(types::I64, 1);
@@ -4005,10 +3994,10 @@ impl SimpleBackend {
                     let default_kind_call =
                         builder.ins().call(default_kind_local, &[bound_func_bits]);
                     let default_kind_val = builder.inst_results(default_kind_call)[0];
-                    let default_none =
-                        builder.ins().iconst(types::I64, FUNC_DEFAULT_NONE as i64);
-                    let default_pop =
-                        builder.ins().iconst(types::I64, FUNC_DEFAULT_DICT_POP as i64);
+                    let default_none = builder.ins().iconst(types::I64, FUNC_DEFAULT_NONE as i64);
+                    let default_pop = builder
+                        .ins()
+                        .iconst(types::I64, FUNC_DEFAULT_DICT_POP as i64);
 
                     let bound_exact_block = builder.create_block();
                     let bound_missing_one_block = builder.create_block();
@@ -4023,15 +4012,23 @@ impl SimpleBackend {
 
                     builder.switch_to_block(bound_missing_check);
                     builder.seal_block(bound_missing_check);
-                    builder
-                        .ins()
-                        .brif(is_one, bound_missing_one_block, &[], bound_missing_two_check, &[]);
+                    builder.ins().brif(
+                        is_one,
+                        bound_missing_one_block,
+                        &[],
+                        bound_missing_two_check,
+                        &[],
+                    );
 
                     builder.switch_to_block(bound_missing_two_check);
                     builder.seal_block(bound_missing_two_check);
-                    builder
-                        .ins()
-                        .brif(is_two, bound_missing_two_block, &[], bound_error_block, &[]);
+                    builder.ins().brif(
+                        is_two,
+                        bound_missing_two_block,
+                        &[],
+                        bound_error_block,
+                        &[],
+                    );
 
                     builder.switch_to_block(bound_exact_block);
                     builder.seal_block(bound_exact_block);
@@ -4045,16 +4042,22 @@ impl SimpleBackend {
                     bound_sig.returns.push(AbiParam::new(types::I64));
                     let bound_sig_ref = builder.import_signature(bound_sig);
                     let bound_call =
-                        builder.ins().call_indirect(bound_sig_ref, bound_fn_ptr, &bound_args);
+                        builder
+                            .ins()
+                            .call_indirect(bound_sig_ref, bound_fn_ptr, &bound_args);
                     let bound_res = builder.inst_results(bound_call)[0];
                     builder.ins().jump(merge_block, &[bound_res]);
 
                     builder.switch_to_block(bound_missing_one_block);
                     builder.seal_block(bound_missing_one_block);
                     let is_default_none =
-                        builder.ins().icmp(IntCC::Equal, default_kind_val, default_none);
+                        builder
+                            .ins()
+                            .icmp(IntCC::Equal, default_kind_val, default_none);
                     let is_default_pop =
-                        builder.ins().icmp(IntCC::Equal, default_kind_val, default_pop);
+                        builder
+                            .ins()
+                            .icmp(IntCC::Equal, default_kind_val, default_pop);
                     let bound_missing_one_default = builder.create_block();
                     let bound_missing_one_pop = builder.create_block();
                     builder.ins().brif(
@@ -4079,22 +4082,22 @@ impl SimpleBackend {
                     bound_sig.returns.push(AbiParam::new(types::I64));
                     let bound_sig_ref = builder.import_signature(bound_sig);
                     let bound_call =
-                        builder.ins().call_indirect(bound_sig_ref, bound_fn_ptr, &bound_args);
+                        builder
+                            .ins()
+                            .call_indirect(bound_sig_ref, bound_fn_ptr, &bound_args);
                     let bound_res = builder.inst_results(bound_call)[0];
                     builder.ins().jump(merge_block, &[bound_res]);
 
                     builder.switch_to_block(bound_missing_one_pop);
                     builder.seal_block(bound_missing_one_pop);
                     let bound_missing_one_pop_ok = builder.create_block();
-                    builder
-                        .ins()
-                        .brif(
-                            is_default_pop,
-                            bound_missing_one_pop_ok,
-                            &[],
-                            bound_error_block,
-                            &[],
-                        );
+                    builder.ins().brif(
+                        is_default_pop,
+                        bound_missing_one_pop_ok,
+                        &[],
+                        bound_error_block,
+                        &[],
+                    );
 
                     builder.switch_to_block(bound_missing_one_pop_ok);
                     builder.seal_block(bound_missing_one_pop_ok);
@@ -4110,18 +4113,26 @@ impl SimpleBackend {
                     bound_sig.returns.push(AbiParam::new(types::I64));
                     let bound_sig_ref = builder.import_signature(bound_sig);
                     let bound_call =
-                        builder.ins().call_indirect(bound_sig_ref, bound_fn_ptr, &bound_args);
+                        builder
+                            .ins()
+                            .call_indirect(bound_sig_ref, bound_fn_ptr, &bound_args);
                     let bound_res = builder.inst_results(bound_call)[0];
                     builder.ins().jump(merge_block, &[bound_res]);
 
                     builder.switch_to_block(bound_missing_two_block);
                     builder.seal_block(bound_missing_two_block);
                     let is_default_pop =
-                        builder.ins().icmp(IntCC::Equal, default_kind_val, default_pop);
+                        builder
+                            .ins()
+                            .icmp(IntCC::Equal, default_kind_val, default_pop);
                     let bound_missing_two_ok = builder.create_block();
-                    builder
-                        .ins()
-                        .brif(is_default_pop, bound_missing_two_ok, &[], bound_error_block, &[]);
+                    builder.ins().brif(
+                        is_default_pop,
+                        bound_missing_two_ok,
+                        &[],
+                        bound_error_block,
+                        &[],
+                    );
 
                     builder.switch_to_block(bound_missing_two_ok);
                     builder.seal_block(bound_missing_two_ok);
@@ -4139,14 +4150,17 @@ impl SimpleBackend {
                     bound_sig.returns.push(AbiParam::new(types::I64));
                     let bound_sig_ref = builder.import_signature(bound_sig);
                     let bound_call =
-                        builder.ins().call_indirect(bound_sig_ref, bound_fn_ptr, &bound_args);
+                        builder
+                            .ins()
+                            .call_indirect(bound_sig_ref, bound_fn_ptr, &bound_args);
                     let bound_res = builder.inst_results(bound_call)[0];
                     builder.ins().jump(merge_block, &[bound_res]);
 
                     builder.switch_to_block(bound_error_block);
                     builder.seal_block(bound_error_block);
-                    let err_call =
-                        builder.ins().call(arity_error_local, &[bound_arity, provided_arity]);
+                    let err_call = builder
+                        .ins()
+                        .call(arity_error_local, &[bound_arity, provided_arity]);
                     let err_res = builder.inst_results(err_call)[0];
                     builder.ins().jump(merge_block, &[err_res]);
 
@@ -4184,7 +4198,9 @@ impl SimpleBackend {
                         .declare_function("molt_call_bind", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*func_bits, *builder_ptr]);
+                    let call = builder
+                        .ins()
+                        .call(local_callee, &[*func_bits, *builder_ptr]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
@@ -6369,7 +6385,10 @@ impl SimpleBackend {
             .unwrap();
         if let Err(err) = self.module.define_function(id, &mut self.ctx) {
             let err_text = format!("{err:?}");
-            eprintln!("Backend verification failed in {}: {err_text}", func_ir.name);
+            eprintln!(
+                "Backend verification failed in {}: {err_text}",
+                func_ir.name
+            );
             if let Some(mode) = should_dump_ir() {
                 dump_ir_ops(&func_ir, &mode);
             }
@@ -6388,10 +6407,7 @@ impl SimpleBackend {
                     if let Some(center) = hit {
                         let start = center.saturating_sub(3);
                         let end = (center + 3).min(lines.len().saturating_sub(1));
-                        eprintln!(
-                            "CLIF snippet for {} around {}:",
-                            func_ir.name, needle
-                        );
+                        eprintln!("CLIF snippet for {} around {}:", func_ir.name, needle);
                         for idx in start..=end {
                             eprintln!("{:04}: {}", idx + 1, lines[idx]);
                         }
