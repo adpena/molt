@@ -25,6 +25,7 @@ Canonical status lives in `docs/spec/STATUS.md` (README and ROADMAP are kept in 
 - **memoryview**: 1D buffer protocol with `format`/`shape`/`strides`/`nbytes`.
 - **String count slices**: `str.count` supports start/end slices with Unicode-aware offsets.
 - **Importable builtins**: `import builtins` binds supported builtins for compiled code.
+- **Builtin function objects**: allowlisted builtins (`any`, `all`, `callable`, `repr`, `getattr`, `hasattr`, `round`, `next`, `anext`, `print`, `super`) lower to first-class functions.
 
 ## Limitations (Current)
 
@@ -33,10 +34,10 @@ Canonical status lives in `docs/spec/STATUS.md` (README and ROADMAP are kept in 
 - **Dataclasses**: compile-time lowering for frozen/eq/repr/slots; no `default_factory`, `kw_only`, or `order`; runtime `dataclasses` module provides metadata only.
 - **Exceptions**: `try/except/else/finally` + `raise`/reraise support; still partial vs full BaseException semantics (see `docs/spec/0014_TYPE_COVERAGE_MATRIX.md`).
 - **Imports**: static module graph only; no dynamic import hooks or full package resolution.
-- **Stdlib**: partial shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pprint`, `string`, `typing`, `sys`, `os`, `asyncio`; import-only stubs for `collections.abc`, `importlib`, `importlib.util` (dynamic import hooks pending).
+- **Stdlib**: partial shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pprint`, `string`, `typing`, `sys`, `os`, `asyncio`, `threading`; import-only stubs for `collections.abc`, `importlib`, `importlib.util` (dynamic import hooks pending).
 - **Reflection**: `type`, `isinstance`, `issubclass`, and `object` are supported with single-inheritance base chains; no metaclasses or dynamic `type()` construction.
 - **Async iteration**: `anext` returns an awaitable; `__aiter__` must return an async iterator (awaitable `__aiter__` still pending).
-- **Asyncio**: shim exposes `run`/`sleep` only (no loop/task APIs).
+- **Asyncio**: shim exposes `run`/`sleep` plus `set_event_loop`/`new_event_loop` stubs (no loop/task APIs).
 - **Async with**: only a single context manager and simple name binding are supported.
 - **Matmul**: `@` is supported only for `molt_buffer`/`buffer2d`; other types raise `TypeError`.
 - **Numeric tower**: complex/decimal not implemented; missing int helpers (e.g., `bit_length`, `to_bytes`, `from_bytes`).
@@ -102,11 +103,11 @@ For cross-version baselines, run the bench harness under each CPython version
 `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench_py314.json`)
 and summarize deltas across files.
 
-Latest run: 2026-01-08 (macOS arm64, CPython 3.14.2).
-Top speedups: `bench_sum.py` 288.41x, `bench_async_await.py` 14.30x,
-`bench_channel_throughput.py` 11.08x, `bench_matrix_math.py` 8.14x, `bench_prod_list.py` 6.52x.
-Regressions: `bench_struct.py` 0.07x, `bench_descriptor_property.py` 0.07x,
-`bench_attr_access.py` 0.14x, `bench_fib.py` 0.22x, `bench_str_split.py` 0.27x.
+Latest run: 2026-01-09 (macOS arm64, CPython 3.14.2).
+Top speedups: `bench_sum.py` 206.53x, `bench_channel_throughput.py` 17.54x,
+`bench_async_await.py` 11.44x, `bench_matrix_math.py` 6.61x, `bench_prod_list.py` 5.50x.
+Regressions: `bench_descriptor_property.py` 0.11x, `bench_struct.py` 0.14x,
+`bench_attr_access.py` 0.20x, `bench_fib.py` 0.23x, `bench_str_split.py` 0.46x.
 Build/run failures: Cython/Numba baselines skipped; Codon skipped for asyncio,
 bytearray/memoryview, molt_buffer/molt_msgpack, and struct-init benches.
 
@@ -116,17 +117,17 @@ bytearray/memoryview, molt_buffer/molt_msgpack, and struct-init benches.
 - Matrix/buffer kernels (`bench_matrix_math.py`): regression >5% fails the gate.
 - Any expected perf deltas from new kernels must be recorded here after the run; complex regressions move to `OPTIMIZATIONS_PLAN.md`.
 
-Baseline microbenchmarks (2026-01-08): `bench_min_list.py` 0.44x, `bench_max_list.py` 0.42x,
-`bench_prod_list.py` 6.52x, `bench_str_find_unicode.py` 4.16x, `bench_str_count_unicode.py` 1.27x.
+Baseline microbenchmarks (2026-01-09): `bench_min_list.py` 0.49x, `bench_max_list.py` 0.55x,
+`bench_prod_list.py` 5.50x, `bench_str_find_unicode.py` 5.11x, `bench_str_count_unicode.py` 1.94x.
 
 | Benchmark | Molt vs CPython | Notes |
 | --- | --- | --- |
-| bench_matrix_math.py | 8.14x | buffer2d matmul lowering |
-| bench_deeply_nested_loop.py | 1.43x | nested loop lowering |
-| bench_str_endswith.py | 4.76x | string endswith fast path |
-| bench_str_startswith.py | 4.75x | string startswith fast path |
-| bench_str_count.py | 5.45x | string count fast path |
-| bench_str_split.py | 0.27x | optimized split builder |
-| bench_str_replace.py | 4.00x | SIMD-friendly replace path |
-| bench_str_join.py | 0.52x | pre-sized join buffer |
-| bench_sum_list.py | 0.44x | vector reduction fast path |
+| bench_matrix_math.py | 6.61x | buffer2d matmul lowering |
+| bench_deeply_nested_loop.py | 1.79x | nested loop lowering |
+| bench_str_endswith.py | 5.26x | string endswith fast path |
+| bench_str_startswith.py | 5.32x | string startswith fast path |
+| bench_str_count.py | 5.47x | string count fast path |
+| bench_str_split.py | 0.46x | optimized split builder |
+| bench_str_replace.py | 4.34x | SIMD-friendly replace path |
+| bench_str_join.py | 0.87x | pre-sized join buffer |
+| bench_sum_list.py | 0.72x | vector reduction fast path |

@@ -35,7 +35,7 @@
 ## 3. Compatibility Matrix
 | Module | Tier | Status | Priority | Milestone | Owner | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| builtins | Core | Partial | P0 | SL1 | runtime/frontend | Importable module binds supported builtins; missing names raise `AttributeError`. |
+| builtins | Core | Partial | P0 | SL1 | runtime/frontend | Importable module binds supported builtins (including function objects for allowlisted builtins); missing names raise `AttributeError`. |
 | functools | Core-adjacent | Planned | P1 | SL1 | stdlib/runtime | Promote `lru_cache`, `partial`, `reduce` fast paths. |
 | itertools | Core-adjacent | Planned | P1 | SL1 | stdlib/runtime | Iterator kernels; tie into vectorization. |
 | operator | Core-adjacent | Planned | P1 | SL1 | stdlib/runtime | Low-level op dispatch helpers. |
@@ -74,9 +74,9 @@
 | subprocess | Capability-gated | Planned | P3 | SL3 | stdlib | Process spawn control. |
 | socket | Capability-gated | Planned | P2 | SL3 | stdlib | Network sockets. |
 | ssl | Capability-gated | Planned | P3 | SL3 | stdlib | TLS primitives. |
-| asyncio | Capability-gated | Partial | P2 | SL3 | stdlib/runtime | Shim exposes `run`/`sleep` with delay/result semantics; loop/task APIs pending. |
+| asyncio | Capability-gated | Partial | P2 | SL3 | stdlib/runtime | Shim exposes `run`/`sleep` with delay/result semantics and no-op `set_event_loop`/`new_event_loop`; loop/task APIs pending. |
 | selectors | Capability-gated | Planned | P3 | SL3 | stdlib | Event loop primitives. |
-| threading | Capability-gated | Planned | P3 | SL3 | stdlib/runtime | Thread model integration. |
+| threading | Capability-gated | Partial | P3 | SL3 | stdlib/runtime | Minimal `Thread` stub (start/join) for import compatibility; runtime thread model integration pending. |
 | multiprocessing | Capability-gated | Planned | P3 | SL3 | stdlib/runtime | Process model integration. |
 | concurrent.futures | Capability-gated | Planned | P3 | SL3 | stdlib/runtime | Executor interfaces. |
 | sqlite3 | Capability-gated | Planned | P3 | SL3 | stdlib/runtime | DB integration. |
@@ -262,5 +262,5 @@ Modules that touch the host require explicit capabilities. Tokens are additive a
 - TODO(stdlib-compat, owner:runtime, milestone:SL3): CPython bridge contract (IPC/ABI, capability gating, deterministic fallback for C extensions).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3): capability-gated I/O (`io`, `os`, `sys`, `pathlib`).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3): network/process gating (`socket`, `ssl`, `subprocess`, `asyncio`).
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3): expand `asyncio` shim beyond `run`/`sleep` (loop/tasks/futures).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3): expand `asyncio` shim beyond `run`/`sleep`/`set_event_loop`/`new_event_loop` (loop/tasks/futures).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3): `typing` runtime helpers + `__annotations__` preservation.

@@ -31,7 +31,7 @@ class _StreamIter:
 
 def _require_caps_for_mode(mode: str) -> None:
     needs_read = "r" in mode or "+" in mode
-    needs_write = any(flag in mode for flag in ("w", "a", "x", "+"))
+    needs_write = "w" in mode or "a" in mode or "x" in mode or "+" in mode
     if needs_read:
         capabilities.require("fs.read")
     if needs_write:

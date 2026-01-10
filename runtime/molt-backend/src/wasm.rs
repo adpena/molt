@@ -234,6 +234,7 @@ impl WasmBackend {
         add_import("is_bound_method", 2, &mut self.import_ids);
         add_import("function_default_kind", 2, &mut self.import_ids);
         add_import("call_arity_error", 3, &mut self.import_ids);
+        add_import("missing", 0, &mut self.import_ids);
         add_import("json_parse_scalar", 4, &mut self.import_ids);
         add_import("msgpack_parse_scalar", 4, &mut self.import_ids);
         add_import("cbor_parse_scalar", 4, &mut self.import_ids);
@@ -242,7 +243,9 @@ impl WasmBackend {
         add_import("bigint_from_str", 3, &mut self.import_ids);
         add_import("str_from_obj", 2, &mut self.import_ids);
         add_import("repr_from_obj", 2, &mut self.import_ids);
+        add_import("repr_builtin", 2, &mut self.import_ids);
         add_import("ascii_from_obj", 2, &mut self.import_ids);
+        add_import("callable_builtin", 2, &mut self.import_ids);
         add_import("int_from_obj", 5, &mut self.import_ids);
         add_import("float_from_obj", 2, &mut self.import_ids);
         add_import("memoryview_new", 2, &mut self.import_ids);
@@ -252,6 +255,15 @@ impl WasmBackend {
         add_import("id", 2, &mut self.import_ids);
         add_import("ord", 2, &mut self.import_ids);
         add_import("chr", 2, &mut self.import_ids);
+        add_import("round_builtin", 3, &mut self.import_ids);
+        add_import("enumerate_builtin", 3, &mut self.import_ids);
+        add_import("next_builtin", 3, &mut self.import_ids);
+        add_import("any_builtin", 2, &mut self.import_ids);
+        add_import("all_builtin", 2, &mut self.import_ids);
+        add_import("getattr_builtin", 5, &mut self.import_ids);
+        add_import("anext_builtin", 3, &mut self.import_ids);
+        add_import("print_builtin", 2, &mut self.import_ids);
+        add_import("super_builtin", 3, &mut self.import_ids);
         add_import("callargs_new", 3, &mut self.import_ids);
         add_import("callargs_push_pos", 3, &mut self.import_ids);
         add_import("callargs_push_kw", 5, &mut self.import_ids);
@@ -421,9 +433,35 @@ impl WasmBackend {
         });
         self.exports.export("molt_memory", ExportKind::Memory, 0);
 
+        let builtin_table_funcs: [(&str, &str); 23] = [
+            ("molt_missing", "missing"),
+            ("molt_repr_builtin", "repr_builtin"),
+            ("molt_callable_builtin", "callable_builtin"),
+            ("molt_round_builtin", "round_builtin"),
+            ("molt_enumerate_builtin", "enumerate_builtin"),
+            ("molt_next_builtin", "next_builtin"),
+            ("molt_any_builtin", "any_builtin"),
+            ("molt_all_builtin", "all_builtin"),
+            ("molt_getattr_builtin", "getattr_builtin"),
+            ("molt_anext_builtin", "anext_builtin"),
+            ("molt_print_builtin", "print_builtin"),
+            ("molt_super_builtin", "super_builtin"),
+            ("molt_set_attr_name", "set_attr_name"),
+            ("molt_del_attr_name", "del_attr_name"),
+            ("molt_has_attr_name", "has_attr_name"),
+            ("molt_isinstance", "isinstance"),
+            ("molt_issubclass", "issubclass"),
+            ("molt_len", "len"),
+            ("molt_id", "id"),
+            ("molt_ord", "ord"),
+            ("molt_chr", "chr"),
+            ("molt_iter", "iter"),
+            ("molt_aiter", "aiter"),
+        ];
+        let table_min = 20.max((2 + builtin_table_funcs.len() + ir.functions.len()) as u32);
         self.tables.table(TableType {
             element_type: RefType::FUNCREF,
-            minimum: 20,
+            minimum: table_min,
             maximum: None,
         });
         self.exports.export("molt_table", ExportKind::Table, 0);
@@ -438,9 +476,15 @@ impl WasmBackend {
         func_to_table_idx.insert("molt_async_sleep".to_string(), 0);
         func_to_table_idx.insert("molt_anext_default_poll".to_string(), 1);
 
+        for (offset, (runtime_name, import_name)) in builtin_table_funcs.iter().enumerate() {
+            let idx = (offset + 2) as u32;
+            func_to_table_idx.insert((*runtime_name).to_string(), idx);
+            table_indices.push(self.import_ids[*import_name]);
+        }
+
         let user_func_start = self.func_count;
         for (i, func_ir) in ir.functions.iter().enumerate() {
-            let idx = (i + 2) as u32;
+            let idx = (i + 2 + builtin_table_funcs.len()) as u32;
             func_to_table_idx.insert(func_ir.name.clone(), idx);
             func_to_index.insert(func_ir.name.clone(), user_func_start + i as u32);
             table_indices.push(user_func_start + i as u32);
@@ -2887,6 +2931,21 @@ impl WasmBackend {
                         func.instruction(&Instruction::Call(import_ids["func_new"]));
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "builtin_func" => {
+                        let func_name = op.s_value.as_ref().unwrap();
+                        let arity = op.value.unwrap_or(0);
+                        let table_idx = func_map[func_name] as i64;
+                        func.instruction(&Instruction::I64Const(table_idx));
+                        func.instruction(&Instruction::I64Const(arity));
+                        func.instruction(&Instruction::Call(import_ids["func_new"]));
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "missing" => {
+                        let out = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::Call(import_ids["missing"]));
+                        func.instruction(&Instruction::LocalSet(out));
                     }
                     "bound_method_new" => {
                         let args = op.args.as_ref().unwrap();

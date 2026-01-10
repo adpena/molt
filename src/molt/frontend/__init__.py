@@ -25,6 +25,14 @@ class MoltOp:
     metadata: dict[str, Any] | None = None
 
 
+@dataclass(frozen=True)
+class BuiltinFuncSpec:
+    runtime: str
+    params: tuple[str, ...]
+    defaults: tuple[ast.expr, ...] = ()
+    vararg: str | None = None
+
+
 GEN_SEND_OFFSET = 0
 GEN_THROW_OFFSET = 8
 GEN_CLOSED_OFFSET = 16
@@ -41,11 +49,49 @@ BUILTIN_TYPE_TAGS = {
     "tuple": 9,
     "dict": 10,
     "set": 17,
+    "frozenset": 18,
     "range": 11,
     "slice": 12,
     "memoryview": 15,
     "object": 100,
     "type": 101,
+}
+
+_MOLT_MISSING = ast.Name(id="__molt_missing__", ctx=ast.Load())
+
+BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
+    "isinstance": BuiltinFuncSpec("molt_isinstance", ("obj", "classinfo")),
+    "issubclass": BuiltinFuncSpec("molt_issubclass", ("sub", "classinfo")),
+    "len": BuiltinFuncSpec("molt_len", ("obj",)),
+    "ord": BuiltinFuncSpec("molt_ord", ("obj",)),
+    "chr": BuiltinFuncSpec("molt_chr", ("obj",)),
+    "repr": BuiltinFuncSpec("molt_repr_builtin", ("obj",)),
+    "callable": BuiltinFuncSpec("molt_callable_builtin", ("obj",)),
+    "id": BuiltinFuncSpec("molt_id", ("obj",)),
+    "enumerate": BuiltinFuncSpec(
+        "molt_enumerate_builtin", ("iterable", "start"), (_MOLT_MISSING,)
+    ),
+    "round": BuiltinFuncSpec(
+        "molt_round_builtin", ("value", "ndigits"), (_MOLT_MISSING,)
+    ),
+    "iter": BuiltinFuncSpec("molt_iter", ("obj",)),
+    "any": BuiltinFuncSpec("molt_any_builtin", ("iterable",)),
+    "all": BuiltinFuncSpec("molt_all_builtin", ("iterable",)),
+    "next": BuiltinFuncSpec(
+        "molt_next_builtin", ("iterator", "default"), (_MOLT_MISSING,)
+    ),
+    "aiter": BuiltinFuncSpec("molt_aiter", ("obj",)),
+    "anext": BuiltinFuncSpec(
+        "molt_anext_builtin", ("aiter", "default"), (_MOLT_MISSING,)
+    ),
+    "getattr": BuiltinFuncSpec(
+        "molt_getattr_builtin", ("obj", "name", "default"), (_MOLT_MISSING,)
+    ),
+    "setattr": BuiltinFuncSpec("molt_set_attr_name", ("obj", "name", "value")),
+    "delattr": BuiltinFuncSpec("molt_del_attr_name", ("obj", "name")),
+    "hasattr": BuiltinFuncSpec("molt_has_attr_name", ("obj", "name")),
+    "super": BuiltinFuncSpec("molt_super_builtin", ("type", "obj")),
+    "print": BuiltinFuncSpec("molt_print_builtin", (), (), vararg="args"),
 }
 
 MOLT_REEXPORT_FUNCTIONS = {
@@ -109,7 +155,7 @@ MOLT_DIRECT_CALLS = {
         "ws_connect",
         "ws_pair",
     },
-    "asyncio": {"run", "sleep"},
+    "asyncio": {"new_event_loop", "run", "set_event_loop", "sleep"},
     "contextlib": {"closing", "nullcontext"},
     "copy": {"copy", "deepcopy"},
     "dataclasses": {"dataclass", "field"},
@@ -146,6 +192,7 @@ MOLT_DIRECT_CALLS = {
         "print_exc",
         "print_tb",
     },
+    "threading": {"Thread"},
     "typing": {
         "TypeVar",
         "cast",
@@ -510,6 +557,43 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _emit_closing(self, payload: MoltValue) -> MoltValue:
         res = MoltValue(self.next_var(), type_hint="context_manager")
         self.emit(MoltOp(kind="CONTEXT_CLOSING", args=[payload], result=res))
+        return res
+
+    def _emit_open_call(self, node: ast.Call) -> MoltValue:
+        if node.keywords:
+            mode_kw = next((kw.value for kw in node.keywords if kw.arg == "mode"), None)
+            if mode_kw is None or len(node.keywords) > 1:
+                raise NotImplementedError("open only supports mode keyword")
+        else:
+            mode_kw = None
+        if len(node.args) not in {1, 2}:
+            raise NotImplementedError("open expects 1 or 2 arguments")
+        path = self.visit(node.args[0])
+        if path is None:
+            raise NotImplementedError("Unsupported open path")
+        mode_expr = mode_kw if mode_kw is not None else None
+        if len(node.args) == 2:
+            if mode_expr is not None:
+                raise NotImplementedError("open received mode twice")
+            mode_expr = node.args[1]
+        if mode_expr is None:
+            mode_val = MoltValue(self.next_var(), type_hint="str")
+            self.emit(MoltOp(kind="CONST_STR", args=["r"], result=mode_val))
+        else:
+            if isinstance(mode_expr, ast.Constant) and isinstance(mode_expr.value, str):
+                mode_val = MoltValue(self.next_var(), type_hint="str")
+                self.emit(
+                    MoltOp(kind="CONST_STR", args=[mode_expr.value], result=mode_val)
+                )
+            else:
+                mode_val = self.visit(mode_expr)
+        mode_hint = None
+        if mode_expr is None:
+            mode_hint = "file_text"
+        elif isinstance(mode_expr, ast.Constant) and isinstance(mode_expr.value, str):
+            mode_hint = "file_bytes" if "b" in mode_expr.value else "file_text"
+        res = MoltValue(self.next_var(), type_hint=mode_hint or "file")
+        self.emit(MoltOp(kind="FILE_OPEN", args=[path, mode_val], result=res))
         return res
 
     def _emit_asyncio_sleep(
@@ -1439,6 +1523,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         default_exprs: list[ast.expr],
         kw_default_exprs: list[ast.expr | None],
         docstring: str | None,
+        module_override: str | None = None,
         is_coroutine: bool = False,
         is_generator: bool = False,
     ) -> None:
@@ -1459,8 +1544,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="CONST_STR", args=[qualname], result=qual_val))
         set_attr("__qualname__", qual_val)
 
+        module_name = module_override or self.module_name
         module_val = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="CONST_STR", args=[self.module_name], result=module_val))
+        self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=module_val))
         set_attr("__module__", module_val)
 
         arg_name_vals: list[MoltValue] = []
@@ -2054,8 +2140,38 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if self.type_hint_policy == "trust":
             self._apply_hint_to_value(name, value, hint)
 
+    def _emit_builtin_function(self, func_id: str) -> MoltValue:
+        spec = BUILTIN_FUNC_SPECS[func_id]
+        func_val = MoltValue(self.next_var(), type_hint="function")
+        self.emit(
+            MoltOp(
+                kind="BUILTIN_FUNC",
+                args=[spec.runtime, len(spec.params)],
+                result=func_val,
+            )
+        )
+        self._emit_function_metadata(
+            func_val,
+            name=func_id,
+            qualname=func_id,
+            posonly_params=list(spec.params),
+            pos_or_kw_params=[],
+            kwonly_params=[],
+            vararg=spec.vararg,
+            varkw=None,
+            default_exprs=list(spec.defaults),
+            kw_default_exprs=[],
+            docstring=None,
+            module_override="builtins",
+        )
+        return func_val
+
     def visit_Name(self, node: ast.Name) -> Any:
         if isinstance(node.ctx, ast.Load):
+            if node.id == "__molt_missing__":
+                res = MoltValue(self.next_var(), type_hint="Any")
+                self.emit(MoltOp(kind="MISSING", args=[], result=res))
+                return res
             if node.id == "__name__":
                 module_name = (
                     "__main__"
@@ -2086,6 +2202,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     res = MoltValue(self.next_var(), type_hint="type")
                     self.emit(MoltOp(kind="BUILTIN_TYPE", args=[tag_val], result=res))
                     return res
+                if node.id in BUILTIN_FUNC_SPECS:
+                    return self._emit_builtin_function(node.id)
                 return None
             if self.current_func_name == "molt_main":
                 return global_val
@@ -5665,6 +5783,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 allowlist_key = normalized or module_name
                 if func_id == "field" and allowlist_key == "dataclasses":
                     return self._emit_dataclasses_field_call(allowlist_key, node)
+                if func_id == "open" and allowlist_key == "builtins":
+                    return self._emit_open_call(node)
                 enforce_allowlist = (
                     allowlist_key in MOLT_DIRECT_CALLS
                     or allowlist_key in self.stdlib_allowlist
@@ -5674,10 +5794,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     and func_id in MOLT_DIRECT_CALLS[allowlist_key]
                 ):
                     if needs_bind:
-                        raise NotImplementedError(
-                            "Call keywords/starargs are not supported for allowlisted "
-                            "module functions"
+                        callee = self.visit(node.func)
+                        if callee is None:
+                            raise NotImplementedError("Unsupported call target")
+                        res = MoltValue(self.next_var(), type_hint="Any")
+                        callargs = self._emit_call_args_builder(node)
+                        self.emit(
+                            MoltOp(
+                                kind="CALL_BIND",
+                                args=[callee, callargs],
+                                result=res,
+                            )
                         )
+                        return res
                     args = self._emit_direct_call_args(allowlist_key, func_id, node)
                     res = MoltValue(self.next_var(), type_hint="Any")
                     target_name = (
@@ -6125,50 +6254,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
                 return res
             if func_id == "open":
-                if node.keywords:
-                    mode_kw = next(
-                        (kw.value for kw in node.keywords if kw.arg == "mode"), None
-                    )
-                    if mode_kw is None or len(node.keywords) > 1:
-                        raise NotImplementedError("open only supports mode keyword")
-                else:
-                    mode_kw = None
-                if len(node.args) not in {1, 2}:
-                    raise NotImplementedError("open expects 1 or 2 arguments")
-                path = self.visit(node.args[0])
-                mode_expr = mode_kw if mode_kw is not None else None
-                if len(node.args) == 2:
-                    if mode_expr is not None:
-                        raise NotImplementedError("open received mode twice")
-                    mode_expr = node.args[1]
-                mode_val: MoltValue
-                if mode_expr is None:
-                    mode_val = MoltValue(self.next_var(), type_hint="str")
-                    self.emit(MoltOp(kind="CONST_STR", args=["r"], result=mode_val))
-                else:
-                    if isinstance(mode_expr, ast.Constant) and isinstance(
-                        mode_expr.value, str
-                    ):
-                        mode_val = MoltValue(self.next_var(), type_hint="str")
-                        self.emit(
-                            MoltOp(
-                                kind="CONST_STR",
-                                args=[mode_expr.value],
-                                result=mode_val,
-                            )
-                        )
-                    else:
-                        mode_val = self.visit(mode_expr)
-                mode_hint: str | None = None
-                if mode_expr is None:
-                    mode_hint = "file_text"
-                elif isinstance(mode_expr, ast.Constant) and isinstance(
-                    mode_expr.value, str
-                ):
-                    mode_hint = "file_bytes" if "b" in mode_expr.value else "file_text"
-                res = MoltValue(self.next_var(), type_hint=mode_hint or "file")
-                self.emit(MoltOp(kind="FILE_OPEN", args=[path, mode_val], result=res))
-                return res
+                return self._emit_open_call(node)
             if func_id == "nullcontext":
                 if len(node.args) > 1:
                     raise NotImplementedError("nullcontext expects 0 or 1 argument")
@@ -7425,6 +7511,20 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 res = MoltValue(self.next_var(), type_hint="memoryview")
                 self.emit(MoltOp(kind="MEMORYVIEW_NEW", args=[arg], result=res))
                 return res
+            if func_id in BUILTIN_FUNC_SPECS:
+                callee = self._emit_builtin_function(func_id)
+                res = MoltValue(self.next_var(), type_hint="Any")
+                if needs_bind:
+                    callargs = self._emit_call_args_builder(node)
+                    self.emit(
+                        MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res)
+                    )
+                else:
+                    args = self._emit_call_args(node.args)
+                    self.emit(
+                        MoltOp(kind="CALL_FUNC", args=[callee] + args, result=res)
+                    )
+                return res
 
             if target_info is not None:
                 target_module = None
@@ -7444,10 +7544,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         target_module = imported_from
                 if target_module is not None:
                     if needs_bind:
-                        raise NotImplementedError(
-                            "Call keywords/starargs are not supported for allowlisted "
-                            "module functions"
+                        callee = self.visit(node.func)
+                        if callee is None:
+                            raise NotImplementedError("Unsupported call target")
+                        res = MoltValue(self.next_var(), type_hint="Any")
+                        callargs = self._emit_call_args_builder(node)
+                        self.emit(
+                            MoltOp(
+                                kind="CALL_BIND",
+                                args=[callee, callargs],
+                                result=res,
+                            )
                         )
+                        return res
                     args = self._emit_direct_call_args(target_module, func_id, node)
                     res = MoltValue(self.next_var(), type_hint="Any")
                     target_name = (
@@ -8709,10 +8818,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             b_val = self.locals.get(b_name) or self.globals.get(b_name)
             if a_val is None or b_val is None:
                 raise NotImplementedError("Matmul operands must be simple locals")
-            res = MoltValue(self.next_var(), type_hint="buffer2d")
-            self.emit(MoltOp(kind="BUFFER2D_MATMUL", args=[a_val, b_val], result=res))
-            self.locals[out_name] = res
-            return None
+            a_hint = self.boxed_local_hints.get(a_name, a_val.type_hint)
+            b_hint = self.boxed_local_hints.get(b_name, b_val.type_hint)
+            if a_hint == "buffer2d" and b_hint == "buffer2d":
+                a_arg = self._load_local_value(a_name) or a_val
+                b_arg = self._load_local_value(b_name) or b_val
+                res = MoltValue(self.next_var(), type_hint="buffer2d")
+                self.emit(
+                    MoltOp(kind="BUFFER2D_MATMUL", args=[a_arg, b_arg], result=res)
+                )
+                self._store_local_value(out_name, res)
+                return None
         target_names = self._collect_target_names(node.target)
         if not target_names:
             raise NotImplementedError("Only name/tuple/list for targets are supported")
@@ -11320,6 +11436,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "out": op.result.name,
                     }
                 )
+            elif op.kind == "BUILTIN_FUNC":
+                func_name, arity = op.args
+                json_ops.append(
+                    {
+                        "kind": "builtin_func",
+                        "s_value": func_name,
+                        "value": arity,
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "FUNC_NEW":
                 func_name, arity = op.args
                 json_ops.append(
@@ -11359,6 +11485,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     {
                         "kind": "super_new",
                         "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "MISSING":
+                json_ops.append(
+                    {
+                        "kind": "missing",
                         "out": op.result.name,
                     }
                 )

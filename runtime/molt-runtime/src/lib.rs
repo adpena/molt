@@ -297,6 +297,7 @@ static DICT_METHOD_CLEAR: OnceLock<u64> = OnceLock::new();
 static DICT_METHOD_COPY: OnceLock<u64> = OnceLock::new();
 static DICT_METHOD_POPITEM: OnceLock<u64> = OnceLock::new();
 static PROFILE_ENABLED: OnceLock<bool> = OnceLock::new();
+static MOLT_MISSING: OnceLock<u64> = OnceLock::new();
 static CALL_DISPATCH_COUNT: AtomicU64 = AtomicU64::new(0);
 static STRING_COUNT_CACHE_HIT: AtomicU64 = AtomicU64::new(0);
 static STRING_COUNT_CACHE_MISS: AtomicU64 = AtomicU64::new(0);
@@ -2674,6 +2675,18 @@ fn builtin_func_bits_with_default(
                     function_set_dict_bits(ptr, bits);
                 }
             }
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+fn missing_bits() -> u64 {
+    *MOLT_MISSING.get_or_init(|| {
+        let total_size = std::mem::size_of::<MoltHeader>();
+        let ptr = alloc_object(total_size, TYPE_ID_OBJECT);
+        if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
             MoltObject::from_ptr(ptr).bits()
         }
     })
@@ -10125,6 +10138,240 @@ pub extern "C" fn molt_chr(val: u64) -> u64 {
         return MoltObject::none().bits();
     }
     MoltObject::from_ptr(out).bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_missing() -> u64 {
+    let bits = missing_bits();
+    inc_ref_bits(bits);
+    bits
+}
+
+#[no_mangle]
+pub extern "C" fn molt_repr_builtin(val_bits: u64) -> u64 {
+    molt_repr_from_obj(val_bits)
+}
+
+#[no_mangle]
+pub extern "C" fn molt_callable_builtin(val_bits: u64) -> u64 {
+    molt_is_callable(val_bits)
+}
+
+#[no_mangle]
+pub extern "C" fn molt_round_builtin(val_bits: u64, ndigits_bits: u64) -> u64 {
+    let missing = missing_bits();
+    let has_ndigits = ndigits_bits != missing;
+    let has_ndigits_bits = MoltObject::from_bool(has_ndigits).bits();
+    let ndigits = if has_ndigits {
+        ndigits_bits
+    } else {
+        MoltObject::none().bits()
+    };
+    molt_round(val_bits, ndigits, has_ndigits_bits)
+}
+
+#[no_mangle]
+pub extern "C" fn molt_enumerate_builtin(iter_bits: u64, start_bits: u64) -> u64 {
+    let missing = missing_bits();
+    let has_start = start_bits != missing;
+    let start = if has_start {
+        start_bits
+    } else {
+        MoltObject::from_int(0).bits()
+    };
+    let has_start_bits = MoltObject::from_bool(has_start).bits();
+    molt_enumerate(iter_bits, start, has_start_bits)
+}
+
+#[no_mangle]
+pub extern "C" fn molt_next_builtin(iter_bits: u64, default_bits: u64) -> u64 {
+    let missing = missing_bits();
+    let pair_bits = molt_iter_next(iter_bits);
+    let pair_obj = obj_from_bits(pair_bits);
+    let Some(pair_ptr) = pair_obj.as_ptr() else {
+        raise!("TypeError", "object is not an iterator");
+    };
+    unsafe {
+        if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+            raise!("TypeError", "object is not an iterator");
+        }
+        let elems = seq_vec_ref(pair_ptr);
+        if elems.len() < 2 {
+            raise!("TypeError", "object is not an iterator");
+        }
+        let val_bits = elems[0];
+        let done_bits = elems[1];
+        if is_truthy(obj_from_bits(done_bits)) {
+            if default_bits != missing {
+                inc_ref_bits(default_bits);
+                return default_bits;
+            }
+            if obj_from_bits(val_bits).is_none() {
+                raise!("StopIteration", "");
+            }
+            let msg_bits = molt_str_from_obj(val_bits);
+            let msg = string_obj_to_owned(obj_from_bits(msg_bits)).unwrap_or_default();
+            dec_ref_bits(msg_bits);
+            raise!("StopIteration", &msg);
+        }
+        inc_ref_bits(val_bits);
+        val_bits
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_any_builtin(iter_bits: u64) -> u64 {
+    let iter_obj = molt_iter(iter_bits);
+    if obj_from_bits(iter_obj).is_none() {
+        raise!("TypeError", "object is not iterable");
+    }
+    loop {
+        let pair_bits = molt_iter_next(iter_obj);
+        let pair_obj = obj_from_bits(pair_bits);
+        let Some(pair_ptr) = pair_obj.as_ptr() else {
+            raise!("TypeError", "object is not an iterator");
+        };
+        unsafe {
+            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                raise!("TypeError", "object is not an iterator");
+            }
+            let elems = seq_vec_ref(pair_ptr);
+            if elems.len() < 2 {
+                raise!("TypeError", "object is not an iterator");
+            }
+            let val_bits = elems[0];
+            let done_bits = elems[1];
+            if is_truthy(obj_from_bits(done_bits)) {
+                return MoltObject::from_bool(false).bits();
+            }
+            if is_truthy(obj_from_bits(val_bits)) {
+                return MoltObject::from_bool(true).bits();
+            }
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_all_builtin(iter_bits: u64) -> u64 {
+    let iter_obj = molt_iter(iter_bits);
+    if obj_from_bits(iter_obj).is_none() {
+        raise!("TypeError", "object is not iterable");
+    }
+    loop {
+        let pair_bits = molt_iter_next(iter_obj);
+        let pair_obj = obj_from_bits(pair_bits);
+        let Some(pair_ptr) = pair_obj.as_ptr() else {
+            raise!("TypeError", "object is not an iterator");
+        };
+        unsafe {
+            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                raise!("TypeError", "object is not an iterator");
+            }
+            let elems = seq_vec_ref(pair_ptr);
+            if elems.len() < 2 {
+                raise!("TypeError", "object is not an iterator");
+            }
+            let val_bits = elems[0];
+            let done_bits = elems[1];
+            if is_truthy(obj_from_bits(done_bits)) {
+                return MoltObject::from_bool(true).bits();
+            }
+            if !is_truthy(obj_from_bits(val_bits)) {
+                return MoltObject::from_bool(false).bits();
+            }
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_getattr_builtin(obj_bits: u64, name_bits: u64, default_bits: u64) -> u64 {
+    let missing = missing_bits();
+    if default_bits == missing {
+        return molt_get_attr_name(obj_bits, name_bits);
+    }
+    molt_get_attr_name_default(obj_bits, name_bits, default_bits)
+}
+
+#[no_mangle]
+pub extern "C" fn molt_anext_builtin(iter_bits: u64, default_bits: u64) -> u64 {
+    let missing = missing_bits();
+    if default_bits == missing {
+        return molt_anext(iter_bits);
+    }
+    let obj_ptr = molt_alloc(3 * std::mem::size_of::<u64>());
+    if obj_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    unsafe {
+        let header = header_from_obj_ptr(obj_ptr);
+        (*header).poll_fn = molt_anext_default_poll as usize as u64;
+        (*header).state = 0;
+        let payload_ptr = obj_ptr as *mut u64;
+        *payload_ptr = iter_bits;
+        inc_ref_bits(iter_bits);
+        *payload_ptr.add(1) = default_bits;
+        inc_ref_bits(default_bits);
+        *payload_ptr.add(2) = MoltObject::none().bits();
+    }
+    MoltObject::from_ptr(obj_ptr).bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_print_builtin(args_bits: u64) -> u64 {
+    let args_obj = obj_from_bits(args_bits);
+    let Some(args_ptr) = args_obj.as_ptr() else {
+        raise!("TypeError", "print expects a tuple");
+    };
+    unsafe {
+        if object_type_id(args_ptr) != TYPE_ID_TUPLE {
+            raise!("TypeError", "print expects a tuple");
+        }
+        let elems = seq_vec_ref(args_ptr);
+        if elems.is_empty() {
+            molt_print_newline();
+            return MoltObject::none().bits();
+        }
+        if elems.len() == 1 {
+            molt_print_obj(elems[0]);
+            return MoltObject::none().bits();
+        }
+        let mut parts = Vec::with_capacity(elems.len());
+        for &val_bits in elems {
+            let str_bits = molt_str_from_obj(val_bits);
+            parts.push(str_bits);
+        }
+        let tuple_ptr = alloc_tuple(&parts);
+        if tuple_ptr.is_null() {
+            for part in parts {
+                dec_ref_bits(part);
+            }
+            return MoltObject::none().bits();
+        }
+        let sep_ptr = alloc_string(b" ");
+        if sep_ptr.is_null() {
+            for part in parts {
+                dec_ref_bits(part);
+            }
+            dec_ref_bits(MoltObject::from_ptr(tuple_ptr).bits());
+            return MoltObject::none().bits();
+        }
+        let sep_bits = MoltObject::from_ptr(sep_ptr).bits();
+        let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
+        let joined_bits = molt_string_join(sep_bits, tuple_bits);
+        molt_print_obj(joined_bits);
+        for part in parts {
+            dec_ref_bits(part);
+        }
+        dec_ref_bits(sep_bits);
+        dec_ref_bits(tuple_bits);
+        dec_ref_bits(joined_bits);
+    }
+    MoltObject::none().bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_super_builtin(type_bits: u64, obj_bits: u64) -> u64 {
+    molt_super_new(type_bits, obj_bits)
 }
 
 #[no_mangle]

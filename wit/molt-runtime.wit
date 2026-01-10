@@ -76,6 +76,7 @@ interface intrinsics {
     callargs_expand_star: func(builder: u64, iterable: molt-object) -> molt-object;
     callargs_expand_kwstar: func(builder: u64, mapping: molt-object) -> molt-object;
     call_bind: func(callable: molt-object, builder: u64) -> molt-object;
+    missing: func() -> molt-object;
 
     json_parse_scalar: func(ptr: molt-ptr, len: u64, out: molt-ptr) -> s32;
     msgpack_parse_scalar: func(ptr: molt-ptr, len: u64, out: molt-ptr) -> s32;
@@ -85,7 +86,9 @@ interface intrinsics {
     bigint_from_str: func(ptr: molt-ptr, len: u64) -> molt-object;
     str_from_obj: func(val: molt-object) -> molt-object;
     repr_from_obj: func(val: molt-object) -> molt-object;
+    repr_builtin: func(val: molt-object) -> molt-object;
     ascii_from_obj: func(val: molt-object) -> molt-object;
+    callable_builtin: func(val: molt-object) -> molt-object;
     int_from_obj: func(val: molt-object, base: molt-object, has_base: molt-object) -> molt-object;
     guard_type: func(val: molt-object, expected: molt-object) -> molt-object;
     guard_layout_ptr: func(obj: molt-ptr, class_bits: molt-object, expected_version: u64) -> molt-object;
@@ -123,6 +126,15 @@ interface intrinsics {
     id: func(val: molt-object) -> molt-object;
     ord: func(val: molt-object) -> molt-object;
     chr: func(val: molt-object) -> molt-object;
+    round_builtin: func(val: molt-object, ndigits: molt-object) -> molt-object;
+    enumerate_builtin: func(iterable: molt-object, start: molt-object) -> molt-object;
+    next_builtin: func(iter: molt-object, default: molt-object) -> molt-object;
+    any_builtin: func(iter: molt-object) -> molt-object;
+    all_builtin: func(iter: molt-object) -> molt-object;
+    getattr_builtin: func(obj: molt-object, name: molt-object, default: molt-object) -> molt-object;
+    anext_builtin: func(iter: molt-object, default: molt-object) -> molt-object;
+    print_builtin: func(args: molt-object) -> molt-object;
+    super_builtin: func(type: molt-object, obj: molt-object) -> molt-object;
     slice: func(obj: molt-object, start: molt-object, end: molt-object) -> molt-object;
     slice_new: func(start: molt-object, stop: molt-object, step: molt-object) -> molt-object;
     range_new: func(start: molt-object, stop: molt-object, step: molt-object) -> molt-object;

@@ -141,6 +141,14 @@ const boxPtr = (obj) => {
   heap.set(id, obj);
   return QNAN | TAG_PTR | id;
 };
+let missingBits = null;
+const missingSentinel = () => {
+  if (missingBits === null) {
+    missingBits = boxPtr({ type: 'missing' });
+  }
+  return missingBits;
+};
+let anextDefaultPollIdx = null;
 const normalizePtrBits = (val) => {
   if (val === 0n) return val;
   if (isPtr(val)) return val;
@@ -3436,6 +3444,150 @@ BASE_IMPORTS = """\
   ws_send: () => 0n,
   ws_recv: () => 0n,
   ws_close: () => {},
+  missing: () => missingSentinel(),
+  repr_builtin: (val) => baseImports.repr_from_obj(val),
+  callable_builtin: (val) => baseImports.is_callable(val),
+  round_builtin: (val, ndigitsBits) => {
+    const missing = missingSentinel();
+    const hasNdigits = ndigitsBits !== missing;
+    const ndigits = hasNdigits ? ndigitsBits : boxNone();
+    return baseImports.round(val, ndigits, boxBool(hasNdigits));
+  },
+  enumerate_builtin: (iterable, startBits) => {
+    const missing = missingSentinel();
+    const hasStart = startBits !== missing;
+    const start = hasStart ? startBits : boxInt(0);
+    return baseImports.enumerate(iterable, start, boxBool(hasStart));
+  },
+  next_builtin: (iterBits, defaultBits) => {
+    const missing = missingSentinel();
+    const pairBits = baseImports.iter_next(iterBits);
+    const pair = getTuple(pairBits);
+    if (!pair || pair.items.length < 2) {
+      throw new Error('TypeError: object is not an iterator');
+    }
+    const valBits = pair.items[0];
+    const doneBits = pair.items[1];
+    if (isTag(doneBits, TAG_BOOL) && (doneBits & 1n) === 1n) {
+      if (defaultBits !== missing) {
+        return defaultBits;
+      }
+      const msgBits = isTag(valBits, TAG_NONE)
+        ? boxPtr({ type: 'str', value: '' })
+        : baseImports.str_from_obj(valBits);
+      const msg = getStrObj(msgBits) ?? '';
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'StopIteration' }),
+        boxPtr({ type: 'str', value: msg }),
+      );
+      return raiseException(exc);
+    }
+    return valBits;
+  },
+  any_builtin: (iterable) => {
+    const iterBits = baseImports.iter(iterable);
+    if (isTag(iterBits, TAG_NONE)) {
+      throw new Error('TypeError: object is not iterable');
+    }
+    while (true) {
+      const pairBits = baseImports.iter_next(iterBits);
+      const pair = getTuple(pairBits);
+      if (!pair || pair.items.length < 2) {
+        throw new Error('TypeError: object is not an iterator');
+      }
+      const valBits = pair.items[0];
+      const doneBits = pair.items[1];
+      if (isTag(doneBits, TAG_BOOL) && (doneBits & 1n) === 1n) {
+        return boxBool(false);
+      }
+      if (baseImports.is_truthy(valBits) === 1n) {
+        return boxBool(true);
+      }
+    }
+  },
+  all_builtin: (iterable) => {
+    const iterBits = baseImports.iter(iterable);
+    if (isTag(iterBits, TAG_NONE)) {
+      throw new Error('TypeError: object is not iterable');
+    }
+    while (true) {
+      const pairBits = baseImports.iter_next(iterBits);
+      const pair = getTuple(pairBits);
+      if (!pair || pair.items.length < 2) {
+        throw new Error('TypeError: object is not an iterator');
+      }
+      const valBits = pair.items[0];
+      const doneBits = pair.items[1];
+      if (isTag(doneBits, TAG_BOOL) && (doneBits & 1n) === 1n) {
+        return boxBool(true);
+      }
+      if (baseImports.is_truthy(valBits) === 0n) {
+        return boxBool(false);
+      }
+    }
+  },
+  getattr_builtin: (objBits, nameBits, defaultBits) => {
+    const missing = missingSentinel();
+    if (defaultBits === missing) {
+      return baseImports.get_attr_name(objBits, nameBits);
+    }
+    return baseImports.get_attr_name_default(objBits, nameBits, defaultBits);
+  },
+  anext_builtin: (iterBits, defaultBits) => {
+    const missing = missingSentinel();
+    if (defaultBits === missing) {
+      return baseImports.anext(iterBits);
+    }
+    if (!memory || !table) return boxNone();
+    const pollFn = baseImports.anext_default_poll;
+    let pollIdx = anextDefaultPollIdx;
+    if (pollIdx === null) {
+      for (let i = 0; i < table.length; i += 1) {
+        if (table.get(i) === pollFn) {
+          pollIdx = i;
+          break;
+        }
+      }
+      if (pollIdx === null) {
+        pollIdx = table.length;
+        table.grow(1);
+        table.set(pollIdx, pollFn);
+      }
+      anextDefaultPollIdx = pollIdx;
+    }
+    const addr = allocRaw(24);
+    if (!addr) return boxNone();
+    const view = new DataView(memory.buffer);
+    view.setUint32(addr - 24, pollIdx, true);
+    view.setBigInt64(addr - 16, 0n, true);
+    view.setBigInt64(addr + 0, iterBits, true);
+    view.setBigInt64(addr + 8, defaultBits, true);
+    view.setBigInt64(addr + 16, boxNone(), true);
+    return boxPtrAddr(addr);
+  },
+  print_builtin: (argsBits) => {
+    const args = getTuple(argsBits);
+    if (!args) {
+      throw new Error('TypeError: print expects a tuple');
+    }
+    if (args.items.length === 0) {
+      baseImports.print_newline();
+      return boxNone();
+    }
+    if (args.items.length === 1) {
+      baseImports.print_obj(args.items[0]);
+      return boxNone();
+    }
+    const parts = [];
+    for (const val of args.items) {
+      const strBits = baseImports.str_from_obj(val);
+      const text = getStrObj(strBits);
+      parts.push(text === null ? '<obj>' : text);
+    }
+    baseImports.print_obj(boxPtr({ type: 'str', value: parts.join(' ') }));
+    return boxNone();
+  },
+  super_builtin: (typeBits, objBits) => baseImports.super_new(typeBits, objBits),
 """
 
 

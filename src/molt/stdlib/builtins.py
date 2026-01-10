@@ -16,6 +16,8 @@ __all__ = [
     "chr",
     "repr",
     "callable",
+    "any",
+    "all",
     "id",
     "str",
     "range",
@@ -57,6 +59,8 @@ ord = ord
 chr = chr
 repr = repr
 callable = callable
+any = any
+all = all
 id = id
 str = str
 range = range

@@ -1,0 +1,3 @@
+Successfully compiled to output.o
+ld: warning: no platform load command found in '/Users/adpena/PycharmProjects/molt/output.o', assuming: macOS
+Successfully built hello_molt

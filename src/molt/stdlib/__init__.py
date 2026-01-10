@@ -17,6 +17,7 @@ __all__ = [
     "pprint",
     "string",
     "sys",
+    "threading",
     "traceback",
     "types",
     "typing",

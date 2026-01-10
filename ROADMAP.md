@@ -30,8 +30,8 @@ Canonical current status: `docs/spec/STATUS.md`. This roadmap is forward-looking
 
 ## Stdlib
 - Partial: importable `builtins` module binding supported builtins (attribute gaps tracked in the matrix).
-- Partial: asyncio shim (`run`/`sleep` lowered to runtime with delay/result semantics); loop/task APIs still pending.
-- Partial: shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pprint`, `string`, `typing`, `sys`, `os`, and `asyncio` (capability-gated env access).
+- Partial: asyncio shim (`run`/`sleep` lowered to runtime with delay/result semantics; `set_event_loop`/`new_event_loop` stubs); loop/task APIs still pending.
+- Partial: shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pprint`, `string`, `typing`, `sys`, `os`, `asyncio`, and `threading` (capability-gated env access).
 - Import-only allowlist expanded for `base64`, `binascii`, `pickle`, `unittest`, `site`, `sysconfig`, `collections.abc`, `importlib`, and `importlib.util` (API parity pending).
 
 ## Offload / IPC

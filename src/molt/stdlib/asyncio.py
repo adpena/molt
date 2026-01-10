@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from molt.concurrency import channel
 
-__all__ = ["Queue", "run", "sleep"]
+__all__ = ["Queue", "new_event_loop", "run", "set_event_loop", "sleep"]
 
 if TYPE_CHECKING:
 
@@ -25,6 +25,14 @@ def sleep(delay: float = 0.0, result: Any | None = None) -> Any:
     if result is None:
         return molt_async_sleep(delay)
     return molt_async_sleep(delay, result)
+
+
+def set_event_loop(_loop: Any) -> None:
+    return None
+
+
+def new_event_loop() -> Any:
+    return None
 
 
 class Queue:

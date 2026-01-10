@@ -3764,6 +3764,35 @@ impl SimpleBackend {
                     let out_name = op.out.unwrap();
                     vars.insert(out_name, obj);
                 }
+                "builtin_func" => {
+                    let func_name = op.s_value.as_ref().unwrap();
+                    let arity = op.value.unwrap();
+                    let mut func_sig = self.module.make_signature();
+                    for _ in 0..arity {
+                        func_sig.params.push(AbiParam::new(types::I64));
+                    }
+                    func_sig.returns.push(AbiParam::new(types::I64));
+                    let func_id = self
+                        .module
+                        .declare_function(func_name, Linkage::Import, &func_sig)
+                        .unwrap();
+                    let func_ref = self.module.declare_func_in_func(func_id, builder.func);
+                    let func_addr = builder.ins().func_addr(types::I64, func_ref);
+                    let arity_val = builder.ins().iconst(types::I64, arity);
+
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_func_new", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[func_addr, arity_val]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
                 "func_new" => {
                     let func_name = op.s_value.as_ref().unwrap();
                     let arity = op.value.unwrap();
@@ -3794,6 +3823,18 @@ impl SimpleBackend {
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[func_addr, arity_val]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "missing" => {
+                    let mut sig = self.module.make_signature();
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_missing", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }

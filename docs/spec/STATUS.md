@@ -26,6 +26,7 @@ README/ROADMAP in sync.
 - Dict/set key hashability parity for common unhashable types (list/dict/set/bytearray/memoryview).
 - Importable `builtins` module binds supported builtins (see stdlib matrix).
 - `enumerate` builtin returns an iterator over `(index, value)` with optional `start`.
+- Builtin function objects for allowlisted builtins (`any`, `all`, `callable`, `repr`, `getattr`, `hasattr`, `round`, `next`, `anext`, `print`, `super`).
 
 ## Limitations (Current)
 - Classes/object model: C3 MRO + multiple inheritance + `super()` resolution for
@@ -41,7 +42,7 @@ README/ROADMAP in sync.
   semantics (see type coverage matrix).
 - Imports: static module graph only; no dynamic import hooks or full package
   resolution.
-- Asyncio: shim exposes `run`/`sleep` only; loop/task APIs still pending and no
+- Asyncio: shim exposes `run`/`sleep` plus `set_event_loop`/`new_event_loop` stubs; loop/task APIs still pending and no
   full event-loop/task surface.
 - Async with: only a single context manager and simple name binding are supported.
 - Matmul (`@`): supported only for `molt_buffer`/`buffer2d`; other types raise
@@ -69,7 +70,7 @@ README/ROADMAP in sync.
 
 ## Stdlib Coverage
 - Partial shims: `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`,
-  `pprint`, `string`, `typing`, `sys`, `os`, `asyncio`.
+  `pprint`, `string`, `typing`, `sys`, `os`, `asyncio`, `threading`.
 - Import-only stubs: `collections.abc`, `importlib`, `importlib.util`.
 - See `docs/spec/0015_STDLIB_COMPATIBILITY_MATRIX.md` for the full matrix.
 

@@ -37,16 +37,16 @@
 | --- | --- | --- | --- | --- | --- |
 | abs | numeric absolute value | Planned | P1 | TC2 | frontend/runtime |
 | aiter | async iterator protocol | Supported | P1 | TC2 | frontend/runtime |
-| all | truthiness reduction | Planned | P1 | TC2 | frontend/runtime |
+| all | truthiness reduction | Partial | P1 | TC2 | frontend/runtime |
 | anext | async next with default | Partial | P1 | TC2 | frontend/runtime |
-| any | truthiness reduction | Planned | P1 | TC2 | frontend/runtime |
+| any | truthiness reduction | Partial | P1 | TC2 | frontend/runtime |
 | ascii | ASCII repr escaping | Planned | P2 | TC3 | runtime |
 | bin | integer to binary string | Planned | P2 | TC3 | runtime |
 | bool | bool constructor | Planned | P1 | TC2 | frontend/runtime |
 | breakpoint | debugger hook (gated) | Planned | P2 | TC3 | stdlib |
 | bytearray | bytearray constructor | Partial | P0 | TC1 | frontend/runtime |
 | bytes | bytes constructor | Planned | P1 | TC2 | frontend/runtime |
-| callable | callable predicate | Planned | P2 | TC3 | runtime |
+| callable | callable predicate | Partial | P2 | TC3 | runtime |
 | chr | int to Unicode char | Planned | P2 | TC3 | runtime |
 | classmethod | descriptor constructor | Partial | P1 | TC2 | runtime |
 | compile | code object (restricted) | Planned | P2 | TC3 | stdlib |
@@ -68,7 +68,7 @@
 | hash | hash protocol | Planned | P2 | TC3 | runtime |
 | help | help system (gated) | Planned | P2 | TC3 | stdlib |
 | hex | integer to hex string | Planned | P2 | TC3 | runtime |
-| id | identity (deterministic) | Planned | P2 | TC3 | runtime |
+| id | identity (deterministic) | Partial | P2 | TC3 | runtime |
 | input | stdin (gated) | Planned | P2 | TC3 | stdlib |
 | int | int constructor | Partial | P1 | TC2 | frontend/runtime |
 | isinstance | type check + tuple-of-types | Partial | P2 | TC3 | runtime |
@@ -147,9 +147,9 @@
 - Implemented: exception objects with cause/context/suppress fields.
   - Implemented: exception class objects derived from `Exception` for typed `type(exc)`.
 - TODO(type-coverage, owner:runtime, milestone:TC1): exception stack trace capture.
-- TODO(type-coverage, owner:runtime, milestone:TC2): formatting builtins (`repr`, `ascii`, `bin`, `hex`, `oct`, `chr`, `ord`) + full `format` protocol (`__format__`, named fields, locale-aware grouping).
+- TODO(type-coverage, owner:runtime, milestone:TC2): formatting builtins (`ascii`, `bin`, `hex`, `oct`, `chr`, `ord`) + full `format` protocol (`__format__`, named fields, locale-aware grouping).
 - TODO(type-coverage, owner:runtime, milestone:TC2): rounding intrinsics (`floor`, `ceil`) + full deterministic semantics for edge cases.
-- TODO(type-coverage, owner:runtime, milestone:TC2): identity builtins (`hash`, `id`, `callable`).
+- TODO(type-coverage, owner:runtime, milestone:TC2): identity builtins (`hash`) with deterministic hashing policy.
 - Implemented: BigInt heap fallback + arithmetic parity beyond 47-bit inline ints.
 - TODO(type-coverage, owner:runtime, milestone:TC1): recursion limits + `RecursionError` guard semantics.
 - Implemented: descriptor deleter semantics (`__delete__`, property deleter) + attribute deletion wiring.
