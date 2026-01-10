@@ -4,7 +4,7 @@
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
 use crossbeam_deque::{Injector, Stealer, Worker};
 use memchr::{memchr, memmem};
-use molt_obj_model::{unregister_ptr as unregister_handle_ptr, MoltObject};
+use molt_obj_model::MoltObject;
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{Signed, ToPrimitive, Zero};
@@ -265,7 +265,6 @@ thread_local! {
 static LAST_EXCEPTION: OnceLock<Mutex<Option<usize>>> = OnceLock::new();
 static MODULE_CACHE: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
 static EXCEPTION_TYPE_CACHE: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
-static RAW_OBJECTS: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
 static BUILTIN_CLASSES: OnceLock<BuiltinClasses> = OnceLock::new();
 static INTERN_BASES_NAME: OnceLock<u64> = OnceLock::new();
 static INTERN_MRO_NAME: OnceLock<u64> = OnceLock::new();
@@ -315,10 +314,24 @@ fn profile_enabled() -> bool {
     })
 }
 
+#[no_mangle]
+pub extern "C" fn molt_profile_enabled() -> u64 {
+    if profile_enabled() {
+        1
+    } else {
+        0
+    }
+}
+
 fn profile_hit(counter: &AtomicU64) {
     if profile_enabled() {
         counter.fetch_add(1, AtomicOrdering::Relaxed);
     }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_profile_struct_field_store() {
+    profile_hit(&STRUCT_FIELD_STORE_COUNT);
 }
 
 trait ExceptionSentinel {
@@ -467,9 +480,6 @@ fn index_i64_from_obj(obj_bits: u64, err: &str) -> i64 {
 }
 
 fn to_f64(obj: MoltObject) -> Option<f64> {
-    if is_raw_object(obj.bits()) {
-        return None;
-    }
     if let Some(val) = obj.as_float() {
         return Some(val);
     }
@@ -797,13 +807,6 @@ fn inc_ref_bits(bits: u64) {
     let obj = obj_from_bits(bits);
     if let Some(ptr) = obj.as_ptr() {
         unsafe { molt_inc_ref(ptr) };
-        return;
-    }
-    if !obj.is_float() {
-        return;
-    }
-    if is_raw_object(bits) {
-        unsafe { molt_inc_ref(bits as *mut u8) };
     }
 }
 
@@ -811,13 +814,6 @@ fn dec_ref_bits(bits: u64) {
     let obj = obj_from_bits(bits);
     if let Some(ptr) = obj.as_ptr() {
         unsafe { molt_dec_ref(ptr) };
-        return;
-    }
-    if !obj.is_float() {
-        return;
-    }
-    if is_raw_object(bits) {
-        unsafe { molt_dec_ref(bits as *mut u8) };
     }
 }
 
@@ -2621,28 +2617,6 @@ fn exception_type_bits(kind_bits: u64) -> u64 {
     class_bits
 }
 
-fn raw_objects() -> &'static Mutex<HashSet<usize>> {
-    RAW_OBJECTS.get_or_init(|| Mutex::new(HashSet::new()))
-}
-
-fn register_raw_object(ptr: *mut u8) {
-    if ptr.is_null() {
-        return;
-    }
-    raw_objects().lock().unwrap().insert(ptr as usize);
-}
-
-fn unregister_raw_object(ptr: *mut u8) {
-    if ptr.is_null() {
-        return;
-    }
-    raw_objects().lock().unwrap().remove(&(ptr as usize));
-}
-
-fn is_raw_object(bits: u64) -> bool {
-    raw_objects().lock().unwrap().contains(&(bits as usize))
-}
-
 fn intern_static_name(slot: &OnceLock<u64>, name: &'static [u8]) -> u64 {
     *slot.get_or_init(|| {
         let ptr = alloc_string(name);
@@ -2974,16 +2948,6 @@ fn type_of_bits(val_bits: u64) -> u64 {
     if obj.is_int() {
         return builtins.int;
     }
-    if is_raw_object(val_bits) {
-        let ptr = val_bits as *mut u8;
-        unsafe {
-            let class_bits = object_class_bits(ptr);
-            if class_bits != 0 {
-                return class_bits;
-            }
-        }
-        return builtins.object;
-    }
     if obj.is_float() {
         return builtins.float;
     }
@@ -3175,13 +3139,13 @@ fn alloc_set_with_entries(entries: &[u64]) -> *mut u8 {
 }
 
 #[no_mangle]
-pub extern "C" fn molt_alloc(size: usize) -> *mut u8 {
+pub extern "C" fn molt_alloc(size: usize) -> u64 {
     let total_size = size + std::mem::size_of::<MoltHeader>();
     let layout = std::alloc::Layout::from_size_align(total_size, 8).unwrap();
     unsafe {
         let ptr = std::alloc::alloc_zeroed(layout);
         if ptr.is_null() {
-            return std::ptr::null_mut();
+            return MoltObject::none().bits();
         }
         let header = ptr as *mut MoltHeader;
         (*header).type_id = TYPE_ID_OBJECT;
@@ -3190,8 +3154,7 @@ pub extern "C" fn molt_alloc(size: usize) -> *mut u8 {
         (*header).state = 0;
         (*header).size = total_size;
         let obj_ptr = ptr.add(std::mem::size_of::<MoltHeader>());
-        register_raw_object(obj_ptr);
-        obj_ptr
+        MoltObject::from_ptr(obj_ptr).bits()
     }
 }
 
@@ -3757,11 +3720,10 @@ pub extern "C" fn molt_issubclass(sub_bits: u64, class_bits: u64) -> u64 {
 
 #[no_mangle]
 pub extern "C" fn molt_object_new() -> u64 {
-    let obj_ptr = molt_alloc(std::mem::size_of::<u64>());
-    if obj_ptr.is_null() {
+    let obj_bits = molt_alloc(std::mem::size_of::<u64>());
+    let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
         return MoltObject::none().bits();
-    }
-    let obj_bits = MoltObject::from_ptr(obj_ptr).bits();
+    };
     let class_bits = builtin_classes().object;
     unsafe {
         let _ = molt_object_set_class(obj_ptr, class_bits);
@@ -4089,9 +4051,6 @@ pub unsafe extern "C" fn molt_object_set_class(obj_ptr: *mut u8, class_bits: u64
 fn resolve_obj_ptr(bits: u64) -> Option<*mut u8> {
     if let Some(ptr) = obj_from_bits(bits).as_ptr() {
         return Some(ptr);
-    }
-    if is_raw_object(bits) {
-        return Some(bits as *mut u8);
     }
     None
 }
@@ -7494,7 +7453,6 @@ fn round_float_ndigits(val: f64, ndigits: i64) -> f64 {
 pub extern "C" fn molt_round(val_bits: u64, ndigits_bits: u64, has_ndigits_bits: u64) -> u64 {
     let val = obj_from_bits(val_bits);
     let has_ndigits = to_i64(obj_from_bits(has_ndigits_bits)).unwrap_or(0) != 0;
-    let is_raw = is_raw_object(val_bits);
     if let Some(ptr) = bigint_ptr_from_bits(val_bits) {
         if !has_ndigits {
             return val_bits;
@@ -7530,7 +7488,7 @@ pub extern "C" fn molt_round(val_bits: u64, ndigits_bits: u64, has_ndigits_bits:
         }
         return bigint_bits(result);
     }
-    if !val.is_int() && !val.is_bool() && (!val.is_float() || is_raw) {
+    if !val.is_int() && !val.is_bool() && !val.is_float() {
         if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
             unsafe {
                 let round_name_bits = intern_static_name(&INTERN_ROUND_NAME, b"__round__");
@@ -8219,7 +8177,7 @@ pub unsafe extern "C" fn molt_bigint_from_str(ptr: *const u8, len: usize) -> u64
 #[no_mangle]
 pub extern "C" fn molt_float_from_obj(val_bits: u64) -> u64 {
     let obj = obj_from_bits(val_bits);
-    if obj.is_float() && !is_raw_object(val_bits) {
+    if obj.is_float() {
         return val_bits;
     }
     if let Some(i) = to_i64(obj) {
@@ -10298,10 +10256,10 @@ pub extern "C" fn molt_anext_builtin(iter_bits: u64, default_bits: u64) -> u64 {
     if default_bits == missing {
         return molt_anext(iter_bits);
     }
-    let obj_ptr = molt_alloc(3 * std::mem::size_of::<u64>());
-    if obj_ptr.is_null() {
+    let obj_bits = molt_alloc(3 * std::mem::size_of::<u64>());
+    let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
         return MoltObject::none().bits();
-    }
+    };
     unsafe {
         let header = header_from_obj_ptr(obj_ptr);
         (*header).poll_fn = molt_anext_default_poll as usize as u64;
@@ -10313,7 +10271,7 @@ pub extern "C" fn molt_anext_builtin(iter_bits: u64, default_bits: u64) -> u64 {
         inc_ref_bits(default_bits);
         *payload_ptr.add(2) = MoltObject::none().bits();
     }
-    MoltObject::from_ptr(obj_ptr).bits()
+    obj_bits
 }
 
 #[no_mangle]
@@ -10774,8 +10732,17 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
         };
         let sep_bytes = std::slice::from_raw_parts(string_bytes(sep_ptr), string_len(sep_ptr));
         let mut total_len = 0usize;
+        struct StringPart {
+            bits: u64,
+            data: *const u8,
+            len: usize,
+        }
         let mut parts = Vec::with_capacity(elems.len());
-        for &elem_bits in elems.iter() {
+        let mut all_same = true;
+        let mut first_bits = 0u64;
+        let mut first_data = std::ptr::null();
+        let mut first_len = 0usize;
+        for (idx, &elem_bits) in elems.iter().enumerate() {
             let elem_obj = obj_from_bits(elem_bits);
             let elem_ptr = match elem_obj.as_ptr() {
                 Some(ptr) => ptr,
@@ -10787,7 +10754,18 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
             let len = string_len(elem_ptr);
             total_len += len;
             let data = string_bytes(elem_ptr);
-            parts.push((data, len));
+            if idx == 0 {
+                first_bits = elem_bits;
+                first_data = data;
+                first_len = len;
+            } else if elem_bits != first_bits {
+                all_same = false;
+            }
+            parts.push(StringPart {
+                bits: elem_bits,
+                data,
+                len,
+            });
         }
         if !parts.is_empty() {
             let sep_total = sep_bytes
@@ -10795,18 +10773,52 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
                 .saturating_mul(parts.len().saturating_sub(1));
             total_len = total_len.saturating_add(sep_total);
         }
+        if parts.len() == 1 {
+            inc_ref_bits(parts[0].bits);
+            return parts[0].bits;
+        }
         let out_ptr = alloc_bytes_like_with_len(total_len, TYPE_ID_STRING);
         if out_ptr.is_null() {
             return MoltObject::none().bits();
         }
         let mut cursor = out_ptr.add(std::mem::size_of::<usize>());
-        for (idx, (elem_ptr, elem_len)) in parts.iter().enumerate() {
+        if all_same && parts.len() > 1 {
+            let sep_len = sep_bytes.len();
+            let elem_len = first_len;
+            if elem_len > 0 {
+                std::ptr::copy_nonoverlapping(first_data, cursor, elem_len);
+                cursor = cursor.add(elem_len);
+            }
+            let pattern_len = sep_len.saturating_add(elem_len);
+            let total_pattern_bytes = pattern_len.saturating_mul(parts.len() - 1);
+            if total_pattern_bytes > 0 {
+                if sep_len > 0 {
+                    std::ptr::copy_nonoverlapping(sep_bytes.as_ptr(), cursor, sep_len);
+                }
+                if elem_len > 0 {
+                    std::ptr::copy_nonoverlapping(first_data, cursor.add(sep_len), elem_len);
+                }
+                let pattern_start = cursor;
+                let mut filled = pattern_len;
+                while filled < total_pattern_bytes {
+                    let copy_len = (total_pattern_bytes - filled).min(filled);
+                    std::ptr::copy_nonoverlapping(
+                        pattern_start,
+                        pattern_start.add(filled),
+                        copy_len,
+                    );
+                    filled += copy_len;
+                }
+            }
+            return MoltObject::from_ptr(out_ptr).bits();
+        }
+        for (idx, part) in parts.iter().enumerate() {
             if idx > 0 {
                 std::ptr::copy_nonoverlapping(sep_bytes.as_ptr(), cursor, sep_bytes.len());
                 cursor = cursor.add(sep_bytes.len());
             }
-            std::ptr::copy_nonoverlapping(*elem_ptr, cursor, *elem_len);
-            cursor = cursor.add(*elem_len);
+            std::ptr::copy_nonoverlapping(part.data, cursor, part.len);
+            cursor = cursor.add(part.len);
         }
         MoltObject::from_ptr(out_ptr).bits()
     }
@@ -11541,6 +11553,120 @@ fn alloc_list_empty_with_capacity(capacity: usize) -> *mut u8 {
     alloc_list_with_capacity(&[], cap)
 }
 
+const SPLIT_CACHE_MAX_ENTRIES: usize = 8;
+const SPLIT_CACHE_MAX_LEN: usize = 32;
+
+struct SplitTokenCacheEntry {
+    bits: u64,
+    len: usize,
+}
+
+fn split_cache_lookup(cache: &[SplitTokenCacheEntry], part: &[u8]) -> Option<u64> {
+    if part.len() > SPLIT_CACHE_MAX_LEN {
+        return None;
+    }
+    for entry in cache {
+        if entry.len != part.len() {
+            continue;
+        }
+        let obj = obj_from_bits(entry.bits);
+        let Some(ptr) = obj.as_ptr() else {
+            continue;
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_STRING {
+                continue;
+            }
+            let bytes = std::slice::from_raw_parts(string_bytes(ptr), entry.len);
+            if bytes == part {
+                return Some(entry.bits);
+            }
+        }
+    }
+    None
+}
+
+fn split_cache_store(cache: &mut Vec<SplitTokenCacheEntry>, bits: u64, len: usize) {
+    if len > SPLIT_CACHE_MAX_LEN || cache.len() >= SPLIT_CACHE_MAX_ENTRIES {
+        return;
+    }
+    cache.push(SplitTokenCacheEntry { bits, len });
+}
+
+fn split_string_push_part(
+    cache: &mut Vec<SplitTokenCacheEntry>,
+    list_ptr: *mut u8,
+    list_bits: u64,
+    part: &[u8],
+) -> bool {
+    if let Some(bits) = split_cache_lookup(cache, part) {
+        inc_ref_bits(bits);
+        unsafe {
+            list_push_owned(list_ptr, bits);
+        }
+        return true;
+    }
+    let ptr = alloc_string(part);
+    if ptr.is_null() {
+        dec_ref_bits(list_bits);
+        return false;
+    }
+    let bits = MoltObject::from_ptr(ptr).bits();
+    unsafe {
+        list_push_owned(list_ptr, bits);
+    }
+    split_cache_store(cache, bits, part.len());
+    true
+}
+
+fn split_string_bytes_to_list(hay: &[u8], needle: &[u8]) -> Option<u64> {
+    let mut cache = Vec::new();
+    if needle.len() == 1 {
+        let count = memchr::memchr_iter(needle[0], hay).count();
+        let list_ptr = alloc_list_empty_with_capacity(count + 1);
+        if list_ptr.is_null() {
+            return None;
+        }
+        let list_bits = MoltObject::from_ptr(list_ptr).bits();
+        let mut start = 0usize;
+        for idx in memchr::memchr_iter(needle[0], hay) {
+            let part = &hay[start..idx];
+            if !split_string_push_part(&mut cache, list_ptr, list_bits, part) {
+                return None;
+            }
+            start = idx + needle.len();
+        }
+        let part = &hay[start..];
+        if !split_string_push_part(&mut cache, list_ptr, list_bits, part) {
+            return None;
+        }
+        return Some(list_bits);
+    }
+    let mut indices = Vec::new();
+    let finder = memmem::Finder::new(needle);
+    for idx in finder.find_iter(hay) {
+        indices.push(idx);
+    }
+    let list_ptr = alloc_list_empty_with_capacity(indices.len() + 1);
+    if list_ptr.is_null() {
+        return None;
+    }
+    let list_bits = MoltObject::from_ptr(list_ptr).bits();
+    let mut start = 0usize;
+    for idx in indices {
+        let part = &hay[start..idx];
+        if !split_string_push_part(&mut cache, list_ptr, list_bits, part) {
+            return None;
+        }
+        start = idx + needle.len();
+    }
+    let part = &hay[start..];
+    if !split_string_push_part(&mut cache, list_ptr, list_bits, part) {
+        return None;
+    }
+    Some(list_bits)
+}
+
 fn split_bytes_to_list<F>(hay: &[u8], needle: &[u8], mut alloc: F) -> Option<u64>
 where
     F: FnMut(&[u8]) -> *mut u8,
@@ -11700,7 +11826,7 @@ pub extern "C" fn molt_string_split(hay_bits: u64, needle_bits: u64) -> u64 {
             if needle_bytes.is_empty() {
                 raise!("ValueError", "empty separator");
             }
-            let list_bits = split_bytes_to_list(hay_bytes, needle_bytes, alloc_string);
+            let list_bits = split_string_bytes_to_list(hay_bytes, needle_bytes);
             let list_bits = match list_bits {
                 Some(val) => val,
                 None => return MoltObject::none().bits(),
@@ -14140,11 +14266,9 @@ pub extern "C" fn molt_print_obj(val: u64) {
         println!("{i}");
         return;
     }
-    if !is_raw_object(val) {
-        if let Some(f) = obj.as_float() {
-            println!("{}", format_float(f));
-            return;
-        }
+    if let Some(f) = obj.as_float() {
+        println!("{}", format_float(f));
+        return;
     }
     if let Some(b) = obj.as_bool() {
         if b {
@@ -14521,10 +14645,8 @@ fn format_obj(obj: MoltObject) -> String {
     if let Some(i) = obj.as_int() {
         return i.to_string();
     }
-    if !is_raw_object(obj.bits()) {
-        if let Some(f) = obj.as_float() {
-            return format_float(f);
-        }
+    if let Some(f) = obj.as_float() {
+        return format_float(f);
     }
     if let Some(b) = obj.as_bool() {
         return if b {
@@ -15276,10 +15398,6 @@ pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
     let header = &mut *header_ptr;
     header.ref_count -= 1;
     if header.ref_count == 0 {
-        unregister_handle_ptr(ptr);
-        if header.type_id == TYPE_ID_OBJECT {
-            unregister_raw_object(ptr);
-        }
         match header.type_id {
             TYPE_ID_STRING => {
                 utf8_cache_remove(ptr as usize);
@@ -16199,16 +16317,7 @@ fn descriptor_no_deleter(attr_name: &str, class_ptr: *mut u8) -> i64 {
 
 fn maybe_ptr_from_bits(bits: u64) -> Option<*mut u8> {
     let obj = obj_from_bits(bits);
-    if let Some(ptr) = obj.as_ptr() {
-        return Some(ptr);
-    }
-    if !obj.is_float() {
-        return None;
-    }
-    if is_raw_object(bits) {
-        return Some(bits as *mut u8);
-    }
-    None
+    obj.as_ptr()
 }
 
 unsafe fn call_function_obj1(func_bits: u64, arg0_bits: u64) -> u64 {
@@ -16795,9 +16904,6 @@ unsafe fn module_attr_lookup(ptr: *mut u8, attr_bits: u64) -> Option<u64> {
 }
 
 unsafe fn instance_bits_for_call(ptr: *mut u8) -> u64 {
-    if is_raw_object(ptr as u64) {
-        return ptr as u64;
-    }
     MoltObject::from_ptr(ptr).bits()
 }
 
@@ -17285,7 +17391,7 @@ unsafe fn attr_lookup_ptr(obj_ptr: *mut u8, attr_bits: u64) -> Option<u64> {
                         }
                     }
                     if let Some(offset) = class_field_offset(class_ptr, attr_bits) {
-                        let bits = molt_object_field_get(obj_ptr as u64, offset);
+                        let bits = molt_object_field_get_ptr(obj_ptr, offset);
                         return Some(bits);
                     }
                 }
@@ -17687,7 +17793,7 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                     }
                     if let Some(offset) = class_field_offset(class_ptr, attr_bits) {
                         dec_ref_bits(attr_bits);
-                        return molt_object_field_set(obj_ptr as u64, offset, val_bits) as i64;
+                        return molt_object_field_set_ptr(obj_ptr, offset, val_bits) as i64;
                     }
                 }
             }

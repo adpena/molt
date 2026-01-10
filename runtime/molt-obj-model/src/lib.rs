@@ -5,10 +5,6 @@
 #[repr(transparent)]
 pub struct MoltObject(u64);
 
-mod handle_table;
-pub use handle_table::unregister_ptr;
-use handle_table::{register_ptr, resolve_ptr};
-
 const QNAN: u64 = 0x7ff8_0000_0000_0000;
 const TAG_INT: u64 = 0x0001_0000_0000_0000;
 const TAG_BOOL: u64 = 0x0002_0000_0000_0000;
@@ -59,9 +55,14 @@ impl MoltObject {
     }
 
     pub fn from_ptr(ptr: *mut u8) -> Self {
-        let handle = register_ptr(ptr);
-        debug_assert!(handle <= POINTER_MASK, "Handle exceeds 48 bits");
-        Self(QNAN | TAG_PTR | handle)
+        let addr = ptr as u64;
+        let high = addr >> 48;
+        debug_assert!(
+            high == 0 || high == 0xffff,
+            "Non-canonical pointer for MoltObject"
+        );
+        let masked = addr & POINTER_MASK;
+        Self(QNAN | TAG_PTR | masked)
     }
 
     pub fn is_float(&self) -> bool {
@@ -107,7 +108,8 @@ impl MoltObject {
     pub fn as_ptr(&self) -> Option<*mut u8> {
         if self.is_ptr() {
             let handle = self.0 & POINTER_MASK;
-            resolve_ptr(handle)
+            let signed = ((handle << 16) as i64) >> 16;
+            Some(signed as usize as *mut u8)
         } else {
             None
         }

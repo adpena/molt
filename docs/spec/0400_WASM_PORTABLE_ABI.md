@@ -78,7 +78,8 @@ For strings:
 - length in bytes
 
 ### 3.3 Ownership and lifetimes
-- The module allocates buffers in its own linear memory via `molt_alloc`
+- The module allocates buffers in its own linear memory via `molt_alloc` and
+  unboxes the returned handle with `molt_handle_resolve` before use.
 - The host never assumes buffer validity beyond the call boundary unless explicitly copied
 - Results returned to the host must be either:
   - copied out by the host, or
@@ -132,7 +133,7 @@ This surface is implemented by:
 - Rust host in the server
 
 ### 5.1 Required imports
-- `molt_alloc(size: i32) -> i32`
+- `molt_alloc(size: i64) -> i64`
 - `molt_free(ptr: i32, len: i32) -> void`
 
 ### 5.2 Optional imports (capability-gated)

@@ -681,6 +681,20 @@ const lookupExceptionAttr = (exc, name) => {
       return undefined;
   }
 };
+const makeBoundMethod = (funcBits, selfBits) => {
+  const addr = allocRaw(16);
+  if (addr && memory) {
+    const view = new DataView(memory.buffer);
+    view.setBigInt64(addr, funcBits, true);
+    view.setBigInt64(addr + 8, selfBits, true);
+  }
+  return boxPtr({
+    type: 'bound_method',
+    func: funcBits,
+    self: selfBits,
+    memAddr: addr || null,
+  });
+};
 const lookupClassAttr = (classBits, name, instanceBits = null, startAfter = null) => {
   const mro = classMroList(classBits);
   let foundStart = startAfter === null;
@@ -696,7 +710,7 @@ const lookupClassAttr = (classBits, name, instanceBits = null, startAfter = null
     if (cls.attrs.has(name)) {
       const attrVal = cls.attrs.get(name);
       if (instanceBits && getFunction(attrVal)) {
-        return boxPtr({ type: 'bound_method', func: attrVal, self: instanceBits });
+        return makeBoundMethod(attrVal, instanceBits);
       }
       return attrVal;
     }
@@ -2903,7 +2917,13 @@ BASE_IMPORTS = """\
   anext: (val) => {
     const attr = lookupAttr(normalizePtrBits(val), '__anext__');
     if (attr === undefined) {
-      throw new Error('TypeError: object is not an async iterator');
+      const norm = normalizePtrBits(val);
+      const addr = isPtr(norm) ? ptrAddr(norm) : -1;
+      const hasClass = isPtr(norm) && instanceClasses.has(addr);
+      throw new Error(
+        `TypeError: object is not an async iterator (got ${typeName(val)}, ` +
+          `addr=${addr}, hasClass=${hasClass})`,
+      );
     }
     return callCallable0(attr);
   },

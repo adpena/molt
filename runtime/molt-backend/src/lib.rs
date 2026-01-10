@@ -1,5 +1,6 @@
 use cranelift::codegen::Context;
 use cranelift::prelude::*;
+use cranelift::codegen::ir::FuncRef;
 use cranelift_module::{DataDescription, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use serde::{Deserialize, Serialize};
@@ -12,7 +13,9 @@ const QNAN: u64 = 0x7ff8_0000_0000_0000;
 const TAG_INT: u64 = 0x0001_0000_0000_0000;
 const TAG_BOOL: u64 = 0x0002_0000_0000_0000;
 const TAG_NONE: u64 = 0x0003_0000_0000_0000;
+const TAG_PTR: u64 = 0x0004_0000_0000_0000;
 const TAG_PENDING: u64 = 0x0005_0000_0000_0000;
+const TAG_MASK: u64 = 0x0007_0000_0000_0000;
 const POINTER_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
 const INT_WIDTH: u64 = 47;
 const INT_MASK: u64 = (1u64 << INT_WIDTH) - 1;
@@ -64,6 +67,64 @@ fn box_bool_value(builder: &mut FunctionBuilder, val: Value) -> Value {
     let bool_val = builder.ins().select(val, one, zero);
     let tag = builder.ins().iconst(types::I64, (QNAN | TAG_BOOL) as i64);
     builder.ins().bor(tag, bool_val)
+}
+
+fn unbox_ptr_value(builder: &mut FunctionBuilder, val: Value) -> Value {
+    let mask = builder.ins().iconst(types::I64, POINTER_MASK as i64);
+    let masked = builder.ins().band(val, mask);
+    let shift = builder.ins().iconst(types::I64, 16);
+    let shifted = builder.ins().ishl(masked, shift);
+    builder.ins().sshr(shifted, shift)
+}
+
+fn box_ptr_value(builder: &mut FunctionBuilder, val: Value) -> Value {
+    let mask = builder.ins().iconst(types::I64, POINTER_MASK as i64);
+    let masked = builder.ins().band(val, mask);
+    let tag = builder.ins().iconst(types::I64, (QNAN | TAG_PTR) as i64);
+    builder.ins().bor(tag, masked)
+}
+
+fn emit_maybe_ref_adjust(
+    builder: &mut FunctionBuilder,
+    val: Value,
+    obj_ref_fn: FuncRef,
+) {
+    let current_block = builder
+        .current_block()
+        .expect("ref adjust requires an active block");
+    let qnan_mask = builder.ins().iconst(types::I64, QNAN as i64);
+    let tag_mask = builder.ins().iconst(types::I64, TAG_MASK as i64);
+    let tag_ptr = builder.ins().iconst(types::I64, TAG_PTR as i64);
+
+    let val_qnan = builder.ins().band(val, qnan_mask);
+    let is_qnan = builder.ins().icmp(IntCC::Equal, val_qnan, qnan_mask);
+    let tag = builder.ins().band(val, tag_mask);
+    let is_ptr_tag = builder.ins().icmp(IntCC::Equal, tag, tag_ptr);
+
+    let qnan_block = builder.create_block();
+    let ptr_block = builder.create_block();
+    let cont_block = builder.create_block();
+    builder.insert_block_after(qnan_block, current_block);
+    builder.insert_block_after(ptr_block, qnan_block);
+    builder.insert_block_after(cont_block, ptr_block);
+
+    builder
+        .ins()
+        .brif(is_qnan, qnan_block, &[], cont_block, &[]);
+
+    builder.switch_to_block(qnan_block);
+    builder.seal_block(qnan_block);
+    builder
+        .ins()
+        .brif(is_ptr_tag, ptr_block, &[], cont_block, &[]);
+
+    builder.switch_to_block(ptr_block);
+    builder.seal_block(ptr_block);
+    builder.ins().call(obj_ref_fn, &[val]);
+    builder.ins().jump(cont_block, &[]);
+
+    builder.switch_to_block(cont_block);
+    builder.seal_block(cont_block);
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -327,6 +388,17 @@ impl SimpleBackend {
             .collect();
         let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut builder_ctx);
 
+        let stateful = func_ir.ops.iter().any(|op| {
+            matches!(
+                op.kind.as_str(),
+                "state_switch"
+                    | "state_transition"
+                    | "state_yield"
+                    | "chan_send_yield"
+                    | "chan_recv_yield"
+            )
+        });
+
         let mut vars = HashMap::new();
         let mut tracked_vars = Vec::new();
         let mut tracked_obj_vars = Vec::new();
@@ -368,6 +440,39 @@ impl SimpleBackend {
             .module
             .declare_func_in_func(dec_ref_obj_callee, builder.func);
 
+        let mut inc_ref_obj_sig = self.module.make_signature();
+        inc_ref_obj_sig.params.push(AbiParam::new(types::I64));
+        let inc_ref_obj_callee = self
+            .module
+            .declare_function("molt_inc_ref_obj", Linkage::Import, &inc_ref_obj_sig)
+            .unwrap();
+        let local_inc_ref_obj = self
+            .module
+            .declare_func_in_func(inc_ref_obj_callee, builder.func);
+
+        let profile_struct_sig = self.module.make_signature();
+        let profile_struct_callee = self
+            .module
+            .declare_function(
+                "molt_profile_struct_field_store",
+                Linkage::Import,
+                &profile_struct_sig,
+            )
+            .unwrap();
+        let local_profile_struct =
+            self.module
+                .declare_func_in_func(profile_struct_callee, builder.func);
+
+        let mut profile_enabled_sig = self.module.make_signature();
+        profile_enabled_sig.returns.push(AbiParam::new(types::I64));
+        let profile_enabled_callee = self
+            .module
+            .declare_function("molt_profile_enabled", Linkage::Import, &profile_enabled_sig)
+            .unwrap();
+        let local_profile_enabled =
+            self.module
+                .declare_func_in_func(profile_enabled_callee, builder.func);
+
         for (i, ty) in param_types.iter().enumerate() {
             let val = builder.append_block_param(entry_block, *ty);
 
@@ -375,6 +480,18 @@ impl SimpleBackend {
 
             vars.insert(name.clone(), val);
         }
+
+        if stateful {
+            if let Some(self_ptr) = vars.get("self").copied() {
+                let self_bits = box_ptr_value(&mut builder, self_ptr);
+                vars.insert("self".to_string(), self_bits);
+            }
+        }
+
+        let profile_enabled_val = {
+            let call = builder.ins().call(local_profile_enabled, &[]);
+            builder.inst_results(call)[0]
+        };
 
         builder.seal_block(entry_block);
 
@@ -3284,6 +3401,7 @@ impl SimpleBackend {
                 "block_on" => {
                     let args = op.args.as_ref().unwrap();
                     let task = vars.get(&args[0]).expect("Task not found");
+                    let task_ptr = unbox_ptr_value(&mut builder, *task);
 
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64)); // task ptr
@@ -3294,7 +3412,7 @@ impl SimpleBackend {
                         .declare_function("molt_block_on", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*task]);
+                    let call = builder.ins().call(local_callee, &[task_ptr]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
@@ -3303,7 +3421,8 @@ impl SimpleBackend {
                     let state = builder
                         .ins()
                         .load(types::I64, MemFlags::new(), self_ptr, -16);
-                    vars.insert("self".to_string(), self_ptr);
+                    let self_bits = box_ptr_value(&mut builder, self_ptr);
+                    vars.insert("self".to_string(), self_bits);
 
                     let mut sorted_states: Vec<_> = resume_states.iter().copied().collect();
                     sorted_states.sort();
@@ -3324,6 +3443,7 @@ impl SimpleBackend {
                 "state_transition" => {
                     let args = op.args.as_ref().unwrap();
                     let future = vars.get(&args[0]).expect("Future not found");
+                    let future_ptr = unbox_ptr_value(&mut builder, *future);
                     let (slot_bits, pending_state_bits) = if args.len() == 2 {
                         (None, *vars.get(&args[1]).expect("Pending state not found"))
                     } else {
@@ -3333,7 +3453,8 @@ impl SimpleBackend {
                         )
                     };
                     let next_state_id = op.value.unwrap();
-                    let self_ptr = *vars.get("self").expect("Self not found");
+                    let self_bits = *vars.get("self").expect("Self not found");
+                    let self_ptr = unbox_ptr_value(&mut builder, self_bits);
 
                     let pending_state_id = unbox_int(&mut builder, pending_state_bits);
                     builder
@@ -3373,7 +3494,7 @@ impl SimpleBackend {
                     let sig_ref = builder.import_signature(sig);
                     let call = builder
                         .ins()
-                        .call_indirect(sig_ref, poll_fn_addr, &[*future]);
+                        .call_indirect(sig_ref, poll_fn_addr, &[future_ptr]);
                     let res = builder.inst_results(call)[0];
                     builder.ins().jump(join_block, &[res]);
 
@@ -3405,7 +3526,7 @@ impl SimpleBackend {
                         .declare_function("molt_sleep_register", Linkage::Import, &sleep_sig)
                         .unwrap();
                     let local_sleep = self.module.declare_func_in_func(sleep_callee, builder.func);
-                    builder.ins().call(local_sleep, &[self_ptr, *future]);
+                    builder.ins().call(local_sleep, &[self_ptr, future_ptr]);
                     builder.ins().jump(master_return_block, &[pending_const]);
 
                     builder.switch_to_block(ready_path);
@@ -3441,7 +3562,8 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap();
                     let pair = vars.get(&args[0]).expect("Yield pair not found");
                     let next_state_id = op.value.unwrap();
-                    let self_ptr = *vars.get("self").expect("Self not found");
+                    let self_bits = *vars.get("self").expect("Self not found");
+                    let self_ptr = unbox_ptr_value(&mut builder, self_bits);
 
                     let state_val = builder.ins().iconst(types::I64, next_state_id);
                     builder
@@ -3465,7 +3587,8 @@ impl SimpleBackend {
                     let val = vars.get(&args[1]).expect("Val not found");
                     let pending_state_bits = *vars.get(&args[2]).expect("Pending state not found");
                     let next_state_id = op.value.unwrap();
-                    let self_ptr = *vars.get("self").expect("Self not found");
+                    let self_bits = *vars.get("self").expect("Self not found");
+                    let self_ptr = unbox_ptr_value(&mut builder, self_bits);
 
                     let pending_state_id = unbox_int(&mut builder, pending_state_bits);
                     builder
@@ -3518,7 +3641,8 @@ impl SimpleBackend {
                     let chan = vars.get(&args[0]).expect("Chan not found");
                     let pending_state_bits = *vars.get(&args[1]).expect("Pending state not found");
                     let next_state_id = op.value.unwrap();
-                    let self_ptr = *vars.get("self").expect("Self not found");
+                    let self_bits = *vars.get("self").expect("Self not found");
+                    let self_ptr = unbox_ptr_value(&mut builder, self_bits);
 
                     let pending_state_id = unbox_int(&mut builder, pending_state_bits);
                     builder
@@ -3583,6 +3707,7 @@ impl SimpleBackend {
                 "spawn" => {
                     let args = op.args.as_ref().unwrap();
                     let task = vars.get(&args[0]).expect("Task not found");
+                    let task_ptr = unbox_ptr_value(&mut builder, *task);
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     let callee = self
@@ -3590,7 +3715,7 @@ impl SimpleBackend {
                         .declare_function("molt_spawn", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    builder.ins().call(local_callee, &[*task]);
+                    builder.ins().call(local_callee, &[task_ptr]);
                 }
                 "cancel_token_new" => {
                     let args = op.args.as_ref().unwrap();
@@ -3725,23 +3850,16 @@ impl SimpleBackend {
                     let local_alloc = self.module.declare_func_in_func(alloc_callee, builder.func);
                     let call = builder.ins().call(local_alloc, &[size]);
                     let obj = builder.inst_results(call)[0];
+                    let obj_ptr = unbox_ptr_value(&mut builder, obj);
 
                     if let Some(arg_names) = args {
                         if !arg_names.is_empty() {
-                            let mut inc_sig = self.module.make_signature();
-                            inc_sig.params.push(AbiParam::new(types::I64));
-                            let inc_callee = self
-                                .module
-                                .declare_function("molt_inc_ref_obj", Linkage::Import, &inc_sig)
-                                .unwrap();
-                            let local_inc =
-                                self.module.declare_func_in_func(inc_callee, builder.func);
                             for (idx, arg_name) in arg_names.iter().enumerate() {
                                 let val = vars.get(arg_name).expect("Arg not found");
                                 builder
                                     .ins()
-                                    .store(MemFlags::new(), *val, obj, (idx * 8) as i32);
-                                builder.ins().call(local_inc, &[*val]);
+                                    .store(MemFlags::new(), *val, obj_ptr, (idx * 8) as i32);
+                                builder.ins().call(local_inc_ref_obj, &[*val]);
                             }
                         }
                     }
@@ -3757,10 +3875,9 @@ impl SimpleBackend {
                         self.module.declare_func_in_func(poll_func_id, builder.func);
                     let poll_addr = builder.ins().func_addr(types::I64, poll_func_ref);
 
-                    builder.ins().store(MemFlags::new(), poll_addr, obj, -24);
+                    builder.ins().store(MemFlags::new(), poll_addr, obj_ptr, -24);
                     let zero = builder.ins().iconst(types::I64, 0);
-                    builder.ins().store(MemFlags::new(), zero, obj, -16);
-                    output_is_ptr = true;
+                    builder.ins().store(MemFlags::new(), zero, obj_ptr, -16);
                     let out_name = op.out.unwrap();
                     vars.insert(out_name, obj);
                 }
@@ -4509,7 +4626,8 @@ impl SimpleBackend {
                 }
                 "object_set_class" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj_ptr = vars.get(&args[0]).expect("Object not found");
+                    let obj_bits = vars.get(&args[0]).expect("Object not found");
+                    let obj_ptr = unbox_ptr_value(&mut builder, *obj_bits);
                     let class_bits = vars.get(&args[1]).expect("Class not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -4520,7 +4638,7 @@ impl SimpleBackend {
                         .declare_function("molt_object_set_class", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*obj_ptr, *class_bits]);
+                    let call = builder.ins().call(local_callee, &[obj_ptr, *class_bits]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
@@ -5430,7 +5548,7 @@ impl SimpleBackend {
 
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64)); // Returns a pointer
+                    sig.returns.push(AbiParam::new(types::I64)); // Returns object bits
                     let callee = self
                         .module
                         .declare_function("molt_alloc", Linkage::Import, &sig)
@@ -5438,7 +5556,6 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[iconst]);
                     let res = builder.inst_results(call)[0];
-                    output_is_ptr = true;
                     let out_name = op.out.unwrap();
                     vars.insert(out_name, res);
                 }
@@ -5455,6 +5572,7 @@ impl SimpleBackend {
                     let local_alloc = self.module.declare_func_in_func(alloc_callee, builder.func);
                     let call = builder.ins().call(local_alloc, &[size]);
                     let obj = builder.inst_results(call)[0];
+                    let obj_ptr = unbox_ptr_value(&mut builder, obj);
 
                     let poll_func_name = op.s_value.as_ref().unwrap();
                     let mut poll_sig = self.module.make_signature();
@@ -5469,19 +5587,19 @@ impl SimpleBackend {
                         self.module.declare_func_in_func(poll_func_id, builder.func);
                     let poll_addr = builder.ins().func_addr(types::I64, poll_func_ref);
 
-                    builder.ins().store(MemFlags::new(), poll_addr, obj, -24);
+                    builder.ins().store(MemFlags::new(), poll_addr, obj_ptr, -24);
                     let zero = builder.ins().iconst(types::I64, 0);
-                    builder.ins().store(MemFlags::new(), zero, obj, -16);
+                    builder.ins().store(MemFlags::new(), zero, obj_ptr, -16);
 
                     if let Some(args_names) = &op.args {
                         for (i, name) in args_names.iter().enumerate() {
                             let arg_val = vars.get(name).expect("Arg not found for alloc_future");
                             let offset = (i * 8) as i32;
-                            builder.ins().store(MemFlags::new(), *arg_val, obj, offset);
+                            builder.ins().store(MemFlags::new(), *arg_val, obj_ptr, offset);
+                            emit_maybe_ref_adjust(&mut builder, *arg_val, local_inc_ref_obj);
                         }
                     }
 
-                    output_is_ptr = true;
                     let out_name = op.out.unwrap();
                     vars.insert(out_name, obj);
                 }
@@ -5513,18 +5631,7 @@ impl SimpleBackend {
                     let gen_local = self.module.declare_func_in_func(gen_callee, builder.func);
                     let call = builder.ins().call(gen_local, &[poll_addr, size]);
                     let obj = builder.inst_results(call)[0];
-                    let mut resolve_sig = self.module.make_signature();
-                    resolve_sig.params.push(AbiParam::new(types::I64));
-                    resolve_sig.returns.push(AbiParam::new(types::I64));
-                    let resolve_callee = self
-                        .module
-                        .declare_function("molt_handle_resolve", Linkage::Import, &resolve_sig)
-                        .unwrap();
-                    let resolve_local = self
-                        .module
-                        .declare_func_in_func(resolve_callee, builder.func);
-                    let resolve_call = builder.ins().call(resolve_local, &[obj]);
-                    let obj_ptr = builder.inst_results(resolve_call)[0];
+                    let obj_ptr = unbox_ptr_value(&mut builder, obj);
 
                     if let Some(args_names) = &op.args {
                         for (i, name) in args_names.iter().enumerate() {
@@ -5545,21 +5652,51 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap();
                     let obj = vars.get(&args[0]).expect("Object not found");
                     let val = vars.get(&args[1]).expect("Value not found");
-                    let offset = builder.ins().iconst(types::I64, op.value.unwrap());
-                    let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let callee = self
-                        .module
-                        .declare_function("molt_object_field_set_ptr", Linkage::Import, &sig)
-                        .unwrap();
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*obj, offset, *val]);
+                    let offset = op.value.unwrap() as i32;
+                    let obj_ptr = unbox_ptr_value(&mut builder, *obj);
+                    let profile_block = builder.create_block();
+                    let profile_cont = builder.create_block();
+                    if let Some(current_block) = builder.current_block() {
+                        builder.insert_block_after(profile_block, current_block);
+                        builder.insert_block_after(profile_cont, profile_block);
+                    }
+                    let profile_bool =
+                        builder.ins().icmp_imm(IntCC::NotEqual, profile_enabled_val, 0);
+                    builder
+                        .ins()
+                        .brif(profile_bool, profile_block, &[], profile_cont, &[]);
+                    builder.switch_to_block(profile_block);
+                    builder.seal_block(profile_block);
+                    builder.ins().call(local_profile_struct, &[]);
+                    builder.ins().jump(profile_cont, &[]);
+                    builder.switch_to_block(profile_cont);
+                    builder.seal_block(profile_cont);
+                    let old_val = builder
+                        .ins()
+                        .load(types::I64, MemFlags::new(), obj_ptr, offset);
+                    let is_same = builder.ins().icmp(IntCC::Equal, old_val, *val);
+                    let store_block = builder.create_block();
+                    let cont_block = builder.create_block();
+                    if let Some(current_block) = builder.current_block() {
+                        builder.insert_block_after(store_block, current_block);
+                        builder.insert_block_after(cont_block, store_block);
+                    }
+                    builder
+                        .ins()
+                        .brif(is_same, cont_block, &[], store_block, &[]);
+
+                    builder.switch_to_block(store_block);
+                    builder.seal_block(store_block);
+                    emit_maybe_ref_adjust(&mut builder, old_val, local_dec_ref_obj);
+                    emit_maybe_ref_adjust(&mut builder, *val, local_inc_ref_obj);
+                    builder.ins().store(MemFlags::new(), *val, obj_ptr, offset);
+                    builder.ins().jump(cont_block, &[]);
+
+                    builder.switch_to_block(cont_block);
+                    builder.seal_block(cont_block);
                     if let Some(out_name) = op.out.as_ref() {
                         if out_name != "none" {
-                            let res = builder.inst_results(call)[0];
+                            let res = builder.ins().iconst(types::I64, box_none());
                             vars.insert(out_name.clone(), res);
                         }
                     }
@@ -5568,21 +5705,12 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap();
                     let obj = vars.get(&args[0]).expect("Object not found");
                     let val = vars.get(&args[1]).expect("Value not found");
-                    let offset = builder.ins().iconst(types::I64, op.value.unwrap());
-                    let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let callee = self
-                        .module
-                        .declare_function("molt_object_field_init_ptr", Linkage::Import, &sig)
-                        .unwrap();
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*obj, offset, *val]);
+                    let offset = op.value.unwrap() as i32;
+                    let obj_ptr = unbox_ptr_value(&mut builder, *obj);
+                    builder.ins().store(MemFlags::new(), *val, obj_ptr, offset);
                     if let Some(out_name) = op.out.as_ref() {
                         if out_name != "none" {
-                            let res = builder.inst_results(call)[0];
+                            let res = builder.ins().iconst(types::I64, box_none());
                             vars.insert(out_name.clone(), res);
                         }
                     }
@@ -5590,24 +5718,19 @@ impl SimpleBackend {
                 "load" => {
                     let args = op.args.as_ref().unwrap();
                     let obj = vars.get(&args[0]).expect("Object not found");
-                    let offset = builder.ins().iconst(types::I64, op.value.unwrap());
-                    let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let callee = self
-                        .module
-                        .declare_function("molt_object_field_get_ptr", Linkage::Import, &sig)
-                        .unwrap();
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*obj, offset]);
-                    let res = builder.inst_results(call)[0];
+                    let offset = op.value.unwrap() as i32;
+                    let obj_ptr = unbox_ptr_value(&mut builder, *obj);
+                    let res = builder
+                        .ins()
+                        .load(types::I64, MemFlags::new(), obj_ptr, offset);
+                    emit_maybe_ref_adjust(&mut builder, res, local_inc_ref_obj);
                     let out_name = op.out.unwrap();
                     vars.insert(out_name, res);
                 }
                 "closure_load" => {
                     let args = op.args.as_ref().unwrap();
                     let obj = vars.get(&args[0]).expect("Object not found");
+                    let obj_ptr = unbox_ptr_value(&mut builder, *obj);
                     let offset = builder.ins().iconst(types::I64, op.value.unwrap());
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -5618,7 +5741,7 @@ impl SimpleBackend {
                         .declare_function("molt_closure_load", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*obj, offset]);
+                    let call = builder.ins().call(local_callee, &[obj_ptr, offset]);
                     let res = builder.inst_results(call)[0];
                     let out_name = op.out.unwrap();
                     vars.insert(out_name, res);
@@ -5627,6 +5750,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap();
                     let obj = vars.get(&args[0]).expect("Object not found");
                     let val = vars.get(&args[1]).expect("Value not found");
+                    let obj_ptr = unbox_ptr_value(&mut builder, *obj);
                     let offset = builder.ins().iconst(types::I64, op.value.unwrap());
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -5638,7 +5762,7 @@ impl SimpleBackend {
                         .declare_function("molt_closure_store", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*obj, offset, *val]);
+                    let call = builder.ins().call(local_callee, &[obj_ptr, offset, *val]);
                     if let Some(out_name) = op.out {
                         let res = builder.inst_results(call)[0];
                         vars.insert(out_name, res);
@@ -5647,24 +5771,19 @@ impl SimpleBackend {
                 "guarded_load" => {
                     let args = op.args.as_ref().unwrap();
                     let obj = vars.get(&args[0]).expect("Object not found");
-                    let offset = builder.ins().iconst(types::I64, op.value.unwrap());
-                    let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let callee = self
-                        .module
-                        .declare_function("molt_object_field_get_ptr", Linkage::Import, &sig)
-                        .unwrap();
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*obj, offset]);
-                    let res = builder.inst_results(call)[0];
+                    let offset = op.value.unwrap() as i32;
+                    let obj_ptr = unbox_ptr_value(&mut builder, *obj);
+                    let res = builder
+                        .ins()
+                        .load(types::I64, MemFlags::new(), obj_ptr, offset);
+                    emit_maybe_ref_adjust(&mut builder, res, local_inc_ref_obj);
                     let out_name = op.out.unwrap();
                     vars.insert(out_name, res);
                 }
                 "guarded_field_get" => {
                     let args = op.args.as_ref().unwrap();
                     let obj = vars.get(&args[0]).expect("Object not found");
+                    let obj_ptr = unbox_ptr_value(&mut builder, *obj);
                     let class_bits = vars.get(&args[1]).expect("Class not found");
                     let expected_version = vars.get(&args[2]).expect("Expected version not found");
                     let attr_name = op.s_value.as_ref().unwrap();
@@ -5701,7 +5820,7 @@ impl SimpleBackend {
                     let call = builder.ins().call(
                         local_callee,
                         &[
-                            *obj,
+                            obj_ptr,
                             *class_bits,
                             *expected_version,
                             offset,
@@ -5716,6 +5835,7 @@ impl SimpleBackend {
                 "guarded_field_set" => {
                     let args = op.args.as_ref().unwrap();
                     let obj = vars.get(&args[0]).expect("Object not found");
+                    let obj_ptr = unbox_ptr_value(&mut builder, *obj);
                     let class_bits = vars.get(&args[1]).expect("Class not found");
                     let expected_version = vars.get(&args[2]).expect("Expected version not found");
                     let val = vars.get(&args[3]).expect("Value not found");
@@ -5754,7 +5874,7 @@ impl SimpleBackend {
                     let call = builder.ins().call(
                         local_callee,
                         &[
-                            *obj,
+                            obj_ptr,
                             *class_bits,
                             *expected_version,
                             offset,
@@ -5773,6 +5893,7 @@ impl SimpleBackend {
                 "guarded_field_init" => {
                     let args = op.args.as_ref().unwrap();
                     let obj = vars.get(&args[0]).expect("Object not found");
+                    let obj_ptr = unbox_ptr_value(&mut builder, *obj);
                     let class_bits = vars.get(&args[1]).expect("Class not found");
                     let expected_version = vars.get(&args[2]).expect("Expected version not found");
                     let val = vars.get(&args[3]).expect("Value not found");
@@ -5811,7 +5932,7 @@ impl SimpleBackend {
                     let call = builder.ins().call(
                         local_callee,
                         &[
-                            *obj,
+                            obj_ptr,
                             *class_bits,
                             *expected_version,
                             offset,
@@ -5845,6 +5966,7 @@ impl SimpleBackend {
                 "guard_layout" => {
                     let args = op.args.as_ref().unwrap();
                     let obj = vars.get(&args[0]).expect("Guard object not found");
+                    let obj_ptr = unbox_ptr_value(&mut builder, *obj);
                     let class_bits = vars.get(&args[1]).expect("Guard class not found");
                     let expected_version = vars.get(&args[2]).expect("Guard version not found");
                     let mut sig = self.module.make_signature();
@@ -5859,7 +5981,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
-                        .call(local_callee, &[*obj, *class_bits, *expected_version]);
+                        .call(local_callee, &[obj_ptr, *class_bits, *expected_version]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
@@ -5868,6 +5990,7 @@ impl SimpleBackend {
                     let obj = vars.get(&args[0]).unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
+                    let obj_ptr = unbox_ptr_value(&mut builder, *obj);
                     let attr_name = op.s_value.as_ref().unwrap();
                     let data_id = self
                         .module
@@ -5897,7 +6020,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
-                        .call(local_callee, &[*obj, attr_ptr, attr_len]);
+                        .call(local_callee, &[obj_ptr, attr_ptr, attr_len]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
@@ -6062,6 +6185,7 @@ impl SimpleBackend {
                     let obj = vars.get(&args[0]).unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
+                    let obj_ptr = unbox_ptr_value(&mut builder, *obj);
                     let val = vars.get(&args[1]).expect("Attr value not found");
                     let attr_name = op.s_value.as_ref().unwrap();
                     let data_id = self
@@ -6093,7 +6217,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
-                        .call(local_callee, &[*obj, attr_ptr, attr_len, *val]);
+                        .call(local_callee, &[obj_ptr, attr_ptr, attr_len, *val]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
@@ -6142,6 +6266,7 @@ impl SimpleBackend {
                     let obj = vars.get(&args[0]).unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
+                    let obj_ptr = unbox_ptr_value(&mut builder, *obj);
                     let attr_name = op.s_value.as_ref().unwrap();
                     let data_id = self
                         .module
@@ -6171,7 +6296,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
-                        .call(local_callee, &[*obj, attr_ptr, attr_len]);
+                        .call(local_callee, &[obj_ptr, attr_ptr, attr_len]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }

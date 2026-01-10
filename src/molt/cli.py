@@ -478,7 +478,7 @@ extern int molt_json_parse_scalar(const char* ptr, long len, unsigned long long*
 extern int molt_msgpack_parse_scalar(const char* ptr, long len, unsigned long long* out);
 extern int molt_cbor_parse_scalar(const char* ptr, long len, unsigned long long* out);
 extern long molt_get_attr_generic(void* obj, const char* attr, long len);
-extern void* molt_alloc(long size);
+extern unsigned long long molt_alloc(long size);
 extern long molt_block_on(void* task);
 extern long molt_async_sleep(void* obj);
 extern void molt_spawn(void* task);

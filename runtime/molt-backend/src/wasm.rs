@@ -549,9 +549,15 @@ impl WasmBackend {
             local_count += 1;
         }
 
-        if type_idx == 2 {
-            locals.entry("self_param".to_string()).or_insert(0);
-            locals.entry("self".to_string()).or_insert(0);
+        if func_ir.name.ends_with("_poll") {
+            let self_param_idx = locals.get("self").copied().unwrap_or(0);
+            locals.insert("self_param".to_string(), self_param_idx);
+            let self_idx = locals.get("self").copied();
+            if self_idx.is_none() || self_idx == Some(self_param_idx) {
+                locals.insert("self".to_string(), local_count);
+                local_types.push(ValType::I64);
+                local_count += 1;
+            }
             if local_count == 0 {
                 local_count = 1;
             }
@@ -603,6 +609,14 @@ impl WasmBackend {
                     | "chan_recv_yield"
             )
         });
+        let self_ptr_local = if stateful {
+            let idx = local_count;
+            local_types.push(ValType::I64);
+            local_count += 1;
+            Some(idx)
+        } else {
+            None
+        };
         let state_local = if stateful {
             let idx = local_count;
             local_types.push(ValType::I64);
@@ -684,10 +698,12 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(ptr_local));
                         func.instruction(&Instruction::LocalGet(len_local));
                         func.instruction(&Instruction::LocalGet(out_local));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::Call(import_ids["string_from_bytes"]));
                         func.instruction(&Instruction::Drop);
 
                         func.instruction(&Instruction::LocalGet(out_local));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
                             align: 3,
@@ -747,10 +763,12 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(ptr_local));
                         func.instruction(&Instruction::LocalGet(len_local));
                         func.instruction(&Instruction::LocalGet(out_local));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::Call(import_ids["bytes_from_bytes"]));
                         func.instruction(&Instruction::Drop);
 
                         func.instruction(&Instruction::LocalGet(out_local));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
                             align: 3,
@@ -1231,6 +1249,7 @@ impl WasmBackend {
                         let class_bits = locals[&args[1]];
                         let expected = locals[&args[2]];
                         func.instruction(&Instruction::LocalGet(obj));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::LocalGet(class_bits));
                         func.instruction(&Instruction::LocalGet(expected));
                         func.instruction(&Instruction::Call(import_ids["guard_layout_ptr"]));
@@ -1273,10 +1292,12 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(ptr));
                         func.instruction(&Instruction::LocalGet(len));
                         func.instruction(&Instruction::LocalGet(out_ptr));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::Call(import_ids["json_parse_scalar"]));
                         func.instruction(&Instruction::Drop);
 
                         func.instruction(&Instruction::LocalGet(out_ptr));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
                             align: 3,
@@ -1302,10 +1323,12 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(ptr));
                         func.instruction(&Instruction::LocalGet(len));
                         func.instruction(&Instruction::LocalGet(out_ptr));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::Call(import_ids["msgpack_parse_scalar"]));
                         func.instruction(&Instruction::Drop);
 
                         func.instruction(&Instruction::LocalGet(out_ptr));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
                             align: 3,
@@ -1331,10 +1354,12 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(ptr));
                         func.instruction(&Instruction::LocalGet(len));
                         func.instruction(&Instruction::LocalGet(out_ptr));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::Call(import_ids["cbor_parse_scalar"]));
                         func.instruction(&Instruction::Drop);
 
                         func.instruction(&Instruction::LocalGet(out_ptr));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
                             align: 3,
@@ -2452,6 +2477,7 @@ impl WasmBackend {
                         let obj = locals[&args[0]];
                         let class_obj = locals[&args[1]];
                         func.instruction(&Instruction::LocalGet(obj));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::LocalGet(class_obj));
                         func.instruction(&Instruction::Call(import_ids["object_set_class"]));
                         let res = locals[op.out.as_ref().unwrap()];
@@ -2470,6 +2496,7 @@ impl WasmBackend {
                         );
                         self.data_offset = (self.data_offset + bytes.len() as u32 + 7) & !7;
                         func.instruction(&Instruction::LocalGet(obj));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::I64Const(offset as i64));
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
                         func.instruction(&Instruction::Call(import_ids["get_attr_ptr"]));
@@ -2528,6 +2555,7 @@ impl WasmBackend {
                         );
                         self.data_offset = (self.data_offset + bytes.len() as u32 + 7) & !7;
                         func.instruction(&Instruction::LocalGet(obj));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::I64Const(offset as i64));
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
                         func.instruction(&Instruction::LocalGet(val));
@@ -2569,6 +2597,7 @@ impl WasmBackend {
                         );
                         self.data_offset = (self.data_offset + bytes.len() as u32 + 7) & !7;
                         func.instruction(&Instruction::LocalGet(obj));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::I64Const(offset as i64));
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
                         func.instruction(&Instruction::Call(import_ids["del_attr_ptr"]));
@@ -2651,6 +2680,7 @@ impl WasmBackend {
                     "store" => {
                         let args = op.args.as_ref().unwrap();
                         func.instruction(&Instruction::LocalGet(locals[&args[0]]));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::I64Const(op.value.unwrap()));
                         func.instruction(&Instruction::LocalGet(locals[&args[1]]));
                         func.instruction(&Instruction::Call(import_ids["object_field_set_ptr"]));
@@ -2667,6 +2697,7 @@ impl WasmBackend {
                     "store_init" => {
                         let args = op.args.as_ref().unwrap();
                         func.instruction(&Instruction::LocalGet(locals[&args[0]]));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::I64Const(op.value.unwrap()));
                         func.instruction(&Instruction::LocalGet(locals[&args[1]]));
                         func.instruction(&Instruction::Call(import_ids["object_field_init_ptr"]));
@@ -2683,6 +2714,7 @@ impl WasmBackend {
                     "load" => {
                         let args = op.args.as_ref().unwrap();
                         func.instruction(&Instruction::LocalGet(locals[&args[0]]));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::I64Const(op.value.unwrap()));
                         func.instruction(&Instruction::Call(import_ids["object_field_get_ptr"]));
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
@@ -2711,6 +2743,7 @@ impl WasmBackend {
                     "guarded_load" => {
                         let args = op.args.as_ref().unwrap();
                         func.instruction(&Instruction::LocalGet(locals[&args[0]]));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::I64Const(op.value.unwrap()));
                         func.instruction(&Instruction::Call(import_ids["object_field_get_ptr"]));
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
@@ -2730,6 +2763,7 @@ impl WasmBackend {
                         );
                         self.data_offset = (self.data_offset + bytes.len() as u32 + 7) & !7;
                         func.instruction(&Instruction::LocalGet(obj));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::LocalGet(class_bits));
                         func.instruction(&Instruction::LocalGet(expected));
                         func.instruction(&Instruction::I64Const(op.value.unwrap()));
@@ -2754,6 +2788,7 @@ impl WasmBackend {
                         );
                         self.data_offset = (self.data_offset + bytes.len() as u32 + 7) & !7;
                         func.instruction(&Instruction::LocalGet(obj));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::LocalGet(class_bits));
                         func.instruction(&Instruction::LocalGet(expected));
                         func.instruction(&Instruction::I64Const(op.value.unwrap()));
@@ -2787,6 +2822,7 @@ impl WasmBackend {
                         );
                         self.data_offset = (self.data_offset + bytes.len() as u32 + 7) & !7;
                         func.instruction(&Instruction::LocalGet(obj));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::LocalGet(class_bits));
                         func.instruction(&Instruction::LocalGet(expected));
                         func.instruction(&Instruction::I64Const(op.value.unwrap()));
@@ -2831,6 +2867,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalSet(out));
                         func.instruction(&Instruction::Else);
                         func.instruction(&Instruction::LocalGet(future));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::LocalGet(poll_local));
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::CallIndirect { ty: 2, table: 0 });
@@ -2851,6 +2888,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::If(BlockType::Empty));
                         func.instruction(&Instruction::LocalGet(0));
                         func.instruction(&Instruction::LocalGet(future));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::Call(import_ids["sleep_register"]));
                         func.instruction(&Instruction::Drop);
                         func.instruction(&Instruction::I64Const(box_pending()));
@@ -2867,6 +2905,7 @@ impl WasmBackend {
                             for (idx, arg) in args.iter().enumerate() {
                                 let arg_val = locals[arg];
                                 func.instruction(&Instruction::LocalGet(res));
+                                func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                                 func.instruction(&Instruction::I32WrapI64);
                                 func.instruction(&Instruction::I32Const((idx * 8) as i32));
                                 func.instruction(&Instruction::I32Add);
@@ -2879,6 +2918,7 @@ impl WasmBackend {
                             }
                         }
                         func.instruction(&Instruction::LocalGet(res));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(-24));
                         func.instruction(&Instruction::I32Add);
@@ -2890,6 +2930,7 @@ impl WasmBackend {
                             memory_index: 0,
                         }));
                         func.instruction(&Instruction::LocalGet(res));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(-16));
                         func.instruction(&Instruction::I32Add);
@@ -3342,6 +3383,7 @@ impl WasmBackend {
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                         func.instruction(&Instruction::LocalGet(res));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(-24));
                         func.instruction(&Instruction::I32Add);
@@ -3353,6 +3395,7 @@ impl WasmBackend {
                             memory_index: 0,
                         }));
                         func.instruction(&Instruction::LocalGet(res));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(-16));
                         func.instruction(&Instruction::I32Add);
@@ -3366,6 +3409,7 @@ impl WasmBackend {
                             for (i, name) in args.iter().enumerate() {
                                 let arg_local = locals[name];
                                 func.instruction(&Instruction::LocalGet(res));
+                                func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                                 func.instruction(&Instruction::I32WrapI64);
                                 func.instruction(&Instruction::I32Const((i as i32) * 8));
                                 func.instruction(&Instruction::I32Add);
@@ -3385,6 +3429,7 @@ impl WasmBackend {
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                         func.instruction(&Instruction::LocalGet(res));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(-24));
                         func.instruction(&Instruction::I32Add);
@@ -3396,6 +3441,7 @@ impl WasmBackend {
                             memory_index: 0,
                         }));
                         func.instruction(&Instruction::LocalGet(res));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(-16));
                         func.instruction(&Instruction::I32Add);
@@ -3406,6 +3452,7 @@ impl WasmBackend {
                             memory_index: 0,
                         }));
                         func.instruction(&Instruction::LocalGet(res));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(0));
                         func.instruction(&Instruction::I32Add);
@@ -3416,6 +3463,7 @@ impl WasmBackend {
                             memory_index: 0,
                         }));
                         func.instruction(&Instruction::LocalGet(res));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(8));
                         func.instruction(&Instruction::I32Add);
@@ -3426,6 +3474,7 @@ impl WasmBackend {
                             memory_index: 0,
                         }));
                         func.instruction(&Instruction::LocalGet(res));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(16));
                         func.instruction(&Instruction::I32Add);
@@ -3436,6 +3485,7 @@ impl WasmBackend {
                             memory_index: 0,
                         }));
                         func.instruction(&Instruction::LocalGet(res));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(24));
                         func.instruction(&Instruction::I32Add);
@@ -3449,6 +3499,7 @@ impl WasmBackend {
                             for (i, name) in args.iter().enumerate() {
                                 let arg_local = locals[name];
                                 func.instruction(&Instruction::LocalGet(res));
+                                func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                                 func.instruction(&Instruction::I32WrapI64);
                                 func.instruction(&Instruction::I32Const(32 + (i as i32) * 8));
                                 func.instruction(&Instruction::I32Add);
@@ -3460,10 +3511,6 @@ impl WasmBackend {
                                 }));
                             }
                         }
-                        func.instruction(&Instruction::LocalGet(res));
-                        func.instruction(&Instruction::I64Const((QNAN | TAG_PTR) as i64));
-                        func.instruction(&Instruction::I64Or);
-                        func.instruction(&Instruction::LocalSet(res));
                     }
                     "state_yield" => {
                         let args = op.args.as_ref().unwrap();
@@ -3813,9 +3860,13 @@ impl WasmBackend {
 
         if stateful {
             let state_local = state_local.expect("state local missing for stateful wasm");
+            let self_ptr_local = self_ptr_local.expect("self ptr local missing for stateful wasm");
             let self_param = *locals
                 .get("self_param")
                 .expect("self_param missing for stateful wasm");
+            let self_local = *locals
+                .get("self")
+                .expect("self local missing for stateful wasm");
             let op_count = func_ir.ops.len();
             let mut label_to_index: HashMap<i64, usize> = HashMap::new();
             for (idx, op) in func_ir.ops.iter().enumerate() {
@@ -3910,7 +3961,20 @@ impl WasmBackend {
                 .map(|idx| (op_count - 1 - idx) as u32)
                 .collect();
 
+            if self_local != self_param {
+                func.instruction(&Instruction::LocalGet(self_param));
+                func.instruction(&Instruction::I64Const(POINTER_MASK as i64));
+                func.instruction(&Instruction::I64And);
+                func.instruction(&Instruction::I64Const((QNAN | TAG_PTR) as i64));
+                func.instruction(&Instruction::I64Or);
+                func.instruction(&Instruction::LocalSet(self_local));
+            }
+
             func.instruction(&Instruction::LocalGet(self_param));
+            func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
+            func.instruction(&Instruction::LocalSet(self_ptr_local));
+
+            func.instruction(&Instruction::LocalGet(self_ptr_local));
             func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::I32Const(-16));
             func.instruction(&Instruction::I32Add);
@@ -3992,7 +4056,7 @@ impl WasmBackend {
                         let out = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::I64Const((idx + 1) as i64));
                         func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::LocalGet(self_param));
+                        func.instruction(&Instruction::LocalGet(self_ptr_local));
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(-16));
                         func.instruction(&Instruction::I32Add);
@@ -4028,15 +4092,16 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(box_pending()));
                         func.instruction(&Instruction::I64Eq);
                         func.instruction(&Instruction::If(BlockType::Empty));
-                        func.instruction(&Instruction::LocalGet(self_param));
+                        func.instruction(&Instruction::LocalGet(self_ptr_local));
                         func.instruction(&Instruction::LocalGet(future));
+                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
                         func.instruction(&Instruction::Call(import_ids["sleep_register"]));
                         func.instruction(&Instruction::Drop);
                         func.instruction(&Instruction::I64Const(box_pending()));
                         func.instruction(&Instruction::Return);
                         func.instruction(&Instruction::End);
                         if let Some(slot) = slot_bits {
-                            func.instruction(&Instruction::LocalGet(self_param));
+                            func.instruction(&Instruction::LocalGet(self_ptr_local));
                             func.instruction(&Instruction::LocalGet(slot));
                             func.instruction(&Instruction::I64Const(INT_MASK as i64));
                             func.instruction(&Instruction::I64And);
@@ -4044,7 +4109,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::Call(import_ids["closure_store"]));
                             func.instruction(&Instruction::Drop);
                         }
-                        func.instruction(&Instruction::LocalGet(self_param));
+                        func.instruction(&Instruction::LocalGet(self_ptr_local));
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(-16));
                         func.instruction(&Instruction::I32Add);
@@ -4066,7 +4131,7 @@ impl WasmBackend {
                             .map(|idx| !(idx as i64));
                         func.instruction(&Instruction::I64Const((idx + 1) as i64));
                         func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::LocalGet(self_param));
+                        func.instruction(&Instruction::LocalGet(self_ptr_local));
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(-16));
                         func.instruction(&Instruction::I32Add);
@@ -4096,7 +4161,7 @@ impl WasmBackend {
                         let next_state_id = op.value.unwrap();
                         func.instruction(&Instruction::I64Const((idx + 1) as i64));
                         func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::LocalGet(self_param));
+                        func.instruction(&Instruction::LocalGet(self_ptr_local));
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(-16));
                         func.instruction(&Instruction::I32Add);
@@ -4124,7 +4189,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(box_pending()));
                         func.instruction(&Instruction::Return);
                         func.instruction(&Instruction::End);
-                        func.instruction(&Instruction::LocalGet(self_param));
+                        func.instruction(&Instruction::LocalGet(self_ptr_local));
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(-16));
                         func.instruction(&Instruction::I32Add);
@@ -4148,7 +4213,7 @@ impl WasmBackend {
                         let next_state_id = op.value.unwrap();
                         func.instruction(&Instruction::I64Const((idx + 1) as i64));
                         func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::LocalGet(self_param));
+                        func.instruction(&Instruction::LocalGet(self_ptr_local));
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(-16));
                         func.instruction(&Instruction::I32Add);
@@ -4175,7 +4240,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(box_pending()));
                         func.instruction(&Instruction::Return);
                         func.instruction(&Instruction::End);
-                        func.instruction(&Instruction::LocalGet(self_param));
+                        func.instruction(&Instruction::LocalGet(self_ptr_local));
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(-16));
                         func.instruction(&Instruction::I32Add);

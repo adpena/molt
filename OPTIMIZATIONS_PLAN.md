@@ -447,6 +447,19 @@ and regression control.
   loads/stores; class mutations now bump version and deopt to generic paths.
 - Update (2026-01-08): fused guarded field ops reduced guard+store calls, but
   `bench_struct.py` is still 0.07x and `bench_attr_access.py` 0.13x vs CPython.
+- Update (2026-01-09): re-bench shows `bench_struct.py` ~0.12x and
+  `bench_attr_access.py` ~0.20x; guard cost is still dominating.
+- Update (2026-01-09): loop guard caching landed, but `bench_struct.py` remains
+  ~0.12x and `bench_attr_access.py` ~0.21x vs CPython; next step is to hoist
+  class layout guards outside hot loops or memoize per loop iteration to remove
+  redundant guard overhead.
+- Update (2026-01-09): hoisted layout guards outside loop bodies; re-bench still
+  shows `bench_struct.py` ~0.12x and `bench_attr_access.py` ~0.19x vs CPython,
+  so the bottleneck is now direct slot store/load cost rather than guard checks.
+- Update (2026-01-09): inlined struct field load/store in the native backend
+  (skip refcount calls for immediates, conditional profile) and re-bench still
+  shows `bench_struct.py` ~0.12x and `bench_attr_access.py` ~0.20x; likely dominated
+  by allocation + raw-object tracking costs (mutex/HashSet) rather than slot ops.
 
 **Benchmark Matrix**
 - bench_struct.py: expected >=2x improvement
@@ -488,10 +501,23 @@ and regression control.
 - Phase 1: Add an attribute lookup IC keyed by (class, attr_name) with descriptor kind.
 - Phase 2: Add guarded direct-call for property getters.
 - Phase 3: Deopt on class mutation (mro/attrs change).
- - Update (2026-01-08): added TLS attribute-name cache and descriptor IC keyed by
+- Update (2026-01-08): added TLS attribute-name cache and descriptor IC keyed by
    (class bits, attr bits, layout version), with class mutation version bumping.
  - Update (2026-01-08): bench still regresses (`bench_descriptor_property.py` 0.12x);
    need direct-call lowering and IC that avoids repeated generic lookups.
+ - Update (2026-01-09): added a guarded property-get fast path (layout guard +
+   direct getter call) to bypass descriptor lookup in hot loops; re-bench pending.
+ - Update (2026-01-09): re-bench shows `bench_descriptor_property.py` ~0.10x;
+   guarded property get is not enough without call overhead reduction.
+ - Update (2026-01-09): loop guard caching + trivial property inline
+   (`return self.<field>`) improved `bench_descriptor_property.py` to ~0.26x, but
+   call overhead is still dominating; target direct field loads or getter inline
+   without call overhead.
+ - Update (2026-01-09): hoisted loop guards did not move the needle; still
+   ~0.27x vs CPython, so we need a non-call, direct-slot property fast path for
+   common `property` patterns or inlined getter bodies.
+ - Update (2026-01-09): backend inline load/store did not materially improve
+   `bench_descriptor_property.py` (~0.27x); call overhead is not the only bottleneck.
 
 **Benchmark Matrix**
 - bench_descriptor_property.py: expected >=2x improvement
@@ -542,6 +568,14 @@ and regression control.
    single copy loop.
  - Update (2026-01-08): `bench_str_join.py` improved to 0.52x; `bench_str_split.py`
    still 0.27x after keeping the single-byte separator on the count+split path.
+ - Update (2026-01-09): added split token reuse cache for short repeated pieces
+   and a join fast path for repeated identical elements using a doubling copy
+   fill strategy; re-bench pending.
+ - Update (2026-01-09): re-bench shows `bench_str_split.py` ~2.04x and
+   `bench_str_join.py` ~0.95x; split success, join near parity but still <1.0x.
+ - Update (2026-01-09): re-bench shows `bench_str_split.py` ~2.03x and
+   `bench_str_join.py` ~0.91x; join remains below parity, investigate repeated-
+   element fast path thresholds and allocation behavior.
 
 **Benchmark Matrix**
 - bench_str_split.py: expected >=2x improvement
@@ -599,3 +633,205 @@ and regression control.
 
 **Success Criteria**
 - Each reduction bench >=1.0x vs CPython with no semantic regressions.
+
+### OPT-0011: Aggressive Monomorphization + Specialization Pipeline
+
+**Problem**
+- Generic lowering leaves hot call sites and arithmetic paths boxed and indirect.
+- We lack a systematic pipeline for cloning specialized versions based on stable types.
+
+**Hypotheses**
+- H1: Monomorphic specializations with guards will reduce dispatch overhead by 2x+ in hot loops.
+- H2: Cloning a small number of specialized variants is cheaper than inline caches for pure numeric code.
+
+**Alternatives**
+1) Call-site driven specialization (guard + fallback, clone per dominant type set).
+2) Whole-function specialization driven by type facts/annotations.
+3) Profile-guided multi-versioning (only for hot functions).
+
+**Research References**
+- Chambers, Ungar, Lee: "An Efficient Implementation of SELF: A Dynamically-Typed Object-Oriented Language Based on Prototypes."
+- CPython PEP 659: Specializing Adaptive Interpreter.
+
+**Plan**
+- Phase 0: Define specialization policy in docs/spec/0017_TYPE_SYSTEM_AND_SPECIALIZATION.md.
+- Phase 1: Emit guarded monomorphic clones for numeric-heavy locals and known globals.
+- Phase 2: Add multi-version cache keyed by type vector at call sites.
+- Phase 3: Add perf gates and regression detection on type-unstable workloads.
+
+**Benchmark Matrix**
+- tests/benchmarks/bench_fib.py: expected +2x
+- tests/benchmarks/bench_matrix_math.py: expected +1.5x
+- tests/benchmarks/bench_sum_list.py: expected +1.5x
+
+**Correctness Plan**
+- Differential tests for mixed-type arithmetic and deopt fallback.
+- Guarded fallback path for unknown or unstable types.
+
+**Risk + Rollback**
+- Risk: code size growth and slower cold-start.
+- Rollback: cap specialization count per function and fall back to generic path.
+
+**Success Criteria**
+- >=1.5x on numeric-heavy benches without regressions >5% on mixed-type benches.
+
+### OPT-0012: Inline Caches for Attribute Access + Call Dispatch
+
+**Problem**
+- Attribute lookup and call dispatch dominate in object-heavy workloads.
+- Layout guards are repeated per access with no reuse across sites.
+
+**Hypotheses**
+- H1: Monomorphic inline caches remove repeated layout checks and dict lookups.
+- H2: Polymorphic inline caches (PICs) reduce cost for small type sets.
+
+**Alternatives**
+1) Monomorphic IC per site with class version tags.
+2) PIC with 2-4 entries and a megamorphic fallback.
+3) Global method cache keyed by (type, name) with epoch invalidation.
+
+**Research References**
+- Holzle, Ungar: "Optimizing Dynamically-Typed Object-Oriented Languages with Polymorphic Inline Caches."
+- CPython method cache and type version tags (Objects/typeobject.c).
+
+**Plan**
+- Phase 0: Add IC counters and invalidation plumbing (type versioning).
+- Phase 1: Monomorphic IC for attribute get/set and call dispatch.
+- Phase 2: PIC expansion + megamorphic fallback.
+- Phase 3: Stabilize guards, document in specs, and add perf gates.
+
+**Benchmark Matrix**
+- tests/benchmarks/bench_attr_access.py: expected +2x
+- tests/benchmarks/bench_descriptor_property.py: expected +1.5x
+- tests/benchmarks/bench_struct.py: expected +1.5x
+
+**Correctness Plan**
+- Differential tests for dynamic class mutation and descriptor precedence.
+- Guard/fallback for changes in class dicts or MRO.
+
+**Risk + Rollback**
+- Risk: invalidation bugs causing stale reads.
+- Rollback: disable ICs under debug flag and keep layout guard path.
+
+**Success Criteria**
+- Attribute-heavy benches >=1.5x, no correctness regressions.
+
+### OPT-0013: Layout-Guard Elimination via Shape Stabilization
+
+**Problem**
+- Layout guards are costly and repeated, even when class layout is stable.
+
+**Hypotheses**
+- H1: Dominating guard hoisting can eliminate repeated layout checks in loops.
+- H2: Shape-stable classes can skip guards entirely after validation.
+
+**Alternatives**
+1) Guard hoisting in SSA (loop-invariant checks).
+2) Class version stamps + global shape table (guard once per function).
+3) User-declared "final" classes with static layout guarantees.
+
+**Research References**
+- Self/Strongtalk shape-based optimization techniques.
+- PyPy map/shadow object layout techniques.
+
+**Plan**
+- Phase 0: Add IR dominance analysis for guard hoisting candidates.
+- Phase 1: Hoist guards to block entry and reuse cached results.
+- Phase 2: Add shape-stable class annotation and skip guards under conditions.
+- Phase 3: Perf validation, guard auditing, and spec updates.
+
+**Benchmark Matrix**
+- tests/benchmarks/bench_struct.py: expected +1.5x
+- tests/benchmarks/bench_attr_access.py: expected +1.3x
+- tests/benchmarks/bench_descriptor_property.py: expected +1.2x
+
+**Correctness Plan**
+- Differential tests for class mutation after guard.
+- Fallback to guarded path on any shape change.
+
+**Risk + Rollback**
+- Risk: incorrect guard elimination on dynamic mutation.
+- Rollback: keep guard checks and disable hoisting in debug builds.
+
+**Success Criteria**
+- >=1.3x on layout-heavy benches with zero semantic regressions.
+
+### OPT-0014: Escape Analysis + Scalar Replacement
+
+**Problem**
+- Short-lived objects (tuples, lists, small structs) still allocate on the heap.
+
+**Hypotheses**
+- H1: Escape analysis can identify non-escaping allocations for stack or scalar replacement.
+- H2: Scalar replacement will reduce allocation pressure and improve cache locality.
+
+**Alternatives**
+1) SSA-based escape analysis with stack allocation for non-escaping objects.
+2) Region-based allocation for short-lived temps.
+3) Annotated allocation hints (compiler-assisted) for common patterns.
+
+**Research References**
+- "Escape Analysis for Object-Oriented Languages" (Choi et al.).
+- JVM HotSpot scalar replacement and escape analysis docs.
+
+**Plan**
+- Phase 0: Add allocation site IDs and liveness tracing.
+- Phase 1: SSA escape analysis and stack allocation for simple objects.
+- Phase 2: Scalar replacement for tuples/structs in tight loops.
+- Phase 3: Extend to lists/dicts where safe; add perf gates.
+
+**Benchmark Matrix**
+- tests/benchmarks/bench_tuple_pack.py: expected +2x
+- tests/benchmarks/bench_struct.py: expected +1.5x
+- tests/benchmarks/bench_list_ops.py: expected +1.3x
+
+**Correctness Plan**
+- Differential tests for object identity, aliasing, and mutation semantics.
+- Guard/fallback when escaping or captured by closures.
+
+**Risk + Rollback**
+- Risk: aliasing bugs or lifetime mismanagement.
+- Rollback: disable escape analysis pass and keep heap allocation.
+
+**Success Criteria**
+- >=1.5x on allocation-heavy benches with no behavioral regressions.
+
+### OPT-0015: PGO/LTO/BOLT Pipeline for Runtime + Stubs
+
+**Problem**
+- Runtime and stubs are compiled without profile-guided or link-time optimization.
+
+**Hypotheses**
+- H1: PGO will improve branch prediction and inline choices in runtime hot paths.
+- H2: LTO/BOLT will reduce call overhead and improve I-cache locality.
+
+**Alternatives**
+1) LLVM PGO for runtime crates and C stubs; keep Cranelift for generated code.
+2) LTO-only for runtime (thin-LTO), no PGO.
+3) BOLT post-link optimization for release artifacts.
+
+**Research References**
+- LLVM PGO and ThinLTO documentation.
+- BOLT optimization tooling: https://github.com/llvm/llvm-project/tree/main/bolt
+
+**Plan**
+- Phase 0: Add scripts to collect profiles on bench suite.
+- Phase 1: Enable thin-LTO in Cargo release profile for runtime crates.
+- Phase 2: Integrate PGO builds for runtime + C stubs.
+- Phase 3: Evaluate BOLT on final artifacts; document tradeoffs.
+
+**Benchmark Matrix**
+- tests/benchmarks/bench_dict_ops.py: expected +1.1x
+- tests/benchmarks/bench_str_count.py: expected +1.1x
+- tests/benchmarks/bench_attr_access.py: expected +1.1x
+
+**Correctness Plan**
+- Ensure identical functional output across PGO/LTO builds.
+- Run differential suite after PGO config changes.
+
+**Risk + Rollback**
+- Risk: build complexity and non-reproducible binaries if profiles drift.
+- Rollback: disable PGO/LTO flags and revert to baseline release builds.
+
+**Success Criteria**
+- >=1.1x on multiple benches with no determinism regressions.
