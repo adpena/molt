@@ -1,6 +1,6 @@
+use cranelift::codegen::ir::FuncRef;
 use cranelift::codegen::Context;
 use cranelift::prelude::*;
-use cranelift::codegen::ir::FuncRef;
 use cranelift_module::{DataDescription, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use serde::{Deserialize, Serialize};
@@ -84,11 +84,7 @@ fn box_ptr_value(builder: &mut FunctionBuilder, val: Value) -> Value {
     builder.ins().bor(tag, masked)
 }
 
-fn emit_maybe_ref_adjust(
-    builder: &mut FunctionBuilder,
-    val: Value,
-    obj_ref_fn: FuncRef,
-) {
+fn emit_maybe_ref_adjust(builder: &mut FunctionBuilder, val: Value, obj_ref_fn: FuncRef) {
     let current_block = builder
         .current_block()
         .expect("ref adjust requires an active block");
@@ -459,19 +455,23 @@ impl SimpleBackend {
                 &profile_struct_sig,
             )
             .unwrap();
-        let local_profile_struct =
-            self.module
-                .declare_func_in_func(profile_struct_callee, builder.func);
+        let local_profile_struct = self
+            .module
+            .declare_func_in_func(profile_struct_callee, builder.func);
 
         let mut profile_enabled_sig = self.module.make_signature();
         profile_enabled_sig.returns.push(AbiParam::new(types::I64));
         let profile_enabled_callee = self
             .module
-            .declare_function("molt_profile_enabled", Linkage::Import, &profile_enabled_sig)
+            .declare_function(
+                "molt_profile_enabled",
+                Linkage::Import,
+                &profile_enabled_sig,
+            )
             .unwrap();
-        let local_profile_enabled =
-            self.module
-                .declare_func_in_func(profile_enabled_callee, builder.func);
+        let local_profile_enabled = self
+            .module
+            .declare_func_in_func(profile_enabled_callee, builder.func);
 
         for (i, ty) in param_types.iter().enumerate() {
             let val = builder.append_block_param(entry_block, *ty);
@@ -3856,9 +3856,12 @@ impl SimpleBackend {
                         if !arg_names.is_empty() {
                             for (idx, arg_name) in arg_names.iter().enumerate() {
                                 let val = vars.get(arg_name).expect("Arg not found");
-                                builder
-                                    .ins()
-                                    .store(MemFlags::new(), *val, obj_ptr, (idx * 8) as i32);
+                                builder.ins().store(
+                                    MemFlags::new(),
+                                    *val,
+                                    obj_ptr,
+                                    (idx * 8) as i32,
+                                );
                                 builder.ins().call(local_inc_ref_obj, &[*val]);
                             }
                         }
@@ -3875,7 +3878,9 @@ impl SimpleBackend {
                         self.module.declare_func_in_func(poll_func_id, builder.func);
                     let poll_addr = builder.ins().func_addr(types::I64, poll_func_ref);
 
-                    builder.ins().store(MemFlags::new(), poll_addr, obj_ptr, -24);
+                    builder
+                        .ins()
+                        .store(MemFlags::new(), poll_addr, obj_ptr, -24);
                     let zero = builder.ins().iconst(types::I64, 0);
                     builder.ins().store(MemFlags::new(), zero, obj_ptr, -16);
                     let out_name = op.out.unwrap();
@@ -5587,7 +5592,9 @@ impl SimpleBackend {
                         self.module.declare_func_in_func(poll_func_id, builder.func);
                     let poll_addr = builder.ins().func_addr(types::I64, poll_func_ref);
 
-                    builder.ins().store(MemFlags::new(), poll_addr, obj_ptr, -24);
+                    builder
+                        .ins()
+                        .store(MemFlags::new(), poll_addr, obj_ptr, -24);
                     let zero = builder.ins().iconst(types::I64, 0);
                     builder.ins().store(MemFlags::new(), zero, obj_ptr, -16);
 
@@ -5595,7 +5602,9 @@ impl SimpleBackend {
                         for (i, name) in args_names.iter().enumerate() {
                             let arg_val = vars.get(name).expect("Arg not found for alloc_future");
                             let offset = (i * 8) as i32;
-                            builder.ins().store(MemFlags::new(), *arg_val, obj_ptr, offset);
+                            builder
+                                .ins()
+                                .store(MemFlags::new(), *arg_val, obj_ptr, offset);
                             emit_maybe_ref_adjust(&mut builder, *arg_val, local_inc_ref_obj);
                         }
                     }
@@ -5661,7 +5670,9 @@ impl SimpleBackend {
                         builder.insert_block_after(profile_cont, profile_block);
                     }
                     let profile_bool =
-                        builder.ins().icmp_imm(IntCC::NotEqual, profile_enabled_val, 0);
+                        builder
+                            .ins()
+                            .icmp_imm(IntCC::NotEqual, profile_enabled_val, 0);
                     builder
                         .ins()
                         .brif(profile_bool, profile_block, &[], profile_cont, &[]);
