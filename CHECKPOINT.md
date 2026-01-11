@@ -1,12 +1,13 @@
-Checkpoint: 2026-01-10 21:32:22 CST
-Git: 073b4e42c196067cc6db2ad1f6988baa1136e81f
+Checkpoint: 2026-01-10 21:51:11 CST
+Git: 9260c9c4794e1808203b3559c34a93f6e5808035
 
 Summary
-- Added `molt_async_sleep_new` to allocate async sleep futures with the runtime poll function set.
-- Native backend now routes `CALL_ASYNC` for `molt_async_sleep` through the new constructor, bypassing import
-  `func_addr` and avoiding null poll_fn headers on Linux.
-- Ran cargo fmt after CI failure; no functional changes beyond formatting.
-- Adjusted call_async to use `first()` to satisfy clippy get_first in CI.
+- Added `molt_future_new` to centralize future header initialization (poll_fn/state) with debug logging when
+  `MOLT_DEBUG_AWAITABLE` is set.
+- `molt_async_sleep_new` now reuses `molt_future_new`; backend `alloc_future`/`call_async` also use it to avoid
+  direct header stores.
+- Still investigating Linux async-for awaitable failures; this change should clarify whether poll_fn is zero at
+  allocation time.
 
 Files touched (uncommitted)
 - CHECKPOINT.md
