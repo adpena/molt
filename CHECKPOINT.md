@@ -1,11 +1,11 @@
-Checkpoint: 2026-01-10 21:28:55 CST
-Git: f4e38c1fc33ed4687d2f5a7850bff129d410fc8b
+Checkpoint: 2026-01-10 21:30:20 CST
+Git: 9370ea8a5a1e1b8e999d68cd71f976807a626b50
 
 Summary
 - Added `molt_async_sleep_new` to allocate async sleep futures with the runtime poll function set.
 - Native backend now routes `CALL_ASYNC` for `molt_async_sleep` through the new constructor, bypassing import
   `func_addr` and avoiding null poll_fn headers on Linux.
-- Rebuilt molt-backend/molt-runtime tests; no spec changes in this slice.
+- Ran cargo fmt after CI failure; no functional changes beyond formatting.
 
 Files touched (uncommitted)
 - CHECKPOINT.md
