@@ -3840,7 +3840,7 @@ impl SimpleBackend {
                     if poll_func_name == "molt_async_sleep" {
                         let arg_names = op.args.as_deref().unwrap_or(&[]);
                         let delay_val = arg_names
-                            .get(0)
+                            .first()
                             .map(|name| *vars.get(name).expect("Arg not found"))
                             .unwrap_or_else(|| builder.ins().iconst(types::I64, box_float(0.0)));
                         let result_val = arg_names
