@@ -3864,16 +3864,29 @@ impl SimpleBackend {
                         let args = op.args.as_deref();
                         let payload_len = args.map(|vals| vals.len()).unwrap_or(0);
                         let size = builder.ins().iconst(types::I64, (payload_len * 8) as i64);
+                        let mut poll_sig = self.module.make_signature();
+                        poll_sig.params.push(AbiParam::new(types::I64));
+                        poll_sig.returns.push(AbiParam::new(types::I64));
+                        let poll_func_id = self
+                            .module
+                            .declare_function(poll_func_name, Linkage::Import, &poll_sig)
+                            .unwrap();
+                        let poll_func_ref =
+                            self.module.declare_func_in_func(poll_func_id, builder.func);
+                        let poll_addr = builder.ins().func_addr(types::I64, poll_func_ref);
+
                         let mut sig = self.module.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
+                        sig.params.push(AbiParam::new(types::I64));
                         sig.returns.push(AbiParam::new(types::I64));
-                        let alloc_callee = self
+                        let future_callee = self
                             .module
-                            .declare_function("molt_alloc", Linkage::Import, &sig)
+                            .declare_function("molt_future_new", Linkage::Import, &sig)
                             .unwrap();
-                        let local_alloc =
-                            self.module.declare_func_in_func(alloc_callee, builder.func);
-                        let call = builder.ins().call(local_alloc, &[size]);
+                        let local_future = self
+                            .module
+                            .declare_func_in_func(future_callee, builder.func);
+                        let call = builder.ins().call(local_future, &[poll_addr, size]);
                         let obj = builder.inst_results(call)[0];
                         let obj_ptr = unbox_ptr_value(&mut builder, obj);
 
@@ -3891,23 +3904,6 @@ impl SimpleBackend {
                                 }
                             }
                         }
-
-                        let mut poll_sig = self.module.make_signature();
-                        poll_sig.params.push(AbiParam::new(types::I64));
-                        poll_sig.returns.push(AbiParam::new(types::I64));
-                        let poll_func_id = self
-                            .module
-                            .declare_function(poll_func_name, Linkage::Import, &poll_sig)
-                            .unwrap();
-                        let poll_func_ref =
-                            self.module.declare_func_in_func(poll_func_id, builder.func);
-                        let poll_addr = builder.ins().func_addr(types::I64, poll_func_ref);
-
-                        builder
-                            .ins()
-                            .store(MemFlags::new(), poll_addr, obj_ptr, -24);
-                        let zero = builder.ins().iconst(types::I64, 0);
-                        builder.ins().store(MemFlags::new(), zero, obj_ptr, -16);
                         let out_name = op.out.unwrap();
                         vars.insert(out_name, obj);
                     }
@@ -5593,17 +5589,6 @@ impl SimpleBackend {
                 "alloc_future" => {
                     let closure_size = op.value.unwrap();
                     let size = builder.ins().iconst(types::I64, closure_size);
-                    let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let alloc_callee = self
-                        .module
-                        .declare_function("molt_alloc", Linkage::Import, &sig)
-                        .unwrap();
-                    let local_alloc = self.module.declare_func_in_func(alloc_callee, builder.func);
-                    let call = builder.ins().call(local_alloc, &[size]);
-                    let obj = builder.inst_results(call)[0];
-                    let obj_ptr = unbox_ptr_value(&mut builder, obj);
 
                     let poll_func_name = op.s_value.as_ref().unwrap();
                     let mut poll_sig = self.module.make_signature();
@@ -5618,11 +5603,20 @@ impl SimpleBackend {
                         self.module.declare_func_in_func(poll_func_id, builder.func);
                     let poll_addr = builder.ins().func_addr(types::I64, poll_func_ref);
 
-                    builder
-                        .ins()
-                        .store(MemFlags::new(), poll_addr, obj_ptr, -24);
-                    let zero = builder.ins().iconst(types::I64, 0);
-                    builder.ins().store(MemFlags::new(), zero, obj_ptr, -16);
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let future_callee = self
+                        .module
+                        .declare_function("molt_future_new", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_future = self
+                        .module
+                        .declare_func_in_func(future_callee, builder.func);
+                    let call = builder.ins().call(local_future, &[poll_addr, size]);
+                    let obj = builder.inst_results(call)[0];
+                    let obj_ptr = unbox_ptr_value(&mut builder, obj);
 
                     if let Some(args_names) = &op.args {
                         for (i, name) in args_names.iter().enumerate() {

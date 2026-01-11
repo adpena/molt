@@ -6712,15 +6712,37 @@ pub extern "C" fn molt_future_poll_fn(future_bits: u64) -> u64 {
 }
 
 #[no_mangle]
-pub extern "C" fn molt_async_sleep_new(delay_bits: u64, result_bits: u64) -> u64 {
-    let obj_bits = molt_alloc(2 * std::mem::size_of::<u64>());
+pub extern "C" fn molt_future_new(poll_fn_addr: u64, closure_size: u64) -> u64 {
+    let obj_bits = molt_alloc(closure_size as usize);
     let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
         return MoltObject::none().bits();
     };
     unsafe {
         let header = header_from_obj_ptr(obj_ptr);
-        (*header).poll_fn = molt_async_sleep as usize as u64;
+        (*header).poll_fn = poll_fn_addr;
         (*header).state = 0;
+        if std::env::var("MOLT_DEBUG_AWAITABLE").is_ok() {
+            eprintln!(
+                "Molt future init debug: bits=0x{:x} poll=0x{:x} size={}",
+                obj_bits,
+                poll_fn_addr,
+                (*header).size
+            );
+        }
+    }
+    obj_bits
+}
+
+#[no_mangle]
+pub extern "C" fn molt_async_sleep_new(delay_bits: u64, result_bits: u64) -> u64 {
+    let obj_bits = molt_future_new(
+        molt_async_sleep as usize as u64,
+        (2 * std::mem::size_of::<u64>()) as u64,
+    );
+    let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
+        return MoltObject::none().bits();
+    };
+    unsafe {
         let payload_ptr = obj_ptr as *mut u64;
         *payload_ptr = delay_bits;
         *payload_ptr.add(1) = result_bits;
