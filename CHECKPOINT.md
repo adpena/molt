@@ -1,5 +1,5 @@
-Checkpoint: 2026-01-10 09:04:12 CST
-Git: b7be1285a7bfcd736d3ff3690c3dd3f39839751a
+Checkpoint: 2026-01-10 10:12:06 CST
+Git: f6c682b90008374ee30ca72773597ca91a0a1949
 
 Summary
 - Removed handle-table/raw-object registry; pointer tags now store canonical 48-bit pointers and `molt_handle_resolve` just unboxes.
@@ -7,29 +7,21 @@ Summary
 - Updated runtime/ABI docs + C stubs to reflect boxed alloc + handle_resolve usage.
 - Wasm backend: only synthesize `self_param`/`self` locals for `*_poll` functions to avoid clobbering arity-1 non-poll args (fixes `__aiter__` returning 0 in wasm).
 - Native backend: `alloc_future` now inc-ref payload args to prevent nondeterministic async awaitable failures in long-running loops.
+- Runtime: ref_count is now atomic to avoid cross-thread refcount races in the scheduler (addresses flaky async awaitable errors in CI).
 - Docs/tests unchanged this turn; no additional updates needed.
 
 Files touched (uncommitted)
 - CHECKPOINT.md
-- OPTIMIZATIONS_PLAN.md
-- bench/results/bench.json
-- docs/spec/0003-runtime.md
-- docs/spec/0020_RUNTIME_SAFETY_INVARIANTS.md
-- docs/spec/0400_WASM_PORTABLE_ABI.md
-- main_stub.c
-- runtime/molt-backend/src/lib.rs
-- runtime/molt-backend/src/wasm.rs
-- runtime/molt-obj-model/src/handle_table.rs
-- runtime/molt-obj-model/src/lib.rs
-- runtime/molt-runtime/src/lib.rs
-- src/molt/cli.py
-- src/molt/frontend/__init__.py
-- tests/wasm_harness.py
 
 Tests run
 - uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic/async_long_running.py (x10)
 - uv run --python 3.12 python3 tools/dev.py lint
 - uv run --python 3.12 python3 tools/dev.py test
+- uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json
+- uv run --python 3.14 python3 tools/bench_wasm.py --json-out bench/results/bench_wasm.json
+- uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic/async_for_else.py
+- uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic/async_for_iter.py (x20)
+- uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic/async_long_running.py (x20)
 - uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json
 - uv run --python 3.14 python3 tools/bench_wasm.py --json-out bench/results/bench_wasm.json
 
