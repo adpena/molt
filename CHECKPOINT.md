@@ -1,17 +1,19 @@
-Checkpoint: 2026-01-10 21:30:20 CST
-Git: 9370ea8a5a1e1b8e999d68cd71f976807a626b50
+Checkpoint: 2026-01-10 21:32:22 CST
+Git: 073b4e42c196067cc6db2ad1f6988baa1136e81f
 
 Summary
 - Added `molt_async_sleep_new` to allocate async sleep futures with the runtime poll function set.
 - Native backend now routes `CALL_ASYNC` for `molt_async_sleep` through the new constructor, bypassing import
   `func_addr` and avoiding null poll_fn headers on Linux.
 - Ran cargo fmt after CI failure; no functional changes beyond formatting.
+- Adjusted call_async to use `first()` to satisfy clippy get_first in CI.
 
 Files touched (uncommitted)
 - CHECKPOINT.md
 
 Tests run
 - cargo test -p molt-runtime -p molt-backend
+- cargo clippy -p molt-runtime -p molt-backend -- -D warnings
 
 Known gaps
 - Allowlisted module calls still reject keywords/star args; only Molt-defined callables accept CALL_BIND.
