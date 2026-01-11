@@ -3837,54 +3837,83 @@ impl SimpleBackend {
                 }
                 "call_async" => {
                     let poll_func_name = op.s_value.as_ref().unwrap();
-                    let args = op.args.as_deref();
-                    let payload_len = args.map(|vals| vals.len()).unwrap_or(0);
-                    let size = builder.ins().iconst(types::I64, (payload_len * 8) as i64);
-                    let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let alloc_callee = self
-                        .module
-                        .declare_function("molt_alloc", Linkage::Import, &sig)
-                        .unwrap();
-                    let local_alloc = self.module.declare_func_in_func(alloc_callee, builder.func);
-                    let call = builder.ins().call(local_alloc, &[size]);
-                    let obj = builder.inst_results(call)[0];
-                    let obj_ptr = unbox_ptr_value(&mut builder, obj);
+                    if poll_func_name == "molt_async_sleep" {
+                        let arg_names = op.args.as_deref().unwrap_or(&[]);
+                        let delay_val = arg_names
+                            .get(0)
+                            .map(|name| *vars.get(name).expect("Arg not found"))
+                            .unwrap_or_else(|| {
+                                builder.ins().iconst(types::I64, box_float(0.0))
+                            });
+                        let result_val = arg_names
+                            .get(1)
+                            .map(|name| *vars.get(name).expect("Arg not found"))
+                            .unwrap_or_else(|| builder.ins().iconst(types::I64, box_none()));
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_async_sleep_new", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[delay_val, result_val]);
+                        let res = builder.inst_results(call)[0];
+                        let out_name = op.out.unwrap();
+                        vars.insert(out_name, res);
+                    } else {
+                        let args = op.args.as_deref();
+                        let payload_len = args.map(|vals| vals.len()).unwrap_or(0);
+                        let size =
+                            builder.ins().iconst(types::I64, (payload_len * 8) as i64);
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let alloc_callee = self
+                            .module
+                            .declare_function("molt_alloc", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_alloc =
+                            self.module.declare_func_in_func(alloc_callee, builder.func);
+                        let call = builder.ins().call(local_alloc, &[size]);
+                        let obj = builder.inst_results(call)[0];
+                        let obj_ptr = unbox_ptr_value(&mut builder, obj);
 
-                    if let Some(arg_names) = args {
-                        if !arg_names.is_empty() {
-                            for (idx, arg_name) in arg_names.iter().enumerate() {
-                                let val = vars.get(arg_name).expect("Arg not found");
-                                builder.ins().store(
-                                    MemFlags::new(),
-                                    *val,
-                                    obj_ptr,
-                                    (idx * 8) as i32,
-                                );
-                                builder.ins().call(local_inc_ref_obj, &[*val]);
+                        if let Some(arg_names) = args {
+                            if !arg_names.is_empty() {
+                                for (idx, arg_name) in arg_names.iter().enumerate() {
+                                    let val = vars.get(arg_name).expect("Arg not found");
+                                    builder.ins().store(
+                                        MemFlags::new(),
+                                        *val,
+                                        obj_ptr,
+                                        (idx * 8) as i32,
+                                    );
+                                    builder.ins().call(local_inc_ref_obj, &[*val]);
+                                }
                             }
                         }
+
+                        let mut poll_sig = self.module.make_signature();
+                        poll_sig.params.push(AbiParam::new(types::I64));
+                        poll_sig.returns.push(AbiParam::new(types::I64));
+                        let poll_func_id = self
+                            .module
+                            .declare_function(poll_func_name, Linkage::Import, &poll_sig)
+                            .unwrap();
+                        let poll_func_ref =
+                            self.module.declare_func_in_func(poll_func_id, builder.func);
+                        let poll_addr = builder.ins().func_addr(types::I64, poll_func_ref);
+
+                        builder
+                            .ins()
+                            .store(MemFlags::new(), poll_addr, obj_ptr, -24);
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        builder.ins().store(MemFlags::new(), zero, obj_ptr, -16);
+                        let out_name = op.out.unwrap();
+                        vars.insert(out_name, obj);
                     }
-
-                    let mut poll_sig = self.module.make_signature();
-                    poll_sig.params.push(AbiParam::new(types::I64));
-                    poll_sig.returns.push(AbiParam::new(types::I64));
-                    let poll_func_id = self
-                        .module
-                        .declare_function(poll_func_name, Linkage::Import, &poll_sig)
-                        .unwrap();
-                    let poll_func_ref =
-                        self.module.declare_func_in_func(poll_func_id, builder.func);
-                    let poll_addr = builder.ins().func_addr(types::I64, poll_func_ref);
-
-                    builder
-                        .ins()
-                        .store(MemFlags::new(), poll_addr, obj_ptr, -24);
-                    let zero = builder.ins().iconst(types::I64, 0);
-                    builder.ins().store(MemFlags::new(), zero, obj_ptr, -16);
-                    let out_name = op.out.unwrap();
-                    vars.insert(out_name, obj);
                 }
                 "builtin_func" => {
                     let func_name = op.s_value.as_ref().unwrap();

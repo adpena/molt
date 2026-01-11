@@ -6711,6 +6711,25 @@ pub extern "C" fn molt_future_poll_fn(future_bits: u64) -> u64 {
     }
 }
 
+#[no_mangle]
+pub extern "C" fn molt_async_sleep_new(delay_bits: u64, result_bits: u64) -> u64 {
+    let obj_bits = molt_alloc(2 * std::mem::size_of::<u64>());
+    let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
+        return MoltObject::none().bits();
+    };
+    unsafe {
+        let header = header_from_obj_ptr(obj_ptr);
+        (*header).poll_fn = molt_async_sleep as usize as u64;
+        (*header).state = 0;
+        let payload_ptr = obj_ptr as *mut u64;
+        *payload_ptr = delay_bits;
+        *payload_ptr.add(1) = result_bits;
+        inc_ref_bits(delay_bits);
+        inc_ref_bits(result_bits);
+    }
+    obj_bits
+}
+
 /// # Safety
 /// - `_obj_ptr` must be a valid pointer if the runtime associates a future with it.
 #[no_mangle]
