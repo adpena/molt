@@ -1,5 +1,5 @@
 use crate::{FunctionIR, OpIR, SimpleIR};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, DataSection, ElementSection, EntityType, ExportKind,
     ExportSection, Function, FunctionSection, ImportSection, Instruction, MemorySection,
@@ -76,7 +76,7 @@ impl WasmBackend {
             elements: ElementSection::new(),
             func_count: 0,
             import_ids: HashMap::new(),
-            data_offset: 0,
+            data_offset: 8,
         }
     }
 
@@ -316,6 +316,7 @@ impl WasmBackend {
         add_import("aiter", 2, &mut self.import_ids);
         add_import("iter_next", 2, &mut self.import_ids);
         add_import("anext", 2, &mut self.import_ids);
+        add_import("generator_new", 3, &mut self.import_ids);
         add_import("generator_send", 3, &mut self.import_ids);
         add_import("generator_throw", 3, &mut self.import_ids);
         add_import("generator_close", 2, &mut self.import_ids);
@@ -332,7 +333,7 @@ impl WasmBackend {
         add_import("string_endswith", 3, &mut self.import_ids);
         add_import("string_count", 3, &mut self.import_ids);
         add_import("string_count_slice", 9, &mut self.import_ids);
-        add_import("env_get", 3, &mut self.import_ids);
+        add_import("env_get", 2, &mut self.import_ids);
         add_import("string_join", 3, &mut self.import_ids);
         add_import("string_split", 3, &mut self.import_ids);
         add_import("string_lower", 2, &mut self.import_ids);
@@ -405,9 +406,51 @@ impl WasmBackend {
 
         self.func_count = import_idx;
 
+        self.funcs.function(3);
+        self.exports
+            .export("molt_call_indirect1", ExportKind::Func, self.func_count);
+        let mut call_indirect = Function::new_with_locals_types(Vec::new());
+        call_indirect.instruction(&Instruction::LocalGet(1));
+        call_indirect.instruction(&Instruction::LocalGet(0));
+        call_indirect.instruction(&Instruction::I32WrapI64);
+        call_indirect.instruction(&Instruction::CallIndirect { ty: 2, table: 0 });
+        call_indirect.instruction(&Instruction::End);
+        self.codes.function(&call_indirect);
+        self.func_count += 1;
+        let sentinel_func_idx = self.func_count;
+        self.funcs.function(2);
+        let mut sentinel = Function::new_with_locals_types(Vec::new());
+        sentinel.instruction(&Instruction::I64Const(0));
+        sentinel.instruction(&Instruction::End);
+        self.codes.function(&sentinel);
+        self.func_count += 1;
+
+        let mut max_func_arity = 0usize;
+        let mut max_call_arity = 0usize;
+        for func_ir in &ir.functions {
+            if func_ir.name.ends_with("_poll") {
+                continue;
+            }
+            max_func_arity = max_func_arity.max(func_ir.params.len());
+            for op in &func_ir.ops {
+                if op.kind == "call_func" {
+                    if let Some(args) = &op.args {
+                        if !args.is_empty() {
+                            max_call_arity = max_call_arity.max(args.len() - 1);
+                        }
+                    }
+                }
+            }
+        }
+
         let mut user_type_map: HashMap<usize, u32> = HashMap::new();
         user_type_map.insert(0, 0);
         user_type_map.insert(1, 2);
+        user_type_map.insert(2, 3);
+        user_type_map.insert(3, 5);
+        user_type_map.insert(4, 7);
+        user_type_map.insert(6, 9);
+        user_type_map.insert(7, 10);
         let mut next_type_idx = 11u32;
         for func_ir in &ir.functions {
             if func_ir.name.ends_with("_poll") {
@@ -424,9 +467,21 @@ impl WasmBackend {
             }
         }
 
+        let max_needed_arity = max_func_arity.max(max_call_arity.saturating_add(3));
+        for arity in 0..=max_needed_arity {
+            if let std::collections::hash_map::Entry::Vacant(entry) = user_type_map.entry(arity) {
+                self.types.function(
+                    std::iter::repeat_n(ValType::I64, arity),
+                    std::iter::once(ValType::I64),
+                );
+                entry.insert(next_type_idx);
+                next_type_idx += 1;
+            }
+        }
+
         // Memory & Table
         self.memories.memory(MemoryType {
-            minimum: 1,
+            minimum: 18,
             maximum: None,
             memory64: false,
             shared: false,
@@ -458,7 +513,7 @@ impl WasmBackend {
             ("molt_iter", "iter"),
             ("molt_aiter", "aiter"),
         ];
-        let table_min = 20.max((2 + builtin_table_funcs.len() + ir.functions.len()) as u32);
+        let table_min = 192.max((3 + builtin_table_funcs.len() + ir.functions.len()) as u32);
         self.tables.table(TableType {
             element_type: RefType::FUNCREF,
             minimum: table_min,
@@ -468,23 +523,24 @@ impl WasmBackend {
 
         // Function indices for table
         let mut table_indices = vec![
+            sentinel_func_idx,
             self.import_ids["async_sleep"],
             self.import_ids["anext_default_poll"],
         ];
         let mut func_to_table_idx = HashMap::new();
         let mut func_to_index = HashMap::new();
-        func_to_table_idx.insert("molt_async_sleep".to_string(), 0);
-        func_to_table_idx.insert("molt_anext_default_poll".to_string(), 1);
+        func_to_table_idx.insert("molt_async_sleep".to_string(), 1);
+        func_to_table_idx.insert("molt_anext_default_poll".to_string(), 2);
 
         for (offset, (runtime_name, import_name)) in builtin_table_funcs.iter().enumerate() {
-            let idx = (offset + 2) as u32;
+            let idx = (offset + 3) as u32;
             func_to_table_idx.insert((*runtime_name).to_string(), idx);
             table_indices.push(self.import_ids[*import_name]);
         }
 
         let user_func_start = self.func_count;
         for (i, func_ir) in ir.functions.iter().enumerate() {
-            let idx = (i + 2 + builtin_table_funcs.len()) as u32;
+            let idx = (i + 3 + builtin_table_funcs.len()) as u32;
             func_to_table_idx.insert(func_ir.name.clone(), idx);
             func_to_index.insert(func_ir.name.clone(), user_func_start + i as u32);
             table_indices.push(user_func_start + i as u32);
@@ -609,6 +665,26 @@ impl WasmBackend {
                     | "chan_recv_yield"
             )
         });
+        if stateful && !locals.contains_key("self_param") {
+            let self_param_idx = locals
+                .get("self")
+                .copied()
+                .or_else(|| {
+                    func_ir
+                        .params
+                        .first()
+                        .and_then(|name| locals.get(name))
+                        .copied()
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "stateful wasm function {} missing self parameter",
+                        func_ir.name
+                    )
+                });
+            locals.insert("self_param".to_string(), self_param_idx);
+            locals.entry("self".to_string()).or_insert(self_param_idx);
+        }
         let self_ptr_local = if stateful {
             let idx = local_count;
             local_types.push(ValType::I64);
@@ -641,11 +717,15 @@ impl WasmBackend {
         }
         let mut control_stack: Vec<ControlKind> = Vec::new();
         let mut try_stack: Vec<usize> = Vec::new();
+        let mut label_stack: Vec<i64> = Vec::new();
+        let mut label_depths: HashMap<i64, usize> = HashMap::new();
 
         let mut emit_ops = |func: &mut Function,
                             ops: &[OpIR],
                             control_stack: &mut Vec<ControlKind>,
-                            try_stack: &mut Vec<usize>| {
+                            try_stack: &mut Vec<usize>,
+                            label_stack: &mut Vec<i64>,
+                            label_depths: &mut HashMap<i64, usize>| {
             for op in ops {
                 match op.kind.as_str() {
                     "const" => {
@@ -3017,6 +3097,55 @@ impl WasmBackend {
                         let tmp_default_kind = locals["__molt_tmp1"];
                         let tmp_missing = locals["__molt_tmp2"];
                         let provided = (arity + 1) as i64;
+                        let emit_bound_call =
+                            |func: &mut Function, call_ty: u32, extra_consts: &[i64]| {
+                                func.instruction(&Instruction::LocalGet(func_bits));
+                                func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
+                                func.instruction(&Instruction::I32WrapI64);
+                                func.instruction(&Instruction::I32Const(8));
+                                func.instruction(&Instruction::I32Add);
+                                func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                                    align: 3,
+                                    offset: 0,
+                                    memory_index: 0,
+                                }));
+                                for arg_name in &args_names[1..] {
+                                    let arg = locals[arg_name];
+                                    func.instruction(&Instruction::LocalGet(arg));
+                                }
+                                for &extra in extra_consts {
+                                    func.instruction(&Instruction::I64Const(extra));
+                                }
+                                func.instruction(&Instruction::LocalGet(func_bits));
+                                func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
+                                func.instruction(&Instruction::I32WrapI64);
+                                func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                                    align: 3,
+                                    offset: 0,
+                                    memory_index: 0,
+                                }));
+                                func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
+                                func.instruction(&Instruction::I32WrapI64);
+                                func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                                    align: 3,
+                                    offset: 0,
+                                    memory_index: 0,
+                                }));
+                                func.instruction(&Instruction::I32WrapI64);
+                                func.instruction(&Instruction::CallIndirect {
+                                    ty: call_ty,
+                                    table: 0,
+                                });
+                                func.instruction(&Instruction::LocalSet(out));
+                            };
+
+                        let emit_arity_error = |func: &mut Function| {
+                            func.instruction(&Instruction::LocalGet(tmp_expected));
+                            func.instruction(&Instruction::I64Const(provided));
+                            func.instruction(&Instruction::Call(import_ids["call_arity_error"]));
+                            func.instruction(&Instruction::LocalSet(out));
+                        };
+
                         func.instruction(&Instruction::LocalGet(func_bits));
                         func.instruction(&Instruction::Call(import_ids["is_bound_method"]));
                         func.instruction(&Instruction::Call(import_ids["is_truthy"]));
@@ -3054,45 +3183,12 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(provided));
                         func.instruction(&Instruction::I64Sub);
                         func.instruction(&Instruction::LocalSet(tmp_missing));
+
                         func.instruction(&Instruction::LocalGet(tmp_missing));
                         func.instruction(&Instruction::I64Const(0));
                         func.instruction(&Instruction::I64Eq);
                         func.instruction(&Instruction::If(BlockType::Empty));
-                        func.instruction(&Instruction::LocalGet(func_bits));
-                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(8));
-                        func.instruction(&Instruction::I32Add);
-                        func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
-                        for arg_name in &args_names[1..] {
-                            let arg = locals[arg_name];
-                            func.instruction(&Instruction::LocalGet(arg));
-                        }
-                        func.instruction(&Instruction::LocalGet(func_bits));
-                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
-                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::CallIndirect {
-                            ty: bound_call_type,
-                            table: 0,
-                        });
-                        func.instruction(&Instruction::LocalSet(out));
+                        emit_bound_call(func, bound_call_type, &[]);
                         func.instruction(&Instruction::Else);
                         func.instruction(&Instruction::LocalGet(tmp_missing));
                         func.instruction(&Instruction::I64Const(1));
@@ -3102,89 +3198,9 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(FUNC_DEFAULT_NONE));
                         func.instruction(&Instruction::I64Eq);
                         func.instruction(&Instruction::If(BlockType::Empty));
-                        func.instruction(&Instruction::LocalGet(func_bits));
-                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(8));
-                        func.instruction(&Instruction::I32Add);
-                        func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
-                        for arg_name in &args_names[1..] {
-                            let arg = locals[arg_name];
-                            func.instruction(&Instruction::LocalGet(arg));
-                        }
-                        func.instruction(&Instruction::I64Const(box_none()));
-                        func.instruction(&Instruction::LocalGet(func_bits));
-                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
-                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::CallIndirect {
-                            ty: bound_call_type_plus1,
-                            table: 0,
-                        });
-                        func.instruction(&Instruction::LocalSet(out));
+                        emit_bound_call(func, bound_call_type_plus1, &[box_none()]);
                         func.instruction(&Instruction::Else);
-                        func.instruction(&Instruction::LocalGet(tmp_default_kind));
-                        func.instruction(&Instruction::I64Const(FUNC_DEFAULT_DICT_POP));
-                        func.instruction(&Instruction::I64Eq);
-                        func.instruction(&Instruction::If(BlockType::Empty));
-                        func.instruction(&Instruction::LocalGet(func_bits));
-                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(8));
-                        func.instruction(&Instruction::I32Add);
-                        func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
-                        for arg_name in &args_names[1..] {
-                            let arg = locals[arg_name];
-                            func.instruction(&Instruction::LocalGet(arg));
-                        }
-                        func.instruction(&Instruction::I64Const(box_int(1)));
-                        func.instruction(&Instruction::LocalGet(func_bits));
-                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
-                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::CallIndirect {
-                            ty: bound_call_type_plus1,
-                            table: 0,
-                        });
-                        func.instruction(&Instruction::LocalSet(out));
-                        func.instruction(&Instruction::Else);
-                        func.instruction(&Instruction::LocalGet(tmp_expected));
-                        func.instruction(&Instruction::I64Const(provided));
-                        func.instruction(&Instruction::Call(import_ids["call_arity_error"]));
-                        func.instruction(&Instruction::LocalSet(out));
-                        func.instruction(&Instruction::End);
+                        emit_arity_error(func);
                         func.instruction(&Instruction::End);
                         func.instruction(&Instruction::Else);
                         func.instruction(&Instruction::LocalGet(tmp_missing));
@@ -3195,54 +3211,13 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(FUNC_DEFAULT_DICT_POP));
                         func.instruction(&Instruction::I64Eq);
                         func.instruction(&Instruction::If(BlockType::Empty));
-                        func.instruction(&Instruction::LocalGet(func_bits));
-                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(8));
-                        func.instruction(&Instruction::I32Add);
-                        func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
-                        for arg_name in &args_names[1..] {
-                            let arg = locals[arg_name];
-                            func.instruction(&Instruction::LocalGet(arg));
-                        }
-                        func.instruction(&Instruction::I64Const(box_none()));
-                        func.instruction(&Instruction::I64Const(box_int(0)));
-                        func.instruction(&Instruction::LocalGet(func_bits));
-                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
-                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::CallIndirect {
-                            ty: bound_call_type_plus2,
-                            table: 0,
-                        });
-                        func.instruction(&Instruction::LocalSet(out));
+                        emit_bound_call(func, bound_call_type_plus2, &[box_none(), box_int(0)]);
                         func.instruction(&Instruction::Else);
-                        func.instruction(&Instruction::LocalGet(tmp_expected));
-                        func.instruction(&Instruction::I64Const(provided));
-                        func.instruction(&Instruction::Call(import_ids["call_arity_error"]));
-                        func.instruction(&Instruction::LocalSet(out));
+                        emit_arity_error(func);
                         func.instruction(&Instruction::End);
                         func.instruction(&Instruction::Else);
-                        func.instruction(&Instruction::LocalGet(tmp_expected));
-                        func.instruction(&Instruction::I64Const(provided));
-                        func.instruction(&Instruction::Call(import_ids["call_arity_error"]));
-                        func.instruction(&Instruction::LocalSet(out));
+                        emit_arity_error(func);
+                        func.instruction(&Instruction::End);
                         func.instruction(&Instruction::End);
                         func.instruction(&Instruction::End);
                         func.instruction(&Instruction::Else);
@@ -3424,77 +3399,12 @@ impl WasmBackend {
                     }
                     "alloc_generator" => {
                         let total = op.value.unwrap_or(0);
+                        let table_idx = func_map[op.s_value.as_ref().unwrap()];
+                        func.instruction(&Instruction::I64Const(table_idx as i64));
                         func.instruction(&Instruction::I64Const(total));
-                        func.instruction(&Instruction::Call(import_ids["alloc"]));
+                        func.instruction(&Instruction::Call(import_ids["generator_new"]));
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
-                        func.instruction(&Instruction::LocalGet(res));
-                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(-24));
-                        func.instruction(&Instruction::I32Add);
-                        let table_idx = func_map[op.s_value.as_ref().unwrap()];
-                        func.instruction(&Instruction::I32Const(table_idx as i32));
-                        func.instruction(&Instruction::I32Store(wasm_encoder::MemArg {
-                            align: 2,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
-                        func.instruction(&Instruction::LocalGet(res));
-                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(-16));
-                        func.instruction(&Instruction::I32Add);
-                        func.instruction(&Instruction::I64Const(0));
-                        func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
-                        func.instruction(&Instruction::LocalGet(res));
-                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(0));
-                        func.instruction(&Instruction::I32Add);
-                        func.instruction(&Instruction::I64Const(box_none()));
-                        func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
-                        func.instruction(&Instruction::LocalGet(res));
-                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(8));
-                        func.instruction(&Instruction::I32Add);
-                        func.instruction(&Instruction::I64Const(box_none()));
-                        func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
-                        func.instruction(&Instruction::LocalGet(res));
-                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(16));
-                        func.instruction(&Instruction::I32Add);
-                        func.instruction(&Instruction::I64Const(box_bool(0)));
-                        func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
-                        func.instruction(&Instruction::LocalGet(res));
-                        func.instruction(&Instruction::Call(import_ids["handle_resolve"]));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(24));
-                        func.instruction(&Instruction::I32Add);
-                        func.instruction(&Instruction::I64Const(box_int(1)));
-                        func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
                         if let Some(args) = op.args.as_ref() {
                             for (i, name) in args.iter().enumerate() {
                                 let arg_local = locals[name];
@@ -3763,6 +3673,16 @@ impl WasmBackend {
                         }
                         func.instruction(&Instruction::Return);
                     }
+                    "jump" => {
+                        let target = op.value.expect("jump missing label");
+                        let depth = label_depths
+                            .get(&target)
+                            .map(|idx| control_stack.len().saturating_sub(1 + idx))
+                            .unwrap_or_else(|| {
+                                panic!("jump target {} missing label block", target)
+                            });
+                        func.instruction(&Instruction::Br(depth as u32));
+                    }
                     "if" => {
                         let args = op.args.as_ref().unwrap();
                         let cond = locals[&args[0]];
@@ -3772,6 +3692,18 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Ne);
                         func.instruction(&Instruction::If(BlockType::Empty));
                         control_stack.push(ControlKind::If);
+                    }
+                    "label" => {
+                        if let Some(label_id) = op.value {
+                            if let Some(top) = label_stack.last().copied() {
+                                if top == label_id {
+                                    label_stack.pop();
+                                    label_depths.remove(&label_id);
+                                    func.instruction(&Instruction::End);
+                                    control_stack.pop();
+                                }
+                            }
+                        }
                     }
                     "else" => {
                         func.instruction(&Instruction::Else);
@@ -4370,6 +4302,16 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalSet(state_local));
                         func.instruction(&Instruction::Br(depth));
                     }
+                    "jump" => {
+                        let target_label = op.value.expect("jump missing label");
+                        let target_idx = label_to_index
+                            .get(&target_label)
+                            .copied()
+                            .expect("unknown jump label");
+                        func.instruction(&Instruction::I64Const(target_idx as i64));
+                        func.instruction(&Instruction::LocalSet(state_local));
+                        func.instruction(&Instruction::Br(depth));
+                    }
                     "try_start" | "try_end" | "label" | "state_label" => {
                         func.instruction(&Instruction::I64Const((idx + 1) as i64));
                         func.instruction(&Instruction::LocalSet(state_local));
@@ -4410,6 +4352,8 @@ impl WasmBackend {
                             std::slice::from_ref(op),
                             &mut scratch_control,
                             &mut scratch_try,
+                            &mut label_stack,
+                            &mut label_depths,
                         );
                         func.instruction(&Instruction::I64Const((idx + 1) as i64));
                         func.instruction(&Instruction::LocalSet(state_local));
@@ -4426,7 +4370,49 @@ impl WasmBackend {
             func.instruction(&Instruction::Return);
             func.instruction(&Instruction::End);
         } else {
-            emit_ops(&mut func, &func_ir.ops, &mut control_stack, &mut try_stack);
+            let jump_labels: HashSet<i64> = func_ir
+                .ops
+                .iter()
+                .filter_map(|op| {
+                    if op.kind.as_str() == "jump" {
+                        op.value
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let label_ids: Vec<i64> = func_ir
+                .ops
+                .iter()
+                .filter_map(|op| {
+                    if op.kind.as_str() == "label" {
+                        op.value.filter(|val| jump_labels.contains(val))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if !label_ids.is_empty() {
+                for label_id in label_ids.iter().rev() {
+                    func.instruction(&Instruction::Block(BlockType::Empty));
+                    control_stack.push(ControlKind::Block);
+                    label_depths.insert(*label_id, control_stack.len() - 1);
+                    label_stack.push(*label_id);
+                }
+            }
+            emit_ops(
+                &mut func,
+                &func_ir.ops,
+                &mut control_stack,
+                &mut try_stack,
+                &mut label_stack,
+                &mut label_depths,
+            );
+            while !label_stack.is_empty() {
+                label_stack.pop();
+                func.instruction(&Instruction::End);
+                control_stack.pop();
+            }
             func.instruction(&Instruction::End);
         }
         self.codes.function(&func);

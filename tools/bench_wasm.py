@@ -3,6 +3,7 @@ import datetime as dt
 import json
 import os
 import platform
+import shutil
 import statistics
 import subprocess
 import sys
@@ -13,6 +14,7 @@ BENCHMARKS = [
     "tests/benchmarks/bench_fib.py",
     "tests/benchmarks/bench_sum.py",
     "tests/benchmarks/bench_sum_list.py",
+    "tests/benchmarks/bench_sum_list_hints.py",
     "tests/benchmarks/bench_min_list.py",
     "tests/benchmarks/bench_max_list.py",
     "tests/benchmarks/bench_prod_list.py",
@@ -58,6 +60,11 @@ SMOKE_BENCHMARKS = [
     "tests/benchmarks/bench_bytes_find.py",
 ]
 
+MOLT_ARGS_BY_BENCH = {
+    "tests/benchmarks/bench_sum_list_hints.py": ["--type-hints", "trust"],
+}
+RUNTIME_WASM = Path("wasm/molt_runtime.wasm")
+
 
 def _git_rev() -> str | None:
     try:
@@ -81,18 +88,62 @@ def _base_env() -> dict[str, str]:
     return env
 
 
+def build_runtime_wasm() -> bool:
+    env = os.environ.copy()
+    env.setdefault("RUSTFLAGS", "-C link-arg=--import-memory")
+    res = subprocess.run(
+        [
+            "cargo",
+            "build",
+            "--release",
+            "--package",
+            "molt-runtime",
+            "--target",
+            "wasm32-wasip1",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    if res.returncode != 0:
+        err = res.stderr.strip() or res.stdout.strip()
+        if err:
+            print(f"WASM runtime build failed: {err}", file=sys.stderr)
+        return False
+    src = Path("target/wasm32-wasip1/release/molt_runtime.wasm")
+    if not src.exists():
+        print("WASM runtime build succeeded but artifact is missing.", file=sys.stderr)
+        return False
+    RUNTIME_WASM.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, RUNTIME_WASM)
+    return True
+
+
 def measure_wasm(script: str) -> tuple[float | None, float]:
     if os.path.exists("./output.wasm"):
         os.remove("./output.wasm")
 
     env = _base_env()
+    extra_args = MOLT_ARGS_BY_BENCH.get(script, [])
     build_res = subprocess.run(
-        [sys.executable, "-m", "molt.cli", "build", "--target", "wasm", script],
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            "--target",
+            "wasm",
+            *extra_args,
+            script,
+        ],
         env=env,
         capture_output=True,
         text=True,
     )
     if build_res.returncode != 0:
+        err = build_res.stderr.strip() or build_res.stdout.strip()
+        if err:
+            print(f"WASM build failed for {script}: {err}", file=sys.stderr)
         return None, 0.0
 
     wasm_size = os.path.getsize("./output.wasm") / 1024
@@ -100,6 +151,9 @@ def measure_wasm(script: str) -> tuple[float | None, float]:
     run_res = subprocess.run(["node", "run_wasm.js"], capture_output=True, text=True)
     end = time.perf_counter()
     if run_res.returncode != 0:
+        err = run_res.stderr.strip() or run_res.stdout.strip()
+        if err:
+            print(f"WASM run failed for {script}: {err}", file=sys.stderr)
         return None, wasm_size
     return end - start, wasm_size
 
@@ -142,6 +196,9 @@ def main() -> None:
     parser.add_argument("--samples", type=int, default=None)
     parser.add_argument("--smoke", action="store_true")
     args = parser.parse_args()
+
+    if not build_runtime_wasm():
+        sys.exit(1)
 
     benchmarks = SMOKE_BENCHMARKS if args.smoke else BENCHMARKS
     samples = args.samples if args.samples is not None else (1 if args.smoke else 3)

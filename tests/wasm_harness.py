@@ -118,6 +118,7 @@ let currentTaskPtr = 0n;
 let nextChanId = 1n;
 let heapPtr = 1 << 20;
 const HEADER_SIZE = 32;
+const GEN_CONTROL_SIZE = 32;
 const align = (size, align) => (size + (align - 1)) & ~(align - 1);
 const allocRaw = (payload) => {
   if (!memory) return 0;
@@ -2926,6 +2927,21 @@ BASE_IMPORTS = """\
       );
     }
     return callCallable0(attr);
+  },
+  generator_new: (pollFn, closureSize) => {
+    const size = Number(closureSize);
+    const addr = allocRaw(size);
+    if (!addr || !memory) return boxNone();
+    const view = new DataView(memory.buffer);
+    view.setBigInt64(addr - 24, pollFn, true);
+    view.setBigInt64(addr - 16, 0n, true);
+    if (size >= GEN_CONTROL_SIZE) {
+      view.setBigInt64(addr + 0, boxNone(), true);
+      view.setBigInt64(addr + 8, boxNone(), true);
+      view.setBigInt64(addr + 16, boxBool(false), true);
+      view.setBigInt64(addr + 24, boxInt(1), true);
+    }
+    return boxPtrAddr(addr);
   },
   generator_send: (gen, sendVal) => generatorSend(gen, sendVal),
   generator_throw: (gen, exc) => generatorThrow(gen, exc),

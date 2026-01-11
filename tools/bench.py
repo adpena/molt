@@ -17,6 +17,7 @@ BENCHMARKS = [
     "tests/benchmarks/bench_fib.py",
     "tests/benchmarks/bench_sum.py",
     "tests/benchmarks/bench_sum_list.py",
+    "tests/benchmarks/bench_sum_list_hints.py",
     "tests/benchmarks/bench_min_list.py",
     "tests/benchmarks/bench_max_list.py",
     "tests/benchmarks/bench_prod_list.py",
@@ -62,6 +63,10 @@ SMOKE_BENCHMARKS = [
     "tests/benchmarks/bench_bytes_find.py",
 ]
 
+MOLT_ARGS_BY_BENCH = {
+    "tests/benchmarks/bench_sum_list_hints.py": ["--type-hints", "trust"],
+}
+
 
 @dataclass(frozen=True)
 class BenchRunner:
@@ -106,14 +111,18 @@ def measure_runtime(cmd_args, script=None, env=None):
     return end - start
 
 
-def measure_molt(script):
+def measure_molt(script, extra_args=None):
     if os.path.exists("./hello_molt"):
         os.remove("./hello_molt")
 
     env = os.environ.copy()
     env["PYTHONPATH"] = "src"
+    args = [sys.executable, "-m", "molt.cli", "build"]
+    if extra_args:
+        args.extend(extra_args)
+    args.append(script)
     res = subprocess.run(
-        [sys.executable, "-m", "molt.cli", "build", script],
+        args,
         env=env,
         capture_output=True,
         text=True,
@@ -400,7 +409,8 @@ def bench_results(benchmarks, samples, use_pypy, use_cython, use_numba, use_codo
                 print(f"Skipping Codon for {name}.", file=sys.stderr)
 
         molt_time, molt_size = 0.0, 0.0
-        molt_runs = [measure_molt(script) for _ in range(samples)]
+        molt_args = MOLT_ARGS_BY_BENCH.get(script, [])
+        molt_runs = [measure_molt(script, molt_args) for _ in range(samples)]
         valid_molt = [r[0] for r in molt_runs if r[0] is not None]
         molt_ok = bool(valid_molt)
         if valid_molt:
@@ -457,6 +467,7 @@ def bench_results(benchmarks, samples, use_pypy, use_cython, use_numba, use_codo
             "molt_cpython_ratio": ratio,
             "molt_codon_ratio": codon_ratio,
             "molt_ok": molt_ok,
+            "molt_args": molt_args,
             "cython_ok": cython_ok,
             "numba_ok": numba_ok,
             "codon_ok": codon_ok,

@@ -1,6 +1,6 @@
 # STATUS (Canonical)
 
-Last updated: 2026-01-09
+Last updated: 2026-01-11
 
 This document is the source of truth for Molt's current capabilities and
 limitations. Update this file whenever behavior or scope changes, and keep
@@ -27,6 +27,7 @@ README/ROADMAP in sync.
 - Importable `builtins` module binds supported builtins (see stdlib matrix).
 - `enumerate` builtin returns an iterator over `(index, value)` with optional `start`.
 - Builtin function objects for allowlisted builtins (`any`, `all`, `callable`, `repr`, `getattr`, `hasattr`, `round`, `next`, `anext`, `print`, `super`).
+- WASM harness runs via `run_wasm.js` with `molt_runtime` intrinsics, including async/channel benches on WASI.
 
 ## Limitations (Current)
 - Classes/object model: C3 MRO + multiple inheritance + `super()` resolution for
@@ -67,6 +68,8 @@ README/ROADMAP in sync.
   registration.
 - Cancellation tokens are available with request-scoped defaults and task-scoped
   overrides; cancellation is cooperative via `molt.cancelled()` checks.
+- WASM runs a single-threaded scheduler loop (no background workers); pending
+  sleeps are handled by blocking registration in the same task loop.
 
 ## Stdlib Coverage
 - Partial shims: `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`,
@@ -82,4 +85,6 @@ README/ROADMAP in sync.
 
 ## Known Gaps
 - uv-managed Python 3.14 hangs on arm64; system Python 3.14 used as workaround.
+- Browser host for WASM is still pending; current harness targets WASI via
+  `run_wasm.js` and uses a single-threaded scheduler.
 - TODO(runtime-provenance, owner:runtime, milestone:RT1): remove handle-table lock overhead via sharded or lock-free lookups.

@@ -181,6 +181,7 @@ interface intrinsics {
     aiter: func(obj: molt-object) -> molt-object;
     iter_next: func(iter: molt-object) -> molt-object;
     anext: func(iter: molt-object) -> molt-object;
+    generator_new: func(poll_fn: u64, closure_size: u64) -> molt-object;
     generator_send: func(gen: molt-object, val: molt-object) -> molt-object;
     generator_throw: func(gen: molt-object, exc: molt-object) -> molt-object;
     generator_close: func(gen: molt-object) -> molt-object;
@@ -197,6 +198,7 @@ interface intrinsics {
     string_endswith: func(haystack: molt-object, needle: molt-object) -> molt-object;
     string_count: func(haystack: molt-object, needle: molt-object) -> molt-object;
     string_count_slice: func(haystack: molt-object, needle: molt-object, start: molt-object, end: molt-object, has_start: molt-object, has_end: molt-object) -> molt-object;
+    env_get: func(key: molt-object, default: molt-object) -> molt-object;
     string_join: func(sep: molt-object, items: molt-object) -> molt-object;
     string_split: func(haystack: molt-object, needle: molt-object) -> molt-object;
     string_lower: func(haystack: molt-object) -> molt-object;

@@ -11,13 +11,23 @@ use num_traits::{Signed, ToPrimitive, Zero};
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
+#[cfg(not(target_arch = "wasm32"))]
+use std::collections::BinaryHeap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::OpenOptions;
 use std::io::{Cursor, Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering as AtomicOrdering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Condvar;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
+
+#[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "env")]
+extern "C" {
+    fn molt_call_indirect1(func_idx: u64, arg0: u64) -> i64;
+}
 
 #[repr(C)]
 pub struct MoltHeader {
@@ -822,6 +832,20 @@ fn dec_ref_bits(bits: u64) {
 
 fn pending_bits_i64() -> i64 {
     MoltObject::pending().bits() as i64
+}
+
+#[inline]
+unsafe fn call_poll_fn(poll_fn_addr: u64, task_ptr: *mut u8) -> i64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let bits = MoltObject::from_ptr(task_ptr).bits();
+        return molt_call_indirect1(poll_fn_addr, bits);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let poll_fn: extern "C" fn(u64) -> i64 = std::mem::transmute(poll_fn_addr as usize);
+        poll_fn(task_ptr as u64)
+    }
 }
 
 fn inline_int_from_i128(val: i128) -> Option<i64> {
@@ -3142,7 +3166,8 @@ fn alloc_set_with_entries(entries: &[u64]) -> *mut u8 {
 }
 
 #[no_mangle]
-pub extern "C" fn molt_alloc(size: usize) -> u64 {
+pub extern "C" fn molt_alloc(size_bits: u64) -> u64 {
+    let size = usize_from_bits(size_bits);
     let total_size = size + std::mem::size_of::<MoltHeader>();
     let layout = std::alloc::Layout::from_size_align(total_size, 8).unwrap();
     unsafe {
@@ -3164,19 +3189,20 @@ pub extern "C" fn molt_alloc(size: usize) -> u64 {
 // --- List Builder ---
 
 #[no_mangle]
-pub extern "C" fn molt_list_builder_new(capacity_hint: usize) -> *mut u8 {
+pub extern "C" fn molt_list_builder_new(capacity_bits: u64) -> u64 {
     // Allocate wrapper object
     let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut Vec<u64>>(); // Store pointer to Vec
     let ptr = alloc_object(total, TYPE_ID_LIST_BUILDER);
     if ptr.is_null() {
-        return ptr;
+        return 0;
     }
     unsafe {
+        let capacity_hint = usize_from_bits(capacity_bits);
         let vec = Box::new(Vec::<u64>::with_capacity(capacity_hint));
         let vec_ptr = Box::into_raw(vec);
         *(ptr as *mut *mut Vec<u64>) = vec_ptr;
     }
-    ptr
+    bits_from_ptr(ptr)
 }
 
 struct CallArgs {
@@ -3190,13 +3216,15 @@ unsafe fn callargs_ptr(ptr: *mut u8) -> *mut CallArgs {
 }
 
 #[no_mangle]
-pub extern "C" fn molt_callargs_new(pos_capacity: usize, kw_capacity: usize) -> *mut u8 {
+pub extern "C" fn molt_callargs_new(pos_capacity_bits: u64, kw_capacity_bits: u64) -> u64 {
     let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut CallArgs>();
     let ptr = alloc_object(total, TYPE_ID_CALLARGS);
     if ptr.is_null() {
-        return ptr;
+        return 0;
     }
     unsafe {
+        let pos_capacity = usize_from_bits(pos_capacity_bits);
+        let kw_capacity = usize_from_bits(kw_capacity_bits);
         let args = Box::new(CallArgs {
             pos: Vec::with_capacity(pos_capacity),
             kw_names: Vec::with_capacity(kw_capacity),
@@ -3205,14 +3233,15 @@ pub extern "C" fn molt_callargs_new(pos_capacity: usize, kw_capacity: usize) -> 
         let args_ptr = Box::into_raw(args);
         *(ptr as *mut *mut CallArgs) = args_ptr;
     }
-    ptr
+    bits_from_ptr(ptr)
 }
 
 /// # Safety
-/// `builder_ptr` must be a valid pointer returned by `molt_callargs_new` and
+/// `builder_bits` must be a valid pointer returned by `molt_callargs_new` and
 /// remain owned by the caller for the duration of this call.
 #[no_mangle]
-pub unsafe extern "C" fn molt_callargs_push_pos(builder_ptr: *mut u8, val: u64) -> u64 {
+pub unsafe extern "C" fn molt_callargs_push_pos(builder_bits: u64, val: u64) -> u64 {
+    let builder_ptr = ptr_from_bits(builder_bits);
     if builder_ptr.is_null() {
         return MoltObject::none().bits();
     }
@@ -3251,14 +3280,15 @@ unsafe fn callargs_push_kw(builder_ptr: *mut u8, name_bits: u64, val_bits: u64) 
 }
 
 /// # Safety
-/// `builder_ptr` must be a valid pointer returned by `molt_callargs_new`.
+/// `builder_bits` must be a valid pointer returned by `molt_callargs_new`.
 /// `name_bits` must reference a Molt string object.
 #[no_mangle]
 pub unsafe extern "C" fn molt_callargs_push_kw(
-    builder_ptr: *mut u8,
+    builder_bits: u64,
     name_bits: u64,
     val_bits: u64,
 ) -> u64 {
+    let builder_ptr = ptr_from_bits(builder_bits);
     if builder_ptr.is_null() {
         return MoltObject::none().bits();
     }
@@ -3266,12 +3296,10 @@ pub unsafe extern "C" fn molt_callargs_push_kw(
 }
 
 /// # Safety
-/// `builder_ptr` must be a valid pointer returned by `molt_callargs_new`.
+/// `builder_bits` must be a valid pointer returned by `molt_callargs_new`.
 #[no_mangle]
-pub unsafe extern "C" fn molt_callargs_expand_star(
-    builder_ptr: *mut u8,
-    iterable_bits: u64,
-) -> u64 {
+pub unsafe extern "C" fn molt_callargs_expand_star(builder_bits: u64, iterable_bits: u64) -> u64 {
+    let builder_ptr = ptr_from_bits(builder_bits);
     if builder_ptr.is_null() {
         return MoltObject::none().bits();
     }
@@ -3297,7 +3325,7 @@ pub unsafe extern "C" fn molt_callargs_expand_star(
             break;
         }
         let val_bits = elems[0];
-        let res = molt_callargs_push_pos(builder_ptr, val_bits);
+        let res = molt_callargs_push_pos(builder_bits, val_bits);
         if obj_from_bits(res).is_none() && exception_pending() {
             return res;
         }
@@ -3306,12 +3334,10 @@ pub unsafe extern "C" fn molt_callargs_expand_star(
 }
 
 /// # Safety
-/// `builder_ptr` must be a valid pointer returned by `molt_callargs_new`.
+/// `builder_bits` must be a valid pointer returned by `molt_callargs_new`.
 #[no_mangle]
-pub unsafe extern "C" fn molt_callargs_expand_kwstar(
-    builder_ptr: *mut u8,
-    mapping_bits: u64,
-) -> u64 {
+pub unsafe extern "C" fn molt_callargs_expand_kwstar(builder_bits: u64, mapping_bits: u64) -> u64 {
+    let builder_ptr = ptr_from_bits(builder_bits);
     if builder_ptr.is_null() {
         return MoltObject::none().bits();
     }
@@ -3336,8 +3362,9 @@ pub unsafe extern "C" fn molt_callargs_expand_kwstar(
 
 #[no_mangle]
 /// # Safety
-/// Caller must ensure `builder_ptr` is valid and points to a list builder.
-pub unsafe extern "C" fn molt_list_builder_append(builder_ptr: *mut u8, val: u64) {
+/// Caller must ensure `builder_bits` is valid and points to a list builder.
+pub unsafe extern "C" fn molt_list_builder_append(builder_bits: u64, val: u64) {
+    let builder_ptr = ptr_from_bits(builder_bits);
     if builder_ptr.is_null() {
         return;
     }
@@ -3351,8 +3378,9 @@ pub unsafe extern "C" fn molt_list_builder_append(builder_ptr: *mut u8, val: u64
 
 #[no_mangle]
 /// # Safety
-/// Caller must ensure `builder_ptr` is valid and points to a list builder.
-pub unsafe extern "C" fn molt_list_builder_finish(builder_ptr: *mut u8) -> u64 {
+/// Caller must ensure `builder_bits` is valid and points to a list builder.
+pub unsafe extern "C" fn molt_list_builder_finish(builder_bits: u64) -> u64 {
+    let builder_ptr = ptr_from_bits(builder_bits);
     if builder_ptr.is_null() {
         return MoltObject::none().bits();
     }
@@ -3381,8 +3409,9 @@ pub unsafe extern "C" fn molt_list_builder_finish(builder_ptr: *mut u8) -> u64 {
 
 #[no_mangle]
 /// # Safety
-/// Caller must ensure `builder_ptr` is valid and points to a tuple builder.
-pub unsafe extern "C" fn molt_tuple_builder_finish(builder_ptr: *mut u8) -> u64 {
+/// Caller must ensure `builder_bits` is valid and points to a tuple builder.
+pub unsafe extern "C" fn molt_tuple_builder_finish(builder_bits: u64) -> u64 {
+    let builder_ptr = ptr_from_bits(builder_bits);
     if builder_ptr.is_null() {
         return MoltObject::none().bits();
     }
@@ -3723,13 +3752,13 @@ pub extern "C" fn molt_issubclass(sub_bits: u64, class_bits: u64) -> u64 {
 
 #[no_mangle]
 pub extern "C" fn molt_object_new() -> u64 {
-    let obj_bits = molt_alloc(std::mem::size_of::<u64>());
+    let obj_bits = molt_alloc(std::mem::size_of::<u64>() as u64);
     let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
         return MoltObject::none().bits();
     };
     let class_bits = builtin_classes().object;
     unsafe {
-        let _ = molt_object_set_class(obj_ptr, class_bits);
+        let _ = molt_object_set_class(bits_from_ptr(obj_ptr), class_bits);
     }
     obj_bits
 }
@@ -4020,10 +4049,11 @@ pub extern "C" fn molt_property_new(get_bits: u64, set_bits: u64, del_bits: u64)
 }
 
 /// # Safety
-/// `obj_ptr` must point to a valid Molt object header that can be mutated, and
+/// `obj_ptr_bits` must point to a valid Molt object header that can be mutated, and
 /// `class_bits` must be either zero or a valid Molt type object.
 #[no_mangle]
-pub unsafe extern "C" fn molt_object_set_class(obj_ptr: *mut u8, class_bits: u64) -> u64 {
+pub unsafe extern "C" fn molt_object_set_class(obj_ptr_bits: u64, class_bits: u64) -> u64 {
+    let obj_ptr = ptr_from_bits(obj_ptr_bits);
     if obj_ptr.is_null() {
         raise!("AttributeError", "object has no class");
     }
@@ -4058,10 +4088,29 @@ fn resolve_obj_ptr(bits: u64) -> Option<*mut u8> {
     None
 }
 
+fn resolve_task_ptr(bits: u64) -> Option<*mut u8> {
+    let obj = obj_from_bits(bits);
+    if let Some(ptr) = obj.as_ptr() {
+        return Some(ptr);
+    }
+    if !obj.is_float() {
+        return None;
+    }
+    let high = bits >> 48;
+    if high == 0 || high == 0xffff {
+        let ptr = ptr_from_bits(bits);
+        let addr = ptr as usize;
+        if addr < 4096 || (addr & 0x7) != 0 {
+            return None;
+        }
+        return Some(ptr);
+    }
+    None
+}
+
 /// # Safety
 /// `obj_ptr` must point to a valid object with enough payload for `offset`.
-#[no_mangle]
-pub unsafe extern "C" fn molt_object_field_get_ptr(obj_ptr: *mut u8, offset: usize) -> u64 {
+unsafe fn object_field_get_ptr_raw(obj_ptr: *mut u8, offset: usize) -> u64 {
     if obj_ptr.is_null() {
         raise!("TypeError", "object field access on non-object");
     }
@@ -4073,12 +4122,7 @@ pub unsafe extern "C" fn molt_object_field_get_ptr(obj_ptr: *mut u8, offset: usi
 
 /// # Safety
 /// `obj_ptr` must point to a valid object with enough payload for `offset`.
-#[no_mangle]
-pub unsafe extern "C" fn molt_object_field_set_ptr(
-    obj_ptr: *mut u8,
-    offset: usize,
-    val_bits: u64,
-) -> u64 {
+unsafe fn object_field_set_ptr_raw(obj_ptr: *mut u8, offset: usize, val_bits: u64) -> u64 {
     if obj_ptr.is_null() {
         raise!("TypeError", "object field access on non-object");
     }
@@ -4096,12 +4140,7 @@ pub unsafe extern "C" fn molt_object_field_set_ptr(
 /// # Safety
 /// `obj_ptr` must point to a valid object with enough payload for `offset`.
 /// Intended for initializing freshly allocated objects with immediate values.
-#[no_mangle]
-pub unsafe extern "C" fn molt_object_field_init_ptr(
-    obj_ptr: *mut u8,
-    offset: usize,
-    val_bits: u64,
-) -> u64 {
+unsafe fn object_field_init_ptr_raw(obj_ptr: *mut u8, offset: usize, val_bits: u64) -> u64 {
     if obj_ptr.is_null() {
         raise!("TypeError", "object field access on non-object");
     }
@@ -4113,6 +4152,42 @@ pub unsafe extern "C" fn molt_object_field_init_ptr(
     );
     *slot = val_bits;
     MoltObject::none().bits()
+}
+
+/// # Safety
+/// `obj_ptr_bits` must point to a valid object with enough payload for `offset_bits`.
+#[no_mangle]
+pub unsafe extern "C" fn molt_object_field_get_ptr(obj_ptr_bits: u64, offset_bits: u64) -> u64 {
+    let obj_ptr = ptr_from_bits(obj_ptr_bits);
+    let offset = usize_from_bits(offset_bits);
+    object_field_get_ptr_raw(obj_ptr, offset)
+}
+
+/// # Safety
+/// `obj_ptr_bits` must point to a valid object with enough payload for `offset_bits`.
+#[no_mangle]
+pub unsafe extern "C" fn molt_object_field_set_ptr(
+    obj_ptr_bits: u64,
+    offset_bits: u64,
+    val_bits: u64,
+) -> u64 {
+    let obj_ptr = ptr_from_bits(obj_ptr_bits);
+    let offset = usize_from_bits(offset_bits);
+    object_field_set_ptr_raw(obj_ptr, offset, val_bits)
+}
+
+/// # Safety
+/// `obj_ptr_bits` must point to a valid object with enough payload for `offset_bits`.
+/// Intended for initializing freshly allocated objects with immediate values.
+#[no_mangle]
+pub unsafe extern "C" fn molt_object_field_init_ptr(
+    obj_ptr_bits: u64,
+    offset_bits: u64,
+    val_bits: u64,
+) -> u64 {
+    let obj_ptr = ptr_from_bits(obj_ptr_bits);
+    let offset = usize_from_bits(offset_bits);
+    object_field_init_ptr_raw(obj_ptr, offset, val_bits)
 }
 
 unsafe fn guard_layout_match(obj_ptr: *mut u8, class_bits: u64, expected_version: u64) -> bool {
@@ -4156,76 +4231,84 @@ unsafe fn guard_layout_match(obj_ptr: *mut u8, class_bits: u64, expected_version
 }
 
 /// # Safety
-/// `obj_ptr` must point to a valid object with a class.
+/// `obj_ptr_bits` must point to a valid object with a class.
 #[no_mangle]
 pub unsafe extern "C" fn molt_guard_layout_ptr(
-    obj_ptr: *mut u8,
+    obj_ptr_bits: u64,
     class_bits: u64,
     expected_version: u64,
 ) -> u64 {
+    let obj_ptr = ptr_from_bits(obj_ptr_bits);
     MoltObject::from_bool(guard_layout_match(obj_ptr, class_bits, expected_version)).bits()
 }
 
 /// # Safety
-/// `obj_ptr` must point to a valid object with enough payload for `offset`.
+/// `obj_ptr_bits` must point to a valid object with enough payload for `offset_bits`.
 #[no_mangle]
 pub unsafe extern "C" fn molt_guarded_field_get_ptr(
-    obj_ptr: *mut u8,
+    obj_ptr_bits: u64,
     class_bits: u64,
     expected_version: u64,
-    offset: usize,
-    attr_name_ptr: *const u8,
-    attr_name_len: usize,
+    offset_bits: u64,
+    attr_name_bits: u64,
+    attr_name_len_bits: u64,
 ) -> u64 {
+    let obj_ptr = ptr_from_bits(obj_ptr_bits);
+    let offset = usize_from_bits(offset_bits);
     if guard_layout_match(obj_ptr, class_bits, expected_version) {
-        return molt_object_field_get_ptr(obj_ptr, offset);
+        return object_field_get_ptr_raw(obj_ptr, offset);
     }
-    molt_get_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len) as u64
+    molt_get_attr_ptr(obj_ptr_bits, attr_name_bits, attr_name_len_bits) as u64
 }
 
 /// # Safety
-/// `obj_ptr` must point to a valid object with enough payload for `offset`.
+/// `obj_ptr_bits` must point to a valid object with enough payload for `offset_bits`.
 #[no_mangle]
 pub unsafe extern "C" fn molt_guarded_field_set_ptr(
-    obj_ptr: *mut u8,
+    obj_ptr_bits: u64,
     class_bits: u64,
     expected_version: u64,
-    offset: usize,
+    offset_bits: u64,
     val_bits: u64,
-    attr_name_ptr: *const u8,
-    attr_name_len: usize,
+    attr_name_bits: u64,
+    attr_name_len_bits: u64,
 ) -> u64 {
+    let obj_ptr = ptr_from_bits(obj_ptr_bits);
+    let offset = usize_from_bits(offset_bits);
     if guard_layout_match(obj_ptr, class_bits, expected_version) {
-        return molt_object_field_set_ptr(obj_ptr, offset, val_bits);
+        return object_field_set_ptr_raw(obj_ptr, offset, val_bits);
     }
-    molt_set_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len, val_bits) as u64
+    molt_set_attr_ptr(obj_ptr_bits, attr_name_bits, attr_name_len_bits, val_bits) as u64
 }
 
 /// # Safety
-/// `obj_ptr` must point to a valid object with enough payload for `offset`.
+/// `obj_ptr_bits` must point to a valid object with enough payload for `offset_bits`.
 #[no_mangle]
 pub unsafe extern "C" fn molt_guarded_field_init_ptr(
-    obj_ptr: *mut u8,
+    obj_ptr_bits: u64,
     class_bits: u64,
     expected_version: u64,
-    offset: usize,
+    offset_bits: u64,
     val_bits: u64,
-    attr_name_ptr: *const u8,
-    attr_name_len: usize,
+    attr_name_bits: u64,
+    attr_name_len_bits: u64,
 ) -> u64 {
+    let obj_ptr = ptr_from_bits(obj_ptr_bits);
+    let offset = usize_from_bits(offset_bits);
     if guard_layout_match(obj_ptr, class_bits, expected_version) {
-        return molt_object_field_init_ptr(obj_ptr, offset, val_bits);
+        return object_field_init_ptr_raw(obj_ptr, offset, val_bits);
     }
-    molt_set_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len, val_bits) as u64
+    molt_set_attr_ptr(obj_ptr_bits, attr_name_bits, attr_name_len_bits, val_bits) as u64
 }
 
 /// # Safety
-/// `obj_bits` must reference a valid object with enough payload for `offset`.
+/// `obj_bits` must reference a valid object with enough payload for `offset_bits`.
 #[no_mangle]
-pub unsafe extern "C" fn molt_object_field_get(obj_bits: u64, offset: usize) -> u64 {
+pub unsafe extern "C" fn molt_object_field_get(obj_bits: u64, offset_bits: u64) -> u64 {
     let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
         raise!("TypeError", "object field access on non-object");
     };
+    let offset = usize_from_bits(offset_bits);
     let slot = obj_ptr.add(offset) as *const u64;
     let bits = *slot;
     inc_ref_bits(bits);
@@ -4233,12 +4316,17 @@ pub unsafe extern "C" fn molt_object_field_get(obj_bits: u64, offset: usize) -> 
 }
 
 /// # Safety
-/// `obj_bits` must reference a valid object with enough payload for `offset`.
+/// `obj_bits` must reference a valid object with enough payload for `offset_bits`.
 #[no_mangle]
-pub unsafe extern "C" fn molt_object_field_set(obj_bits: u64, offset: usize, val_bits: u64) -> u64 {
+pub unsafe extern "C" fn molt_object_field_set(
+    obj_bits: u64,
+    offset_bits: u64,
+    val_bits: u64,
+) -> u64 {
     let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
         raise!("TypeError", "object field access on non-object");
     };
+    let offset = usize_from_bits(offset_bits);
     profile_hit(&STRUCT_FIELD_STORE_COUNT);
     let slot = obj_ptr.add(offset) as *mut u64;
     let old_bits = *slot;
@@ -4251,17 +4339,18 @@ pub unsafe extern "C" fn molt_object_field_set(obj_bits: u64, offset: usize, val
 }
 
 /// # Safety
-/// `obj_bits` must reference a valid object with enough payload for `offset`.
+/// `obj_bits` must reference a valid object with enough payload for `offset_bits`.
 /// Intended for initializing freshly allocated objects with immediate values.
 #[no_mangle]
 pub unsafe extern "C" fn molt_object_field_init(
     obj_bits: u64,
-    offset: usize,
+    offset_bits: u64,
     val_bits: u64,
 ) -> u64 {
     let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
         raise!("TypeError", "object field access on non-object");
     };
+    let offset = usize_from_bits(offset_bits);
     let slot = obj_ptr.add(offset) as *mut u64;
     let old_bits = *slot;
     debug_assert!(
@@ -4398,7 +4487,8 @@ unsafe fn generator_set_slot(ptr: *mut u8, offset: usize, bits: u64) {
 /// `self_ptr` must point to a valid closure storage region and `offset` must be
 /// within the allocated payload.
 #[no_mangle]
-pub unsafe extern "C" fn molt_closure_load(self_ptr: *mut u8, offset: u64) -> u64 {
+pub unsafe extern "C" fn molt_closure_load(self_bits: u64, offset: u64) -> u64 {
+    let self_ptr = ptr_from_bits(self_bits);
     if self_ptr.is_null() {
         return MoltObject::none().bits();
     }
@@ -4412,7 +4502,8 @@ pub unsafe extern "C" fn molt_closure_load(self_ptr: *mut u8, offset: u64) -> u6
 /// `self_ptr` must point to a valid closure storage region and `offset` must be
 /// within the allocated payload.
 #[no_mangle]
-pub unsafe extern "C" fn molt_closure_store(self_ptr: *mut u8, offset: u64, bits: u64) -> u64 {
+pub unsafe extern "C" fn molt_closure_store(self_bits: u64, offset: u64, bits: u64) -> u64 {
+    let self_ptr = ptr_from_bits(self_bits);
     if self_ptr.is_null() {
         return MoltObject::none().bits();
     }
@@ -4565,10 +4656,9 @@ pub extern "C" fn molt_generator_send(gen_bits: u64, send_bits: u64) -> u64 {
         let gen_depth = to_i64(obj_from_bits(gen_depth_bits)).unwrap_or(0);
         let gen_depth = if gen_depth < 0 { 0 } else { gen_depth as usize };
         exception_stack_set_depth(gen_depth);
-        let poll_fn: extern "C" fn(*mut u8) -> i64 = std::mem::transmute(poll_fn_addr as usize);
         let prev_raise = generator_raise_active();
         set_generator_raise(true);
-        let res = poll_fn(ptr);
+        let res = call_poll_fn(poll_fn_addr, ptr);
         set_generator_raise(prev_raise);
         let pending = exception_pending();
         let exc_bits = if pending {
@@ -4637,10 +4727,9 @@ pub extern "C" fn molt_generator_throw(gen_bits: u64, exc_bits: u64) -> u64 {
         let gen_depth = to_i64(obj_from_bits(gen_depth_bits)).unwrap_or(0);
         let gen_depth = if gen_depth < 0 { 0 } else { gen_depth as usize };
         exception_stack_set_depth(gen_depth);
-        let poll_fn: extern "C" fn(*mut u8) -> i64 = std::mem::transmute(poll_fn_addr as usize);
         let prev_raise = generator_raise_active();
         set_generator_raise(true);
-        let res = poll_fn(ptr);
+        let res = call_poll_fn(poll_fn_addr, ptr);
         set_generator_raise(prev_raise);
         let pending = exception_pending();
         let exc_bits = if pending {
@@ -4728,10 +4817,9 @@ pub extern "C" fn molt_generator_close(gen_bits: u64) -> u64 {
         let gen_depth = to_i64(obj_from_bits(gen_depth_bits)).unwrap_or(0);
         let gen_depth = if gen_depth < 0 { 0 } else { gen_depth as usize };
         exception_stack_set_depth(gen_depth);
-        let poll_fn: extern "C" fn(*mut u8) -> i64 = std::mem::transmute(poll_fn_addr as usize);
         let prev_raise = generator_raise_active();
         set_generator_raise(true);
-        let res = poll_fn(ptr) as u64;
+        let res = call_poll_fn(poll_fn_addr, ptr) as u64;
         set_generator_raise(prev_raise);
         let pending = exception_pending();
         let exc_bits = if pending {
@@ -5466,7 +5554,7 @@ pub extern "C" fn molt_buffer2d_matmul(a_bits: u64, b_bits: u64) -> u64 {
 }
 
 #[no_mangle]
-pub extern "C" fn molt_dict_new(capacity_hint: usize) -> u64 {
+pub extern "C" fn molt_dict_new(capacity_bits: u64) -> u64 {
     let total = std::mem::size_of::<MoltHeader>()
         + std::mem::size_of::<*mut Vec<u64>>()
         + std::mem::size_of::<*mut Vec<usize>>();
@@ -5475,6 +5563,7 @@ pub extern "C" fn molt_dict_new(capacity_hint: usize) -> u64 {
         return MoltObject::none().bits();
     }
     unsafe {
+        let capacity_hint = usize_from_bits(capacity_bits);
         let order = Vec::with_capacity(capacity_hint * 2);
         let mut table = Vec::new();
         if capacity_hint > 0 {
@@ -5504,7 +5593,7 @@ pub extern "C" fn molt_dict_from_obj(obj_bits: u64) -> u64 {
             }
         }
     }
-    let dict_bits = molt_dict_new(capacity);
+    let dict_bits = molt_dict_new(capacity as u64);
     if obj_from_bits(dict_bits).is_none() {
         return MoltObject::none().bits();
     }
@@ -5540,7 +5629,7 @@ pub extern "C" fn molt_dict_from_obj(obj_bits: u64) -> u64 {
 }
 
 #[no_mangle]
-pub extern "C" fn molt_set_new(capacity_hint: usize) -> u64 {
+pub extern "C" fn molt_set_new(capacity_bits: u64) -> u64 {
     let total = std::mem::size_of::<MoltHeader>()
         + std::mem::size_of::<*mut Vec<u64>>()
         + std::mem::size_of::<*mut Vec<usize>>();
@@ -5549,6 +5638,7 @@ pub extern "C" fn molt_set_new(capacity_hint: usize) -> u64 {
         return MoltObject::none().bits();
     }
     unsafe {
+        let capacity_hint = usize_from_bits(capacity_bits);
         let order = Vec::with_capacity(capacity_hint);
         let mut table = Vec::new();
         if capacity_hint > 0 {
@@ -5563,7 +5653,7 @@ pub extern "C" fn molt_set_new(capacity_hint: usize) -> u64 {
 }
 
 #[no_mangle]
-pub extern "C" fn molt_frozenset_new(capacity_hint: usize) -> u64 {
+pub extern "C" fn molt_frozenset_new(capacity_bits: u64) -> u64 {
     let total = std::mem::size_of::<MoltHeader>()
         + std::mem::size_of::<*mut Vec<u64>>()
         + std::mem::size_of::<*mut Vec<usize>>();
@@ -5572,6 +5662,7 @@ pub extern "C" fn molt_frozenset_new(capacity_hint: usize) -> u64 {
         return MoltObject::none().bits();
     }
     unsafe {
+        let capacity_hint = usize_from_bits(capacity_bits);
         let order = Vec::with_capacity(capacity_hint);
         let mut table = Vec::new();
         if capacity_hint > 0 {
@@ -5586,24 +5677,26 @@ pub extern "C" fn molt_frozenset_new(capacity_hint: usize) -> u64 {
 }
 
 #[no_mangle]
-pub extern "C" fn molt_dict_builder_new(capacity_hint: usize) -> *mut u8 {
+pub extern "C" fn molt_dict_builder_new(capacity_bits: u64) -> u64 {
     let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut Vec<u64>>();
     let ptr = alloc_object(total, TYPE_ID_DICT_BUILDER);
     if ptr.is_null() {
-        return ptr;
+        return 0;
     }
     unsafe {
+        let capacity_hint = usize_from_bits(capacity_bits);
         let vec = Vec::with_capacity(capacity_hint * 2);
         let vec_ptr = Box::into_raw(Box::new(vec));
         *(ptr as *mut *mut Vec<u64>) = vec_ptr;
     }
-    ptr
+    bits_from_ptr(ptr)
 }
 
 #[no_mangle]
 /// # Safety
-/// Caller must ensure `builder_ptr` is valid and points to a dict builder.
-pub unsafe extern "C" fn molt_dict_builder_append(builder_ptr: *mut u8, key: u64, val: u64) {
+/// Caller must ensure `builder_bits` is valid and points to a dict builder.
+pub unsafe extern "C" fn molt_dict_builder_append(builder_bits: u64, key: u64, val: u64) {
+    let builder_ptr = ptr_from_bits(builder_bits);
     if builder_ptr.is_null() {
         return;
     }
@@ -5618,8 +5711,9 @@ pub unsafe extern "C" fn molt_dict_builder_append(builder_ptr: *mut u8, key: u64
 
 #[no_mangle]
 /// # Safety
-/// Caller must ensure `builder_ptr` is valid and points to a dict builder.
-pub unsafe extern "C" fn molt_dict_builder_finish(builder_ptr: *mut u8) -> u64 {
+/// Caller must ensure `builder_bits` is valid and points to a dict builder.
+pub unsafe extern "C" fn molt_dict_builder_finish(builder_bits: u64) -> u64 {
+    let builder_ptr = ptr_from_bits(builder_bits);
     if builder_ptr.is_null() {
         return MoltObject::none().bits();
     }
@@ -5639,24 +5733,26 @@ pub unsafe extern "C" fn molt_dict_builder_finish(builder_ptr: *mut u8) -> u64 {
 // --- Set Builder ---
 
 #[no_mangle]
-pub extern "C" fn molt_set_builder_new(capacity_hint: usize) -> *mut u8 {
+pub extern "C" fn molt_set_builder_new(capacity_bits: u64) -> u64 {
     let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut Vec<u64>>();
     let ptr = alloc_object(total, TYPE_ID_SET_BUILDER);
     if ptr.is_null() {
-        return ptr;
+        return 0;
     }
     unsafe {
+        let capacity_hint = usize_from_bits(capacity_bits);
         let vec = Vec::with_capacity(capacity_hint);
         let vec_ptr = Box::into_raw(Box::new(vec));
         *(ptr as *mut *mut Vec<u64>) = vec_ptr;
     }
-    ptr
+    bits_from_ptr(ptr)
 }
 
 #[no_mangle]
 /// # Safety
-/// Caller must ensure `builder_ptr` is valid and points to a set builder.
-pub unsafe extern "C" fn molt_set_builder_append(builder_ptr: *mut u8, key: u64) {
+/// Caller must ensure `builder_bits` is valid and points to a set builder.
+pub unsafe extern "C" fn molt_set_builder_append(builder_bits: u64, key: u64) {
+    let builder_ptr = ptr_from_bits(builder_bits);
     if builder_ptr.is_null() {
         return;
     }
@@ -5670,8 +5766,9 @@ pub unsafe extern "C" fn molt_set_builder_append(builder_ptr: *mut u8, key: u64)
 
 #[no_mangle]
 /// # Safety
-/// Caller must ensure `builder_ptr` is valid and points to a set builder.
-pub unsafe extern "C" fn molt_set_builder_finish(builder_ptr: *mut u8) -> u64 {
+/// Caller must ensure `builder_bits` is valid and points to a set builder.
+pub unsafe extern "C" fn molt_set_builder_finish(builder_bits: u64) -> u64 {
+    let builder_ptr = ptr_from_bits(builder_bits);
     if builder_ptr.is_null() {
         return MoltObject::none().bits();
     }
@@ -5712,7 +5809,7 @@ pub struct MoltWebSocket {
 }
 
 #[no_mangle]
-pub extern "C" fn molt_chan_new(capacity_bits: u64) -> *mut u8 {
+pub extern "C" fn molt_chan_new(capacity_bits: u64) -> u64 {
     let capacity = match to_i64(obj_from_bits(capacity_bits)) {
         Some(val) => val,
         None => raise!("TypeError", "channel capacity must be an integer"),
@@ -5730,13 +5827,14 @@ pub extern "C" fn molt_chan_new(capacity_bits: u64) -> *mut u8 {
         sender: s,
         receiver: r,
     });
-    Box::into_raw(chan) as *mut u8
+    bits_from_ptr(Box::into_raw(chan) as *mut u8)
 }
 
 #[no_mangle]
 /// # Safety
-/// Caller must ensure `chan_ptr` is a valid channel pointer.
-pub unsafe extern "C" fn molt_chan_send(chan_ptr: *mut u8, val: i64) -> i64 {
+/// Caller must ensure `chan_bits` is a valid channel pointer.
+pub unsafe extern "C" fn molt_chan_send(chan_bits: u64, val: i64) -> i64 {
+    let chan_ptr = ptr_from_bits(chan_bits);
     let chan = &*(chan_ptr as *mut MoltChannel);
     match chan.sender.try_send(val) {
         Ok(_) => 0,                   // Ready(None)
@@ -5746,8 +5844,9 @@ pub unsafe extern "C" fn molt_chan_send(chan_ptr: *mut u8, val: i64) -> i64 {
 
 #[no_mangle]
 /// # Safety
-/// Caller must ensure `chan_ptr` is a valid channel pointer.
-pub unsafe extern "C" fn molt_chan_recv(chan_ptr: *mut u8) -> i64 {
+/// Caller must ensure `chan_bits` is a valid channel pointer.
+pub unsafe extern "C" fn molt_chan_recv(chan_bits: u64) -> i64 {
+    let chan_ptr = ptr_from_bits(chan_bits);
     let chan = &*(chan_ptr as *mut MoltChannel);
     match chan.receiver.try_recv() {
         Ok(val) => val,
@@ -5764,24 +5863,24 @@ fn bytes_channel(capacity: usize) -> (Sender<Vec<u8>>, Receiver<Vec<u8>>) {
 }
 
 #[no_mangle]
-pub extern "C" fn molt_stream_new(capacity: usize) -> *mut u8 {
+pub extern "C" fn molt_stream_new(capacity_bits: u64) -> u64 {
+    let capacity = usize_from_bits(capacity_bits);
     let (s, r) = bytes_channel(capacity);
     let stream = Box::new(MoltStream {
         sender: s,
         receiver: r,
         closed: AtomicBool::new(false),
     });
-    Box::into_raw(stream) as *mut u8
+    bits_from_ptr(Box::into_raw(stream) as *mut u8)
 }
 
 #[no_mangle]
 /// # Safety
-/// Caller must ensure `stream_ptr` is valid; `data_ptr` must be readable for `len` bytes.
-pub unsafe extern "C" fn molt_stream_send(
-    stream_ptr: *mut u8,
-    data_ptr: *const u8,
-    len: usize,
-) -> i64 {
+/// Caller must ensure `stream_bits` is valid; `data_bits` must be readable for `len_bits` bytes.
+pub unsafe extern "C" fn molt_stream_send(stream_bits: u64, data_bits: u64, len_bits: u64) -> i64 {
+    let stream_ptr = ptr_from_bits(stream_bits);
+    let data_ptr = ptr_from_const_bits(data_bits);
+    let len = usize_from_bits(len_bits);
     if stream_ptr.is_null() || (data_ptr.is_null() && len != 0) {
         return pending_bits_i64();
     }
@@ -5795,8 +5894,9 @@ pub unsafe extern "C" fn molt_stream_send(
 
 #[no_mangle]
 /// # Safety
-/// Caller must ensure `stream_ptr` is a valid stream pointer.
-pub unsafe extern "C" fn molt_stream_recv(stream_ptr: *mut u8) -> i64 {
+/// Caller must ensure `stream_bits` is a valid stream pointer.
+pub unsafe extern "C" fn molt_stream_recv(stream_bits: u64) -> i64 {
+    let stream_ptr = ptr_from_bits(stream_bits);
     if stream_ptr.is_null() {
         return MoltObject::none().bits() as i64;
     }
@@ -5822,8 +5922,9 @@ pub unsafe extern "C" fn molt_stream_recv(stream_ptr: *mut u8) -> i64 {
 
 #[no_mangle]
 /// # Safety
-/// Caller must ensure `stream_ptr` is a valid stream pointer.
-pub unsafe extern "C" fn molt_stream_close(stream_ptr: *mut u8) {
+/// Caller must ensure `stream_bits` is a valid stream pointer.
+pub unsafe extern "C" fn molt_stream_close(stream_bits: u64) {
+    let stream_ptr = ptr_from_bits(stream_bits);
     if stream_ptr.is_null() {
         return;
     }
@@ -5835,13 +5936,16 @@ pub unsafe extern "C" fn molt_stream_close(stream_ptr: *mut u8) {
 /// # Safety
 /// Caller must ensure `out_left` and `out_right` are valid writable pointers.
 pub unsafe extern "C" fn molt_ws_pair(
-    capacity: usize,
-    out_left: *mut *mut u8,
-    out_right: *mut *mut u8,
+    capacity_bits: u64,
+    out_left_bits: u64,
+    out_right_bits: u64,
 ) -> i32 {
+    let out_left = ptr_from_bits(out_left_bits) as *mut u64;
+    let out_right = ptr_from_bits(out_right_bits) as *mut u64;
     if out_left.is_null() || out_right.is_null() {
         return 2;
     }
+    let capacity = usize_from_bits(capacity_bits);
     let (a_tx, a_rx) = bytes_channel(capacity);
     let (b_tx, b_rx) = bytes_channel(capacity);
     let left = Box::new(MoltWebSocket {
@@ -5862,8 +5966,8 @@ pub unsafe extern "C" fn molt_ws_pair(
         close_hook: None,
         hook_ctx: std::ptr::null_mut(),
     });
-    *out_left = Box::into_raw(left) as *mut u8;
-    *out_right = Box::into_raw(right) as *mut u8;
+    *out_left = bits_from_ptr(Box::into_raw(left) as *mut u8);
+    *out_right = bits_from_ptr(Box::into_raw(right) as *mut u8);
     0
 }
 
@@ -5934,14 +6038,13 @@ fn has_capability(name: &str) -> bool {
 #[no_mangle]
 /// # Safety
 /// Caller must ensure `url_ptr` is valid for `url_len` bytes and `out` is writable.
-pub unsafe extern "C" fn molt_ws_connect(
-    url_ptr: *const u8,
-    url_len: usize,
-    out: *mut *mut u8,
-) -> i32 {
+pub unsafe extern "C" fn molt_ws_connect(url_bits: u64, url_len_bits: u64, out_bits: u64) -> i32 {
+    let out = ptr_from_bits(out_bits) as *mut u64;
     if out.is_null() {
         return 2;
     }
+    let url_ptr = ptr_from_const_bits(url_bits);
+    let url_len = usize_from_bits(url_len_bits);
     if !has_capability("websocket:connect") {
         return 6;
     }
@@ -5955,14 +6058,17 @@ pub unsafe extern "C" fn molt_ws_connect(
     if ws_ptr.is_null() {
         return 7;
     }
-    *out = ws_ptr;
+    *out = bits_from_ptr(ws_ptr);
     0
 }
 
 #[no_mangle]
 /// # Safety
-/// Caller must ensure `ws_ptr` is valid; `data_ptr` must be readable for `len` bytes.
-pub unsafe extern "C" fn molt_ws_send(ws_ptr: *mut u8, data_ptr: *const u8, len: usize) -> i64 {
+/// Caller must ensure `ws_bits` is valid; `data_bits` must be readable for `len_bits` bytes.
+pub unsafe extern "C" fn molt_ws_send(ws_bits: u64, data_bits: u64, len_bits: u64) -> i64 {
+    let ws_ptr = ptr_from_bits(ws_bits);
+    let data_ptr = ptr_from_const_bits(data_bits);
+    let len = usize_from_bits(len_bits);
     if ws_ptr.is_null() || (data_ptr.is_null() && len != 0) {
         return pending_bits_i64();
     }
@@ -5979,8 +6085,9 @@ pub unsafe extern "C" fn molt_ws_send(ws_ptr: *mut u8, data_ptr: *const u8, len:
 
 #[no_mangle]
 /// # Safety
-/// Caller must ensure `ws_ptr` is a valid websocket pointer.
-pub unsafe extern "C" fn molt_ws_recv(ws_ptr: *mut u8) -> i64 {
+/// Caller must ensure `ws_bits` is a valid websocket pointer.
+pub unsafe extern "C" fn molt_ws_recv(ws_bits: u64) -> i64 {
+    let ws_ptr = ptr_from_bits(ws_bits);
     if ws_ptr.is_null() {
         return MoltObject::none().bits() as i64;
     }
@@ -6009,8 +6116,9 @@ pub unsafe extern "C" fn molt_ws_recv(ws_ptr: *mut u8) -> i64 {
 
 #[no_mangle]
 /// # Safety
-/// Caller must ensure `ws_ptr` is a valid websocket pointer.
-pub unsafe extern "C" fn molt_ws_close(ws_ptr: *mut u8) {
+/// Caller must ensure `ws_bits` is a valid websocket pointer.
+pub unsafe extern "C" fn molt_ws_close(ws_bits: u64) {
+    let ws_ptr = ptr_from_bits(ws_bits);
     if ws_ptr.is_null() {
         return;
     }
@@ -6230,26 +6338,31 @@ pub struct MoltTask {
 }
 
 #[derive(Copy, Clone)]
+#[cfg(not(target_arch = "wasm32"))]
 struct SleepEntry {
     deadline: Instant,
     task_ptr: usize,
     gen: u64,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl PartialEq for SleepEntry {
     fn eq(&self, other: &Self) -> bool {
         self.deadline == other.deadline && self.gen == other.gen && self.task_ptr == other.task_ptr
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Eq for SleepEntry {}
 
+#[cfg(not(target_arch = "wasm32"))]
 impl PartialOrd for SleepEntry {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Ord for SleepEntry {
     fn cmp(&self, other: &Self) -> Ordering {
         other
@@ -6260,14 +6373,18 @@ impl Ord for SleepEntry {
 }
 
 struct SleepState {
+    #[cfg(not(target_arch = "wasm32"))]
     heap: BinaryHeap<SleepEntry>,
+    #[cfg(not(target_arch = "wasm32"))]
     tasks: HashMap<usize, u64>,
+    #[cfg(not(target_arch = "wasm32"))]
     next_gen: u64,
     blocking: HashMap<usize, Instant>,
 }
 
 struct SleepQueue {
     inner: Mutex<SleepState>,
+    #[cfg(not(target_arch = "wasm32"))]
     cv: Condvar,
 }
 
@@ -6275,15 +6392,20 @@ impl SleepQueue {
     fn new() -> Self {
         Self {
             inner: Mutex::new(SleepState {
+                #[cfg(not(target_arch = "wasm32"))]
                 heap: BinaryHeap::new(),
+                #[cfg(not(target_arch = "wasm32"))]
                 tasks: HashMap::new(),
+                #[cfg(not(target_arch = "wasm32"))]
                 next_gen: 0,
                 blocking: HashMap::new(),
             }),
+            #[cfg(not(target_arch = "wasm32"))]
             cv: Condvar::new(),
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn register_scheduler(&self, task_ptr: *mut u8, deadline: Instant) {
         let mut guard = self.inner.lock().unwrap();
         let task_key = task_ptr as usize;
@@ -6310,12 +6432,14 @@ impl SleepQueue {
         guard.blocking.remove(&(task_ptr as usize))
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn is_scheduled(&self, task_ptr: *mut u8) -> bool {
         let guard = self.inner.lock().unwrap();
         guard.tasks.contains_key(&(task_ptr as usize))
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn sleep_worker(queue: Arc<SleepQueue>) {
     loop {
         let task_ptr = {
@@ -6375,7 +6499,10 @@ pub struct MoltScheduler {
 
 impl MoltScheduler {
     pub fn new() -> Self {
-        let num_threads = num_cpus::get();
+        #[cfg(target_arch = "wasm32")]
+        let num_threads = 0usize;
+        #[cfg(not(target_arch = "wasm32"))]
+        let num_threads = num_cpus::get().max(1);
         let injector = Arc::new(Injector::new());
         let mut workers = Vec::new();
         let mut stealers = Vec::new();
@@ -6452,32 +6579,72 @@ impl MoltScheduler {
     }
 
     fn execute_task(task: MoltTask, injector: &Injector<MoltTask>) {
-        unsafe {
-            let task_ptr = task.future_ptr;
-            let header = task_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
-            let poll_fn_addr = (*header).poll_fn;
-            if poll_fn_addr != 0 {
-                let poll_fn: extern "C" fn(*mut u8) -> i64 =
-                    std::mem::transmute(poll_fn_addr as usize);
-                let prev_task = CURRENT_TASK.with(|cell| {
-                    let prev = cell.get();
-                    cell.set(task_ptr as usize);
-                    prev
-                });
-                let token = ensure_task_token(task_ptr, current_token_id());
-                let prev_token = set_current_token(token);
-                let res = poll_fn(task_ptr);
-                let pending = res == pending_bits_i64();
-                record_async_poll(task_ptr, pending, "scheduler");
-                if pending {
-                    if !SLEEP_QUEUE.is_scheduled(task_ptr) {
-                        injector.push(task);
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = injector;
+            unsafe {
+                let task_ptr = task.future_ptr;
+                let header = task_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
+                let poll_fn_addr = (*header).poll_fn;
+                if poll_fn_addr != 0 {
+                    let prev_task = CURRENT_TASK.with(|cell| {
+                        let prev = cell.get();
+                        cell.set(task_ptr as usize);
+                        prev
+                    });
+                    let token = ensure_task_token(task_ptr, current_token_id());
+                    let prev_token = set_current_token(token);
+                    loop {
+                        let res = call_poll_fn(poll_fn_addr, task_ptr);
+                        let pending = res == pending_bits_i64();
+                        record_async_poll(task_ptr, pending, "scheduler");
+                        if pending {
+                            if let Some(deadline) = SLEEP_QUEUE.take_blocking_deadline(task_ptr) {
+                                let now = Instant::now();
+                                if deadline > now {
+                                    std::thread::sleep(deadline - now);
+                                }
+                            } else {
+                                std::thread::yield_now();
+                            }
+                            continue;
+                        }
+                        clear_task_token(task_ptr);
+                        break;
                     }
-                } else {
-                    clear_task_token(task_ptr);
+                    set_current_token(prev_token);
+                    CURRENT_TASK.with(|cell| cell.set(prev_task));
                 }
-                set_current_token(prev_token);
-                CURRENT_TASK.with(|cell| cell.set(prev_task));
+            }
+            return;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            unsafe {
+                let task_ptr = task.future_ptr;
+                let header = task_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
+                let poll_fn_addr = (*header).poll_fn;
+                if poll_fn_addr != 0 {
+                    let prev_task = CURRENT_TASK.with(|cell| {
+                        let prev = cell.get();
+                        cell.set(task_ptr as usize);
+                        prev
+                    });
+                    let token = ensure_task_token(task_ptr, current_token_id());
+                    let prev_token = set_current_token(token);
+                    let res = call_poll_fn(poll_fn_addr, task_ptr);
+                    let pending = res == pending_bits_i64();
+                    record_async_poll(task_ptr, pending, "scheduler");
+                    if pending {
+                        if !SLEEP_QUEUE.is_scheduled(task_ptr) {
+                            injector.push(task);
+                        }
+                    } else {
+                        clear_task_token(task_ptr);
+                    }
+                    set_current_token(prev_token);
+                    CURRENT_TASK.with(|cell| cell.set(prev_task));
+                }
             }
         }
     }
@@ -6493,8 +6660,11 @@ lazy_static::lazy_static! {
     static ref SCHEDULER: MoltScheduler = MoltScheduler::new();
     static ref SLEEP_QUEUE: Arc<SleepQueue> = {
         let queue = Arc::new(SleepQueue::new());
-        let worker_queue = Arc::clone(&queue);
-        thread::spawn(move || sleep_worker(worker_queue));
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let worker_queue = Arc::clone(&queue);
+            thread::spawn(move || sleep_worker(worker_queue));
+        }
         queue
     };
     static ref UTF8_INDEX_CACHE: Mutex<Utf8CacheStore> = Mutex::new(Utf8CacheStore::new());
@@ -6635,9 +6805,12 @@ pub unsafe extern "C" fn molt_cancel_current() -> u64 {
 }
 
 /// # Safety
-/// - `task_ptr` must be a valid pointer to a Molt task with a valid header.
+/// - `task_bits` must be a valid pointer to a Molt task with a valid header.
 #[no_mangle]
-pub unsafe extern "C" fn molt_spawn(task_ptr: *mut u8) {
+pub unsafe extern "C" fn molt_spawn(task_bits: u64) {
+    let Some(task_ptr) = resolve_task_ptr(task_bits) else {
+        raise!("TypeError", "object is not awaitable");
+    };
     cancel_tokens();
     let token = current_token_id();
     register_task_token(task_ptr, token);
@@ -6646,21 +6819,24 @@ pub unsafe extern "C" fn molt_spawn(task_ptr: *mut u8) {
     });
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn is_block_on_task(task_ptr: *mut u8) -> bool {
     BLOCK_ON_TASK.with(|cell| cell.get() == task_ptr as usize)
 }
 
 /// # Safety
-/// - `task_ptr` must be a valid pointer to a Molt task with a valid header.
+/// - `task_bits` must be a valid pointer to a Molt task with a valid header.
 #[no_mangle]
-pub unsafe extern "C" fn molt_block_on(task_ptr: *mut u8) -> i64 {
+pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
+    let Some(task_ptr) = resolve_task_ptr(task_bits) else {
+        raise!("TypeError", "object is not awaitable");
+    };
     cancel_tokens();
     let header = task_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
     let poll_fn_addr = (*header).poll_fn;
     if poll_fn_addr == 0 {
         return 0;
     }
-    let poll_fn: extern "C" fn(*mut u8) -> i64 = std::mem::transmute(poll_fn_addr as usize);
     let prev_task = CURRENT_TASK.with(|cell| {
         let prev = cell.get();
         cell.set(task_ptr as usize);
@@ -6670,7 +6846,7 @@ pub unsafe extern "C" fn molt_block_on(task_ptr: *mut u8) -> i64 {
     let prev_token = set_current_token(token);
     BLOCK_ON_TASK.with(|cell| cell.set(task_ptr as usize));
     let result = loop {
-        let res = poll_fn(task_ptr);
+        let res = call_poll_fn(poll_fn_addr, task_ptr);
         let pending = res == pending_bits_i64();
         record_async_poll(task_ptr, pending, "block_on");
         if pending {
@@ -6784,9 +6960,10 @@ pub extern "C" fn molt_async_sleep_new(delay_bits: u64, result_bits: u64) -> u64
 }
 
 /// # Safety
-/// - `_obj_ptr` must be a valid pointer if the runtime associates a future with it.
+/// - `obj_bits` must be a valid pointer if the runtime associates a future with it.
 #[no_mangle]
-pub unsafe extern "C" fn molt_async_sleep(_obj_ptr: *mut u8) -> i64 {
+pub unsafe extern "C" fn molt_async_sleep(obj_bits: u64) -> i64 {
+    let _obj_ptr = ptr_from_bits(obj_bits);
     if _obj_ptr.is_null() {
         return MoltObject::none().bits() as i64;
     }
@@ -6838,9 +7015,10 @@ pub unsafe extern "C" fn molt_async_sleep(_obj_ptr: *mut u8) -> i64 {
 }
 
 /// # Safety
-/// - `_obj_ptr` must be a valid pointer to a Molt future allocated with payload slots.
+/// - `obj_bits` must be a valid pointer to a Molt future allocated with payload slots.
 #[no_mangle]
-pub unsafe extern "C" fn molt_anext_default_poll(_obj_ptr: *mut u8) -> i64 {
+pub unsafe extern "C" fn molt_anext_default_poll(obj_bits: u64) -> i64 {
+    let _obj_ptr = ptr_from_bits(obj_bits);
     if _obj_ptr.is_null() {
         return MoltObject::none().bits() as i64;
     }
@@ -6869,8 +7047,7 @@ pub unsafe extern "C" fn molt_anext_default_poll(_obj_ptr: *mut u8) -> i64 {
     if poll_fn_addr == 0 {
         return MoltObject::none().bits() as i64;
     }
-    let poll_fn: extern "C" fn(*mut u8) -> i64 = std::mem::transmute(poll_fn_addr as usize);
-    let res = poll_fn(await_ptr);
+    let res = call_poll_fn(poll_fn_addr, await_ptr);
     if res == pending_bits_i64() {
         return res;
     }
@@ -6891,10 +7068,12 @@ pub unsafe extern "C" fn molt_anext_default_poll(_obj_ptr: *mut u8) -> i64 {
 }
 
 /// # Safety
-/// - `task_ptr` must be a valid Molt task pointer.
-/// - `future_ptr` must point to a valid Molt future.
+/// - `task_bits` must be a valid Molt task pointer.
+/// - `future_bits` must point to a valid Molt future.
 #[no_mangle]
-pub unsafe extern "C" fn molt_sleep_register(task_ptr: *mut u8, future_ptr: *mut u8) -> u64 {
+pub unsafe extern "C" fn molt_sleep_register(task_bits: u64, future_bits: u64) -> u64 {
+    let task_ptr = ptr_from_bits(task_bits);
+    let future_ptr = ptr_from_bits(future_bits);
     if task_ptr.is_null() || future_ptr.is_null() {
         return 0;
     }
@@ -6923,12 +7102,20 @@ pub unsafe extern "C" fn molt_sleep_register(task_ptr: *mut u8, future_ptr: *mut
     if deadline <= Instant::now() {
         return 0;
     }
-    if is_block_on_task(task_ptr) {
+    #[cfg(target_arch = "wasm32")]
+    {
         SLEEP_QUEUE.register_blocking(task_ptr, deadline);
-    } else {
-        SLEEP_QUEUE.register_scheduler(task_ptr, deadline);
+        return 1;
     }
-    1
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if is_block_on_task(task_ptr) {
+            SLEEP_QUEUE.register_blocking(task_ptr, deadline);
+        } else {
+            SLEEP_QUEUE.register_scheduler(task_ptr, deadline);
+        }
+        return 1;
+    }
 }
 
 // --- NaN-boxed ops ---
@@ -7723,9 +7910,9 @@ fn set_like_result_type_id(type_id: u32) -> u32 {
 
 unsafe fn set_like_new_bits(type_id: u32, capacity: usize) -> u64 {
     if type_id == TYPE_ID_FROZENSET {
-        molt_frozenset_new(capacity)
+        molt_frozenset_new(capacity as u64)
     } else {
-        molt_set_new(capacity)
+        molt_set_new(capacity as u64)
     }
 }
 
@@ -8242,9 +8429,11 @@ fn parse_int_from_str(text: &str, base: i64) -> Result<(BigInt, i64), ()> {
 }
 
 /// # Safety
-/// - `ptr` must be null or valid for `len` bytes.
+/// - `ptr_bits` must be null or valid for `len_bits` bytes.
 #[no_mangle]
-pub unsafe extern "C" fn molt_bigint_from_str(ptr: *const u8, len: usize) -> u64 {
+pub unsafe extern "C" fn molt_bigint_from_str(ptr_bits: u64, len_bits: u64) -> u64 {
+    let ptr = ptr_from_const_bits(ptr_bits);
+    let len = usize_from_bits(len_bits);
     if ptr.is_null() {
         return MoltObject::none().bits();
     }
@@ -10351,7 +10540,7 @@ pub extern "C" fn molt_anext_builtin(iter_bits: u64, default_bits: u64) -> u64 {
     if default_bits == missing {
         return molt_anext(iter_bits);
     }
-    let obj_bits = molt_alloc(3 * std::mem::size_of::<u64>());
+    let obj_bits = molt_alloc(3 * std::mem::size_of::<u64>() as u64);
     let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
         return MoltObject::none().bits();
     };
@@ -11138,7 +11327,7 @@ fn build_utf8_cache(bytes: &[u8]) -> Utf8IndexCache {
         while end < bytes.len() && (bytes[end] & 0b1100_0000) == 0b1000_0000 {
             end += 1;
         }
-        total += simdutf::count_utf8(&bytes[idx..end]) as i64;
+        total += count_utf8_bytes(&bytes[idx..end]);
         offsets.push(end);
         prefix.push(total);
         idx = end;
@@ -11389,7 +11578,7 @@ fn utf8_count_prefix_cached(bytes: &[u8], cache: &Utf8IndexCache, prefix_len: us
     let mut total = *cache.prefix.get(block_idx).unwrap_or(&0);
     let start = *cache.offsets.get(block_idx).unwrap_or(&0);
     if start < prefix_len {
-        total += simdutf::count_utf8(&bytes[start..prefix_len]) as i64;
+        total += count_utf8_bytes(&bytes[start..prefix_len]);
     }
     total
 }
@@ -11487,11 +11676,11 @@ fn utf8_count_prefix_blocked(bytes: &[u8], prefix_len: usize) -> i64 {
     let mut total = 0i64;
     let mut idx = 0usize;
     while idx + BLOCK <= prefix_len {
-        total += simdutf::count_utf8(&bytes[idx..idx + BLOCK]) as i64;
+        total += count_utf8_bytes(&bytes[idx..idx + BLOCK]);
         idx += BLOCK;
     }
     if idx < prefix_len {
-        total += simdutf::count_utf8(&bytes[idx..prefix_len]) as i64;
+        total += count_utf8_bytes(&bytes[idx..prefix_len]);
     }
     total
 }
@@ -11504,7 +11693,33 @@ fn memchr_fast(needle: u8, hay: &[u8]) -> Option<usize> {
     memchr(needle, hay)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn count_utf8_bytes(bytes: &[u8]) -> i64 {
+    simdutf::count_utf8(bytes) as i64
+}
+
 #[cfg(target_arch = "wasm32")]
+fn count_utf8_bytes(bytes: &[u8]) -> i64 {
+    let mut count = 0i64;
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        let b = bytes[idx];
+        let width = if b < 0x80 {
+            1
+        } else if b < 0xE0 {
+            2
+        } else if b < 0xF0 {
+            3
+        } else {
+            4
+        };
+        idx = idx.saturating_add(width);
+        count += 1;
+    }
+    count
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn memchr_simd128(needle: u8, hay: &[u8]) -> (bool, Option<usize>) {
     if !std::arch::is_wasm_feature_detected!("simd128") {
         return (false, None);
@@ -11529,6 +11744,11 @@ fn memchr_simd128(needle: u8, hay: &[u8]) -> (bool, Option<usize>) {
         }
     }
     (true, None)
+}
+
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+fn memchr_simd128(_needle: u8, _hay: &[u8]) -> (bool, Option<usize>) {
+    (false, None)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -13837,9 +14057,7 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                 if poll_fn_addr == 0 {
                     return generator_done_tuple(MoltObject::none().bits());
                 }
-                let poll_fn: extern "C" fn(*mut u8) -> i64 =
-                    std::mem::transmute(poll_fn_addr as usize);
-                let res = poll_fn(ptr);
+                let res = call_poll_fn(poll_fn_addr, ptr);
                 return res as u64;
             }
             if object_type_id(ptr) == TYPE_ID_ENUMERATE {
@@ -15843,7 +16061,9 @@ mod tests {
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure ptr is valid UTF-8 of at least len bytes.
 #[no_mangle]
-pub unsafe extern "C" fn molt_json_parse_int(ptr: *const u8, len: usize) -> i64 {
+pub unsafe extern "C" fn molt_json_parse_int(ptr_bits: u64, len_bits: u64) -> i64 {
+    let ptr = ptr_from_const_bits(ptr_bits);
+    let len = usize_from_bits(len_bits);
     let s = {
         let slice = std::slice::from_raw_parts(ptr, len);
         std::str::from_utf8(slice).unwrap()
@@ -16222,7 +16442,14 @@ unsafe fn parse_json_scalar(
 /// # Safety
 /// Caller must ensure ptr is valid for len bytes.
 #[no_mangle]
-pub unsafe extern "C" fn molt_string_from_bytes(ptr: *const u8, len: usize, out: *mut u64) -> i32 {
+pub unsafe extern "C" fn molt_string_from_bytes(
+    ptr_bits: u64,
+    len_bits: u64,
+    out_bits: u64,
+) -> i32 {
+    let out = ptr_from_bits(out_bits) as *mut u64;
+    let ptr = ptr_from_const_bits(ptr_bits);
+    let len = usize_from_bits(len_bits);
     if out.is_null() {
         return 2;
     }
@@ -16244,7 +16471,10 @@ pub unsafe extern "C" fn molt_string_from_bytes(ptr: *const u8, len: usize, out:
 /// # Safety
 /// Caller must ensure ptr is valid for len bytes.
 #[no_mangle]
-pub unsafe extern "C" fn molt_bytes_from_bytes(ptr: *const u8, len: usize, out: *mut u64) -> i32 {
+pub unsafe extern "C" fn molt_bytes_from_bytes(ptr_bits: u64, len_bits: u64, out_bits: u64) -> i32 {
+    let out = ptr_from_bits(out_bits) as *mut u64;
+    let ptr = ptr_from_const_bits(ptr_bits);
+    let len = usize_from_bits(len_bits);
     if out.is_null() {
         return 2;
     }
@@ -16282,7 +16512,14 @@ pub extern "C" fn molt_env_get(key_bits: u64, default_bits: u64) -> u64 {
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure ptr is valid UTF-8 of at least len bytes.
 #[no_mangle]
-pub unsafe extern "C" fn molt_json_parse_scalar(ptr: *const u8, len: usize, out: *mut u64) -> i32 {
+pub unsafe extern "C" fn molt_json_parse_scalar(
+    ptr_bits: u64,
+    len_bits: u64,
+    out_bits: u64,
+) -> i32 {
+    let out = ptr_from_bits(out_bits) as *mut u64;
+    let ptr = ptr_from_const_bits(ptr_bits);
+    let len = usize_from_bits(len_bits);
     if out.is_null() {
         return 2;
     }
@@ -16304,10 +16541,13 @@ pub unsafe extern "C" fn molt_json_parse_scalar(ptr: *const u8, len: usize, out:
 /// Caller must ensure ptr is valid for len bytes.
 #[no_mangle]
 pub unsafe extern "C" fn molt_msgpack_parse_scalar(
-    ptr: *const u8,
-    len: usize,
-    out: *mut u64,
+    ptr_bits: u64,
+    len_bits: u64,
+    out_bits: u64,
 ) -> i32 {
+    let out = ptr_from_bits(out_bits) as *mut u64;
+    let ptr = ptr_from_const_bits(ptr_bits);
+    let len = usize_from_bits(len_bits);
     if out.is_null() {
         return 2;
     }
@@ -16334,7 +16574,14 @@ pub unsafe extern "C" fn molt_msgpack_parse_scalar(
 /// # Safety
 /// Caller must ensure ptr is valid for len bytes.
 #[no_mangle]
-pub unsafe extern "C" fn molt_cbor_parse_scalar(ptr: *const u8, len: usize, out: *mut u64) -> i32 {
+pub unsafe extern "C" fn molt_cbor_parse_scalar(
+    ptr_bits: u64,
+    len_bits: u64,
+    out_bits: u64,
+) -> i32 {
+    let out = ptr_from_bits(out_bits) as *mut u64;
+    let ptr = ptr_from_const_bits(ptr_bits);
+    let len = usize_from_bits(len_bits);
     if out.is_null() {
         return 2;
     }
@@ -16411,6 +16658,32 @@ fn descriptor_no_deleter(attr_name: &str, class_ptr: *mut u8) -> i64 {
 fn maybe_ptr_from_bits(bits: u64) -> Option<*mut u8> {
     let obj = obj_from_bits(bits);
     obj.as_ptr()
+}
+
+#[inline]
+fn usize_from_bits(bits: u64) -> usize {
+    debug_assert!(bits <= usize::MAX as u64);
+    bits as usize
+}
+
+#[inline]
+fn ptr_from_bits(bits: u64) -> *mut u8 {
+    bits as usize as *mut u8
+}
+
+#[inline]
+fn ptr_from_const_bits(bits: u64) -> *const u8 {
+    bits as usize as *const u8
+}
+
+#[inline]
+fn bits_from_ptr(ptr: *mut u8) -> u64 {
+    ptr as usize as u64
+}
+
+#[inline]
+fn bits_from_const_ptr(ptr: *const u8) -> u64 {
+    ptr as usize as u64
 }
 
 unsafe fn call_function_obj1(func_bits: u64, arg0_bits: u64) -> u64 {
@@ -17485,7 +17758,7 @@ unsafe fn attr_lookup_ptr(obj_ptr: *mut u8, attr_bits: u64) -> Option<u64> {
                         }
                     }
                     if let Some(offset) = class_field_offset(class_ptr, attr_bits) {
-                        let bits = molt_object_field_get_ptr(obj_ptr, offset);
+                        let bits = object_field_get_ptr_raw(obj_ptr, offset);
                         return Some(bits);
                     }
                 }
@@ -17532,10 +17805,13 @@ unsafe fn attr_lookup_ptr(obj_ptr: *mut u8, attr_bits: u64) -> Option<u64> {
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
 #[no_mangle]
 pub unsafe extern "C" fn molt_get_attr_generic(
-    obj_ptr: *mut u8,
-    attr_name_ptr: *const u8,
-    attr_name_len: usize,
+    obj_ptr_bits: u64,
+    attr_name_bits: u64,
+    attr_name_len_bits: u64,
 ) -> i64 {
+    let obj_ptr = ptr_from_bits(obj_ptr_bits);
+    let attr_name_ptr = ptr_from_const_bits(attr_name_bits);
+    let attr_name_len = usize_from_bits(attr_name_len_bits);
     if obj_ptr.is_null() {
         raise!("AttributeError", "object has no attribute");
     }
@@ -17586,22 +17862,25 @@ pub unsafe extern "C" fn molt_get_attr_generic(
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
 #[no_mangle]
 pub unsafe extern "C" fn molt_get_attr_ptr(
-    obj_ptr: *mut u8,
-    attr_name_ptr: *const u8,
-    attr_name_len: usize,
+    obj_ptr_bits: u64,
+    attr_name_bits: u64,
+    attr_name_len_bits: u64,
 ) -> i64 {
-    molt_get_attr_generic(obj_ptr, attr_name_ptr, attr_name_len)
+    molt_get_attr_generic(obj_ptr_bits, attr_name_bits, attr_name_len_bits)
 }
 
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
 #[no_mangle]
 pub unsafe extern "C" fn molt_set_attr_generic(
-    obj_ptr: *mut u8,
-    attr_name_ptr: *const u8,
-    attr_name_len: usize,
+    obj_ptr_bits: u64,
+    attr_name_bits: u64,
+    attr_name_len_bits: u64,
     val_bits: u64,
 ) -> i64 {
+    let obj_ptr = ptr_from_bits(obj_ptr_bits);
+    let attr_name_ptr = ptr_from_const_bits(attr_name_bits);
+    let attr_name_len = usize_from_bits(attr_name_len_bits);
     if obj_ptr.is_null() {
         raise!("AttributeError", "object has no attribute");
     }
@@ -17887,7 +18166,7 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                     }
                     if let Some(offset) = class_field_offset(class_ptr, attr_bits) {
                         dec_ref_bits(attr_bits);
-                        return molt_object_field_set_ptr(obj_ptr, offset, val_bits) as i64;
+                        return object_field_set_ptr_raw(obj_ptr, offset, val_bits) as i64;
                     }
                 }
             }
@@ -18144,22 +18423,25 @@ unsafe fn del_attr_ptr(obj_ptr: *mut u8, attr_bits: u64, attr_name: &str) -> i64
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
 #[no_mangle]
 pub unsafe extern "C" fn molt_set_attr_ptr(
-    obj_ptr: *mut u8,
-    attr_name_ptr: *const u8,
-    attr_name_len: usize,
+    obj_ptr_bits: u64,
+    attr_name_bits: u64,
+    attr_name_len_bits: u64,
     val_bits: u64,
 ) -> i64 {
-    molt_set_attr_generic(obj_ptr, attr_name_ptr, attr_name_len, val_bits)
+    molt_set_attr_generic(obj_ptr_bits, attr_name_bits, attr_name_len_bits, val_bits)
 }
 
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
 #[no_mangle]
 pub unsafe extern "C" fn molt_del_attr_generic(
-    obj_ptr: *mut u8,
-    attr_name_ptr: *const u8,
-    attr_name_len: usize,
+    obj_ptr_bits: u64,
+    attr_name_bits: u64,
+    attr_name_len_bits: u64,
 ) -> i64 {
+    let obj_ptr = ptr_from_bits(obj_ptr_bits);
+    let attr_name_ptr = ptr_from_const_bits(attr_name_bits);
+    let attr_name_len = usize_from_bits(attr_name_len_bits);
     if obj_ptr.is_null() {
         raise!("AttributeError", "object has no attribute");
     }
@@ -18177,11 +18459,11 @@ pub unsafe extern "C" fn molt_del_attr_generic(
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
 #[no_mangle]
 pub unsafe extern "C" fn molt_del_attr_ptr(
-    obj_ptr: *mut u8,
-    attr_name_ptr: *const u8,
-    attr_name_len: usize,
+    obj_ptr_bits: u64,
+    attr_name_bits: u64,
+    attr_name_len_bits: u64,
 ) -> i64 {
-    molt_del_attr_generic(obj_ptr, attr_name_ptr, attr_name_len)
+    molt_del_attr_generic(obj_ptr_bits, attr_name_bits, attr_name_len_bits)
 }
 
 /// # Safety
@@ -18189,11 +18471,13 @@ pub unsafe extern "C" fn molt_del_attr_ptr(
 #[no_mangle]
 pub unsafe extern "C" fn molt_get_attr_object(
     obj_bits: u64,
-    attr_name_ptr: *const u8,
-    attr_name_len: usize,
+    attr_name_bits: u64,
+    attr_name_len_bits: u64,
 ) -> i64 {
+    let attr_name_ptr = ptr_from_const_bits(attr_name_bits);
+    let attr_name_len = usize_from_bits(attr_name_len_bits);
     if let Some(ptr) = maybe_ptr_from_bits(obj_bits) {
-        return molt_get_attr_generic(ptr, attr_name_ptr, attr_name_len);
+        return molt_get_attr_generic(bits_from_ptr(ptr), attr_name_bits, attr_name_len_bits);
     }
     let obj = obj_from_bits(obj_bits);
     let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
@@ -18206,9 +18490,11 @@ pub unsafe extern "C" fn molt_get_attr_object(
 #[no_mangle]
 pub unsafe extern "C" fn molt_get_attr_special(
     obj_bits: u64,
-    attr_name_ptr: *const u8,
-    attr_name_len: usize,
+    attr_name_bits: u64,
+    attr_name_len_bits: u64,
 ) -> i64 {
+    let attr_name_ptr = ptr_from_const_bits(attr_name_bits);
+    let attr_name_len = usize_from_bits(attr_name_len_bits);
     let obj = obj_from_bits(obj_bits);
     let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
     let attr_name = std::str::from_utf8(slice).unwrap_or("<attr>");
@@ -18243,12 +18529,19 @@ pub unsafe extern "C" fn molt_get_attr_special(
 #[no_mangle]
 pub unsafe extern "C" fn molt_set_attr_object(
     obj_bits: u64,
-    attr_name_ptr: *const u8,
-    attr_name_len: usize,
+    attr_name_bits: u64,
+    attr_name_len_bits: u64,
     val_bits: u64,
 ) -> i64 {
+    let attr_name_ptr = ptr_from_const_bits(attr_name_bits);
+    let attr_name_len = usize_from_bits(attr_name_len_bits);
     if let Some(ptr) = maybe_ptr_from_bits(obj_bits) {
-        return molt_set_attr_generic(ptr, attr_name_ptr, attr_name_len, val_bits);
+        return molt_set_attr_generic(
+            bits_from_ptr(ptr),
+            attr_name_bits,
+            attr_name_len_bits,
+            val_bits,
+        );
     }
     let obj = obj_from_bits(obj_bits);
     let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
@@ -18261,11 +18554,13 @@ pub unsafe extern "C" fn molt_set_attr_object(
 #[no_mangle]
 pub unsafe extern "C" fn molt_del_attr_object(
     obj_bits: u64,
-    attr_name_ptr: *const u8,
-    attr_name_len: usize,
+    attr_name_bits: u64,
+    attr_name_len_bits: u64,
 ) -> i64 {
+    let attr_name_ptr = ptr_from_const_bits(attr_name_bits);
+    let attr_name_len = usize_from_bits(attr_name_len_bits);
     if let Some(ptr) = maybe_ptr_from_bits(obj_bits) {
-        return molt_del_attr_generic(ptr, attr_name_ptr, attr_name_len);
+        return molt_del_attr_generic(bits_from_ptr(ptr), attr_name_bits, attr_name_len_bits);
     }
     let obj = obj_from_bits(obj_bits);
     let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
@@ -18383,7 +18678,12 @@ pub extern "C" fn molt_set_attr_name(obj_bits: u64, name_bits: u64, val_bits: u6
         if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
             let bytes = string_bytes(name_ptr);
             let len = string_len(name_ptr);
-            return molt_set_attr_generic(obj_ptr, bytes, len, val_bits) as u64;
+            return molt_set_attr_generic(
+                bits_from_ptr(obj_ptr),
+                bits_from_const_ptr(bytes),
+                len as u64,
+                val_bits,
+            ) as u64;
         }
     }
     let obj = obj_from_bits(obj_bits);

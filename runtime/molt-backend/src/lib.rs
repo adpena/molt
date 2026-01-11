@@ -3538,10 +3538,8 @@ impl SimpleBackend {
                 "block_on" => {
                     let args = op.args.as_ref().unwrap();
                     let task = vars.get(&args[0]).expect("Task not found");
-                    let task_ptr = unbox_ptr_value(&mut builder, *task);
-
                     let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64)); // task ptr
+                    sig.params.push(AbiParam::new(types::I64)); // boxed task
                     sig.returns.push(AbiParam::new(types::I64));
 
                     let callee = self
@@ -3549,7 +3547,7 @@ impl SimpleBackend {
                         .declare_function("molt_block_on", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[task_ptr]);
+                    let call = builder.ins().call(local_callee, &[*task]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
@@ -3844,7 +3842,6 @@ impl SimpleBackend {
                 "spawn" => {
                     let args = op.args.as_ref().unwrap();
                     let task = vars.get(&args[0]).expect("Task not found");
-                    let task_ptr = unbox_ptr_value(&mut builder, *task);
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     let callee = self
@@ -3852,7 +3849,7 @@ impl SimpleBackend {
                         .declare_function("molt_spawn", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    builder.ins().call(local_callee, &[task_ptr]);
+                    builder.ins().call(local_callee, &[*task]);
                 }
                 "cancel_token_new" => {
                     let args = op.args.as_ref().unwrap();

@@ -47,6 +47,11 @@
 - Use hints for specialization with runtime guards.
 - Guard failures raise `TypeError: type guard mismatch`.
 
+### 3.4 Trust usage guidance
+- `trust` is intended for production code that is fully annotated and validated by `ty`.
+- Builds fail on `ty` errors; incorrect hints are treated as user error and can miscompile.
+- Prefer `check` during migration or when input types are not fully controlled.
+
 ## 4. Specialization Rules (Current)
 - **Structification:** Fixed-layout fields for non-dynamic classes.
 - **Access lowering:**

@@ -7597,6 +7597,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                 else:
                     args = self._emit_call_args(node.args)
+                    if imported_from:
+                        args = self._apply_direct_call_defaults(
+                            imported_from, func_id, args, node
+                        )
                     self.emit(
                         MoltOp(kind="CALL_FUNC", args=[callee] + args, result=res)
                     )

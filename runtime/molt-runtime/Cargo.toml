@@ -17,7 +17,9 @@ crossbeam-channel = "0.5"
 num_cpus = "1.16"
 lazy_static = "1.4"
 memchr = "2.7"
-simdutf = "0.6"
 num-bigint = "0.4"
 num-integer = "0.1"
 num-traits = "0.2"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+simdutf = "0.6"

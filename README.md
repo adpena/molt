@@ -103,17 +103,22 @@ For cross-version baselines, run the bench harness under each CPython version
 `uv run --python 3.13 python3 tools/bench.py --json-out bench/results/bench_py313.json`,
 `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench_py314.json`)
 and summarize deltas across files.
+Type-hint specialization is available via `--type-hints=trust` (no guards, fastest)
+or `--type-hints=check` (guards inserted). `trust` requires clean `ty` results and
+assumes hints are correct; incorrect hints are user error and may miscompile.
 
-Latest run: 2026-01-10 (macOS x86_64, CPython 3.14.0).
-Top speedups: `bench_sum.py` 235.17x, `bench_channel_throughput.py` 43.91x,
-`bench_async_await.py` 12.06x, `bench_matrix_math.py` 10.08x,
-`bench_deeply_nested_loop.py` 6.92x.
-Regressions: `bench_struct.py` 0.75x, `bench_attr_access.py` 0.70x,
-`bench_fib.py` 0.33x.
+Latest run: 2026-01-11 (macOS x86_64, CPython 3.14.0).
+Top speedups: `bench_sum.py` 241.56x, `bench_channel_throughput.py` 47.78x,
+`bench_async_await.py` 13.29x, `bench_matrix_math.py` 11.02x,
+`bench_parse_msgpack.py` 9.59x.
+Regressions: `bench_fib.py` 0.35x, `bench_attr_access.py` 0.69x,
+`bench_struct.py` 0.76x.
 Build/run failures: Cython/Numba baselines skipped; Codon skipped for async,
-channel, matrix_math, bytearray, memoryview, parse_msgpack, and struct benches.
-WASM run: 2026-01-10 (macOS x86_64, CPython 3.14.0). Timings unavailable
-(`molt_wasm_ok` false), sizes-only emitted; async/channel WASM outputs are 0.0 KB.
+channel, matrix_math, bytearray, memoryview, parse_msgpack, struct, and
+sum_list_hints benches.
+WASM run: 2026-01-11 (macOS x86_64, CPython 3.14.0). Timings unavailable
+(`molt_wasm_ok` false); stubs missing core intrinsics (e.g., `string_from_bytes`)
+and async/channel WASM fails validation (`else` already present).
 
 ### Performance Gates
 - Vector reductions (`bench_sum_list.py`, `bench_min_list.py`, `bench_max_list.py`, `bench_prod_list.py`): regression >5% fails the gate.
@@ -121,17 +126,17 @@ WASM run: 2026-01-10 (macOS x86_64, CPython 3.14.0). Timings unavailable
 - Matrix/buffer kernels (`bench_matrix_math.py`): regression >5% fails the gate.
 - Any expected perf deltas from new kernels must be recorded here after the run; complex regressions move to `OPTIMIZATIONS_PLAN.md`.
 
-Baseline microbenchmarks (2026-01-10): `bench_min_list.py` 2.11x, `bench_max_list.py` 2.04x,
-`bench_prod_list.py` 6.48x, `bench_str_find_unicode.py` 5.17x, `bench_str_count_unicode.py` 1.87x.
+Baseline microbenchmarks (2026-01-11): `bench_min_list.py` 1.99x, `bench_max_list.py` 1.97x,
+`bench_prod_list.py` 6.42x, `bench_str_find_unicode.py` 4.95x, `bench_str_count_unicode.py` 1.97x.
 
 | Benchmark | Molt vs CPython | Notes |
 | --- | --- | --- |
-| bench_matrix_math.py | 10.08x | buffer2d matmul lowering |
-| bench_deeply_nested_loop.py | 6.92x | nested loop lowering |
-| bench_str_endswith.py | 5.35x | string endswith fast path |
+| bench_matrix_math.py | 11.02x | buffer2d matmul lowering |
+| bench_deeply_nested_loop.py | 6.85x | nested loop lowering |
+| bench_str_endswith.py | 5.49x | string endswith fast path |
 | bench_str_startswith.py | 5.30x | string startswith fast path |
-| bench_str_count.py | 5.47x | string count fast path |
-| bench_str_split.py | 0.46x | optimized split builder |
-| bench_str_replace.py | 4.34x | SIMD-friendly replace path |
-| bench_str_join.py | 0.87x | pre-sized join buffer |
-| bench_sum_list.py | 0.72x | vector reduction fast path |
+| bench_str_count.py | 5.52x | string count fast path |
+| bench_str_split.py | 4.49x | optimized split builder |
+| bench_str_replace.py | 4.65x | SIMD-friendly replace path |
+| bench_str_join.py | 2.79x | pre-sized join buffer |
+| bench_sum_list.py | 2.61x | vector reduction fast path |

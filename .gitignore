@@ -18,8 +18,9 @@ target/
 *.rlib
 *.d
 hello_molt
-bench/results/
+bench/results/*
 !bench/results/bench.json
+!bench/results/bench_wasm.json
 bench/cython/
 bench/numba/
 bench/codon/
