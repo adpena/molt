@@ -54,6 +54,15 @@ fn unbox_int(builder: &mut FunctionBuilder, val: Value) -> Value {
     builder.ins().sshr(shifted, shift)
 }
 
+fn is_int_tag(builder: &mut FunctionBuilder, val: Value) -> Value {
+    let mask = builder
+        .ins()
+        .iconst(types::I64, (QNAN | TAG_MASK) as i64);
+    let tag = builder.ins().iconst(types::I64, (QNAN | TAG_INT) as i64);
+    let masked = builder.ins().band(val, mask);
+    builder.ins().icmp(IntCC::Equal, masked, tag)
+}
+
 fn box_int_value(builder: &mut FunctionBuilder, val: Value) -> Value {
     let mask = builder.ins().iconst(types::I64, INT_MASK as i64);
     let masked = builder.ins().band(val, mask);
@@ -720,6 +729,27 @@ impl SimpleBackend {
                         let sum = builder.ins().iadd(lhs_val, rhs_val);
                         box_int_value(&mut builder, sum)
                     } else {
+                        let lhs_is_int = is_int_tag(&mut builder, *lhs);
+                        let rhs_is_int = is_int_tag(&mut builder, *rhs);
+                        let both_int = builder.ins().band(lhs_is_int, rhs_is_int);
+                        let fast_block = builder.create_block();
+                        let slow_block = builder.create_block();
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+                        builder
+                            .ins()
+                            .brif(both_int, fast_block, &[], slow_block, &[]);
+
+                        builder.switch_to_block(fast_block);
+                        builder.seal_block(fast_block);
+                        let lhs_val = unbox_int(&mut builder, *lhs);
+                        let rhs_val = unbox_int(&mut builder, *rhs);
+                        let sum = builder.ins().iadd(lhs_val, rhs_val);
+                        let fast_res = box_int_value(&mut builder, sum);
+                        builder.ins().jump(merge_block, &[fast_res]);
+
+                        builder.switch_to_block(slow_block);
+                        builder.seal_block(slow_block);
                         let mut sig = self.module.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
                         sig.params.push(AbiParam::new(types::I64));
@@ -730,7 +760,12 @@ impl SimpleBackend {
                             .unwrap();
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
-                        builder.inst_results(call)[0]
+                        let slow_res = builder.inst_results(call)[0];
+                        builder.ins().jump(merge_block, &[slow_res]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                        builder.block_params(merge_block)[0]
                     };
                     vars.insert(op.out.unwrap(), res);
                 }
@@ -1036,6 +1071,27 @@ impl SimpleBackend {
                         let diff = builder.ins().isub(lhs_val, rhs_val);
                         box_int_value(&mut builder, diff)
                     } else {
+                        let lhs_is_int = is_int_tag(&mut builder, *lhs);
+                        let rhs_is_int = is_int_tag(&mut builder, *rhs);
+                        let both_int = builder.ins().band(lhs_is_int, rhs_is_int);
+                        let fast_block = builder.create_block();
+                        let slow_block = builder.create_block();
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+                        builder
+                            .ins()
+                            .brif(both_int, fast_block, &[], slow_block, &[]);
+
+                        builder.switch_to_block(fast_block);
+                        builder.seal_block(fast_block);
+                        let lhs_val = unbox_int(&mut builder, *lhs);
+                        let rhs_val = unbox_int(&mut builder, *rhs);
+                        let diff = builder.ins().isub(lhs_val, rhs_val);
+                        let fast_res = box_int_value(&mut builder, diff);
+                        builder.ins().jump(merge_block, &[fast_res]);
+
+                        builder.switch_to_block(slow_block);
+                        builder.seal_block(slow_block);
                         let mut sig = self.module.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
                         sig.params.push(AbiParam::new(types::I64));
@@ -1046,7 +1102,12 @@ impl SimpleBackend {
                             .unwrap();
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
-                        builder.inst_results(call)[0]
+                        let slow_res = builder.inst_results(call)[0];
+                        builder.ins().jump(merge_block, &[slow_res]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                        builder.block_params(merge_block)[0]
                     };
                     vars.insert(op.out.unwrap(), res);
                 }
@@ -1060,6 +1121,27 @@ impl SimpleBackend {
                         let prod = builder.ins().imul(lhs_val, rhs_val);
                         box_int_value(&mut builder, prod)
                     } else {
+                        let lhs_is_int = is_int_tag(&mut builder, *lhs);
+                        let rhs_is_int = is_int_tag(&mut builder, *rhs);
+                        let both_int = builder.ins().band(lhs_is_int, rhs_is_int);
+                        let fast_block = builder.create_block();
+                        let slow_block = builder.create_block();
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+                        builder
+                            .ins()
+                            .brif(both_int, fast_block, &[], slow_block, &[]);
+
+                        builder.switch_to_block(fast_block);
+                        builder.seal_block(fast_block);
+                        let lhs_val = unbox_int(&mut builder, *lhs);
+                        let rhs_val = unbox_int(&mut builder, *rhs);
+                        let prod = builder.ins().imul(lhs_val, rhs_val);
+                        let fast_res = box_int_value(&mut builder, prod);
+                        builder.ins().jump(merge_block, &[fast_res]);
+
+                        builder.switch_to_block(slow_block);
+                        builder.seal_block(slow_block);
                         let mut sig = self.module.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
                         sig.params.push(AbiParam::new(types::I64));
@@ -1070,7 +1152,12 @@ impl SimpleBackend {
                             .unwrap();
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
-                        builder.inst_results(call)[0]
+                        let slow_res = builder.inst_results(call)[0];
+                        builder.ins().jump(merge_block, &[slow_res]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                        builder.block_params(merge_block)[0]
                     };
                     vars.insert(op.out.unwrap(), res);
                 }
@@ -3093,6 +3180,27 @@ impl SimpleBackend {
                         let cmp = builder.ins().icmp(IntCC::SignedLessThan, lhs_val, rhs_val);
                         box_bool_value(&mut builder, cmp)
                     } else {
+                        let lhs_is_int = is_int_tag(&mut builder, *lhs);
+                        let rhs_is_int = is_int_tag(&mut builder, *rhs);
+                        let both_int = builder.ins().band(lhs_is_int, rhs_is_int);
+                        let fast_block = builder.create_block();
+                        let slow_block = builder.create_block();
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+                        builder
+                            .ins()
+                            .brif(both_int, fast_block, &[], slow_block, &[]);
+
+                        builder.switch_to_block(fast_block);
+                        builder.seal_block(fast_block);
+                        let lhs_val = unbox_int(&mut builder, *lhs);
+                        let rhs_val = unbox_int(&mut builder, *rhs);
+                        let cmp = builder.ins().icmp(IntCC::SignedLessThan, lhs_val, rhs_val);
+                        let fast_res = box_bool_value(&mut builder, cmp);
+                        builder.ins().jump(merge_block, &[fast_res]);
+
+                        builder.switch_to_block(slow_block);
+                        builder.seal_block(slow_block);
                         let mut sig = self.module.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
                         sig.params.push(AbiParam::new(types::I64));
@@ -3103,7 +3211,12 @@ impl SimpleBackend {
                             .unwrap();
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
-                        builder.inst_results(call)[0]
+                        let slow_res = builder.inst_results(call)[0];
+                        builder.ins().jump(merge_block, &[slow_res]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                        builder.block_params(merge_block)[0]
                     };
                     vars.insert(op.out.unwrap(), res);
                 }
@@ -3168,6 +3281,27 @@ impl SimpleBackend {
                         let cmp = builder.ins().icmp(IntCC::Equal, lhs_val, rhs_val);
                         box_bool_value(&mut builder, cmp)
                     } else {
+                        let lhs_is_int = is_int_tag(&mut builder, *lhs);
+                        let rhs_is_int = is_int_tag(&mut builder, *rhs);
+                        let both_int = builder.ins().band(lhs_is_int, rhs_is_int);
+                        let fast_block = builder.create_block();
+                        let slow_block = builder.create_block();
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+                        builder
+                            .ins()
+                            .brif(both_int, fast_block, &[], slow_block, &[]);
+
+                        builder.switch_to_block(fast_block);
+                        builder.seal_block(fast_block);
+                        let lhs_val = unbox_int(&mut builder, *lhs);
+                        let rhs_val = unbox_int(&mut builder, *rhs);
+                        let cmp = builder.ins().icmp(IntCC::Equal, lhs_val, rhs_val);
+                        let fast_res = box_bool_value(&mut builder, cmp);
+                        builder.ins().jump(merge_block, &[fast_res]);
+
+                        builder.switch_to_block(slow_block);
+                        builder.seal_block(slow_block);
                         let mut sig = self.module.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
                         sig.params.push(AbiParam::new(types::I64));
@@ -3178,7 +3312,12 @@ impl SimpleBackend {
                             .unwrap();
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
-                        builder.inst_results(call)[0]
+                        let slow_res = builder.inst_results(call)[0];
+                        builder.ins().jump(merge_block, &[slow_res]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                        builder.block_params(merge_block)[0]
                     };
                     vars.insert(op.out.unwrap(), res);
                 }

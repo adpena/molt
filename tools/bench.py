@@ -260,6 +260,9 @@ def _prepare_codon_runner(
     codon = shutil.which("codon")
     if not codon:
         return None
+    arch_prefix: list[str] = []
+    if platform.system() == "Darwin" and platform.machine() == "x86_64":
+        arch_prefix = ["/usr/bin/arch", "-arm64"]
     module_name = f"bench_codon_{script_path.stem}"
     module_dir = build_root / module_name
     module_dir.mkdir(parents=True, exist_ok=True)
@@ -275,7 +278,8 @@ def _prepare_codon_runner(
     else:
         codon_home = env.get("CODON_HOME")
     build = subprocess.run(
-        [codon, "build", "-release", str(script_path), "-o", str(binary_path)],
+        arch_prefix
+        + [codon, "build", "-release", str(script_path), "-o", str(binary_path)],
         capture_output=True,
         text=True,
         env=env,
@@ -287,7 +291,7 @@ def _prepare_codon_runner(
         target = module_dir / "libomp.dylib"
         if libomp.exists() and not target.exists():
             shutil.copy2(libomp, target)
-    return BenchRunner([str(binary_path)], None, env)
+    return BenchRunner(arch_prefix + [str(binary_path)], None, env)
 
 
 def _pypy_command() -> list[str] | None:

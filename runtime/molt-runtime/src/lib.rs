@@ -301,6 +301,9 @@ static CALL_DISPATCH_COUNT: AtomicU64 = AtomicU64::new(0);
 static STRING_COUNT_CACHE_HIT: AtomicU64 = AtomicU64::new(0);
 static STRING_COUNT_CACHE_MISS: AtomicU64 = AtomicU64::new(0);
 static STRUCT_FIELD_STORE_COUNT: AtomicU64 = AtomicU64::new(0);
+static ATTR_LOOKUP_COUNT: AtomicU64 = AtomicU64::new(0);
+static LAYOUT_GUARD_COUNT: AtomicU64 = AtomicU64::new(0);
+static LAYOUT_GUARD_FAIL: AtomicU64 = AtomicU64::new(0);
 static ASYNC_POLL_COUNT: AtomicU64 = AtomicU64::new(0);
 static ASYNC_PENDING_COUNT: AtomicU64 = AtomicU64::new(0);
 static ASYNC_WAKEUP_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -4113,30 +4116,43 @@ pub unsafe extern "C" fn molt_object_field_init_ptr(
 }
 
 unsafe fn guard_layout_match(obj_ptr: *mut u8, class_bits: u64, expected_version: u64) -> bool {
+    profile_hit(&LAYOUT_GUARD_COUNT);
     if obj_ptr.is_null() {
+        profile_hit(&LAYOUT_GUARD_FAIL);
         return false;
     }
     let header = header_from_obj_ptr(obj_ptr);
     if (*header).type_id != TYPE_ID_OBJECT {
+        profile_hit(&LAYOUT_GUARD_FAIL);
         return false;
     }
     let obj_class_bits = object_class_bits(obj_ptr);
     if obj_class_bits == 0 || obj_class_bits != class_bits {
+        profile_hit(&LAYOUT_GUARD_FAIL);
         return false;
     }
     let class_obj = obj_from_bits(class_bits);
     let Some(class_ptr) = class_obj.as_ptr() else {
+        profile_hit(&LAYOUT_GUARD_FAIL);
         return false;
     };
     if object_type_id(class_ptr) != TYPE_ID_TYPE {
+        profile_hit(&LAYOUT_GUARD_FAIL);
         return false;
     }
     let version = class_layout_version_bits(class_ptr);
     let expected = match to_i64(obj_from_bits(expected_version)) {
         Some(val) if val >= 0 => val as u64,
-        _ => return false,
+        _ => {
+            profile_hit(&LAYOUT_GUARD_FAIL);
+            return false;
+        }
     };
-    version == expected
+    if version != expected {
+        profile_hit(&LAYOUT_GUARD_FAIL);
+        return false;
+    }
+    true
 }
 
 /// # Safety
@@ -8546,16 +8562,22 @@ pub extern "C" fn molt_profile_dump() {
     let cache_hit = STRING_COUNT_CACHE_HIT.load(AtomicOrdering::Relaxed);
     let cache_miss = STRING_COUNT_CACHE_MISS.load(AtomicOrdering::Relaxed);
     let struct_stores = STRUCT_FIELD_STORE_COUNT.load(AtomicOrdering::Relaxed);
+    let attr_lookups = ATTR_LOOKUP_COUNT.load(AtomicOrdering::Relaxed);
+    let layout_guard = LAYOUT_GUARD_COUNT.load(AtomicOrdering::Relaxed);
+    let layout_guard_fail = LAYOUT_GUARD_FAIL.load(AtomicOrdering::Relaxed);
     let async_polls = ASYNC_POLL_COUNT.load(AtomicOrdering::Relaxed);
     let async_pending = ASYNC_PENDING_COUNT.load(AtomicOrdering::Relaxed);
     let async_wakeups = ASYNC_WAKEUP_COUNT.load(AtomicOrdering::Relaxed);
     let async_sleep_reg = ASYNC_SLEEP_REGISTER_COUNT.load(AtomicOrdering::Relaxed);
     eprintln!(
-        "molt_profile call_dispatch={} string_count_cache_hit={} string_count_cache_miss={} struct_field_store={} async_polls={} async_pending={} async_wakeups={} async_sleep_register={}",
+        "molt_profile call_dispatch={} string_count_cache_hit={} string_count_cache_miss={} struct_field_store={} attr_lookup={} layout_guard={} layout_guard_fail={} async_polls={} async_pending={} async_wakeups={} async_sleep_register={}",
         call_dispatch,
         cache_hit,
         cache_miss,
         struct_stores,
+        attr_lookups,
+        layout_guard,
+        layout_guard_fail,
         async_polls,
         async_pending,
         async_wakeups,
@@ -17226,6 +17248,7 @@ unsafe fn class_attr_lookup(
 }
 
 unsafe fn attr_lookup_ptr(obj_ptr: *mut u8, attr_bits: u64) -> Option<u64> {
+    profile_hit(&ATTR_LOOKUP_COUNT);
     let type_id = object_type_id(obj_ptr);
     if type_id == TYPE_ID_MODULE {
         return module_attr_lookup(obj_ptr, attr_bits);

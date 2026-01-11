@@ -84,7 +84,7 @@ See `docs/spec/` for detailed architectural decisions.
 - Rust: `cargo test`
 - Differential: `python tests/molt_diff.py <case.py>`
 - Bench setup (optional): `uv sync --group bench --python 3.12` (Numba requires <3.13)
-- Codon baseline (optional): install `codon` and run benches with an arm64 interpreter on Apple Silicon (e.g., `uv run --python /opt/homebrew/bin/python3.14 python3 tools/bench.py --json-out bench/results/bench.json`).
+- Codon baseline (optional): install `codon` and run benches with an arm64 interpreter on Apple Silicon (e.g., `uv run --python /opt/homebrew/bin/python3.14 python3 tools/bench.py --json-out bench/results/bench.json`); see `bench/README.md` for current skips.
 - WASM bench: `uv run --python 3.14 python3 tools/bench_wasm.py --json-out bench/results/bench_wasm.json`.
 
 ## Performance & Comparisons
@@ -97,19 +97,23 @@ columns. PyPy baselines use `uv run --no-project --python pypy@3.11` to bypass
 `requires-python` and remain comparable.
 Codon baselines require the `codon` CLI; on Apple Silicon, run the bench harness
 under an arm64 interpreter so Codon can link against its runtime.
+Codon skip reasons are tracked in `bench/README.md`.
 For cross-version baselines, run the bench harness under each CPython version
 (`uv run --python 3.12 python3 tools/bench.py --json-out bench/results/bench_py312.json`,
 `uv run --python 3.13 python3 tools/bench.py --json-out bench/results/bench_py313.json`,
 `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench_py314.json`)
 and summarize deltas across files.
 
-Latest run: 2026-01-09 (macOS arm64, CPython 3.14.2).
-Top speedups: `bench_sum.py` 206.53x, `bench_channel_throughput.py` 17.54x,
-`bench_async_await.py` 11.44x, `bench_matrix_math.py` 6.61x, `bench_prod_list.py` 5.50x.
-Regressions: `bench_descriptor_property.py` 0.11x, `bench_struct.py` 0.14x,
-`bench_attr_access.py` 0.20x, `bench_fib.py` 0.23x, `bench_str_split.py` 0.46x.
-Build/run failures: Cython/Numba baselines skipped; Codon skipped for asyncio,
-bytearray/memoryview, molt_buffer/molt_msgpack, and struct-init benches.
+Latest run: 2026-01-10 (macOS x86_64, CPython 3.14.0).
+Top speedups: `bench_sum.py` 235.17x, `bench_channel_throughput.py` 43.91x,
+`bench_async_await.py` 12.06x, `bench_matrix_math.py` 10.08x,
+`bench_deeply_nested_loop.py` 6.92x.
+Regressions: `bench_struct.py` 0.75x, `bench_attr_access.py` 0.70x,
+`bench_fib.py` 0.33x.
+Build/run failures: Cython/Numba baselines skipped; Codon skipped for async,
+channel, matrix_math, bytearray, memoryview, parse_msgpack, and struct benches.
+WASM run: 2026-01-10 (macOS x86_64, CPython 3.14.0). Timings unavailable
+(`molt_wasm_ok` false), sizes-only emitted; async/channel WASM outputs are 0.0 KB.
 
 ### Performance Gates
 - Vector reductions (`bench_sum_list.py`, `bench_min_list.py`, `bench_max_list.py`, `bench_prod_list.py`): regression >5% fails the gate.
@@ -117,15 +121,15 @@ bytearray/memoryview, molt_buffer/molt_msgpack, and struct-init benches.
 - Matrix/buffer kernels (`bench_matrix_math.py`): regression >5% fails the gate.
 - Any expected perf deltas from new kernels must be recorded here after the run; complex regressions move to `OPTIMIZATIONS_PLAN.md`.
 
-Baseline microbenchmarks (2026-01-09): `bench_min_list.py` 0.49x, `bench_max_list.py` 0.55x,
-`bench_prod_list.py` 5.50x, `bench_str_find_unicode.py` 5.11x, `bench_str_count_unicode.py` 1.94x.
+Baseline microbenchmarks (2026-01-10): `bench_min_list.py` 2.11x, `bench_max_list.py` 2.04x,
+`bench_prod_list.py` 6.48x, `bench_str_find_unicode.py` 5.17x, `bench_str_count_unicode.py` 1.87x.
 
 | Benchmark | Molt vs CPython | Notes |
 | --- | --- | --- |
-| bench_matrix_math.py | 6.61x | buffer2d matmul lowering |
-| bench_deeply_nested_loop.py | 1.79x | nested loop lowering |
-| bench_str_endswith.py | 5.26x | string endswith fast path |
-| bench_str_startswith.py | 5.32x | string startswith fast path |
+| bench_matrix_math.py | 10.08x | buffer2d matmul lowering |
+| bench_deeply_nested_loop.py | 6.92x | nested loop lowering |
+| bench_str_endswith.py | 5.35x | string endswith fast path |
+| bench_str_startswith.py | 5.30x | string startswith fast path |
 | bench_str_count.py | 5.47x | string count fast path |
 | bench_str_split.py | 0.46x | optimized split builder |
 | bench_str_replace.py | 4.34x | SIMD-friendly replace path |

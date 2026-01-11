@@ -1,26 +1,34 @@
-Checkpoint: 2026-01-10 22:38:35 CST
-Git: db1737e41048b87ef5b166cd356d3ac5954cedef
+Checkpoint: 2026-01-11 00:00:55 CST
+Git: b6fad8b9fc8d713bb1b8d99b5f6a562f241596dc
 
 Summary
-- Future allocation now uses a zeroed, direct header init in `molt_future_new` to avoid pointer round-trips.
-- `molt_aiter`/`molt_anext` now use `attr_name_bits_from_bytes`, fixing async-for resolving `__anext__` as
-  `__aiter__` ("object is not awaitable").
-- Awaitable debug now includes class name when poll_fn is missing.
+- Added profiling counters for attr lookup + layout guard hits/fails, exposed in profile dumps.
+- Frontend now records default arg metadata for symbol-known callables and reuses it during call lowering,
+  plus propagates function hints through assignments.
+- Added guard-assumption loop split for getattr/setattr and exact-class init fast paths to reduce per-iteration
+  guard branching.
+- Backend adds int-tag fast paths for ADD/SUB/MUL/LT/EQ before runtime fallback.
+- Updated bench harness Codon invocation for macOS x86_64 and refreshed README perf summary after native/WASM runs.
 
 Files touched (uncommitted)
-- CHECKPOINT.md
+- README.md
+- bench/results/bench.json
+- runtime/molt-backend/src/lib.rs
+- runtime/molt-runtime/src/lib.rs
+- src/molt/frontend/__init__.py
+- tools/bench.py
+
+Docs/spec updates needed?
+- None for this change set (perf counters, lowering tweaks, bench docs only).
 
 Tests run
-- uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic/async_for_else.py
-- uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic/async_for_iter.py
-- uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic/async_long_running.py
+- uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic
+- uv run --python 3.12 python3 tools/dev.py lint
+- uv run --python 3.12 python3 tools/dev.py test
+- uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json
+- uv run --python 3.14 python3 tools/bench_wasm.py --json-out bench/results/bench_wasm.json
 
 Known gaps
-- Allowlisted module calls still reject keywords/star args; only Molt-defined callables accept CALL_BIND.
-- async with multi-context and destructuring targets remain unsupported (see docs/spec/STATUS.md).
-- BaseException hierarchy and typed matching remain partial (see docs/spec/0014_TYPE_COVERAGE_MATRIX.md).
-- OPT-0007/0008 regressions still open (struct/descriptor/attr access).
-- OPT-0009 partial: bench_str_split.py ~2x CPython, bench_str_join.py ~0.91x.
-- Fuzz invocation needs a bounded run (e.g. max time) to be treated as a clean pass.
-- bench_struct/bench_attr_access/bench_descriptor_property remain far below CPython; prioritize OPT-0007/0008 follow-through.
-- Codon baseline skips asyncio/bytearray/memoryview/molt_buffer/molt_msgpack/struct-init benches.
+- Layout guard overhead remains high; bench_struct/bench_attr_access/bench_fib still below CPython.
+- WASM bench timings unavailable (molt_wasm_ok false); sizes only.
+- Codon baseline skips remain for async/channel/matrix_math/bytearray/memoryview/parse_msgpack/struct benches.

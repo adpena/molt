@@ -289,6 +289,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.exact_locals: dict[str, str] = {}
         self.globals: dict[str, MoltValue] = {}
         self.func_symbol_names: dict[str, str] = {}
+        self.func_default_specs: dict[str, dict[str, Any]] = {}
         self.stable_module_funcs: set[str] = set()
         self.module_declared_funcs: dict[str, str] = {}
         self.module_defined_funcs: set[str] = set()
@@ -345,6 +346,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.block_terminated = False
         self.range_loop_stack: list[tuple[MoltValue, MoltValue]] = []
         self.loop_layout_guards: list[dict[str, tuple[str, MoltValue]]] = []
+        self.loop_guard_assumptions: list[dict[str, tuple[str, bool]]] = []
         self.active_exceptions: list[MoltValue] = []
         self.func_aliases: dict[str, str] = {}
         self.const_ints: dict[str, int] = {}
@@ -989,6 +991,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             defaults[stmt.name] = {"params": len(params), "defaults": default_specs}
         return defaults
 
+    def _record_func_default_specs(self, func_symbol: str, args: ast.arguments) -> None:
+        if args.vararg or args.kwarg or args.kwonlyargs or args.posonlyargs:
+            return
+        params = [arg.arg for arg in args.args]
+        default_specs: list[dict[str, Any]] = []
+        for expr in args.defaults:
+            if isinstance(expr, ast.Constant):
+                default_specs.append({"const": True, "value": expr.value})
+            else:
+                default_specs.append({"const": False})
+        self.func_default_specs[func_symbol] = {
+            "params": len(params),
+            "defaults": default_specs,
+        }
+
     def _module_stable_funcs(self, node: ast.Module) -> set[str]:
         counts, funcs, dynamic = self._collect_module_assignments(node)
         if dynamic:
@@ -1108,6 +1125,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "try_suppress_depth": self.try_suppress_depth,
             "return_unwind_depth": self.return_unwind_depth,
             "active_exceptions": self.active_exceptions,
+            "loop_guard_assumptions": self.loop_guard_assumptions,
             "return_label": self.return_label,
             "return_slot": self.return_slot,
             "return_slot_index": self.return_slot_index,
@@ -1139,6 +1157,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.try_suppress_depth = state["try_suppress_depth"]
         self.return_unwind_depth = state["return_unwind_depth"]
         self.active_exceptions = state["active_exceptions"]
+        self.loop_guard_assumptions = state["loop_guard_assumptions"]
         self.return_label = state["return_label"]
         self.return_slot = state["return_slot"]
         self.return_slot_index = state["return_slot_index"]
@@ -1370,6 +1389,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             else 0
         )
         return 1 + field_offsets + len(class_attrs) + len(methods)
+
+    def _class_layout_stable(self, class_name: str) -> bool:
+        class_info = self.classes.get(class_name)
+        if not class_info:
+            return False
+        if class_info.get("dynamic") or class_info.get("dataclass"):
+            return False
+        if class_name in self.mutated_classes:
+            return False
+        return True
 
     def _async_local_offset(self, name: str) -> int:
         if name not in self.async_locals:
@@ -1988,6 +2017,34 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         args = self._emit_call_args(node.args)
         return self._apply_direct_call_defaults(module_name, func_id, args, node)
 
+    def _emit_direct_call_args_for_symbol(
+        self, func_symbol: str, node: ast.Call
+    ) -> tuple[list[MoltValue], MoltValue | None]:
+        if node.keywords:
+            raise NotImplementedError("Call keywords are not supported")
+        args = self._emit_call_args(node.args)
+        info = self.func_default_specs.get(func_symbol)
+        if info is None:
+            return args, None
+        total_params = info.get("params")
+        defaults = info.get("defaults", [])
+        func_obj = None
+        if total_params is not None:
+            missing = total_params - len(args)
+            if missing > 0 and any(
+                not spec.get("const", False) for spec in defaults[-missing:]
+            ):
+                func_obj = self.visit(node.func)
+        args = self._apply_default_specs(
+            total_params,
+            defaults,
+            args,
+            node,
+            call_name=self.func_symbol_names.get(func_symbol, func_symbol),
+            func_obj=func_obj,
+        )
+        return args, func_obj
+
     def _emit_dataclasses_field_call(
         self, module_name: str, node: ast.Call
     ) -> MoltValue:
@@ -2474,6 +2531,32 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.exact_locals[name] = self.exact_locals[value.id]
                 return
         self.exact_locals.pop(name, None)
+
+    def _propagate_func_type_hint(
+        self, value_node: MoltValue, source_expr: ast.AST | None
+    ) -> None:
+        if not isinstance(source_expr, ast.Name):
+            return
+        source_info = self.locals.get(source_expr.id) or self.globals.get(
+            source_expr.id
+        )
+        if source_info is None:
+            return
+        hint = source_info.type_hint
+        if not isinstance(hint, str):
+            return
+        if hint.startswith(("AsyncFunc:", "GenFunc:")):
+            symbol = hint.split(":")[1]
+            base_symbol = (
+                symbol[: -len("_poll")] if symbol.endswith("_poll") else symbol
+            )
+            if base_symbol in self.func_default_specs:
+                value_node.type_hint = hint
+            return
+        if hint.startswith("Func:"):
+            symbol = hint.split(":")[1]
+            if symbol in self.func_default_specs:
+                value_node.type_hint = hint
 
     def _load_local_value(self, name: str) -> MoltValue | None:
         if self.current_func_name != "molt_main" and name in self.global_decls:
@@ -3049,28 +3132,48 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
             return
-        iter_obj = self._emit_iter_new(iterable)
-
-        zero = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-        one = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[1], result=one))
-
         guard_map = self._emit_hoisted_loop_guards(node.body)
-        self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
-        pair = MoltValue(self.next_var(), type_hint="tuple")
-        self.emit(MoltOp(kind="ITER_NEXT", args=[iter_obj], result=pair))
-        done = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="INDEX", args=[pair, one], result=done))
-        self.emit(
-            MoltOp(kind="LOOP_BREAK_IF_TRUE", args=[done], result=MoltValue("none"))
-        )
-        item = MoltValue(self.next_var(), type_hint="Any")
-        self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=item))
-        self._emit_assign_target(target, item, None)
-        self._visit_loop_body(node.body, guard_map)
-        self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+
+        def emit_loop_body() -> None:
+            iter_obj = self._emit_iter_new(iterable)
+            zero = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[0], result=zero))
+            one = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[1], result=one))
+
+            self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
+            pair = MoltValue(self.next_var(), type_hint="tuple")
+            self.emit(MoltOp(kind="ITER_NEXT", args=[iter_obj], result=pair))
+            done = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="INDEX", args=[pair, one], result=done))
+            self.emit(
+                MoltOp(
+                    kind="LOOP_BREAK_IF_TRUE",
+                    args=[done],
+                    result=MoltValue("none"),
+                )
+            )
+            item = MoltValue(self.next_var(), type_hint="Any")
+            self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=item))
+            self._emit_assign_target(target, item, None)
+            self._visit_loop_body(node.body, None)
+            self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+            self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+
+        if guard_map:
+            guard_cond = self._emit_guard_map_condition(guard_map)
+            self.emit(MoltOp(kind="IF", args=[guard_cond], result=MoltValue("none")))
+            self._push_loop_guard_assumptions(guard_map, True)
+            emit_loop_body()
+            self._pop_loop_guard_assumptions()
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+            self._push_loop_guard_assumptions(guard_map, False)
+            emit_loop_body()
+            self._pop_loop_guard_assumptions()
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            return
+
+        emit_loop_body()
 
     def _emit_index_loop(self, node: ast.For, iterable: MoltValue) -> None:
         target = node.target
@@ -3158,30 +3261,51 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
             return
-        zero = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-        one = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[1], result=one))
-        length = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="LEN", args=[iterable], result=length))
-
         guard_map = self._emit_hoisted_loop_guards(node.body)
-        idx = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="LOOP_INDEX_START", args=[zero], result=idx))
-        cond = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="LT", args=[idx, length], result=cond))
-        self.emit(
-            MoltOp(kind="LOOP_BREAK_IF_FALSE", args=[cond], result=MoltValue("none"))
-        )
-        item = MoltValue(self.next_var(), type_hint="Any")
-        self.emit(MoltOp(kind="INDEX", args=[iterable, idx], result=item))
-        self._emit_assign_target(target, item, None)
-        self._visit_loop_body(node.body, guard_map)
-        next_idx = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="ADD", args=[idx, one], result=next_idx))
-        self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
-        self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+
+        def emit_loop_body() -> None:
+            zero = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[0], result=zero))
+            one = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[1], result=one))
+            length = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="LEN", args=[iterable], result=length))
+
+            idx = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="LOOP_INDEX_START", args=[zero], result=idx))
+            cond = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="LT", args=[idx, length], result=cond))
+            self.emit(
+                MoltOp(
+                    kind="LOOP_BREAK_IF_FALSE",
+                    args=[cond],
+                    result=MoltValue("none"),
+                )
+            )
+            item = MoltValue(self.next_var(), type_hint="Any")
+            self.emit(MoltOp(kind="INDEX", args=[iterable, idx], result=item))
+            self._emit_assign_target(target, item, None)
+            self._visit_loop_body(node.body, None)
+            next_idx = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="ADD", args=[idx, one], result=next_idx))
+            self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
+            self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+            self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+
+        if guard_map:
+            guard_cond = self._emit_guard_map_condition(guard_map)
+            self.emit(MoltOp(kind="IF", args=[guard_cond], result=MoltValue("none")))
+            self._push_loop_guard_assumptions(guard_map, True)
+            emit_loop_body()
+            self._pop_loop_guard_assumptions()
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+            self._push_loop_guard_assumptions(guard_map, False)
+            emit_loop_body()
+            self._pop_loop_guard_assumptions()
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            return
+
+        emit_loop_body()
 
     def _parse_range_call(
         self, node: ast.AST
@@ -3222,80 +3346,107 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self._emit_iter_loop(node, range_obj)
             return None
         step_const = self.const_ints.get(step.name)
-        if step_const is not None and step_const != 0:
-            guard_map = self._emit_hoisted_loop_guards(node.body)
+        guard_map = self._emit_hoisted_loop_guards(node.body)
+
+        def emit_range_loop_body() -> None:
+            if step_const is not None and step_const != 0:
+                idx = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx))
+                cond = MoltValue(self.next_var(), type_hint="bool")
+                if step_const > 0:
+                    self.emit(MoltOp(kind="LT", args=[idx, stop], result=cond))
+                else:
+                    self.emit(MoltOp(kind="LT", args=[stop, idx], result=cond))
+                self.emit(
+                    MoltOp(
+                        kind="LOOP_BREAK_IF_FALSE",
+                        args=[cond],
+                        result=MoltValue("none"),
+                    )
+                )
+                self._emit_assign_target(target, idx, None)
+                self.range_loop_stack.append((idx, step))
+                self._visit_loop_body(node.body, None)
+                self.range_loop_stack.pop()
+                next_idx = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="ADD", args=[idx, step], result=next_idx))
+                self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
+                self.emit(
+                    MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
+                )
+                self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+                return None
+            one = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[1], result=one))
+            zero = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[0], result=zero))
+            step_pos = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="LT", args=[zero, step], result=step_pos))
+            self.emit(MoltOp(kind="IF", args=[step_pos], result=MoltValue("none")))
             idx = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx))
             cond = MoltValue(self.next_var(), type_hint="bool")
-            if step_const > 0:
-                self.emit(MoltOp(kind="LT", args=[idx, stop], result=cond))
-            else:
-                self.emit(MoltOp(kind="LT", args=[stop, idx], result=cond))
+            self.emit(MoltOp(kind="LT", args=[idx, stop], result=cond))
             self.emit(
                 MoltOp(
-                    kind="LOOP_BREAK_IF_FALSE", args=[cond], result=MoltValue("none")
+                    kind="LOOP_BREAK_IF_FALSE",
+                    args=[cond],
+                    result=MoltValue("none"),
                 )
             )
             self._emit_assign_target(target, idx, None)
             self.range_loop_stack.append((idx, step))
-            self._visit_loop_body(node.body, guard_map)
+            self._visit_loop_body(node.body, None)
             self.range_loop_stack.pop()
             next_idx = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="ADD", args=[idx, step], result=next_idx))
             self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
             self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
-            return None
-        one = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[1], result=one))
-        zero = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-        step_pos = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="LT", args=[zero, step], result=step_pos))
-        guard_map = self._emit_hoisted_loop_guards(node.body)
-        self.emit(MoltOp(kind="IF", args=[step_pos], result=MoltValue("none")))
-        idx = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx))
-        cond = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="LT", args=[idx, stop], result=cond))
-        self.emit(
-            MoltOp(kind="LOOP_BREAK_IF_FALSE", args=[cond], result=MoltValue("none"))
-        )
-        self._emit_assign_target(target, idx, None)
-        self.range_loop_stack.append((idx, step))
-        self._visit_loop_body(node.body, guard_map)
-        self.range_loop_stack.pop()
-        next_idx = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="ADD", args=[idx, step], result=next_idx))
-        self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
-        self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-        step_neg = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="LT", args=[step, zero], result=step_neg))
-        self.emit(MoltOp(kind="IF", args=[step_neg], result=MoltValue("none")))
-        idx_neg = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx_neg))
-        cond_neg = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="LT", args=[stop, idx_neg], result=cond_neg))
-        self.emit(
-            MoltOp(
-                kind="LOOP_BREAK_IF_FALSE",
-                args=[cond_neg],
-                result=MoltValue("none"),
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+            step_neg = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="LT", args=[step, zero], result=step_neg))
+            self.emit(MoltOp(kind="IF", args=[step_neg], result=MoltValue("none")))
+            idx_neg = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx_neg))
+            cond_neg = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="LT", args=[stop, idx_neg], result=cond_neg))
+            self.emit(
+                MoltOp(
+                    kind="LOOP_BREAK_IF_FALSE",
+                    args=[cond_neg],
+                    result=MoltValue("none"),
+                )
             )
-        )
-        self._emit_assign_target(target, idx_neg, None)
-        self.range_loop_stack.append((idx_neg, step))
-        self._visit_loop_body(node.body, guard_map)
-        self.range_loop_stack.pop()
-        next_idx_neg = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="ADD", args=[idx_neg, step], result=next_idx_neg))
-        self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx_neg], result=idx_neg))
-        self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            self._emit_assign_target(target, idx_neg, None)
+            self.range_loop_stack.append((idx_neg, step))
+            self._visit_loop_body(node.body, None)
+            self.range_loop_stack.pop()
+            next_idx_neg = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="ADD", args=[idx_neg, step], result=next_idx_neg))
+            self.emit(
+                MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx_neg], result=idx_neg)
+            )
+            self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+            self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+
+        if guard_map:
+            guard_cond = self._emit_guard_map_condition(guard_map)
+            self.emit(MoltOp(kind="IF", args=[guard_cond], result=MoltValue("none")))
+            self._push_loop_guard_assumptions(guard_map, True)
+            emit_range_loop_body()
+            self._pop_loop_guard_assumptions()
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+            self._push_loop_guard_assumptions(guard_map, False)
+            emit_range_loop_body()
+            self._pop_loop_guard_assumptions()
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            return None
+
+        emit_range_loop_body()
+        return None
 
     def _emit_range_list(
         self, start: MoltValue, stop: MoltValue, step: MoltValue
@@ -3531,7 +3682,39 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         expected_class: str,
         *,
         use_init: bool = False,
+        assume_exact: bool = False,
     ) -> None:
+        assumption = self._loop_guard_assumption(obj.name, expected_class)
+        if assumption is True:
+            setattr_kind = "SETATTR_INIT" if use_init else "SETATTR"
+            self.emit(
+                MoltOp(
+                    kind=setattr_kind,
+                    args=[obj, attr, value, expected_class],
+                    result=MoltValue("none"),
+                )
+            )
+            return
+        if assumption is False:
+            self.emit(
+                MoltOp(
+                    kind="SETATTR_GENERIC_PTR",
+                    args=[obj, attr, value],
+                    result=MoltValue("none"),
+                )
+            )
+            return
+        if self._class_layout_stable(expected_class):
+            if assume_exact or self.exact_locals.get(obj.name) == expected_class:
+                setattr_kind = "SETATTR_INIT" if use_init else "SETATTR"
+                self.emit(
+                    MoltOp(
+                        kind=setattr_kind,
+                        args=[obj, attr, value, expected_class],
+                        result=MoltValue("none"),
+                    )
+                )
+                return
         guard = self._loop_guard_for(obj, expected_class)
         if guard is None:
             class_ref = self._emit_module_attr_get(expected_class)
@@ -3582,6 +3765,38 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _emit_guarded_getattr(
         self, obj: MoltValue, attr: str, expected_class: str
     ) -> MoltValue:
+        assumption = self._loop_guard_assumption(obj.name, expected_class)
+        if assumption is True:
+            res = MoltValue(self.next_var())
+            self.emit(
+                MoltOp(
+                    kind="GETATTR",
+                    args=[obj, attr, expected_class],
+                    result=res,
+                )
+            )
+            return res
+        if assumption is False:
+            res = MoltValue(self.next_var())
+            self.emit(
+                MoltOp(
+                    kind="GETATTR_GENERIC_PTR",
+                    args=[obj, attr],
+                    result=res,
+                )
+            )
+            return res
+        if self._class_layout_stable(expected_class):
+            if self.exact_locals.get(obj.name) == expected_class:
+                res = MoltValue(self.next_var())
+                self.emit(
+                    MoltOp(
+                        kind="GETATTR",
+                        args=[obj, attr, expected_class],
+                        result=res,
+                    )
+                )
+                return res
         guard = self._loop_guard_for(obj, expected_class)
         if guard is None:
             class_ref = self._emit_module_attr_get(expected_class)
@@ -3630,6 +3845,27 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         )
         return guard
 
+    def _loop_guard_assumption(self, obj_name: str, expected_class: str) -> bool | None:
+        for guard_map in reversed(self.loop_guard_assumptions):
+            entry = guard_map.get(obj_name)
+            if entry and entry[0] == expected_class:
+                return entry[1]
+        return None
+
+    def _push_loop_guard_assumptions(
+        self,
+        guard_map: dict[str, tuple[str, MoltValue]],
+        assume_true: bool,
+    ) -> None:
+        assumptions: dict[str, tuple[str, bool]] = {}
+        for name, (expected_class, _) in guard_map.items():
+            assumptions[name] = (expected_class, assume_true)
+        self.loop_guard_assumptions.append(assumptions)
+
+    def _pop_loop_guard_assumptions(self) -> None:
+        if self.loop_guard_assumptions:
+            self.loop_guard_assumptions.pop()
+
     def _loop_guard_for(self, obj: MoltValue, expected_class: str) -> MoltValue | None:
         if not self.loop_layout_guards:
             return None
@@ -3673,6 +3909,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             guard = self._emit_layout_guard(obj, expected_class)
             guard_map[name] = (expected_class, guard)
         return guard_map
+
+    def _emit_guard_map_condition(
+        self, guard_map: dict[str, tuple[str, MoltValue]]
+    ) -> MoltValue:
+        condition: MoltValue | None = None
+        for _, (_, guard) in sorted(guard_map.items()):
+            if condition is None:
+                condition = guard
+                continue
+            combined = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="AND", args=[condition, guard], result=combined))
+            condition = combined
+        if condition is None:
+            condition = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=condition))
+        return condition
 
     def _emit_guarded_field_get_with_guard(
         self,
@@ -7111,10 +7363,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                     elif use_init:
                         self._emit_guarded_setattr(
-                            res, name, val, class_id, use_init=True
+                            res, name, val, class_id, use_init=True, assume_exact=True
                         )
                     else:
-                        self._emit_guarded_setattr(res, name, val, class_id)
+                        self._emit_guarded_setattr(
+                            res, name, val, class_id, assume_exact=True
+                        )
                 init_method = class_info.get("methods", {}).get("__init__")
                 if init_method is None:
                     for base_name in class_info.get("mro", [])[1:]:
@@ -7188,7 +7442,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 parts = target_info.type_hint.split(":")
                 poll_func = parts[1]
                 closure_size = int(parts[2])
-                args = self._emit_direct_call_args(None, func_id, node)
+                func_symbol = (
+                    poll_func[: -len("_poll")]
+                    if poll_func.endswith("_poll")
+                    else poll_func
+                )
+                args, _ = self._emit_direct_call_args_for_symbol(func_symbol, node)
                 res = MoltValue(self.next_var(), type_hint="Future")
                 self.emit(
                     MoltOp(
@@ -7213,7 +7472,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 parts = target_info.type_hint.split(":")
                 poll_func = parts[1]
                 closure_size = int(parts[2])
-                args = self._emit_direct_call_args(None, func_id, node)
+                func_symbol = (
+                    poll_func[: -len("_poll")]
+                    if poll_func.endswith("_poll")
+                    else poll_func
+                )
+                args, _ = self._emit_direct_call_args_for_symbol(func_symbol, node)
                 res = MoltValue(self.next_var(), type_hint="generator")
                 self.emit(
                     MoltOp(
@@ -7292,7 +7556,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                     )
                     return res
-                args = self._emit_direct_call_args(None, func_id, node)
+                args, func_obj = self._emit_direct_call_args_for_symbol(
+                    target_name, node
+                )
                 res = MoltValue(self.next_var(), type_hint="int")
                 if self.is_async() or (
                     isinstance(node.func, ast.Name)
@@ -7302,7 +7568,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         MoltOp(kind="CALL", args=[target_name] + args, result=res)
                     )
                 else:
-                    callee = self.visit(node.func)
+                    callee = func_obj or self.visit(node.func)
                     if callee is None:
                         raise NotImplementedError("Unsupported call target")
                     self.emit(
@@ -8556,6 +8822,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             ):
                 if source_expr is not None:
                     self._update_exact_local(target.id, source_expr)
+                    self._propagate_func_type_hint(value_node, source_expr)
             if self.current_func_name != "molt_main" and target.id in self.global_decls:
                 self._store_local_value(target.id, value_node)
                 return
@@ -9494,14 +9761,35 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if not self.is_async():
                 self._box_local(name)
         guard_map = self._emit_hoisted_loop_guards(node.body)
-        self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
-        cond = self.visit(node.test)
-        self.emit(
-            MoltOp(kind="LOOP_BREAK_IF_FALSE", args=[cond], result=MoltValue("none"))
-        )
-        self._visit_loop_body(node.body, guard_map)
-        self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+
+        def emit_loop_body() -> None:
+            self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
+            cond = self.visit(node.test)
+            self.emit(
+                MoltOp(
+                    kind="LOOP_BREAK_IF_FALSE",
+                    args=[cond],
+                    result=MoltValue("none"),
+                )
+            )
+            self._visit_loop_body(node.body, None)
+            self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+            self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+
+        if guard_map:
+            guard_cond = self._emit_guard_map_condition(guard_map)
+            self.emit(MoltOp(kind="IF", args=[guard_cond], result=MoltValue("none")))
+            self._push_loop_guard_assumptions(guard_map, True)
+            emit_loop_body()
+            self._pop_loop_guard_assumptions()
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+            self._push_loop_guard_assumptions(guard_map, False)
+            emit_loop_body()
+            self._pop_loop_guard_assumptions()
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            return None
+
+        emit_loop_body()
         return None
 
     def _visit_block(self, body: list[ast.stmt]) -> None:
@@ -10236,6 +10524,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             raise NotImplementedError("Function decorators are not supported yet")
         func_name = node.name
         func_symbol = self._function_symbol(func_name)
+        self._record_func_default_specs(func_symbol, node.args)
         poll_func_name = f"{func_symbol}_poll"
         prev_func = self.current_func_name
         has_return = self._function_contains_return(node)
@@ -10374,6 +10663,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 raise NotImplementedError("Function decorators are not supported yet")
             func_name = node.name
             func_symbol = self._function_symbol(func_name)
+            self._record_func_default_specs(func_symbol, node.args)
             poll_func_name = f"{func_symbol}_poll"
             prev_func = self.current_func_name
             posonly, pos_or_kw, kwonly, vararg, varkw = self._split_function_args(
@@ -10567,6 +10857,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             raise NotImplementedError("Function decorators are not supported yet")
         func_name = node.name
         func_symbol = self._function_symbol(func_name)
+        self._record_func_default_specs(func_symbol, node.args)
         prev_func = self.current_func_name
         posonly, pos_or_kw, kwonly, vararg, varkw = self._split_function_args(node.args)
         posonly_names = [arg.arg for arg in posonly]
