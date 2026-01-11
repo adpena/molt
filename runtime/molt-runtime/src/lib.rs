@@ -16086,10 +16086,11 @@ pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
             _ => {}
         }
         let size = header.size;
-        if header.type_id == TYPE_ID_OBJECT && header.poll_fn == 0 {
-            if object_pool_put(size, header_ptr as *mut u8) {
-                return;
-            }
+        if header.type_id == TYPE_ID_OBJECT
+            && header.poll_fn == 0
+            && object_pool_put(size, header_ptr as *mut u8)
+        {
+            return;
         }
         let layout = std::alloc::Layout::from_size_align(size, 8).unwrap();
         std::alloc::dealloc(header_ptr as *mut u8, layout);

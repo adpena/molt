@@ -1,11 +1,12 @@
-Checkpoint: 2026-01-11T17:34:48-0600
-Git: cfd0a1a5d0d46a20d8d31db97cf3041f38ec8bfd (dirty)
+Checkpoint: 2026-01-11T17:38:40-0600
+Git: f37c1e6b558ee4c1fdd4452e5f8ad6e31c1904e1 (dirty)
 
 Summary
 - Fixed capability lookup crash by memoizing parsed capabilities and avoiding temporary set membership in `has()`.
 - Fixed stdlib root `__init__.py` module naming to avoid empty module names.
 - Updated Django demo path and checkpoint freshness requirements in docs.
 - Applied `cargo fmt` to satisfy CI rustfmt on the wasm backend.
+- Fixed wasm backend clippy warnings (compile context, flatten loops, data reloc scan).
 
 Files touched (uncommitted)
 - AGENTS.md
@@ -40,6 +41,7 @@ Tests run
 - `uv run --python 3.12 python3 tools/dev.py lint`
 - `uv run --python 3.12 python3 tools/dev.py test`
 - `cargo fmt`
+- `cargo clippy -- -D warnings`
 
 Known gaps
 - wasm perf is still ~2-4x slower than CPython on list/min/max and struct/descriptor benches (bench_struct ~4.3x).

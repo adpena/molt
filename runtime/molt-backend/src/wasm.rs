@@ -49,6 +49,15 @@ struct DataSegmentRef {
     index: u32,
 }
 
+struct CompileFuncContext<'a> {
+    func_map: &'a HashMap<String, u32>,
+    func_indices: &'a HashMap<String, u32>,
+    table_func_indices: &'a [u32],
+    import_ids: &'a HashMap<String, u32>,
+    user_type_map: &'a HashMap<usize, u32>,
+    reloc_enabled: bool,
+}
+
 fn box_int(val: i64) -> i64 {
     let masked = (val as u64) & POINTER_MASK;
     (QNAN | TAG_INT | masked) as i64
@@ -628,22 +637,21 @@ impl WasmBackend {
 
         let table_func_indices = table_indices.clone();
         let import_ids = self.import_ids.clone();
+        let compile_ctx = CompileFuncContext {
+            func_map: &func_to_table_idx,
+            func_indices: &func_to_index,
+            table_func_indices: &table_func_indices,
+            import_ids: &import_ids,
+            user_type_map: &user_type_map,
+            reloc_enabled,
+        };
         for func_ir in ir.functions {
             let type_idx = if func_ir.name.ends_with("_poll") {
                 2
             } else {
                 *user_type_map.get(&func_ir.params.len()).unwrap_or(&0)
             };
-            self.compile_func(
-                func_ir,
-                type_idx,
-                &func_to_table_idx,
-                &func_to_index,
-                &table_func_indices,
-                &import_ids,
-                &user_type_map,
-                reloc_enabled,
-            );
+            self.compile_func(func_ir, type_idx, &compile_ctx);
         }
 
         let mut elements = None;
@@ -702,22 +710,18 @@ impl WasmBackend {
         bytes
     }
 
-    fn compile_func(
-        &mut self,
-        func_ir: FunctionIR,
-        type_idx: u32,
-        func_map: &HashMap<String, u32>,
-        func_indices: &HashMap<String, u32>,
-        table_func_indices: &[u32],
-        import_ids: &HashMap<String, u32>,
-        user_type_map: &HashMap<usize, u32>,
-        reloc_enabled: bool,
-    ) {
+    fn compile_func(&mut self, func_ir: FunctionIR, type_idx: u32, ctx: &CompileFuncContext<'_>) {
         let func_index = self.func_count;
         self.funcs.function(type_idx);
         self.exports
             .export(&func_ir.name, ExportKind::Func, self.func_count);
         self.func_count += 1;
+        let func_map = ctx.func_map;
+        let func_indices = ctx.func_indices;
+        let table_func_indices = ctx.table_func_indices;
+        let import_ids = ctx.import_ids;
+        let user_type_map = ctx.user_type_map;
+        let reloc_enabled = ctx.reloc_enabled;
 
         let mut locals = HashMap::new();
         let mut local_count = 0;
@@ -5129,18 +5133,16 @@ fn add_reloc_sections(
             }
             Payload::ImportSection(reader) => {
                 section_index += 1;
-                for import in reader {
-                    if let Ok(import) = import {
-                        match import.ty {
-                            TypeRef::Func(_) => {
-                                func_imports.push(import.name.to_string());
-                                func_import_count += 1;
-                            }
-                            TypeRef::Table(_) => {
-                                table_import_count += 1;
-                            }
-                            _ => {}
+                for import in reader.into_iter().flatten() {
+                    match import.ty {
+                        TypeRef::Func(_) => {
+                            func_imports.push(import.name.to_string());
+                            func_import_count += 1;
                         }
+                        TypeRef::Table(_) => {
+                            table_import_count += 1;
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -5159,11 +5161,9 @@ fn add_reloc_sections(
                 section_index += 1;
             }
             Payload::ExportSection(reader) => {
-                for export in reader {
-                    if let Ok(export) = export {
-                        if export.kind == ExternalKind::Func {
-                            func_exports.insert(export.index, export.name.to_string());
-                        }
+                for export in reader.into_iter().flatten() {
+                    if export.kind == ExternalKind::Func {
+                        func_exports.insert(export.index, export.name.to_string());
                     }
                 }
                 section_index += 1;
@@ -5218,24 +5218,22 @@ fn add_reloc_sections(
                 let data_section_start = reader.range().start;
                 data_section_index = Some(section_index);
                 section_index += 1;
-                let mut segment_index = 0u32;
-                for data in reader {
+                for (segment_index, data) in reader.into_iter().enumerate() {
                     if let Ok(data) = data {
                         if let DataKind::Active { offset_expr, .. } = data.kind {
                             let mut ops = offset_expr.get_operators_reader();
-                            if let Ok((op, op_offset)) = ops.read_with_offset() {
-                                if let Operator::I32Const { .. } = op {
-                                    let offset =
-                                        (op_offset + 1).saturating_sub(data_section_start) as u32;
-                                    pending_data.push(PendingReloc::DataAddr {
-                                        offset,
-                                        segment_index,
-                                    });
-                                }
+                            if let Ok((Operator::I32Const { .. }, op_offset)) =
+                                ops.read_with_offset()
+                            {
+                                let offset =
+                                    (op_offset + 1).saturating_sub(data_section_start) as u32;
+                                pending_data.push(PendingReloc::DataAddr {
+                                    offset,
+                                    segment_index: segment_index as u32,
+                                });
                             }
                         }
                     }
-                    segment_index += 1;
                 }
             }
             Payload::DataCountSection { .. } => {
