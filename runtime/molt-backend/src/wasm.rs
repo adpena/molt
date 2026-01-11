@@ -2,11 +2,11 @@ use crate::{FunctionIR, OpIR, SimpleIR};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use wasm_encoder::{
-    BlockType, CodeSection, ConstExpr, CustomSection, DataSection, DataSymbolDefinition, Elements,
-    ElementSection, ElementSegment, ElementMode, Encode, EntityType, ExportKind, ExportSection,
-    Function, FunctionSection, ImportSection, Instruction, LinkingSection, MemorySection,
-    MemoryType, Module, RefType, StartSection, SymbolTable, TableSection, TableType, TypeSection,
-    ValType,
+    BlockType, CodeSection, ConstExpr, CustomSection, DataSection, DataSymbolDefinition,
+    ElementMode, ElementSection, ElementSegment, Elements, Encode, EntityType, ExportKind,
+    ExportSection, Function, FunctionSection, ImportSection, Instruction, LinkingSection,
+    MemorySection, MemoryType, Module, RefType, StartSection, SymbolTable, TableSection, TableType,
+    TypeSection, ValType,
 };
 use wasmparser::{DataKind, ExternalKind, Operator, Parser, Payload, TypeRef};
 
@@ -124,20 +124,13 @@ impl WasmBackend {
         } else {
             ConstExpr::i32_const(offset as i32)
         };
-        self.data.active(
-            0,
-            &const_expr,
-            bytes.iter().copied(),
-        );
+        self.data.active(0, &const_expr, bytes.iter().copied());
         self.data_offset = (self.data_offset + bytes.len() as u32 + 7) & !7;
         let info = DataSegmentInfo {
             size: bytes.len() as u32,
         };
         self.data_segments.push(info);
-        DataSegmentRef {
-            offset,
-            index,
-        }
+        DataSegmentRef { offset, index }
     }
 
     fn emit_data_ptr(
@@ -787,7 +780,8 @@ impl WasmBackend {
         });
         if needs_field_fast {
             for name in ["__wasm_tmp0", "__wasm_tmp1"] {
-                if let std::collections::hash_map::Entry::Vacant(entry) = locals.entry(name.to_string())
+                if let std::collections::hash_map::Entry::Vacant(entry) =
+                    locals.entry(name.to_string())
                 {
                     entry.insert(local_count);
                     local_types.push(ValType::I64);
@@ -1039,9 +1033,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(seq));
                         func.instruction(&Instruction::LocalGet(acc));
                         func.instruction(&Instruction::LocalGet(start));
-                        emit_call(func, reloc_enabled,
-                            import_ids["vec_sum_int_range_trusted"],
-                        );
+                        emit_call(func, reloc_enabled, import_ids["vec_sum_int_range_trusted"]);
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
@@ -1085,7 +1077,9 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(seq));
                         func.instruction(&Instruction::LocalGet(acc));
                         func.instruction(&Instruction::LocalGet(start));
-                        emit_call(func, reloc_enabled,
+                        emit_call(
+                            func,
+                            reloc_enabled,
                             import_ids["vec_prod_int_range_trusted"],
                         );
                         let res = locals[op.out.as_ref().unwrap()];
@@ -1131,9 +1125,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(seq));
                         func.instruction(&Instruction::LocalGet(acc));
                         func.instruction(&Instruction::LocalGet(start));
-                        emit_call(func, reloc_enabled,
-                            import_ids["vec_min_int_range_trusted"],
-                        );
+                        emit_call(func, reloc_enabled, import_ids["vec_min_int_range_trusted"]);
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
@@ -1177,9 +1169,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(seq));
                         func.instruction(&Instruction::LocalGet(acc));
                         func.instruction(&Instruction::LocalGet(start));
-                        emit_call(func, reloc_enabled,
-                            import_ids["vec_max_int_range_trusted"],
-                        );
+                        emit_call(func, reloc_enabled, import_ids["vec_max_int_range_trusted"]);
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
@@ -3449,7 +3439,7 @@ impl WasmBackend {
                         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
                         func.instruction(&Instruction::LocalGet(poll_local));
                         func.instruction(&Instruction::I32WrapI64);
-                        emit_call_indirect(func, reloc_enabled, 2, 0 );
+                        emit_call_indirect(func, reloc_enabled, 2, 0);
                         func.instruction(&Instruction::LocalSet(out));
                         func.instruction(&Instruction::End);
                         if let Some(slot) = slot_bits {
@@ -3655,8 +3645,7 @@ impl WasmBackend {
                                     memory_index: 0,
                                 }));
                                 func.instruction(&Instruction::I32WrapI64);
-                                emit_call_indirect(func, reloc_enabled, call_ty, 0,
-                                );
+                                emit_call_indirect(func, reloc_enabled, call_ty, 0);
                                 func.instruction(&Instruction::LocalSet(out));
                             };
 
@@ -3755,8 +3744,7 @@ impl WasmBackend {
                             memory_index: 0,
                         }));
                         func.instruction(&Instruction::I32WrapI64);
-                        emit_call_indirect(func, reloc_enabled, call_type, 0,
-                        );
+                        emit_call_indirect(func, reloc_enabled, call_type, 0);
                         func.instruction(&Instruction::LocalSet(out));
                         func.instruction(&Instruction::End);
                     }
@@ -3809,8 +3797,7 @@ impl WasmBackend {
                             memory_index: 0,
                         }));
                         func.instruction(&Instruction::I32WrapI64);
-                        emit_call_indirect(func, reloc_enabled, call_type, 0,
-                        );
+                        emit_call_indirect(func, reloc_enabled, call_type, 0);
                         func.instruction(&Instruction::LocalSet(out));
                     }
                     "chan_new" => {
@@ -4162,24 +4149,18 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let token = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(token));
-                        emit_call(func, reloc_enabled,
-                            import_ids["cancel_token_is_cancelled"],
-                        );
+                        emit_call(func, reloc_enabled, import_ids["cancel_token_is_cancelled"]);
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                     }
                     "cancel_token_set_current" => {
                         let args = op.args.as_ref().unwrap();
                         let token = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(token));
-                        emit_call(func, reloc_enabled,
-                            import_ids["cancel_token_set_current"],
-                        );
+                        emit_call(func, reloc_enabled, import_ids["cancel_token_set_current"]);
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                     }
                     "cancel_token_get_current" => {
-                        emit_call(func, reloc_enabled,
-                            import_ids["cancel_token_get_current"],
-                        );
+                        emit_call(func, reloc_enabled, import_ids["cancel_token_get_current"]);
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                     }
                     "cancelled" => {
@@ -4551,7 +4532,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(future));
                         func.instruction(&Instruction::LocalGet(poll_local));
                         func.instruction(&Instruction::I32WrapI64);
-                        emit_call_indirect(func, reloc_enabled, 2, 0 );
+                        emit_call_indirect(func, reloc_enabled, 2, 0);
                         func.instruction(&Instruction::LocalSet(out));
                         func.instruction(&Instruction::End);
                         func.instruction(&Instruction::LocalGet(out));
@@ -5403,7 +5384,10 @@ fn add_reloc_sections(
                     });
                 }
             }
-            PendingReloc::DataAddr { offset, segment_index } => {
+            PendingReloc::DataAddr {
+                offset,
+                segment_index,
+            } => {
                 if let Some(index) = data_symbol_map.get(segment_index as usize) {
                     code_entries.push(RelocEntry {
                         ty: 4,
@@ -5417,7 +5401,11 @@ fn add_reloc_sections(
     }
 
     for reloc in pending_data {
-        if let PendingReloc::DataAddr { offset, segment_index } = reloc {
+        if let PendingReloc::DataAddr {
+            offset,
+            segment_index,
+        } = reloc
+        {
             if let Some(index) = data_symbol_map.get(segment_index as usize) {
                 data_entries.push(RelocEntry {
                     ty: 4,
