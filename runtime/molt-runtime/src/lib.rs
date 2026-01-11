@@ -14,7 +14,7 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::fs::OpenOptions;
 use std::io::{Cursor, Read, Write};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 #[repr(C)]
 pub struct MoltHeader {
     pub type_id: u32,
-    pub ref_count: u32,
+    pub ref_count: AtomicU32,
     pub poll_fn: u64, // Function pointer for polling
     pub state: i64,   // State machine state
     pub size: usize,  // Total size of allocation
@@ -858,7 +858,7 @@ fn alloc_object(total_size: usize, type_id: u32) -> *mut u8 {
         }
         let header = ptr as *mut MoltHeader;
         (*header).type_id = type_id;
-        (*header).ref_count = 1;
+        (*header).ref_count.store(1, AtomicOrdering::Relaxed);
         (*header).poll_fn = 0;
         (*header).state = 0;
         (*header).size = total_size;
@@ -3149,7 +3149,7 @@ pub extern "C" fn molt_alloc(size: usize) -> u64 {
         }
         let header = ptr as *mut MoltHeader;
         (*header).type_id = TYPE_ID_OBJECT;
-        (*header).ref_count = 1;
+        (*header).ref_count.store(1, AtomicOrdering::Relaxed);
         (*header).poll_fn = 0;
         (*header).state = 0;
         (*header).size = total_size;
@@ -15384,7 +15384,9 @@ pub unsafe extern "C" fn molt_inc_ref(ptr: *mut u8) {
         return;
     }
     let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
-    (*header_ptr).ref_count += 1;
+    (*header_ptr)
+        .ref_count
+        .fetch_add(1, AtomicOrdering::Relaxed);
 }
 
 /// # Safety
@@ -15396,8 +15398,8 @@ pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
     }
     let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
     let header = &mut *header_ptr;
-    header.ref_count -= 1;
-    if header.ref_count == 0 {
+    if header.ref_count.fetch_sub(1, AtomicOrdering::AcqRel) == 1 {
+        std::sync::atomic::fence(AtomicOrdering::Acquire);
         match header.type_id {
             TYPE_ID_STRING => {
                 utf8_cache_remove(ptr as usize);
