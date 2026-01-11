@@ -326,6 +326,9 @@ and regression control.
   - `bench_fib.py`: 0.9290s (Molt) vs 0.2168s (CPython), 0.23x.
   - Priority: inspect call dispatch and recursion prologue/epilogue costs; verify IR emits fast
     path for local recursion and avoid tuple/list allocations for argument passing.
+- Update (2026-01-11): removed sync return-slot list allocation for normal functions.
+  - `bench_fib.py`: 0.0962s (Molt) vs 0.1345s (CPython), 1.40x.
+  - `MOLT_PROFILE=1`: alloc_count 5,385,100 -> 26 on fib recursion.
 
 ### OPT-0006: Unicode Count Warm-Cache Fast Path
 
@@ -460,6 +463,13 @@ and regression control.
   (skip refcount calls for immediates, conditional profile) and re-bench still
   shows `bench_struct.py` ~0.12x and `bench_attr_access.py` ~0.20x; likely dominated
   by allocation + raw-object tracking costs (mutex/HashSet) rather than slot ops.
+- Update (2026-01-11): added a non-pointer fast path for `store` (skip refcount
+  adjustments when old/new values are immediate) and simplified ref adjust tag
+  checks; re-bench pending.
+- Update (2026-01-11): MOLT_PROFILE shows `bench_struct.py` alloc_count ~7.0M and
+  layout_guard ~2.0M; `bench_attr_access.py` alloc_count ~2.5M and
+  layout_guard ~1.0M (≈2x loop iterations). Allocation + guard costs still
+  dominate.
 
 **Benchmark Matrix**
 - bench_struct.py: expected >=2x improvement
@@ -835,3 +845,109 @@ and regression control.
 
 **Success Criteria**
 - >=1.1x on multiple benches with no determinism regressions.
+
+### OPT-0016: Single-Module WASM Linking (Zero JS Glue)
+
+**Problem**
+- WASM runs are dominated by JS boundary overhead because output imports runtime
+  intrinsics via JS wrappers; this causes large regressions vs native and makes
+  wasm parity unachievable.
+
+**Hypotheses**
+- H1: Directly linking runtime + output (or at least using direct wasm-to-wasm
+  imports with shared memory/table) removes per-call JS glue and yields multi-x
+  speedups on wasm benches.
+- H2: A true single-module link eliminates the remaining JS stub and enables
+  more aggressive inlining and table specialization later.
+
+**Alternatives**
+1) Direct-link harness: shared memory/table + wasm-to-wasm imports (no JS glue),
+   keep a minimal JS stub for `molt_call_indirect1`.
+2) wasm-ld static link: emit wasm object/module and link runtime + output into
+   one module at build time.
+3) Component model compose: wrap runtime/output as components and compose with
+   `wasm-tools` + wasmtime (higher compatibility cost, better ABI hygiene).
+
+**Research References**
+- WebAssembly module linking proposal: https://github.com/WebAssembly/module-linking
+- Component model overview: https://github.com/WebAssembly/component-model
+- WASI docs: https://github.com/WebAssembly/WASI
+
+**Plan**
+- Phase 0: Implement shared-memory/table direct-link harness (run_wasm.js) and
+  import limits parsing; keep `MOLT_WASM_LEGACY=1` fallback.
+- Phase 1: Add a `tools/wasm_link.py` spike that attempts wasm-ld linking when
+  available and produces `output_linked.wasm`.
+- Phase 2: Update bench harness to time linked wasm when available; compare
+  against direct-link + legacy.
+- Phase 3: Remove JS `molt_call_indirect1` stub by moving indirect calls into
+  runtime or via single-module link.
+- Current blocker: expand wasm-ld validation beyond a single bench, confirm
+  table/element relocation coverage, and remove the JS `molt_call_indirect1`
+  stub once single-module linking is fully reliable.
+
+**Benchmark Matrix**
+- tests/benchmarks/bench_attr_access.py: expected +2x wasm
+- tests/benchmarks/bench_struct.py: expected +2x wasm
+- tests/benchmarks/bench_fib.py: expected +1.5x wasm
+- tests/benchmarks/bench_deeply_nested_loop.py: expected +2x wasm
+
+**Correctness Plan**
+- Run `pytest tests/test_wasm_control_flow.py` and a small differential slice.
+- Validate wasm output exports `molt_memory`/`molt_table` and runtime intrinsics.
+- Compare runtime logs between legacy/direct-link to ensure identical outputs.
+
+**Risk + Rollback**
+- Risk: wasm import-limit mismatches or toolchain availability gaps.
+- Rollback: fall back to legacy wrapper mode (`MOLT_WASM_LEGACY=1`).
+
+**Success Criteria**
+- >=2x improvement on wasm benches with no behavior regressions.
+
+### OPT-0010: Fixed-Size Object Pool for Class Instances (Native + WASM)
+
+**Problem**
+- `bench_struct.py` and wasm attribute-heavy workloads spend significant time allocating/freeing fixed-layout objects.
+- WASM shows large allocation overhead vs CPython due to allocator and refcount churn.
+
+**Hypotheses**
+- H1: Size-bucket pools for fixed-layout TYPE_ID_OBJECT instances reduce allocator overhead by >2x in allocation-heavy loops.
+- H2: Pooling plus zeroed reuse avoids refcount churn regressions when slots are immediate-heavy (int/float/bool).
+
+**Alternatives**
+1) Size-bucket freelist (current direction): simple, low risk, moderate wins.
+2) Per-class pool keyed by class_id (better locality, more metadata, higher complexity).
+3) Arena/bump allocator with epoch reset for non-escaping objects (best perf, higher complexity, needs escape analysis).
+
+**Research References**
+- CPython freelists: https://docs.python.org/3/c-api/structures.html#free-lists
+- jemalloc size classes: https://jemalloc.net/jemalloc.3.html
+- tcmalloc design: https://gperftools.github.io/gperftools/
+
+**Plan**
+- Phase 0: Measure allocation hot paths and size distributions (native + wasm).
+- Phase 1: Implement size-bucket pool with zeroed reuse and caps; measure wins.
+- Phase 2: Add per-class pools + reuse counters; evaluate allocator contention.
+- Phase 3: Integrate with escape analysis for stack/arena allocation when safe.
+
+**Benchmark Matrix**
+- bench_struct.py: expected +1.1x to +1.5x (native); reduce wasm gap by ~20%.
+- bench_attr_access.py: expected +1.05x (less allocator churn).
+- bench_descriptor_property.py: expected +1.05x.
+- wasm parity: reduce allocation-heavy gaps by >20%.
+
+**Correctness Plan**
+- Differential tests with attribute read-before-write (must raise AttributeError).
+- Stress test object alloc/free with pointer and immediate fields.
+- Guard/fallback: pool only for TYPE_ID_OBJECT with poll_fn=0.
+
+**Risk + Rollback**
+- Risk: pooled objects retain stale pointer values if zeroing is missed.
+- Rollback: disable pooling by setting max bucket size to 0 and keep dealloc path.
+
+**Success Criteria**
+- `bench_struct.py` meets or beats CPython; wasm gap <2x.
+- No new memory leaks; refcount stability verified in tests.
+
+**Latest Results (2026-01-11)**
+- Phase 1: size-bucket pool implemented for TYPE_ID_OBJECT with zeroed reuse.

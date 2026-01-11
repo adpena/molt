@@ -26,6 +26,7 @@ use std::time::{Duration, Instant};
 #[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "env")]
 extern "C" {
+    #[link_name = "molt_call_indirect1"]
     fn molt_call_indirect1(func_idx: u64, arg0: u64) -> i64;
 }
 
@@ -314,10 +315,15 @@ static STRUCT_FIELD_STORE_COUNT: AtomicU64 = AtomicU64::new(0);
 static ATTR_LOOKUP_COUNT: AtomicU64 = AtomicU64::new(0);
 static LAYOUT_GUARD_COUNT: AtomicU64 = AtomicU64::new(0);
 static LAYOUT_GUARD_FAIL: AtomicU64 = AtomicU64::new(0);
+static ALLOC_COUNT: AtomicU64 = AtomicU64::new(0);
 static ASYNC_POLL_COUNT: AtomicU64 = AtomicU64::new(0);
 static ASYNC_PENDING_COUNT: AtomicU64 = AtomicU64::new(0);
 static ASYNC_WAKEUP_COUNT: AtomicU64 = AtomicU64::new(0);
 static ASYNC_SLEEP_REGISTER_COUNT: AtomicU64 = AtomicU64::new(0);
+static OBJECT_POOL: OnceLock<Mutex<HashMap<usize, Vec<usize>>>> = OnceLock::new();
+
+const OBJECT_POOL_MAX_BYTES: usize = 1024;
+const OBJECT_POOL_BUCKET_LIMIT: usize = 4096;
 
 fn profile_enabled() -> bool {
     *PROFILE_ENABLED.get_or_init(|| {
@@ -876,6 +882,62 @@ fn int_bits_from_i128(val: i128) -> u64 {
     }
 }
 
+fn object_pool() -> &'static Mutex<HashMap<usize, Vec<usize>>> {
+    OBJECT_POOL.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn object_pool_take(total_size: usize) -> Option<*mut u8> {
+    if total_size > OBJECT_POOL_MAX_BYTES {
+        return None;
+    }
+    let mut guard = object_pool().lock().unwrap();
+    guard
+        .get_mut(&total_size)
+        .and_then(|bucket| bucket.pop())
+        .map(|addr| addr as *mut u8)
+}
+
+fn object_pool_put(total_size: usize, header_ptr: *mut u8) -> bool {
+    if header_ptr.is_null() || total_size > OBJECT_POOL_MAX_BYTES {
+        return false;
+    }
+    let mut guard = object_pool().lock().unwrap();
+    let bucket = guard.entry(total_size).or_default();
+    if bucket.len() >= OBJECT_POOL_BUCKET_LIMIT {
+        return false;
+    }
+    unsafe {
+        std::ptr::write_bytes(header_ptr, 0, total_size);
+    }
+    bucket.push(header_ptr as usize);
+    true
+}
+
+fn alloc_object_zeroed_with_pool(total_size: usize, type_id: u32) -> *mut u8 {
+    let header_ptr = if type_id == TYPE_ID_OBJECT {
+        object_pool_take(total_size)
+    } else {
+        None
+    };
+    let header_ptr = header_ptr.unwrap_or_else(|| {
+        let layout = std::alloc::Layout::from_size_align(total_size, 8).unwrap();
+        unsafe { std::alloc::alloc_zeroed(layout) }
+    });
+    if header_ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    profile_hit(&ALLOC_COUNT);
+    unsafe {
+        let header = header_ptr as *mut MoltHeader;
+        (*header).type_id = type_id;
+        (*header).ref_count.store(1, AtomicOrdering::Relaxed);
+        (*header).poll_fn = 0;
+        (*header).state = 0;
+        (*header).size = total_size;
+        header_ptr.add(std::mem::size_of::<MoltHeader>())
+    }
+}
+
 fn alloc_object(total_size: usize, type_id: u32) -> *mut u8 {
     let layout = std::alloc::Layout::from_size_align(total_size, 8).unwrap();
     unsafe {
@@ -883,6 +945,7 @@ fn alloc_object(total_size: usize, type_id: u32) -> *mut u8 {
         if ptr.is_null() {
             return std::ptr::null_mut();
         }
+        profile_hit(&ALLOC_COUNT);
         let header = ptr as *mut MoltHeader;
         (*header).type_id = type_id;
         (*header).ref_count.store(1, AtomicOrdering::Relaxed);
@@ -3169,21 +3232,52 @@ fn alloc_set_with_entries(entries: &[u64]) -> *mut u8 {
 pub extern "C" fn molt_alloc(size_bits: u64) -> u64 {
     let size = usize_from_bits(size_bits);
     let total_size = size + std::mem::size_of::<MoltHeader>();
-    let layout = std::alloc::Layout::from_size_align(total_size, 8).unwrap();
-    unsafe {
-        let ptr = std::alloc::alloc_zeroed(layout);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let header = ptr as *mut MoltHeader;
-        (*header).type_id = TYPE_ID_OBJECT;
-        (*header).ref_count.store(1, AtomicOrdering::Relaxed);
-        (*header).poll_fn = 0;
-        (*header).state = 0;
-        (*header).size = total_size;
-        let obj_ptr = ptr.add(std::mem::size_of::<MoltHeader>());
-        MoltObject::from_ptr(obj_ptr).bits()
+    let obj_ptr = alloc_object_zeroed_with_pool(total_size, TYPE_ID_OBJECT);
+    if obj_ptr.is_null() {
+        return MoltObject::none().bits();
     }
+    MoltObject::from_ptr(obj_ptr).bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_alloc_class(size_bits: u64, class_bits: u64) -> u64 {
+    let size = usize_from_bits(size_bits);
+    let total_size = size + std::mem::size_of::<MoltHeader>();
+    let obj_ptr = alloc_object_zeroed_with_pool(total_size, TYPE_ID_OBJECT);
+    if obj_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    unsafe {
+        if class_bits != 0 {
+            let class_obj = obj_from_bits(class_bits);
+            let Some(class_ptr) = class_obj.as_ptr() else {
+                raise!("TypeError", "class must be a type object");
+            };
+            if object_type_id(class_ptr) != TYPE_ID_TYPE {
+                raise!("TypeError", "class must be a type object");
+            }
+            object_set_class_bits(obj_ptr, class_bits);
+            inc_ref_bits(class_bits);
+        }
+    }
+    MoltObject::from_ptr(obj_ptr).bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_alloc_class_trusted(size_bits: u64, class_bits: u64) -> u64 {
+    let size = usize_from_bits(size_bits);
+    let total_size = size + std::mem::size_of::<MoltHeader>();
+    let obj_ptr = alloc_object_zeroed_with_pool(total_size, TYPE_ID_OBJECT);
+    if obj_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    unsafe {
+        if class_bits != 0 {
+            object_set_class_bits(obj_ptr, class_bits);
+            inc_ref_bits(class_bits);
+        }
+    }
+    MoltObject::from_ptr(obj_ptr).bits()
 }
 
 // --- List Builder ---
@@ -4129,6 +4223,12 @@ unsafe fn object_field_set_ptr_raw(obj_ptr: *mut u8, offset: usize, val_bits: u6
     profile_hit(&STRUCT_FIELD_STORE_COUNT);
     let slot = obj_ptr.add(offset) as *mut u64;
     let old_bits = *slot;
+    let old_is_ptr = obj_from_bits(old_bits).as_ptr().is_some();
+    let new_is_ptr = obj_from_bits(val_bits).as_ptr().is_some();
+    if !old_is_ptr && !new_is_ptr {
+        *slot = val_bits;
+        return MoltObject::none().bits();
+    }
     if old_bits != val_bits {
         dec_ref_bits(old_bits);
         inc_ref_bits(val_bits);
@@ -4330,6 +4430,12 @@ pub unsafe extern "C" fn molt_object_field_set(
     profile_hit(&STRUCT_FIELD_STORE_COUNT);
     let slot = obj_ptr.add(offset) as *mut u64;
     let old_bits = *slot;
+    let old_is_ptr = obj_from_bits(old_bits).as_ptr().is_some();
+    let new_is_ptr = obj_from_bits(val_bits).as_ptr().is_some();
+    if !old_is_ptr && !new_is_ptr {
+        *slot = val_bits;
+        return MoltObject::none().bits();
+    }
     if old_bits != val_bits {
         dec_ref_bits(old_bits);
         inc_ref_bits(val_bits);
@@ -8754,12 +8860,13 @@ pub extern "C" fn molt_profile_dump() {
     let attr_lookups = ATTR_LOOKUP_COUNT.load(AtomicOrdering::Relaxed);
     let layout_guard = LAYOUT_GUARD_COUNT.load(AtomicOrdering::Relaxed);
     let layout_guard_fail = LAYOUT_GUARD_FAIL.load(AtomicOrdering::Relaxed);
+    let allocs = ALLOC_COUNT.load(AtomicOrdering::Relaxed);
     let async_polls = ASYNC_POLL_COUNT.load(AtomicOrdering::Relaxed);
     let async_pending = ASYNC_PENDING_COUNT.load(AtomicOrdering::Relaxed);
     let async_wakeups = ASYNC_WAKEUP_COUNT.load(AtomicOrdering::Relaxed);
     let async_sleep_reg = ASYNC_SLEEP_REGISTER_COUNT.load(AtomicOrdering::Relaxed);
     eprintln!(
-        "molt_profile call_dispatch={} string_count_cache_hit={} string_count_cache_miss={} struct_field_store={} attr_lookup={} layout_guard={} layout_guard_fail={} async_polls={} async_pending={} async_wakeups={} async_sleep_register={}",
+        "molt_profile call_dispatch={} string_count_cache_hit={} string_count_cache_miss={} struct_field_store={} attr_lookup={} layout_guard={} layout_guard_fail={} alloc_count={} async_polls={} async_pending={} async_wakeups={} async_sleep_register={}",
         call_dispatch,
         cache_hit,
         cache_miss,
@@ -8767,6 +8874,7 @@ pub extern "C" fn molt_profile_dump() {
         attr_lookups,
         layout_guard,
         layout_guard_fail,
+        allocs,
         async_polls,
         async_pending,
         async_wakeups,
@@ -11787,6 +11895,9 @@ fn replace_bytes_impl(hay: &[u8], needle: &[u8], replacement: &[u8]) -> Option<V
         }
         return Some(out);
     }
+    if needle == replacement {
+        return Some(hay.to_vec());
+    }
     if needle.len() == 1 {
         let needle_byte = needle[0];
         if replacement.len() == 1 {
@@ -11819,6 +11930,31 @@ fn replace_bytes_impl(hay: &[u8], needle: &[u8], replacement: &[u8]) -> Option<V
             search = start;
         }
         out.extend_from_slice(&hay[start..]);
+        return Some(out);
+    }
+    if needle.len() == replacement.len() {
+        let mut out = hay.to_vec();
+        if needle.len() == 2 {
+            let n0 = needle[0];
+            let n1 = needle[1];
+            let r0 = replacement[0];
+            let r1 = replacement[1];
+            let mut i = 0usize;
+            while i + 1 < hay.len() {
+                if hay[i] == n0 && hay[i + 1] == n1 {
+                    out[i] = r0;
+                    out[i + 1] = r1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            return Some(out);
+        }
+        let finder = memmem::Finder::new(needle);
+        for idx in finder.find_iter(hay) {
+            out[idx..idx + needle.len()].copy_from_slice(replacement);
+        }
         return Some(out);
     }
     let mut out = Vec::with_capacity(hay.len());
@@ -15856,9 +15992,10 @@ pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
                     let payload = header
                         .size
                         .saturating_sub(std::mem::size_of::<MoltHeader>());
-                    if payload >= std::mem::size_of::<u64>() {
-                        let dict_bits = instance_dict_bits(ptr);
-                        dec_ref_bits(dict_bits);
+                    let slots = payload / std::mem::size_of::<u64>();
+                    let payload_ptr = ptr as *mut u64;
+                    for idx in 0..slots {
+                        dec_ref_bits(*payload_ptr.add(idx));
                     }
                     let class_bits = object_class_bits(ptr);
                     if class_bits != 0 {
@@ -15949,6 +16086,11 @@ pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
             _ => {}
         }
         let size = header.size;
+        if header.type_id == TYPE_ID_OBJECT && header.poll_fn == 0 {
+            if object_pool_put(size, header_ptr as *mut u8) {
+                return;
+            }
+        }
         let layout = std::alloc::Layout::from_size_align(size, 8).unwrap();
         std::alloc::dealloc(header_ptr as *mut u8, layout);
     }

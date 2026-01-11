@@ -27,7 +27,7 @@ README/ROADMAP in sync.
 - Importable `builtins` module binds supported builtins (see stdlib matrix).
 - `enumerate` builtin returns an iterator over `(index, value)` with optional `start`.
 - Builtin function objects for allowlisted builtins (`any`, `all`, `callable`, `repr`, `getattr`, `hasattr`, `round`, `next`, `anext`, `print`, `super`).
-- WASM harness runs via `run_wasm.js` with `molt_runtime` intrinsics, including async/channel benches on WASI.
+- WASM harness runs via `run_wasm.js` with shared memory/table and direct runtime imports (legacy wrapper fallback via `MOLT_WASM_LEGACY=1`), including async/channel benches on WASI.
 
 ## Limitations (Current)
 - Classes/object model: C3 MRO + multiple inheritance + `super()` resolution for
@@ -77,14 +77,24 @@ README/ROADMAP in sync.
 - Import-only stubs: `collections.abc`, `importlib`, `importlib.util`.
 - See `docs/spec/0015_STDLIB_COMPATIBILITY_MATRIX.md` for the full matrix.
 
+## Django Demo Blockers (Current)
+- Missing `functools`/`itertools`/`operator`/`collections` parity needed for common Django internals.
+- Async loop/task APIs + `contextvars` are incomplete; cancellation injection and long-running workload hardening are pending.
+- Capability-gated I/O/runtime modules (`os`, `sys`, `pathlib`, `logging`, `time`, `selectors`) need deterministic parity.
+- HTTP/ASGI surface and DB driver/pool integration are not implemented.
+- Descriptor hooks and class attribute fallbacks are missing (`__getattr__`/`__setattr__`), limiting idiomatic Django patterns.
+
 ## Tooling + Verification
 - CI enforces lint, type checks, Rust fmt/clippy, differential tests, and perf
   smoke gates.
 - Use `tools/dev.py lint` and `tools/dev.py test` for local validation.
 - WIT interface contract lives at `wit/molt-runtime.wit` (WASM runtime intrinsics).
+- Experimental single-module wasm link attempt via `tools/wasm_link.py` (requires `wasm-ld`); run via `MOLT_WASM_LINKED=1`.
 
 ## Known Gaps
 - uv-managed Python 3.14 hangs on arm64; system Python 3.14 used as workaround.
 - Browser host for WASM is still pending; current harness targets WASI via
   `run_wasm.js` and uses a single-threaded scheduler.
+- True single-module WASM link (no JS boundary) is still pending; current direct-link harness still uses a JS stub for `molt_call_indirect1`.
 - TODO(runtime-provenance, owner:runtime, milestone:RT1): remove handle-table lock overhead via sharded or lock-free lookups.
+- Single-module wasm linking remains experimental; wasm-ld now links relocatable output when `MOLT_WASM_LINK=1`, but broader coverage + table/element relocation validation and removal of the JS `molt_call_indirect1` stub are still pending.

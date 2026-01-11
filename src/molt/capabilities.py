@@ -28,12 +28,25 @@ def _raw_getenv(key: str, default: str = "") -> str:
         return default
 
 
+_CAPS_CACHE: set[str] | None = None
+_CAPS_RAW: str | None = None
+
+
+def _caps_cache() -> set[str]:
+    global _CAPS_CACHE, _CAPS_RAW
+    raw = _raw_getenv("MOLT_CAPABILITIES", "")
+    if _CAPS_CACHE is None or raw != _CAPS_RAW:
+        _CAPS_RAW = raw
+        _CAPS_CACHE = _parse_caps(raw)
+    return _CAPS_CACHE
+
+
 def capabilities() -> set[str]:
-    return _parse_caps(_raw_getenv("MOLT_CAPABILITIES", ""))
+    return set(_caps_cache())
 
 
 def has(capability: str) -> bool:
-    return capability in capabilities()
+    return capability in _caps_cache()
 
 
 def require(capability: str) -> None:

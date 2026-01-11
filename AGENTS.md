@@ -69,9 +69,10 @@
 - Follow `docs/spec/0015_STDLIB_COMPATIBILITY_MATRIX.md` for stdlib scope, tiers (core vs import vs gated), and promotion rules.
 - Keep stdlib modules import-only by default; only promote to core after updating the stdlib matrix and `ROADMAP.md`.
 - Treat I/O, OS, network, and process modules as capability-gated and document the required permissions in specs.
-- Always update `CHECKPOINT.md` after each assistant turn and when nearing context compaction; include a timestamp and the latest git commit info for freshness checks.
+- Always update `CHECKPOINT.md` after each assistant turn and when nearing context compaction; include an ISO-8601 timestamp and `git rev-parse HEAD` (note if dirty) for freshness checks.
 
 ## Optimization Planning
+- When focusing on optimization tasks, closely measure allocations and apply rigorous profiling when it can clarify behavior; this has unlocked major speedups in synchronous functions.
 - When a potential optimization is discovered but is complex, risky, or time-intensive, add a fully specced entry to `OPTIMIZATIONS_PLAN.md`.
 - The plan must include: problem statement, hypotheses, alternative implementations, algorithmic references/research (papers preferred), perf evaluation matrix (benchmarks + expected deltas), risk/rollback, and integration steps.
 - Compare alternatives with explicit tradeoffs and include checklists for validation and regression prevention.

@@ -1,19 +1,45 @@
-Checkpoint: 2026-01-11 07:06:05 CST
-Git: 91e67e67afb2897b3d84428a70910b2c4a0fdeab
+Checkpoint: 2026-01-11T17:31:29-0600
+Git: 79f51e5e4049a3af6d27e686d472b62ad386e0db (dirty)
 
 Summary
-- Refreshed native + wasm benchmark results for the next checkpoint commit.
+- Fixed capability lookup crash by memoizing parsed capabilities and avoiding temporary set membership in `has()`.
+- Fixed stdlib root `__init__.py` module naming to avoid empty module names.
+- Updated Django demo path and checkpoint freshness requirements in docs.
 
 Files touched (uncommitted)
+- AGENTS.md
 - CHECKPOINT.md
+- Cargo.lock
+- GEMINI.md
+- OPTIMIZATIONS_PLAN.md
+- ROADMAP.md
+- bench/results/bench.json
+- bench/results/bench_wasm.json
+- docs/spec/STATUS.md
+- logs/clif_fib.txt
+- logs/clif_sum_list.txt
+- logs/ir_fib.txt
+- run_wasm.js
+- runtime/molt-backend/Cargo.toml
+- runtime/molt-backend/src/lib.rs
+- runtime/molt-backend/src/wasm.rs
+- runtime/molt-runtime/src/lib.rs
+- src/molt/capabilities.py
+- src/molt/cli.py
+- src/molt/frontend/__init__.py
+- tests/wasm_harness.py
+- tools/bench_wasm.py
+- tools/wasm_link.py
+- wit/molt-runtime.wit
 
 Docs/spec updates needed?
-- None.
+- None (roadmap updated).
 
 Tests run
-- `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json`
-- `uv run --python 3.14 python3 tools/bench_wasm.py --json-out bench/results/bench_wasm.json`
+- `uv run --python 3.12 python3 tools/dev.py lint`
+- `uv run --python 3.12 python3 tools/dev.py test`
 
 Known gaps
-- Layout guard overhead remains high; bench_struct/bench_attr_access/bench_fib still below CPython.
+- wasm perf is still ~2-4x slower than CPython on list/min/max and struct/descriptor benches (bench_struct ~4.3x).
+- wasm table init uses a start-function; element segments still pending if reloc.ELEM is restored.
 - Codon baseline skips remain for async/channel/matrix_math/bytearray/memoryview/parse_msgpack/struct/sum_list_hints benches.

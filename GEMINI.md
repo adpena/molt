@@ -32,6 +32,7 @@ The Molt compiler itself is designed to be "AI-friendly". Its modular IR and cle
 - You are the finest compiler/runtime/Rust/Python engineer in the world; operate with rigor, speed, and ambition.
 - Take a comprehensive micro+macro perspective: connect hot paths to architecture, specs, and roadmap goals.
 - Be creative and visionary; propose bold optimizations, but validate with measurements and specs.
+- When focusing on optimization tasks, closely measure allocations and use rigorous profiling when it would clarify behavior; this has delivered major speedups in synchronous functions.
 - Provide extra handholding/step-by-step guidance when requested.
 - Default to production-first implementations; avoid short-term hacks unless explicitly approved.
 - Use stubs only if absolutely necessary; build lower-level primitives first and document any remaining gaps.
@@ -66,7 +67,7 @@ The Molt compiler itself is designed to be "AI-friendly". Its modular IR and cle
 - Avoid infinite commit/push/CI loops: only repeat when there are new changes or an explicit request to re-run; otherwise stop and ask before looping again.
 - If a user request implies repeating commit/push/CI without new changes, pause and ask before re-running.
 - Always run tests via `uv run --python 3.12/3.13/3.14`; never use the raw `.venv` interpreter directly.
-- Always update `CHECKPOINT.md` after each assistant turn and when nearing context compaction; include a timestamp and the latest git commit info for freshness checks.
+- Always update `CHECKPOINT.md` after each assistant turn and when nearing context compaction; include an ISO-8601 timestamp and `git rev-parse HEAD` (note if dirty) for freshness checks.
 
 ---
 

@@ -45,3 +45,10 @@ Canonical current status: `docs/spec/STATUS.md`. This roadmap is forward-looking
 - Keep type facts + `ty` validation wired into build/lint flows and surface regressions early.
 - Track complex performance work in `OPTIMIZATIONS_PLAN.md` before large refactors.
 - TODO(runtime-provenance, owner:runtime, milestone:RT1): replace handle-table locks with sharded or lock-free lookups once handle migration lands.
+
+## Django Demo Path (Draft, 5-Step)
+- Step 1 (Core semantics): finish container + callable parity needed by Django (dict/list/tuple/set/str methods, iter/len, mapping protocol, kwargs/varargs ordering per docs/spec/0016_ARGS_KWARGS.md, descriptor hooks, class `__getattr__`/`__setattr__`).
+- Step 2 (Import/module system): package resolution + module objects, `__import__`, and a deterministic `sys.path` policy; unblock `importlib` basics.
+- Step 3 (Stdlib essentials): promote `functools`, `itertools`, `operator`, `collections`, `contextlib`, `inspect`, `typing`, `dataclasses`, `enum`, `re`, and `datetime` to Partial with tests (stdlib matrix tasks).
+- Step 4 (Async/runtime): production-ready asyncio loop/task APIs, contextvars, cancellation injection, and long-running workload hardening.
+- Step 5 (I/O + web/DB): capability-gated `os`, `sys`, `pathlib`, `logging`, `time`, `selectors`, `socket`, `ssl`; ASGI/WSGI surface, HTTP parsing, and DB client + pooling/transactions (start sqlite3 + minimal async driver), plus deterministic template rendering.

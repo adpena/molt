@@ -7,6 +7,8 @@ interface intrinsics {
     print_obj: func(val: molt-object);
     print_newline: func();
     alloc: func(size: u64) -> u64;
+    alloc_class: func(size: u64, class_bits: molt-object) -> molt-object;
+    alloc_class_trusted: func(size: u64, class_bits: molt-object) -> molt-object;
     async_sleep: func(obj: u64) -> u64;
     anext_default_poll: func(obj: u64) -> u64;
     future_poll_fn: func(obj: u64) -> u64;
@@ -96,6 +98,7 @@ interface intrinsics {
     guarded_field_set_ptr: func(obj: molt-ptr, class_bits: molt-object, expected_version: u64, offset: u64, val: molt-object, attr_ptr: molt-ptr, attr_len: u64) -> molt-object;
     guarded_field_init_ptr: func(obj: molt-ptr, class_bits: molt-object, expected_version: u64, offset: u64, val: molt-object, attr_ptr: molt-ptr, attr_len: u64) -> molt-object;
     handle_resolve: func(bits: molt-object) -> molt-ptr;
+    inc_ref_obj: func(val: molt-object);
     get_attr_generic: func(obj: molt-ptr, attr_ptr: molt-ptr, attr_len: u64) -> molt-object;
     get_attr_ptr: func(obj: molt-ptr, attr_ptr: molt-ptr, attr_len: u64) -> molt-object;
     get_attr_object: func(obj: molt-object, attr_ptr: molt-ptr, attr_len: u64) -> molt-object;

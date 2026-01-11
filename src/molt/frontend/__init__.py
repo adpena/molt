@@ -3043,6 +3043,102 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return acc_name, seq_name, "min", start_expr
         return None
 
+    def _match_iter_vector_reduction_loop(
+        self, node: ast.For
+    ) -> tuple[str, str, str, ast.expr | None] | None:
+        if not isinstance(node.target, ast.Name):
+            return None
+        item_name = node.target.id
+        if len(node.body) != 1:
+            return None
+        if not isinstance(node.iter, ast.Name):
+            return None
+        seq_name = node.iter.id
+        stmt = node.body[0]
+        if isinstance(stmt, ast.AugAssign):
+            if not isinstance(stmt.op, (ast.Add, ast.Mult)):
+                return None
+            if not isinstance(stmt.target, ast.Name):
+                return None
+            if stmt.target.id == item_name:
+                return None
+            if isinstance(stmt.value, ast.Name) and stmt.value.id == item_name:
+                kind = "sum" if isinstance(stmt.op, ast.Add) else "prod"
+                return (stmt.target.id, seq_name, kind, None)
+        if isinstance(stmt, ast.Assign):
+            if len(stmt.targets) != 1 or not isinstance(stmt.targets[0], ast.Name):
+                return None
+            acc_name = stmt.targets[0].id
+            if acc_name == item_name:
+                return None
+            if not isinstance(stmt.value, ast.BinOp) or not isinstance(
+                stmt.value.op, (ast.Add, ast.Mult)
+            ):
+                return None
+            left = stmt.value.left
+            right = stmt.value.right
+            if isinstance(left, ast.Name) and left.id == acc_name:
+                if isinstance(right, ast.Name) and right.id == item_name:
+                    kind = "sum" if isinstance(stmt.value.op, ast.Add) else "prod"
+                    return (acc_name, seq_name, kind, None)
+            if isinstance(right, ast.Name) and right.id == acc_name:
+                if isinstance(left, ast.Name) and left.id == item_name:
+                    kind = "sum" if isinstance(stmt.value.op, ast.Add) else "prod"
+                    return (acc_name, seq_name, kind, None)
+        return None
+
+    def _match_iter_vector_minmax_loop(
+        self, node: ast.For
+    ) -> tuple[str, str, str, ast.expr | None] | None:
+        if not isinstance(node.target, ast.Name):
+            return None
+        item_name = node.target.id
+        if len(node.body) != 1:
+            return None
+        if not isinstance(node.iter, ast.Name):
+            return None
+        seq_name = node.iter.id
+        stmt = node.body[0]
+        if not isinstance(stmt, ast.If) or stmt.orelse:
+            return None
+        if len(stmt.body) != 1:
+            return None
+        assign = stmt.body[0]
+        if not isinstance(assign, ast.Assign):
+            return None
+        if len(assign.targets) != 1 or not isinstance(assign.targets[0], ast.Name):
+            return None
+        acc_name = assign.targets[0].id
+        if acc_name == item_name:
+            return None
+        if not isinstance(assign.value, ast.Name) or assign.value.id != item_name:
+            return None
+        test = stmt.test
+        if not isinstance(test, ast.Compare):
+            return None
+        if len(test.ops) != 1 or len(test.comparators) != 1:
+            return None
+        op = test.ops[0]
+        left = test.left
+        right = test.comparators[0]
+        left_is_acc = isinstance(left, ast.Name) and left.id == acc_name
+        right_is_acc = isinstance(right, ast.Name) and right.id == acc_name
+        left_is_item = isinstance(left, ast.Name) and left.id == item_name
+        right_is_item = isinstance(right, ast.Name) and right.id == item_name
+        if not ((left_is_acc and right_is_item) or (left_is_item and right_is_acc)):
+            return None
+        if isinstance(op, ast.Lt):
+            if left_is_item and right_is_acc:
+                return acc_name, seq_name, "min", None
+            if left_is_acc and right_is_item:
+                return acc_name, seq_name, "max", None
+        if isinstance(op, ast.Gt):
+            if left_is_item and right_is_acc:
+                return acc_name, seq_name, "max", None
+            if left_is_acc and right_is_item:
+                return acc_name, seq_name, "min", None
+        return None
+
     def _match_vector_minmax_loop(self, node: ast.For) -> tuple[str, str, str] | None:
         if not isinstance(node.target, ast.Name):
             return None
@@ -3683,8 +3779,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         *,
         use_init: bool = False,
         assume_exact: bool = False,
+        obj_name: str | None = None,
     ) -> None:
-        assumption = self._loop_guard_assumption(obj.name, expected_class)
+        name = obj_name or obj.name
+        assumption = self._loop_guard_assumption(name, expected_class)
         if assumption is True:
             setattr_kind = "SETATTR_INIT" if use_init else "SETATTR"
             self.emit(
@@ -3705,7 +3803,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
             return
         if self._class_layout_stable(expected_class):
-            if assume_exact or self.exact_locals.get(obj.name) == expected_class:
+            if assume_exact or self.exact_locals.get(name) == expected_class:
                 setattr_kind = "SETATTR_INIT" if use_init else "SETATTR"
                 self.emit(
                     MoltOp(
@@ -3715,7 +3813,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                 )
                 return
-        guard = self._loop_guard_for(obj, expected_class)
+        guard = self._loop_guard_for(obj, expected_class, obj_name=name)
         if guard is None:
             class_ref = self._emit_module_attr_get(expected_class)
             expected_version = MoltValue(self.next_var(), type_hint="int")
@@ -3763,9 +3861,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
     def _emit_guarded_getattr(
-        self, obj: MoltValue, attr: str, expected_class: str
+        self,
+        obj: MoltValue,
+        attr: str,
+        expected_class: str,
+        *,
+        assume_exact: bool = False,
+        obj_name: str | None = None,
     ) -> MoltValue:
-        assumption = self._loop_guard_assumption(obj.name, expected_class)
+        name = obj_name or obj.name
+        assumption = self._loop_guard_assumption(name, expected_class)
         if assumption is True:
             res = MoltValue(self.next_var())
             self.emit(
@@ -3787,7 +3892,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
             return res
         if self._class_layout_stable(expected_class):
-            if self.exact_locals.get(obj.name) == expected_class:
+            if assume_exact or self.exact_locals.get(name) == expected_class:
                 res = MoltValue(self.next_var())
                 self.emit(
                     MoltOp(
@@ -3797,7 +3902,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                 )
                 return res
-        guard = self._loop_guard_for(obj, expected_class)
+        guard = self._loop_guard_for(obj, expected_class, obj_name=name)
         if guard is None:
             class_ref = self._emit_module_attr_get(expected_class)
             expected_version = MoltValue(self.next_var(), type_hint="int")
@@ -3866,17 +3971,20 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if self.loop_guard_assumptions:
             self.loop_guard_assumptions.pop()
 
-    def _loop_guard_for(self, obj: MoltValue, expected_class: str) -> MoltValue | None:
+    def _loop_guard_for(
+        self, obj: MoltValue, expected_class: str, *, obj_name: str | None = None
+    ) -> MoltValue | None:
         if not self.loop_layout_guards:
             return None
-        if self.exact_locals.get(obj.name) != expected_class:
+        name = obj_name or obj.name
+        if self.exact_locals.get(name) != expected_class:
             return None
         guard_map = self.loop_layout_guards[-1]
-        cached = guard_map.get(obj.name)
+        cached = guard_map.get(name)
         if cached and cached[0] == expected_class:
             return cached[1]
         guard = self._emit_layout_guard(obj, expected_class)
-        guard_map[obj.name] = (expected_class, guard)
+        guard_map[name] = (expected_class, guard)
         return guard
 
     def _invalidate_loop_guard(self, name: str) -> None:
@@ -4014,8 +4122,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         getter_symbol: str,
         expected_class: str,
         return_hint: str | None,
+        *,
+        obj_name: str | None = None,
     ) -> MoltValue:
-        guard = self._loop_guard_for(obj, expected_class)
+        guard = self._loop_guard_for(obj, expected_class, obj_name=obj_name)
         if guard is None:
             guard = self._emit_layout_guard(obj, expected_class)
         use_phi = self.enable_phi and not self.is_async()
@@ -5089,7 +5199,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     default_specs.append({"const": True, "value": expr.value})
                 else:
                     default_specs.append({"const": False})
-            has_return = self._function_contains_return(item)
             func_val = MoltValue(self.next_var(), type_hint=f"Func:{method_symbol}")
             self.emit(
                 MoltOp(
@@ -5120,7 +5229,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 method_symbol,
                 params=params,
                 type_facts_name=f"{node.name}.{method_name}",
-                needs_return_slot=has_return,
+                needs_return_slot=False,
             )
             arg_nodes: list[ast.arg] = posonly + pos_or_kw
             if item.args.vararg is not None:
@@ -6590,8 +6699,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                 )
                                 return res
                             else:
+                                obj_name = None
+                                assume_exact = False
+                                if isinstance(node.args[0], ast.Name):
+                                    obj_name = node.args[0].id
+                                    assume_exact = (
+                                        self.exact_locals.get(obj_name) == obj.type_hint
+                                    )
                                 return self._emit_guarded_getattr(
-                                    obj, name_lit, obj.type_hint
+                                    obj,
+                                    name_lit,
+                                    obj.type_hint,
+                                    assume_exact=assume_exact,
+                                    obj_name=obj_name,
                                 )
                 if name_lit:
                     class_name = None
@@ -6647,9 +6767,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 ):
                     attr_name = node.args[1].value
                 if attr_name:
+                    obj_name = None
                     exact_class = None
                     if isinstance(node.args[0], ast.Name):
-                        exact_class = self.exact_locals.get(node.args[0].id)
+                        obj_name = node.args[0].id
+                        exact_class = self.exact_locals.get(obj_name)
                     if exact_class is not None:
                         self._record_instance_attr_mutation(exact_class, attr_name)
                     elif obj.type_hint in self.classes:
@@ -6697,8 +6819,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                         )
                                     )
                                 else:
+                                    assume_exact = (
+                                        exact_class is not None
+                                        and exact_class == obj.type_hint
+                                    )
                                     self._emit_guarded_setattr(
-                                        obj, attr_name, val, obj.type_hint
+                                        obj,
+                                        attr_name,
+                                        val,
+                                        obj.type_hint,
+                                        obj_name=obj_name,
+                                        assume_exact=assume_exact,
                                     )
                                     self.emit(
                                         MoltOp(
@@ -7321,13 +7452,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                     return res
                 res = MoltValue(self.next_var(), type_hint=class_id)
-                self.emit(MoltOp(kind="ALLOC", args=[class_id], result=res))
+                alloc_kind = (
+                    "ALLOC_CLASS_TRUSTED"
+                    if not class_info.get("dynamic")
+                    else "ALLOC_CLASS"
+                )
                 self.emit(
-                    MoltOp(
-                        kind="OBJECT_SET_CLASS",
-                        args=[res, class_ref],
-                        result=MoltValue("none"),
-                    )
+                    MoltOp(kind=alloc_kind, args=[class_ref, class_id], result=res)
                 )
                 field_order = class_info.get("field_order") or list(
                     class_info.get("fields", {}).keys()
@@ -8400,6 +8531,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         obj = self.visit(node.value)
         if obj is None:
             obj = MoltValue("unknown_obj", type_hint="Unknown")
+        obj_name = None
+        exact_class = None
+        if isinstance(node.value, ast.Name):
+            obj_name = node.value.id
+            exact_class = self.exact_locals.get(obj_name)
         if obj.type_hint.startswith("super"):
             super_class = None
             if obj.type_hint == "super":
@@ -8484,7 +8620,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         obj.type_hint, property_field
                     )
                 ):
-                    guard = self._loop_guard_for(obj, obj.type_hint)
+                    guard = self._loop_guard_for(obj, obj.type_hint, obj_name=obj_name)
                     if guard is None:
                         guard = self._emit_layout_guard(obj, obj.type_hint)
                     return self._emit_guarded_field_get_with_guard(
@@ -8501,6 +8637,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 getter_symbol,
                 obj.type_hint,
                 method_info["return_hint"],
+                obj_name=obj_name,
             )
         if obj.type_hint.startswith("module"):
             attr_name = MoltValue(self.next_var(), type_hint="str")
@@ -8556,7 +8693,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             )
             return res
-        return self._emit_guarded_getattr(obj, node.attr, expected_class)
+        assume_exact = exact_class == expected_class if exact_class else False
+        return self._emit_guarded_getattr(
+            obj,
+            node.attr,
+            expected_class,
+            assume_exact=assume_exact,
+            obj_name=obj_name,
+        )
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if not isinstance(node.target, (ast.Name, ast.Attribute)):
@@ -8596,8 +8740,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return None
 
         obj = self.visit(node.target.value)
+        obj_name = None
         if isinstance(node.target.value, ast.Name):
             class_name = node.target.value.id
+            obj_name = class_name
             if class_name in self.classes:
                 self._invalidate_loop_guards_for_class(class_name)
         exact_class = None
@@ -8625,7 +8771,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                 ):
                     self._emit_guarded_setattr(
-                        obj, node.target.attr, value_node, exact_class
+                        obj,
+                        node.target.attr,
+                        value_node,
+                        exact_class,
+                        obj_name=obj_name,
+                        assume_exact=True,
                     )
                     return None
         if class_info and class_info.get("dataclass"):
@@ -8674,7 +8825,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                     else:
                         self._emit_guarded_setattr(
-                            obj, node.target.attr, value_node, obj.type_hint
+                            obj,
+                            node.target.attr,
+                            value_node,
+                            obj.type_hint,
+                            obj_name=obj_name,
                         )
                 else:
                     self.emit(
@@ -8722,8 +8877,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             raise NotImplementedError("Unsupported assignment value")
         if isinstance(target, ast.Attribute):
             obj = self.visit(target.value)
+            obj_name = None
             if isinstance(target.value, ast.Name):
                 class_name = target.value.id
+                obj_name = class_name
                 if class_name in self.classes:
                     self._invalidate_loop_guards_for_class(class_name)
             exact_class = None
@@ -8751,7 +8908,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                     ):
                         self._emit_guarded_setattr(
-                            obj, target.attr, value_node, exact_class
+                            obj,
+                            target.attr,
+                            value_node,
+                            exact_class,
+                            obj_name=obj_name,
+                            assume_exact=True,
                         )
                         return
             if class_info and class_info.get("dataclass"):
@@ -8800,7 +8962,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             )
                         else:
                             self._emit_guarded_setattr(
-                                obj, target.attr, value_node, obj.type_hint
+                                obj,
+                                target.attr,
+                                value_node,
+                                obj.type_hint,
+                                obj_name=obj_name,
                             )
                     else:
                         self.emit(
@@ -8979,9 +9145,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             res = MoltValue(self.next_var(), type_hint=current.type_hint)
             self.emit(MoltOp(kind=op_kind, args=[current, value_node], result=res))
             obj = self.visit(node.target.value)
+            obj_name = None
             exact_class = None
             if isinstance(node.target.value, ast.Name):
-                exact_class = self.exact_locals.get(node.target.value.id)
+                obj_name = node.target.value.id
+                exact_class = self.exact_locals.get(obj_name)
             class_info = None
             if obj is not None:
                 class_info = self.classes.get(obj.type_hint)
@@ -9004,7 +9172,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                     ):
                         self._emit_guarded_setattr(
-                            obj, node.target.attr, res, exact_class
+                            obj,
+                            node.target.attr,
+                            res,
+                            exact_class,
+                            obj_name=obj_name,
+                            assume_exact=True,
                         )
                         return None
             if class_info and class_info.get("dataclass"):
@@ -9057,7 +9230,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                     else:
                         self._emit_guarded_setattr(
-                            obj, node.target.attr, res, obj.type_hint
+                            obj,
+                            node.target.attr,
+                            res,
+                            obj.type_hint,
+                            obj_name=obj_name,
                         )
                 else:
                     self.emit(
@@ -9526,21 +9703,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         for name in sorted(assigned):
             if not self.is_async():
                 self._box_local(name)
-        indexed_reduction = (
-            None
-            if self.is_async() or not isinstance(node.target, ast.Name)
-            else self._match_indexed_vector_reduction_loop(node)
-        )
-        if indexed_reduction is None:
-            indexed_reduction = (
-                None
-                if self.is_async() or not isinstance(node.target, ast.Name)
-                else self._match_indexed_vector_minmax_loop(node)
-            )
-        if indexed_reduction is not None:
-            acc_name, seq_name, kind, start_expr = indexed_reduction
+        reduction = None
+        if not self.is_async() and isinstance(node.target, ast.Name):
+            reduction = self._match_indexed_vector_reduction_loop(node)
+            if reduction is None:
+                reduction = self._match_indexed_vector_minmax_loop(node)
+            if reduction is None:
+                reduction = self._match_iter_vector_reduction_loop(node)
+            if reduction is None:
+                reduction = self._match_iter_vector_minmax_loop(node)
+        if reduction is not None:
+            acc_name, seq_name, kind, start_expr = reduction
             if seq_name in assigned:
-                indexed_reduction = None
+                reduction = None
             else:
                 seq_val = self.locals.get(seq_name) or self.globals.get(seq_name)
                 if seq_val and seq_val.type_hint in {"list", "tuple"}:
@@ -9588,10 +9763,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             MoltOp(kind="ELSE", args=[], result=MoltValue("none"))
                         )
                         range_args = self._parse_range_call(node.iter)
-                        if range_args is None:
-                            raise NotImplementedError("Unsupported range invocation")
-                        start, stop, step = range_args
-                        self._emit_range_loop(node, start, stop, step)
+                        if range_args is not None:
+                            start, stop, step = range_args
+                            self._emit_range_loop(node, start, stop, step)
+                        else:
+                            iterable = self._load_local_value(seq_name) or seq_val
+                            self._emit_for_loop(node, iterable)
                         self.emit(
                             MoltOp(kind="END_IF", args=[], result=MoltValue("none"))
                         )
@@ -10903,7 +11080,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             func_symbol,
             params=params,
             type_facts_name=func_name,
-            needs_return_slot=has_return,
+            needs_return_slot=False,
         )
         self.global_decls = self._collect_global_decls(node.body)
         if not self.is_async():
@@ -12406,6 +12583,26 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     {
                         "kind": "alloc",
                         "value": self.classes[op.args[0]]["size"],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "ALLOC_CLASS":
+                class_ref, class_id = op.args
+                json_ops.append(
+                    {
+                        "kind": "alloc_class",
+                        "args": [class_ref.name],
+                        "value": self.classes[class_id]["size"],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "ALLOC_CLASS_TRUSTED":
+                class_ref, class_id = op.args
+                json_ops.append(
+                    {
+                        "kind": "alloc_class_trusted",
+                        "args": [class_ref.name],
+                        "value": self.classes[class_id]["size"],
                         "out": op.result.name,
                     }
                 )

@@ -34,6 +34,14 @@ def _module_name_from_path(path: Path, roots: list[Path], stdlib_root: Path) -> 
         rel = resolved.relative_to(stdlib_root.resolve())
     except ValueError:
         rel = None
+    if rel is not None:
+        if rel.name == "__init__.py":
+            rel = rel.parent
+        else:
+            rel = rel.with_suffix("")
+        if rel.parts:
+            return ".".join(rel.parts)
+        rel = None
     if rel is None:
         for root in roots:
             try:

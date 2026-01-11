@@ -61,6 +61,13 @@ fn is_int_tag(builder: &mut FunctionBuilder, val: Value) -> Value {
     builder.ins().icmp(IntCC::Equal, masked, tag)
 }
 
+fn is_ptr_tag(builder: &mut FunctionBuilder, val: Value) -> Value {
+    let mask = builder.ins().iconst(types::I64, (QNAN | TAG_MASK) as i64);
+    let tag = builder.ins().iconst(types::I64, (QNAN | TAG_PTR) as i64);
+    let masked = builder.ins().band(val, mask);
+    builder.ins().icmp(IntCC::Equal, masked, tag)
+}
+
 fn box_int_value(builder: &mut FunctionBuilder, val: Value) -> Value {
     let mask = builder.ins().iconst(types::I64, INT_MASK as i64);
     let masked = builder.ins().band(val, mask);
@@ -95,31 +102,13 @@ fn emit_maybe_ref_adjust(builder: &mut FunctionBuilder, val: Value, obj_ref_fn: 
     let current_block = builder
         .current_block()
         .expect("ref adjust requires an active block");
-    let qnan_mask = builder.ins().iconst(types::I64, QNAN as i64);
-    let tag_mask = builder.ins().iconst(types::I64, TAG_MASK as i64);
-    let tag_ptr = builder.ins().iconst(types::I64, TAG_PTR as i64);
-
-    let val_qnan = builder.ins().band(val, qnan_mask);
-    let is_qnan = builder.ins().icmp(IntCC::Equal, val_qnan, qnan_mask);
-    let tag = builder.ins().band(val, tag_mask);
-    let is_ptr_tag = builder.ins().icmp(IntCC::Equal, tag, tag_ptr);
-
-    let qnan_block = builder.create_block();
     let ptr_block = builder.create_block();
     let cont_block = builder.create_block();
-    builder.insert_block_after(qnan_block, current_block);
-    builder.insert_block_after(ptr_block, qnan_block);
+    builder.insert_block_after(ptr_block, current_block);
     builder.insert_block_after(cont_block, ptr_block);
 
-    builder
-        .ins()
-        .brif(is_qnan, qnan_block, &[], cont_block, &[]);
-
-    builder.switch_to_block(qnan_block);
-    builder.seal_block(qnan_block);
-    builder
-        .ins()
-        .brif(is_ptr_tag, ptr_block, &[], cont_block, &[]);
+    let is_ptr = is_ptr_tag(builder, val);
+    builder.ins().brif(is_ptr, ptr_block, &[], cont_block, &[]);
 
     builder.switch_to_block(ptr_block);
     builder.seal_block(ptr_block);
@@ -5720,6 +5709,46 @@ impl SimpleBackend {
                     let out_name = op.out.unwrap();
                     vars.insert(out_name, res);
                 }
+                "alloc_class" => {
+                    let size = op.value.unwrap();
+                    let args = op.args.as_ref().unwrap();
+                    let class_bits = vars.get(&args[0]).expect("Class not found");
+                    let iconst = builder.ins().iconst(types::I64, size);
+
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64)); // Returns object bits
+                    let callee = self
+                        .module
+                        .declare_function("molt_alloc_class", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[iconst, *class_bits]);
+                    let res = builder.inst_results(call)[0];
+                    let out_name = op.out.unwrap();
+                    vars.insert(out_name, res);
+                }
+                "alloc_class_trusted" => {
+                    let size = op.value.unwrap();
+                    let args = op.args.as_ref().unwrap();
+                    let class_bits = vars.get(&args[0]).expect("Class not found");
+                    let iconst = builder.ins().iconst(types::I64, size);
+
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64)); // Returns object bits
+                    let callee = self
+                        .module
+                        .declare_function("molt_alloc_class_trusted", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[iconst, *class_bits]);
+                    let res = builder.inst_results(call)[0];
+                    let out_name = op.out.unwrap();
+                    vars.insert(out_name, res);
+                }
                 "alloc_future" => {
                     let closure_size = op.value.unwrap();
                     let size = builder.ins().iconst(types::I64, closure_size);
@@ -5839,13 +5868,32 @@ impl SimpleBackend {
                     let old_val = builder
                         .ins()
                         .load(types::I64, MemFlags::new(), obj_ptr, offset);
-                    let is_same = builder.ins().icmp(IntCC::Equal, old_val, *val);
+                    let old_is_ptr = is_ptr_tag(&mut builder, old_val);
+                    let new_is_ptr = is_ptr_tag(&mut builder, *val);
+                    let either_ptr = builder.ins().bor(old_is_ptr, new_is_ptr);
+                    let fast_block = builder.create_block();
+                    let slow_block = builder.create_block();
                     let store_block = builder.create_block();
                     let cont_block = builder.create_block();
                     if let Some(current_block) = builder.current_block() {
-                        builder.insert_block_after(store_block, current_block);
+                        builder.insert_block_after(fast_block, current_block);
+                        builder.insert_block_after(slow_block, fast_block);
+                        builder.insert_block_after(store_block, slow_block);
                         builder.insert_block_after(cont_block, store_block);
                     }
+
+                    builder
+                        .ins()
+                        .brif(either_ptr, slow_block, &[], fast_block, &[]);
+
+                    builder.switch_to_block(fast_block);
+                    builder.seal_block(fast_block);
+                    builder.ins().store(MemFlags::new(), *val, obj_ptr, offset);
+                    builder.ins().jump(cont_block, &[]);
+
+                    builder.switch_to_block(slow_block);
+                    builder.seal_block(slow_block);
+                    let is_same = builder.ins().icmp(IntCC::Equal, old_val, *val);
                     builder
                         .ins()
                         .brif(is_same, cont_block, &[], store_block, &[]);

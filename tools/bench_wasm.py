@@ -64,6 +64,11 @@ MOLT_ARGS_BY_BENCH = {
     "tests/benchmarks/bench_sum_list_hints.py": ["--type-hints", "trust"],
 }
 RUNTIME_WASM = Path("wasm/molt_runtime.wasm")
+RUNTIME_WASM_RELOC = Path("wasm/molt_runtime_reloc.wasm")
+LINKED_WASM = Path("output_linked.wasm")
+WASM_LD = shutil.which("wasm-ld")
+_LINK_WARNED = False
+_LINK_DISABLED = False
 
 
 def _git_rev() -> str | None:
@@ -88,9 +93,21 @@ def _base_env() -> dict[str, str]:
     return env
 
 
-def build_runtime_wasm() -> bool:
+def _append_rustflags(env: dict[str, str], flags: str) -> None:
+    existing = env.get("RUSTFLAGS", "")
+    joined = f"{existing} {flags}".strip()
+    env["RUSTFLAGS"] = joined
+
+
+def build_runtime_wasm(*, reloc: bool, output: Path) -> bool:
     env = os.environ.copy()
-    env.setdefault("RUSTFLAGS", "-C link-arg=--import-memory")
+    base_flags = "-C link-arg=--import-memory"
+    if reloc:
+        base_flags = (
+            f"{base_flags} -C link-arg=--relocatable -C link-arg=--no-gc-sections"
+            " -C relocation-model=pic"
+        )
+    _append_rustflags(env, base_flags)
     res = subprocess.run(
         [
             "cargo",
@@ -114,12 +131,71 @@ def build_runtime_wasm() -> bool:
     if not src.exists():
         print("WASM runtime build succeeded but artifact is missing.", file=sys.stderr)
         return False
-    RUNTIME_WASM.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, RUNTIME_WASM)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, output)
     return True
 
 
-def measure_wasm(script: str) -> tuple[float | None, float]:
+def _want_linked() -> bool:
+    return os.environ.get("MOLT_WASM_LINK") == "1"
+
+
+def _link_wasm(env: dict[str, str]) -> Path | None:
+    if not _want_linked():
+        return None
+    if WASM_LD is None:
+        global _LINK_WARNED
+        if not _LINK_WARNED:
+            print(
+                "Skipping wasm link: wasm-ld not found (install LLVM to enable).",
+                file=sys.stderr,
+            )
+            _LINK_WARNED = True
+        return None
+    global _LINK_DISABLED
+    if _LINK_DISABLED:
+        return None
+    if LINKED_WASM.exists():
+        LINKED_WASM.unlink()
+    runtime_path = RUNTIME_WASM_RELOC if RUNTIME_WASM_RELOC.exists() else RUNTIME_WASM
+    res = subprocess.run(
+        [
+            sys.executable,
+            "tools/wasm_link.py",
+            "--runtime",
+            str(runtime_path),
+            "--input",
+            "output.wasm",
+            "--output",
+            str(LINKED_WASM),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    if res.returncode != 0:
+        err = res.stderr.strip() or res.stdout.strip()
+        if err:
+            print(f"WASM link failed: {err}", file=sys.stderr)
+            if (
+                "not a relocatable wasm file" in err
+                or "out of order section" in err
+                or "invalid function symbol index" in err
+                or "Stack dump" in err
+            ):
+                print(
+                    "Disabling wasm linking for remaining benches (non-relocatable input).",
+                    file=sys.stderr,
+                )
+                _LINK_DISABLED = True
+        return None
+    if not LINKED_WASM.exists():
+        print("WASM link produced no output artifact.", file=sys.stderr)
+        return None
+    return LINKED_WASM
+
+
+def measure_wasm(script: str) -> tuple[float | None, float, bool]:
     if os.path.exists("./output.wasm"):
         os.remove("./output.wasm")
 
@@ -144,28 +220,46 @@ def measure_wasm(script: str) -> tuple[float | None, float]:
         err = build_res.stderr.strip() or build_res.stdout.strip()
         if err:
             print(f"WASM build failed for {script}: {err}", file=sys.stderr)
-        return None, 0.0
+        return None, 0.0, False
 
-    wasm_size = os.path.getsize("./output.wasm") / 1024
+    output_path = Path("output.wasm")
+    if not output_path.exists():
+        print(f"WASM build produced no output.wasm for {script}", file=sys.stderr)
+        return None, 0.0, False
+
+    linked = _link_wasm(env)
+    linked_used = linked is not None
+    wasm_path = linked if linked_used else output_path
+    wasm_size = wasm_path.stat().st_size / 1024
+    run_env = env.copy()
+    if linked is not None:
+        run_env["MOLT_WASM_LINKED"] = "1"
+        run_env["MOLT_WASM_LINKED_PATH"] = str(linked)
     start = time.perf_counter()
-    run_res = subprocess.run(["node", "run_wasm.js"], capture_output=True, text=True)
+    run_res = subprocess.run(
+        ["node", "run_wasm.js"],
+        env=run_env,
+        capture_output=True,
+        text=True,
+    )
     end = time.perf_counter()
     if run_res.returncode != 0:
         err = run_res.stderr.strip() or run_res.stdout.strip()
         if err:
             print(f"WASM run failed for {script}: {err}", file=sys.stderr)
-        return None, wasm_size
-    return end - start, wasm_size
+        return None, wasm_size, linked_used
+    return end - start, wasm_size, linked_used
 
 
-def collect_samples(script: str, samples: int) -> tuple[float, float, bool]:
+def collect_samples(script: str, samples: int) -> tuple[float, float, bool, bool]:
     runs = [measure_wasm(script) for _ in range(samples)]
-    valid = [t for t, _ in runs if t is not None]
+    valid = [t for t, _, _ in runs if t is not None]
     if not valid:
-        return 0.0, runs[0][1] if runs else 0.0, False
+        return 0.0, runs[0][1] if runs else 0.0, False, False
     avg = statistics.mean(valid)
     size = runs[0][1]
-    return avg, size, True
+    linked_used = any(r[2] for r in runs)
+    return avg, size, True, linked_used
 
 
 def bench_results(benchmarks: list[str], samples: int) -> dict[str, dict]:
@@ -174,13 +268,14 @@ def bench_results(benchmarks: list[str], samples: int) -> dict[str, dict]:
     print("-" * 60)
     for script in benchmarks:
         name = Path(script).stem
-        wasm_time, wasm_size, ok = collect_samples(script, samples)
+        wasm_time, wasm_size, ok, linked_used = collect_samples(script, samples)
         time_cell = f"{wasm_time:<12.4f}" if ok else f"{'n/a':<12}"
         print(f"{name:<30} | {time_cell} | {wasm_size:>8.1f} KB")
         data[name] = {
             "molt_wasm_time_s": wasm_time,
             "molt_wasm_size_kb": wasm_size,
             "molt_wasm_ok": ok,
+            "molt_wasm_linked": linked_used,
         }
     return data
 
@@ -195,10 +290,23 @@ def main() -> None:
     parser.add_argument("--json-out", type=Path, default=None)
     parser.add_argument("--samples", type=int, default=None)
     parser.add_argument("--smoke", action="store_true")
+    parser.add_argument(
+        "--linked",
+        action="store_true",
+        help="Attempt single-module wasm linking with wasm-ld when available.",
+    )
     args = parser.parse_args()
 
-    if not build_runtime_wasm():
+    if args.linked:
+        os.environ["MOLT_WASM_LINK"] = "1"
+
+    if not build_runtime_wasm(reloc=False, output=RUNTIME_WASM):
         sys.exit(1)
+    if _want_linked() and not build_runtime_wasm(reloc=True, output=RUNTIME_WASM_RELOC):
+        print(
+            "Relocatable runtime build failed; falling back to non-linked wasm runs.",
+            file=sys.stderr,
+        )
 
     benchmarks = SMOKE_BENCHMARKS if args.smoke else BENCHMARKS
     samples = args.samples if args.samples is not None else (1 if args.smoke else 3)

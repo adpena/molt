@@ -1233,6 +1233,27 @@ BASE_IMPORTS = """\
     if (!addr) return boxNone();
     return boxPtrAddr(addr);
   },
+  alloc_class: (size, classBits) => {
+    const addr = allocRaw(size);
+    if (!addr) return boxNone();
+    if (classBits !== 0n && !getClass(classBits)) {
+      throw new Error('TypeError: class must be a type object');
+    }
+    const objBits = boxPtrAddr(addr);
+    if (classBits !== 0n) {
+      instanceClasses.set(ptrAddr(objBits), classBits);
+    }
+    return objBits;
+  },
+  alloc_class_trusted: (size, classBits) => {
+    const addr = allocRaw(size);
+    if (!addr) return boxNone();
+    const objBits = boxPtrAddr(addr);
+    if (classBits !== 0n) {
+      instanceClasses.set(ptrAddr(objBits), classBits);
+    }
+    return objBits;
+  },
   async_sleep: (taskPtr) => {
     if (taskPtr === 0n) return boxNone();
     const key = taskPtr.toString();
@@ -2101,6 +2122,7 @@ BASE_IMPORTS = """\
     if (!obj) return BigInt(ptrAddr(bits));
     return 0n;
   },
+  inc_ref_obj: (_val) => {},
   get_attr_ptr: (obj, namePtr, nameLen) =>
     getAttrValue(normalizePtrBits(obj), readUtf8(namePtr, nameLen)),
   get_attr_generic: (obj, namePtr, nameLen) =>
@@ -3626,6 +3648,115 @@ BASE_IMPORTS = """\
   super_builtin: (typeBits, objBits) => baseImports.super_new(typeBits, objBits),
 """
 
+IMPORT_HELPERS = """\
+const readVarUint = (bytes, offset) => {
+  let result = 0;
+  let shift = 0;
+  let pos = offset;
+  while (true) {
+    if (pos >= bytes.length) {
+      throw new Error('Unexpected EOF while reading varuint');
+    }
+    const byte = bytes[pos++];
+    result |= (byte & 0x7f) << shift;
+    if ((byte & 0x80) === 0) {
+      break;
+    }
+    shift += 7;
+  }
+  return [result, pos];
+};
+const readString = (bytes, offset) => {
+  const [len, pos] = readVarUint(bytes, offset);
+  const end = pos + len;
+  if (end > bytes.length) {
+    throw new Error('Unexpected EOF while reading string');
+  }
+  const value = new TextDecoder('utf-8').decode(bytes.slice(pos, end));
+  return [value, end];
+};
+const readLimits = (bytes, offset) => {
+  const flags = bytes[offset++];
+  const [min, pos] = readVarUint(bytes, offset);
+  let max = null;
+  let next = pos;
+  if (flags & 0x01) {
+    const [maxVal, posMax] = readVarUint(bytes, pos);
+    max = maxVal;
+    next = posMax;
+  }
+  return [{ min, max }, next];
+};
+const parseWasmImports = (buffer) => {
+  const bytes = new Uint8Array(buffer);
+  if (bytes.length < 8) {
+    throw new Error('Invalid wasm binary');
+  }
+  let offset = 8;
+  let memoryImport = null;
+  let tableImport = null;
+  while (offset < bytes.length) {
+    const sectionId = bytes[offset++];
+    const [sectionSize, sizePos] = readVarUint(bytes, offset);
+    offset = sizePos;
+    const sectionEnd = offset + sectionSize;
+    if (sectionId === 2) {
+      let count;
+      [count, offset] = readVarUint(bytes, offset);
+      for (let idx = 0; idx < count; idx += 1) {
+        let moduleName;
+        [moduleName, offset] = readString(bytes, offset);
+        let fieldName;
+        [fieldName, offset] = readString(bytes, offset);
+        const kind = bytes[offset++];
+        if (kind === 0) {
+          const [, next] = readVarUint(bytes, offset);
+          offset = next;
+        } else if (kind === 1) {
+          offset += 1;
+          let limits;
+          [limits, offset] = readLimits(bytes, offset);
+          if (moduleName === 'env' && fieldName === '__indirect_function_table') {
+            tableImport = limits;
+          }
+        } else if (kind === 2) {
+          let limits;
+          [limits, offset] = readLimits(bytes, offset);
+          if (moduleName === 'env' && fieldName === 'memory') {
+            memoryImport = limits;
+          }
+        } else if (kind === 3) {
+          offset += 2;
+        } else {
+          throw new Error(`Unknown import kind ${kind}`);
+        }
+      }
+    } else {
+      offset = sectionEnd;
+    }
+  }
+  return { memory: memoryImport, table: tableImport };
+};
+const wasmImports = parseWasmImports(wasmBuffer);
+if (wasmImports.memory) {
+  const memDesc = { initial: wasmImports.memory.min };
+  if (wasmImports.memory.max !== null) {
+    memDesc.maximum = wasmImports.memory.max;
+  }
+  memory = new WebAssembly.Memory(memDesc);
+}
+if (wasmImports.table) {
+  const tableDesc = { initial: wasmImports.table.min, element: 'anyfunc' };
+  if (wasmImports.table.max !== null) {
+    tableDesc.maximum = wasmImports.table.max;
+  }
+  table = new WebAssembly.Table(tableDesc);
+}
+const envImports = {};
+if (memory) envImports.memory = memory;
+if (table) envImports.__indirect_function_table = table;
+"""
+
 
 def wasm_runner_source(*, extra_js: str = "", import_overrides: str = "") -> str:
     parts = [BASE_PREAMBLE]
@@ -3638,8 +3769,9 @@ def wasm_runner_source(*, extra_js: str = "", import_overrides: str = "") -> str
     if import_overrides:
         parts.append(import_overrides.rstrip() + "\n")
     parts.append("};\n")
+    parts.append(IMPORT_HELPERS.rstrip() + "\n")
     parts.append(
-        "const imports = { molt_runtime: { ...baseImports, ...overrideImports } };\n"
+        "const imports = { molt_runtime: { ...baseImports, ...overrideImports }, env: envImports };\n"
     )
     parts.append(
         "WebAssembly.instantiate(wasmBuffer, imports)\n"
