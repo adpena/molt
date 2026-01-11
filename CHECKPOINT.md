@@ -1,20 +1,19 @@
-Checkpoint: 2026-01-10 21:51:11 CST
-Git: 9260c9c4794e1808203b3559c34a93f6e5808035
+Checkpoint: 2026-01-10 22:38:35 CST
+Git: db1737e41048b87ef5b166cd356d3ac5954cedef
 
 Summary
-- Added `molt_future_new` to centralize future header initialization (poll_fn/state) with debug logging when
-  `MOLT_DEBUG_AWAITABLE` is set.
-- `molt_async_sleep_new` now reuses `molt_future_new`; backend `alloc_future`/`call_async` also use it to avoid
-  direct header stores.
-- Still investigating Linux async-for awaitable failures; this change should clarify whether poll_fn is zero at
-  allocation time.
+- Future allocation now uses a zeroed, direct header init in `molt_future_new` to avoid pointer round-trips.
+- `molt_aiter`/`molt_anext` now use `attr_name_bits_from_bytes`, fixing async-for resolving `__anext__` as
+  `__aiter__` ("object is not awaitable").
+- Awaitable debug now includes class name when poll_fn is missing.
 
 Files touched (uncommitted)
 - CHECKPOINT.md
 
 Tests run
-- cargo test -p molt-runtime -p molt-backend
-- cargo clippy -p molt-runtime -p molt-backend -- -D warnings
+- uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic/async_for_else.py
+- uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic/async_for_iter.py
+- uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic/async_long_running.py
 
 Known gaps
 - Allowlisted module calls still reject keywords/star args; only Molt-defined callables accept CALL_BIND.
