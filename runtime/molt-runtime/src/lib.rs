@@ -6696,10 +6696,18 @@ pub extern "C" fn molt_future_poll_fn(future_bits: u64) -> u64 {
         let poll_fn_addr = (*header).poll_fn;
         if poll_fn_addr == 0 {
             if std::env::var("MOLT_DEBUG_AWAITABLE").is_ok() {
+                let mut class_name = None;
+                if object_type_id(ptr) == TYPE_ID_OBJECT {
+                    let class_bits = object_class_bits(ptr);
+                    if class_bits != 0 {
+                        class_name = Some(class_name_for_error(class_bits));
+                    }
+                }
                 eprintln!(
-                    "Molt awaitable debug: bits=0x{:x} type={} poll=0x0 state={} size={}",
+                    "Molt awaitable debug: bits=0x{:x} type={} class={} poll=0x0 state={} size={}",
                     future_bits,
                     type_name(obj),
+                    class_name.as_deref().unwrap_or("-"),
                     (*header).state,
                     (*header).size
                 );
@@ -6713,14 +6721,21 @@ pub extern "C" fn molt_future_poll_fn(future_bits: u64) -> u64 {
 
 #[no_mangle]
 pub extern "C" fn molt_future_new(poll_fn_addr: u64, closure_size: u64) -> u64 {
-    let obj_bits = molt_alloc(closure_size as usize);
-    let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
-        return MoltObject::none().bits();
-    };
+    let total_size = std::mem::size_of::<MoltHeader>() + closure_size as usize;
+    let layout = std::alloc::Layout::from_size_align(total_size, 8).unwrap();
     unsafe {
-        let header = header_from_obj_ptr(obj_ptr);
+        let ptr = std::alloc::alloc_zeroed(layout);
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let header = ptr as *mut MoltHeader;
+        (*header).type_id = TYPE_ID_OBJECT;
+        (*header).ref_count.store(1, AtomicOrdering::Relaxed);
         (*header).poll_fn = poll_fn_addr;
         (*header).state = 0;
+        (*header).size = total_size;
+        let obj_ptr = ptr.add(std::mem::size_of::<MoltHeader>());
+        let obj_bits = MoltObject::from_ptr(obj_ptr).bits();
         if std::env::var("MOLT_DEBUG_AWAITABLE").is_ok() {
             eprintln!(
                 "Molt future init debug: bits=0x{:x} poll=0x{:x} size={}",
@@ -6729,8 +6744,8 @@ pub extern "C" fn molt_future_new(poll_fn_addr: u64, closure_size: u64) -> u64 {
                 (*header).size
             );
         }
+        obj_bits
     }
-    obj_bits
 }
 
 #[no_mangle]
@@ -13766,11 +13781,9 @@ pub extern "C" fn molt_iter(iter_bits: u64) -> u64 {
 pub extern "C" fn molt_aiter(obj_bits: u64) -> u64 {
     unsafe {
         let obj = obj_from_bits(obj_bits);
-        let name_ptr = alloc_string(b"__aiter__");
-        if name_ptr.is_null() {
+        let Some(name_bits) = attr_name_bits_from_bytes(b"__aiter__") else {
             return MoltObject::none().bits();
-        }
-        let name_bits = MoltObject::from_ptr(name_ptr).bits();
+        };
         let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) else {
             dec_ref_bits(name_bits);
             let msg = format!("'{}' object is not async iterable", type_name(obj));
@@ -13941,11 +13954,9 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
 pub extern "C" fn molt_anext(obj_bits: u64) -> u64 {
     unsafe {
         let obj = obj_from_bits(obj_bits);
-        let name_ptr = alloc_string(b"__anext__");
-        if name_ptr.is_null() {
+        let Some(name_bits) = attr_name_bits_from_bytes(b"__anext__") else {
             return MoltObject::none().bits();
-        }
-        let name_bits = MoltObject::from_ptr(name_ptr).bits();
+        };
         let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) else {
             dec_ref_bits(name_bits);
             let msg = format!("'{}' object is not an async iterator", type_name(obj));
