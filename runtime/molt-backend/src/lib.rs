@@ -55,9 +55,7 @@ fn unbox_int(builder: &mut FunctionBuilder, val: Value) -> Value {
 }
 
 fn is_int_tag(builder: &mut FunctionBuilder, val: Value) -> Value {
-    let mask = builder
-        .ins()
-        .iconst(types::I64, (QNAN | TAG_MASK) as i64);
+    let mask = builder.ins().iconst(types::I64, (QNAN | TAG_MASK) as i64);
     let tag = builder.ins().iconst(types::I64, (QNAN | TAG_INT) as i64);
     let masked = builder.ins().band(val, mask);
     builder.ins().icmp(IntCC::Equal, masked, tag)
