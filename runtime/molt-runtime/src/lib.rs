@@ -6679,7 +6679,15 @@ pub unsafe extern "C" fn molt_block_on(task_ptr: *mut u8) -> i64 {
 
 #[no_mangle]
 pub extern "C" fn molt_future_poll_fn(future_bits: u64) -> u64 {
-    let Some(ptr) = maybe_ptr_from_bits(future_bits) else {
+    let obj = obj_from_bits(future_bits);
+    let Some(ptr) = obj.as_ptr() else {
+        if std::env::var("MOLT_DEBUG_AWAITABLE").is_ok() {
+            eprintln!(
+                "Molt awaitable debug: bits=0x{:x} type={}",
+                future_bits,
+                type_name(obj)
+            );
+        }
         raise_exception::<()>("TypeError", "object is not awaitable");
         return 0;
     };
@@ -6687,6 +6695,15 @@ pub extern "C" fn molt_future_poll_fn(future_bits: u64) -> u64 {
         let header = header_from_obj_ptr(ptr);
         let poll_fn_addr = (*header).poll_fn;
         if poll_fn_addr == 0 {
+            if std::env::var("MOLT_DEBUG_AWAITABLE").is_ok() {
+                eprintln!(
+                    "Molt awaitable debug: bits=0x{:x} type={} poll=0x0 state={} size={}",
+                    future_bits,
+                    type_name(obj),
+                    (*header).state,
+                    (*header).size
+                );
+            }
             raise_exception::<()>("TypeError", "object is not awaitable");
             return 0;
         }

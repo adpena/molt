@@ -31,6 +31,7 @@ def run_molt(file_path):
     # Build
     env = os.environ.copy()
     env["PYTHONPATH"] = "src"
+    env.setdefault("MOLT_DEBUG_AWAITABLE", "1")
     build_res = subprocess.run(
         [sys.executable, "-m", "molt.cli", "build", file_path],
         env=env,
@@ -41,7 +42,7 @@ def run_molt(file_path):
         return None, build_res.stderr, build_res.returncode
 
     # Run
-    run_res = subprocess.run(["./hello_molt"], capture_output=True, text=True)
+    run_res = subprocess.run(["./hello_molt"], capture_output=True, text=True, env=env)
     return run_res.stdout, run_res.stderr, run_res.returncode
 
 
