@@ -3842,9 +3842,7 @@ impl SimpleBackend {
                         let delay_val = arg_names
                             .get(0)
                             .map(|name| *vars.get(name).expect("Arg not found"))
-                            .unwrap_or_else(|| {
-                                builder.ins().iconst(types::I64, box_float(0.0))
-                            });
+                            .unwrap_or_else(|| builder.ins().iconst(types::I64, box_float(0.0)));
                         let result_val = arg_names
                             .get(1)
                             .map(|name| *vars.get(name).expect("Arg not found"))
@@ -3865,8 +3863,7 @@ impl SimpleBackend {
                     } else {
                         let args = op.args.as_deref();
                         let payload_len = args.map(|vals| vals.len()).unwrap_or(0);
-                        let size =
-                            builder.ins().iconst(types::I64, (payload_len * 8) as i64);
+                        let size = builder.ins().iconst(types::I64, (payload_len * 8) as i64);
                         let mut sig = self.module.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
                         sig.returns.push(AbiParam::new(types::I64));
