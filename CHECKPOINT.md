@@ -1,19 +1,16 @@
-Checkpoint: 2026-01-10 20:53:34 CST
-Git: cb2f53a650d1360c67d44e2ebd75aa7b4c1fe4d2
+Checkpoint: 2026-01-10 21:08:48 CST
+Git: 41b3b7e5a2f0c6b7e2a3f39c2b77c62aa8a4d2a5
 
 Summary
-- Async for awaitable handling now reuses `_emit_await_value` to align with the standard await path and avoid bespoke state-transition caching.
-- Simplified async-for lowering by removing the custom awaitable slot/state transition block while retaining StopAsyncIteration handling.
-- Local differential async-for slices now pass after the refactor.
-- Docs/tests unchanged this turn; no additional updates needed.
+- Added awaitable debug logging behind `MOLT_DEBUG_AWAITABLE` to surface non-awaitable details during CI.
+- Diff harness now enables `MOLT_DEBUG_AWAITABLE` for compiled binaries to surface async-for failures in CI logs.
+- Re-ran native + wasm benches for the commit.
+- Docs/tests unchanged beyond the debug toggle; no spec updates needed.
 
 Files touched (uncommitted)
 - CHECKPOINT.md
 
 Tests run
-- uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic/async_for_else.py
-- uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic/async_for_iter.py
-- uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic/async_long_running.py
 - uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json
 - uv run --python 3.14 python3 tools/bench_wasm.py --json-out bench/results/bench_wasm.json
 
