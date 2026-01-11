@@ -10789,71 +10789,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return res
 
         self.emit(MoltOp(kind="EXCEPTION_PUSH", args=[], result=MoltValue("none")))
-        awaitable_slot = None
-        if self.is_async():
-            awaitable_slot = self._async_local_offset(
-                f"__anext_future_{len(self.async_locals)}"
-            )
-            awaitable_cached = MoltValue(self.next_var(), type_hint="Any")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", awaitable_slot],
-                    result=awaitable_cached,
-                )
-            )
-            none_cached = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_cached))
-            is_none_cached = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(
-                MoltOp(
-                    kind="IS",
-                    args=[awaitable_cached, none_cached],
-                    result=is_none_cached,
-                )
-            )
-            zero_cached = MoltValue(self.next_var(), type_hint="float")
-            self.emit(MoltOp(kind="CONST_FLOAT", args=[0.0], result=zero_cached))
-            is_zero_cached = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(
-                MoltOp(
-                    kind="IS",
-                    args=[awaitable_cached, zero_cached],
-                    result=is_zero_cached,
-                )
-            )
-            is_empty_cached = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(
-                MoltOp(
-                    kind="OR",
-                    args=[is_none_cached, is_zero_cached],
-                    result=is_empty_cached,
-                )
-            )
-            self.emit(
-                MoltOp(kind="IF", args=[is_empty_cached], result=MoltValue("none"))
-            )
-            awaitable_new = MoltValue(self.next_var(), type_hint="Future")
-            self.emit(MoltOp(kind="ANEXT", args=[iter_obj], result=awaitable_new))
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", awaitable_slot, awaitable_new],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            awaitable = MoltValue(self.next_var(), type_hint="Future")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", awaitable_slot],
-                    result=awaitable,
-                )
-            )
-        else:
-            awaitable = MoltValue(self.next_var(), type_hint="Future")
-            self.emit(MoltOp(kind="ANEXT", args=[iter_obj], result=awaitable))
+        awaitable = MoltValue(self.next_var(), type_hint="Future")
+        self.emit(MoltOp(kind="ANEXT", args=[iter_obj], result=awaitable))
         if has_default:
             if default_val is None:
                 default_val = MoltValue(self.next_var(), type_hint="None")
@@ -10903,65 +10840,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none")))
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-        self.state_count += 1
-        pending_state_id = self.state_count
-        self.emit(
-            MoltOp(
-                kind="STATE_LABEL", args=[pending_state_id], result=MoltValue("none")
-            )
-        )
-        pending_state_val = MoltValue(self.next_var(), type_hint="int")
-        self.emit(
-            MoltOp(kind="CONST", args=[pending_state_id], result=pending_state_val)
-        )
-        awaitable_for_poll = awaitable
-        if awaitable_slot is not None:
-            awaitable_for_poll = MoltValue(self.next_var(), type_hint="Future")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", awaitable_slot],
-                    result=awaitable_for_poll,
-                )
-            )
-        self.state_count += 1
-        next_state_id = self.state_count
-        await_result_slot = self._async_local_offset(
-            f"__anext_result_{len(self.async_locals)}"
-        )
-        await_slot_val = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[await_result_slot], result=await_slot_val))
-        awaited = MoltValue(self.next_var(), type_hint="Any")
-        self.emit(
-            MoltOp(
-                kind="STATE_TRANSITION",
-                args=[
-                    awaitable_for_poll,
-                    await_slot_val,
-                    pending_state_val,
-                    next_state_id,
-                ],
-                result=awaited,
-            )
-        )
-        if awaitable_slot is not None:
-            cleared_val = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=cleared_val))
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", awaitable_slot, cleared_val],
-                    result=MoltValue("none"),
-                )
-            )
-        awaited_val = MoltValue(self.next_var(), type_hint="Any")
-        self.emit(
-            MoltOp(
-                kind="LOAD_CLOSURE",
-                args=["self", await_result_slot],
-                result=awaited_val,
-            )
-        )
+        awaited_val = self._emit_await_value(awaitable, raise_pending=False)
         exc_after = MoltValue(self.next_var(), type_hint="exception")
         self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=exc_after))
         none_after = MoltValue(self.next_var(), type_hint="None")
