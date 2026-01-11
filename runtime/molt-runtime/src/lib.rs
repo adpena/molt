@@ -7105,7 +7105,7 @@ pub unsafe extern "C" fn molt_sleep_register(task_bits: u64, future_bits: u64) -
     #[cfg(target_arch = "wasm32")]
     {
         SLEEP_QUEUE.register_blocking(task_ptr, deadline);
-        return 1;
+        1
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -7114,7 +7114,7 @@ pub unsafe extern "C" fn molt_sleep_register(task_bits: u64, future_bits: u64) -
         } else {
             SLEEP_QUEUE.register_scheduler(task_ptr, deadline);
         }
-        return 1;
+        1
     }
 }
 
