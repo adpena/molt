@@ -1,18 +1,17 @@
-Checkpoint: 2026-01-10 21:08:48 CST
-Git: 41b3b7e5a2f0c6b7e2a3f39c2b77c62aa8a4d2a5
+Checkpoint: 2026-01-10 21:28:55 CST
+Git: f4e38c1fc33ed4687d2f5a7850bff129d410fc8b
 
 Summary
-- Added awaitable debug logging behind `MOLT_DEBUG_AWAITABLE` to surface non-awaitable details during CI.
-- Diff harness now enables `MOLT_DEBUG_AWAITABLE` for compiled binaries to surface async-for failures in CI logs.
-- Re-ran native + wasm benches for the commit.
-- Docs/tests unchanged beyond the debug toggle; no spec updates needed.
+- Added `molt_async_sleep_new` to allocate async sleep futures with the runtime poll function set.
+- Native backend now routes `CALL_ASYNC` for `molt_async_sleep` through the new constructor, bypassing import
+  `func_addr` and avoiding null poll_fn headers on Linux.
+- Rebuilt molt-backend/molt-runtime tests; no spec changes in this slice.
 
 Files touched (uncommitted)
 - CHECKPOINT.md
 
 Tests run
-- uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json
-- uv run --python 3.14 python3 tools/bench_wasm.py --json-out bench/results/bench_wasm.json
+- cargo test -p molt-runtime -p molt-backend
 
 Known gaps
 - Allowlisted module calls still reject keywords/star args; only Molt-defined callables accept CALL_BIND.
