@@ -4782,10 +4782,10 @@ pub extern "C" fn molt_is_callable(obj_bits: u64) -> u64 {
                 let dict_bits = instance_dict_bits(ptr);
                 if dict_bits != 0 {
                     if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                        if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                            if dict_get_in_place(dict_ptr, call_bits).is_some() {
-                                return true;
-                            }
+                        if object_type_id(dict_ptr) == TYPE_ID_DICT
+                            && dict_get_in_place(dict_ptr, call_bits).is_some()
+                        {
+                            return true;
                         }
                     }
                 }
@@ -4806,10 +4806,10 @@ pub extern "C" fn molt_is_callable(obj_bits: u64) -> u64 {
                     let dict_bits = dataclass_dict_bits(ptr);
                     if dict_bits != 0 {
                         if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                            if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                                if dict_get_in_place(dict_ptr, call_bits).is_some() {
-                                    return true;
-                                }
+                            if object_type_id(dict_ptr) == TYPE_ID_DICT
+                                && dict_get_in_place(dict_ptr, call_bits).is_some()
+                            {
+                                return true;
                             }
                         }
                     }
