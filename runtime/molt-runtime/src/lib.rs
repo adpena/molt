@@ -906,7 +906,7 @@ fn object_pool() -> &'static Mutex<Vec<Vec<usize>>> {
 }
 
 fn object_pool_index(total_size: usize) -> Option<usize> {
-    if total_size == 0 || total_size > OBJECT_POOL_MAX_BYTES || total_size % 8 != 0 {
+    if total_size == 0 || total_size > OBJECT_POOL_MAX_BYTES || !total_size.is_multiple_of(8) {
         return None;
     }
     Some(total_size / 8)
@@ -1041,13 +1041,7 @@ unsafe fn object_mark_has_ptrs(ptr: *mut u8) {
     (*header_from_obj_ptr(ptr)).flags |= HEADER_FLAG_HAS_PTRS;
 }
 
-unsafe fn object_has_ptrs(ptr: *mut u8) -> bool {
-    ((*header_from_obj_ptr(ptr)).flags & HEADER_FLAG_HAS_PTRS) != 0
-}
-
-unsafe fn object_skip_class_decref(ptr: *mut u8) -> bool {
-    ((*header_from_obj_ptr(ptr)).flags & HEADER_FLAG_SKIP_CLASS_DECREF) != 0
-}
+// Intentionally no helper for flags to keep dead-code warnings clean.
 
 unsafe fn bigint_ref(ptr: *mut u8) -> &'static BigInt {
     &*(ptr as *const BigInt)
