@@ -18563,43 +18563,36 @@ unsafe fn bind_builtin_call(
 ) -> Option<Vec<u64>> {
     let fn_ptr = function_fn_ptr(func_ptr);
     if fn_ptr == dict_get_method as usize as u64 {
-        return Some(bind_builtin_keywords(
+        return bind_builtin_keywords(
             args,
             &["key", "default"],
             Some(MoltObject::none().bits()),
             None,
-        )?);
+        );
     }
     if fn_ptr == dict_setdefault_method as usize as u64 {
-        return Some(bind_builtin_keywords(
+        return bind_builtin_keywords(
             args,
             &["key", "default"],
             Some(MoltObject::none().bits()),
             None,
-        )?);
+        );
     }
     if fn_ptr == dict_update_method as usize as u64 {
-        return Some(bind_builtin_keywords(
-            args,
-            &["other"],
-            Some(missing_bits()),
-            None,
-        )?);
+        return bind_builtin_keywords(args, &["other"], Some(missing_bits()), None);
     }
     if fn_ptr == dict_pop_method as usize as u64 {
-        return Some(bind_builtin_pop(args)?);
+        return bind_builtin_pop(args);
     }
 
     if !args.kw_names.is_empty() {
         raise!("TypeError", "keywords are not supported for this builtin");
-        return None;
     }
 
     let mut out = args.pos.clone();
     let arity = function_arity(func_ptr) as usize;
     if out.len() > arity {
         raise!("TypeError", "too many positional arguments");
-        return None;
     }
     let missing = arity - out.len();
     if missing == 0 {
@@ -18626,7 +18619,6 @@ unsafe fn bind_builtin_call(
         return Some(out);
     }
     raise!("TypeError", "missing required arguments");
-    None
 }
 
 unsafe fn bind_builtin_keywords(
@@ -18637,7 +18629,6 @@ unsafe fn bind_builtin_keywords(
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
         raise!("TypeError", "missing required argument 'self'");
-        return None;
     }
     let mut out = vec![args.pos[0]];
     let mut values: Vec<Option<u64>> = vec![None; names.len()];
@@ -18646,7 +18637,6 @@ unsafe fn bind_builtin_keywords(
         let idx = pos_idx - 1;
         if idx >= names.len() {
             raise!("TypeError", "too many positional arguments");
-            return None;
         }
         values[idx] = Some(args.pos[pos_idx]);
         pos_idx += 1;
@@ -18665,7 +18655,6 @@ unsafe fn bind_builtin_keywords(
                 if values[idx].is_some() {
                     let msg = format!("got multiple values for argument '{name_str}'");
                     raise!("TypeError", &msg);
-                    return None;
                 }
                 values[idx] = Some(val_bits);
                 matched = true;
@@ -18675,7 +18664,6 @@ unsafe fn bind_builtin_keywords(
         if !matched {
             let msg = format!("got an unexpected keyword '{name_str}'");
             raise!("TypeError", &msg);
-            return None;
         }
     }
     for (idx, val) in values.iter_mut().enumerate() {
@@ -18687,7 +18675,6 @@ unsafe fn bind_builtin_keywords(
             let name = names[idx];
             let msg = format!("missing required argument '{name}'");
             raise!("TypeError", &msg);
-            return None;
         }
     }
     for val in values.into_iter().flatten() {
@@ -18702,7 +18689,6 @@ unsafe fn bind_builtin_keywords(
 unsafe fn bind_builtin_pop(args: &CallArgs) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
         raise!("TypeError", "missing required argument 'self'");
-        return None;
     }
     let mut out = vec![args.pos[0]];
     let mut key: Option<u64> = None;
@@ -18715,7 +18701,6 @@ unsafe fn bind_builtin_pop(args: &CallArgs) -> Option<Vec<u64>> {
             default = Some(args.pos[pos_idx]);
         } else {
             raise!("TypeError", "too many positional arguments");
-            return None;
         }
         pos_idx += 1;
     }
@@ -18731,25 +18716,21 @@ unsafe fn bind_builtin_pop(args: &CallArgs) -> Option<Vec<u64>> {
             if key.is_some() {
                 let msg = format!("got multiple values for argument '{name_str}'");
                 raise!("TypeError", &msg);
-                return None;
             }
             key = Some(val_bits);
         } else if name_str == "default" {
             if default.is_some() {
                 let msg = format!("got multiple values for argument '{name_str}'");
                 raise!("TypeError", &msg);
-                return None;
             }
             default = Some(val_bits);
         } else {
             let msg = format!("got an unexpected keyword '{name_str}'");
             raise!("TypeError", &msg);
-            return None;
         }
     }
     let Some(key_bits) = key else {
         raise!("TypeError", "missing required argument 'key'");
-        return None;
     };
     let (default_bits, has_default) = if let Some(bits) = default {
         (bits, MoltObject::from_int(1).bits())
