@@ -4220,8 +4220,9 @@ impl SimpleBackend {
                         self.module.declare_func_in_func(callargs_new, builder.func);
                     let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
                     let kw_capacity = builder.ins().iconst(types::I64, 0);
-                    let callargs_call =
-                        builder.ins().call(callargs_new_local, &[pos_capacity, kw_capacity]);
+                    let callargs_call = builder
+                        .ins()
+                        .call(callargs_new_local, &[pos_capacity, kw_capacity]);
                     let callargs_ptr = builder.inst_results(callargs_call)[0];
                     let mut push_sig = self.module.make_signature();
                     push_sig.params.push(AbiParam::new(types::I64));
@@ -4231,10 +4232,13 @@ impl SimpleBackend {
                         .module
                         .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
                         .unwrap();
-                    let callargs_push_local =
-                        self.module.declare_func_in_func(callargs_push_pos, builder.func);
+                    let callargs_push_local = self
+                        .module
+                        .declare_func_in_func(callargs_push_pos, builder.func);
                     for arg in &args {
-                        builder.ins().call(callargs_push_local, &[callargs_ptr, *arg]);
+                        builder
+                            .ins()
+                            .call(callargs_push_local, &[callargs_ptr, *arg]);
                     }
                     let mut bind_sig = self.module.make_signature();
                     bind_sig.params.push(AbiParam::new(types::I64));
@@ -4244,10 +4248,10 @@ impl SimpleBackend {
                         .module
                         .declare_function("molt_call_bind", Linkage::Import, &bind_sig)
                         .unwrap();
-                    let call_bind_local =
-                        self.module.declare_func_in_func(call_bind, builder.func);
-                    let fallback_call =
-                        builder.ins().call(call_bind_local, &[*callee_bits, callargs_ptr]);
+                    let call_bind_local = self.module.declare_func_in_func(call_bind, builder.func);
+                    let fallback_call = builder
+                        .ins()
+                        .call(call_bind_local, &[*callee_bits, callargs_ptr]);
                     let fallback_res = builder.inst_results(fallback_call)[0];
                     builder.ins().jump(merge_block, &[fallback_res]);
 
@@ -4619,8 +4623,9 @@ impl SimpleBackend {
                         self.module.declare_func_in_func(callargs_new, builder.func);
                     let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
                     let kw_capacity = builder.ins().iconst(types::I64, 0);
-                    let callargs_call =
-                        builder.ins().call(callargs_new_local, &[pos_capacity, kw_capacity]);
+                    let callargs_call = builder
+                        .ins()
+                        .call(callargs_new_local, &[pos_capacity, kw_capacity]);
                     let callargs_ptr = builder.inst_results(callargs_call)[0];
                     let mut push_sig = self.module.make_signature();
                     push_sig.params.push(AbiParam::new(types::I64));
@@ -4630,10 +4635,13 @@ impl SimpleBackend {
                         .module
                         .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
                         .unwrap();
-                    let callargs_push_local =
-                        self.module.declare_func_in_func(callargs_push_pos, builder.func);
+                    let callargs_push_local = self
+                        .module
+                        .declare_func_in_func(callargs_push_pos, builder.func);
                     for arg in &args {
-                        builder.ins().call(callargs_push_local, &[callargs_ptr, *arg]);
+                        builder
+                            .ins()
+                            .call(callargs_push_local, &[callargs_ptr, *arg]);
                     }
                     let mut bind_sig = self.module.make_signature();
                     bind_sig.params.push(AbiParam::new(types::I64));
@@ -4643,10 +4651,10 @@ impl SimpleBackend {
                         .module
                         .declare_function("molt_call_bind", Linkage::Import, &bind_sig)
                         .unwrap();
-                    let call_bind_local =
-                        self.module.declare_func_in_func(call_bind, builder.func);
-                    let fallback_call =
-                        builder.ins().call(call_bind_local, &[*func_bits, callargs_ptr]);
+                    let call_bind_local = self.module.declare_func_in_func(call_bind, builder.func);
+                    let fallback_call = builder
+                        .ins()
+                        .call(call_bind_local, &[*func_bits, callargs_ptr]);
                     let fallback_res = builder.inst_results(fallback_call)[0];
                     builder.ins().jump(merge_block, &[fallback_res]);
 

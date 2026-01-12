@@ -667,7 +667,8 @@ impl WasmBackend {
             self.funcs.function(8);
             let mut init_table = Function::new_with_locals_types(Vec::new());
             for (table_idx, func_idx) in table_indices.iter().enumerate() {
-                init_table.instruction(&Instruction::I32Const(table_base as i32 + table_idx as i32));
+                init_table
+                    .instruction(&Instruction::I32Const(table_base as i32 + table_idx as i32));
                 emit_ref_func(&mut init_table, reloc_enabled, *func_idx);
                 init_table.instruction(&Instruction::TableSet(0));
             }

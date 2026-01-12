@@ -17346,8 +17346,7 @@ unsafe fn call_class_init_with_args(class_ptr: *mut u8, args: &[u64]) -> u64 {
         return inst_bits;
     };
     let init_name_bits = intern_static_name(&INTERN_INIT_NAME, b"__init__");
-    let Some(init_bits) =
-        class_attr_lookup(class_ptr, class_ptr, Some(inst_ptr), init_name_bits)
+    let Some(init_bits) = class_attr_lookup(class_ptr, class_ptr, Some(inst_ptr), init_name_bits)
     else {
         return inst_bits;
     };
