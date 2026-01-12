@@ -16383,8 +16383,7 @@ pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
                         }
                     }
                     let class_bits = object_class_bits(ptr);
-                    if class_bits != 0 && (header.flags & HEADER_FLAG_SKIP_CLASS_DECREF) == 0
-                    {
+                    if class_bits != 0 && (header.flags & HEADER_FLAG_SKIP_CLASS_DECREF) == 0 {
                         dec_ref_bits(class_bits);
                     }
                 } else {

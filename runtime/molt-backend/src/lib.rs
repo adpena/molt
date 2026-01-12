@@ -126,7 +126,9 @@ fn emit_mark_has_ptrs(builder: &mut FunctionBuilder, obj_ptr: Value) {
     let header_ptr = builder
         .ins()
         .iadd_imm(obj_ptr, i64::from(HEADER_FLAGS_OFFSET));
-    let flags = builder.ins().load(types::I64, MemFlags::new(), header_ptr, 0);
+    let flags = builder
+        .ins()
+        .load(types::I64, MemFlags::new(), header_ptr, 0);
     let mask = builder.ins().iconst(types::I64, HEADER_HAS_PTRS_FLAG);
     let new_flags = builder.ins().bor(flags, mask);
     builder
