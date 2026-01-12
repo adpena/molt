@@ -17173,8 +17173,7 @@ unsafe fn call_function_obj2(func_bits: u64, arg0_bits: u64, arg1_bits: u64) -> 
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
     if closure_bits != 0 {
-        let func: extern "C" fn(u64, u64, u64) -> i64 =
-            std::mem::transmute(fn_ptr as usize);
+        let func: extern "C" fn(u64, u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
         func(closure_bits, arg0_bits, arg1_bits) as u64
     } else {
         let func: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
@@ -17203,12 +17202,10 @@ unsafe fn call_function_obj3(
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
     if closure_bits != 0 {
-        let func: extern "C" fn(u64, u64, u64, u64) -> i64 =
-            std::mem::transmute(fn_ptr as usize);
+        let func: extern "C" fn(u64, u64, u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
         func(closure_bits, arg0_bits, arg1_bits, arg2_bits) as u64
     } else {
-        let func: extern "C" fn(u64, u64, u64) -> i64 =
-            std::mem::transmute(fn_ptr as usize);
+        let func: extern "C" fn(u64, u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
         func(arg0_bits, arg1_bits, arg2_bits) as u64
     }
 }
@@ -17239,8 +17236,7 @@ unsafe fn call_function_obj4(
             std::mem::transmute(fn_ptr as usize);
         func(closure_bits, arg0_bits, arg1_bits, arg2_bits, arg3_bits) as u64
     } else {
-        let func: extern "C" fn(u64, u64, u64, u64) -> i64 =
-            std::mem::transmute(fn_ptr as usize);
+        let func: extern "C" fn(u64, u64, u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
         func(arg0_bits, arg1_bits, arg2_bits, arg3_bits) as u64
     }
 }
@@ -17270,7 +17266,14 @@ unsafe fn call_function_obj5(
     if closure_bits != 0 {
         let func: extern "C" fn(u64, u64, u64, u64, u64, u64) -> i64 =
             std::mem::transmute(fn_ptr as usize);
-        func(closure_bits, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits) as u64
+        func(
+            closure_bits,
+            arg0_bits,
+            arg1_bits,
+            arg2_bits,
+            arg3_bits,
+            arg4_bits,
+        ) as u64
     } else {
         let func: extern "C" fn(u64, u64, u64, u64, u64) -> i64 =
             std::mem::transmute(fn_ptr as usize);
@@ -17305,7 +17308,13 @@ unsafe fn call_function_obj6(
         let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> i64 =
             std::mem::transmute(fn_ptr as usize);
         func(
-            closure_bits, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
+            closure_bits,
+            arg0_bits,
+            arg1_bits,
+            arg2_bits,
+            arg3_bits,
+            arg4_bits,
+            arg5_bits,
         ) as u64
     } else {
         let func: extern "C" fn(u64, u64, u64, u64, u64, u64) -> i64 =
@@ -17407,14 +17416,7 @@ unsafe fn call_function_obj8(
         let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
             std::mem::transmute(fn_ptr as usize);
         func(
-            arg0_bits,
-            arg1_bits,
-            arg2_bits,
-            arg3_bits,
-            arg4_bits,
-            arg5_bits,
-            arg6_bits,
-            arg7_bits,
+            arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits, arg7_bits,
         ) as u64
     }
 }
