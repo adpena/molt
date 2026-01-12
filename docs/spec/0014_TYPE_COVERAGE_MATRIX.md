@@ -142,11 +142,13 @@
 - RC/GC hooks for all container edges and iterator state.
 - Implemented: instance dict fallback for structified objects + dynamic attrs on non-slot dataclasses.
 - Implemented: class objects + basic descriptors (`classmethod`, `staticmethod`, `property`).
+- Implemented: instance `__getattr__`/`__setattr__` hooks for user-defined classes.
 - Implemented: C3 MRO + multiple inheritance for attribute lookup + `super()` resolution + data descriptor precedence.
 - Implemented: frozenset hashing (order-insensitive) + set/frozenset algebra intrinsics.
 - Implemented: exception objects with cause/context/suppress fields.
   - Implemented: exception class objects derived from `Exception` for typed `type(exc)`.
 - TODO(type-coverage, owner:runtime, milestone:TC1): exception stack trace capture.
+- TODO(type-coverage, owner:runtime, milestone:TC2): `__getattribute__` override + object-level `__setattr__`/`__getattr__` builtins.
 - TODO(type-coverage, owner:runtime, milestone:TC2): formatting builtins (`ascii`, `bin`, `hex`, `oct`, `chr`, `ord`) + full `format` protocol (`__format__`, named fields, locale-aware grouping).
 - TODO(type-coverage, owner:runtime, milestone:TC2): rounding intrinsics (`floor`, `ceil`) + full deterministic semantics for edge cases.
 - TODO(type-coverage, owner:runtime, milestone:TC2): identity builtins (`hash`) with deterministic hashing policy.
@@ -157,6 +159,7 @@
 ## 4. Frontend + IR Coverage
 - Lower set literals/constructors + set algebra + frozenset; complex and exceptions remain.
 - Add IR ops for raise, try/except, unpacking, and dunder dispatch.
+- Implemented: `list.extend` consumes generic iterables via the iter protocol (range/generator/etc.).
 - TODO(type-coverage, owner:frontend, milestone:TC2): iterable unpacking + starred targets.
 
 ## 5. Backend + WIT/ABI

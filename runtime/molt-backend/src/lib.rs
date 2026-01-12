@@ -23,6 +23,7 @@ const INT_SHIFT: i64 = (64 - INT_WIDTH) as i64;
 const GENERATOR_CONTROL_BYTES: i32 = 32;
 const FUNC_DEFAULT_NONE: i64 = 1;
 const FUNC_DEFAULT_DICT_POP: i64 = 2;
+const FUNC_DEFAULT_DICT_UPDATE: i64 = 3;
 
 fn box_int(val: i64) -> i64 {
     let masked = (val as u64) & POINTER_MASK;
@@ -4246,6 +4247,13 @@ impl SimpleBackend {
                         .unwrap();
                     let default_kind_local =
                         self.module.declare_func_in_func(default_kind, builder.func);
+                    let mut missing_sig = self.module.make_signature();
+                    missing_sig.returns.push(AbiParam::new(types::I64));
+                    let missing_fn = self
+                        .module
+                        .declare_function("molt_missing", Linkage::Import, &missing_sig)
+                        .unwrap();
+                    let missing_local = self.module.declare_func_in_func(missing_fn, builder.func);
                     let mut arity_sig = self.module.make_signature();
                     arity_sig.params.push(AbiParam::new(types::I64));
                     arity_sig.params.push(AbiParam::new(types::I64));
@@ -4304,6 +4312,7 @@ impl SimpleBackend {
                     let default_kind_val = builder.inst_results(default_kind_call)[0];
                     let default_none = builder.ins().iconst(types::I64, FUNC_DEFAULT_NONE);
                     let default_pop = builder.ins().iconst(types::I64, FUNC_DEFAULT_DICT_POP);
+                    let default_update = builder.ins().iconst(types::I64, FUNC_DEFAULT_DICT_UPDATE);
 
                     let bound_exact_block = builder.create_block();
                     let bound_missing_one_block = builder.create_block();
@@ -4364,13 +4373,29 @@ impl SimpleBackend {
                         builder
                             .ins()
                             .icmp(IntCC::Equal, default_kind_val, default_pop);
+                    let is_default_update =
+                        builder
+                            .ins()
+                            .icmp(IntCC::Equal, default_kind_val, default_update);
                     let bound_missing_one_default = builder.create_block();
                     let bound_missing_one_pop = builder.create_block();
+                    let bound_missing_one_update = builder.create_block();
+                    let bound_missing_one_check = builder.create_block();
                     builder.ins().brif(
                         is_default_none,
                         bound_missing_one_default,
                         &[],
+                        bound_missing_one_check,
+                        &[],
+                    );
+
+                    builder.switch_to_block(bound_missing_one_check);
+                    builder.seal_block(bound_missing_one_check);
+                    builder.ins().brif(
+                        is_default_pop,
                         bound_missing_one_pop,
+                        &[],
+                        bound_missing_one_update,
                         &[],
                     );
 
@@ -4396,22 +4421,43 @@ impl SimpleBackend {
 
                     builder.switch_to_block(bound_missing_one_pop);
                     builder.seal_block(bound_missing_one_pop);
-                    let bound_missing_one_pop_ok = builder.create_block();
-                    builder.ins().brif(
-                        is_default_pop,
-                        bound_missing_one_pop_ok,
-                        &[],
-                        bound_error_block,
-                        &[],
-                    );
-
-                    builder.switch_to_block(bound_missing_one_pop_ok);
-                    builder.seal_block(bound_missing_one_pop_ok);
                     let mut bound_args = Vec::with_capacity(args.len() + 2);
                     bound_args.push(self_bits);
                     bound_args.extend(args.iter().copied());
                     let has_default_bits = builder.ins().iconst(types::I64, box_int(1));
                     bound_args.push(has_default_bits);
+                    let mut bound_sig = self.module.make_signature();
+                    for _ in 0..bound_args.len() {
+                        bound_sig.params.push(AbiParam::new(types::I64));
+                    }
+                    bound_sig.returns.push(AbiParam::new(types::I64));
+                    let bound_sig_ref = builder.import_signature(bound_sig);
+                    let bound_call =
+                        builder
+                            .ins()
+                            .call_indirect(bound_sig_ref, bound_fn_ptr, &bound_args);
+                    let bound_res = builder.inst_results(bound_call)[0];
+                    builder.ins().jump(merge_block, &[bound_res]);
+
+                    builder.switch_to_block(bound_missing_one_update);
+                    builder.seal_block(bound_missing_one_update);
+                    let bound_missing_one_update_ok = builder.create_block();
+                    builder.ins().brif(
+                        is_default_update,
+                        bound_missing_one_update_ok,
+                        &[],
+                        bound_error_block,
+                        &[],
+                    );
+
+                    builder.switch_to_block(bound_missing_one_update_ok);
+                    builder.seal_block(bound_missing_one_update_ok);
+                    let missing_call = builder.ins().call(missing_local, &[]);
+                    let missing_bits = builder.inst_results(missing_call)[0];
+                    let mut bound_args = Vec::with_capacity(args.len() + 2);
+                    bound_args.push(self_bits);
+                    bound_args.extend(args.iter().copied());
+                    bound_args.push(missing_bits);
                     let mut bound_sig = self.module.make_signature();
                     for _ in 0..bound_args.len() {
                         bound_sig.params.push(AbiParam::new(types::I64));

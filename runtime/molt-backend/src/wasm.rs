@@ -23,6 +23,7 @@ const QNAN_TAG_PTR_I64: i64 = (QNAN | TAG_PTR) as i64;
 const INT_MASK: u64 = (1 << 47) - 1;
 const FUNC_DEFAULT_NONE: i64 = 1;
 const FUNC_DEFAULT_DICT_POP: i64 = 2;
+const FUNC_DEFAULT_DICT_UPDATE: i64 = 3;
 
 #[derive(Clone, Copy)]
 struct DataSegmentInfo {
@@ -3652,6 +3653,44 @@ impl WasmBackend {
                                 emit_call_indirect(func, reloc_enabled, call_ty, 0);
                                 func.instruction(&Instruction::LocalSet(out));
                             };
+                        let emit_bound_call_with_local =
+                            |func: &mut Function, call_ty: u32, extra_locals: &[u32]| {
+                                func.instruction(&Instruction::LocalGet(func_bits));
+                                emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+                                func.instruction(&Instruction::I32WrapI64);
+                                func.instruction(&Instruction::I32Const(8));
+                                func.instruction(&Instruction::I32Add);
+                                func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                                    align: 3,
+                                    offset: 0,
+                                    memory_index: 0,
+                                }));
+                                for arg_name in &args_names[1..] {
+                                    let arg = locals[arg_name];
+                                    func.instruction(&Instruction::LocalGet(arg));
+                                }
+                                for &extra in extra_locals {
+                                    func.instruction(&Instruction::LocalGet(extra));
+                                }
+                                func.instruction(&Instruction::LocalGet(func_bits));
+                                emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+                                func.instruction(&Instruction::I32WrapI64);
+                                func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                                    align: 3,
+                                    offset: 0,
+                                    memory_index: 0,
+                                }));
+                                emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+                                func.instruction(&Instruction::I32WrapI64);
+                                func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                                    align: 3,
+                                    offset: 0,
+                                    memory_index: 0,
+                                }));
+                                func.instruction(&Instruction::I32WrapI64);
+                                emit_call_indirect(func, reloc_enabled, call_ty, 0);
+                                func.instruction(&Instruction::LocalSet(out));
+                            };
 
                         let emit_arity_error = |func: &mut Function| {
                             func.instruction(&Instruction::LocalGet(tmp_expected));
@@ -3714,7 +3753,16 @@ impl WasmBackend {
                         func.instruction(&Instruction::If(BlockType::Empty));
                         emit_bound_call(func, bound_call_type_plus1, &[box_none()]);
                         func.instruction(&Instruction::Else);
+                        func.instruction(&Instruction::LocalGet(tmp_default_kind));
+                        func.instruction(&Instruction::I64Const(FUNC_DEFAULT_DICT_UPDATE));
+                        func.instruction(&Instruction::I64Eq);
+                        func.instruction(&Instruction::If(BlockType::Empty));
+                        emit_call(func, reloc_enabled, import_ids["missing"]);
+                        func.instruction(&Instruction::LocalSet(tmp_missing));
+                        emit_bound_call_with_local(func, bound_call_type_plus1, &[tmp_missing]);
+                        func.instruction(&Instruction::Else);
                         emit_arity_error(func);
+                        func.instruction(&Instruction::End);
                         func.instruction(&Instruction::End);
                         func.instruction(&Instruction::Else);
                         func.instruction(&Instruction::LocalGet(tmp_missing));

@@ -1,49 +1,42 @@
-Checkpoint: 2026-01-11T17:38:40-0600
-Git: f37c1e6b558ee4c1fdd4452e5f8ad6e31c1904e1 (dirty)
+Checkpoint: 2026-01-11T18:43:54-0600
+Git: f70c52bd80932247a23947b34222e0017fe93176 (dirty)
 
 Summary
-- Fixed capability lookup crash by memoizing parsed capabilities and avoiding temporary set membership in `has()`.
-- Fixed stdlib root `__init__.py` module naming to avoid empty module names.
-- Updated Django demo path and checkpoint freshness requirements in docs.
-- Applied `cargo fmt` to satisfy CI rustfmt on the wasm backend.
-- Fixed wasm backend clippy warnings (compile context, flatten loops, data reloc scan).
+- Added instance `__getattr__`/`__setattr__` hooks, `**kwargs` mapping support, and dict `setdefault`/`update` bound methods.
+- `list.extend` now consumes generic iterables via the iter protocol; added differential coverage.
+- Updated STATUS/type matrix and refreshed README performance summary with new native + WASM bench results.
 
 Files touched (uncommitted)
-- AGENTS.md
 - CHECKPOINT.md
-- Cargo.lock
-- GEMINI.md
-- OPTIMIZATIONS_PLAN.md
-- ROADMAP.md
+- README.md
 - bench/results/bench.json
 - bench/results/bench_wasm.json
+- docs/spec/0014_TYPE_COVERAGE_MATRIX.md
 - docs/spec/STATUS.md
 - logs/clif_fib.txt
 - logs/clif_sum_list.txt
 - logs/ir_fib.txt
-- run_wasm.js
-- runtime/molt-backend/Cargo.toml
 - runtime/molt-backend/src/lib.rs
 - runtime/molt-backend/src/wasm.rs
 - runtime/molt-runtime/src/lib.rs
-- src/molt/capabilities.py
-- src/molt/cli.py
-- src/molt/frontend/__init__.py
-- tests/wasm_harness.py
-- tools/bench_wasm.py
-- tools/wasm_link.py
-- wit/molt-runtime.wit
+- tests/differential/basic/attr_hooks.py
+- tests/differential/basic/container_methods.py
+- tests/differential/basic/kwargs_mapping.py
 
 Docs/spec updates needed?
-- None (roadmap updated).
+- None (STATUS/type matrix/README updated).
 
 Tests run
+- `cargo fmt`
+- `uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic/container_methods.py`
 - `uv run --python 3.12 python3 tools/dev.py lint`
 - `uv run --python 3.12 python3 tools/dev.py test`
-- `cargo fmt`
+- `cargo test`
 - `cargo clippy -- -D warnings`
+- `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json`
+- `uv run --python 3.14 python3 tools/bench_wasm.py --json-out bench/results/bench_wasm.json`
 
 Known gaps
-- wasm perf is still ~2-4x slower than CPython on list/min/max and struct/descriptor benches (bench_struct ~4.3x).
-- wasm table init uses a start-function; element segments still pending if reloc.ELEM is restored.
 - Codon baseline skips remain for async/channel/matrix_math/bytearray/memoryview/parse_msgpack/struct/sum_list_hints benches.
+- WASM remains slower than native on nested-loop/struct benches; async/channel binaries are still the largest (80-142 KB).
+- Single-module WASM link + JS stub removal remains pending (see `docs/spec/STATUS.md`).

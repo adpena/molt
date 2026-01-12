@@ -23,19 +23,23 @@ README/ROADMAP in sync.
 - memoryview exposes 1D `format`/`shape`/`strides`/`nbytes` for bytes/bytearray views.
 - `str.count` supports start/end slices with Unicode-aware offsets.
 - `str.lower`/`str.upper`, `list.clear`/`list.copy`/`list.reverse`, and `dict.setdefault`/`dict.update`.
+- `list.extend` accepts iterable inputs (range/generator/etc.) via the iter protocol.
 - Dict/set key hashability parity for common unhashable types (list/dict/set/bytearray/memoryview).
 - Importable `builtins` module binds supported builtins (see stdlib matrix).
 - `enumerate` builtin returns an iterator over `(index, value)` with optional `start`.
 - Builtin function objects for allowlisted builtins (`any`, `all`, `callable`, `repr`, `getattr`, `hasattr`, `round`, `next`, `anext`, `print`, `super`).
 - WASM harness runs via `run_wasm.js` with shared memory/table and direct runtime imports (legacy wrapper fallback via `MOLT_WASM_LEGACY=1`), including async/channel benches on WASI.
+- Instance `__getattr__`/`__setattr__` hooks for user-defined classes.
+- `**kwargs` expansion accepts dicts and mapping-like objects with `keys()` + `__getitem__`.
 
 ## Limitations (Current)
 - Classes/object model: C3 MRO + multiple inheritance + `super()` resolution for
   attribute lookup; no metaclasses or dynamic `type()` construction; descriptor
   precedence for `__get__`/`__set__`/`__delete__` is supported.
 - Attributes: fixed struct fields with dynamic instance-dict fallback; no
-  user-defined `__slots__` beyond dataclass lowering; no `__getattr__`/
-  `__setattr__` hooks yet.
+  user-defined `__slots__` beyond dataclass lowering; `__getattribute__` is
+  not implemented and object-level `__setattr__`/`__getattr__` are not exposed
+  as builtins.
 - Dataclasses: compile-time lowering for frozen/eq/repr/slots; no
   `default_factory`, `kw_only`, or `order`.
 - Call binding: allowlisted module functions still reject keyword/variadic calls; binder supports up to 8 arguments before fallback work is added.
@@ -82,7 +86,7 @@ README/ROADMAP in sync.
 - Async loop/task APIs + `contextvars` are incomplete; cancellation injection and long-running workload hardening are pending.
 - Capability-gated I/O/runtime modules (`os`, `sys`, `pathlib`, `logging`, `time`, `selectors`) need deterministic parity.
 - HTTP/ASGI surface and DB driver/pool integration are not implemented.
-- Descriptor hooks and class attribute fallbacks are missing (`__getattr__`/`__setattr__`), limiting idiomatic Django patterns.
+- Descriptor hooks still lack `__getattribute__`/metaclass behaviors, limiting idiomatic Django patterns.
 
 ## Tooling + Verification
 - CI enforces lint, type checks, Rust fmt/clippy, differential tests, and perf
