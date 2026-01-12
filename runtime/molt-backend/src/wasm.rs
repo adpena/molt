@@ -54,6 +54,7 @@ struct CompileFuncContext<'a> {
     func_map: &'a HashMap<String, u32>,
     func_indices: &'a HashMap<String, u32>,
     table_func_indices: &'a [u32],
+    table_base: u32,
     import_ids: &'a HashMap<String, u32>,
     user_type_map: &'a HashMap<usize, u32>,
     reloc_enabled: bool,
@@ -315,6 +316,7 @@ impl WasmBackend {
         add_import("del_attr_name", 3, &mut self.import_ids);
         add_import("is_truthy", 2, &mut self.import_ids);
         add_import("is_bound_method", 2, &mut self.import_ids);
+        add_import("is_function_obj", 2, &mut self.import_ids);
         add_import("function_default_kind", 2, &mut self.import_ids);
         add_import("call_arity_error", 3, &mut self.import_ids);
         add_import("missing", 0, &mut self.import_ids);
@@ -598,7 +600,9 @@ impl WasmBackend {
             ("molt_iter", "iter"),
             ("molt_aiter", "aiter"),
         ];
-        let table_min = 192.max((3 + builtin_table_funcs.len() + ir.functions.len()) as u32);
+        let table_base: u32 = 256;
+        let table_len = (3 + builtin_table_funcs.len() + ir.functions.len()) as u32;
+        let table_min = 192.max(table_base + table_len);
         let table_ty = TableType {
             element_type: RefType::FUNCREF,
             minimum: table_min,
@@ -645,6 +649,7 @@ impl WasmBackend {
             import_ids: &import_ids,
             user_type_map: &user_type_map,
             reloc_enabled,
+            table_base,
         };
         for func_ir in ir.functions {
             let type_idx = if func_ir.name.ends_with("_poll") {
@@ -662,7 +667,7 @@ impl WasmBackend {
             self.funcs.function(8);
             let mut init_table = Function::new_with_locals_types(Vec::new());
             for (table_idx, func_idx) in table_indices.iter().enumerate() {
-                init_table.instruction(&Instruction::I32Const(table_idx as i32));
+                init_table.instruction(&Instruction::I32Const(table_base as i32 + table_idx as i32));
                 emit_ref_func(&mut init_table, reloc_enabled, *func_idx);
                 init_table.instruction(&Instruction::TableSet(0));
             }
@@ -674,7 +679,7 @@ impl WasmBackend {
             });
         } else {
             let mut element_section = ElementSection::new();
-            let offset = ConstExpr::i32_const(0);
+            let offset = ConstExpr::i32_const(table_base as i32);
             element_section.segment(ElementSegment {
                 mode: ElementMode::Active {
                     table: None,
@@ -720,6 +725,7 @@ impl WasmBackend {
         let func_map = ctx.func_map;
         let func_indices = ctx.func_indices;
         let table_func_indices = ctx.table_func_indices;
+        let table_base = ctx.table_base;
         let import_ids = ctx.import_ids;
         let user_type_map = ctx.user_type_map;
         let reloc_enabled = ctx.reloc_enabled;
@@ -3496,8 +3502,9 @@ impl WasmBackend {
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(-24));
                         func.instruction(&Instruction::I32Add);
-                        let table_idx = func_map[op.s_value.as_ref().unwrap()];
-                        let target_func_index = table_func_indices[table_idx as usize];
+                        let table_slot = func_map[op.s_value.as_ref().unwrap()];
+                        let table_idx = table_base + table_slot;
+                        let target_func_index = table_func_indices[table_slot as usize];
                         emit_table_index_i32(
                             func,
                             reloc_enabled,
@@ -3548,8 +3555,9 @@ impl WasmBackend {
                     "func_new" => {
                         let func_name = op.s_value.as_ref().unwrap();
                         let arity = op.value.unwrap_or(0);
-                        let table_idx = func_map[func_name];
-                        let target_func_index = table_func_indices[table_idx as usize];
+                        let table_slot = func_map[func_name];
+                        let table_idx = table_base + table_slot;
+                        let target_func_index = table_func_indices[table_slot as usize];
                         emit_table_index_i64(
                             func,
                             reloc_enabled,
@@ -3566,8 +3574,9 @@ impl WasmBackend {
                     "builtin_func" => {
                         let func_name = op.s_value.as_ref().unwrap();
                         let arity = op.value.unwrap_or(0);
-                        let table_idx = func_map[func_name];
-                        let target_func_index = table_func_indices[table_idx as usize];
+                        let table_slot = func_map[func_name];
+                        let table_idx = table_base + table_slot;
+                        let target_func_index = table_func_indices[table_slot as usize];
                         emit_table_index_i64(
                             func,
                             reloc_enabled,
@@ -3783,6 +3792,27 @@ impl WasmBackend {
                         func.instruction(&Instruction::End);
                         func.instruction(&Instruction::End);
                         func.instruction(&Instruction::Else);
+                        func.instruction(&Instruction::LocalGet(func_bits));
+                        emit_call(func, reloc_enabled, import_ids["is_function_obj"]);
+                        emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+                        func.instruction(&Instruction::I32WrapI64);
+                        func.instruction(&Instruction::If(BlockType::Empty));
+                        func.instruction(&Instruction::LocalGet(func_bits));
+                        emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+                        func.instruction(&Instruction::I32WrapI64);
+                        func.instruction(&Instruction::I32Const(8));
+                        func.instruction(&Instruction::I32Add);
+                        func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                            align: 3,
+                            offset: 0,
+                            memory_index: 0,
+                        }));
+                        func.instruction(&Instruction::LocalSet(tmp_expected));
+
+                        func.instruction(&Instruction::LocalGet(tmp_expected));
+                        func.instruction(&Instruction::I64Const(provided));
+                        func.instruction(&Instruction::I64Eq);
+                        func.instruction(&Instruction::If(BlockType::Empty));
                         for arg_name in &args_names[1..] {
                             let arg = locals[arg_name];
                             func.instruction(&Instruction::LocalGet(arg));
@@ -3798,6 +3828,42 @@ impl WasmBackend {
                         func.instruction(&Instruction::I32WrapI64);
                         emit_call_indirect(func, reloc_enabled, call_type, 0);
                         func.instruction(&Instruction::LocalSet(out));
+                        func.instruction(&Instruction::Else);
+                        let callargs_tmp = tmp_expected;
+                        func.instruction(&Instruction::I64Const(arity as i64));
+                        func.instruction(&Instruction::I64Const(0));
+                        emit_call(func, reloc_enabled, import_ids["callargs_new"]);
+                        func.instruction(&Instruction::LocalSet(callargs_tmp));
+                        for arg_name in &args_names[1..] {
+                            let arg = locals[arg_name];
+                            func.instruction(&Instruction::LocalGet(callargs_tmp));
+                            func.instruction(&Instruction::LocalGet(arg));
+                            emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
+                            func.instruction(&Instruction::Drop);
+                        }
+                        func.instruction(&Instruction::LocalGet(func_bits));
+                        func.instruction(&Instruction::LocalGet(callargs_tmp));
+                        emit_call(func, reloc_enabled, import_ids["call_bind"]);
+                        func.instruction(&Instruction::LocalSet(out));
+                        func.instruction(&Instruction::End);
+                        func.instruction(&Instruction::Else);
+                        let callargs_tmp = tmp_expected;
+                        func.instruction(&Instruction::I64Const(arity as i64));
+                        func.instruction(&Instruction::I64Const(0));
+                        emit_call(func, reloc_enabled, import_ids["callargs_new"]);
+                        func.instruction(&Instruction::LocalSet(callargs_tmp));
+                        for arg_name in &args_names[1..] {
+                            let arg = locals[arg_name];
+                            func.instruction(&Instruction::LocalGet(callargs_tmp));
+                            func.instruction(&Instruction::LocalGet(arg));
+                            emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
+                            func.instruction(&Instruction::Drop);
+                        }
+                        func.instruction(&Instruction::LocalGet(func_bits));
+                        func.instruction(&Instruction::LocalGet(callargs_tmp));
+                        emit_call(func, reloc_enabled, import_ids["call_bind"]);
+                        func.instruction(&Instruction::LocalSet(out));
+                        func.instruction(&Instruction::End);
                         func.instruction(&Instruction::End);
                     }
                     "call_bind" => {
@@ -3918,8 +3984,9 @@ impl WasmBackend {
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(-24));
                         func.instruction(&Instruction::I32Add);
-                        let table_idx = func_map[op.s_value.as_ref().unwrap()];
-                        let target_func_index = table_func_indices[table_idx as usize];
+                        let table_slot = func_map[op.s_value.as_ref().unwrap()];
+                        let table_idx = table_base + table_slot;
+                        let target_func_index = table_func_indices[table_slot as usize];
                         emit_table_index_i32(
                             func,
                             reloc_enabled,
@@ -3963,8 +4030,9 @@ impl WasmBackend {
                     }
                     "alloc_generator" => {
                         let total = op.value.unwrap_or(0);
-                        let table_idx = func_map[op.s_value.as_ref().unwrap()];
-                        let target_func_index = table_func_indices[table_idx as usize];
+                        let table_slot = func_map[op.s_value.as_ref().unwrap()];
+                        let table_idx = table_base + table_slot;
+                        let target_func_index = table_func_indices[table_slot as usize];
                         emit_table_index_i64(
                             func,
                             reloc_enabled,

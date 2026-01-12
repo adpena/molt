@@ -36,8 +36,8 @@
 | Module | Tier | Status | Priority | Milestone | Owner | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | builtins | Core | Partial | P0 | SL1 | runtime/frontend | Importable module binds supported builtins (including function objects for allowlisted builtins); missing names raise `AttributeError`. |
-| functools | Core-adjacent | Planned | P1 | SL1 | stdlib/runtime | Promote `lru_cache`, `partial`, `reduce` fast paths. |
-| itertools | Core-adjacent | Planned | P1 | SL1 | stdlib/runtime | Iterator kernels; tie into vectorization. |
+| functools | Core-adjacent | Partial | P1 | SL1 | stdlib/runtime | `partial`, `reduce`, `lru_cache`, `wraps` shim (no fast paths yet). |
+| itertools | Core-adjacent | Partial | P1 | SL1 | stdlib/runtime | `chain`, `islice`, `repeat` shim; vectorized kernels pending. |
 | operator | Core-adjacent | Planned | P1 | SL1 | stdlib/runtime | Low-level op dispatch helpers. |
 | math | Core-adjacent | Planned | P1 | SL1 | stdlib/runtime | SIMD-friendly numeric intrinsics. |
 | collections | Stdlib | Planned | P1 | SL1 | stdlib | `deque`, `Counter`, `defaultdict`. |

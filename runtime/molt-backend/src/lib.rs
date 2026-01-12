@@ -4168,6 +4168,25 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let expected_addr = builder.ins().func_addr(types::I64, local_callee);
 
+                    let mut check_sig = self.module.make_signature();
+                    check_sig.params.push(AbiParam::new(types::I64));
+                    check_sig.returns.push(AbiParam::new(types::I64));
+                    let is_func = self
+                        .module
+                        .declare_function("molt_is_function_obj", Linkage::Import, &check_sig)
+                        .unwrap();
+                    let is_func_local = self.module.declare_func_in_func(is_func, builder.func);
+                    let truthy = self
+                        .module
+                        .declare_function("molt_is_truthy", Linkage::Import, &check_sig)
+                        .unwrap();
+                    let truthy_local = self.module.declare_func_in_func(truthy, builder.func);
+                    let is_func_call = builder.ins().call(is_func_local, &[*callee_bits]);
+                    let is_func_bits = builder.inst_results(is_func_call)[0];
+                    let truthy_call = builder.ins().call(truthy_local, &[is_func_bits]);
+                    let truthy_bits = builder.inst_results(truthy_call)[0];
+                    let is_func_bool = builder.ins().icmp_imm(IntCC::NotEqual, truthy_bits, 0);
+
                     let mut resolve_sig = self.module.make_signature();
                     resolve_sig.params.push(AbiParam::new(types::I64));
                     resolve_sig.returns.push(AbiParam::new(types::I64));
@@ -4178,16 +4197,68 @@ impl SimpleBackend {
                     let resolve_local = self
                         .module
                         .declare_func_in_func(resolve_callee, builder.func);
-                    let resolve_call = builder.ins().call(resolve_local, &[*callee_bits]);
-                    let func_ptr = builder.inst_results(resolve_call)[0];
-                    let fn_ptr = builder.ins().load(types::I64, MemFlags::new(), func_ptr, 0);
-
-                    let matches = builder.ins().icmp(IntCC::Equal, fn_ptr, expected_addr);
-                    let then_block = builder.create_block();
-                    let else_block = builder.create_block();
                     let merge_block = builder.create_block();
                     builder.append_block_param(merge_block, types::I64);
 
+                    let func_block = builder.create_block();
+                    let fallback_block = builder.create_block();
+                    builder
+                        .ins()
+                        .brif(is_func_bool, func_block, &[], fallback_block, &[]);
+
+                    builder.switch_to_block(fallback_block);
+                    builder.seal_block(fallback_block);
+                    let mut callargs_sig = self.module.make_signature();
+                    callargs_sig.params.push(AbiParam::new(types::I64));
+                    callargs_sig.params.push(AbiParam::new(types::I64));
+                    callargs_sig.returns.push(AbiParam::new(types::I64));
+                    let callargs_new = self
+                        .module
+                        .declare_function("molt_callargs_new", Linkage::Import, &callargs_sig)
+                        .unwrap();
+                    let callargs_new_local =
+                        self.module.declare_func_in_func(callargs_new, builder.func);
+                    let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
+                    let kw_capacity = builder.ins().iconst(types::I64, 0);
+                    let callargs_call =
+                        builder.ins().call(callargs_new_local, &[pos_capacity, kw_capacity]);
+                    let callargs_ptr = builder.inst_results(callargs_call)[0];
+                    let mut push_sig = self.module.make_signature();
+                    push_sig.params.push(AbiParam::new(types::I64));
+                    push_sig.params.push(AbiParam::new(types::I64));
+                    push_sig.returns.push(AbiParam::new(types::I64));
+                    let callargs_push_pos = self
+                        .module
+                        .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
+                        .unwrap();
+                    let callargs_push_local =
+                        self.module.declare_func_in_func(callargs_push_pos, builder.func);
+                    for arg in &args {
+                        builder.ins().call(callargs_push_local, &[callargs_ptr, *arg]);
+                    }
+                    let mut bind_sig = self.module.make_signature();
+                    bind_sig.params.push(AbiParam::new(types::I64));
+                    bind_sig.params.push(AbiParam::new(types::I64));
+                    bind_sig.returns.push(AbiParam::new(types::I64));
+                    let call_bind = self
+                        .module
+                        .declare_function("molt_call_bind", Linkage::Import, &bind_sig)
+                        .unwrap();
+                    let call_bind_local =
+                        self.module.declare_func_in_func(call_bind, builder.func);
+                    let fallback_call =
+                        builder.ins().call(call_bind_local, &[*callee_bits, callargs_ptr]);
+                    let fallback_res = builder.inst_results(fallback_call)[0];
+                    builder.ins().jump(merge_block, &[fallback_res]);
+
+                    builder.switch_to_block(func_block);
+                    builder.seal_block(func_block);
+                    let resolve_call = builder.ins().call(resolve_local, &[*callee_bits]);
+                    let func_ptr = builder.inst_results(resolve_call)[0];
+                    let fn_ptr = builder.ins().load(types::I64, MemFlags::new(), func_ptr, 0);
+                    let matches = builder.ins().icmp(IntCC::Equal, fn_ptr, expected_addr);
+                    let then_block = builder.create_block();
+                    let else_block = builder.create_block();
                     builder
                         .ins()
                         .brif(matches, then_block, &[], else_block, &[]);
@@ -4236,6 +4307,11 @@ impl SimpleBackend {
                         .declare_function("molt_is_bound_method", Linkage::Import, &check_sig)
                         .unwrap();
                     let is_bound_local = self.module.declare_func_in_func(is_bound, builder.func);
+                    let is_func = self
+                        .module
+                        .declare_function("molt_is_function_obj", Linkage::Import, &check_sig)
+                        .unwrap();
+                    let is_func_local = self.module.declare_func_in_func(is_func, builder.func);
                     let truthy = self
                         .module
                         .declare_function("molt_is_truthy", Linkage::Import, &check_sig)
@@ -4271,12 +4347,14 @@ impl SimpleBackend {
                     let is_bound_bool = builder.ins().icmp_imm(IntCC::NotEqual, truthy_bits, 0);
 
                     let bound_block = builder.create_block();
-                    let direct_block = builder.create_block();
+                    let non_bound_block = builder.create_block();
+                    let func_block = builder.create_block();
+                    let fallback_block = builder.create_block();
                     let merge_block = builder.create_block();
                     builder.append_block_param(merge_block, types::I64);
                     builder
                         .ins()
-                        .brif(is_bound_bool, bound_block, &[], direct_block, &[]);
+                        .brif(is_bound_bool, bound_block, &[], non_bound_block, &[]);
 
                     builder.switch_to_block(bound_block);
                     builder.seal_block(bound_block);
@@ -4516,8 +4594,64 @@ impl SimpleBackend {
                     let err_res = builder.inst_results(err_call)[0];
                     builder.ins().jump(merge_block, &[err_res]);
 
-                    builder.switch_to_block(direct_block);
-                    builder.seal_block(direct_block);
+                    builder.switch_to_block(non_bound_block);
+                    builder.seal_block(non_bound_block);
+                    let is_func_call = builder.ins().call(is_func_local, &[*func_bits]);
+                    let is_func_bits = builder.inst_results(is_func_call)[0];
+                    let truthy_call = builder.ins().call(truthy_local, &[is_func_bits]);
+                    let truthy_bits = builder.inst_results(truthy_call)[0];
+                    let is_func_bool = builder.ins().icmp_imm(IntCC::NotEqual, truthy_bits, 0);
+                    builder
+                        .ins()
+                        .brif(is_func_bool, func_block, &[], fallback_block, &[]);
+
+                    builder.switch_to_block(fallback_block);
+                    builder.seal_block(fallback_block);
+                    let mut new_sig = self.module.make_signature();
+                    new_sig.params.push(AbiParam::new(types::I64));
+                    new_sig.params.push(AbiParam::new(types::I64));
+                    new_sig.returns.push(AbiParam::new(types::I64));
+                    let callargs_new = self
+                        .module
+                        .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
+                        .unwrap();
+                    let callargs_new_local =
+                        self.module.declare_func_in_func(callargs_new, builder.func);
+                    let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
+                    let kw_capacity = builder.ins().iconst(types::I64, 0);
+                    let callargs_call =
+                        builder.ins().call(callargs_new_local, &[pos_capacity, kw_capacity]);
+                    let callargs_ptr = builder.inst_results(callargs_call)[0];
+                    let mut push_sig = self.module.make_signature();
+                    push_sig.params.push(AbiParam::new(types::I64));
+                    push_sig.params.push(AbiParam::new(types::I64));
+                    push_sig.returns.push(AbiParam::new(types::I64));
+                    let callargs_push_pos = self
+                        .module
+                        .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
+                        .unwrap();
+                    let callargs_push_local =
+                        self.module.declare_func_in_func(callargs_push_pos, builder.func);
+                    for arg in &args {
+                        builder.ins().call(callargs_push_local, &[callargs_ptr, *arg]);
+                    }
+                    let mut bind_sig = self.module.make_signature();
+                    bind_sig.params.push(AbiParam::new(types::I64));
+                    bind_sig.params.push(AbiParam::new(types::I64));
+                    bind_sig.returns.push(AbiParam::new(types::I64));
+                    let call_bind = self
+                        .module
+                        .declare_function("molt_call_bind", Linkage::Import, &bind_sig)
+                        .unwrap();
+                    let call_bind_local =
+                        self.module.declare_func_in_func(call_bind, builder.func);
+                    let fallback_call =
+                        builder.ins().call(call_bind_local, &[*func_bits, callargs_ptr]);
+                    let fallback_res = builder.inst_results(fallback_call)[0];
+                    builder.ins().jump(merge_block, &[fallback_res]);
+
+                    builder.switch_to_block(func_block);
+                    builder.seal_block(func_block);
                     let resolve_call = builder.ins().call(resolve_local, &[*func_bits]);
                     let func_ptr = builder.inst_results(resolve_call)[0];
                     let fn_ptr = builder.ins().load(types::I64, MemFlags::new(), func_ptr, 0);

@@ -101,7 +101,7 @@ def _append_rustflags(env: dict[str, str], flags: str) -> None:
 
 def build_runtime_wasm(*, reloc: bool, output: Path) -> bool:
     env = os.environ.copy()
-    base_flags = "-C link-arg=--import-memory"
+    base_flags = "-C link-arg=--import-memory -C link-arg=--import-table -C link-arg=--growable-table"
     if reloc:
         base_flags = (
             f"{base_flags} -C link-arg=--relocatable -C link-arg=--no-gc-sections"

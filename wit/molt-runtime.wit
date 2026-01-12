@@ -190,6 +190,7 @@ interface intrinsics {
     generator_close: func(gen: molt-object) -> molt-object;
     is_generator: func(obj: molt-object) -> molt-object;
     is_bound_method: func(obj: molt-object) -> molt-object;
+    is_function_obj: func(obj: molt-object) -> molt-object;
     is_callable: func(obj: molt-object) -> molt-object;
     index: func(obj: molt-object, key: molt-object) -> molt-object;
     store_index: func(obj: molt-object, key: molt-object, val: molt-object) -> molt-object;

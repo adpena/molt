@@ -211,7 +211,7 @@ def normalize_type_hint(value: str | None) -> str | None:
                         return f"{base}[{inner_mapping[elem]}]"
             if inner_lower in {"any", "object"}:
                 return base
-            return None
+            return base
         if base == "dict":
             if "," in inner:
                 parts = [part.strip() for part in inner.split(",") if part.strip()]
@@ -232,7 +232,7 @@ def normalize_type_hint(value: str | None) -> str | None:
                             return f"dict[str,{val}]"
             if inner_lower in {"any", "object"}:
                 return "dict"
-            return None
+            return "dict"
         text = base
     base = text.strip()
     base_lower = base.lower()

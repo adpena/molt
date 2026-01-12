@@ -1,4 +1,15 @@
-from molt.stdlib import copy, fnmatch, inspect, pprint, string, sys, traceback, typing
+from molt.stdlib import (
+    copy,
+    fnmatch,
+    functools,
+    inspect,
+    itertools,
+    pprint,
+    string,
+    sys,
+    traceback,
+    typing,
+)
 
 
 def foo(a, b=1):
@@ -17,3 +28,29 @@ try:
 except Exception as exc:
     print(traceback.format_exception_only(type(exc), exc)[0].strip())
 print(sys.getrecursionlimit() > 0)
+
+
+def add(a, b):
+    return a + b
+
+
+part = functools.partial(add, 2)
+print(part(3))
+
+
+def fib(n):
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+
+fib = functools.lru_cache(maxsize=2)(fib)
+
+
+print(fib(5))
+print(fib.cache_info().hits >= 0)
+print(functools.reduce(add, [1, 2, 3], 0))
+
+print(list(itertools.chain([1, 2], [3])))
+print(list(itertools.islice([0, 1, 2, 3, 4], 1, 5, 2)))
+print(list(itertools.repeat("x", 3)))

@@ -55,3 +55,21 @@ def dict_methods_dynamic(mapping):
 
 
 dict_methods_dynamic({"a": 1})
+
+s = "a☃b"
+chars: list[str] = []
+for ch in s:
+    chars.append(ch)
+print(chars)
+
+b = b"\x00\xff"
+byte_vals: list[int] = []
+for val in b:
+    byte_vals.append(val)
+print(byte_vals)
+
+ba = bytearray(b"\x01\x02")
+ba_vals: list[int] = []
+for val in ba:
+    ba_vals.append(val)
+print(ba_vals)

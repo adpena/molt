@@ -13,9 +13,9 @@
 | int | arithmetic, comparisons, hash | Supported | P0 | TC0 | runtime |
 | float | arithmetic, comparisons, repr | Supported | P0 | TC0 | runtime |
 | complex | arithmetic, comparisons, repr | Planned | P1 | TC2 | runtime |
-| str | len, slice, find/split/replace/startswith/endswith/count/join/lower/upper, concat, repr | Partial | P0 | TC1 | runtime/frontend |
-| bytes | len, slice, find/split/replace, concat | Partial | P0 | TC1 | runtime |
-| bytearray | mutability, find/split/replace, concat | Partial | P0 | TC1 | runtime |
+| str | len, slice, iter, find/split/replace/startswith/endswith/count/join/lower/upper, concat, repr | Partial | P0 | TC1 | runtime/frontend |
+| bytes | len, slice, iter, find/split/replace, concat | Partial | P0 | TC1 | runtime |
+| bytearray | mutability, iter, find/split/replace, concat | Partial | P0 | TC1 | runtime |
 | list | literals, index/slice, append/extend/insert/remove/pop/count/index/clear/copy/reverse, iter | Partial | P0 | TC1 | runtime/frontend |
 | tuple | literals, index/slice, hash, iter | Partial | P0 | TC1 | runtime/frontend |
 | dict | literals, index/set, views, iter, basic methods (keys/values/items/get/pop/clear/copy/popitem/setdefault/update) | Partial | P0 | TC1 | runtime/frontend |
@@ -142,13 +142,13 @@
 - RC/GC hooks for all container edges and iterator state.
 - Implemented: instance dict fallback for structified objects + dynamic attrs on non-slot dataclasses.
 - Implemented: class objects + basic descriptors (`classmethod`, `staticmethod`, `property`).
-- Implemented: instance `__getattr__`/`__setattr__` hooks for user-defined classes.
+- Implemented: instance `__getattr__`/`__getattribute__`/`__setattr__` hooks for user-defined classes.
 - Implemented: C3 MRO + multiple inheritance for attribute lookup + `super()` resolution + data descriptor precedence.
 - Implemented: frozenset hashing (order-insensitive) + set/frozenset algebra intrinsics.
 - Implemented: exception objects with cause/context/suppress fields.
   - Implemented: exception class objects derived from `Exception` for typed `type(exc)`.
 - TODO(type-coverage, owner:runtime, milestone:TC1): exception stack trace capture.
-- TODO(type-coverage, owner:runtime, milestone:TC2): `__getattribute__` override + object-level `__setattr__`/`__getattr__` builtins.
+- TODO(type-coverage, owner:runtime, milestone:TC2): object-level `__setattr__`/`__getattr__`/`__getattribute__` builtins.
 - TODO(type-coverage, owner:runtime, milestone:TC2): formatting builtins (`ascii`, `bin`, `hex`, `oct`, `chr`, `ord`) + full `format` protocol (`__format__`, named fields, locale-aware grouping).
 - TODO(type-coverage, owner:runtime, milestone:TC2): rounding intrinsics (`floor`, `ceil`) + full deterministic semantics for edge cases.
 - TODO(type-coverage, owner:runtime, milestone:TC2): identity builtins (`hash`) with deterministic hashing policy.
