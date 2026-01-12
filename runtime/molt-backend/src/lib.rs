@@ -2135,9 +2135,7 @@ impl SimpleBackend {
                 "dict_update_kwstar" => {
                     let args = op.args.as_ref().unwrap();
                     let dict = vars.get(&args[0]).expect("Dict not found");
-                    let other = vars
-                        .get(&args[1])
-                        .expect("Dict update mapping not found");
+                    let other = vars.get(&args[1]).expect("Dict update mapping not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));

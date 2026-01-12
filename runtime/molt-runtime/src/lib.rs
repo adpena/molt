@@ -2599,8 +2599,7 @@ fn record_exception(ptr: *mut u8) {
     } else if !obj_from_bits(trace_bits).is_none() {
         dec_ref_bits(trace_bits);
         unsafe {
-            *(ptr.add(5 * std::mem::size_of::<u64>()) as *mut u64) =
-                MoltObject::none().bits();
+            *(ptr.add(5 * std::mem::size_of::<u64>()) as *mut u64) = MoltObject::none().bits();
         }
     }
     *guard = Some(ptr as usize);
@@ -15030,25 +15029,25 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                 if let Some(name_bits) = attr_name_bits_from_bytes(b"__next__") {
                     if let Some(call_bits) = attr_lookup_ptr(ptr, name_bits) {
                         dec_ref_bits(name_bits);
-                    exception_stack_push();
-                    let val_bits = call_callable0(call_bits);
-                    dec_ref_bits(call_bits);
-                    if exception_pending() {
-                        let exc_bits = molt_exception_last();
-                        let kind_bits = molt_exception_kind(exc_bits);
-                        let kind = string_obj_to_owned(obj_from_bits(kind_bits));
-                        dec_ref_bits(kind_bits);
-                        if kind.as_deref() == Some("StopIteration") {
-                            molt_exception_clear();
+                        exception_stack_push();
+                        let val_bits = call_callable0(call_bits);
+                        dec_ref_bits(call_bits);
+                        if exception_pending() {
+                            let exc_bits = molt_exception_last();
+                            let kind_bits = molt_exception_kind(exc_bits);
+                            let kind = string_obj_to_owned(obj_from_bits(kind_bits));
+                            dec_ref_bits(kind_bits);
+                            if kind.as_deref() == Some("StopIteration") {
+                                molt_exception_clear();
+                                dec_ref_bits(exc_bits);
+                                exception_stack_pop();
+                                return generator_done_tuple(MoltObject::none().bits());
+                            }
                             dec_ref_bits(exc_bits);
                             exception_stack_pop();
-                            return generator_done_tuple(MoltObject::none().bits());
+                            return MoltObject::none().bits();
                         }
-                        dec_ref_bits(exc_bits);
                         exception_stack_pop();
-                        return MoltObject::none().bits();
-                    }
-                    exception_stack_pop();
                         let done_bits = MoltObject::from_bool(false).bits();
                         let tuple_ptr = alloc_tuple(&[val_bits, done_bits]);
                         if tuple_ptr.is_null() {
