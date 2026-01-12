@@ -1375,6 +1375,17 @@ unsafe fn function_set_dict_bits(ptr: *mut u8, bits: u64) {
     *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = bits;
 }
 
+unsafe fn function_closure_bits(ptr: *mut u8) -> u64 {
+    *(ptr.add(3 * std::mem::size_of::<u64>()) as *const u64)
+}
+
+unsafe fn function_set_closure_bits(ptr: *mut u8, bits: u64) {
+    *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64) = bits;
+    if bits != 0 {
+        inc_ref_bits(bits);
+    }
+}
+
 unsafe fn bound_method_func_bits(ptr: *mut u8) -> u64 {
     *(ptr as *const u64)
 }
@@ -2176,7 +2187,7 @@ fn alloc_context_manager(enter_fn: *const (), exit_fn: *const (), payload_bits: 
 }
 
 fn alloc_function_obj(fn_ptr: u64, arity: u64) -> *mut u8 {
-    let total = std::mem::size_of::<MoltHeader>() + 3 * std::mem::size_of::<u64>();
+    let total = std::mem::size_of::<MoltHeader>() + 4 * std::mem::size_of::<u64>();
     let ptr = alloc_object(total, TYPE_ID_FUNCTION);
     if ptr.is_null() {
         return ptr;
@@ -2185,6 +2196,7 @@ fn alloc_function_obj(fn_ptr: u64, arity: u64) -> *mut u8 {
         *(ptr as *mut u64) = fn_ptr;
         *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = arity;
         *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = 0;
+        *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64) = 0;
     }
     ptr
 }
@@ -3803,6 +3815,18 @@ pub extern "C" fn molt_func_new(fn_ptr: u64, arity: u64) -> u64 {
 }
 
 #[no_mangle]
+pub extern "C" fn molt_func_new_closure(fn_ptr: u64, arity: u64, closure_bits: u64) -> u64 {
+    let ptr = alloc_function_obj(fn_ptr, arity);
+    if ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    unsafe {
+        function_set_closure_bits(ptr, closure_bits);
+    }
+    MoltObject::from_ptr(ptr).bits()
+}
+
+#[no_mangle]
 pub extern "C" fn molt_bound_method_new(func_bits: u64, self_bits: u64) -> u64 {
     let func_obj = obj_from_bits(func_bits);
     let Some(func_ptr) = func_obj.as_ptr() else {
@@ -4847,6 +4871,20 @@ pub extern "C" fn molt_function_default_kind(func_bits: u64) -> i64 {
             return 0;
         }
         obj_from_bits(dict_bits).as_int().unwrap_or(0)
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_function_closure_bits(func_bits: u64) -> u64 {
+    let obj = obj_from_bits(func_bits);
+    let Some(ptr) = obj.as_ptr() else {
+        return 0;
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_FUNCTION {
+            return 0;
+        }
+        function_closure_bits(ptr)
     }
 }
 
@@ -17085,8 +17123,14 @@ unsafe fn call_function_obj1(func_bits: u64, arg0_bits: u64) -> u64 {
         raise!("TypeError", "call arity mismatch");
     }
     let fn_ptr = function_fn_ptr(func_ptr);
-    let func: extern "C" fn(u64) -> i64 = std::mem::transmute(fn_ptr as usize);
-    func(arg0_bits) as u64
+    let closure_bits = function_closure_bits(func_ptr);
+    if closure_bits != 0 {
+        let func: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
+        func(closure_bits, arg0_bits) as u64
+    } else {
+        let func: extern "C" fn(u64) -> i64 = std::mem::transmute(fn_ptr as usize);
+        func(arg0_bits) as u64
+    }
 }
 
 unsafe fn call_function_obj0(func_bits: u64) -> u64 {
@@ -17103,8 +17147,14 @@ unsafe fn call_function_obj0(func_bits: u64) -> u64 {
         raise!("TypeError", "call arity mismatch");
     }
     let fn_ptr = function_fn_ptr(func_ptr);
-    let func: extern "C" fn() -> i64 = std::mem::transmute(fn_ptr as usize);
-    func() as u64
+    let closure_bits = function_closure_bits(func_ptr);
+    if closure_bits != 0 {
+        let func: extern "C" fn(u64) -> i64 = std::mem::transmute(fn_ptr as usize);
+        func(closure_bits) as u64
+    } else {
+        let func: extern "C" fn() -> i64 = std::mem::transmute(fn_ptr as usize);
+        func() as u64
+    }
 }
 
 unsafe fn call_function_obj2(func_bits: u64, arg0_bits: u64, arg1_bits: u64) -> u64 {
@@ -17121,8 +17171,15 @@ unsafe fn call_function_obj2(func_bits: u64, arg0_bits: u64, arg1_bits: u64) -> 
         raise!("TypeError", "call arity mismatch");
     }
     let fn_ptr = function_fn_ptr(func_ptr);
-    let func: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
-    func(arg0_bits, arg1_bits) as u64
+    let closure_bits = function_closure_bits(func_ptr);
+    if closure_bits != 0 {
+        let func: extern "C" fn(u64, u64, u64) -> i64 =
+            std::mem::transmute(fn_ptr as usize);
+        func(closure_bits, arg0_bits, arg1_bits) as u64
+    } else {
+        let func: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
+        func(arg0_bits, arg1_bits) as u64
+    }
 }
 
 unsafe fn call_function_obj3(
@@ -17144,8 +17201,16 @@ unsafe fn call_function_obj3(
         raise!("TypeError", "call arity mismatch");
     }
     let fn_ptr = function_fn_ptr(func_ptr);
-    let func: extern "C" fn(u64, u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
-    func(arg0_bits, arg1_bits, arg2_bits) as u64
+    let closure_bits = function_closure_bits(func_ptr);
+    if closure_bits != 0 {
+        let func: extern "C" fn(u64, u64, u64, u64) -> i64 =
+            std::mem::transmute(fn_ptr as usize);
+        func(closure_bits, arg0_bits, arg1_bits, arg2_bits) as u64
+    } else {
+        let func: extern "C" fn(u64, u64, u64) -> i64 =
+            std::mem::transmute(fn_ptr as usize);
+        func(arg0_bits, arg1_bits, arg2_bits) as u64
+    }
 }
 
 unsafe fn call_function_obj4(
@@ -17168,8 +17233,16 @@ unsafe fn call_function_obj4(
         raise!("TypeError", "call arity mismatch");
     }
     let fn_ptr = function_fn_ptr(func_ptr);
-    let func: extern "C" fn(u64, u64, u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
-    func(arg0_bits, arg1_bits, arg2_bits, arg3_bits) as u64
+    let closure_bits = function_closure_bits(func_ptr);
+    if closure_bits != 0 {
+        let func: extern "C" fn(u64, u64, u64, u64, u64) -> i64 =
+            std::mem::transmute(fn_ptr as usize);
+        func(closure_bits, arg0_bits, arg1_bits, arg2_bits, arg3_bits) as u64
+    } else {
+        let func: extern "C" fn(u64, u64, u64, u64) -> i64 =
+            std::mem::transmute(fn_ptr as usize);
+        func(arg0_bits, arg1_bits, arg2_bits, arg3_bits) as u64
+    }
 }
 
 unsafe fn call_function_obj5(
@@ -17193,8 +17266,16 @@ unsafe fn call_function_obj5(
         raise!("TypeError", "call arity mismatch");
     }
     let fn_ptr = function_fn_ptr(func_ptr);
-    let func: extern "C" fn(u64, u64, u64, u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
-    func(arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits) as u64
+    let closure_bits = function_closure_bits(func_ptr);
+    if closure_bits != 0 {
+        let func: extern "C" fn(u64, u64, u64, u64, u64, u64) -> i64 =
+            std::mem::transmute(fn_ptr as usize);
+        func(closure_bits, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits) as u64
+    } else {
+        let func: extern "C" fn(u64, u64, u64, u64, u64) -> i64 =
+            std::mem::transmute(fn_ptr as usize);
+        func(arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits) as u64
+    }
 }
 
 unsafe fn call_function_obj6(
@@ -17219,11 +17300,20 @@ unsafe fn call_function_obj6(
         raise!("TypeError", "call arity mismatch");
     }
     let fn_ptr = function_fn_ptr(func_ptr);
-    let func: extern "C" fn(u64, u64, u64, u64, u64, u64) -> i64 =
-        std::mem::transmute(fn_ptr as usize);
-    func(
-        arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
-    ) as u64
+    let closure_bits = function_closure_bits(func_ptr);
+    if closure_bits != 0 {
+        let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> i64 =
+            std::mem::transmute(fn_ptr as usize);
+        func(
+            closure_bits, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
+        ) as u64
+    } else {
+        let func: extern "C" fn(u64, u64, u64, u64, u64, u64) -> i64 =
+            std::mem::transmute(fn_ptr as usize);
+        func(
+            arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
+        ) as u64
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -17250,11 +17340,27 @@ unsafe fn call_function_obj7(
         raise!("TypeError", "call arity mismatch");
     }
     let fn_ptr = function_fn_ptr(func_ptr);
-    let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> i64 =
-        std::mem::transmute(fn_ptr as usize);
-    func(
-        arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
-    ) as u64
+    let closure_bits = function_closure_bits(func_ptr);
+    if closure_bits != 0 {
+        let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
+            std::mem::transmute(fn_ptr as usize);
+        func(
+            closure_bits,
+            arg0_bits,
+            arg1_bits,
+            arg2_bits,
+            arg3_bits,
+            arg4_bits,
+            arg5_bits,
+            arg6_bits,
+        ) as u64
+    } else {
+        let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> i64 =
+            std::mem::transmute(fn_ptr as usize);
+        func(
+            arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
+        ) as u64
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -17282,11 +17388,35 @@ unsafe fn call_function_obj8(
         raise!("TypeError", "call arity mismatch");
     }
     let fn_ptr = function_fn_ptr(func_ptr);
-    let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
-        std::mem::transmute(fn_ptr as usize);
-    func(
-        arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits, arg7_bits,
-    ) as u64
+    let closure_bits = function_closure_bits(func_ptr);
+    if closure_bits != 0 {
+        let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
+            std::mem::transmute(fn_ptr as usize);
+        func(
+            closure_bits,
+            arg0_bits,
+            arg1_bits,
+            arg2_bits,
+            arg3_bits,
+            arg4_bits,
+            arg5_bits,
+            arg6_bits,
+            arg7_bits,
+        ) as u64
+    } else {
+        let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
+            std::mem::transmute(fn_ptr as usize);
+        func(
+            arg0_bits,
+            arg1_bits,
+            arg2_bits,
+            arg3_bits,
+            arg4_bits,
+            arg5_bits,
+            arg6_bits,
+            arg7_bits,
+        ) as u64
+    }
 }
 
 unsafe fn call_function_obj_vec(func_bits: u64, args: &[u64]) -> u64 {

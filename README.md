@@ -11,6 +11,7 @@ Canonical status lives in `docs/spec/STATUS.md` (README and ROADMAP are kept in 
 
 - **Tier 0 Structification**: Compiles typed Python classes to native structs with fixed-offset access.
 - **Native Async**: Lowers `async/await` into state-machine poll loops.
+- **ASGI shim**: CPython-only adapter for HTTP + lifespan; capability-gated (`capabilities.require("net")`).
 - **Async iteration**: Supports `__aiter__`/`__anext__`, `aiter`/`anext`, and `async for` (sync-iter fallback enabled for now).
 - **Async context managers**: `async with` lowering for `__aenter__`/`__aexit__`.
 - **Async defaults**: `anext(..., default)` awaitable creation outside `await`.
@@ -38,6 +39,7 @@ Canonical status lives in `docs/spec/STATUS.md` (README and ROADMAP are kept in 
 - **Reflection**: `type`, `isinstance`, `issubclass`, and `object` are supported with single-inheritance base chains; no metaclasses or dynamic `type()` construction.
 - **Async iteration**: `anext` returns an awaitable; `__aiter__` must return an async iterator (awaitable `__aiter__` still pending).
 - **Asyncio**: shim exposes `run`/`sleep` plus `set_event_loop`/`new_event_loop` stubs (no loop/task APIs).
+- **ASGI**: shim only (no websocket support) and not integrated into compiled runtime yet.
 - **Async with**: only a single context manager and simple name binding are supported.
 - **Matmul**: `@` is supported only for `molt_buffer`/`buffer2d`; other types raise `TypeError`.
 - **Numeric tower**: complex/decimal not implemented; missing int helpers (e.g., `bit_length`, `to_bytes`, `from_bytes`).
@@ -61,6 +63,24 @@ python3 -m molt.cli build examples/hello.py
 # Use JSON parsing only when explicitly requested
 python3 -m molt.cli build --codec json examples/hello.py
 ```
+
+## ASGI shim (CPython)
+
+Wrap a `molt.net` handler into an ASGI app for local integration testing:
+
+```python
+from molt.asgi import asgi_adapter
+from molt.net import Request, Response
+
+
+def handler(request: Request) -> Response:
+    return Response.text("ok")
+
+
+app = asgi_adapter(handler)
+```
+
+The adapter is capability-gated and calls `capabilities.require("net")` per request.
 
 ## Architecture
 

@@ -71,6 +71,7 @@ interface intrinsics {
     contains: func(container: molt-object, item: molt-object) -> molt-object;
     is_truthy: func(val: molt-object) -> u64;
     function_default_kind: func(func: molt-object) -> u64;
+    function_closure_bits: func(func: molt-object) -> molt-object;
     call_arity_error: func(expected: u64, got: u64) -> molt-object;
     callargs_new: func(pos_capacity: u64, kw_capacity: u64) -> molt-object;
     callargs_push_pos: func(builder: u64, val: molt-object) -> molt-object;
@@ -239,6 +240,7 @@ interface intrinsics {
     issubclass: func(sub_obj: molt-object, class_obj: molt-object) -> molt-object;
     object_new: func() -> molt-object;
     func_new: func(fn_idx: u64, arity: u64) -> molt-object;
+    func_new_closure: func(fn_idx: u64, arity: u64, closure: molt-object) -> molt-object;
     bound_method_new: func(func: molt-object, self_obj: molt-object) -> molt-object;
     classmethod_new: func(func: molt-object) -> molt-object;
     staticmethod_new: func(func: molt-object) -> molt-object;

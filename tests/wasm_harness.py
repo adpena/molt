@@ -301,6 +301,9 @@ const callFunctionBits = (funcBits, args) => {
   if (!fn) {
     throw new Error('TypeError: call expects function object');
   }
+  if (func.closure && func.closure !== 0n) {
+    return fn(func.closure, ...args);
+  }
   return fn(...args);
 };
 const callCallable0 = (callableBits) => {
@@ -3019,6 +3022,10 @@ BASE_IMPORTS = """\
       ? BigInt(func.defaultKind)
       : 0n;
   },
+  function_closure_bits: (val) => {
+    const func = getFunction(val);
+    return func && func.closure ? func.closure : 0n;
+  },
   call_arity_error: (expected, got) => {
     throw new Error(`TypeError: call arity mismatch (expected ${expected}, got ${got})`);
   },
@@ -3446,6 +3453,14 @@ BASE_IMPORTS = """\
       attrs: new Map(),
       memAddr: addr || null,
     });
+  },
+  func_new_closure: (fnIdx, arity, closureBits) => {
+    const bits = baseImports.func_new(fnIdx, arity);
+    const func = getFunction(bits);
+    if (func) {
+      func.closure = closureBits;
+    }
+    return bits;
   },
   bound_method_new: (funcBits, selfBits) => {
     const addr = allocRaw(16);

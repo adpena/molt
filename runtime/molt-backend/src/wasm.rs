@@ -318,6 +318,7 @@ impl WasmBackend {
         add_import("is_bound_method", 2, &mut self.import_ids);
         add_import("is_function_obj", 2, &mut self.import_ids);
         add_import("function_default_kind", 2, &mut self.import_ids);
+        add_import("function_closure_bits", 2, &mut self.import_ids);
         add_import("call_arity_error", 3, &mut self.import_ids);
         add_import("missing", 0, &mut self.import_ids);
         add_import("json_parse_scalar", 4, &mut self.import_ids);
@@ -450,6 +451,7 @@ impl WasmBackend {
         add_import("issubclass", 3, &mut self.import_ids);
         add_import("object_new", 0, &mut self.import_ids);
         add_import("func_new", 3, &mut self.import_ids);
+        add_import("func_new_closure", 5, &mut self.import_ids);
         add_import("bound_method_new", 3, &mut self.import_ids);
         add_import("classmethod_new", 2, &mut self.import_ids);
         add_import("staticmethod_new", 2, &mut self.import_ids);
@@ -802,7 +804,7 @@ impl WasmBackend {
             }
         }
 
-        for name in ["__molt_tmp0", "__molt_tmp1", "__molt_tmp2"] {
+        for name in ["__molt_tmp0", "__molt_tmp1", "__molt_tmp2", "__molt_tmp3"] {
             if let std::collections::hash_map::Entry::Vacant(entry) = locals.entry(name.to_string())
             {
                 entry.insert(local_count);
@@ -3572,6 +3574,32 @@ impl WasmBackend {
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
+                    "func_new_closure" => {
+                        let func_name = op.s_value.as_ref().unwrap();
+                        let arity = op.value.unwrap_or(0);
+                        let closure_name = op
+                            .args
+                            .as_ref()
+                            .and_then(|args| args.first())
+                            .expect("func_new_closure expects closure arg");
+                        let closure_bits = locals[closure_name];
+                        let table_slot = func_map[func_name];
+                        let table_idx = table_base + table_slot;
+                        let target_func_index = table_func_indices[table_slot as usize];
+                        emit_table_index_i64(
+                            func,
+                            reloc_enabled,
+                            func_index,
+                            table_idx,
+                            target_func_index,
+                            &mut self.table_index_relocs,
+                        );
+                        func.instruction(&Instruction::I64Const(arity));
+                        func.instruction(&Instruction::LocalGet(closure_bits));
+                        emit_call(func, reloc_enabled, import_ids["func_new_closure"]);
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
                     "builtin_func" => {
                         let func_name = op.s_value.as_ref().unwrap();
                         let arity = op.value.unwrap_or(0);
@@ -3624,6 +3652,7 @@ impl WasmBackend {
                         let tmp_expected = locals["__molt_tmp0"];
                         let tmp_default_kind = locals["__molt_tmp1"];
                         let tmp_missing = locals["__molt_tmp2"];
+                        let tmp_closure = locals["__molt_tmp3"];
                         let provided = (arity + 1) as i64;
                         let emit_bound_call =
                             |func: &mut Function, call_ty: u32, extra_consts: &[i64]| {
@@ -3722,6 +3751,20 @@ impl WasmBackend {
                             offset: 0,
                             memory_index: 0,
                         }));
+                        emit_call(func, reloc_enabled, import_ids["function_closure_bits"]);
+                        func.instruction(&Instruction::LocalSet(tmp_closure));
+                        func.instruction(&Instruction::LocalGet(tmp_closure));
+                        func.instruction(&Instruction::I64Const(0));
+                        func.instruction(&Instruction::I64Eq);
+                        func.instruction(&Instruction::If(BlockType::Empty));
+                        func.instruction(&Instruction::LocalGet(func_bits));
+                        emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+                        func.instruction(&Instruction::I32WrapI64);
+                        func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                            align: 3,
+                            offset: 0,
+                            memory_index: 0,
+                        }));
                         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(8));
@@ -3793,10 +3836,35 @@ impl WasmBackend {
                         func.instruction(&Instruction::End);
                         func.instruction(&Instruction::End);
                         func.instruction(&Instruction::Else);
+                        let callargs_tmp = tmp_expected;
+                        func.instruction(&Instruction::I64Const(arity as i64));
+                        func.instruction(&Instruction::I64Const(0));
+                        emit_call(func, reloc_enabled, import_ids["callargs_new"]);
+                        func.instruction(&Instruction::LocalSet(callargs_tmp));
+                        for arg_name in &args_names[1..] {
+                            let arg = locals[arg_name];
+                            func.instruction(&Instruction::LocalGet(callargs_tmp));
+                            func.instruction(&Instruction::LocalGet(arg));
+                            emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
+                            func.instruction(&Instruction::Drop);
+                        }
+                        func.instruction(&Instruction::LocalGet(func_bits));
+                        func.instruction(&Instruction::LocalGet(callargs_tmp));
+                        emit_call(func, reloc_enabled, import_ids["call_bind"]);
+                        func.instruction(&Instruction::LocalSet(out));
+                        func.instruction(&Instruction::End);
+                        func.instruction(&Instruction::Else);
                         func.instruction(&Instruction::LocalGet(func_bits));
                         emit_call(func, reloc_enabled, import_ids["is_function_obj"]);
                         emit_call(func, reloc_enabled, import_ids["is_truthy"]);
                         func.instruction(&Instruction::I32WrapI64);
+                        func.instruction(&Instruction::If(BlockType::Empty));
+                        func.instruction(&Instruction::LocalGet(func_bits));
+                        emit_call(func, reloc_enabled, import_ids["function_closure_bits"]);
+                        func.instruction(&Instruction::LocalSet(tmp_closure));
+                        func.instruction(&Instruction::LocalGet(tmp_closure));
+                        func.instruction(&Instruction::I64Const(0));
+                        func.instruction(&Instruction::I64Eq);
                         func.instruction(&Instruction::If(BlockType::Empty));
                         func.instruction(&Instruction::LocalGet(func_bits));
                         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
@@ -3829,6 +3897,24 @@ impl WasmBackend {
                         func.instruction(&Instruction::I32WrapI64);
                         emit_call_indirect(func, reloc_enabled, call_type, 0);
                         func.instruction(&Instruction::LocalSet(out));
+                        func.instruction(&Instruction::Else);
+                        let callargs_tmp = tmp_expected;
+                        func.instruction(&Instruction::I64Const(arity as i64));
+                        func.instruction(&Instruction::I64Const(0));
+                        emit_call(func, reloc_enabled, import_ids["callargs_new"]);
+                        func.instruction(&Instruction::LocalSet(callargs_tmp));
+                        for arg_name in &args_names[1..] {
+                            let arg = locals[arg_name];
+                            func.instruction(&Instruction::LocalGet(callargs_tmp));
+                            func.instruction(&Instruction::LocalGet(arg));
+                            emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
+                            func.instruction(&Instruction::Drop);
+                        }
+                        func.instruction(&Instruction::LocalGet(func_bits));
+                        func.instruction(&Instruction::LocalGet(callargs_tmp));
+                        emit_call(func, reloc_enabled, import_ids["call_bind"]);
+                        func.instruction(&Instruction::LocalSet(out));
+                        func.instruction(&Instruction::End);
                         func.instruction(&Instruction::Else);
                         let callargs_tmp = tmp_expected;
                         func.instruction(&Instruction::I64Const(arity as i64));

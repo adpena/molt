@@ -1,6 +1,6 @@
 # STATUS (Canonical)
 
-Last updated: 2026-01-11
+Last updated: 2026-01-12
 
 This document is the source of truth for Molt's current capabilities and
 limitations. Update this file whenever behavior or scope changes, and keep
@@ -10,6 +10,8 @@ README/ROADMAP in sync.
 - Tier 0 structification for typed classes (fixed layout).
 - Native async/await lowering with state-machine poll loops.
 - Call argument binding for Molt-defined functions: positional/keyword/`*args`/`**kwargs` with pos-only/kw-only enforcement.
+- Function decorators (non-contextmanager) are lowered; sync/async free-var closures are captured via closure tuples.
+- Local/closure function calls (decorators, `__call__`) lower through dynamic call paths when not allowlisted.
 - Async iteration: `__aiter__`/`__anext__`, `aiter`/`anext`, and `async for`.
 - Async context managers: `async with` lowering for `__aenter__`/`__aexit__`.
 - `anext(..., default)` awaitable creation outside `await`.
@@ -28,6 +30,7 @@ README/ROADMAP in sync.
 - Importable `builtins` module binds supported builtins (see stdlib matrix).
 - `enumerate` builtin returns an iterator over `(index, value)` with optional `start`.
 - Builtin function objects for allowlisted builtins (`any`, `all`, `callable`, `repr`, `getattr`, `hasattr`, `round`, `next`, `anext`, `print`, `super`).
+- CPython shim: minimal ASGI adapter for http/lifespan via `molt.asgi.asgi_adapter`.
 - WASM harness runs via `run_wasm.js` with shared memory/table and direct runtime imports (legacy wrapper fallback via `MOLT_WASM_LEGACY=1`), including async/channel benches on WASI.
 - Instance `__getattr__`/`__setattr__` hooks for user-defined classes.
 - Instance `__getattribute__` hooks for user-defined classes.
@@ -42,7 +45,8 @@ README/ROADMAP in sync.
   `__getattr__`/`__getattribute__`/`__setattr__` are not exposed as builtins.
 - Dataclasses: compile-time lowering for frozen/eq/repr/slots; no
   `default_factory`, `kw_only`, or `order`.
-- Call binding: allowlisted module functions still reject keyword/variadic calls; binder supports up to 8 arguments before fallback work is added.
+- Call binding: allowlisted module functions still reject keyword/variadic calls; binder supports up to 8 arguments before fallback work is added. Non-allowlisted imports remain blocked unless the bridge policy is enabled.
+- Closures for generator functions and generator decorators are still pending.
 - Exceptions: `try/except/else/finally` + `raise`/reraise; partial BaseException
   semantics (see type coverage matrix).
 - Imports: static module graph only; no dynamic import hooks or full package
@@ -86,7 +90,7 @@ README/ROADMAP in sync.
 - Missing `functools`/`itertools`/`operator`/`collections` parity needed for common Django internals.
 - Async loop/task APIs + `contextvars` are incomplete; cancellation injection and long-running workload hardening are pending.
 - Capability-gated I/O/runtime modules (`os`, `sys`, `pathlib`, `logging`, `time`, `selectors`) need deterministic parity.
-- HTTP/ASGI surface and DB driver/pool integration are not implemented.
+- HTTP/ASGI runtime surface and DB driver/pool integration are not implemented (shim adapter exists).
 - Descriptor hooks still lack metaclass behaviors, limiting idiomatic Django patterns.
 
 ## Tooling + Verification
