@@ -1,19 +1,12 @@
-Checkpoint: 2026-01-12T00:15:44-0600
-Git: 821f9242932c9e8e41e1b3e2d8f24f6e94d2e446
+Checkpoint: 2026-01-12T00:27:04-0600
+Git: 7d066de8a6c8b583dd92a3a81199b131935a1195
 
 Summary
-- Fixed WASM table collisions/stack issues and refreshed bench outputs in the previous commit.
-- Collapsed nested `if` checks in `molt_is_callable` to satisfy clippy.
-- CI green on `main` (Run 20909814135).
+- CI green on `main` (Run 20910034832).
+- No code changes since the last checkpoint; metadata refresh only.
 
 Files touched (uncommitted)
-- logs/clif_fib.txt
-- logs/clif_functools.txt
-- logs/clif_lru.txt
-- logs/clif_lru_factory.txt
-- logs/clif_sum_list.txt
-- logs/clif_wrapper.txt
-- logs/ir_fib.txt
+- None.
 
 Docs/spec updates needed?
 - None.
