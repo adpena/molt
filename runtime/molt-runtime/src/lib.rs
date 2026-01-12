@@ -285,8 +285,12 @@ static INTERN_SET_NAME: OnceLock<u64> = OnceLock::new();
 static INTERN_DELETE_NAME: OnceLock<u64> = OnceLock::new();
 static INTERN_SET_NAME_METHOD: OnceLock<u64> = OnceLock::new();
 static INTERN_GETATTR_NAME: OnceLock<u64> = OnceLock::new();
+static INTERN_GETATTRIBUTE_NAME: OnceLock<u64> = OnceLock::new();
+static INTERN_CALL_NAME: OnceLock<u64> = OnceLock::new();
+static INTERN_INIT_NAME: OnceLock<u64> = OnceLock::new();
 static INTERN_SETATTR_NAME: OnceLock<u64> = OnceLock::new();
 static INTERN_FIELD_OFFSETS_NAME: OnceLock<u64> = OnceLock::new();
+static INTERN_MOLT_LAYOUT_SIZE: OnceLock<u64> = OnceLock::new();
 static INTERN_FLOAT_NAME: OnceLock<u64> = OnceLock::new();
 static INTERN_INDEX_NAME: OnceLock<u64> = OnceLock::new();
 static INTERN_INT_NAME: OnceLock<u64> = OnceLock::new();
@@ -4762,12 +4766,68 @@ pub extern "C" fn molt_is_bound_method(obj_bits: u64) -> u64 {
 }
 
 #[no_mangle]
+pub extern "C" fn molt_is_function_obj(obj_bits: u64) -> u64 {
+    let is_func = maybe_ptr_from_bits(obj_bits)
+        .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_FUNCTION });
+    MoltObject::from_bool(is_func).bits()
+}
+
+#[no_mangle]
 pub extern "C" fn molt_is_callable(obj_bits: u64) -> u64 {
     let is_callable = maybe_ptr_from_bits(obj_bits).is_some_and(|ptr| unsafe {
-        matches!(
-            object_type_id(ptr),
-            TYPE_ID_FUNCTION | TYPE_ID_BOUND_METHOD | TYPE_ID_TYPE
-        )
+        match object_type_id(ptr) {
+            TYPE_ID_FUNCTION | TYPE_ID_BOUND_METHOD | TYPE_ID_TYPE => true,
+            TYPE_ID_OBJECT => {
+                let call_bits = intern_static_name(&INTERN_CALL_NAME, b"__call__");
+                let dict_bits = instance_dict_bits(ptr);
+                if dict_bits != 0 {
+                    if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+                        if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                            if dict_get_in_place(dict_ptr, call_bits).is_some() {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                let class_bits = object_class_bits(ptr);
+                if class_bits != 0 {
+                    if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
+                        if object_type_id(class_ptr) == TYPE_ID_TYPE {
+                            return class_attr_lookup_raw_mro(class_ptr, call_bits).is_some();
+                        }
+                    }
+                }
+                false
+            }
+            TYPE_ID_DATACLASS => {
+                let call_bits = intern_static_name(&INTERN_CALL_NAME, b"__call__");
+                let desc_ptr = dataclass_desc_ptr(ptr);
+                if !desc_ptr.is_null() && !(*desc_ptr).slots {
+                    let dict_bits = dataclass_dict_bits(ptr);
+                    if dict_bits != 0 {
+                        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+                            if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                                if dict_get_in_place(dict_ptr, call_bits).is_some() {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+                if !desc_ptr.is_null() {
+                    let class_bits = (*desc_ptr).class_bits;
+                    if class_bits != 0 {
+                        if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
+                            if object_type_id(class_ptr) == TYPE_ID_TYPE {
+                                return class_attr_lookup_raw_mro(class_ptr, call_bits).is_some();
+                            }
+                        }
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
     });
     MoltObject::from_bool(is_callable).bits()
 }
@@ -14206,8 +14266,15 @@ pub extern "C" fn molt_iter(iter_bits: u64) -> u64 {
                 inc_ref_bits(iter_bits);
                 return iter_bits;
             }
+            if type_id == TYPE_ID_ITER {
+                inc_ref_bits(iter_bits);
+                return iter_bits;
+            }
             if type_id == TYPE_ID_LIST
                 || type_id == TYPE_ID_TUPLE
+                || type_id == TYPE_ID_STRING
+                || type_id == TYPE_ID_BYTES
+                || type_id == TYPE_ID_BYTEARRAY
                 || type_id == TYPE_ID_DICT
                 || type_id == TYPE_ID_SET
                 || type_id == TYPE_ID_FROZENSET
@@ -14322,6 +14389,75 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
             let target_bits = iter_target_bits(ptr);
             let target_obj = obj_from_bits(target_bits);
             let idx = iter_index(ptr);
+            if let Some(target_ptr) = target_obj.as_ptr() {
+                let target_type = object_type_id(target_ptr);
+                if target_type == TYPE_ID_STRING {
+                    let bytes = std::slice::from_raw_parts(
+                        string_bytes(target_ptr),
+                        string_len(target_ptr),
+                    );
+                    if idx >= bytes.len() {
+                        let none_bits = MoltObject::none().bits();
+                        let done_bits = MoltObject::from_bool(true).bits();
+                        let tuple_ptr = alloc_tuple(&[none_bits, done_bits]);
+                        if tuple_ptr.is_null() {
+                            return MoltObject::none().bits();
+                        }
+                        return MoltObject::from_ptr(tuple_ptr).bits();
+                    }
+                    let tail = &bytes[idx..];
+                    let Ok(text) = std::str::from_utf8(tail) else {
+                        return MoltObject::none().bits();
+                    };
+                    let Some(ch) = text.chars().next() else {
+                        let none_bits = MoltObject::none().bits();
+                        let done_bits = MoltObject::from_bool(true).bits();
+                        let tuple_ptr = alloc_tuple(&[none_bits, done_bits]);
+                        if tuple_ptr.is_null() {
+                            return MoltObject::none().bits();
+                        }
+                        return MoltObject::from_ptr(tuple_ptr).bits();
+                    };
+                    let mut buf = [0u8; 4];
+                    let out = ch.encode_utf8(&mut buf);
+                    let out_ptr = alloc_string(out.as_bytes());
+                    if out_ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    let val_bits = MoltObject::from_ptr(out_ptr).bits();
+                    let next_idx = idx + ch.len_utf8();
+                    iter_set_index(ptr, next_idx);
+                    let done_bits = MoltObject::from_bool(false).bits();
+                    let tuple_ptr = alloc_tuple(&[val_bits, done_bits]);
+                    if tuple_ptr.is_null() {
+                        dec_ref_bits(val_bits);
+                        return MoltObject::none().bits();
+                    }
+                    dec_ref_bits(val_bits);
+                    return MoltObject::from_ptr(tuple_ptr).bits();
+                }
+                if target_type == TYPE_ID_BYTES || target_type == TYPE_ID_BYTEARRAY {
+                    let bytes =
+                        std::slice::from_raw_parts(bytes_data(target_ptr), bytes_len(target_ptr));
+                    if idx >= bytes.len() {
+                        let none_bits = MoltObject::none().bits();
+                        let done_bits = MoltObject::from_bool(true).bits();
+                        let tuple_ptr = alloc_tuple(&[none_bits, done_bits]);
+                        if tuple_ptr.is_null() {
+                            return MoltObject::none().bits();
+                        }
+                        return MoltObject::from_ptr(tuple_ptr).bits();
+                    }
+                    let val_bits = MoltObject::from_int(bytes[idx] as i64).bits();
+                    iter_set_index(ptr, idx + 1);
+                    let done_bits = MoltObject::from_bool(false).bits();
+                    let tuple_ptr = alloc_tuple(&[val_bits, done_bits]);
+                    if tuple_ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    return MoltObject::from_ptr(tuple_ptr).bits();
+                }
+            }
             let (len, next_val, needs_drop) = if let Some(target_ptr) = target_obj.as_ptr() {
                 let target_type = object_type_id(target_ptr);
                 if target_type == TYPE_ID_LIST || target_type == TYPE_ID_TUPLE {
@@ -17174,6 +17310,59 @@ unsafe fn call_function_obj_vec(func_bits: u64, args: &[u64]) -> u64 {
     }
 }
 
+unsafe fn lookup_call_attr(obj_ptr: *mut u8) -> Option<u64> {
+    let call_name_bits = intern_static_name(&INTERN_CALL_NAME, b"__call__");
+    attr_lookup_ptr(obj_ptr, call_name_bits)
+}
+
+unsafe fn class_layout_size(class_ptr: *mut u8) -> usize {
+    let size_name_bits = intern_static_name(&INTERN_MOLT_LAYOUT_SIZE, b"__molt_layout_size__");
+    if let Some(size_bits) = class_attr_lookup_raw_mro(class_ptr, size_name_bits) {
+        if let Some(size) = obj_from_bits(size_bits).as_int() {
+            if size > 0 {
+                return size as usize;
+            }
+        }
+    }
+    8
+}
+
+unsafe fn alloc_instance_for_class(class_ptr: *mut u8) -> u64 {
+    let class_bits = MoltObject::from_ptr(class_ptr).bits();
+    let size = class_layout_size(class_ptr);
+    let total_size = size + std::mem::size_of::<MoltHeader>();
+    let obj_ptr = alloc_object_zeroed_with_pool(total_size, TYPE_ID_OBJECT);
+    if obj_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    object_set_class_bits(obj_ptr, class_bits);
+    inc_ref_bits(class_bits);
+    MoltObject::from_ptr(obj_ptr).bits()
+}
+
+unsafe fn call_class_init_with_args(class_ptr: *mut u8, args: &[u64]) -> u64 {
+    let inst_bits = alloc_instance_for_class(class_ptr);
+    let Some(inst_ptr) = obj_from_bits(inst_bits).as_ptr() else {
+        return inst_bits;
+    };
+    let init_name_bits = intern_static_name(&INTERN_INIT_NAME, b"__init__");
+    let Some(init_bits) =
+        class_attr_lookup(class_ptr, class_ptr, Some(inst_ptr), init_name_bits)
+    else {
+        return inst_bits;
+    };
+    let pos_capacity = MoltObject::from_int(args.len() as i64).bits();
+    let builder_bits = molt_callargs_new(pos_capacity, MoltObject::from_int(0).bits());
+    if builder_bits == 0 {
+        return inst_bits;
+    }
+    for &arg in args {
+        let _ = molt_callargs_push_pos(builder_bits, arg);
+    }
+    let _ = molt_call_bind(init_bits, builder_bits);
+    inst_bits
+}
+
 unsafe fn call_callable0(call_bits: u64) -> u64 {
     let call_obj = obj_from_bits(call_bits);
     let Some(call_ptr) = call_obj.as_ptr() else {
@@ -17185,6 +17374,13 @@ unsafe fn call_callable0(call_bits: u64) -> u64 {
             let func_bits = bound_method_func_bits(call_ptr);
             let self_bits = bound_method_self_bits(call_ptr);
             call_function_obj1(func_bits, self_bits)
+        }
+        TYPE_ID_TYPE => call_class_init_with_args(call_ptr, &[]),
+        TYPE_ID_OBJECT | TYPE_ID_DATACLASS => {
+            let Some(call_attr_bits) = lookup_call_attr(call_ptr) else {
+                raise!("TypeError", "object is not callable");
+            };
+            call_callable0(call_attr_bits)
         }
         _ => raise!("TypeError", "object is not callable"),
     }
@@ -17201,6 +17397,13 @@ unsafe fn call_callable1(call_bits: u64, arg0_bits: u64) -> u64 {
             let func_bits = bound_method_func_bits(call_ptr);
             let self_bits = bound_method_self_bits(call_ptr);
             call_function_obj2(func_bits, self_bits, arg0_bits)
+        }
+        TYPE_ID_TYPE => call_class_init_with_args(call_ptr, &[arg0_bits]),
+        TYPE_ID_OBJECT | TYPE_ID_DATACLASS => {
+            let Some(call_attr_bits) = lookup_call_attr(call_ptr) else {
+                raise!("TypeError", "object is not callable");
+            };
+            call_callable1(call_attr_bits, arg0_bits)
         }
         _ => raise!("TypeError", "object is not callable"),
     }
@@ -17220,6 +17423,10 @@ unsafe fn callable_arity(call_bits: u64) -> Option<usize> {
             }
             Some(function_arity(func_ptr) as usize)
         }
+        TYPE_ID_OBJECT | TYPE_ID_DATACLASS => {
+            let call_attr_bits = lookup_call_attr(call_ptr)?;
+            callable_arity(call_attr_bits)
+        }
         _ => None,
     }
 }
@@ -17235,6 +17442,13 @@ unsafe fn call_callable2(call_bits: u64, arg0_bits: u64, arg1_bits: u64) -> u64 
             let func_bits = bound_method_func_bits(call_ptr);
             let self_bits = bound_method_self_bits(call_ptr);
             call_function_obj3(func_bits, self_bits, arg0_bits, arg1_bits)
+        }
+        TYPE_ID_TYPE => call_class_init_with_args(call_ptr, &[arg0_bits, arg1_bits]),
+        TYPE_ID_OBJECT | TYPE_ID_DATACLASS => {
+            let Some(call_attr_bits) = lookup_call_attr(call_ptr) else {
+                raise!("TypeError", "object is not callable");
+            };
+            call_callable2(call_attr_bits, arg0_bits, arg1_bits)
         }
         _ => raise!("TypeError", "object is not callable"),
     }
@@ -17266,6 +17480,29 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
             TYPE_ID_BOUND_METHOD => {
                 func_bits = bound_method_func_bits(call_ptr);
                 self_bits = Some(bound_method_self_bits(call_ptr));
+            }
+            TYPE_ID_TYPE => {
+                let inst_bits = alloc_instance_for_class(call_ptr);
+                let init_name_bits = intern_static_name(&INTERN_INIT_NAME, b"__init__");
+                let Some(init_bits) = class_attr_lookup_raw_mro(call_ptr, init_name_bits) else {
+                    return inst_bits;
+                };
+                let builder_ptr = ptr_from_bits(builder_bits);
+                if builder_ptr.is_null() {
+                    return inst_bits;
+                }
+                let args_ptr = callargs_ptr(builder_ptr);
+                if !args_ptr.is_null() {
+                    (*args_ptr).pos.insert(0, inst_bits);
+                }
+                let _ = molt_call_bind(init_bits, builder_bits);
+                return inst_bits;
+            }
+            TYPE_ID_OBJECT | TYPE_ID_DATACLASS => {
+                let Some(call_attr_bits) = lookup_call_attr(call_ptr) else {
+                    raise!("TypeError", "object is not callable");
+                };
+                return molt_call_bind(call_attr_bits, builder_bits);
             }
             _ => raise!("TypeError", "object is not callable"),
         }
@@ -17929,6 +18166,19 @@ unsafe fn attr_lookup_ptr(obj_ptr: *mut u8, attr_bits: u64) -> Option<u64> {
             if class_bits != 0 {
                 if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
                     if object_type_id(class_ptr) == TYPE_ID_TYPE {
+                        let getattribute_bits =
+                            intern_static_name(&INTERN_GETATTRIBUTE_NAME, b"__getattribute__");
+                        if !obj_eq(obj_from_bits(attr_bits), obj_from_bits(getattribute_bits)) {
+                            if let Some(call_bits) = class_attr_lookup(
+                                class_ptr,
+                                class_ptr,
+                                Some(obj_ptr),
+                                getattribute_bits,
+                            ) {
+                                let res_bits = call_callable1(call_bits, attr_bits);
+                                return Some(res_bits);
+                            }
+                        }
                         if let Some(val_bits) = class_attr_lookup_raw_mro(class_ptr, attr_bits) {
                             if descriptor_is_data(val_bits) {
                                 return descriptor_bind(val_bits, class_ptr, Some(obj_ptr));
@@ -17982,6 +18232,19 @@ unsafe fn attr_lookup_ptr(obj_ptr: *mut u8, attr_bits: u64) -> Option<u64> {
         if class_bits != 0 {
             if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
                 if object_type_id(class_ptr) == TYPE_ID_TYPE {
+                    let getattribute_bits =
+                        intern_static_name(&INTERN_GETATTRIBUTE_NAME, b"__getattribute__");
+                    if !obj_eq(obj_from_bits(attr_bits), obj_from_bits(getattribute_bits)) {
+                        if let Some(call_bits) = class_attr_lookup(
+                            class_ptr,
+                            class_ptr,
+                            Some(obj_ptr),
+                            getattribute_bits,
+                        ) {
+                            let res_bits = call_callable1(call_bits, attr_bits);
+                            return Some(res_bits);
+                        }
+                    }
                     class_version = class_layout_version_bits(class_ptr);
                     if let Some(entry) =
                         descriptor_cache_lookup(class_bits, attr_bits, class_version)

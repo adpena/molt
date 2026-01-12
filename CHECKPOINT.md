@@ -1,40 +1,44 @@
-Checkpoint: 2026-01-11T18:43:54-0600
-Git: f70c52bd80932247a23947b34222e0017fe93176 (dirty)
+Checkpoint: 2026-01-11T22:13:08-0600
+Git: 2b9cfdad616446bd5619b0a392c7429ada06c801 (dirty)
 
 Summary
-- Added instance `__getattr__`/`__setattr__` hooks, `**kwargs` mapping support, and dict `setdefault`/`update` bound methods.
-- `list.extend` now consumes generic iterables via the iter protocol; added differential coverage.
-- Updated STATUS/type matrix and refreshed README performance summary with new native + WASM bench results.
+- Added `__molt_layout_size__` metadata on classes and wired class-object call paths in the runtime/wasm harness so `cls(...)` works via `__init__`.
+- Implemented `is_function_obj` in the wasm harness to unblock `call_func` imports.
+- Adjusted `functools.update_wrapper` to use `setattr` for `__wrapped__` to satisfy `ty`.
 
 Files touched (uncommitted)
 - CHECKPOINT.md
-- README.md
-- bench/results/bench.json
-- bench/results/bench_wasm.json
 - docs/spec/0014_TYPE_COVERAGE_MATRIX.md
+- docs/spec/0015_STDLIB_COMPATIBILITY_MATRIX.md
 - docs/spec/STATUS.md
-- logs/clif_fib.txt
-- logs/clif_sum_list.txt
-- logs/ir_fib.txt
 - runtime/molt-backend/src/lib.rs
 - runtime/molt-backend/src/wasm.rs
 - runtime/molt-runtime/src/lib.rs
-- tests/differential/basic/attr_hooks.py
-- tests/differential/basic/container_methods.py
-- tests/differential/basic/kwargs_mapping.py
+- src/molt/frontend/__init__.py
+- src/molt/stdlib/__init__.py
+- src/molt/type_facts.py
+- tests/differential/basic/getattribute_basic.py
+- tests/differential/basic/iter_methods.py
+- tests/differential/basic/stdlib_allowlist_calls.py
+- tests/wasm_harness.py
+- wit/molt-runtime.wit
+- logs/clif_fib.txt
+- logs/clif_functools.txt
+- logs/clif_lru.txt
+- logs/clif_lru_factory.txt
+- logs/clif_sum_list.txt
+- logs/clif_wrapper.txt
+- logs/ir_fib.txt
+- src/molt/stdlib/functools.py
+- src/molt/stdlib/itertools.py
 
 Docs/spec updates needed?
-- None (STATUS/type matrix/README updated).
+- None.
 
 Tests run
-- `cargo fmt`
-- `uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic/container_methods.py`
+- `uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic`
 - `uv run --python 3.12 python3 tools/dev.py lint`
 - `uv run --python 3.12 python3 tools/dev.py test`
-- `cargo test`
-- `cargo clippy -- -D warnings`
-- `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json`
-- `uv run --python 3.14 python3 tools/bench_wasm.py --json-out bench/results/bench_wasm.json`
 
 Known gaps
 - Codon baseline skips remain for async/channel/matrix_math/bytearray/memoryview/parse_msgpack/struct/sum_list_hints benches.

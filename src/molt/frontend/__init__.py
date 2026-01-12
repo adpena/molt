@@ -160,6 +160,7 @@ MOLT_DIRECT_CALLS = {
     "copy": {"copy", "deepcopy"},
     "dataclasses": {"dataclass", "field"},
     "fnmatch": {"fnmatch", "fnmatchcase"},
+    "functools": {"lru_cache", "partial", "reduce", "update_wrapper", "wraps"},
     "importlib": {"import_module", "invalidate_caches", "reload"},
     "inspect": {
         "cleandoc",
@@ -183,6 +184,7 @@ MOLT_DIRECT_CALLS = {
         "_getframe",
         "setrecursionlimit",
     },
+    "itertools": {"chain", "islice", "repeat"},
     "traceback": {
         "format_exception",
         "format_exception_only",
@@ -237,6 +239,7 @@ class MethodInfo(TypedDict):
 
 class ClassInfo(TypedDict, total=False):
     fields: dict[str, int]
+    field_hints: dict[str, str]
     size: int
     field_order: list[str]
     defaults: dict[str, ast.expr]
@@ -5030,12 +5033,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 raise NotImplementedError("Dataclass inheritance is not supported")
             field_order: list[str] = []
             field_defaults: dict[str, ast.expr] = {}
+            field_hints: dict[str, str] = {}
             for item in node.body:
                 if isinstance(item, ast.AnnAssign) and isinstance(
                     item.target, ast.Name
                 ):
                     name = item.target.id
                     field_order.append(name)
+                    if self._hints_enabled():
+                        hint = self._annotation_to_hint(item.annotation)
+                        if hint is not None:
+                            field_hints[name] = hint
                     if item.value is not None:
                         field_defaults[name] = item.value
                         class_attrs[name] = item.value
@@ -5048,6 +5056,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 "fields": field_indices,
                 "field_order": field_order,
                 "defaults": field_defaults,
+                "field_hints": field_hints,
                 "class_attrs": class_attrs,
                 "bases": base_names,
                 "mro": mro_names,
@@ -5064,6 +5073,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             fields: dict[str, int] = {}
             field_order: list[str] = []
             field_defaults: dict[str, ast.expr] = {}
+            field_hints: dict[str, str] = {}
             for base_name in mro_names[1:]:
                 base_info = self.classes.get(base_name)
                 if base_info is None:
@@ -5072,6 +5082,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     if field not in fields:
                         fields[field] = len(field_order) * 8
                         field_order.append(field)
+                for field, hint in base_info.get("field_hints", {}).items():
+                    if field not in field_hints:
+                        field_hints[field] = hint
                 for name, expr in base_info.get("defaults", {}).items():
                     if name not in field_defaults:
                         field_defaults[name] = expr
@@ -5082,11 +5095,20 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 fields[name] = len(field_order) * 8
                 field_order.append(name)
 
+            def add_field_hint(name: str, annotation: ast.AST | None) -> None:
+                if not self._hints_enabled() or annotation is None:
+                    return
+                hint = self._annotation_to_hint(cast(ast.expr, annotation))
+                if hint is None or name in field_hints:
+                    return
+                field_hints[name] = hint
+
             for item in node.body:
                 if isinstance(item, ast.AnnAssign) and isinstance(
                     item.target, ast.Name
                 ):
                     add_field(item.target.id)
+                    add_field_hint(item.target.id, item.annotation)
                     if item.value is not None:
                         field_defaults[item.target.id] = item.value
                         class_attrs[item.target.id] = item.value
@@ -5102,8 +5124,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if methods_in_body:
 
                 class FieldCollector(ast.NodeVisitor):
-                    def __init__(self, add: Callable[[str], None]) -> None:
+                    def __init__(
+                        self,
+                        add: Callable[[str], None],
+                        add_hint: Callable[[str, ast.AST | None], None],
+                    ) -> None:
                         self._add = add
+                        self._add_hint = add_hint
 
                     def visit_Assign(self, node: ast.Assign) -> None:
                         for target in node.targets:
@@ -5111,17 +5138,20 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         self.generic_visit(node.value)
 
                     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-                        self._handle_target(node.target)
+                        self._handle_target(node.target, node.annotation)
                         if node.value is not None:
                             self.generic_visit(node.value)
 
-                    def _handle_target(self, target: ast.AST) -> None:
+                    def _handle_target(
+                        self, target: ast.AST, annotation: ast.AST | None = None
+                    ) -> None:
                         if (
                             isinstance(target, ast.Attribute)
                             and isinstance(target.value, ast.Name)
                             and target.value.id == "self"
                         ):
                             self._add(target.attr)
+                            self._add_hint(target.attr, annotation)
 
                     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
                         return
@@ -5134,7 +5164,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     def visit_Lambda(self, node: ast.Lambda) -> None:
                         return
 
-                collector = FieldCollector(add_field)
+                collector = FieldCollector(add_field, add_field_hint)
                 for method in methods_in_body:
                     for stmt in method.body:
                         collector.visit(stmt)
@@ -5145,6 +5175,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 methods=methods,
                 field_order=field_order,
                 defaults=field_defaults,
+                field_hints=field_hints,
                 class_attrs=class_attrs,
                 bases=base_names,
                 mro=mro_names,
@@ -5583,6 +5614,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     result=MoltValue("none"),
                 )
             )
+
+        size_val = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[class_info["size"]], result=size_val))
+        self.emit(
+            MoltOp(
+                kind="SETATTR_GENERIC_OBJ",
+                args=[class_val, "__molt_layout_size__", size_val],
+                result=MoltValue("none"),
+            )
+        )
 
         for attr_name, expr in class_attrs.items():
             val = self.visit(expr)
@@ -7353,8 +7394,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             class_id = None
             if func_id in self.classes:
                 class_id = func_id
-            elif target_info and target_info.type_hint in self.classes:
-                class_id = target_info.type_hint
             if class_id is not None:
                 class_info = self.classes[class_id]
                 if imported_from:
@@ -7459,6 +7498,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
                 self.emit(
                     MoltOp(kind=alloc_kind, args=[class_ref, class_id], result=res)
+                )
+                self.emit(
+                    MoltOp(
+                        kind="OBJECT_SET_CLASS",
+                        args=[res, class_ref],
+                        result=MoltValue("none"),
+                    )
                 )
                 field_order = class_info.get("field_order") or list(
                     class_info.get("fields", {}).keys()
@@ -8564,6 +8610,20 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                     return res
         class_info = self.classes.get(obj.type_hint)
+        if class_info:
+            getattribute_info, _ = self._resolve_method_info(
+                obj.type_hint, "__getattribute__"
+            )
+            if getattribute_info:
+                res = MoltValue(self.next_var())
+                self.emit(
+                    MoltOp(
+                        kind="GETATTR_GENERIC_PTR",
+                        args=[obj, node.attr],
+                        result=res,
+                    )
+                )
+                return res
         if class_info and class_info.get("dataclass"):
             field_map = class_info["fields"]
             if node.attr not in field_map:
@@ -8578,7 +8638,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return res
             idx_val = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="CONST", args=[field_map[node.attr]], result=idx_val))
-            res = MoltValue(self.next_var())
+            hint = None
+            if self._hints_enabled():
+                hint = class_info.get("field_hints", {}).get(node.attr)
+            res = MoltValue(self.next_var(), type_hint=hint or "Unknown")
             self.emit(MoltOp(kind="DATACLASS_GET", args=[obj, idx_val], result=res))
             return res
         method_info = None
@@ -8693,14 +8756,20 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             )
             return res
+        hint = None
+        if self._hints_enabled():
+            hint = self.classes[expected_class].get("field_hints", {}).get(node.attr)
         assume_exact = exact_class == expected_class if exact_class else False
-        return self._emit_guarded_getattr(
+        res = self._emit_guarded_getattr(
             obj,
             node.attr,
             expected_class,
             assume_exact=assume_exact,
             obj_name=obj_name,
         )
+        if hint is not None:
+            res.type_hint = hint
+        return res
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if not isinstance(node.target, (ast.Name, ast.Attribute)):
@@ -11083,10 +11152,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             needs_return_slot=False,
         )
         self.global_decls = self._collect_global_decls(node.body)
-        if not self.is_async():
-            assigned = self._collect_assigned_names(node.body)
-            for name in sorted(assigned):
-                self._box_local(name)
         for arg in arg_nodes:
             hint = None
             if self.type_hint_policy == "ignore" and arg.annotation is not None:
@@ -11110,6 +11175,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 hint = self.explicit_type_hints.get(arg.arg)
                 if hint is not None:
                     self._emit_guard_type(self.locals[arg.arg], hint)
+        if not self.is_async():
+            assigned = self._collect_assigned_names(node.body)
+            for name in sorted(assigned):
+                self._box_local(name)
         for item in node.body:
             self.visit(item)
         if self.return_label is not None:

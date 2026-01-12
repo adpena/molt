@@ -248,6 +248,22 @@ const getClass = (val) => {
   if (obj && obj.type === 'class') return obj;
   return null;
 };
+const classLayoutSize = (classBits) => {
+  if (!getClass(classBits)) return 8;
+  const sizeBits = lookupClassAttr(classBits, '__molt_layout_size__');
+  if (sizeBits !== undefined && isIntLike(sizeBits)) {
+    return Number(unboxIntLike(sizeBits));
+  }
+  return 8;
+};
+const allocInstanceForClass = (classBits) => {
+  const size = classLayoutSize(classBits);
+  const addr = allocRaw(size);
+  if (!addr) return boxNone();
+  const instBits = boxPtrAddr(addr);
+  instanceClasses.set(ptrAddr(instBits), classBits);
+  return instBits;
+};
 const classLayoutVersion = (classBits) => {
   if (!getClass(classBits)) return null;
   const current = classLayoutVersions.get(classBits);
@@ -296,6 +312,15 @@ const callCallable0 = (callableBits) => {
   if (func) {
     return callFunctionBits(callableBits, []);
   }
+  const cls = getClass(callableBits);
+  if (cls) {
+    const instBits = allocInstanceForClass(callableBits);
+    const initBits = lookupClassAttr(callableBits, '__init__', instBits);
+    if (initBits !== undefined) {
+      callCallable0(initBits);
+    }
+    return instBits;
+  }
   throw new Error('TypeError: object is not callable');
 };
 const callCallable1 = (callableBits, arg0) => {
@@ -307,6 +332,15 @@ const callCallable1 = (callableBits, arg0) => {
   if (func) {
     return callFunctionBits(callableBits, [arg0]);
   }
+  const cls = getClass(callableBits);
+  if (cls) {
+    const instBits = allocInstanceForClass(callableBits);
+    const initBits = lookupClassAttr(callableBits, '__init__', instBits);
+    if (initBits !== undefined) {
+      callCallable1(initBits, arg0);
+    }
+    return instBits;
+  }
   throw new Error('TypeError: object is not callable');
 };
 const callCallable2 = (callableBits, arg0, arg1) => {
@@ -317,6 +351,15 @@ const callCallable2 = (callableBits, arg0, arg1) => {
   const func = getFunction(callableBits);
   if (func) {
     return callFunctionBits(callableBits, [arg0, arg1]);
+  }
+  const cls = getClass(callableBits);
+  if (cls) {
+    const instBits = allocInstanceForClass(callableBits);
+    const initBits = lookupClassAttr(callableBits, '__init__', instBits);
+    if (initBits !== undefined) {
+      callCallable2(initBits, arg0, arg1);
+    }
+    return instBits;
   }
   throw new Error('TypeError: object is not callable');
 };
@@ -3056,6 +3099,17 @@ BASE_IMPORTS = """\
   call_bind: (callBits, builderBits) => {
     const args = getCallArgs(builderBits);
     if (!args) return boxNone();
+    const cls = getClass(callBits);
+    if (cls) {
+      const instBits = allocInstanceForClass(callBits);
+      const initBits = lookupClassAttr(callBits, '__init__');
+      if (initBits === undefined) {
+        return instBits;
+      }
+      args.pos.unshift(instBits);
+      baseImports.call_bind(initBits, builderBits);
+      return instBits;
+    }
     let funcBits = callBits;
     let selfBits = null;
     const bound = getBoundMethod(callBits);
@@ -3208,6 +3262,7 @@ BASE_IMPORTS = """\
     const attr = lookupAttr(normalizePtrBits(val), '__call__');
     return boxBool(attr !== undefined);
   },
+  is_function_obj: (val) => boxBool(getFunction(val) !== null),
   index: (seq, idxBits) => {
     const idx = Number(unboxInt(idxBits));
     const list = getList(seq);
