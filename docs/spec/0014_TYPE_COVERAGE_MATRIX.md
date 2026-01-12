@@ -26,9 +26,9 @@
 | memoryview | buffer protocol (1D format/shape/strides), slicing, writable views | Partial | P2 | TC3 | runtime |
 | iterator | iter/next protocol, StopIteration | Partial | P0 | TC1 | runtime |
 | generator/coroutine | send/throw/close, await | Partial | P0 | TC2 | runtime/frontend |
-| exceptions | BaseException hierarchy, raise/try, chaining | Partial | P0 | TC1 | frontend/runtime |
+| exceptions | BaseException hierarchy, raise/try, chaining, `__traceback__` (names) | Partial | P0 | TC1 | frontend/runtime |
 | function/method | callables, closures, descriptors | Partial | P1 | TC2 | frontend/runtime |
-| type/object | isinstance/issubclass, MRO | Planned | P2 | TC3 | runtime |
+| type/object | isinstance/issubclass, MRO | Partial | P2 | TC3 | runtime |
 | module | imports, attributes, globals | Partial | P2 | TC3 | stdlib/frontend |
 | descriptor protocol | @property, @classmethod | Partial | P1 | TC2 | runtime/frontend |
 
@@ -52,7 +52,7 @@
 | compile | code object (restricted) | Planned | P2 | TC3 | stdlib |
 | complex | complex constructor | Planned | P1 | TC2 | frontend/runtime |
 | delattr | attribute deletion | Partial | P2 | TC3 | runtime |
-| dict | dict constructor | Planned | P1 | TC2 | frontend/runtime |
+| dict | dict constructor | Partial | P1 | TC2 | frontend/runtime |
 | dir | attribute listing | Planned | P2 | TC3 | runtime |
 | divmod | quotient/remainder | Planned | P1 | TC2 | frontend/runtime |
 | enumerate | lazy iterator with index | Partial | P1 | TC2 | frontend/runtime |
@@ -111,11 +111,12 @@
 - **TC0 (Now):** ints/bools/None/float + core containers in MVP.
 - **TC1 (Near):** exceptions, full container semantics, range/slice polish.
   - Implemented: `try/except/else/finally` lowering + exception chaining (explicit `__cause__`, implicit `__context__`, `__suppress_context__`).
-  - Implemented: exception type objects for `type()`/`__name__` via kind-based classes (base `Exception`).
-  - TODO(type-coverage, owner:runtime, milestone:TC1): BaseException hierarchy + typed matching (beyond kind-name classes).
+  - Implemented: exception type objects for `type()`/`__name__` via kind-based classes (base `BaseException`).
+  - Implemented: `BaseException` root class + `SystemExit`/`KeyboardInterrupt`/`GeneratorExit` base selection.
+  - TODO(type-coverage, owner:runtime, milestone:TC1): typed exception matching beyond kind-name classes.
 - Implemented: comparison ops (`==`, `!=`, `<`, `<=`, `>`, `>=`, `is`, `in`, chained comparisons) + lowering rules for core types (list/tuple/dict/str/bytes/bytearray/range).
   - TODO(type-coverage, owner:frontend, milestone:TC1): builtin reductions (`sum/min/max`) and `len` parity.
-  - TODO(type-coverage, owner:frontend, milestone:TC1): builtin constructors for `tuple`, `dict`, `bytes`, `bytearray`.
+  - TODO(type-coverage, owner:frontend, milestone:TC1): constructor parity for `bytes`/`bytearray` encoding overloads and exact `tuple`/`dict` error parity.
 - **TC2 (Mid):** set/frozenset, generators/coroutines, callable objects.
   - Implemented: generator protocol (`send`/`throw`/`close`, `yield from`) + closure slot load/store intrinsics across native + wasm backends.
 - Implemented: async state machine (`await`, `asyncio.run`/`asyncio.sleep`) with delay/result semantics and pending sentinel across native + wasm harness.
@@ -146,8 +147,8 @@
 - Implemented: C3 MRO + multiple inheritance for attribute lookup + `super()` resolution + data descriptor precedence.
 - Implemented: frozenset hashing (order-insensitive) + set/frozenset algebra intrinsics.
 - Implemented: exception objects with cause/context/suppress fields.
-  - Implemented: exception class objects derived from `Exception` for typed `type(exc)`.
-- TODO(type-coverage, owner:runtime, milestone:TC1): exception stack trace capture.
+  - Implemented: exception class objects derived from `BaseException` for typed `type(exc)`.
+  - Implemented: `__traceback__` capture as a tuple of function names.
 - TODO(type-coverage, owner:runtime, milestone:TC2): object-level `__setattr__`/`__getattr__`/`__getattribute__` builtins.
 - TODO(type-coverage, owner:runtime, milestone:TC2): formatting builtins (`ascii`, `bin`, `hex`, `oct`, `chr`, `ord`) + full `format` protocol (`__format__`, named fields, locale-aware grouping).
 - TODO(type-coverage, owner:runtime, milestone:TC2): rounding intrinsics (`floor`, `ceil`) + full deterministic semantics for edge cases.
@@ -176,4 +177,4 @@
 - Differential tests per type with edge cases (errors, hashing, iteration).
 - Hypothesis‑driven generators for container/exception semantics.
 - Perf gates for container hot paths + memory churn.
-- TODO(type-coverage, owner:tests, milestone:TC1): add exception coverage to molt_diff.
+- Partial: exception coverage in `molt_diff` (add traceback/args/line info cases as runtime grows).

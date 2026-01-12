@@ -1,22 +1,29 @@
-Checkpoint: 2026-01-12T08:53:06-06:00
-Git: 578c3ea9a5c40dda938a0208ce6a565fda538d98 (dirty)
+Checkpoint: 2026-01-12T11:52:21-06:00
+Git: 03ce5c067746463a332358c32f529dcc2739a3b1 (dirty)
 
 Summary
-- Fixed wasm header offsets for poll/state after MoltHeader growth; generator iter hang resolved.
-- Marked object headers as pointer-containing in native stores and runtime field setters to keep ref scanning correct.
-- Re-ran native + wasm benches and refreshed README performance numbers.
+- Added BaseException root + exception trace capture (function-name tuples) and non-string exception messages via str() lowering/runtime conversion.
+- Extended wasm harness imports for new dict helpers (clear/copy/popitem/update_kwstar) to restore WASM parity tests.
+- Hardened collections.Counter mapping detection for Molt shims and fixed typing-only casts.
 
 Files touched (uncommitted)
 - CHECKPOINT.md
-- OPTIMIZATIONS_PLAN.md
-- README.md
-- bench/results/bench.json
-- bench/results/bench_wasm.json
+- ROADMAP.md
+- docs/spec/0014_TYPE_COVERAGE_MATRIX.md
+- docs/spec/0015_STDLIB_COMPATIBILITY_MATRIX.md
+- docs/spec/STATUS.md
 - runtime/molt-backend/src/lib.rs
 - runtime/molt-backend/src/wasm.rs
 - runtime/molt-runtime/src/lib.rs
 - src/molt/frontend/__init__.py
-- src/molt_json/__init__.py
+- src/molt/stdlib/__init__.py
+- src/molt/stdlib/collections/__init__.py
+- src/molt/stdlib/operator.py
+- tests/differential/basic/collections_basic.py
+- tests/differential/basic/exception_message.py
+- tests/differential/basic/list_dict.py
+- tests/differential/basic/mro_inconsistent.py
+- tests/differential/basic/stdlib_allowlist_calls.py
 - tests/wasm_harness.py
 - wit/molt-runtime.wit
 
@@ -26,16 +33,13 @@ Docs/spec updates needed?
 Tests run
 - `uv run --python 3.12 python3 tools/dev.py lint`
 - `uv run --python 3.12 python3 tools/dev.py test`
-- `PYTHONPATH=src uv run --python 3.14 python3 -m molt.cli build --target wasm /tmp/molt_gen_debug.py`
-- `PYTHONPATH=src uv run --python 3.14 python3 -m molt.cli build --target wasm tests/benchmarks/bench_generator_iter.py`
-- `node run_wasm.js`
-- `uv run --python 3.14 python3 tools/bench_wasm.py --samples 1 --json-out bench/results/bench_wasm.json`
-- `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json`
 
 Benchmarks
-- `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json`
-- `uv run --python 3.14 python3 tools/bench_wasm.py --samples 1 --json-out bench/results/bench_wasm.json`
+- Not run (changes only).
 
 Known gaps
 - Codon baseline skips remain for async/channel/matrix_math/bytearray/memoryview/parse_msgpack/struct/sum_list_hints benches.
 - Single-module WASM link + JS stub removal remains pending (see `docs/spec/STATUS.md`).
+
+CI
+- Not run (local changes only).

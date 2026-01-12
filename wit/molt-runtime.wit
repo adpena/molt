@@ -165,6 +165,10 @@ interface intrinsics {
     dict_pop: func(dict: molt-object, key: molt-object, default: molt-object, has_default: molt-object) -> molt-object;
     dict_setdefault: func(dict: molt-object, key: molt-object, default: molt-object) -> molt-object;
     dict_update: func(dict: molt-object, other: molt-object) -> molt-object;
+    dict_clear: func(dict: molt-object) -> molt-object;
+    dict_copy: func(dict: molt-object) -> molt-object;
+    dict_popitem: func(dict: molt-object) -> molt-object;
+    dict_update_kwstar: func(dict: molt-object, other: molt-object) -> molt-object;
     dict_keys: func(dict: molt-object) -> molt-object;
     dict_values: func(dict: molt-object) -> molt-object;
     dict_items: func(dict: molt-object) -> molt-object;

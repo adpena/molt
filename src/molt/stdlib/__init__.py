@@ -15,6 +15,7 @@ __all__ = [
     "io",
     "itertools",
     "os",
+    "operator",
     "pathlib",
     "pprint",
     "string",

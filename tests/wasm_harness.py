@@ -2788,6 +2788,20 @@ BASE_IMPORTS = """\
     dictDelete(dict, keyBits);
     return val;
   },
+  dict_popitem: (dictBits) => {
+    const dict = getDict(dictBits);
+    if (!dict) return boxNone();
+    if (dict.entries.length === 0) {
+      throw new Error('KeyError: popitem(): dictionary is empty');
+    }
+    const entry = dict.entries.pop();
+    dict.lookup = new Map();
+    for (let i = 0; i < dict.entries.length; i++) {
+      dict.lookup.set(dictKey(dict.entries[i][0]), i);
+    }
+    if (!entry) return boxNone();
+    return tupleFromArray([entry[0], entry[1]]);
+  },
   dict_setdefault: (dictBits, keyBits, defaultBits) => {
     const dict = getDict(dictBits);
     if (!dict) return boxNone();
@@ -2804,6 +2818,22 @@ BASE_IMPORTS = """\
     const other = getDict(otherBits);
     if (!other) return boxNone();
     for (const [keyBits, valBits] of other.entries) {
+      dictSetValue(dict, keyBits, valBits);
+    }
+    return boxNone();
+  },
+  dict_update_kwstar: (dictBits, otherBits) => {
+    const dict = getDict(dictBits);
+    if (!dict) return boxNone();
+    const other = getDict(otherBits);
+    if (!other) {
+      throw new Error('TypeError: argument after ** must be a mapping');
+    }
+    for (const [keyBits, valBits] of other.entries) {
+      const keyStr = getStrObj(keyBits);
+      if (keyStr === null) {
+        throw new Error('TypeError: keywords must be strings');
+      }
       dictSetValue(dict, keyBits, valBits);
     }
     return boxNone();
@@ -2825,6 +2855,22 @@ BASE_IMPORTS = """\
     if (!dict) return boxNone();
     const items = dict.entries.map((entry) => tupleFromArray([entry[0], entry[1]]));
     return listFromArray(items);
+  },
+  dict_copy: (dictBits) => {
+    const dict = getDict(dictBits);
+    if (!dict) return boxNone();
+    const out = { type: 'dict', entries: [], lookup: new Map() };
+    for (const [keyBits, valBits] of dict.entries) {
+      dictSetValue(out, keyBits, valBits);
+    }
+    return boxPtr(out);
+  },
+  dict_clear: (dictBits) => {
+    const dict = getDict(dictBits);
+    if (!dict) return boxNone();
+    dict.entries = [];
+    dict.lookup = new Map();
+    return boxNone();
   },
   set_new: () => boxPtr({ type: 'set', items: new Set() }),
   set_add: (setBits, keyBits) => {

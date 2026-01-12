@@ -13,7 +13,7 @@ Canonical current status: `docs/spec/STATUS.md`. This roadmap is forward-looking
 - Implemented: class objects + basic descriptors (`classmethod`, `staticmethod`, `property`) + `__set_name__` hook.
 - Implemented: C3 MRO + multiple inheritance for attribute lookup + `super()` resolution + data descriptor precedence.
 - Implemented: reflection builtins (`type`, `isinstance`, `issubclass`, `object`) for base chains (no metaclasses).
-- Implemented: exception chaining with explicit `__cause__`, implicit `__context__`, and `__suppress_context__`.
+- Implemented: BaseException root + exception chaining (`__cause__`, `__context__`, `__suppress_context__`) + `__traceback__` name tuples.
 - Implemented: descriptor deleter semantics (`__delete__`, property deleter) + attribute deletion wiring.
 - Implemented: set literals/constructor with add/contains/iter/len + algebra (`|`, `&`, `-`, `^`); `frozenset` constructor + algebra.
 - Implemented: format mini-language for ints/floats + f-string conversion flags (`!r`, `!s`, `!a`).

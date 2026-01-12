@@ -389,6 +389,10 @@ impl WasmBackend {
         add_import("dict_pop", 7, &mut self.import_ids);
         add_import("dict_setdefault", 5, &mut self.import_ids);
         add_import("dict_update", 3, &mut self.import_ids);
+        add_import("dict_clear", 2, &mut self.import_ids);
+        add_import("dict_copy", 2, &mut self.import_ids);
+        add_import("dict_popitem", 2, &mut self.import_ids);
+        add_import("dict_update_kwstar", 3, &mut self.import_ids);
         add_import("dict_keys", 2, &mut self.import_ids);
         add_import("dict_values", 2, &mut self.import_ids);
         add_import("dict_items", 2, &mut self.import_ids);
@@ -1943,6 +1947,40 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(dict));
                         func.instruction(&Instruction::LocalGet(other));
                         emit_call(func, reloc_enabled, import_ids["dict_update"]);
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "dict_clear" => {
+                        let args = op.args.as_ref().unwrap();
+                        let dict = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(dict));
+                        emit_call(func, reloc_enabled, import_ids["dict_clear"]);
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "dict_copy" => {
+                        let args = op.args.as_ref().unwrap();
+                        let dict = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(dict));
+                        emit_call(func, reloc_enabled, import_ids["dict_copy"]);
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "dict_popitem" => {
+                        let args = op.args.as_ref().unwrap();
+                        let dict = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(dict));
+                        emit_call(func, reloc_enabled, import_ids["dict_popitem"]);
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "dict_update_kwstar" => {
+                        let args = op.args.as_ref().unwrap();
+                        let dict = locals[&args[0]];
+                        let other = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(dict));
+                        func.instruction(&Instruction::LocalGet(other));
+                        emit_call(func, reloc_enabled, import_ids["dict_update_kwstar"]);
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }

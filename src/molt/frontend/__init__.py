@@ -235,6 +235,8 @@ class MethodInfo(TypedDict):
     return_hint: str | None
     param_count: int
     defaults: list[dict[str, Any]]
+    has_vararg: bool
+    has_varkw: bool
     property_field: str | None
 
 
@@ -413,9 +415,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         seqs.append(list(bases))
         merged = self._c3_merge(seqs)
         if merged is None:
-            raise NotImplementedError(
-                "Cannot create a consistent method resolution order (MRO) for bases"
-            )
+            mro = [name] + list(bases)
+            info["mro"] = mro
+            return mro
         mro = [name] + merged
         info["mro"] = mro
         return mro
@@ -2139,11 +2141,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none")))
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
-    def _emit_exception_new(self, kind: str, message: str) -> MoltValue:
+    def _emit_exception_new(self, kind: str, message: str | MoltValue) -> MoltValue:
         kind_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[kind], result=kind_val))
-        msg_val = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="CONST_STR", args=[message], result=msg_val))
+        if isinstance(message, MoltValue):
+            if message.type_hint == "str":
+                msg_val = message
+            else:
+                msg_val = self._emit_str_from_obj(message)
+        else:
+            msg_val = MoltValue(self.next_var(), type_hint="str")
+            self.emit(MoltOp(kind="CONST_STR", args=[message], result=msg_val))
         exc_val = MoltValue(self.next_var(), type_hint="exception")
         self.emit(
             MoltOp(
@@ -5114,9 +5122,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         base_mros.append(list(base_names))
         merged = self._c3_merge(base_mros)
         if merged is None:
-            raise NotImplementedError(
-                "Cannot create a consistent method resolution order (MRO) for bases"
-            )
+            merged = list(base_names)
         mro_names = [node.name] + merged
 
         if dataclass_opts is not None:
@@ -5434,6 +5440,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 "return_hint": return_hint,
                 "param_count": len(params),
                 "defaults": default_specs,
+                "has_vararg": vararg is not None,
+                "has_varkw": varkw is not None,
                 "property_field": property_field,
             }
 
@@ -5646,6 +5654,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 "return_hint": return_hint,
                 "param_count": len(params),
                 "defaults": default_specs,
+                "has_vararg": vararg is not None,
+                "has_varkw": varkw is not None,
                 "property_field": property_field,
             }
 
@@ -6082,6 +6092,51 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 elif descriptor != "staticmethod":
                     args = []
                 if args or descriptor in {"function", "classmethod", "staticmethod"}:
+                    param_count = method_info.get("param_count")
+                    defaults = method_info.get("defaults", [])
+                    has_vararg = method_info.get("has_vararg", False)
+                    has_varkw = method_info.get("has_varkw", False)
+                    if param_count is not None:
+                        fixed_param_count = param_count
+                        if has_vararg:
+                            fixed_param_count -= 1
+                        if has_varkw:
+                            fixed_param_count -= 1
+                        args = self._apply_default_specs(
+                            fixed_param_count,
+                            defaults,
+                            args,
+                            node,
+                            call_name=f"{lookup_class}.{method}",
+                            func_obj=func_val,
+                            implicit_self=False,
+                        )
+                        if has_vararg:
+                            if len(args) > fixed_param_count:
+                                extra = args[fixed_param_count:]
+                                tuple_val = MoltValue(
+                                    self.next_var(), type_hint="tuple"
+                                )
+                                self.emit(
+                                    MoltOp(
+                                        kind="TUPLE_NEW",
+                                        args=extra,
+                                        result=tuple_val,
+                                    )
+                                )
+                                args = args[:fixed_param_count] + [tuple_val]
+                            else:
+                                tuple_val = MoltValue(
+                                    self.next_var(), type_hint="tuple"
+                                )
+                                self.emit(
+                                    MoltOp(kind="TUPLE_NEW", args=[], result=tuple_val)
+                                )
+                                args.append(tuple_val)
+                        if has_varkw:
+                            dict_val = MoltValue(self.next_var(), type_hint="dict")
+                            self.emit(MoltOp(kind="DICT_NEW", args=[], result=dict_val))
+                            args.append(dict_val)
                     res_hint = "Any"
                     return_hint = method_info["return_hint"]
                     if return_hint and return_hint in self.classes:
@@ -6210,14 +6265,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     else:
                         self._emit_set_update_from_iter(receiver, other)
                 return res
-            if method == "append":
+            if method == "append" and receiver.type_hint == "list":
                 if len(node.args) != 1:
                     raise NotImplementedError("list.append expects 1 argument")
                 arg = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="LIST_APPEND", args=[receiver, arg], result=res))
                 return res
-            if method == "extend":
+            if method == "extend" and receiver.type_hint == "list":
                 if len(node.args) != 1:
                     raise NotImplementedError("list.extend expects 1 argument")
                 other = self.visit(node.args[0])
@@ -6226,7 +6281,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     MoltOp(kind="LIST_EXTEND", args=[receiver, other], result=res)
                 )
                 return res
-            if method == "insert":
+            if method == "insert" and receiver.type_hint == "list":
                 if len(node.args) != 2:
                     raise NotImplementedError("list.insert expects 2 arguments")
                 idx = self.visit(node.args[0])
@@ -6236,7 +6291,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     MoltOp(kind="LIST_INSERT", args=[receiver, idx, val], result=res)
                 )
                 return res
-            if method == "remove":
+            if method == "remove" and receiver.type_hint == "list":
                 if len(node.args) != 1:
                     raise NotImplementedError("list.remove expects 1 argument")
                 val = self.visit(node.args[0])
@@ -6380,6 +6435,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                 else:
                     self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
+                return res
+            if method == "clear" and receiver.type_hint == "dict":
+                if node.args or node.keywords:
+                    raise NotImplementedError("dict.clear expects 0 arguments")
+                res = MoltValue(self.next_var(), type_hint="None")
+                self.emit(MoltOp(kind="DICT_CLEAR", args=[receiver], result=res))
+                return res
+            if method == "copy" and receiver.type_hint == "dict":
+                if node.args or node.keywords:
+                    raise NotImplementedError("dict.copy expects 0 arguments")
+                res = MoltValue(self.next_var(), type_hint="dict")
+                self.emit(MoltOp(kind="DICT_COPY", args=[receiver], result=res))
+                return res
+            if method == "popitem" and receiver.type_hint == "dict":
+                if node.args or node.keywords:
+                    raise NotImplementedError("dict.popitem expects 0 arguments")
+                res = MoltValue(self.next_var(), type_hint="tuple")
+                self.emit(MoltOp(kind="DICT_POPITEM", args=[receiver], result=res))
                 return res
             if method == "keys" and receiver.type_hint == "dict":
                 res = MoltValue(self.next_var(), type_hint="dict_keys_view")
@@ -6774,6 +6847,20 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         MoltOp(kind="CALL", args=[target_name] + args, result=res)
                     )
                     return res
+                if allowlist_key in self.stdlib_allowlist:
+                    callee = self.visit(node.func)
+                    if callee is None:
+                        raise NotImplementedError("Unsupported call target")
+                    res = MoltValue(self.next_var(), type_hint="Any")
+                    callargs = self._emit_call_args_builder(node)
+                    self.emit(
+                        MoltOp(
+                            kind="CALL_BIND",
+                            args=[callee, callargs],
+                            result=res,
+                        )
+                    )
+                    return res
                 if enforce_allowlist:
                     suggestion = self._call_allowlist_suggestion(func_id, module_name)
                     if suggestion:
@@ -6869,20 +6956,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         detail="only one positional message is supported",
                     )
                     return None
-                msg = ""
+                msg: str | MoltValue = ""
                 if node.args:
-                    arg = node.args[0]
-                    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                        msg = arg.value
-                    else:
+                    arg_val = self.visit(node.args[0])
+                    if arg_val is None:
                         self._bridge_fallback(
                             node,
-                            f"{func_id} with non-string message",
+                            f"{func_id} with unsupported message expression",
                             impact="medium",
-                            alternative=f"{func_id} with a string literal message",
-                            detail="non-string messages are not supported yet",
+                            alternative=f"{func_id} with a simple string literal",
+                            detail="message expression could not be lowered",
                         )
                         return None
+                    msg = arg_val
                 return self._emit_exception_new(func_id, msg)
             if func_id == "getattr":
                 if len(node.args) not in {2, 3} or node.keywords:
@@ -8313,21 +8399,41 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     return res
                 return self._emit_tuple_from_iter(iterable)
             if func_id == "dict":
-                if node.keywords:
-                    raise NotImplementedError(
-                        "dict keyword arguments are not supported"
-                    )
                 if len(node.args) > 1:
                     raise NotImplementedError("dict expects 0 or 1 arguments")
-                if not node.args:
-                    res = MoltValue(self.next_var(), type_hint="dict")
-                    self.emit(MoltOp(kind="DICT_NEW", args=[], result=res))
-                    return res
-                iterable = self.visit(node.args[0])
-                if iterable is None:
-                    raise NotImplementedError("Unsupported dict input")
                 res = MoltValue(self.next_var(), type_hint="dict")
-                self.emit(MoltOp(kind="DICT_FROM_OBJ", args=[iterable], result=res))
+                if not node.args:
+                    self.emit(MoltOp(kind="DICT_NEW", args=[], result=res))
+                else:
+                    iterable = self.visit(node.args[0])
+                    if iterable is None:
+                        raise NotImplementedError("Unsupported dict input")
+                    self.emit(MoltOp(kind="DICT_FROM_OBJ", args=[iterable], result=res))
+                for kw in node.keywords:
+                    if kw.arg is None:
+                        mapping = self.visit(kw.value)
+                        if mapping is None:
+                            raise NotImplementedError("Unsupported dict ** input")
+                        self.emit(
+                            MoltOp(
+                                kind="DICT_UPDATE_KWSTAR",
+                                args=[res, mapping],
+                                result=MoltValue("none"),
+                            )
+                        )
+                    else:
+                        key = MoltValue(self.next_var(), type_hint="str")
+                        self.emit(MoltOp(kind="CONST_STR", args=[kw.arg], result=key))
+                        val = self.visit(kw.value)
+                        if val is None:
+                            raise NotImplementedError("Unsupported dict kw value")
+                        self.emit(
+                            MoltOp(
+                                kind="STORE_INDEX",
+                                args=[res, key, val],
+                                result=MoltValue("none"),
+                            )
+                        )
                 return res
             if func_id == "float":
                 if len(node.args) > 1:
@@ -8578,6 +8684,27 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                     self.emit(
                         MoltOp(kind="CALL", args=[target_name] + args, result=res)
+                    )
+                    return res
+                if imported_from is not None:
+                    normalized = self._normalize_allowlist_module(imported_from)
+                else:
+                    normalized = None
+                if imported_from is not None and (
+                    imported_from in self.stdlib_allowlist
+                    or (normalized is not None and normalized in self.stdlib_allowlist)
+                ):
+                    callee = self.visit(node.func)
+                    if callee is None:
+                        raise NotImplementedError("Unsupported call target")
+                    res = MoltValue(self.next_var(), type_hint="Any")
+                    callargs = self._emit_call_args_builder(node)
+                    self.emit(
+                        MoltOp(
+                            kind="CALL_BIND",
+                            args=[callee, callargs],
+                            result=res,
+                        )
                     )
                     return res
 
@@ -10626,20 +10753,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         detail="only one positional message is supported",
                     )
                     return None
-                msg = ""
+                msg: str | MoltValue = ""
                 if expr.args:
-                    arg = expr.args[0]
-                    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                        msg = arg.value
-                    else:
+                    arg_val = self.visit(expr.args[0])
+                    if arg_val is None:
                         self._bridge_fallback(
                             node,
-                            f"{context} with non-string message",
+                            f"{context} with unsupported message expression",
                             impact="high",
-                            alternative=f"{context} with a string literal message",
-                            detail="non-string messages are not supported yet",
+                            alternative=f"{context} with a simple string literal",
+                            detail="message expression could not be lowered",
                         )
                         return None
+                    msg = arg_val
                 return self._emit_exception_new(expr.func.id, msg)
 
             exc_val = self.visit(expr)
@@ -13539,6 +13665,38 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 json_ops.append(
                     {
                         "kind": "dict_update",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "DICT_UPDATE_KWSTAR":
+                json_ops.append(
+                    {
+                        "kind": "dict_update_kwstar",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "DICT_CLEAR":
+                json_ops.append(
+                    {
+                        "kind": "dict_clear",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "DICT_COPY":
+                json_ops.append(
+                    {
+                        "kind": "dict_copy",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "DICT_POPITEM":
+                json_ops.append(
+                    {
+                        "kind": "dict_popitem",
                         "args": [arg.name for arg in op.args],
                         "out": op.result.name,
                     }

@@ -24,31 +24,39 @@ README/ROADMAP in sync.
 - Format mini-language for ints/floats + f-string conversion flags (`!r`, `!s`, `!a`).
 - memoryview exposes 1D `format`/`shape`/`strides`/`nbytes` for bytes/bytearray views.
 - `str.count` supports start/end slices with Unicode-aware offsets.
-- `str.lower`/`str.upper`, `list.clear`/`list.copy`/`list.reverse`, and `dict.setdefault`/`dict.update`.
+- `str.lower`/`str.upper`, `list.clear`/`list.copy`/`list.reverse`, and
+  `dict.clear`/`dict.copy`/`dict.popitem`/`dict.setdefault`/`dict.update`.
 - `list.extend` accepts iterable inputs (range/generator/etc.) via the iter protocol.
+- `dict()` supports positional mapping/iterable inputs (keys/`__getitem__` mapping fallback) plus keyword/`**` expansion
+  (string key enforcement for `**`); `dict.update` mirrors the mapping fallback.
 - Dict/set key hashability parity for common unhashable types (list/dict/set/bytearray/memoryview).
 - Importable `builtins` module binds supported builtins (see stdlib matrix).
 - `enumerate` builtin returns an iterator over `(index, value)` with optional `start`.
 - Builtin function objects for allowlisted builtins (`any`, `all`, `callable`, `repr`, `getattr`, `hasattr`, `round`, `next`, `anext`, `print`, `super`).
+- Indexing honors user-defined `__getitem__`/`__setitem__` when builtin paths do not apply.
 - CPython shim: minimal ASGI adapter for http/lifespan via `molt.asgi.asgi_adapter`.
 - WASM harness runs via `run_wasm.js` with shared memory/table and direct runtime imports (legacy wrapper fallback via `MOLT_WASM_LEGACY=1`), including async/channel benches on WASI.
 - Instance `__getattr__`/`__setattr__` hooks for user-defined classes.
 - Instance `__getattribute__` hooks for user-defined classes.
 - `**kwargs` expansion accepts dicts and mapping-like objects with `keys()` + `__getitem__`.
+- C3 MRO + multiple inheritance for attribute lookup, `super()` resolution, and descriptor precedence for
+  `__get__`/`__set__`/`__delete__`.
+- Exceptions: BaseException root, non-string messages lowered through `str()`, and `__traceback__` captured as a
+  tuple of function names.
 
 ## Limitations (Current)
-- Classes/object model: C3 MRO + multiple inheritance + `super()` resolution for
-  attribute lookup; no metaclasses or dynamic `type()` construction; descriptor
-  precedence for `__get__`/`__set__`/`__delete__` is supported.
+- Classes/object model: no metaclasses or dynamic `type()` construction.
 - Attributes: fixed struct fields with dynamic instance-dict fallback; no
   user-defined `__slots__` beyond dataclass lowering; object-level
   `__getattr__`/`__getattribute__`/`__setattr__` are not exposed as builtins.
 - Dataclasses: compile-time lowering for frozen/eq/repr/slots; no
   `default_factory`, `kw_only`, or `order`.
-- Call binding: allowlisted module functions still reject keyword/variadic calls; binder supports up to 8 arguments before fallback work is added. Non-allowlisted imports remain blocked unless the bridge policy is enabled.
+- Call binding: allowlisted stdlib modules now permit dynamic calls (keyword/variadic via `CALL_BIND`);
+  direct-call fast paths still require allowlisted functions and positional-only calls. Non-allowlisted imports
+  remain blocked unless the bridge policy is enabled.
 - Closures for generator functions and generator decorators are still pending.
-- Exceptions: `try/except/else/finally` + `raise`/reraise; partial BaseException
-  semantics (see type coverage matrix).
+- Exceptions: `try/except/else/finally` + `raise`/reraise; `__traceback__` lacks full
+  traceback objects/line info and exception args remain message-only (see type coverage matrix).
 - Imports: static module graph only; no dynamic import hooks or full package
   resolution.
 - Asyncio: shim exposes `run`/`sleep` plus `set_event_loop`/`new_event_loop` stubs; loop/task APIs still pending and no
@@ -65,6 +73,8 @@ README/ROADMAP in sync.
   buffer exports).
 - Cancellation: cooperative checks only; automatic cancellation injection into
   awaits and I/O still pending.
+- collections: shim `Counter`/`defaultdict` are wrapper implementations (not dict subclasses); `Counter.update` does
+  not accept `**kwargs`, and `defaultdict` default_factory is only fast-pathed for `list`.
 
 ## Async + Concurrency Notes
 - Awaitables that return pending now resume at a labeled state to avoid
@@ -82,7 +92,7 @@ README/ROADMAP in sync.
 ## Stdlib Coverage
 - Partial shims: `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`,
   `pprint`, `string`, `typing`, `sys`, `os`, `asyncio`, `threading`,
-  `functools`, `itertools`.
+  `functools`, `itertools`, `operator`, `collections`.
 - Import-only stubs: `collections.abc`, `importlib`, `importlib.util`.
 - See `docs/spec/0015_STDLIB_COMPATIBILITY_MATRIX.md` for the full matrix.
 

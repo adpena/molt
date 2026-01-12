@@ -38,9 +38,9 @@
 | builtins | Core | Partial | P0 | SL1 | runtime/frontend | Importable module binds supported builtins (including function objects for allowlisted builtins); missing names raise `AttributeError`. |
 | functools | Core-adjacent | Partial | P1 | SL1 | stdlib/runtime | `partial`, `reduce`, `lru_cache`, `wraps` shim (no fast paths yet). |
 | itertools | Core-adjacent | Partial | P1 | SL1 | stdlib/runtime | `chain`, `islice`, `repeat` shim; vectorized kernels pending. |
-| operator | Core-adjacent | Planned | P1 | SL1 | stdlib/runtime | Low-level op dispatch helpers. |
+| operator | Core-adjacent | Partial | P1 | SL1 | stdlib/runtime | Basic helpers (`add`, `mul`, `eq`, `itemgetter`, `attrgetter`, `methodcaller`). |
 | math | Core-adjacent | Planned | P1 | SL1 | stdlib/runtime | SIMD-friendly numeric intrinsics. |
-| collections | Stdlib | Planned | P1 | SL1 | stdlib | `deque`, `Counter`, `defaultdict`. |
+| collections | Stdlib | Partial | P1 | SL1 | stdlib | `deque`, `Counter`, `defaultdict` basics (wrapper shims; `Counter`/`defaultdict` are not dict subclasses; `Counter.update` lacks `**kwargs`). |
 | heapq | Stdlib | Planned | P1 | SL1 | stdlib | Heap primitives. |
 | bisect | Stdlib | Planned | P1 | SL1 | stdlib | Binary search helpers. |
 | array | Stdlib | Planned | P1 | SL1 | runtime | Typed array storage, interop-ready. |
@@ -165,8 +165,8 @@ Scope is based on the compatibility matrix and current stubs in `src/molt/stdlib
 #### 3.1.5 collections (Stdlib)
 - Goal: Implement `deque`, `Counter`, `defaultdict`.
 - Scope: Basic operations and methods; omit advanced views initially.
-- Semantics: `deque` O(1) append/pop; `Counter` arithmetic and `most_common`.
-- Runtime/IR: New runtime types for `deque`; `Counter` backed by dict with deterministic ordering.
+- Semantics: `deque` basic append/pop/iter; `Counter` arithmetic and `most_common`.
+- Runtime/IR: Current shim uses list-backed `deque` + dict-backed wrappers; TODO(stdlib-compat, owner:stdlib, milestone:SL1): move to runtime types and dict-subclass parity.
 - Tests: Unit + differential tests; deterministic iteration and repr.
 - Docs: Matrix update: `collections` Partial/SL1.
 - Acceptance: Behavior parity for common methods; deterministic iteration.

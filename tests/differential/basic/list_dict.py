@@ -28,3 +28,36 @@ print(len(d.values()))
 big = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
 big.append(20)
 print(len(big))
+
+print(dict())
+print(dict(a=1, b=2))
+print(dict({"a": 1}, b=3))
+print(dict(**{"x": 4, "y": 5}))
+try:
+    dict(**{1: 2})
+except TypeError:
+    print("dict-kw-typeerror")
+
+
+class Mapping:
+    def __init__(self):
+        self.data = {"a": 1, "b": 2}
+
+    def keys(self):
+        return ["a", "b"]
+
+    def __getitem__(self, key):
+        return self.data[key]
+
+
+print(dict(Mapping()))
+d2 = {}
+d2.update(Mapping())
+print(d2["a"], d2["b"])
+
+d3 = {"x": 1, "y": 2}
+print(d3.copy())
+print(d3.popitem())
+print(d3)
+d3.clear()
+print(d3)
