@@ -528,6 +528,9 @@ and regression control.
    common `property` patterns or inlined getter bodies.
  - Update (2026-01-09): backend inline load/store did not materially improve
    `bench_descriptor_property.py` (~0.27x); call overhead is not the only bottleneck.
+ - Update (2026-01-12): fixed class layout version mismatch by setting the
+   runtime layout version at class construction; `bench_descriptor_property.py`
+   now ~2.8x vs CPython (guarded field path hits fast load).
 
 **Benchmark Matrix**
 - bench_descriptor_property.py: expected >=2x improvement

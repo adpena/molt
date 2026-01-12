@@ -128,16 +128,16 @@ or `--type-hints=check` (guards inserted). `trust` requires clean `ty` results a
 assumes hints are correct; incorrect hints are user error and may miscompile.
 
 Latest run: 2026-01-12 (macOS x86_64, CPython 3.14.0).
-Top speedups: `bench_sum.py` 185.48x, `bench_channel_throughput.py` 41.93x,
-`bench_async_await.py` 11.20x, `bench_matrix_math.py` 9.31x,
-`bench_parse_msgpack.py` 8.68x.
-Regressions: none (slowest wins: `bench_fib.py` 1.51x, `bench_struct.py` 1.57x).
+Top speedups: `bench_sum.py` 219.46x, `bench_channel_throughput.py` 42.86x,
+`bench_async_await.py` 11.80x, `bench_matrix_math.py` 9.81x,
+`bench_deeply_nested_loop.py` 7.01x.
+Regressions: none (slowest wins: `bench_fib.py` 1.41x, `bench_struct.py` 1.55x).
 Build/run failures: Cython/Numba baselines skipped; Codon skipped for async,
 channel, matrix_math, bytearray, memoryview, parse_msgpack, struct, and
 sum_list_hints benches.
 WASM run: 2026-01-12 (macOS x86_64, CPython 3.14.0). Slowest: `bench_deeply_nested_loop.py`
-5.54s, `bench_struct.py` 1.59s; largest sizes: `bench_channel_throughput.py` 142.2 KB,
-`bench_async_await.py` 80.2 KB; all benches produced timings.
+5.54s, `bench_struct.py` 1.64s; largest sizes: `bench_channel_throughput.py` 146.2 KB,
+`bench_async_await.py` 81.5 KB; all benches produced timings.
 
 ### Performance Gates
 - Vector reductions (`bench_sum_list.py`, `bench_min_list.py`, `bench_max_list.py`, `bench_prod_list.py`): regression >5% fails the gate.
@@ -145,17 +145,17 @@ WASM run: 2026-01-12 (macOS x86_64, CPython 3.14.0). Slowest: `bench_deeply_nest
 - Matrix/buffer kernels (`bench_matrix_math.py`): regression >5% fails the gate.
 - Any expected perf deltas from new kernels must be recorded here after the run; complex regressions move to `OPTIMIZATIONS_PLAN.md`.
 
-Baseline microbenchmarks (2026-01-12): `bench_min_list.py` 1.87x, `bench_max_list.py` 1.95x,
-`bench_prod_list.py` 5.95x, `bench_str_find_unicode.py` 4.55x, `bench_str_count_unicode.py` 1.99x.
+Baseline microbenchmarks (2026-01-12): `bench_min_list.py` 1.97x, `bench_max_list.py` 1.96x,
+`bench_prod_list.py` 6.14x, `bench_str_find_unicode.py` 4.58x, `bench_str_count_unicode.py` 1.93x.
 
 | Benchmark | Molt vs CPython | Notes |
 | --- | --- | --- |
-| bench_matrix_math.py | 9.31x | buffer2d matmul lowering |
-| bench_deeply_nested_loop.py | 6.85x | nested loop lowering |
-| bench_str_endswith.py | 4.61x | string endswith fast path |
-| bench_str_startswith.py | 4.47x | string startswith fast path |
-| bench_str_count.py | 4.66x | string count fast path |
-| bench_str_split.py | 4.05x | optimized split builder |
-| bench_str_replace.py | 4.07x | SIMD-friendly replace path |
-| bench_str_join.py | 2.64x | pre-sized join buffer |
-| bench_sum_list.py | 2.56x | vector reduction fast path |
+| bench_matrix_math.py | 9.81x | buffer2d matmul lowering |
+| bench_deeply_nested_loop.py | 7.01x | nested loop lowering |
+| bench_str_endswith.py | 4.78x | string endswith fast path |
+| bench_str_startswith.py | 4.77x | string startswith fast path |
+| bench_str_count.py | 4.94x | string count fast path |
+| bench_str_split.py | 4.30x | optimized split builder |
+| bench_str_replace.py | 4.37x | SIMD-friendly replace path |
+| bench_str_join.py | 2.68x | pre-sized join buffer |
+| bench_sum_list.py | 2.48x | vector reduction fast path |

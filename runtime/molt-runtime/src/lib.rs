@@ -4167,6 +4167,25 @@ pub extern "C" fn molt_class_layout_version(class_bits: u64) -> u64 {
 }
 
 #[no_mangle]
+pub extern "C" fn molt_class_set_layout_version(class_bits: u64, version_bits: u64) -> u64 {
+    let class_obj = obj_from_bits(class_bits);
+    let Some(class_ptr) = class_obj.as_ptr() else {
+        raise!("TypeError", "class must be a type object");
+    };
+    unsafe {
+        if object_type_id(class_ptr) != TYPE_ID_TYPE {
+            raise!("TypeError", "class must be a type object");
+        }
+        let version = match to_i64(obj_from_bits(version_bits)) {
+            Some(val) if val >= 0 => val as u64,
+            _ => raise!("TypeError", "layout version must be int"),
+        };
+        class_set_layout_version_bits(class_ptr, version);
+    }
+    MoltObject::none().bits()
+}
+
+#[no_mangle]
 pub extern "C" fn molt_super_new(type_bits: u64, obj_bits: u64) -> u64 {
     let type_obj = obj_from_bits(type_bits);
     let Some(type_ptr) = type_obj.as_ptr() else {

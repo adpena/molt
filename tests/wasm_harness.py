@@ -3395,6 +3395,20 @@ BASE_IMPORTS = """\
     const version = classLayoutVersion(classBits);
     return boxInt(version ?? 0n);
   },
+  class_set_layout_version: (classBits, versionBits) => {
+    if (!getClass(classBits)) {
+      throw new Error('TypeError: class must be a type object');
+    }
+    if (!isIntLike(versionBits)) {
+      throw new Error('TypeError: layout version must be int');
+    }
+    const version = unboxIntLike(versionBits);
+    if (version < 0n) {
+      throw new Error('TypeError: layout version must be non-negative');
+    }
+    classLayoutVersions.set(classBits, version);
+    return boxNone();
+  },
   isinstance: (objBits, classBits) => {
     const tuple = getTuple(classBits);
     if (tuple) {

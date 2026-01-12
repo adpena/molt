@@ -5743,6 +5743,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 result=MoltValue("none"),
             )
         )
+        layout_version = self.classes[node.name].get("layout_version", 0)
+        layout_val = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[layout_version], result=layout_val))
+        self.emit(
+            MoltOp(
+                kind="CLASS_SET_LAYOUT_VERSION",
+                args=[class_val, layout_val],
+                result=MoltValue("none"),
+            )
+        )
 
         return None
 
@@ -12614,6 +12624,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 json_ops.append(
                     {
                         "kind": "class_layout_version",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "CLASS_SET_LAYOUT_VERSION":
+                json_ops.append(
+                    {
+                        "kind": "class_set_layout_version",
                         "args": [arg.name for arg in op.args],
                         "out": op.result.name,
                     }

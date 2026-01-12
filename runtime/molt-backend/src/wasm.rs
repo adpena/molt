@@ -447,6 +447,7 @@ impl WasmBackend {
         add_import("builtin_type", 2, &mut self.import_ids);
         add_import("type_of", 2, &mut self.import_ids);
         add_import("class_layout_version", 2, &mut self.import_ids);
+        add_import("class_set_layout_version", 3, &mut self.import_ids);
         add_import("isinstance", 3, &mut self.import_ids);
         add_import("issubclass", 3, &mut self.import_ids);
         add_import("object_new", 0, &mut self.import_ids);
@@ -2650,6 +2651,20 @@ impl WasmBackend {
                         emit_call(func, reloc_enabled, import_ids["class_layout_version"]);
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "class_set_layout_version" => {
+                        let args = op.args.as_ref().unwrap();
+                        let class_bits = locals[&args[0]];
+                        let version_bits = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(class_bits));
+                        func.instruction(&Instruction::LocalGet(version_bits));
+                        emit_call(func, reloc_enabled, import_ids["class_set_layout_version"]);
+                        if let Some(out) = op.out.as_ref() {
+                            if out != "none" {
+                                let res = locals[out];
+                                func.instruction(&Instruction::LocalSet(res));
+                            }
+                        }
                     }
                     "isinstance" => {
                         let args = op.args.as_ref().unwrap();
