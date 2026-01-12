@@ -1,5 +1,5 @@
-Checkpoint: 2026-01-12T02:33:10-0600
-Git: ce0dc12b92695df1042dcab048a26e0b0c04605b (dirty)
+Checkpoint: 2026-01-12T02:36:54-0600
+Git: ab6bfaa76fd496f8873755c7b0f80eda05260618 (clean)
 
 Summary
 - Fixed class layout version mismatch by setting runtime layout version during class construction.
@@ -7,18 +7,7 @@ Summary
 - Re-ran native + wasm benches; bench_descriptor_property now 2.80x vs CPython.
 
 Files touched (uncommitted)
-- CHECKPOINT.md
-- OPTIMIZATIONS_PLAN.md
-- README.md
-- ROADMAP.md
-- bench/results/bench.json
-- bench/results/bench_wasm.json
-- runtime/molt-backend/src/lib.rs
-- runtime/molt-backend/src/wasm.rs
-- runtime/molt-runtime/src/lib.rs
-- src/molt/frontend/__init__.py
-- tests/wasm_harness.py
-- wit/molt-runtime.wit
+- None.
 
 Docs/spec updates needed?
 - None.
