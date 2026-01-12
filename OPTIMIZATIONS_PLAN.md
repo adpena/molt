@@ -470,6 +470,17 @@ and regression control.
   layout_guard ~2.0M; `bench_attr_access.py` alloc_count ~2.5M and
   layout_guard ~1.0M (≈2x loop iterations). Allocation + guard costs still
   dominate.
+- Update (2026-01-12): added a TLS object pool for `TYPE_ID_OBJECT` to reduce
+  mutex/HashMap contention in hot allocation loops; re-bench pending.
+- Update (2026-01-12): set Cranelift `opt_level=speed` for the native backend;
+  re-bench pending.
+- Update (2026-01-12): replaced pool HashMap lookups with fixed 8-byte size
+  buckets (TLS + global) for O(1) size-class reuse; re-bench pending.
+- Update (2026-01-12): added header flags to skip payload scans for objects that
+  never stored pointers, plus a static-class allocation path that elides per-
+  instance class refcounts; re-bench pending.
+- Update (2026-01-12): added a minimal dead-struct allocation elision pass in the
+  backend (alloc only used by slot stores/object_set_class); re-bench pending.
 
 **Benchmark Matrix**
 - bench_struct.py: expected >=2x improvement

@@ -249,6 +249,7 @@ class ClassInfo(TypedDict, total=False):
     bases: list[str]
     mro: list[str]
     dynamic: bool
+    static: bool
     dataclass: bool
     frozen: bool
     eq: bool
@@ -5107,6 +5108,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 dynamic = True
         if node.name in self.mutated_classes:
             dynamic = True
+        is_static = self.current_func_name == "molt_main"
 
         base_mros = [self._class_mro_names(name) for name in base_names]
         base_mros.append(list(base_names))
@@ -5150,6 +5152,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 "bases": base_names,
                 "mro": mro_names,
                 "dynamic": False,
+                "static": is_static,
                 "size": len(field_order) * 8,
                 "dataclass": True,
                 "frozen": dataclass_opts["frozen"],
@@ -5269,6 +5272,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 bases=base_names,
                 mro=mro_names,
                 dynamic=dynamic,
+                static=is_static,
             )
 
         def compile_method(item: ast.FunctionDef) -> MethodInfo:
@@ -7668,21 +7672,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                     return res
                 res = MoltValue(self.next_var(), type_hint=class_id)
-                alloc_kind = (
-                    "ALLOC_CLASS_TRUSTED"
-                    if not class_info.get("dynamic")
-                    else "ALLOC_CLASS"
-                )
+                alloc_kind = "ALLOC_CLASS"
+                if not class_info.get("dynamic"):
+                    alloc_kind = (
+                        "ALLOC_CLASS_STATIC"
+                        if class_info.get("static")
+                        else "ALLOC_CLASS_TRUSTED"
+                    )
                 self.emit(
                     MoltOp(kind=alloc_kind, args=[class_ref, class_id], result=res)
                 )
-                self.emit(
-                    MoltOp(
-                        kind="OBJECT_SET_CLASS",
-                        args=[res, class_ref],
-                        result=MoltValue("none"),
+                if alloc_kind != "ALLOC_CLASS_STATIC":
+                    self.emit(
+                        MoltOp(
+                            kind="OBJECT_SET_CLASS",
+                            args=[res, class_ref],
+                            result=MoltValue("none"),
+                        )
                     )
-                )
                 field_order = class_info.get("field_order") or list(
                     class_info.get("fields", {}).keys()
                 )
@@ -12937,6 +12944,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 json_ops.append(
                     {
                         "kind": "alloc_class_trusted",
+                        "args": [class_ref.name],
+                        "value": self.classes[class_id]["size"],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "ALLOC_CLASS_STATIC":
+                class_ref, class_id = op.args
+                json_ops.append(
+                    {
+                        "kind": "alloc_class_static",
                         "args": [class_ref.name],
                         "value": self.classes[class_id]["size"],
                         "out": op.result.name,

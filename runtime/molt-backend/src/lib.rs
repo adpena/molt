@@ -24,6 +24,8 @@ const GENERATOR_CONTROL_BYTES: i32 = 32;
 const FUNC_DEFAULT_NONE: i64 = 1;
 const FUNC_DEFAULT_DICT_POP: i64 = 2;
 const FUNC_DEFAULT_DICT_UPDATE: i64 = 3;
+const HEADER_FLAGS_OFFSET: i32 = -8;
+const HEADER_HAS_PTRS_FLAG: i64 = 1;
 
 fn box_int(val: i64) -> i64 {
     let masked = (val as u64) & POINTER_MASK;
@@ -118,6 +120,18 @@ fn emit_maybe_ref_adjust(builder: &mut FunctionBuilder, val: Value, obj_ref_fn: 
 
     builder.switch_to_block(cont_block);
     builder.seal_block(cont_block);
+}
+
+fn emit_mark_has_ptrs(builder: &mut FunctionBuilder, obj_ptr: Value) {
+    let header_ptr = builder
+        .ins()
+        .iadd_imm(obj_ptr, i64::from(HEADER_FLAGS_OFFSET));
+    let flags = builder.ins().load(types::I64, MemFlags::new(), header_ptr, 0);
+    let mask = builder.ins().iconst(types::I64, HEADER_HAS_PTRS_FLAG);
+    let new_flags = builder.ins().bor(flags, mask);
+    builder
+        .ins()
+        .store(MemFlags::new(), new_flags, header_ptr, 0);
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -240,6 +254,66 @@ fn dump_ir_ops(func_ir: &FunctionIR, mode: &str) {
     eprintln!("IR ops for {} (mode={}):\n{}", func_ir.name, mode, out);
 }
 
+pub(crate) fn elide_dead_struct_allocs(func_ir: &mut FunctionIR) {
+    if std::env::var("MOLT_DISABLE_STRUCT_ELIDE").is_ok() {
+        return;
+    }
+    let mut remove = vec![false; func_ir.ops.len()];
+    let alloc_kinds = ["alloc_class", "alloc_class_trusted", "alloc_class_static"];
+    let allowed_use_kinds = [
+        "store",
+        "store_init",
+        "guarded_field_set",
+        "guarded_field_init",
+        "object_set_class",
+    ];
+
+    for (idx, op) in func_ir.ops.iter().enumerate() {
+        if !alloc_kinds.contains(&op.kind.as_str()) {
+            continue;
+        }
+        let Some(out_name) = op.out.as_ref() else {
+            continue;
+        };
+        let mut allowed = true;
+        let mut uses = Vec::new();
+        for (use_idx, use_op) in func_ir.ops.iter().enumerate() {
+            let Some(args) = use_op.args.as_ref() else {
+                continue;
+            };
+            for (pos, arg) in args.iter().enumerate() {
+                if arg != out_name {
+                    continue;
+                }
+                if pos != 0 || !allowed_use_kinds.contains(&use_op.kind.as_str()) {
+                    allowed = false;
+                    break;
+                }
+                uses.push(use_idx);
+            }
+            if !allowed {
+                break;
+            }
+        }
+        if allowed {
+            remove[idx] = true;
+            for use_idx in uses {
+                remove[use_idx] = true;
+            }
+        }
+    }
+
+    if remove.iter().any(|&flag| flag) {
+        let mut new_ops = Vec::with_capacity(func_ir.ops.len());
+        for (idx, op) in func_ir.ops.iter().enumerate() {
+            if !remove[idx] {
+                new_ops.push(op.clone());
+            }
+        }
+        func_ir.ops = new_ops;
+    }
+}
+
 fn compute_last_use(ops: &[OpIR]) -> HashMap<String, usize> {
     let mut last_use = HashMap::new();
     for (idx, op) in ops.iter().enumerate() {
@@ -322,6 +396,7 @@ impl SimpleBackend {
     pub fn new() -> Self {
         let mut flag_builder = settings::builder();
         flag_builder.set("is_pic", "true").unwrap();
+        flag_builder.set("opt_level", "speed").unwrap();
         let isa_builder = cranelift_native::builder().unwrap_or_else(|msg| {
             panic!("host machine is not supported: {}", msg);
         });
@@ -341,6 +416,10 @@ impl SimpleBackend {
     }
 
     pub fn compile(mut self, ir: SimpleIR) -> Vec<u8> {
+        let mut ir = ir;
+        for func_ir in &mut ir.functions {
+            elide_dead_struct_allocs(func_ir);
+        }
         for func_ir in ir.functions {
             self.compile_func(func_ir);
         }
@@ -6138,6 +6217,26 @@ impl SimpleBackend {
                     let out_name = op.out.unwrap();
                     vars.insert(out_name, res);
                 }
+                "alloc_class_static" => {
+                    let size = op.value.unwrap();
+                    let args = op.args.as_ref().unwrap();
+                    let class_bits = vars.get(&args[0]).expect("Class not found");
+                    let iconst = builder.ins().iconst(types::I64, size);
+
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64)); // Returns object bits
+                    let callee = self
+                        .module
+                        .declare_function("molt_alloc_class_static", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[iconst, *class_bits]);
+                    let res = builder.inst_results(call)[0];
+                    let out_name = op.out.unwrap();
+                    vars.insert(out_name, res);
+                }
                 "alloc_future" => {
                     let closure_size = op.value.unwrap();
                     let size = builder.ins().iconst(types::I64, closure_size);
@@ -6282,6 +6381,7 @@ impl SimpleBackend {
 
                     builder.switch_to_block(slow_block);
                     builder.seal_block(slow_block);
+                    emit_mark_has_ptrs(&mut builder, obj_ptr);
                     let is_same = builder.ins().icmp(IntCC::Equal, old_val, *val);
                     builder
                         .ins()
@@ -6309,6 +6409,24 @@ impl SimpleBackend {
                     let val = vars.get(&args[1]).expect("Value not found");
                     let offset = op.value.unwrap() as i32;
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj);
+                    let new_is_ptr = is_ptr_tag(&mut builder, *val);
+                    let mark_block = builder.create_block();
+                    let cont_block = builder.create_block();
+                    if let Some(current_block) = builder.current_block() {
+                        builder.insert_block_after(mark_block, current_block);
+                        builder.insert_block_after(cont_block, mark_block);
+                    }
+                    builder
+                        .ins()
+                        .brif(new_is_ptr, mark_block, &[], cont_block, &[]);
+
+                    builder.switch_to_block(mark_block);
+                    builder.seal_block(mark_block);
+                    emit_mark_has_ptrs(&mut builder, obj_ptr);
+                    builder.ins().jump(cont_block, &[]);
+
+                    builder.switch_to_block(cont_block);
+                    builder.seal_block(cont_block);
                     builder.ins().store(MemFlags::new(), *val, obj_ptr, offset);
                     if let Some(out_name) = op.out.as_ref() {
                         if out_name != "none" {

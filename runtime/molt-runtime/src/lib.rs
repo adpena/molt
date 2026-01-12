@@ -37,6 +37,7 @@ pub struct MoltHeader {
     pub poll_fn: u64, // Function pointer for polling
     pub state: i64,   // State machine state
     pub size: usize,  // Total size of allocation
+    pub flags: u64,   // Header flags (object metadata)
 }
 
 struct DataclassDesc {
@@ -329,10 +330,19 @@ static ASYNC_POLL_COUNT: AtomicU64 = AtomicU64::new(0);
 static ASYNC_PENDING_COUNT: AtomicU64 = AtomicU64::new(0);
 static ASYNC_WAKEUP_COUNT: AtomicU64 = AtomicU64::new(0);
 static ASYNC_SLEEP_REGISTER_COUNT: AtomicU64 = AtomicU64::new(0);
-static OBJECT_POOL: OnceLock<Mutex<HashMap<usize, Vec<usize>>>> = OnceLock::new();
+static OBJECT_POOL: OnceLock<Mutex<Vec<Vec<usize>>>> = OnceLock::new();
 
 const OBJECT_POOL_MAX_BYTES: usize = 1024;
 const OBJECT_POOL_BUCKET_LIMIT: usize = 4096;
+const OBJECT_POOL_TLS_BUCKET_LIMIT: usize = 1024;
+const OBJECT_POOL_BUCKETS: usize = OBJECT_POOL_MAX_BYTES / 8 + 1;
+const HEADER_FLAG_HAS_PTRS: u64 = 1;
+const HEADER_FLAG_SKIP_CLASS_DECREF: u64 = 1 << 1;
+
+thread_local! {
+    static OBJECT_POOL_TLS: RefCell<Vec<Vec<usize>>> =
+        RefCell::new(vec![Vec::new(); OBJECT_POOL_BUCKETS]);
+}
 
 fn profile_enabled() -> bool {
     *PROFILE_ENABLED.get_or_init(|| {
@@ -891,32 +901,59 @@ fn int_bits_from_i128(val: i128) -> u64 {
     }
 }
 
-fn object_pool() -> &'static Mutex<HashMap<usize, Vec<usize>>> {
-    OBJECT_POOL.get_or_init(|| Mutex::new(HashMap::new()))
+fn object_pool() -> &'static Mutex<Vec<Vec<usize>>> {
+    OBJECT_POOL.get_or_init(|| Mutex::new(vec![Vec::new(); OBJECT_POOL_BUCKETS]))
+}
+
+fn object_pool_index(total_size: usize) -> Option<usize> {
+    if total_size == 0 || total_size > OBJECT_POOL_MAX_BYTES || total_size % 8 != 0 {
+        return None;
+    }
+    Some(total_size / 8)
 }
 
 fn object_pool_take(total_size: usize) -> Option<*mut u8> {
-    if total_size > OBJECT_POOL_MAX_BYTES {
-        return None;
+    let idx = object_pool_index(total_size)?;
+    let from_tls = OBJECT_POOL_TLS.with(|pool| {
+        let mut pool = pool.borrow_mut();
+        pool.get_mut(idx).and_then(|bucket| bucket.pop())
+    });
+    if let Some(addr) = from_tls {
+        return Some(addr as *mut u8);
     }
     let mut guard = object_pool().lock().unwrap();
     guard
-        .get_mut(&total_size)
+        .get_mut(idx)
         .and_then(|bucket| bucket.pop())
         .map(|addr| addr as *mut u8)
 }
 
 fn object_pool_put(total_size: usize, header_ptr: *mut u8) -> bool {
-    if header_ptr.is_null() || total_size > OBJECT_POOL_MAX_BYTES {
+    if header_ptr.is_null() {
         return false;
     }
-    let mut guard = object_pool().lock().unwrap();
-    let bucket = guard.entry(total_size).or_default();
-    if bucket.len() >= OBJECT_POOL_BUCKET_LIMIT {
+    let Some(idx) = object_pool_index(total_size) else {
         return false;
-    }
+    };
     unsafe {
         std::ptr::write_bytes(header_ptr, 0, total_size);
+    }
+    let stored_tls = OBJECT_POOL_TLS.with(|pool| {
+        let mut pool = pool.borrow_mut();
+        let bucket = &mut pool[idx];
+        if bucket.len() >= OBJECT_POOL_TLS_BUCKET_LIMIT {
+            return false;
+        }
+        bucket.push(header_ptr as usize);
+        true
+    });
+    if stored_tls {
+        return true;
+    }
+    let mut guard = object_pool().lock().unwrap();
+    let bucket = &mut guard[idx];
+    if bucket.len() >= OBJECT_POOL_BUCKET_LIMIT {
+        return false;
     }
     bucket.push(header_ptr as usize);
     true
@@ -943,6 +980,7 @@ fn alloc_object_zeroed_with_pool(total_size: usize, type_id: u32) -> *mut u8 {
         (*header).poll_fn = 0;
         (*header).state = 0;
         (*header).size = total_size;
+        (*header).flags = 0;
         header_ptr.add(std::mem::size_of::<MoltHeader>())
     }
 }
@@ -961,6 +999,7 @@ fn alloc_object(total_size: usize, type_id: u32) -> *mut u8 {
         (*header).poll_fn = 0;
         (*header).state = 0;
         (*header).size = total_size;
+        (*header).flags = 0;
         ptr.add(std::mem::size_of::<MoltHeader>())
     }
 }
@@ -996,6 +1035,18 @@ unsafe fn object_class_bits(ptr: *mut u8) -> u64 {
 
 unsafe fn object_set_class_bits(ptr: *mut u8, bits: u64) {
     (*header_from_obj_ptr(ptr)).state = bits as i64;
+}
+
+unsafe fn object_mark_has_ptrs(ptr: *mut u8) {
+    (*header_from_obj_ptr(ptr)).flags |= HEADER_FLAG_HAS_PTRS;
+}
+
+unsafe fn object_has_ptrs(ptr: *mut u8) -> bool {
+    ((*header_from_obj_ptr(ptr)).flags & HEADER_FLAG_HAS_PTRS) != 0
+}
+
+unsafe fn object_skip_class_decref(ptr: *mut u8) -> bool {
+    ((*header_from_obj_ptr(ptr)).flags & HEADER_FLAG_SKIP_CLASS_DECREF) != 0
 }
 
 unsafe fn bigint_ref(ptr: *mut u8) -> &'static BigInt {
@@ -3313,6 +3364,24 @@ pub extern "C" fn molt_alloc_class_trusted(size_bits: u64, class_bits: u64) -> u
     MoltObject::from_ptr(obj_ptr).bits()
 }
 
+#[no_mangle]
+pub extern "C" fn molt_alloc_class_static(size_bits: u64, class_bits: u64) -> u64 {
+    let size = usize_from_bits(size_bits);
+    let total_size = size + std::mem::size_of::<MoltHeader>();
+    let obj_ptr = alloc_object_zeroed_with_pool(total_size, TYPE_ID_OBJECT);
+    if obj_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    unsafe {
+        if class_bits != 0 {
+            object_set_class_bits(obj_ptr, class_bits);
+        }
+        let header = header_from_obj_ptr(obj_ptr);
+        (*header).flags |= HEADER_FLAG_SKIP_CLASS_DECREF;
+    }
+    MoltObject::from_ptr(obj_ptr).bits()
+}
+
 // --- List Builder ---
 
 #[no_mangle]
@@ -4280,12 +4349,13 @@ pub unsafe extern "C" fn molt_object_set_class(obj_ptr_bits: u64, class_bits: u6
             raise!("TypeError", "class must be a type object");
         }
     }
+    let skip_class_ref = ((*header).flags & HEADER_FLAG_SKIP_CLASS_DECREF) != 0;
     let old_bits = object_class_bits(obj_ptr);
-    if old_bits != 0 {
+    if old_bits != 0 && !skip_class_ref {
         dec_ref_bits(old_bits);
     }
     object_set_class_bits(obj_ptr, class_bits);
-    if class_bits != 0 {
+    if class_bits != 0 && !skip_class_ref {
         inc_ref_bits(class_bits);
     }
     MoltObject::none().bits()
@@ -4341,6 +4411,9 @@ unsafe fn object_field_set_ptr_raw(obj_ptr: *mut u8, offset: usize, val_bits: u6
     let old_bits = *slot;
     let old_is_ptr = obj_from_bits(old_bits).as_ptr().is_some();
     let new_is_ptr = obj_from_bits(val_bits).as_ptr().is_some();
+    if new_is_ptr {
+        object_mark_has_ptrs(obj_ptr);
+    }
     if !old_is_ptr && !new_is_ptr {
         *slot = val_bits;
         return MoltObject::none().bits();
@@ -4366,6 +4439,9 @@ unsafe fn object_field_init_ptr_raw(obj_ptr: *mut u8, offset: usize, val_bits: u
         old_bits == 0 || obj_from_bits(old_bits).as_ptr().is_none(),
         "object_field_init used on slot with pointer contents"
     );
+    if obj_from_bits(val_bits).as_ptr().is_some() {
+        object_mark_has_ptrs(obj_ptr);
+    }
     *slot = val_bits;
     MoltObject::none().bits()
 }
@@ -4548,6 +4624,9 @@ pub unsafe extern "C" fn molt_object_field_set(
     let old_bits = *slot;
     let old_is_ptr = obj_from_bits(old_bits).as_ptr().is_some();
     let new_is_ptr = obj_from_bits(val_bits).as_ptr().is_some();
+    if new_is_ptr {
+        object_mark_has_ptrs(obj_ptr);
+    }
     if !old_is_ptr && !new_is_ptr {
         *slot = val_bits;
         return MoltObject::none().bits();
@@ -4579,6 +4658,9 @@ pub unsafe extern "C" fn molt_object_field_init(
         old_bits == 0 || obj_from_bits(old_bits).as_ptr().is_none(),
         "object_field_init used on slot with pointer contents"
     );
+    if obj_from_bits(val_bits).as_ptr().is_some() {
+        object_mark_has_ptrs(obj_ptr);
+    }
     *slot = val_bits;
     MoltObject::none().bits()
 }
@@ -7218,6 +7300,7 @@ pub extern "C" fn molt_future_new(poll_fn_addr: u64, closure_size: u64) -> u64 {
         (*header).poll_fn = poll_fn_addr;
         (*header).state = 0;
         (*header).size = total_size;
+        (*header).flags = 0;
         let obj_ptr = ptr.add(std::mem::size_of::<MoltHeader>());
         let obj_bits = MoltObject::from_ptr(obj_ptr).bits();
         if std::env::var("MOLT_DEBUG_AWAITABLE").is_ok() {
@@ -16288,16 +16371,20 @@ pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
             }
             TYPE_ID_OBJECT => {
                 if header.poll_fn == 0 {
+                    let has_ptrs = (header.flags & HEADER_FLAG_HAS_PTRS) != 0;
                     let payload = header
                         .size
                         .saturating_sub(std::mem::size_of::<MoltHeader>());
-                    let slots = payload / std::mem::size_of::<u64>();
-                    let payload_ptr = ptr as *mut u64;
-                    for idx in 0..slots {
-                        dec_ref_bits(*payload_ptr.add(idx));
+                    if has_ptrs {
+                        let slots = payload / std::mem::size_of::<u64>();
+                        let payload_ptr = ptr as *mut u64;
+                        for idx in 0..slots {
+                            dec_ref_bits(*payload_ptr.add(idx));
+                        }
                     }
                     let class_bits = object_class_bits(ptr);
-                    if class_bits != 0 {
+                    if class_bits != 0 && (header.flags & HEADER_FLAG_SKIP_CLASS_DECREF) == 0
+                    {
                         dec_ref_bits(class_bits);
                     }
                 } else {

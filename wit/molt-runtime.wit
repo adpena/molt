@@ -9,6 +9,7 @@ interface intrinsics {
     alloc: func(size: u64) -> u64;
     alloc_class: func(size: u64, class_bits: molt-object) -> molt-object;
     alloc_class_trusted: func(size: u64, class_bits: molt-object) -> molt-object;
+    alloc_class_static: func(size: u64, class_bits: molt-object) -> molt-object;
     async_sleep: func(obj: u64) -> u64;
     anext_default_poll: func(obj: u64) -> u64;
     future_poll_fn: func(obj: u64) -> u64;

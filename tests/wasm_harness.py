@@ -117,7 +117,9 @@ let currentTokenId = 1n;
 let currentTaskPtr = 0n;
 let nextChanId = 1n;
 let heapPtr = 1 << 20;
-const HEADER_SIZE = 32;
+const HEADER_SIZE = 40;
+const HEADER_POLL_FN_OFFSET = HEADER_SIZE - 8;
+const HEADER_STATE_OFFSET = HEADER_SIZE - 16;
 const GEN_CONTROL_SIZE = 32;
 const align = (size, align) => (size + (align - 1)) & ~(align - 1);
 const allocRaw = (payload) => {
@@ -1099,7 +1101,7 @@ const generatorSend = (gen, sendVal) => {
   exceptionSetDepth(genDepth);
   view.setBigInt64(addr + 0, sendVal, true);
   view.setBigInt64(addr + 8, boxNone(), true);
-  const pollIdx = view.getUint32(addr - 24, true);
+  const pollIdx = view.getUint32(addr - HEADER_POLL_FN_OFFSET, true);
   const poll = table.get(pollIdx);
   const prevRaise = generatorRaise;
   generatorRaise = true;
@@ -1149,7 +1151,7 @@ const generatorThrow = (gen, exc) => {
   exceptionSetDepth(genDepth);
   view.setBigInt64(addr + 8, exc, true);
   view.setBigInt64(addr + 0, boxNone(), true);
-  const pollIdx = view.getUint32(addr - 24, true);
+  const pollIdx = view.getUint32(addr - HEADER_POLL_FN_OFFSET, true);
   const poll = table.get(pollIdx);
   const prevRaise = generatorRaise;
   generatorRaise = true;
@@ -1201,7 +1203,7 @@ const generatorClose = (gen) => {
   );
   view.setBigInt64(addr + 8, exc, true);
   view.setBigInt64(addr + 0, boxNone(), true);
-  const pollIdx = view.getUint32(addr - 24, true);
+  const pollIdx = view.getUint32(addr - HEADER_POLL_FN_OFFSET, true);
   const poll = table.get(pollIdx);
   const prevRaise = generatorRaise;
   generatorRaise = true;
@@ -1300,6 +1302,15 @@ BASE_IMPORTS = """\
     }
     return objBits;
   },
+  alloc_class_static: (size, classBits) => {
+    const addr = allocRaw(size);
+    if (!addr) return boxNone();
+    const objBits = boxPtrAddr(addr);
+    if (classBits !== 0n) {
+      instanceClasses.set(ptrAddr(objBits), classBits);
+    }
+    return objBits;
+  },
   async_sleep: (taskPtr) => {
     if (taskPtr === 0n) return boxNone();
     const key = taskPtr.toString();
@@ -1313,7 +1324,7 @@ BASE_IMPORTS = """\
     if (taskPtr === 0n || !memory || !table) return boxNone();
     const addr = ptrAddr(taskPtr);
     const view = new DataView(memory.buffer);
-    const state = Number(view.getBigInt64(addr - 16, true));
+    const state = Number(view.getBigInt64(addr - HEADER_STATE_OFFSET, true));
     const iterBits = view.getBigInt64(addr + 0, true);
     const defaultBits = view.getBigInt64(addr + 8, true);
     if (state === 0) {
@@ -1323,13 +1334,13 @@ BASE_IMPORTS = """\
       }
       const awaitBits = callCallable0(attr);
       view.setBigInt64(addr + 16, awaitBits, true);
-      view.setBigInt64(addr - 16, 1n, true);
+      view.setBigInt64(addr - HEADER_STATE_OFFSET, 1n, true);
     }
     const awaitBits = view.getBigInt64(addr + 16, true);
     const awaitPtrBits = normalizePtrBits(awaitBits);
     if (!isPtr(awaitPtrBits) || heap.has(awaitPtrBits & POINTER_MASK)) return boxNone();
     const awaitAddr = ptrAddr(awaitPtrBits);
-    const pollIdx = view.getUint32(awaitAddr - 24, true);
+    const pollIdx = view.getUint32(awaitAddr - HEADER_POLL_FN_OFFSET, true);
     const poll = table.get(pollIdx);
     if (!poll) return boxNone();
     const res = poll(awaitBits);
@@ -1356,7 +1367,7 @@ BASE_IMPORTS = """\
     }
     const addr = ptrAddr(ptrBits);
     const view = new DataView(memory.buffer);
-    const pollIdx = view.getUint32(addr - 24, true);
+    const pollIdx = view.getUint32(addr - HEADER_POLL_FN_OFFSET, true);
     const poll = table.get(pollIdx);
     if (!poll) {
       const exc = exceptionNew(
@@ -1375,7 +1386,7 @@ BASE_IMPORTS = """\
     if (!memory || !table) return 0n;
     const addr = ptrAddr(taskPtr);
     const view = new DataView(memory.buffer);
-    const pollIdx = view.getUint32(addr - 24, true);
+    const pollIdx = view.getUint32(addr - HEADER_POLL_FN_OFFSET, true);
     const poll = table.get(pollIdx);
     if (!poll) return 0n;
     const prevTask = currentTaskPtr;
@@ -3001,8 +3012,8 @@ BASE_IMPORTS = """\
     const addr = allocRaw(size);
     if (!addr || !memory) return boxNone();
     const view = new DataView(memory.buffer);
-    view.setBigInt64(addr - 24, pollFn, true);
-    view.setBigInt64(addr - 16, 0n, true);
+    view.setBigInt64(addr - HEADER_POLL_FN_OFFSET, pollFn, true);
+    view.setBigInt64(addr - HEADER_STATE_OFFSET, 0n, true);
     if (size >= GEN_CONTROL_SIZE) {
       view.setBigInt64(addr + 0, boxNone(), true);
       view.setBigInt64(addr + 8, boxNone(), true);
@@ -3700,8 +3711,8 @@ BASE_IMPORTS = """\
     const addr = allocRaw(24);
     if (!addr) return boxNone();
     const view = new DataView(memory.buffer);
-    view.setUint32(addr - 24, pollIdx, true);
-    view.setBigInt64(addr - 16, 0n, true);
+    view.setUint32(addr - HEADER_POLL_FN_OFFSET, pollIdx, true);
+    view.setBigInt64(addr - HEADER_STATE_OFFSET, 0n, true);
     view.setBigInt64(addr + 0, iterBits, true);
     view.setBigInt64(addr + 8, defaultBits, true);
     view.setBigInt64(addr + 16, boxNone(), true);

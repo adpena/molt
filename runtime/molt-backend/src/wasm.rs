@@ -24,6 +24,9 @@ const INT_MASK: u64 = (1 << 47) - 1;
 const FUNC_DEFAULT_NONE: i64 = 1;
 const FUNC_DEFAULT_DICT_POP: i64 = 2;
 const FUNC_DEFAULT_DICT_UPDATE: i64 = 3;
+const HEADER_SIZE_BYTES: i32 = 40;
+const HEADER_POLL_FN_OFFSET: i32 = -(HEADER_SIZE_BYTES - 8);
+const HEADER_STATE_OFFSET: i32 = -(HEADER_SIZE_BYTES - 16);
 
 #[derive(Clone, Copy)]
 struct DataSegmentInfo {
@@ -162,6 +165,10 @@ impl WasmBackend {
     }
 
     pub fn compile(mut self, ir: SimpleIR) -> Vec<u8> {
+        let mut ir = ir;
+        for func_ir in &mut ir.functions {
+            crate::elide_dead_struct_allocs(func_ir);
+        }
         // Type 0: () -> i64 (User functions)
         self.types
             .function(std::iter::empty::<ValType>(), std::iter::once(ValType::I64));
@@ -222,6 +229,7 @@ impl WasmBackend {
         add_import("alloc", 2, &mut self.import_ids);
         add_import("alloc_class", 3, &mut self.import_ids);
         add_import("alloc_class_trusted", 3, &mut self.import_ids);
+        add_import("alloc_class_static", 3, &mut self.import_ids);
         add_import("async_sleep", 2, &mut self.import_ids);
         add_import("anext_default_poll", 2, &mut self.import_ids);
         add_import("future_poll_fn", 2, &mut self.import_ids);
@@ -1506,6 +1514,14 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(op.value.unwrap()));
                         func.instruction(&Instruction::LocalGet(class_bits));
                         emit_call(func, reloc_enabled, import_ids["alloc_class_trusted"]);
+                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                    }
+                    "alloc_class_static" => {
+                        let args = op.args.as_ref().unwrap();
+                        let class_bits = locals[&args[0]];
+                        func.instruction(&Instruction::I64Const(op.value.unwrap()));
+                        func.instruction(&Instruction::LocalGet(class_bits));
+                        emit_call(func, reloc_enabled, import_ids["alloc_class_static"]);
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                     }
                     "json_parse" => {
@@ -3446,7 +3462,7 @@ impl WasmBackend {
                         let out = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalGet(0));
                         func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(-16));
+                        func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
                         func.instruction(&Instruction::I32Add);
                         func.instruction(&Instruction::I64Const(op.value.unwrap()));
                         func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
@@ -3518,7 +3534,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(res));
                         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
                         func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(-24));
+                        func.instruction(&Instruction::I32Const(HEADER_POLL_FN_OFFSET));
                         func.instruction(&Instruction::I32Add);
                         let table_slot = func_map[op.s_value.as_ref().unwrap()];
                         let table_idx = table_base + table_slot;
@@ -3539,7 +3555,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(res));
                         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
                         func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(-16));
+                        func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
                         func.instruction(&Instruction::I32Add);
                         func.instruction(&Instruction::I64Const(0));
                         func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
@@ -4084,7 +4100,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(res));
                         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
                         func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(-24));
+                        func.instruction(&Instruction::I32Const(HEADER_POLL_FN_OFFSET));
                         func.instruction(&Instruction::I32Add);
                         let table_slot = func_map[op.s_value.as_ref().unwrap()];
                         let table_idx = table_base + table_slot;
@@ -4105,7 +4121,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(res));
                         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
                         func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(-16));
+                        func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
                         func.instruction(&Instruction::I32Add);
                         func.instruction(&Instruction::I64Const(0));
                         func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
@@ -4168,7 +4184,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         func.instruction(&Instruction::LocalGet(0));
                         func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(-16));
+                        func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
                         func.instruction(&Instruction::I32Add);
                         func.instruction(&Instruction::I64Const(op.value.unwrap()));
                         func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
@@ -4645,7 +4661,7 @@ impl WasmBackend {
 
             func.instruction(&Instruction::LocalGet(self_ptr_local));
             func.instruction(&Instruction::I32WrapI64);
-            func.instruction(&Instruction::I32Const(-16));
+            func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
             func.instruction(&Instruction::I32Add);
             func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
                 align: 3,
@@ -4727,7 +4743,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalSet(state_local));
                         func.instruction(&Instruction::LocalGet(self_ptr_local));
                         func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(-16));
+                        func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
                         func.instruction(&Instruction::I32Add);
                         if let Some(pending_encoded) = pending_target_idx {
                             func.instruction(&Instruction::I64Const(pending_encoded));
@@ -4780,7 +4796,7 @@ impl WasmBackend {
                         }
                         func.instruction(&Instruction::LocalGet(self_ptr_local));
                         func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(-16));
+                        func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
                         func.instruction(&Instruction::I32Add);
                         func.instruction(&Instruction::I64Const(next_state_id));
                         func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
@@ -4802,7 +4818,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalSet(state_local));
                         func.instruction(&Instruction::LocalGet(self_ptr_local));
                         func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(-16));
+                        func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
                         func.instruction(&Instruction::I32Add);
                         if let Some(encoded) = resume_encoded {
                             func.instruction(&Instruction::I64Const(encoded));
@@ -4832,7 +4848,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalSet(state_local));
                         func.instruction(&Instruction::LocalGet(self_ptr_local));
                         func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(-16));
+                        func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
                         func.instruction(&Instruction::I32Add);
                         if let Some(pending_encoded) = pending_target_idx {
                             func.instruction(&Instruction::I64Const(pending_encoded));
@@ -4860,7 +4876,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::End);
                         func.instruction(&Instruction::LocalGet(self_ptr_local));
                         func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(-16));
+                        func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
                         func.instruction(&Instruction::I32Add);
                         func.instruction(&Instruction::I64Const(next_state_id));
                         func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
@@ -4884,7 +4900,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalSet(state_local));
                         func.instruction(&Instruction::LocalGet(self_ptr_local));
                         func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(-16));
+                        func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
                         func.instruction(&Instruction::I32Add);
                         if let Some(pending_encoded) = pending_target_idx {
                             func.instruction(&Instruction::I64Const(pending_encoded));
@@ -4911,7 +4927,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::End);
                         func.instruction(&Instruction::LocalGet(self_ptr_local));
                         func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(-16));
+                        func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
                         func.instruction(&Instruction::I32Add);
                         func.instruction(&Instruction::I64Const(next_state_id));
                         func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {

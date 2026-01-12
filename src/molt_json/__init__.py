@@ -40,6 +40,7 @@ class MoltHeader(ctypes.Structure):
         ("poll_fn", ctypes.c_uint64),
         ("state", ctypes.c_int64),
         ("size", ctypes.c_size_t),
+        ("flags", ctypes.c_uint64),
     ]
 
 
