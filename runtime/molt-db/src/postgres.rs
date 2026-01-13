@@ -2,11 +2,12 @@
 
 use crate::{AsyncAcquireError, AsyncPool, AsyncPooled, CancelToken};
 use rustls::{ClientConfig, RootCertStore};
+use std::collections::{HashMap, VecDeque};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio_postgres::config::SslMode;
-use tokio_postgres::{Client, Config, Error as PgError, NoTls};
+use tokio_postgres::{Client, Config, Error as PgError, NoTls, Statement};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
 #[derive(Clone, Debug)]
@@ -45,6 +46,7 @@ pub struct PgConn {
     cancel_token: tokio_postgres::CancelToken,
     tls: PgTls,
     last_used: Mutex<Instant>,
+    statement_cache: Mutex<StatementCache>,
 }
 
 #[derive(Clone)]
@@ -53,10 +55,58 @@ enum PgTls {
     Rustls(MakeRustlsConnect),
 }
 
+struct StatementCache {
+    capacity: usize,
+    order: VecDeque<String>,
+    entries: HashMap<String, Statement>,
+}
+
+impl StatementCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            order: VecDeque::new(),
+            entries: HashMap::new(),
+        }
+    }
+
+    fn get(&mut self, key: &str) -> Option<Statement> {
+        if let Some(stmt) = self.entries.get(key) {
+            if let Some(pos) = self.order.iter().position(|entry| entry == key) {
+                self.order.remove(pos);
+            }
+            self.order.push_back(key.to_string());
+            return Some(stmt.clone());
+        }
+        None
+    }
+
+    fn insert(&mut self, key: String, stmt: Statement) {
+        if self.capacity == 0 {
+            return;
+        }
+        if self.entries.contains_key(&key) {
+            self.entries.insert(key.clone(), stmt);
+            if let Some(pos) = self.order.iter().position(|entry| entry == &key) {
+                self.order.remove(pos);
+            }
+            self.order.push_back(key);
+            return;
+        }
+        self.entries.insert(key.clone(), stmt);
+        self.order.push_back(key.clone());
+        if self.order.len() > self.capacity {
+            if let Some(evict) = self.order.pop_front() {
+                self.entries.remove(&evict);
+            }
+        }
+    }
+}
+
 impl PgConn {
     async fn connect(config: &PgPoolConfig) -> Result<Self, String> {
-        let mut pg_config = Config::from_str(&config.dsn)
-            .map_err(|err| format!("invalid Postgres DSN: {err}"))?;
+        let mut pg_config =
+            Config::from_str(&config.dsn).map_err(|err| format!("invalid Postgres DSN: {err}"))?;
         pg_config.connect_timeout(config.connect_timeout);
         let ssl_mode = pg_config.get_ssl_mode();
         let (client, tls) = if ssl_mode == SslMode::Disable {
@@ -89,6 +139,7 @@ impl PgConn {
             cancel_token,
             tls,
             last_used: Mutex::new(Instant::now()),
+            statement_cache: Mutex::new(StatementCache::new(config.statement_cache_size)),
         })
     }
 
@@ -98,6 +149,26 @@ impl PgConn {
 
     pub fn cancel_token(&self) -> &tokio_postgres::CancelToken {
         &self.cancel_token
+    }
+
+    pub async fn prepare_cached(
+        &self,
+        sql: &str,
+        types: &[tokio_postgres::types::Type],
+    ) -> Result<Statement, PgError> {
+        let key = statement_cache_key(sql, types);
+        {
+            let mut cache = self.statement_cache.lock().unwrap();
+            if let Some(stmt) = cache.get(&key) {
+                return Ok(stmt);
+            }
+        }
+        let statement = self.client.prepare_typed(sql, types).await?;
+        {
+            let mut cache = self.statement_cache.lock().unwrap();
+            cache.insert(key, statement.clone());
+        }
+        Ok(statement)
     }
 
     pub async fn cancel_query(&self) -> Result<(), PgError> {
@@ -226,4 +297,17 @@ fn build_tls_connector(config: &PgPoolConfig) -> Result<MakeRustlsConnect, Strin
         .with_root_certificates(roots)
         .with_no_client_auth();
     Ok(MakeRustlsConnect::new(tls_config))
+}
+
+fn statement_cache_key(sql: &str, types: &[tokio_postgres::types::Type]) -> String {
+    let mut key = String::with_capacity(sql.len() + types.len() * 8);
+    key.push_str(sql);
+    key.push('|');
+    for (idx, ty) in types.iter().enumerate() {
+        if idx > 0 {
+            key.push(',');
+        }
+        key.push_str(&ty.to_string());
+    }
+    key
 }

@@ -22,11 +22,11 @@ use std::time::{Duration, Instant};
 use molt_db::{AcquireError, CancelToken, Pool, Pooled, SqliteConn, SqliteOpenMode};
 use rusqlite::{params_from_iter, types::Value};
 use sqlparser::ast::{
-    Expr as SqlExpr, GroupByExpr as SqlGroupByExpr, Ident as SqlIdent,
-    Query as SqlQuery, Select as SqlSelect, SelectItem as SqlSelectItem,
-    SetExpr as SqlSetExpr, Statement as SqlStatement, TableAlias as SqlTableAlias,
-    TableFactor as SqlTableFactor, TableWithJoins as SqlTableWithJoins,
-    Value as SqlValue, WildcardAdditionalOptions as SqlWildcardAdditionalOptions,
+    Expr as SqlExpr, GroupByExpr as SqlGroupByExpr, Ident as SqlIdent, Query as SqlQuery,
+    Select as SqlSelect, SelectItem as SqlSelectItem, SetExpr as SqlSetExpr,
+    Statement as SqlStatement, TableAlias as SqlTableAlias, TableFactor as SqlTableFactor,
+    TableWithJoins as SqlTableWithJoins, Value as SqlValue,
+    WildcardAdditionalOptions as SqlWildcardAdditionalOptions,
 };
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
@@ -620,7 +620,7 @@ fn handle_cancel_request(
         decode_payload::<CancelRequest>(&payload, &envelope.codec).map_err(|err| ExecError {
             status: "InvalidInput",
             message: err,
-    })?;
+        })?;
     mark_cancelled(cancelled, cancel.request_id);
     if let Some(registry) = async_cancel {
         registry.mark_cancelled(cancel.request_id);
@@ -828,9 +828,7 @@ fn normalize_named_params(
                     if i + 1 < bytes.len() && is_ident_start(bytes[i + 1] as char) {
                         let start = i + 1;
                         let mut end = start + 1;
-                        while end < bytes.len()
-                            && is_ident_continue(bytes[end] as char)
-                        {
+                        while end < bytes.len() && is_ident_continue(bytes[end] as char) {
                             end += 1;
                         }
                         let name = &sql[start..end];
@@ -985,11 +983,7 @@ fn is_ident_continue(ch: char) -> bool {
 }
 
 #[allow(dead_code)]
-fn validate_query(
-    sql: &str,
-    max_rows: u32,
-    allow_write: bool,
-) -> Result<String, ExecError> {
+fn validate_query(sql: &str, max_rows: u32, allow_write: bool) -> Result<String, ExecError> {
     let dialect = PostgreSqlDialect {};
     let mut statements = Parser::parse_sql(&dialect, sql).map_err(|err| ExecError {
         status: "InvalidInput",
@@ -1066,7 +1060,10 @@ fn wrap_query_limit(query: SqlQuery, max_rows: u32) -> SqlStatement {
         with: None,
         body: Box::new(SqlSetExpr::Select(Box::new(select))),
         order_by: Vec::new(),
-        limit: Some(SqlExpr::Value(SqlValue::Number(max_rows.to_string(), false))),
+        limit: Some(SqlExpr::Value(SqlValue::Number(
+            max_rows.to_string(),
+            false,
+        ))),
         limit_by: Vec::new(),
         offset: None,
         fetch: None,
@@ -1094,12 +1091,10 @@ fn resolve_pg_param(spec: DbParamSpec) -> Result<(PgParam, Type), ExecError> {
     let hint = type_hint.as_deref();
     match spec.value {
         DbParamValue::Null => {
-            let pg_type = hint
-                .and_then(parse_pg_type)
-                .ok_or_else(|| ExecError {
-                    status: "InvalidInput",
-                    message: "Null params must include an explicit type".to_string(),
-                })?;
+            let pg_type = hint.and_then(parse_pg_type).ok_or_else(|| ExecError {
+                status: "InvalidInput",
+                message: "Null params must include an explicit type".to_string(),
+            })?;
             let param = match pg_type {
                 Type::BOOL => PgParam::NullBool(None),
                 Type::INT2 => PgParam::NullInt2(None),

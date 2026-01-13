@@ -90,8 +90,7 @@ impl<T> AsyncPool<T> {
     {
         let factory = Box::new(move || {
             let fut = factory();
-            Box::pin(async move { fut.await.map_err(|err| err.to_string()) })
-                as FactoryFuture<T>
+            Box::pin(async move { fut.await.map_err(|err| err.to_string()) }) as FactoryFuture<T>
         });
         Arc::new(Self {
             max: max.max(1),
@@ -250,9 +249,7 @@ mod tests {
     async fn async_pool_timeout() {
         let pool = AsyncPool::new(1, || async { Ok::<_, std::io::Error>(42usize) });
         let _guard = pool.acquire(None, None).await.expect("guard");
-        let result = pool
-            .acquire(Some(Duration::from_millis(5)), None)
-            .await;
+        let result = pool.acquire(Some(Duration::from_millis(5)), None).await;
         assert_eq!(result.err(), Some(AsyncAcquireError::Timeout));
     }
 
@@ -271,9 +268,7 @@ mod tests {
         let pool = AsyncPool::new(1, || async { Ok::<_, std::io::Error>(7usize) });
         let guard = pool.acquire(None, None).await.expect("guard");
         guard.discard();
-        let next = pool
-            .acquire(Some(Duration::from_millis(10)), None)
-            .await;
+        let next = pool.acquire(Some(Duration::from_millis(10)), None).await;
         assert!(next.is_ok());
     }
 }
