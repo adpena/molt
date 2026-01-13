@@ -39,6 +39,7 @@ else
 fi
 SERVER_THREADS="${MOLT_SERVER_THREADS:-2}"
 SERVER_KEEPALIVE="${MOLT_SERVER_KEEPALIVE:-15}"
+SERVER_PID_FILE="/tmp/molt_gunicorn.pid"
 
 if [[ "$SERVER" == "auto" ]]; then
   if "${RUN_PY[@]}" - <<'PY'
@@ -116,6 +117,9 @@ PY
 
 # Start Django (server mode)
 cd "$ROOT"
+if [[ "$SERVER" == "gunicorn" ]]; then
+  rm -f "$SERVER_PID_FILE"
+fi
 case "$SERVER" in
   django)
     SERVER_CMD=("${RUN_PY[@]}" demo/django_app/manage.py runserver "$SERVER_PORT")
@@ -128,6 +132,7 @@ case "$SERVER" in
       --worker-class gthread
       --threads "$SERVER_THREADS"
       --keep-alive "$SERVER_KEEPALIVE"
+      --pid "$SERVER_PID_FILE"
       --log-level warning
     )
     ;;
@@ -151,6 +156,15 @@ esac
 DJ_PID=$!
 trap 'kill $WORKER_PID $DJ_PID 2>/dev/null || true' EXIT
 export MOLT_DEMO_SERVER_PID="$DJ_PID"
+if [[ "$SERVER" == "gunicorn" ]]; then
+  for _ in {1..50}; do
+    if [[ -s "$SERVER_PID_FILE" ]]; then
+      export MOLT_DEMO_SERVER_PID="$(cat "$SERVER_PID_FILE")"
+      break
+    fi
+    sleep 0.1
+  done
+fi
 sleep 2
 
 cd "$ROOT"

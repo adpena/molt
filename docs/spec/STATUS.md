@@ -27,7 +27,7 @@ README/ROADMAP in sync.
 - Format mini-language for ints/floats + f-string conversion flags (`!r`, `!s`, `!a`).
 - memoryview exposes 1D `format`/`shape`/`strides`/`nbytes` for bytes/bytearray views.
 - `str.count` supports start/end slices with Unicode-aware offsets.
-- `str.lower`/`str.upper`, `list.clear`/`list.copy`/`list.reverse`, and
+- `str.lower`/`str.upper`, `list.clear`/`list.copy`/`list.reverse`/`list.sort`, and
   `dict.clear`/`dict.copy`/`dict.popitem`/`dict.setdefault`/`dict.update`.
 - `list.extend` accepts iterable inputs (range/generator/etc.) via the iter protocol.
 - `dict()` supports positional mapping/iterable inputs (keys/`__getitem__` mapping fallback) plus keyword/`**` expansion
@@ -38,8 +38,12 @@ README/ROADMAP in sync.
 - Dict/set key hashability parity for common unhashable types (list/dict/set/bytearray/memoryview).
 - Importable `builtins` module binds supported builtins (see stdlib matrix).
 - `enumerate` builtin returns an iterator over `(index, value)` with optional `start`.
-- Builtin function objects for allowlisted builtins (`any`, `all`, `abs`, `ascii`, `bin`, `oct`, `hex`, `chr`, `ord`, `divmod`, `callable`, `repr`, `getattr`, `hasattr`, `round`, `next`, `anext`, `print`, `super`, `sum`, `min`, `max`).
-- Builtin reductions: `sum`, `min`, `max` with key/default support for numeric comparisons.
+- Builtin function objects for allowlisted builtins (`any`, `all`, `abs`, `ascii`, `bin`, `oct`, `hex`, `chr`, `ord`, `divmod`, `callable`, `repr`, `getattr`, `hasattr`, `round`, `next`, `anext`, `print`, `super`, `sum`, `min`, `max`, `sorted`).
+- Builtin reductions: `sum`, `min`, `max` with key/default support across core ordering types.
+- Lexicographic ordering for `str`/`bytes`/`bytearray`/`list`/`tuple` (cross-type ordering raises `TypeError`).
+- Ordering comparisons fall back to `__lt__`/`__le__`/`__gt__`/`__ge__` for user-defined objects
+  (used by `sorted`/`list.sort`/`min`/`max`).
+- Lambda expressions lower to function objects with closures, defaults, and varargs/kw-only args.
 - Indexing honors user-defined `__getitem__`/`__setitem__` when builtin paths do not apply.
 - CPython shim: minimal ASGI adapter for http/lifespan via `molt.asgi.asgi_adapter`.
 - `molt_accel` client/decorator expose before/after hooks, metrics callbacks, and cancel-checks; wire selection honors `MOLT_WORKER_WIRE`/`MOLT_WIRE`.
@@ -68,6 +72,7 @@ README/ROADMAP in sync.
   direct-call fast paths still require allowlisted functions and positional-only calls. Non-allowlisted imports
   remain blocked unless the bridge policy is enabled.
 - Closures for generator functions and generator decorators are still pending.
+- Comprehensions: list/set/dict comprehensions and generator expressions are not supported yet.
 - Exceptions: `try/except/else/finally` + `raise`/reraise; `__traceback__` lacks full
   traceback objects/line info and exception args remain message-only (see type coverage matrix).
 - Imports: static module graph only; no dynamic import hooks or full package
@@ -86,6 +91,7 @@ README/ROADMAP in sync.
   buffer exports).
 - Cancellation: cooperative checks only; automatic cancellation injection into
   awaits and I/O still pending.
+- Ordering: rich comparisons do not model `NotImplemented` semantics yet (truthiness is used).
 - collections: shim `Counter`/`defaultdict` are wrapper implementations (not dict subclasses); `defaultdict`
   default_factory is only fast-pathed for `list`.
 

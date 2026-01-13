@@ -18,6 +18,9 @@ Canonical current status: `docs/spec/STATUS.md`. This roadmap is forward-looking
 - Implemented: set literals/constructor with add/contains/iter/len + algebra (`|`, `&`, `-`, `^`); `frozenset` constructor + algebra.
 - Implemented: format mini-language for ints/floats + f-string conversion flags (`!r`, `!s`, `!a`).
 - Implemented: call argument binding for Molt functions (positional/keyword/`*args`/`**kwargs`) with pos-only/kw-only enforcement.
+- Implemented: lambda lowering with closures, defaults, and kw-only/varargs support.
+- Implemented: `sorted()` builtin with stable ordering + key/reverse (core ordering types).
+- Implemented: `list.sort` with key/reverse and rich-compare fallback for user-defined types.
 - Implemented: `str.lower`/`str.upper`, `list.clear`/`list.copy`/`list.reverse`, and `dict.setdefault`/`dict.update`.
 - TODO(type-coverage, owner:runtime, milestone:TC2): full format protocol (`__format__`, named fields, locale-aware grouping).
 - TODO(type-coverage, owner:runtime, milestone:TC2): matmul dunder hooks (`__matmul__`/`__rmatmul__`) with buffer2d fast path.

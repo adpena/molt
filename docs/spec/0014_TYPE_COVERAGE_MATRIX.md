@@ -96,7 +96,7 @@
 | set | set constructor | Partial | P1 | TC2 | frontend/runtime |
 | setattr | attribute set | Partial | P1 | TC2 | runtime |
 | slice | slice constructor | Partial | P1 | TC2 | frontend/runtime |
-| sorted | stable sort + key/reverse | Planned | P2 | TC3 | frontend/runtime |
+| sorted | stable sort + key/reverse | Partial | P2 | TC3 | frontend/runtime |
 | staticmethod | descriptor constructor | Partial | P1 | TC2 | runtime |
 | str | str constructor | Partial | P1 | TC2 | frontend/runtime |
 | sum | reduction with start | Partial | P1 | TC2 | frontend/runtime |
@@ -114,8 +114,9 @@
   - Implemented: exception type objects for `type()`/`__name__` via kind-based classes (base `BaseException`).
   - Implemented: `BaseException` root class + `SystemExit`/`KeyboardInterrupt`/`GeneratorExit` base selection.
   - TODO(type-coverage, owner:runtime, milestone:TC1): typed exception matching beyond kind-name classes.
-- Implemented: comparison ops (`==`, `!=`, `<`, `<=`, `>`, `>=`, `is`, `in`, chained comparisons) + lowering rules for core types (list/tuple/dict/str/bytes/bytearray/range).
+- Implemented: comparison ops (`==`, `!=`, `<`, `<=`, `>`, `>=`, `is`, `in`, chained comparisons) for numbers + str/bytes/bytearray/list/tuple; ordering for custom objects uses `__lt__`/`__le__`/`__gt__`/`__ge__` (NotImplemented semantics still pending).
   - Implemented: builtin reductions (`sum`/`min`/`max`) and `len` parity.
+  - Implemented: `list.sort` with key/reverse (stable).
   - Implemented: `tuple`/`dict` constructor arg-count + sequence-length error parity.
   - Partial: `bytes`/`bytearray` constructors accept int/iterables + str with `utf-8`/`latin-1`/`ascii`/`utf-16`/`utf-32` encodings and basic error handlers (`strict`/`ignore`/`replace`).
   - TODO(type-coverage, owner:runtime, milestone:TC1): expand `bytes`/`bytearray` encoding coverage (additional codecs + full error handlers).

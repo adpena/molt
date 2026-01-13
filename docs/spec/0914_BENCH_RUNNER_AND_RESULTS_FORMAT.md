@@ -49,6 +49,8 @@ Store:
   - error rate
   - payload size
 - worker metrics summary (queue depth, avg queue time)
+- process metrics (server/worker CPU avg/max, RSS avg/max KB, proc count, samples)
+- process context (server mode and worker/server PIDs used for sampling)
 
 ---
 

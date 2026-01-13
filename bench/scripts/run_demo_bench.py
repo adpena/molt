@@ -29,54 +29,141 @@ class BenchResult:
     raw: dict[str, Any]
 
 
-def read_process_table() -> list[tuple[int, float, int, str]]:
-    cmd = ["ps", "-A", "-o", "pid=", "-o", "%cpu=", "-o", "rss=", "-o", "command="]
+def read_process_table() -> list[tuple[int, int, float, int, str]]:
+    cmd = [
+        "ps",
+        "-A",
+        "-ww",
+        "-o",
+        "pid=",
+        "-o",
+        "ppid=",
+        "-o",
+        "%cpu=",
+        "-o",
+        "rss=",
+        "-o",
+        "command=",
+    ]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         return []
-    rows: list[tuple[int, float, int, str]] = []
+    rows: list[tuple[int, int, float, int, str]] = []
     for line in proc.stdout.splitlines():
-        parts = line.strip().split(None, 3)
-        if len(parts) < 4:
+        parts = line.strip().split(None, 4)
+        if len(parts) < 5:
             continue
         try:
             pid = int(parts[0])
-            cpu = float(parts[1])
-            rss = int(float(parts[2]))
+            ppid = int(parts[1])
+            cpu = float(parts[2])
+            rss = int(float(parts[3]))
         except ValueError:
             continue
-        rows.append((pid, cpu, rss, parts[3]))
+        rows.append((pid, ppid, cpu, rss, parts[4]))
     return rows
 
 
-def extract_proc_matchers(env: dict[str, str]) -> dict[str, list[str]]:
+def extract_proc_matchers(env: dict[str, str]) -> dict[str, dict[str, object]]:
+    def parse_env_pid(value: str | None) -> int | None:
+        if not value:
+            return None
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+
+    def find_listen_pids(port: int) -> list[int]:
+        if not shutil.which("lsof"):
+            return []
+        cmd = ["lsof", "-n", "-i", f"tcp:{port}", "-sTCP:LISTEN", "-t"]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            return []
+        pids: list[int] = []
+        for line in proc.stdout.splitlines():
+            try:
+                pids.append(int(line.strip()))
+            except ValueError:
+                continue
+        return pids
+
     server = env.get("MOLT_SERVER", "auto").lower()
-    matchers: dict[str, list[str]] = {"worker": ["molt-worker", "molt_worker"]}
+    matchers: dict[str, dict[str, object]] = {
+        "worker": {"patterns": ["molt-worker", "molt_worker"]}
+    }
+    worker_pid = parse_env_pid(env.get("MOLT_DEMO_WORKER_PID"))
+    if worker_pid is not None:
+        matchers["worker"]["root_pid"] = worker_pid
     if server == "gunicorn":
-        matchers["server"] = ["gunicorn"]
+        matchers["server"] = {"patterns": ["gunicorn"]}
     elif server == "uvicorn":
-        matchers["server"] = ["uvicorn"]
+        matchers["server"] = {"patterns": ["uvicorn"]}
     elif server == "django":
-        matchers["server"] = ["manage.py runserver", "runserver"]
+        matchers["server"] = {"patterns": ["manage.py runserver", "runserver"]}
     else:
-        matchers["server"] = ["gunicorn", "uvicorn", "runserver"]
+        matchers["server"] = {"patterns": ["gunicorn", "uvicorn", "runserver"]}
+    server_pid = parse_env_pid(env.get("MOLT_DEMO_SERVER_PID"))
+    server_root_pids: list[int] = []
+    if server_pid is not None:
+        server_root_pids.append(server_pid)
+    port = parse_env_pid(env.get("MOLT_SERVER_PORT") or "8000")
+    if port is not None:
+        for pid in find_listen_pids(port):
+            if pid not in server_root_pids:
+                server_root_pids.append(pid)
+    if server_root_pids:
+        matchers["server"]["root_pids"] = server_root_pids
     return matchers
 
 
 def sample_processes(
-    matchers: dict[str, list[str]],
+    matchers: dict[str, dict[str, object]],
 ) -> dict[str, tuple[float, int, int]]:
     table = read_process_table()
+    by_ppid: dict[int, list[int]] = {}
+    for pid, ppid, _, _, _ in table:
+        by_ppid.setdefault(ppid, []).append(pid)
     samples: dict[str, tuple[float, int, int]] = {}
-    for label, patterns in matchers.items():
+    for label, selector in matchers.items():
+        patterns = selector.get("patterns")
+        root_pid = selector.get("root_pid")
+        root_pids = selector.get("root_pids")
+        target_pids: set[int] = set()
+        if isinstance(root_pids, list):
+            for candidate in root_pids:
+                if not isinstance(candidate, int):
+                    continue
+                stack = [candidate]
+                while stack:
+                    current = stack.pop()
+                    if current in target_pids:
+                        continue
+                    target_pids.add(current)
+                    stack.extend(by_ppid.get(current, []))
+        if isinstance(root_pid, int):
+            stack = [root_pid]
+            while stack:
+                current = stack.pop()
+                if current in target_pids:
+                    continue
+                target_pids.add(current)
+                stack.extend(by_ppid.get(current, []))
+        pattern_pids: set[int] = set()
+        if isinstance(patterns, list):
+            for pid, _, _, _, cmd in table:
+                if any(pattern in cmd for pattern in patterns):
+                    pattern_pids.add(pid)
+        selected_pids = target_pids | pattern_pids
         cpu_sum = 0.0
         rss_sum = 0
         proc_count = 0
-        for _, cpu, rss, cmd in table:
-            if any(pattern in cmd for pattern in patterns):
-                cpu_sum += cpu
-                rss_sum += rss
-                proc_count += 1
+        for pid, _, cpu, rss, _ in table:
+            if not selected_pids or pid not in selected_pids:
+                continue
+            cpu_sum += cpu
+            rss_sum += rss
+            proc_count += 1
         samples[label] = (cpu_sum, rss_sum, proc_count)
     return samples
 
@@ -244,6 +331,13 @@ def main() -> None:
         "offload": offload.raw,
         "offload_table": offload_table.raw,
     }
+    process_context = {
+        "server": env.get("MOLT_SERVER"),
+        "server_pid": env.get("MOLT_DEMO_SERVER_PID"),
+        "worker_pid": env.get("MOLT_DEMO_WORKER_PID"),
+    }
+    if any(process_context.values()):
+        artifact["process_context"] = process_context
     proc_metrics: dict[str, dict[str, dict[str, float]]] = {}
     for result in results:
         metrics = result.raw.get("proc_metrics")

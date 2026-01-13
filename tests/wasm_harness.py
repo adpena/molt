@@ -452,19 +452,157 @@ const compareTypeError = (op, left, right) => {
     )}' and '${typeName(right)}'`
   );
 };
-const compareKeys = (left, right, op) => {
+const compareBigIntFloat = (big, num) => {
+  if (Number.isNaN(num)) return { kind: 'unordered' };
+  if (!Number.isFinite(num)) {
+    return { kind: 'ordered', ordering: num < 0 ? 1 : -1 };
+  }
+  const bigNum = Number(big);
+  if (!Number.isFinite(bigNum)) {
+    return { kind: 'ordered', ordering: big < 0n ? -1 : 1 };
+  }
+  if (bigNum === num && Number.isInteger(num) && big === BigInt(num)) {
+    return { kind: 'ordered', ordering: 0 };
+  }
+  return { kind: 'ordered', ordering: bigNum < num ? -1 : 1 };
+};
+const compareNumbersOutcome = (left, right) => {
   const leftBig = getBigIntValue(left);
   const rightBig = getBigIntValue(right);
   if (leftBig !== null && rightBig !== null) {
-    if (leftBig === rightBig) return 0;
-    return leftBig < rightBig ? -1 : 1;
+    if (leftBig === rightBig) return { kind: 'ordered', ordering: 0 };
+    return { kind: 'ordered', ordering: leftBig < rightBig ? -1 : 1 };
   }
   const leftNum = numberFromVal(left);
   const rightNum = numberFromVal(right);
   if (leftNum !== null && rightNum !== null) {
-    if (leftNum === rightNum) return 0;
-    return leftNum < rightNum ? -1 : 1;
+    if (Number.isNaN(leftNum) || Number.isNaN(rightNum)) {
+      return { kind: 'unordered' };
+    }
+    if (leftNum === rightNum) return { kind: 'ordered', ordering: 0 };
+    return { kind: 'ordered', ordering: leftNum < rightNum ? -1 : 1 };
   }
+  if (leftBig !== null && rightNum !== null) {
+    return compareBigIntFloat(leftBig, rightNum);
+  }
+  if (rightBig !== null && leftNum !== null) {
+    const outcome = compareBigIntFloat(rightBig, leftNum);
+    if (outcome.kind === 'ordered') {
+      return { kind: 'ordered', ordering: -outcome.ordering };
+    }
+    return outcome;
+  }
+  if ((leftBig !== null || leftNum !== null) && (rightBig !== null || rightNum !== null)) {
+    return { kind: 'unordered' };
+  }
+  return { kind: 'notComparable' };
+};
+const compareObjectsBuiltin = (left, right) => {
+  const numOutcome = compareNumbersOutcome(left, right);
+  if (numOutcome.kind !== 'notComparable') return numOutcome;
+  const leftObj = getObj(left);
+  const rightObj = getObj(right);
+  if (!leftObj || !rightObj) return { kind: 'notComparable' };
+  if (leftObj.type === 'str' && rightObj.type === 'str') {
+    if (leftObj.value === rightObj.value) return { kind: 'ordered', ordering: 0 };
+    return { kind: 'ordered', ordering: leftObj.value < rightObj.value ? -1 : 1 };
+  }
+  const leftBytes =
+    leftObj.type === 'bytes' || leftObj.type === 'bytearray' ? leftObj.data : null;
+  const rightBytes =
+    rightObj.type === 'bytes' || rightObj.type === 'bytearray' ? rightObj.data : null;
+  if (leftBytes && rightBytes) {
+    const cmp = Buffer.from(leftBytes).compare(Buffer.from(rightBytes));
+    return { kind: 'ordered', ordering: cmp === 0 ? 0 : cmp < 0 ? -1 : 1 };
+  }
+  if (leftObj.type === 'list' && rightObj.type === 'list') {
+    const common = Math.min(leftObj.items.length, rightObj.items.length);
+    for (let i = 0; i < common; i += 1) {
+      const lBits = leftObj.items[i];
+      const rBits = rightObj.items[i];
+      if (isTruthyBits(baseImports.eq(lBits, rBits))) {
+        continue;
+      }
+      return compareObjects(lBits, rBits);
+    }
+    if (leftObj.items.length === rightObj.items.length) {
+      return { kind: 'ordered', ordering: 0 };
+    }
+    return {
+      kind: 'ordered',
+      ordering: leftObj.items.length < rightObj.items.length ? -1 : 1,
+    };
+  }
+  if (leftObj.type === 'tuple' && rightObj.type === 'tuple') {
+    const common = Math.min(leftObj.items.length, rightObj.items.length);
+    for (let i = 0; i < common; i += 1) {
+      const lBits = leftObj.items[i];
+      const rBits = rightObj.items[i];
+      if (isTruthyBits(baseImports.eq(lBits, rBits))) {
+        continue;
+      }
+      return compareObjects(lBits, rBits);
+    }
+    if (leftObj.items.length === rightObj.items.length) {
+      return { kind: 'ordered', ordering: 0 };
+    }
+    return {
+      kind: 'ordered',
+      ordering: leftObj.items.length < rightObj.items.length ? -1 : 1,
+    };
+  }
+  return { kind: 'notComparable' };
+};
+const richCompareBool = (left, right, opName, reverseName) => {
+  const leftAttr = lookupAttr(left, opName);
+  if (leftAttr !== undefined) {
+    const res = callCallable1(leftAttr, right);
+    if (exceptionPending() !== 0n) return { kind: 'error' };
+    return { kind: 'bool', value: isTruthyBits(res) };
+  }
+  if (exceptionPending() !== 0n) return { kind: 'error' };
+  const rightAttr = lookupAttr(right, reverseName);
+  if (rightAttr !== undefined) {
+    const res = callCallable1(rightAttr, left);
+    if (exceptionPending() !== 0n) return { kind: 'error' };
+    return { kind: 'bool', value: isTruthyBits(res) };
+  }
+  if (exceptionPending() !== 0n) return { kind: 'error' };
+  return { kind: 'notComparable' };
+};
+const richCompareOrder = (left, right) => {
+  const lt = richCompareBool(left, right, '__lt__', '__gt__');
+  if (lt.kind === 'error') return { kind: 'error' };
+  if (lt.kind === 'notComparable') return { kind: 'notComparable' };
+  if (lt.value) return { kind: 'ordered', ordering: -1 };
+  const gt = richCompareBool(right, left, '__lt__', '__gt__');
+  if (gt.kind === 'error') return { kind: 'error' };
+  if (gt.kind === 'notComparable') return { kind: 'notComparable' };
+  if (gt.value) return { kind: 'ordered', ordering: 1 };
+  return { kind: 'ordered', ordering: 0 };
+};
+const compareObjects = (left, right) => {
+  const outcome = compareObjectsBuiltin(left, right);
+  if (outcome.kind !== 'notComparable') return outcome;
+  return richCompareOrder(left, right);
+};
+const compareBuiltinBool = (left, right, op) => {
+  const outcome = compareObjectsBuiltin(left, right);
+  if (outcome.kind === 'ordered') {
+    if (op === '<') return { kind: 'bool', value: outcome.ordering < 0 };
+    if (op === '<=') return { kind: 'bool', value: outcome.ordering <= 0 };
+    if (op === '>') return { kind: 'bool', value: outcome.ordering > 0 };
+    if (op === '>=') return { kind: 'bool', value: outcome.ordering >= 0 };
+  }
+  if (outcome.kind === 'unordered') return { kind: 'bool', value: false };
+  if (outcome.kind === 'error') return { kind: 'error' };
+  return { kind: 'notComparable' };
+};
+const compareKeys = (left, right, op) => {
+  const outcome = compareObjects(left, right);
+  if (outcome.kind === 'ordered') return outcome.ordering;
+  if (outcome.kind === 'unordered') return 0;
+  if (outcome.kind === 'error') return null;
   compareTypeError(op, left, right);
   return 0;
 };
@@ -1980,51 +2118,39 @@ BASE_IMPORTS = """\
     throw new Error('TypeError: trunc() expects a real number');
   },
   lt: (a, b) => {
-    if (isIntLike(a) && isIntLike(b)) {
-      return boxBool(unboxIntLike(a) < unboxIntLike(b));
-    }
-    const lf = numberFromVal(a);
-    const rf = numberFromVal(b);
-    if (lf !== null && rf !== null) {
-      if (Number.isNaN(lf) || Number.isNaN(rf)) return boxBool(false);
-      return boxBool(lf < rf);
-    }
+    const builtin = compareBuiltinBool(a, b, '<');
+    if (builtin.kind === 'bool') return boxBool(builtin.value);
+    if (builtin.kind === 'error') return boxNone();
+    const rich = richCompareBool(a, b, '__lt__', '__gt__');
+    if (rich.kind === 'bool') return boxBool(rich.value);
+    if (rich.kind === 'error') return boxNone();
     return compareTypeError('<', a, b);
   },
   le: (a, b) => {
-    if (isIntLike(a) && isIntLike(b)) {
-      return boxBool(unboxIntLike(a) <= unboxIntLike(b));
-    }
-    const lf = numberFromVal(a);
-    const rf = numberFromVal(b);
-    if (lf !== null && rf !== null) {
-      if (Number.isNaN(lf) || Number.isNaN(rf)) return boxBool(false);
-      return boxBool(lf <= rf);
-    }
+    const builtin = compareBuiltinBool(a, b, '<=');
+    if (builtin.kind === 'bool') return boxBool(builtin.value);
+    if (builtin.kind === 'error') return boxNone();
+    const rich = richCompareBool(a, b, '__le__', '__ge__');
+    if (rich.kind === 'bool') return boxBool(rich.value);
+    if (rich.kind === 'error') return boxNone();
     return compareTypeError('<=', a, b);
   },
   gt: (a, b) => {
-    if (isIntLike(a) && isIntLike(b)) {
-      return boxBool(unboxIntLike(a) > unboxIntLike(b));
-    }
-    const lf = numberFromVal(a);
-    const rf = numberFromVal(b);
-    if (lf !== null && rf !== null) {
-      if (Number.isNaN(lf) || Number.isNaN(rf)) return boxBool(false);
-      return boxBool(lf > rf);
-    }
+    const builtin = compareBuiltinBool(a, b, '>');
+    if (builtin.kind === 'bool') return boxBool(builtin.value);
+    if (builtin.kind === 'error') return boxNone();
+    const rich = richCompareBool(a, b, '__gt__', '__lt__');
+    if (rich.kind === 'bool') return boxBool(rich.value);
+    if (rich.kind === 'error') return boxNone();
     return compareTypeError('>', a, b);
   },
   ge: (a, b) => {
-    if (isIntLike(a) && isIntLike(b)) {
-      return boxBool(unboxIntLike(a) >= unboxIntLike(b));
-    }
-    const lf = numberFromVal(a);
-    const rf = numberFromVal(b);
-    if (lf !== null && rf !== null) {
-      if (Number.isNaN(lf) || Number.isNaN(rf)) return boxBool(false);
-      return boxBool(lf >= rf);
-    }
+    const builtin = compareBuiltinBool(a, b, '>=');
+    if (builtin.kind === 'bool') return boxBool(builtin.value);
+    if (builtin.kind === 'error') return boxNone();
+    const rich = richCompareBool(a, b, '__ge__', '__le__');
+    if (rich.kind === 'bool') return boxBool(rich.value);
+    if (rich.kind === 'error') return boxNone();
     return compareTypeError('>=', a, b);
   },
   eq: (a, b) => {
@@ -2779,6 +2905,41 @@ BASE_IMPORTS = """\
     const list = getList(listBits);
     if (!list) return boxNone();
     list.items.reverse();
+    return boxNone();
+  },
+  list_sort: (listBits, keyBits, reverseBits) => {
+    const list = getList(listBits);
+    if (!list) return boxNone();
+    const useKey = !isNone(keyBits);
+    const reverse = isTruthyBits(reverseBits);
+    const items = [];
+    for (const valBits of list.items) {
+      const keyVal = useKey ? callCallable1(keyBits, valBits) : valBits;
+      if (useKey && exceptionPending() !== 0n) return boxNone();
+      items.push({ key: keyVal, val: valBits, idx: items.length });
+    }
+    let error = null;
+    items.sort((left, right) => {
+      if (error) return 0;
+      const outcome = compareObjects(left.key, right.key);
+      if (outcome.kind === 'ordered') {
+        if (outcome.ordering !== 0) {
+          return reverse ? -outcome.ordering : outcome.ordering;
+        }
+      } else if (outcome.kind === 'notComparable') {
+        error = { kind: 'notComparable', left: left.key, right: right.key };
+        return 0;
+      } else if (outcome.kind === 'error') {
+        error = { kind: 'exception' };
+        return 0;
+      }
+      return left.idx - right.idx;
+    });
+    if (error) {
+      if (error.kind === 'exception') return boxNone();
+      compareTypeError('<', error.left, error.right);
+    }
+    list.items = items.map((item) => item.val);
     return boxNone();
   },
   list_count: (listBits, valBits) => {
@@ -3827,10 +3988,14 @@ BASE_IMPORTS = """\
         if (best === null) {
           best = valBits;
           bestKey = useKey ? callCallable1(keyBits, valBits) : valBits;
+          if (useKey && exceptionPending() !== 0n) return boxNone();
           continue;
         }
         const candKey = useKey ? callCallable1(keyBits, valBits) : valBits;
-        if (compareKeys(candKey, bestKey, '<') < 0) {
+        if (useKey && exceptionPending() !== 0n) return boxNone();
+        const cmp = compareKeys(candKey, bestKey, '<');
+        if (cmp === null) return boxNone();
+        if (cmp < 0) {
           best = valBits;
           bestKey = candKey;
         }
@@ -3838,9 +4003,13 @@ BASE_IMPORTS = """\
     }
     let best = args.items[0];
     let bestKey = useKey ? callCallable1(keyBits, best) : best;
+    if (useKey && exceptionPending() !== 0n) return boxNone();
     for (const valBits of args.items.slice(1)) {
       const candKey = useKey ? callCallable1(keyBits, valBits) : valBits;
-      if (compareKeys(candKey, bestKey, '<') < 0) {
+      if (useKey && exceptionPending() !== 0n) return boxNone();
+      const cmp = compareKeys(candKey, bestKey, '<');
+      if (cmp === null) return boxNone();
+      if (cmp < 0) {
         best = valBits;
         bestKey = candKey;
       }
@@ -3887,10 +4056,14 @@ BASE_IMPORTS = """\
         if (best === null) {
           best = valBits;
           bestKey = useKey ? callCallable1(keyBits, valBits) : valBits;
+          if (useKey && exceptionPending() !== 0n) return boxNone();
           continue;
         }
         const candKey = useKey ? callCallable1(keyBits, valBits) : valBits;
-        if (compareKeys(candKey, bestKey, '>') > 0) {
+        if (useKey && exceptionPending() !== 0n) return boxNone();
+        const cmp = compareKeys(candKey, bestKey, '>');
+        if (cmp === null) return boxNone();
+        if (cmp > 0) {
           best = valBits;
           bestKey = candKey;
         }
@@ -3898,14 +4071,64 @@ BASE_IMPORTS = """\
     }
     let best = args.items[0];
     let bestKey = useKey ? callCallable1(keyBits, best) : best;
+    if (useKey && exceptionPending() !== 0n) return boxNone();
     for (const valBits of args.items.slice(1)) {
       const candKey = useKey ? callCallable1(keyBits, valBits) : valBits;
-      if (compareKeys(candKey, bestKey, '>') > 0) {
+      if (useKey && exceptionPending() !== 0n) return boxNone();
+      const cmp = compareKeys(candKey, bestKey, '>');
+      if (cmp === null) return boxNone();
+      if (cmp > 0) {
         best = valBits;
         bestKey = candKey;
       }
     }
     return best;
+  },
+  sorted_builtin: (iterBits, keyBits, reverseBits) => {
+    const iterObj = baseImports.iter(iterBits);
+    if (isTag(iterObj, TAG_NONE)) {
+      throw new Error('TypeError: object is not iterable');
+    }
+    const useKey = !isTag(keyBits, TAG_NONE);
+    const reverse = isTruthyBits(reverseBits);
+    const items = [];
+    while (true) {
+      const pairBits = baseImports.iter_next(iterObj);
+      const pair = getTuple(pairBits);
+      if (!pair || pair.items.length < 2) {
+        throw new Error('TypeError: object is not an iterator');
+      }
+      const doneBits = pair.items[1];
+      if (isTag(doneBits, TAG_BOOL) && (doneBits & 1n) === 1n) {
+        break;
+      }
+      const valBits = pair.items[0];
+      const keyVal = useKey ? callCallable1(keyBits, valBits) : valBits;
+      if (useKey && exceptionPending() !== 0n) return boxNone();
+      items.push({ key: keyVal, val: valBits, idx: items.length });
+    }
+    let error = null;
+    items.sort((left, right) => {
+      if (error) return 0;
+      const outcome = compareObjects(left.key, right.key);
+      if (outcome.kind === 'ordered') {
+        if (outcome.ordering !== 0) {
+          return reverse ? -outcome.ordering : outcome.ordering;
+        }
+      } else if (outcome.kind === 'notComparable') {
+        error = { kind: 'notComparable', left: left.key, right: right.key };
+        return 0;
+      } else if (outcome.kind === 'error') {
+        error = { kind: 'exception' };
+        return 0;
+      }
+      return left.idx - right.idx;
+    });
+    if (error) {
+      if (error.kind === 'exception') return boxNone();
+      compareTypeError('<', error.left, error.right);
+    }
+    return listFromArray(items.map((item) => item.val));
   },
   context_enter: (val) => val,
   context_exit: () => boxBool(false),

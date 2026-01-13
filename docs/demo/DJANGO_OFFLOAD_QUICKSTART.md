@@ -30,7 +30,10 @@ python3 bench/scripts/run_stack.sh
 ```
 Artifacts land in `bench/results/` (k6 JSON + markdown summary).
 Worker metrics land in `/tmp/molt_demo_metrics.jsonl` unless `MOLT_DEMO_METRICS_PATH` is set.
-Process CPU/RSS summaries are captured when the bench script can read the server/worker PIDs.
+Process CPU/RSS summaries are captured by sampling the process table; the bench
+runner uses `MOLT_DEMO_SERVER_PID`/`MOLT_DEMO_WORKER_PID` when available,
+prefers listen-PIDs from `MOLT_SERVER_PORT` when `lsof` is present, and falls
+back to command-name matching.
 Set `MOLT_ACCEL_CLIENT_MODE=per_request` to spawn a worker client per request (default is `shared`).
 Set `MOLT_UV_SYNC=0` to skip the automatic `uv sync --group demo` step in the bench script.
 Set `MOLT_SERVER=gunicorn|uvicorn|django` to choose the server (default `auto` prefers gunicorn, then uvicorn).

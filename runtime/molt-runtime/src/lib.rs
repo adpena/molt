@@ -312,6 +312,10 @@ static INTERN_MOLT_VARARG: OnceLock<u64> = OnceLock::new();
 static INTERN_MOLT_VARKW: OnceLock<u64> = OnceLock::new();
 static INTERN_DEFAULTS_NAME: OnceLock<u64> = OnceLock::new();
 static INTERN_KWDEFAULTS_NAME: OnceLock<u64> = OnceLock::new();
+static INTERN_LT_NAME: OnceLock<u64> = OnceLock::new();
+static INTERN_LE_NAME: OnceLock<u64> = OnceLock::new();
+static INTERN_GT_NAME: OnceLock<u64> = OnceLock::new();
+static INTERN_GE_NAME: OnceLock<u64> = OnceLock::new();
 static DICT_METHOD_KEYS: OnceLock<u64> = OnceLock::new();
 static DICT_METHOD_VALUES: OnceLock<u64> = OnceLock::new();
 static DICT_METHOD_ITEMS: OnceLock<u64> = OnceLock::new();
@@ -332,6 +336,7 @@ static LIST_METHOD_COPY: OnceLock<u64> = OnceLock::new();
 static LIST_METHOD_REVERSE: OnceLock<u64> = OnceLock::new();
 static LIST_METHOD_COUNT: OnceLock<u64> = OnceLock::new();
 static LIST_METHOD_INDEX: OnceLock<u64> = OnceLock::new();
+static LIST_METHOD_SORT: OnceLock<u64> = OnceLock::new();
 static PROFILE_ENABLED: OnceLock<bool> = OnceLock::new();
 static MOLT_MISSING: OnceLock<u64> = OnceLock::new();
 static CALL_DISPATCH_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -3110,6 +3115,11 @@ fn list_method_bits(name: &str) -> Option<u64> {
             &LIST_METHOD_INDEX,
             molt_list_index as usize as u64,
             2,
+        )),
+        "sort" => Some(builtin_func_bits(
+            &LIST_METHOD_SORT,
+            molt_list_sort as usize as u64,
+            3,
         )),
         _ => None,
     }
@@ -8947,6 +8957,204 @@ fn compare_type_error(lhs: MoltObject, rhs: MoltObject, op: &str) -> u64 {
     raise!("TypeError", &msg);
 }
 
+#[derive(Clone, Copy)]
+enum CompareOutcome {
+    Ordered(Ordering),
+    Unordered,
+    NotComparable,
+    Error,
+}
+
+#[derive(Clone, Copy)]
+enum CompareBoolOutcome {
+    True,
+    False,
+    NotComparable,
+    Error,
+}
+
+#[derive(Clone, Copy)]
+enum CompareOp {
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+fn is_number(obj: MoltObject) -> bool {
+    to_i64(obj).is_some() || obj.is_float() || bigint_ptr_from_bits(obj.bits()).is_some()
+}
+
+fn compare_numbers_outcome(lhs: MoltObject, rhs: MoltObject) -> CompareOutcome {
+    if let Some(ordering) = compare_numbers(lhs, rhs) {
+        return CompareOutcome::Ordered(ordering);
+    }
+    if is_number(lhs) && is_number(rhs) {
+        return CompareOutcome::Unordered;
+    }
+    CompareOutcome::NotComparable
+}
+
+unsafe fn compare_string_bytes(lhs_ptr: *mut u8, rhs_ptr: *mut u8) -> Ordering {
+    let l_len = string_len(lhs_ptr);
+    let r_len = string_len(rhs_ptr);
+    let l_bytes = std::slice::from_raw_parts(string_bytes(lhs_ptr), l_len);
+    let r_bytes = std::slice::from_raw_parts(string_bytes(rhs_ptr), r_len);
+    l_bytes.cmp(r_bytes)
+}
+
+unsafe fn compare_bytes_like(lhs_ptr: *mut u8, rhs_ptr: *mut u8) -> Ordering {
+    let l_len = bytes_len(lhs_ptr);
+    let r_len = bytes_len(rhs_ptr);
+    let l_bytes = std::slice::from_raw_parts(bytes_data(lhs_ptr), l_len);
+    let r_bytes = std::slice::from_raw_parts(bytes_data(rhs_ptr), r_len);
+    l_bytes.cmp(r_bytes)
+}
+
+unsafe fn compare_sequence(lhs_ptr: *mut u8, rhs_ptr: *mut u8) -> CompareOutcome {
+    let lhs = seq_vec_ref(lhs_ptr);
+    let rhs = seq_vec_ref(rhs_ptr);
+    let common = lhs.len().min(rhs.len());
+    for idx in 0..common {
+        let l_bits = lhs[idx];
+        let r_bits = rhs[idx];
+        if obj_eq(obj_from_bits(l_bits), obj_from_bits(r_bits)) {
+            continue;
+        }
+        return compare_objects(obj_from_bits(l_bits), obj_from_bits(r_bits));
+    }
+    CompareOutcome::Ordered(lhs.len().cmp(&rhs.len()))
+}
+
+fn compare_objects_builtin(lhs: MoltObject, rhs: MoltObject) -> CompareOutcome {
+    match compare_numbers_outcome(lhs, rhs) {
+        CompareOutcome::NotComparable => {}
+        outcome => return outcome,
+    }
+    let (Some(lhs_ptr), Some(rhs_ptr)) = (lhs.as_ptr(), rhs.as_ptr()) else {
+        return CompareOutcome::NotComparable;
+    };
+    unsafe {
+        let ltype = object_type_id(lhs_ptr);
+        let rtype = object_type_id(rhs_ptr);
+        if ltype == TYPE_ID_STRING && rtype == TYPE_ID_STRING {
+            return CompareOutcome::Ordered(compare_string_bytes(lhs_ptr, rhs_ptr));
+        }
+        if (ltype == TYPE_ID_BYTES || ltype == TYPE_ID_BYTEARRAY)
+            && (rtype == TYPE_ID_BYTES || rtype == TYPE_ID_BYTEARRAY)
+        {
+            return CompareOutcome::Ordered(compare_bytes_like(lhs_ptr, rhs_ptr));
+        }
+        if ltype == TYPE_ID_LIST && rtype == TYPE_ID_LIST {
+            return compare_sequence(lhs_ptr, rhs_ptr);
+        }
+        if ltype == TYPE_ID_TUPLE && rtype == TYPE_ID_TUPLE {
+            return compare_sequence(lhs_ptr, rhs_ptr);
+        }
+    }
+    CompareOutcome::NotComparable
+}
+
+fn ordering_matches(ordering: Ordering, op: CompareOp) -> bool {
+    match op {
+        CompareOp::Lt => ordering == Ordering::Less,
+        CompareOp::Le => ordering != Ordering::Greater,
+        CompareOp::Gt => ordering == Ordering::Greater,
+        CompareOp::Ge => ordering != Ordering::Less,
+    }
+}
+
+fn compare_builtin_bool(lhs: MoltObject, rhs: MoltObject, op: CompareOp) -> CompareBoolOutcome {
+    match compare_objects_builtin(lhs, rhs) {
+        CompareOutcome::Ordered(ordering) => {
+            if ordering_matches(ordering, op) {
+                CompareBoolOutcome::True
+            } else {
+                CompareBoolOutcome::False
+            }
+        }
+        CompareOutcome::Unordered => CompareBoolOutcome::False,
+        CompareOutcome::NotComparable => CompareBoolOutcome::NotComparable,
+        CompareOutcome::Error => CompareBoolOutcome::Error,
+    }
+}
+
+fn rich_compare_bool(
+    lhs: MoltObject,
+    rhs: MoltObject,
+    op_name_bits: u64,
+    reverse_name_bits: u64,
+) -> CompareBoolOutcome {
+    unsafe {
+        if let Some(lhs_ptr) = lhs.as_ptr() {
+            if let Some(call_bits) = attr_lookup_ptr(lhs_ptr, op_name_bits) {
+                let res_bits = call_callable1(call_bits, rhs.bits());
+                dec_ref_bits(call_bits);
+                if exception_pending() {
+                    dec_ref_bits(res_bits);
+                    return CompareBoolOutcome::Error;
+                }
+                let truthy = is_truthy(obj_from_bits(res_bits));
+                dec_ref_bits(res_bits);
+                return if truthy {
+                    CompareBoolOutcome::True
+                } else {
+                    CompareBoolOutcome::False
+                };
+            }
+            if exception_pending() {
+                return CompareBoolOutcome::Error;
+            }
+        }
+        if let Some(rhs_ptr) = rhs.as_ptr() {
+            if let Some(call_bits) = attr_lookup_ptr(rhs_ptr, reverse_name_bits) {
+                let res_bits = call_callable1(call_bits, lhs.bits());
+                dec_ref_bits(call_bits);
+                if exception_pending() {
+                    dec_ref_bits(res_bits);
+                    return CompareBoolOutcome::Error;
+                }
+                let truthy = is_truthy(obj_from_bits(res_bits));
+                dec_ref_bits(res_bits);
+                return if truthy {
+                    CompareBoolOutcome::True
+                } else {
+                    CompareBoolOutcome::False
+                };
+            }
+            if exception_pending() {
+                return CompareBoolOutcome::Error;
+            }
+        }
+    }
+    CompareBoolOutcome::NotComparable
+}
+
+fn rich_compare_order(lhs: MoltObject, rhs: MoltObject) -> CompareOutcome {
+    let lt_name_bits = intern_static_name(&INTERN_LT_NAME, b"__lt__");
+    let gt_name_bits = intern_static_name(&INTERN_GT_NAME, b"__gt__");
+    match rich_compare_bool(lhs, rhs, lt_name_bits, gt_name_bits) {
+        CompareBoolOutcome::True => return CompareOutcome::Ordered(Ordering::Less),
+        CompareBoolOutcome::False => {}
+        CompareBoolOutcome::NotComparable => return CompareOutcome::NotComparable,
+        CompareBoolOutcome::Error => return CompareOutcome::Error,
+    }
+    match rich_compare_bool(rhs, lhs, lt_name_bits, gt_name_bits) {
+        CompareBoolOutcome::True => CompareOutcome::Ordered(Ordering::Greater),
+        CompareBoolOutcome::False => CompareOutcome::Ordered(Ordering::Equal),
+        CompareBoolOutcome::NotComparable => CompareOutcome::NotComparable,
+        CompareBoolOutcome::Error => CompareOutcome::Error,
+    }
+}
+
+fn compare_objects(lhs: MoltObject, rhs: MoltObject) -> CompareOutcome {
+    match compare_objects_builtin(lhs, rhs) {
+        CompareOutcome::NotComparable => {}
+        outcome => return outcome,
+    }
+    rich_compare_order(lhs, rhs)
+}
+
 fn compare_numbers(lhs: MoltObject, rhs: MoltObject) -> Option<Ordering> {
     if let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
         return Some(li.cmp(&ri));
@@ -8987,52 +9195,80 @@ fn float_pair_from_obj(lhs: MoltObject, rhs: MoltObject) -> Option<(f64, f64)> {
 pub extern "C" fn molt_lt(a: u64, b: u64) -> u64 {
     let lhs = obj_from_bits(a);
     let rhs = obj_from_bits(b);
-    if let Some(ordering) = compare_numbers(lhs, rhs) {
-        return MoltObject::from_bool(ordering == Ordering::Less).bits();
+    match compare_builtin_bool(lhs, rhs, CompareOp::Lt) {
+        CompareBoolOutcome::True => return MoltObject::from_bool(true).bits(),
+        CompareBoolOutcome::False => return MoltObject::from_bool(false).bits(),
+        CompareBoolOutcome::Error => return MoltObject::none().bits(),
+        CompareBoolOutcome::NotComparable => {}
     }
-    if lhs.is_float() || rhs.is_float() {
-        return MoltObject::from_bool(false).bits();
+    let lt_name_bits = intern_static_name(&INTERN_LT_NAME, b"__lt__");
+    let gt_name_bits = intern_static_name(&INTERN_GT_NAME, b"__gt__");
+    match rich_compare_bool(lhs, rhs, lt_name_bits, gt_name_bits) {
+        CompareBoolOutcome::True => MoltObject::from_bool(true).bits(),
+        CompareBoolOutcome::False => MoltObject::from_bool(false).bits(),
+        CompareBoolOutcome::Error => MoltObject::none().bits(),
+        CompareBoolOutcome::NotComparable => compare_type_error(lhs, rhs, "<"),
     }
-    compare_type_error(lhs, rhs, "<")
 }
 
 #[no_mangle]
 pub extern "C" fn molt_le(a: u64, b: u64) -> u64 {
     let lhs = obj_from_bits(a);
     let rhs = obj_from_bits(b);
-    if let Some(ordering) = compare_numbers(lhs, rhs) {
-        return MoltObject::from_bool(ordering != Ordering::Greater).bits();
+    match compare_builtin_bool(lhs, rhs, CompareOp::Le) {
+        CompareBoolOutcome::True => return MoltObject::from_bool(true).bits(),
+        CompareBoolOutcome::False => return MoltObject::from_bool(false).bits(),
+        CompareBoolOutcome::Error => return MoltObject::none().bits(),
+        CompareBoolOutcome::NotComparable => {}
     }
-    if lhs.is_float() || rhs.is_float() {
-        return MoltObject::from_bool(false).bits();
+    let le_name_bits = intern_static_name(&INTERN_LE_NAME, b"__le__");
+    let ge_name_bits = intern_static_name(&INTERN_GE_NAME, b"__ge__");
+    match rich_compare_bool(lhs, rhs, le_name_bits, ge_name_bits) {
+        CompareBoolOutcome::True => MoltObject::from_bool(true).bits(),
+        CompareBoolOutcome::False => MoltObject::from_bool(false).bits(),
+        CompareBoolOutcome::Error => MoltObject::none().bits(),
+        CompareBoolOutcome::NotComparable => compare_type_error(lhs, rhs, "<="),
     }
-    compare_type_error(lhs, rhs, "<=")
 }
 
 #[no_mangle]
 pub extern "C" fn molt_gt(a: u64, b: u64) -> u64 {
     let lhs = obj_from_bits(a);
     let rhs = obj_from_bits(b);
-    if let Some(ordering) = compare_numbers(lhs, rhs) {
-        return MoltObject::from_bool(ordering == Ordering::Greater).bits();
+    match compare_builtin_bool(lhs, rhs, CompareOp::Gt) {
+        CompareBoolOutcome::True => return MoltObject::from_bool(true).bits(),
+        CompareBoolOutcome::False => return MoltObject::from_bool(false).bits(),
+        CompareBoolOutcome::Error => return MoltObject::none().bits(),
+        CompareBoolOutcome::NotComparable => {}
     }
-    if lhs.is_float() || rhs.is_float() {
-        return MoltObject::from_bool(false).bits();
+    let gt_name_bits = intern_static_name(&INTERN_GT_NAME, b"__gt__");
+    let lt_name_bits = intern_static_name(&INTERN_LT_NAME, b"__lt__");
+    match rich_compare_bool(lhs, rhs, gt_name_bits, lt_name_bits) {
+        CompareBoolOutcome::True => MoltObject::from_bool(true).bits(),
+        CompareBoolOutcome::False => MoltObject::from_bool(false).bits(),
+        CompareBoolOutcome::Error => MoltObject::none().bits(),
+        CompareBoolOutcome::NotComparable => compare_type_error(lhs, rhs, ">"),
     }
-    compare_type_error(lhs, rhs, ">")
 }
 
 #[no_mangle]
 pub extern "C" fn molt_ge(a: u64, b: u64) -> u64 {
     let lhs = obj_from_bits(a);
     let rhs = obj_from_bits(b);
-    if let Some(ordering) = compare_numbers(lhs, rhs) {
-        return MoltObject::from_bool(ordering != Ordering::Less).bits();
+    match compare_builtin_bool(lhs, rhs, CompareOp::Ge) {
+        CompareBoolOutcome::True => return MoltObject::from_bool(true).bits(),
+        CompareBoolOutcome::False => return MoltObject::from_bool(false).bits(),
+        CompareBoolOutcome::Error => return MoltObject::none().bits(),
+        CompareBoolOutcome::NotComparable => {}
     }
-    if lhs.is_float() || rhs.is_float() {
-        return MoltObject::from_bool(false).bits();
+    let ge_name_bits = intern_static_name(&INTERN_GE_NAME, b"__ge__");
+    let le_name_bits = intern_static_name(&INTERN_LE_NAME, b"__le__");
+    match rich_compare_bool(lhs, rhs, ge_name_bits, le_name_bits) {
+        CompareBoolOutcome::True => MoltObject::from_bool(true).bits(),
+        CompareBoolOutcome::False => MoltObject::from_bool(false).bits(),
+        CompareBoolOutcome::Error => MoltObject::none().bits(),
+        CompareBoolOutcome::NotComparable => compare_type_error(lhs, rhs, ">="),
     }
-    compare_type_error(lhs, rhs, ">=")
 }
 
 #[no_mangle]
@@ -11557,20 +11793,8 @@ pub extern "C" fn molt_divmod_builtin(a_bits: u64, b_bits: u64) -> u64 {
 }
 
 #[inline]
-fn minmax_compare(best_key_bits: u64, cand_key_bits: u64, want_max: bool) -> Option<bool> {
-    let lhs = obj_from_bits(cand_key_bits);
-    let rhs = obj_from_bits(best_key_bits);
-    if let Some(ordering) = compare_numbers(lhs, rhs) {
-        return Some(if want_max {
-            ordering == Ordering::Greater
-        } else {
-            ordering == Ordering::Less
-        });
-    }
-    if lhs.is_float() || rhs.is_float() {
-        return Some(false);
-    }
-    None
+fn minmax_compare(best_key_bits: u64, cand_key_bits: u64) -> CompareOutcome {
+    compare_objects(obj_from_bits(cand_key_bits), obj_from_bits(best_key_bits))
 }
 
 fn molt_minmax_builtin(
@@ -11672,12 +11896,33 @@ fn molt_minmax_builtin(
                 } else {
                     val_bits
                 };
-                let Some(replace) = minmax_compare(best_key_bits, cand_key_bits, want_max) else {
-                    return compare_type_error(
-                        obj_from_bits(cand_key_bits),
-                        obj_from_bits(best_key_bits),
-                        if want_max { ">" } else { "<" },
-                    );
+                let replace = match minmax_compare(best_key_bits, cand_key_bits) {
+                    CompareOutcome::Ordered(ordering) => {
+                        if want_max {
+                            ordering == Ordering::Greater
+                        } else {
+                            ordering == Ordering::Less
+                        }
+                    }
+                    CompareOutcome::Unordered => false,
+                    CompareOutcome::NotComparable => {
+                        if use_key {
+                            dec_ref_bits(best_key_bits);
+                            dec_ref_bits(cand_key_bits);
+                        }
+                        return compare_type_error(
+                            obj_from_bits(cand_key_bits),
+                            obj_from_bits(best_key_bits),
+                            if want_max { ">" } else { "<" },
+                        );
+                    }
+                    CompareOutcome::Error => {
+                        if use_key {
+                            dec_ref_bits(best_key_bits);
+                            dec_ref_bits(cand_key_bits);
+                        }
+                        return MoltObject::none().bits();
+                    }
                 };
                 if replace {
                     if use_key {
@@ -11709,12 +11954,33 @@ fn molt_minmax_builtin(
             } else {
                 val_bits
             };
-            let Some(replace) = minmax_compare(best_key_bits, cand_key_bits, want_max) else {
-                return compare_type_error(
-                    obj_from_bits(cand_key_bits),
-                    obj_from_bits(best_key_bits),
-                    if want_max { ">" } else { "<" },
-                );
+            let replace = match minmax_compare(best_key_bits, cand_key_bits) {
+                CompareOutcome::Ordered(ordering) => {
+                    if want_max {
+                        ordering == Ordering::Greater
+                    } else {
+                        ordering == Ordering::Less
+                    }
+                }
+                CompareOutcome::Unordered => false,
+                CompareOutcome::NotComparable => {
+                    if use_key {
+                        dec_ref_bits(best_key_bits);
+                        dec_ref_bits(cand_key_bits);
+                    }
+                    return compare_type_error(
+                        obj_from_bits(cand_key_bits),
+                        obj_from_bits(best_key_bits),
+                        if want_max { ">" } else { "<" },
+                    );
+                }
+                CompareOutcome::Error => {
+                    if use_key {
+                        dec_ref_bits(best_key_bits);
+                        dec_ref_bits(cand_key_bits);
+                    }
+                    return MoltObject::none().bits();
+                }
             };
             if replace {
                 if use_key {
@@ -11742,6 +12008,138 @@ pub extern "C" fn molt_min_builtin(args_bits: u64, key_bits: u64, default_bits: 
 #[no_mangle]
 pub extern "C" fn molt_max_builtin(args_bits: u64, key_bits: u64, default_bits: u64) -> u64 {
     molt_minmax_builtin(args_bits, key_bits, default_bits, true, "max")
+}
+
+struct SortItem {
+    key_bits: u64,
+    value_bits: u64,
+}
+
+enum SortError {
+    NotComparable(u64, u64),
+    Exception,
+}
+
+#[no_mangle]
+pub extern "C" fn molt_sorted_builtin(iter_bits: u64, key_bits: u64, reverse_bits: u64) -> u64 {
+    let iter_obj = molt_iter(iter_bits);
+    if obj_from_bits(iter_obj).is_none() {
+        raise!("TypeError", "object is not iterable");
+    }
+    let use_key = !obj_from_bits(key_bits).is_none();
+    let reverse = is_truthy(obj_from_bits(reverse_bits));
+    let mut items: Vec<SortItem> = Vec::new();
+    loop {
+        let pair_bits = molt_iter_next(iter_obj);
+        let pair_obj = obj_from_bits(pair_bits);
+        let Some(pair_ptr) = pair_obj.as_ptr() else {
+            if use_key {
+                for item in items.drain(..) {
+                    dec_ref_bits(item.key_bits);
+                }
+            }
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                if use_key {
+                    for item in items.drain(..) {
+                        dec_ref_bits(item.key_bits);
+                    }
+                }
+                raise!("TypeError", "object is not an iterator");
+            }
+            let elems = seq_vec_ref(pair_ptr);
+            if elems.len() < 2 {
+                if use_key {
+                    for item in items.drain(..) {
+                        dec_ref_bits(item.key_bits);
+                    }
+                }
+                raise!("TypeError", "object is not an iterator");
+            }
+            let val_bits = elems[0];
+            let done_bits = elems[1];
+            if is_truthy(obj_from_bits(done_bits)) {
+                break;
+            }
+            let key_val_bits = if use_key {
+                let res_bits = call_callable1(key_bits, val_bits);
+                if exception_pending() {
+                    for item in items.drain(..) {
+                        dec_ref_bits(item.key_bits);
+                    }
+                    return MoltObject::none().bits();
+                }
+                res_bits
+            } else {
+                val_bits
+            };
+            items.push(SortItem {
+                key_bits: key_val_bits,
+                value_bits: val_bits,
+            });
+        }
+    }
+    let mut error: Option<SortError> = None;
+    items.sort_by(|left, right| {
+        if error.is_some() {
+            return Ordering::Equal;
+        }
+        let outcome = compare_objects(obj_from_bits(left.key_bits), obj_from_bits(right.key_bits));
+        match outcome {
+            CompareOutcome::Ordered(ordering) => {
+                if reverse {
+                    ordering.reverse()
+                } else {
+                    ordering
+                }
+            }
+            CompareOutcome::Unordered => Ordering::Equal,
+            CompareOutcome::NotComparable => {
+                error = Some(SortError::NotComparable(left.key_bits, right.key_bits));
+                Ordering::Equal
+            }
+            CompareOutcome::Error => {
+                error = Some(SortError::Exception);
+                Ordering::Equal
+            }
+        }
+    });
+    if let Some(error) = error {
+        if use_key {
+            for item in items.drain(..) {
+                dec_ref_bits(item.key_bits);
+            }
+        }
+        match error {
+            SortError::NotComparable(left_bits, right_bits) => {
+                let msg = format!(
+                    "'<' not supported between instances of '{}' and '{}'",
+                    type_name(obj_from_bits(left_bits)),
+                    type_name(obj_from_bits(right_bits)),
+                );
+                raise!("TypeError", &msg);
+            }
+            SortError::Exception => {
+                return MoltObject::none().bits();
+            }
+        }
+    }
+    let mut out: Vec<u64> = Vec::with_capacity(items.len());
+    for item in items.iter() {
+        out.push(item.value_bits);
+    }
+    if use_key {
+        for item in items.drain(..) {
+            dec_ref_bits(item.key_bits);
+        }
+    }
+    let list_ptr = alloc_list(&out);
+    if list_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    MoltObject::from_ptr(list_ptr).bits()
 }
 
 #[no_mangle]
@@ -16704,6 +17102,100 @@ pub extern "C" fn molt_list_reverse(list_bits: u64) -> u64 {
 }
 
 #[no_mangle]
+pub extern "C" fn molt_list_sort(list_bits: u64, key_bits: u64, reverse_bits: u64) -> u64 {
+    let list_obj = obj_from_bits(list_bits);
+    if let Some(list_ptr) = list_obj.as_ptr() {
+        unsafe {
+            if object_type_id(list_ptr) != TYPE_ID_LIST {
+                return MoltObject::none().bits();
+            }
+            let use_key = !obj_from_bits(key_bits).is_none();
+            let reverse = is_truthy(obj_from_bits(reverse_bits));
+            let elems = seq_vec_ref(list_ptr);
+            let mut items: Vec<SortItem> = Vec::with_capacity(elems.len());
+            for &val_bits in elems.iter() {
+                let key_val_bits = if use_key {
+                    let res_bits = call_callable1(key_bits, val_bits);
+                    if exception_pending() {
+                        dec_ref_bits(res_bits);
+                        for item in items.drain(..) {
+                            dec_ref_bits(item.key_bits);
+                        }
+                        return MoltObject::none().bits();
+                    }
+                    res_bits
+                } else {
+                    val_bits
+                };
+                items.push(SortItem {
+                    key_bits: key_val_bits,
+                    value_bits: val_bits,
+                });
+            }
+            let mut error: Option<SortError> = None;
+            items.sort_by(|left, right| {
+                if error.is_some() {
+                    return Ordering::Equal;
+                }
+                let outcome =
+                    compare_objects(obj_from_bits(left.key_bits), obj_from_bits(right.key_bits));
+                match outcome {
+                    CompareOutcome::Ordered(ordering) => {
+                        if reverse {
+                            ordering.reverse()
+                        } else {
+                            ordering
+                        }
+                    }
+                    CompareOutcome::Unordered => Ordering::Equal,
+                    CompareOutcome::NotComparable => {
+                        error = Some(SortError::NotComparable(left.key_bits, right.key_bits));
+                        Ordering::Equal
+                    }
+                    CompareOutcome::Error => {
+                        error = Some(SortError::Exception);
+                        Ordering::Equal
+                    }
+                }
+            });
+            if let Some(error) = error {
+                if use_key {
+                    for item in items.drain(..) {
+                        dec_ref_bits(item.key_bits);
+                    }
+                }
+                match error {
+                    SortError::NotComparable(left_bits, right_bits) => {
+                        let msg = format!(
+                            "'<' not supported between instances of '{}' and '{}'",
+                            type_name(obj_from_bits(left_bits)),
+                            type_name(obj_from_bits(right_bits)),
+                        );
+                        raise!("TypeError", &msg);
+                    }
+                    SortError::Exception => {
+                        return MoltObject::none().bits();
+                    }
+                }
+            }
+            let mut new_elems: Vec<u64> = Vec::with_capacity(items.len());
+            for item in items.iter() {
+                new_elems.push(item.value_bits);
+            }
+            if use_key {
+                for item in items.drain(..) {
+                    dec_ref_bits(item.key_bits);
+                }
+            }
+            let elems_mut = seq_vec(list_ptr);
+            *elems_mut = new_elems;
+            return MoltObject::none().bits();
+        }
+    }
+    MoltObject::none().bits()
+}
+
+#[no_mangle]
 pub extern "C" fn molt_list_count(list_bits: u64, val_bits: u64) -> u64 {
     let list_obj = obj_from_bits(list_bits);
     if let Some(ptr) = list_obj.as_ptr() {
@@ -19782,6 +20274,9 @@ unsafe fn bind_builtin_call(
     if fn_ptr == dict_pop_method as usize as u64 {
         return bind_builtin_pop(args);
     }
+    if fn_ptr == molt_list_sort as usize as u64 {
+        return bind_builtin_list_sort(args);
+    }
 
     if !args.kw_names.is_empty() {
         raise!("TypeError", "keywords are not supported for this builtin");
@@ -19882,6 +20377,51 @@ unsafe fn bind_builtin_keywords(
         out.push(extra);
     }
     Some(out)
+}
+
+unsafe fn bind_builtin_list_sort(args: &CallArgs) -> Option<Vec<u64>> {
+    if args.pos.is_empty() {
+        raise!("TypeError", "missing required argument 'self'");
+    }
+    if args.pos.len() > 1 {
+        raise!("TypeError", "too many positional arguments");
+    }
+    let mut key_bits = MoltObject::none().bits();
+    let mut reverse_bits = MoltObject::from_bool(false).bits();
+    let mut key_set = false;
+    let mut reverse_set = false;
+    for (name_bits, val_bits) in args
+        .kw_names
+        .iter()
+        .copied()
+        .zip(args.kw_values.iter().copied())
+    {
+        let name_obj = obj_from_bits(name_bits);
+        let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
+        match name_str.as_str() {
+            "key" => {
+                if key_set {
+                    let msg = format!("got multiple values for argument '{name_str}'");
+                    raise!("TypeError", &msg);
+                }
+                key_bits = val_bits;
+                key_set = true;
+            }
+            "reverse" => {
+                if reverse_set {
+                    let msg = format!("got multiple values for argument '{name_str}'");
+                    raise!("TypeError", &msg);
+                }
+                reverse_bits = val_bits;
+                reverse_set = true;
+            }
+            _ => {
+                let msg = format!("got an unexpected keyword '{name_str}'");
+                raise!("TypeError", &msg);
+            }
+        }
+    }
+    Some(vec![args.pos[0], key_bits, reverse_bits])
 }
 
 unsafe fn bind_builtin_pop(args: &CallArgs) -> Option<Vec<u64>> {

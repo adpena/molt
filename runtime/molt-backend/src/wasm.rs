@@ -366,6 +366,7 @@ impl WasmBackend {
         add_import("sum_builtin", 3, &mut self.import_ids);
         add_import("min_builtin", 5, &mut self.import_ids);
         add_import("max_builtin", 5, &mut self.import_ids);
+        add_import("sorted_builtin", 5, &mut self.import_ids);
         add_import("getattr_builtin", 5, &mut self.import_ids);
         add_import("anext_builtin", 3, &mut self.import_ids);
         add_import("print_builtin", 2, &mut self.import_ids);
@@ -391,6 +392,7 @@ impl WasmBackend {
         add_import("list_clear", 2, &mut self.import_ids);
         add_import("list_copy", 2, &mut self.import_ids);
         add_import("list_reverse", 2, &mut self.import_ids);
+        add_import("list_sort", 5, &mut self.import_ids);
         add_import("list_count", 3, &mut self.import_ids);
         add_import("list_index", 3, &mut self.import_ids);
         add_import("tuple_from_list", 2, &mut self.import_ids);
@@ -604,7 +606,7 @@ impl WasmBackend {
             .import("env", "memory", EntityType::Memory(memory_ty));
         self.exports.export("molt_memory", ExportKind::Memory, 0);
 
-        let builtin_table_funcs: [(&str, &str); 34] = [
+        let builtin_table_funcs: [(&str, &str); 35] = [
             ("molt_missing", "missing"),
             ("molt_repr_builtin", "repr_builtin"),
             ("molt_callable_builtin", "callable_builtin"),
@@ -616,6 +618,7 @@ impl WasmBackend {
             ("molt_sum_builtin", "sum_builtin"),
             ("molt_min_builtin", "min_builtin"),
             ("molt_max_builtin", "max_builtin"),
+            ("molt_sorted_builtin", "sorted_builtin"),
             ("molt_getattr_builtin", "getattr_builtin"),
             ("molt_anext_builtin", "anext_builtin"),
             ("molt_print_builtin", "print_builtin"),

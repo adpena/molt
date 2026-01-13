@@ -36,6 +36,7 @@ __all__ = [
     "any",
     "all",
     "sum",
+    "sorted",
     "min",
     "max",
     "id",
@@ -88,6 +89,7 @@ callable = callable
 any = any
 all = all
 sum = sum
+sorted = sorted
 min = min
 max = max
 id = id

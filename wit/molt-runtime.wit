@@ -148,6 +148,7 @@ interface intrinsics {
     sum_builtin: func(iter: molt-object, start: molt-object) -> molt-object;
     min_builtin: func(args: molt-object, key: molt-object, default: molt-object) -> molt-object;
     max_builtin: func(args: molt-object, key: molt-object, default: molt-object) -> molt-object;
+    sorted_builtin: func(iter: molt-object, key: molt-object, reverse: molt-object) -> molt-object;
     getattr_builtin: func(obj: molt-object, name: molt-object, default: molt-object) -> molt-object;
     anext_builtin: func(iter: molt-object, default: molt-object) -> molt-object;
     print_builtin: func(args: molt-object) -> molt-object;
@@ -167,6 +168,7 @@ interface intrinsics {
     list_clear: func(list: molt-object) -> molt-object;
     list_copy: func(list: molt-object) -> molt-object;
     list_reverse: func(list: molt-object) -> molt-object;
+    list_sort: func(list: molt-object, key: molt-object, reverse: molt-object) -> molt-object;
     list_count: func(list: molt-object, val: molt-object) -> molt-object;
     list_index: func(list: molt-object, val: molt-object) -> molt-object;
     tuple_from_list: func(obj: molt-object) -> molt-object;
