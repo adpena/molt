@@ -753,12 +753,7 @@ fn handle_request(
         fake_decode_us_per_row: ctx.fake_decode_us_per_row,
         fake_cpu_iters: ctx.fake_cpu_iters,
     };
-    let result = execute_entry(
-        &envelope,
-        &exec_ctx,
-        &ctx.exports,
-        &ctx.compiled_entries,
-    );
+    let result = execute_entry(&envelope, &exec_ctx, &ctx.exports, &ctx.compiled_entries);
     let exec_ms = exec_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     metrics.insert("exec_ms".to_string(), exec_ms);
     if let Some(limit) = timeout {
