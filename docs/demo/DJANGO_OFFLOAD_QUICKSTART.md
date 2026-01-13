@@ -33,11 +33,19 @@ Worker metrics land in `/tmp/molt_demo_metrics.jsonl` unless `MOLT_DEMO_METRICS_
 Set `MOLT_FAKE_DB_DELAY_MS` to simulate base DB latency,
 `MOLT_FAKE_DB_DECODE_US_PER_ROW` to simulate per-row decode cost, and
 `MOLT_FAKE_DB_CPU_ITERS` to simulate per-row CPU work.
+Set `MOLT_DEMO_DB_PATH` to enable SQLite-backed reads for `/baseline` and `/offload`;
+seed it with `python3 -m demoapp.db_seed --path "$MOLT_DEMO_DB_PATH"` (or let
+`bench/scripts/run_stack.sh` seed automatically). The worker reads
+`MOLT_DB_SQLITE_PATH` (defaults to `MOLT_DEMO_DB_PATH` in the bench script). Use
+`MOLT_DB_SQLITE_READWRITE=1` to open the worker connection read-write (default is
+read-only).
 Process CPU/RSS summaries are captured by sampling the process table; the bench
 runner uses `MOLT_DEMO_SERVER_PID`/`MOLT_DEMO_WORKER_PID` when available,
 prefers listen-PIDs from `MOLT_SERVER_PORT` when `lsof` is present, and falls
 back to command-name matching.
 Set `MOLT_ACCEL_CLIENT_MODE=per_request` to spawn a worker client per request (default is `shared`).
+Set `MOLT_ACCEL_POOL_SIZE` to use a pool of worker processes when `MOLT_ACCEL_CLIENT_MODE=shared`.
+Set `MOLT_WORKER_THREADS` or `MOLT_WORKER_MAX_QUEUE` to override worker thread count or queue depth.
 Set `MOLT_UV_SYNC=0` to skip the automatic `uv sync --group demo` step in the bench script.
 Set `MOLT_SERVER=gunicorn|uvicorn|django` to choose the server (default `auto` prefers gunicorn, then uvicorn).
 Set `MOLT_SERVER_THREADS=2` to control gunicorn threads (defaults to 2 and uses the `gthread` worker class).

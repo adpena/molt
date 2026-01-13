@@ -334,6 +334,20 @@ def percentile(values: list[float], pct: float) -> float:
 
 
 def summarize_worker_metrics(path: Path) -> dict[str, dict[str, float]]:
+    def append_metric(
+        bucket: dict[str, list[float]],
+        payload: dict[str, Any],
+        key_ms: str,
+        key_us: str,
+    ) -> None:
+        value = payload.get(key_us)
+        if isinstance(value, (int, float)):
+            bucket[key_ms].append(float(value) / 1000.0)
+            return
+        value = payload.get(key_ms)
+        if isinstance(value, (int, float)):
+            bucket[key_ms].append(float(value))
+
     by_entry: dict[str, dict[str, list[float]]] = {}
     for line in path.read_text().splitlines():
         try:
@@ -345,9 +359,20 @@ def summarize_worker_metrics(path: Path) -> dict[str, dict[str, float]]:
             continue
         bucket = by_entry.setdefault(
             entry,
-            {"queue_ms": [], "exec_ms": [], "queue_depth": [], "payload_bytes": []},
+            {
+                "queue_ms": [],
+                "handler_ms": [],
+                "exec_ms": [],
+                "decode_ms": [],
+                "queue_depth": [],
+                "payload_bytes": [],
+            },
         )
-        for key in ("queue_ms", "exec_ms", "queue_depth", "payload_bytes"):
+        append_metric(bucket, payload, "queue_ms", "queue_us")
+        append_metric(bucket, payload, "handler_ms", "handler_us")
+        append_metric(bucket, payload, "exec_ms", "exec_us")
+        append_metric(bucket, payload, "decode_ms", "decode_us")
+        for key in ("queue_depth", "payload_bytes"):
             value = payload.get(key)
             if isinstance(value, (int, float)):
                 bucket[key].append(float(value))
@@ -355,15 +380,21 @@ def summarize_worker_metrics(path: Path) -> dict[str, dict[str, float]]:
     summary: dict[str, dict[str, float]] = {}
     for entry, metrics in by_entry.items():
         queue_ms = metrics["queue_ms"]
+        handler_ms = metrics["handler_ms"]
         exec_ms = metrics["exec_ms"]
+        decode_ms = metrics["decode_ms"]
         queue_depth = metrics["queue_depth"]
         payload_bytes = metrics["payload_bytes"]
         summary[entry] = {
             "count": max(len(queue_ms), len(exec_ms)),
             "queue_ms_p50": percentile(queue_ms, 50),
             "queue_ms_p95": percentile(queue_ms, 95),
+            "handler_ms_p50": percentile(handler_ms, 50),
+            "handler_ms_p95": percentile(handler_ms, 95),
             "exec_ms_p50": percentile(exec_ms, 50),
             "exec_ms_p95": percentile(exec_ms, 95),
+            "decode_ms_p50": percentile(decode_ms, 50),
+            "decode_ms_p95": percentile(decode_ms, 95),
             "queue_depth_max": float(max(queue_depth) if queue_depth else 0.0),
             "payload_bytes_avg": float(sum(payload_bytes) / len(payload_bytes))
             if payload_bytes
@@ -398,6 +429,26 @@ def main() -> None:
     }
     if any(value for value in fake_db.values() if value is not None):
         artifact["fake_db"] = fake_db
+    db_config = {
+        "sqlite_path": env.get("MOLT_DB_SQLITE_PATH"),
+        "demo_db_path": env.get("MOLT_DEMO_DB_PATH"),
+        "sqlite_readwrite": env.get("MOLT_DB_SQLITE_READWRITE"),
+    }
+    if any(value for value in db_config.values() if value is not None):
+        artifact["molt_db"] = db_config
+    accel_config = {
+        "client_mode": env.get("MOLT_ACCEL_CLIENT_MODE"),
+        "pool_size": env.get("MOLT_ACCEL_POOL_SIZE"),
+        "wire": env.get("MOLT_WORKER_WIRE") or env.get("MOLT_WIRE"),
+    }
+    if any(value for value in accel_config.values() if value is not None):
+        artifact["molt_accel"] = accel_config
+    worker_tuning = {
+        "threads": env.get("MOLT_WORKER_THREADS"),
+        "max_queue": env.get("MOLT_WORKER_MAX_QUEUE"),
+    }
+    if any(value for value in worker_tuning.values() if value is not None):
+        artifact["molt_worker"] = worker_tuning
     process_context = {
         "server": env.get("MOLT_SERVER"),
         "server_pid": env.get("MOLT_DEMO_SERVER_PID"),
@@ -452,19 +503,40 @@ def main() -> None:
             sent_cell = f"{sent:.1f}" if isinstance(sent, (int, float)) else "-"
             recv_cell = f"{recv:.1f}" if isinstance(recv, (int, float)) else "-"
             md_lines.append(f"| {entry} | {sent_cell} | {recv_cell} |")
+    accel_rows = [(key, value) for key, value in accel_config.items() if value]
+    if accel_rows:
+        md_lines.append("")
+        md_lines.append("## Molt accel config")
+        for key, value in accel_rows:
+            md_lines.append(f"- {key}: {value}")
+    db_rows = [(key, value) for key, value in db_config.items() if value]
+    if db_rows:
+        md_lines.append("")
+        md_lines.append("## Molt DB config")
+        for key, value in db_rows:
+            md_lines.append(f"- {key}: {value}")
+    worker_rows = [(key, value) for key, value in worker_tuning.items() if value]
+    if worker_rows:
+        md_lines.append("")
+        md_lines.append("## Molt worker tuning")
+        for key, value in worker_rows:
+            md_lines.append(f"- {key}: {value}")
     if worker_metrics:
         md_lines.append("")
         md_lines.append("## Worker metrics (molt_accel hooks)")
         md_lines.append(
-            "| entry | count | queue_ms p50 | queue_ms p95 | exec_ms p50 | "
-            "exec_ms p95 | queue_depth max | payload avg |"
+            "| entry | count | queue_ms p50 | queue_ms p95 | handler_ms p50 | "
+            "handler_ms p95 | exec_ms p50 | exec_ms p95 | decode_ms p50 | "
+            "decode_ms p95 | queue_depth max | payload avg |"
         )
-        md_lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
+        md_lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
         for entry, metrics in sorted(worker_metrics.items()):
             md_lines.append(
                 f"| {entry} | {metrics['count']:.0f} | "
                 f"{metrics['queue_ms_p50']:.1f} | {metrics['queue_ms_p95']:.1f} | "
+                f"{metrics['handler_ms_p50']:.1f} | {metrics['handler_ms_p95']:.1f} | "
                 f"{metrics['exec_ms_p50']:.1f} | {metrics['exec_ms_p95']:.1f} | "
+                f"{metrics['decode_ms_p50']:.1f} | {metrics['decode_ms_p95']:.1f} | "
                 f"{metrics['queue_depth_max']:.0f} | {metrics['payload_bytes_avg']:.1f} |"
             )
     md_lines.append("")

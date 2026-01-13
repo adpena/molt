@@ -226,6 +226,11 @@ const TYPE_ID_BIGINT: u32 = 233;
 const TYPE_ID_ENUMERATE: u32 = 234;
 const TYPE_ID_CALLARGS: u32 = 235;
 const TYPE_ID_NOT_IMPLEMENTED: u32 = 236;
+const TYPE_ID_CALL_ITER: u32 = 237;
+const TYPE_ID_REVERSED: u32 = 238;
+const TYPE_ID_ZIP: u32 = 239;
+const TYPE_ID_MAP: u32 = 240;
+const TYPE_ID_FILTER: u32 = 241;
 
 const INLINE_INT_MIN_I128: i128 = -(1_i128 << 46);
 const INLINE_INT_MAX_I128: i128 = (1_i128 << 46) - 1;
@@ -666,6 +671,14 @@ fn is_truthy(obj: MoltObject) -> bool {
             if type_id == TYPE_ID_ENUMERATE {
                 return true;
             }
+            if type_id == TYPE_ID_CALL_ITER
+                || type_id == TYPE_ID_REVERSED
+                || type_id == TYPE_ID_ZIP
+                || type_id == TYPE_ID_MAP
+                || type_id == TYPE_ID_FILTER
+            {
+                return true;
+            }
             if type_id == TYPE_ID_SLICE {
                 return true;
             }
@@ -727,6 +740,11 @@ fn type_name(obj: MoltObject) -> &'static str {
                 TYPE_ID_TYPE => "type",
                 TYPE_ID_GENERATOR => "generator",
                 TYPE_ID_ENUMERATE => "enumerate",
+                TYPE_ID_CALL_ITER => "callable_iterator",
+                TYPE_ID_REVERSED => "reversed",
+                TYPE_ID_ZIP => "zip",
+                TYPE_ID_MAP => "map",
+                TYPE_ID_FILTER => "filter",
                 TYPE_ID_CLASSMETHOD => "classmethod",
                 TYPE_ID_STATICMETHOD => "staticmethod",
                 TYPE_ID_PROPERTY => "property",
@@ -1404,6 +1422,46 @@ unsafe fn enumerate_index_bits(ptr: *mut u8) -> u64 {
 
 unsafe fn enumerate_set_index_bits(ptr: *mut u8, idx_bits: u64) {
     *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = idx_bits;
+}
+
+unsafe fn call_iter_callable_bits(ptr: *mut u8) -> u64 {
+    *(ptr as *const u64)
+}
+
+unsafe fn call_iter_sentinel_bits(ptr: *mut u8) -> u64 {
+    *(ptr.add(std::mem::size_of::<u64>()) as *const u64)
+}
+
+unsafe fn reversed_target_bits(ptr: *mut u8) -> u64 {
+    *(ptr as *const u64)
+}
+
+unsafe fn reversed_index(ptr: *mut u8) -> usize {
+    *(ptr.add(std::mem::size_of::<u64>()) as *const usize)
+}
+
+unsafe fn reversed_set_index(ptr: *mut u8, idx: usize) {
+    *(ptr.add(std::mem::size_of::<u64>()) as *mut usize) = idx;
+}
+
+unsafe fn zip_iters_ptr(ptr: *mut u8) -> *mut Vec<u64> {
+    *(ptr as *mut *mut Vec<u64>)
+}
+
+unsafe fn map_func_bits(ptr: *mut u8) -> u64 {
+    *(ptr as *const u64)
+}
+
+unsafe fn map_iters_ptr(ptr: *mut u8) -> *mut Vec<u64> {
+    *(ptr.add(std::mem::size_of::<u64>()) as *mut *mut Vec<u64>)
+}
+
+unsafe fn filter_func_bits(ptr: *mut u8) -> u64 {
+    *(ptr as *const u64)
+}
+
+unsafe fn filter_iter_bits(ptr: *mut u8) -> u64 {
+    *(ptr.add(std::mem::size_of::<u64>()) as *const u64)
 }
 
 unsafe fn range_start(ptr: *mut u8) -> i64 {
@@ -11460,6 +11518,11 @@ pub extern "C" fn molt_id(val: u64) -> u64 {
     MoltObject::from_int(val as i64).bits()
 }
 
+fn ord_length_error(len: usize) -> u64 {
+    let msg = format!("ord() expected a character, but string of length {len} found");
+    raise!("TypeError", &msg);
+}
+
 #[no_mangle]
 pub extern "C" fn molt_ord(val: u64) -> u64 {
     let obj = obj_from_bits(val);
@@ -11473,20 +11536,15 @@ pub extern "C" fn molt_ord(val: u64) -> u64 {
                 };
                 let char_count = s.chars().count();
                 if char_count != 1 {
-                    let msg = format!(
-                        "ord() expected a character, but string of length {char_count} found"
-                    );
-                    raise!("TypeError", &msg);
+                    return ord_length_error(char_count);
                 }
-                let ch = s.chars().next().unwrap_or('\0');
+                let ch = s.chars().next().unwrap();
                 return MoltObject::from_int(ch as i64).bits();
             }
             if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
                 let len = bytes_len(ptr);
                 if len != 1 {
-                    let msg =
-                        format!("ord() expected a character, but string of length {len} found");
-                    raise!("TypeError", &msg);
+                    return ord_length_error(len);
                 }
                 let bytes = std::slice::from_raw_parts(bytes_data(ptr), len);
                 return MoltObject::from_int(bytes[0] as i64).bits();
@@ -12050,6 +12108,161 @@ pub extern "C" fn molt_min_builtin(args_bits: u64, key_bits: u64, default_bits: 
 #[no_mangle]
 pub extern "C" fn molt_max_builtin(args_bits: u64, key_bits: u64, default_bits: u64) -> u64 {
     molt_minmax_builtin(args_bits, key_bits, default_bits, true, "max")
+}
+
+#[no_mangle]
+pub extern "C" fn molt_map_builtin(func_bits: u64, iterables_bits: u64) -> u64 {
+    let iterables_obj = obj_from_bits(iterables_bits);
+    let Some(iterables_ptr) = iterables_obj.as_ptr() else {
+        raise!("TypeError", "map expects a tuple");
+    };
+    unsafe {
+        if object_type_id(iterables_ptr) != TYPE_ID_TUPLE {
+            raise!("TypeError", "map expects a tuple");
+        }
+        let iterables = seq_vec_ref(iterables_ptr);
+        if iterables.is_empty() {
+            raise!("TypeError", "map() must have at least two arguments");
+        }
+        let mut iters = Vec::with_capacity(iterables.len());
+        for &iterable_bits in iterables.iter() {
+            let iter_bits = molt_iter(iterable_bits);
+            if obj_from_bits(iter_bits).is_none() {
+                raise!("TypeError", "object is not iterable");
+            }
+            iters.push(iter_bits);
+        }
+        let total = std::mem::size_of::<MoltHeader>()
+            + std::mem::size_of::<u64>()
+            + std::mem::size_of::<*mut Vec<u64>>();
+        let map_ptr = alloc_object(total, TYPE_ID_MAP);
+        if map_ptr.is_null() {
+            for iter_bits in iters {
+                dec_ref_bits(iter_bits);
+            }
+            return MoltObject::none().bits();
+        }
+        let iters_ptr = Box::into_raw(Box::new(iters));
+        *(map_ptr as *mut u64) = func_bits;
+        *(map_ptr.add(std::mem::size_of::<u64>()) as *mut *mut Vec<u64>) = iters_ptr;
+        inc_ref_bits(func_bits);
+        MoltObject::from_ptr(map_ptr).bits()
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_filter_builtin(func_bits: u64, iterable_bits: u64) -> u64 {
+    let iter_bits = molt_iter(iterable_bits);
+    if obj_from_bits(iter_bits).is_none() {
+        raise!("TypeError", "object is not iterable");
+    }
+    let total = std::mem::size_of::<MoltHeader>() + 2 * std::mem::size_of::<u64>();
+    let filter_ptr = alloc_object(total, TYPE_ID_FILTER);
+    if filter_ptr.is_null() {
+        dec_ref_bits(iter_bits);
+        return MoltObject::none().bits();
+    }
+    unsafe {
+        *(filter_ptr as *mut u64) = func_bits;
+        *(filter_ptr.add(std::mem::size_of::<u64>()) as *mut u64) = iter_bits;
+    }
+    inc_ref_bits(func_bits);
+    MoltObject::from_ptr(filter_ptr).bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_zip_builtin(iterables_bits: u64) -> u64 {
+    let iterables_obj = obj_from_bits(iterables_bits);
+    let Some(iterables_ptr) = iterables_obj.as_ptr() else {
+        raise!("TypeError", "zip expects a tuple");
+    };
+    unsafe {
+        if object_type_id(iterables_ptr) != TYPE_ID_TUPLE {
+            raise!("TypeError", "zip expects a tuple");
+        }
+        let iterables = seq_vec_ref(iterables_ptr);
+        let mut iters = Vec::with_capacity(iterables.len());
+        for &iterable_bits in iterables.iter() {
+            let iter_bits = molt_iter(iterable_bits);
+            if obj_from_bits(iter_bits).is_none() {
+                raise!("TypeError", "object is not iterable");
+            }
+            iters.push(iter_bits);
+        }
+        let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut Vec<u64>>();
+        let zip_ptr = alloc_object(total, TYPE_ID_ZIP);
+        if zip_ptr.is_null() {
+            for iter_bits in iters {
+                dec_ref_bits(iter_bits);
+            }
+            return MoltObject::none().bits();
+        }
+        let iters_ptr = Box::into_raw(Box::new(iters));
+        *(zip_ptr as *mut *mut Vec<u64>) = iters_ptr;
+        MoltObject::from_ptr(zip_ptr).bits()
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_reversed_builtin(seq_bits: u64) -> u64 {
+    let obj = obj_from_bits(seq_bits);
+    if let Some(ptr) = obj.as_ptr() {
+        unsafe {
+            let type_id = object_type_id(ptr);
+            if type_id == TYPE_ID_LIST
+                || type_id == TYPE_ID_TUPLE
+                || type_id == TYPE_ID_STRING
+                || type_id == TYPE_ID_BYTES
+                || type_id == TYPE_ID_BYTEARRAY
+                || type_id == TYPE_ID_RANGE
+                || type_id == TYPE_ID_DICT
+                || type_id == TYPE_ID_DICT_KEYS_VIEW
+                || type_id == TYPE_ID_DICT_VALUES_VIEW
+                || type_id == TYPE_ID_DICT_ITEMS_VIEW
+            {
+                let idx = if type_id == TYPE_ID_STRING {
+                    string_len(ptr)
+                } else if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
+                    bytes_len(ptr)
+                } else if type_id == TYPE_ID_DICT {
+                    dict_order(ptr).len() / 2
+                } else if type_id == TYPE_ID_DICT_KEYS_VIEW
+                    || type_id == TYPE_ID_DICT_VALUES_VIEW
+                    || type_id == TYPE_ID_DICT_ITEMS_VIEW
+                {
+                    dict_view_len(ptr)
+                } else if type_id == TYPE_ID_RANGE {
+                    range_len_i64(range_start(ptr), range_stop(ptr), range_step(ptr)) as usize
+                } else if type_id == TYPE_ID_LIST {
+                    list_len(ptr)
+                } else {
+                    tuple_len(ptr)
+                };
+                let total = std::mem::size_of::<MoltHeader>()
+                    + std::mem::size_of::<u64>()
+                    + std::mem::size_of::<usize>();
+                let rev_ptr = alloc_object(total, TYPE_ID_REVERSED);
+                if rev_ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                inc_ref_bits(seq_bits);
+                *(rev_ptr as *mut u64) = seq_bits;
+                reversed_set_index(rev_ptr, idx);
+                return MoltObject::from_ptr(rev_ptr).bits();
+            }
+            if let Some(name_bits) = attr_name_bits_from_bytes(b"__reversed__") {
+                if let Some(call_bits) = attr_lookup_ptr(ptr, name_bits) {
+                    dec_ref_bits(name_bits);
+                    let res = call_callable0(call_bits);
+                    dec_ref_bits(call_bits);
+                    return res;
+                }
+                dec_ref_bits(name_bits);
+            }
+        }
+    }
+    let msg = format!("'{}' object is not reversible", type_name(obj));
+    raise!("TypeError", &msg);
 }
 
 struct SortItem {
@@ -14553,6 +14766,24 @@ fn bytes_from_obj_impl(bits: u64, kind: BytesCtorKind) -> u64 {
                 inc_ref_bits(bits);
                 return bits;
             }
+            if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                let elems = seq_vec_ref(ptr);
+                let mut out = Vec::with_capacity(elems.len());
+                for &elem in elems.iter() {
+                    let Some(byte) = bytes_item_to_u8(elem, kind) else {
+                        return MoltObject::none().bits();
+                    };
+                    out.push(byte);
+                }
+                let out_ptr = match kind {
+                    BytesCtorKind::Bytes => alloc_bytes(&out),
+                    BytesCtorKind::Bytearray => alloc_bytearray(&out),
+                };
+                if out_ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                return MoltObject::from_ptr(out_ptr).bits();
+            }
             if let Some(slice) = bytes_like_slice(ptr) {
                 let out_ptr = match kind {
                     BytesCtorKind::Bytes => alloc_bytes(slice),
@@ -16477,6 +16708,15 @@ pub extern "C" fn molt_iter(iter_bits: u64) -> u64 {
                 inc_ref_bits(iter_bits);
                 return iter_bits;
             }
+            if type_id == TYPE_ID_CALL_ITER
+                || type_id == TYPE_ID_REVERSED
+                || type_id == TYPE_ID_ZIP
+                || type_id == TYPE_ID_MAP
+                || type_id == TYPE_ID_FILTER
+            {
+                inc_ref_bits(iter_bits);
+                return iter_bits;
+            }
             if type_id == TYPE_ID_LIST
                 || type_id == TYPE_ID_TUPLE
                 || type_id == TYPE_ID_STRING
@@ -16544,6 +16784,26 @@ pub extern "C" fn molt_iter(iter_bits: u64) -> u64 {
         }
     }
     MoltObject::none().bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_iter_sentinel(callable_bits: u64, sentinel_bits: u64) -> u64 {
+    let callable_ok = is_truthy(obj_from_bits(molt_is_callable(callable_bits)));
+    if !callable_ok {
+        raise!("TypeError", "iter(v, w): v must be callable");
+    }
+    let total = std::mem::size_of::<MoltHeader>() + 2 * std::mem::size_of::<u64>();
+    let iter_ptr = alloc_object(total, TYPE_ID_CALL_ITER);
+    if iter_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    unsafe {
+        *(iter_ptr as *mut u64) = callable_bits;
+        *(iter_ptr.add(std::mem::size_of::<u64>()) as *mut u64) = sentinel_bits;
+    }
+    inc_ref_bits(callable_bits);
+    inc_ref_bits(sentinel_bits);
+    MoltObject::from_ptr(iter_ptr).bits()
 }
 
 #[no_mangle]
@@ -16626,6 +16886,298 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                 dec_ref_bits(idx_bits);
                 enumerate_set_index_bits(ptr, next_bits);
                 return MoltObject::from_ptr(out_ptr).bits();
+            }
+            if object_type_id(ptr) == TYPE_ID_CALL_ITER {
+                let call_bits = call_iter_callable_bits(ptr);
+                let sentinel_bits = call_iter_sentinel_bits(ptr);
+                let val_bits = call_callable0(call_bits);
+                if exception_pending() {
+                    dec_ref_bits(val_bits);
+                    return MoltObject::none().bits();
+                }
+                if obj_eq(obj_from_bits(val_bits), obj_from_bits(sentinel_bits)) {
+                    dec_ref_bits(val_bits);
+                    return generator_done_tuple(MoltObject::none().bits());
+                }
+                let done_bits = MoltObject::from_bool(false).bits();
+                let tuple_ptr = alloc_tuple(&[val_bits, done_bits]);
+                if tuple_ptr.is_null() {
+                    dec_ref_bits(val_bits);
+                    return MoltObject::none().bits();
+                }
+                dec_ref_bits(val_bits);
+                return MoltObject::from_ptr(tuple_ptr).bits();
+            }
+            if object_type_id(ptr) == TYPE_ID_MAP {
+                let func_bits = map_func_bits(ptr);
+                let iters_ptr = map_iters_ptr(ptr);
+                if iters_ptr.is_null() {
+                    return generator_done_tuple(MoltObject::none().bits());
+                }
+                let iters = &mut *iters_ptr;
+                if iters.is_empty() {
+                    return generator_done_tuple(MoltObject::none().bits());
+                }
+                let mut vals = Vec::with_capacity(iters.len());
+                for &iter_bits in iters.iter() {
+                    let pair_bits = molt_iter_next(iter_bits);
+                    let pair_obj = obj_from_bits(pair_bits);
+                    let Some(pair_ptr) = pair_obj.as_ptr() else {
+                        return MoltObject::none().bits();
+                    };
+                    if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                        raise!("TypeError", "object is not an iterator");
+                    }
+                    let elems = seq_vec_ref(pair_ptr);
+                    if elems.len() < 2 {
+                        raise!("TypeError", "object is not an iterator");
+                    }
+                    let val_bits = elems[0];
+                    let done_bits = elems[1];
+                    if is_truthy(obj_from_bits(done_bits)) {
+                        return generator_done_tuple(MoltObject::none().bits());
+                    }
+                    vals.push(val_bits);
+                }
+                let res_bits = if vals.len() == 1 {
+                    call_callable1(func_bits, vals[0])
+                } else {
+                    let builder_bits = molt_callargs_new(vals.len() as u64, 0);
+                    if builder_bits == 0 {
+                        return MoltObject::none().bits();
+                    }
+                    for &val_bits in &vals {
+                        let _ = molt_callargs_push_pos(builder_bits, val_bits);
+                    }
+                    molt_call_bind(func_bits, builder_bits)
+                };
+                if exception_pending() {
+                    dec_ref_bits(res_bits);
+                    return MoltObject::none().bits();
+                }
+                let done_bits = MoltObject::from_bool(false).bits();
+                let tuple_ptr = alloc_tuple(&[res_bits, done_bits]);
+                if tuple_ptr.is_null() {
+                    dec_ref_bits(res_bits);
+                    return MoltObject::none().bits();
+                }
+                dec_ref_bits(res_bits);
+                return MoltObject::from_ptr(tuple_ptr).bits();
+            }
+            if object_type_id(ptr) == TYPE_ID_FILTER {
+                let func_bits = filter_func_bits(ptr);
+                let iter_bits = filter_iter_bits(ptr);
+                loop {
+                    let pair_bits = molt_iter_next(iter_bits);
+                    let pair_obj = obj_from_bits(pair_bits);
+                    let Some(pair_ptr) = pair_obj.as_ptr() else {
+                        return MoltObject::none().bits();
+                    };
+                    if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                        raise!("TypeError", "object is not an iterator");
+                    }
+                    let elems = seq_vec_ref(pair_ptr);
+                    if elems.len() < 2 {
+                        raise!("TypeError", "object is not an iterator");
+                    }
+                    let val_bits = elems[0];
+                    let done_bits = elems[1];
+                    if is_truthy(obj_from_bits(done_bits)) {
+                        return generator_done_tuple(MoltObject::none().bits());
+                    }
+                    let keep = if obj_from_bits(func_bits).is_none() {
+                        is_truthy(obj_from_bits(val_bits))
+                    } else {
+                        let pred_bits = call_callable1(func_bits, val_bits);
+                        if exception_pending() {
+                            dec_ref_bits(pred_bits);
+                            return MoltObject::none().bits();
+                        }
+                        let keep = is_truthy(obj_from_bits(pred_bits));
+                        dec_ref_bits(pred_bits);
+                        keep
+                    };
+                    if keep {
+                        let done_bits = MoltObject::from_bool(false).bits();
+                        let tuple_ptr = alloc_tuple(&[val_bits, done_bits]);
+                        if tuple_ptr.is_null() {
+                            return MoltObject::none().bits();
+                        }
+                        return MoltObject::from_ptr(tuple_ptr).bits();
+                    }
+                }
+            }
+            if object_type_id(ptr) == TYPE_ID_ZIP {
+                let iters_ptr = zip_iters_ptr(ptr);
+                if iters_ptr.is_null() {
+                    return generator_done_tuple(MoltObject::none().bits());
+                }
+                let iters = &mut *iters_ptr;
+                if iters.is_empty() {
+                    return generator_done_tuple(MoltObject::none().bits());
+                }
+                let mut vals = Vec::with_capacity(iters.len());
+                for &iter_bits in iters.iter() {
+                    let pair_bits = molt_iter_next(iter_bits);
+                    let pair_obj = obj_from_bits(pair_bits);
+                    let Some(pair_ptr) = pair_obj.as_ptr() else {
+                        return MoltObject::none().bits();
+                    };
+                    if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                        raise!("TypeError", "object is not an iterator");
+                    }
+                    let elems = seq_vec_ref(pair_ptr);
+                    if elems.len() < 2 {
+                        raise!("TypeError", "object is not an iterator");
+                    }
+                    let val_bits = elems[0];
+                    let done_bits = elems[1];
+                    if is_truthy(obj_from_bits(done_bits)) {
+                        return generator_done_tuple(MoltObject::none().bits());
+                    }
+                    vals.push(val_bits);
+                }
+                let tuple_ptr = alloc_tuple(vals.as_slice());
+                if tuple_ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                let val_bits = MoltObject::from_ptr(tuple_ptr).bits();
+                let done_bits = MoltObject::from_bool(false).bits();
+                let out_ptr = alloc_tuple(&[val_bits, done_bits]);
+                if out_ptr.is_null() {
+                    dec_ref_bits(val_bits);
+                    return MoltObject::none().bits();
+                }
+                dec_ref_bits(val_bits);
+                return MoltObject::from_ptr(out_ptr).bits();
+            }
+            if object_type_id(ptr) == TYPE_ID_REVERSED {
+                let target_bits = reversed_target_bits(ptr);
+                let target_obj = obj_from_bits(target_bits);
+                let idx = reversed_index(ptr);
+                let (next_idx, val_bits, needs_drop) = if let Some(target_ptr) = target_obj.as_ptr()
+                {
+                    let target_type = object_type_id(target_ptr);
+                    if target_type == TYPE_ID_LIST || target_type == TYPE_ID_TUPLE {
+                        let elems = seq_vec_ref(target_ptr);
+                        let len = elems.len();
+                        let idx = idx.min(len);
+                        if idx == 0 {
+                            (0, None, false)
+                        } else {
+                            (idx - 1, Some(elems[idx - 1]), false)
+                        }
+                    } else if target_type == TYPE_ID_RANGE {
+                        let start = range_start(target_ptr);
+                        let stop = range_stop(target_ptr);
+                        let step = range_step(target_ptr);
+                        let len = range_len_i64(start, stop, step) as usize;
+                        let idx = idx.min(len);
+                        if idx == 0 {
+                            (0, None, false)
+                        } else {
+                            let pos = (idx - 1) as i64;
+                            let val = start + step * pos;
+                            let bits = MoltObject::from_int(val).bits();
+                            (idx - 1, Some(bits), false)
+                        }
+                    } else if target_type == TYPE_ID_STRING {
+                        let bytes = std::slice::from_raw_parts(
+                            string_bytes(target_ptr),
+                            string_len(target_ptr),
+                        );
+                        let idx = idx.min(bytes.len());
+                        if idx == 0 {
+                            (0, None, false)
+                        } else {
+                            let Ok(text) = std::str::from_utf8(&bytes[..idx]) else {
+                                return MoltObject::none().bits();
+                            };
+                            if let Some(ch) = text.chars().next_back() {
+                                let mut buf = [0u8; 4];
+                                let out = ch.encode_utf8(&mut buf);
+                                let out_ptr = alloc_string(out.as_bytes());
+                                if out_ptr.is_null() {
+                                    return MoltObject::none().bits();
+                                }
+                                let val_bits = MoltObject::from_ptr(out_ptr).bits();
+                                let next_idx = idx - ch.len_utf8();
+                                (next_idx, Some(val_bits), true)
+                            } else {
+                                (0, None, false)
+                            }
+                        }
+                    } else if target_type == TYPE_ID_BYTES || target_type == TYPE_ID_BYTEARRAY {
+                        let bytes = std::slice::from_raw_parts(
+                            bytes_data(target_ptr),
+                            bytes_len(target_ptr),
+                        );
+                        let idx = idx.min(bytes.len());
+                        if idx == 0 {
+                            (0, None, false)
+                        } else {
+                            let pos = idx - 1;
+                            let val_bits = MoltObject::from_int(bytes[pos] as i64).bits();
+                            (idx - 1, Some(val_bits), false)
+                        }
+                    } else if target_type == TYPE_ID_DICT {
+                        let order = dict_order(target_ptr);
+                        let len = order.len() / 2;
+                        let idx = idx.min(len);
+                        if idx == 0 {
+                            (0, None, false)
+                        } else {
+                            let entry = (idx - 1) * 2;
+                            (idx - 1, Some(order[entry]), false)
+                        }
+                    } else if target_type == TYPE_ID_DICT_KEYS_VIEW
+                        || target_type == TYPE_ID_DICT_VALUES_VIEW
+                        || target_type == TYPE_ID_DICT_ITEMS_VIEW
+                    {
+                        let len = dict_view_len(target_ptr);
+                        let idx = idx.min(len);
+                        if idx == 0 {
+                            (0, None, false)
+                        } else if let Some((key_bits, val_bits)) =
+                            dict_view_entry(target_ptr, idx - 1)
+                        {
+                            if target_type == TYPE_ID_DICT_ITEMS_VIEW {
+                                let tuple_ptr = alloc_tuple(&[key_bits, val_bits]);
+                                if tuple_ptr.is_null() {
+                                    return MoltObject::none().bits();
+                                }
+                                (idx - 1, Some(MoltObject::from_ptr(tuple_ptr).bits()), true)
+                            } else if target_type == TYPE_ID_DICT_KEYS_VIEW {
+                                (idx - 1, Some(key_bits), false)
+                            } else {
+                                (idx - 1, Some(val_bits), false)
+                            }
+                        } else {
+                            (0, None, false)
+                        }
+                    } else {
+                        (0, None, false)
+                    }
+                } else {
+                    (0, None, false)
+                };
+                if let Some(val_bits) = val_bits {
+                    reversed_set_index(ptr, next_idx);
+                    let done_bits = MoltObject::from_bool(false).bits();
+                    let tuple_ptr = alloc_tuple(&[val_bits, done_bits]);
+                    if tuple_ptr.is_null() {
+                        if needs_drop {
+                            dec_ref_bits(val_bits);
+                        }
+                        return MoltObject::none().bits();
+                    }
+                    if needs_drop {
+                        dec_ref_bits(val_bits);
+                    }
+                    return MoltObject::from_ptr(tuple_ptr).bits();
+                }
+                reversed_set_index(ptr, 0);
+                return generator_done_tuple(MoltObject::none().bits());
             }
             if object_type_id(ptr) != TYPE_ID_ITER {
                 if let Some(name_bits) = attr_name_bits_from_bytes(b"__next__") {
@@ -18523,6 +19075,42 @@ pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
                 let index_bits = enumerate_index_bits(ptr);
                 dec_ref_bits(target_bits);
                 dec_ref_bits(index_bits);
+            }
+            TYPE_ID_CALL_ITER => {
+                let call_bits = call_iter_callable_bits(ptr);
+                let sentinel_bits = call_iter_sentinel_bits(ptr);
+                dec_ref_bits(call_bits);
+                dec_ref_bits(sentinel_bits);
+            }
+            TYPE_ID_REVERSED => {
+                let target_bits = reversed_target_bits(ptr);
+                dec_ref_bits(target_bits);
+            }
+            TYPE_ID_ZIP => {
+                let vec_ptr = zip_iters_ptr(ptr);
+                if !vec_ptr.is_null() {
+                    let vec = Box::from_raw(vec_ptr);
+                    for bits in vec.iter() {
+                        dec_ref_bits(*bits);
+                    }
+                }
+            }
+            TYPE_ID_MAP => {
+                let func_bits = map_func_bits(ptr);
+                dec_ref_bits(func_bits);
+                let vec_ptr = map_iters_ptr(ptr);
+                if !vec_ptr.is_null() {
+                    let vec = Box::from_raw(vec_ptr);
+                    for bits in vec.iter() {
+                        dec_ref_bits(*bits);
+                    }
+                }
+            }
+            TYPE_ID_FILTER => {
+                let func_bits = filter_func_bits(ptr);
+                let iter_bits = filter_iter_bits(ptr);
+                dec_ref_bits(func_bits);
+                dec_ref_bits(iter_bits);
             }
             TYPE_ID_LIST_BUILDER => {
                 let vec_ptr = *(ptr as *mut *mut Vec<u64>);

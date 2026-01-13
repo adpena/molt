@@ -1,45 +1,61 @@
-Checkpoint: 2026-01-13T06:28:01Z
-Git: 519c2e510db7126ccb92c3205a1f5f90845c05eb (dirty)
+Checkpoint: 2026-01-13T08:35:25Z
+Git: 3ade558198cb5da0dba2dac3b8393823e2eb4fa5 (dirty)
 
 Summary
-- Added cancel-aware DB pool acquisition and wired it into molt-worker request handling, mapping pool waits to Cancelled/Timeout.
-- Added fake DB decode-cost simulation via MOLT_FAKE_DB_DECODE_US_PER_ROW with baseline parity in Django views.
-- Extended demo bench artifacts with machine/tool metadata and payload size metrics; updated demo/spec docs and roadmap.
+- Renamed `molt_django_adapter` to `molt_db_adapter` and updated docs/tests to reflect framework-agnostic DB adapter naming.
+- Added a feature-gated async pool primitive with cancellation token support in `molt-db` and documented it in DB specs/ROADMAP/STATUS.
+- Added `tokio` dependency for the async pool and validated with `cargo test -p molt-db --features async`.
 
 Files touched (uncommitted)
 - CHECKPOINT.md
+- Cargo.lock
+- README.md
 - ROADMAP.md
 - bench/scripts/run_demo_bench.py
+- bench/scripts/run_stack.sh
+- demo/django_app/demoapp/db_seed.py
 - demo/django_app/demoapp/views.py
 - docs/AGENT_MEMORY.md
 - docs/demo/DJANGO_OFFLOAD_QUICKSTART.md
+- docs/spec/0700_MOLT_DB_LAYER_VISION.md
+- docs/spec/0701_ASYNC_PG_POOL_AND_PROTOCOL.md
+- docs/spec/0702_QUERY_BUILDER_AND_DJANGO_ADAPTER.md
+- docs/spec/0910_REPRO_BENCH_VERTICAL_SLICE.md
 - docs/spec/0911_MOLT_WORKER_V0_SPEC.md
 - docs/spec/0913_DEMO_DJANGO_ENDPOINT_CONTRACT.md
 - docs/spec/0914_BENCH_RUNNER_AND_RESULTS_FORMAT.md
+- docs/spec/0915_MOLT_DB_IPC_CONTRACT.md
 - docs/spec/STATUS.md
+- references/docs.md
+- runtime/molt-db/Cargo.toml
 - runtime/molt-db/src/lib.rs
+- runtime/molt-db/src/async_pool.rs
+- runtime/molt-db/src/pool.rs
+- runtime/molt-db/src/sqlite.rs
+- runtime/molt-worker/Cargo.toml
 - runtime/molt-worker/src/main.rs
+- src/molt_db_adapter/__init__.py
+- src/molt_db_adapter/contracts.py
 - Other pre-existing local modifications not listed here (see git status).
 
 Docs/spec updates needed?
-- Updated docs/spec/0911_MOLT_WORKER_V0_SPEC.md, docs/spec/0913_DEMO_DJANGO_ENDPOINT_CONTRACT.md, docs/spec/0914_BENCH_RUNNER_AND_RESULTS_FORMAT.md, docs/spec/STATUS.md, and ROADMAP.md for cancellation + bench metadata.
+- Updated docs/spec/0700_MOLT_DB_LAYER_VISION.md, docs/spec/0701_ASYNC_PG_POOL_AND_PROTOCOL.md, docs/spec/0702_QUERY_BUILDER_AND_DJANGO_ADAPTER.md, docs/spec/0915_MOLT_DB_IPC_CONTRACT.md, docs/spec/STATUS.md, README.md, and ROADMAP.md for adapter rename + async pool primitive.
 
 Tests run
-- cargo test -p molt-db
-- cargo test -p molt-worker
-- uv run --python 3.12 python3 -m pytest tests/test_django_demo.py
+- cargo test -p molt-db --features async
+- uv run --python 3.12 python3 -m pytest tests/test_molt_db_adapter_contracts.py tests/test_django_demo.py
 
 Benchmarks
-- bench/scripts/run_stack.sh
-  - baseline: 2042.6 req/s, p50=44.0ms p95=65.4ms p99=70.5ms p999=82.7ms, errors=0.00%
-  - offload: 1532.1 req/s, p50=59.5ms p95=86.2ms p99=93.9ms p999=111.1ms, errors=0.00%
-  - offload_table: 1808.6 req/s, p50=25.2ms p95=29.6ms p99=43.5ms p999=46.2ms, errors=0.00%
-  - artifacts: bench/results/demo_k6_20260113T062712.json, bench/results/demo_k6_20260113T062712.md
+- None this turn.
 
 Known gaps
 - Cancellation propagation into real DB tasks still pending.
+- SQLite connector support is native-only; wasm parity pending.
+- DB IPC contract is defined, but worker-side `db_query` entrypoint is not implemented yet.
+- Postgres driver integration and async worker runtime wiring remain pending; avoid blocking worker threads on DB I/O.
 - Codon baseline skips remain for async/channel/matrix_math/bytearray/memoryview/parse_msgpack/struct/sum_list_hints benches.
 - Single-module WASM link + JS stub removal remains pending (see docs/spec/STATUS.md).
+- Offload demo throughput still trails baseline; need to iterate on IPC + serialization + DB mode perf.
 
 CI
 - Not run (local changes only).

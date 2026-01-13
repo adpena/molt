@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 from django.http import JsonResponse
@@ -87,6 +89,73 @@ def _sleep_fake_db(rows: int) -> None:
         time.sleep((decode_us * rows) / 1_000_000.0)
 
 
+def _db_path() -> Path | None:
+    raw = os.environ.get("MOLT_DEMO_DB_PATH")
+    if raw is None or raw == "":
+        return None
+    return Path(raw)
+
+
+def _sqlite_connect(path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(path), check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA query_only = ON")
+    conn.execute("PRAGMA busy_timeout = 100")
+    return conn
+
+
+def _fetch_items_sqlite(
+    *,
+    path: Path,
+    user_id: int,
+    q: str | None,
+    status: str | None,
+    limit: int,
+) -> dict[str, Any]:
+    if not path.exists():
+        raise FileNotFoundError(str(path))
+    sql = (
+        "SELECT id, created_at, status, title, score, unread "
+        "FROM items WHERE user_id = ?"
+    )
+    params: list[Any] = [user_id]
+    if status:
+        sql += " AND status = ?"
+        params.append(status)
+    if q:
+        sql += " AND title LIKE ?"
+        params.append(f"%{q}%")
+    sql += " ORDER BY id ASC LIMIT ?"
+    params.append(limit)
+    items: list[dict[str, Any]] = []
+    open_count = 0
+    closed_count = 0
+    with _sqlite_connect(path) as conn:
+        for row in conn.execute(sql, params):
+            status_value = row["status"]
+            if status_value == "open":
+                open_count += 1
+            elif status_value == "closed":
+                closed_count += 1
+            items.append(
+                {
+                    "id": row["id"],
+                    "created_at": row["created_at"],
+                    "status": status_value,
+                    "title": row["title"],
+                    "score": row["score"],
+                    "unread": bool(row["unread"]),
+                }
+            )
+
+    next_cursor = f"{user_id}:{limit}" if len(items) == limit else None
+    return {
+        "items": items,
+        "next_cursor": next_cursor,
+        "counts": {"open": open_count, "closed": closed_count},
+    }
+
+
 def _build_items_response(
     *,
     user_id: int,
@@ -147,6 +216,30 @@ def baseline_items(request: Any) -> JsonResponse:
     cursor = _query_param(request, "cursor")
     limit = _parse_limit(_query_param(request, "limit"))
     cpu_iters = _env_int("MOLT_FAKE_DB_CPU_ITERS", 0)
+    db_path = _db_path()
+
+    if db_path is not None:
+        try:
+            payload = _fetch_items_sqlite(
+                path=db_path,
+                user_id=user_id,
+                q=q,
+                status=status,
+                limit=limit,
+            )
+            return JsonResponse(payload, status=200)
+        except FileNotFoundError:
+            return JsonResponse(
+                {
+                    "error": "DbUnavailable",
+                    "detail": "Demo DB not found; run demoapp.db_seed",
+                },
+                status=503,
+            )
+        except sqlite3.Error as exc:
+            return JsonResponse(
+                {"error": "InternalError", "detail": str(exc)}, status=500
+            )
 
     _sleep_fake_db(limit)
 

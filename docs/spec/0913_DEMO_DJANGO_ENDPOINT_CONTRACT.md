@@ -46,6 +46,9 @@ This allows:
 Then later swap in real Postgres with the same contract.
 
 **Implementation status:** `molt_worker` returns a deterministic fake response for `list_items` and supports `MOLT_FAKE_DB_DELAY_MS` (base latency), `MOLT_FAKE_DB_DECODE_US_PER_ROW` (per-row decode cost), and `MOLT_FAKE_DB_CPU_ITERS` (per-row CPU work).
+When `MOLT_DEMO_DB_PATH` (Django) and `MOLT_DB_SQLITE_PATH` (worker) are set,
+`list_items` reads from SQLite instead of the fake DB path; fake DB settings are
+ignored in this mode.
 
 ---
 
@@ -53,7 +56,7 @@ Then later swap in real Postgres with the same contract.
 - entry: `list_items`
 - input payload (MsgPack):
   - query params normalized to a struct
-- output payload (MsgPack):
+- output payload (`codec_out` in the manifest, typically `json` for pass-through):
   - response struct exactly matching JSON above
 
 ---

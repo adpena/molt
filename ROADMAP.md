@@ -39,12 +39,14 @@ Canonical current status: `docs/spec/STATUS.md`. This roadmap is forward-looking
 - Import-only allowlist expanded for `base64`, `binascii`, `pickle`, `unittest`, `site`, `sysconfig`, `collections.abc`, `importlib`, and `importlib.util` (API parity pending).
 
 ## Offload / IPC
-- Partial: `molt_accel` v0 scaffolding (stdio framing + client + decorator) + `molt_worker` stdio shell with demo handlers and compiled dispatch (`list_items`/`compute`/`offload_table`/`health`).
+- Partial: `molt_accel` v0 scaffolding (stdio framing + client + decorator) + `molt_worker` stdio shell with demo handlers and compiled dispatch (`list_items`/`compute`/`offload_table`/`health`), plus optional worker pooling via `MOLT_ACCEL_POOL_SIZE`.
 - Implemented: compiled export loader + manifest validation (schema, reserved-name filtering, error mapping) with queue/timeout metrics.
+- Implemented: worker tuning via `MOLT_WORKER_THREADS` and `MOLT_WORKER_MAX_QUEUE` (CLI overrides).
 - TODO(offload, owner:runtime, milestone:SL1): propagate cancellation into real DB tasks; extend compiled handlers beyond demo coverage.
 
 ## DB
-- Partial: `molt-db` pool skeleton (bounded, sync); async drivers + Postgres protocol + cancellation-aware queries still pending.
+- Partial: `molt-db` pool skeleton (bounded, sync), feature-gated async pool primitive, plus a SQLite connector (native-only; wasm parity pending); async drivers + Postgres protocol + cancellation-aware queries still pending.
+- Top priority: ship async Postgres pool + cancellation-aware query execution before expanding DB adapters or query-builder ergonomics.
 
 ## Tooling
 - Keep type facts + `ty` validation wired into build/lint flows and surface regressions early.
@@ -57,3 +59,4 @@ Canonical current status: `docs/spec/STATUS.md`. This roadmap is forward-looking
 - Step 3 (Stdlib essentials): advance `docs/spec/0015_STDLIB_COMPATIBILITY_MATRIX.md` for `functools`, `itertools`, `operator`, `collections`, `contextlib`, `inspect`, `typing`, `dataclasses`, `enum`, `re`, and `datetime` to Partial with tests.
 - Step 4 (Async/runtime): production-ready asyncio loop/task APIs, contextvars, cancellation injection, and long-running workload hardening.
 - Step 5 (I/O + web/DB): capability-gated `os`, `sys`, `pathlib`, `logging`, `time`, `selectors`, `socket`, `ssl`; ASGI/WSGI surface, HTTP parsing, and DB client + pooling/transactions (start sqlite3 + minimal async driver), plus deterministic template rendering.
+- Cross-framework note: DB IPC payloads and adapters must remain framework-agnostic to support Django/Flask/FastAPI.

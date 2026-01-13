@@ -24,7 +24,7 @@
 - `health_check_interval_ms`
 - `statement_cache_size`
 
-**Implementation status:** `molt-db` currently provides a sync, bounded pool skeleton; async acquisition, fairness, and cancellation are still pending.
+**Implementation status:** `molt-db` provides a sync pool skeleton, a feature-gated async pool primitive, and a native-only SQLite connector for real reads in `molt-worker`; Postgres wire/protocol, fairness tuning, and cancellation-aware query execution are still pending.
 
 ### 1.2 Acquire semantics
 Acquire must be:

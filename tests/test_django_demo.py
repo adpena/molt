@@ -69,3 +69,23 @@ def test_compute_offload_parity() -> None:
     assert resp_base.status_code == 200
     assert resp_offload.status_code == 200
     assert resp_base.json() == resp_offload.json()
+
+
+def test_demo_baseline_sqlite_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup_django()
+    from demoapp.db_seed import seed_db
+    from django.test import Client
+
+    db_path = tmp_path / "demo.sqlite"
+    seed_db(db_path, users=1, items_per_user=4)
+    monkeypatch.setenv("MOLT_DEMO_DB_PATH", str(db_path))
+
+    client = Client()
+    resp = client.get("/baseline/?user_id=1&limit=3")
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert len(payload["items"]) == 3
+    assert payload["counts"] == {"open": 2, "closed": 1}

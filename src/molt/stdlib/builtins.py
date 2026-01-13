@@ -57,6 +57,10 @@ __all__ = [
     "bytearray",
     "memoryview",
     "iter",
+    "map",
+    "filter",
+    "zip",
+    "reversed",
     "next",
     "aiter",
     "anext",
@@ -111,6 +115,10 @@ bytes = bytes
 bytearray = bytearray
 memoryview = memoryview
 iter = iter
+map = map
+filter = filter
+zip = zip
+reversed = reversed
 next = next
 aiter = aiter
 anext = anext

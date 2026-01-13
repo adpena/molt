@@ -442,6 +442,11 @@ const typeName = (val) => {
     if (obj.type === 'dict') return 'dict';
     if (obj.type === 'module') return 'module';
     if (obj.type === 'function') return 'function';
+    if (obj.type === 'map') return 'map';
+    if (obj.type === 'filter') return 'filter';
+    if (obj.type === 'zip') return 'zip';
+    if (obj.type === 'reversed') return 'reversed';
+    if (obj.type === 'call_iter') return 'callable_iterator';
   }
   if (isPtr(val) && !heap.has(val & POINTER_MASK)) {
     const clsBits = instanceClasses.get(ptrAddr(val));
@@ -643,6 +648,31 @@ const getEnumerate = (val) => {
   if (!obj || obj.type !== 'enumerate') return null;
   return obj;
 };
+const getCallIter = (val) => {
+  const obj = getObj(val);
+  if (!obj || obj.type !== 'call_iter') return null;
+  return obj;
+};
+const getReversed = (val) => {
+  const obj = getObj(val);
+  if (!obj || obj.type !== 'reversed') return null;
+  return obj;
+};
+const getZipIter = (val) => {
+  const obj = getObj(val);
+  if (!obj || obj.type !== 'zip') return null;
+  return obj;
+};
+const getMapIter = (val) => {
+  const obj = getObj(val);
+  if (!obj || obj.type !== 'map') return null;
+  return obj;
+};
+const getFilterIter = (val) => {
+  const obj = getObj(val);
+  if (!obj || obj.type !== 'filter') return null;
+  return obj;
+};
 const getDict = (val) => {
   const obj = getObj(val);
   if (!obj || obj.type !== 'dict') return null;
@@ -684,20 +714,186 @@ const iterNextInternal = (val) => {
   if (isGenerator(val)) {
     return generatorSend(val, boxNone());
   }
+  const callIter = getCallIter(val);
+  if (callIter) {
+    const value = callCallable0(callIter.callable);
+    if (exceptionPending() !== 0n) return boxNone();
+    if (isTruthyBits(baseImports.eq(value, callIter.sentinel))) {
+      return tupleFromArray([boxNone(), boxBool(true)]);
+    }
+    return tupleFromArray([value, boxBool(false)]);
+  }
+  const mapIter = getMapIter(val);
+  if (mapIter) {
+    const vals = [];
+    for (const iterBits of mapIter.iters) {
+      const pair = iterNextInternal(iterBits);
+      const tuple = getTuple(pair);
+      if (!tuple || tuple.items.length < 2) {
+        throw new Error('TypeError: object is not an iterator');
+      }
+      const doneBits = tuple.items[1];
+      if (isTruthyBits(doneBits)) {
+        return tupleFromArray([boxNone(), boxBool(true)]);
+      }
+      vals.push(tuple.items[0]);
+    }
+    let res = boxNone();
+    if (vals.length === 1) {
+      res = callCallable1(mapIter.func, vals[0]);
+    } else {
+      const builder = baseImports.callargs_new(boxInt(vals.length), boxInt(0));
+      for (const valBits of vals) {
+        baseImports.callargs_push_pos(builder, valBits);
+      }
+      res = baseImports.call_bind(mapIter.func, builder);
+    }
+    if (exceptionPending() !== 0n) return boxNone();
+    return tupleFromArray([res, boxBool(false)]);
+  }
+  const filterIter = getFilterIter(val);
+  if (filterIter) {
+    while (true) {
+      const pair = iterNextInternal(filterIter.iterBits);
+      const tuple = getTuple(pair);
+      if (!tuple || tuple.items.length < 2) {
+        throw new Error('TypeError: object is not an iterator');
+      }
+      const doneBits = tuple.items[1];
+      if (isTruthyBits(doneBits)) {
+        return tupleFromArray([boxNone(), boxBool(true)]);
+      }
+      const valBits = tuple.items[0];
+      let keep = false;
+      if (isNone(filterIter.func)) {
+        keep = isTruthyBits(valBits);
+      } else {
+        const pred = callCallable1(filterIter.func, valBits);
+        if (exceptionPending() !== 0n) return boxNone();
+        keep = isTruthyBits(pred);
+      }
+      if (keep) {
+        return tupleFromArray([valBits, boxBool(false)]);
+      }
+    }
+  }
+  const zipIter = getZipIter(val);
+  if (zipIter) {
+    if (zipIter.iters.length === 0) {
+      return tupleFromArray([boxNone(), boxBool(true)]);
+    }
+    const vals = [];
+    for (const iterBits of zipIter.iters) {
+      const pair = iterNextInternal(iterBits);
+      const tuple = getTuple(pair);
+      if (!tuple || tuple.items.length < 2) {
+        throw new Error('TypeError: object is not an iterator');
+      }
+      const doneBits = tuple.items[1];
+      if (isTruthyBits(doneBits)) {
+        return tupleFromArray([boxNone(), boxBool(true)]);
+      }
+      vals.push(tuple.items[0]);
+    }
+    const tupleBits = tupleFromArray(vals);
+    return tupleFromArray([tupleBits, boxBool(false)]);
+  }
+  const revIter = getReversed(val);
+  if (revIter) {
+    const target = revIter.target;
+    const list = getList(target);
+    const tup = getTuple(target);
+    const dict = getDict(target);
+    const bytes = getBytes(target);
+    const bytearray = getBytearray(target);
+    const strVal = getStrObj(target);
+    if (list || tup) {
+      const items = list ? list.items : tup.items;
+      const idx = Math.min(revIter.idx, items.length);
+      if (idx === 0) {
+        return tupleFromArray([boxNone(), boxBool(true)]);
+      }
+      const value = items[idx - 1];
+      revIter.idx = idx - 1;
+      return tupleFromArray([value, boxBool(false)]);
+    }
+    if (bytes || bytearray) {
+      const data = bytes ? bytes.data : bytearray.data;
+      const idx = Math.min(revIter.idx, data.length);
+      if (idx === 0) {
+        return tupleFromArray([boxNone(), boxBool(true)]);
+      }
+      const value = boxInt(data[idx - 1]);
+      revIter.idx = idx - 1;
+      return tupleFromArray([value, boxBool(false)]);
+    }
+    if (dict) {
+      const idx = Math.min(revIter.idx, dict.entries.length);
+      if (idx === 0) {
+        return tupleFromArray([boxNone(), boxBool(true)]);
+      }
+      const value = dict.entries[idx - 1][0];
+      revIter.idx = idx - 1;
+      return tupleFromArray([value, boxBool(false)]);
+    }
+    if (strVal !== null) {
+      const chars = Array.from(strVal);
+      const idx = Math.min(revIter.idx, chars.length);
+      if (idx === 0) {
+        return tupleFromArray([boxNone(), boxBool(true)]);
+      }
+      const value = boxPtr({ type: 'str', value: chars[idx - 1] });
+      revIter.idx = idx - 1;
+      return tupleFromArray([value, boxBool(false)]);
+    }
+    return boxNone();
+  }
   const iter = getIter(val);
   if (!iter) return boxNone();
   const target = iter.target;
   const list = getList(target);
   const tup = getTuple(target);
   const setLike = getSetLike(target);
-  const items = list ? list.items : tup ? tup.items : setLike ? [...setLike.items] : null;
-  if (!items) return boxNone();
-  if (iter.idx >= items.length) {
-    return tupleFromArray([boxNone(), boxBool(true)]);
+  const dict = getDict(target);
+  const bytes = getBytes(target);
+  const bytearray = getBytearray(target);
+  const strVal = getStrObj(target);
+  if (list || tup || setLike) {
+    const items = list ? list.items : tup ? tup.items : [...setLike.items];
+    if (iter.idx >= items.length) {
+      return tupleFromArray([boxNone(), boxBool(true)]);
+    }
+    const value = items[iter.idx];
+    iter.idx += 1;
+    return tupleFromArray([value, boxBool(false)]);
   }
-  const value = items[iter.idx];
-  iter.idx += 1;
-  return tupleFromArray([value, boxBool(false)]);
+  if (dict) {
+    if (iter.idx >= dict.entries.length) {
+      return tupleFromArray([boxNone(), boxBool(true)]);
+    }
+    const value = dict.entries[iter.idx][0];
+    iter.idx += 1;
+    return tupleFromArray([value, boxBool(false)]);
+  }
+  if (bytes || bytearray) {
+    const data = bytes ? bytes.data : bytearray.data;
+    if (iter.idx >= data.length) {
+      return tupleFromArray([boxNone(), boxBool(true)]);
+    }
+    const value = boxInt(data[iter.idx]);
+    iter.idx += 1;
+    return tupleFromArray([value, boxBool(false)]);
+  }
+  if (strVal !== null) {
+    const chars = Array.from(strVal);
+    if (iter.idx >= chars.length) {
+      return tupleFromArray([boxNone(), boxBool(true)]);
+    }
+    const value = boxPtr({ type: 'str', value: chars[iter.idx] });
+    iter.idx += 1;
+    return tupleFromArray([value, boxBool(false)]);
+  }
+  return boxNone();
 };
 const dictKey = (bits) => {
   if (isTag(bits, TAG_NONE)) return 'n:None';
@@ -902,7 +1098,18 @@ const isTruthyBits = (val) => {
     if (obj && obj.type === 'bytearray') return obj.data.length !== 0;
     if (obj && obj.type === 'list') return obj.items.length !== 0;
     if (obj && obj.type === 'tuple') return obj.items.length !== 0;
-    if (obj && obj.type === 'iter') return true;
+    if (
+      obj &&
+      (obj.type === 'iter' ||
+        obj.type === 'enumerate' ||
+        obj.type === 'call_iter' ||
+        obj.type === 'reversed' ||
+        obj.type === 'zip' ||
+        obj.type === 'map' ||
+        obj.type === 'filter')
+    ) {
+      return true;
+    }
   }
   return false;
 };
@@ -3191,6 +3398,15 @@ BASE_IMPORTS = """\
     if (enumObj) {
       return val;
     }
+    if (
+      getCallIter(val) ||
+      getReversed(val) ||
+      getZipIter(val) ||
+      getMapIter(val) ||
+      getFilterIter(val)
+    ) {
+      return val;
+    }
     const list = getList(val);
     if (list) {
       return boxPtr({ type: 'iter', target: val, idx: 0 });
@@ -3203,7 +3419,28 @@ BASE_IMPORTS = """\
     if (setLike) {
       return boxPtr({ type: 'iter', target: val, idx: 0 });
     }
+    const dict = getDict(val);
+    if (dict) {
+      return boxPtr({ type: 'iter', target: val, idx: 0 });
+    }
+    const bytes = getBytes(val);
+    if (bytes) {
+      return boxPtr({ type: 'iter', target: val, idx: 0 });
+    }
+    const bytearray = getBytearray(val);
+    if (bytearray) {
+      return boxPtr({ type: 'iter', target: val, idx: 0 });
+    }
+    if (getStrObj(val) !== null) {
+      return boxPtr({ type: 'iter', target: val, idx: 0 });
+    }
     return boxNone();
+  },
+  iter_sentinel: (callableBits, sentinelBits) => {
+    if (!isTruthyBits(baseImports.is_callable(callableBits))) {
+      throw new Error('TypeError: iter(v, w): v must be callable');
+    }
+    return boxPtr({ type: 'call_iter', callable: callableBits, sentinel: sentinelBits });
   },
   enumerate: (iterable, startBits, hasStartBits) => {
     let start = 0n;
@@ -3328,15 +3565,8 @@ BASE_IMPORTS = """\
   callargs_expand_star: (builder, iterable) => {
     const args = getCallArgs(builder);
     if (!args) return boxNone();
-    let iterBits = boxNone();
-    if (isGenerator(iterable)) {
-      iterBits = iterable;
-    } else if (getEnumerate(iterable)) {
-      iterBits = iterable;
-    } else if (getList(iterable) || getTuple(iterable) || getSetLike(iterable)) {
-      iterBits = boxPtr({ type: 'iter', target: iterable, idx: 0 });
-    }
-    if (isNone(iterBits)) {
+    const iterBits = baseImports.iter(iterable);
+    if (isTag(iterBits, TAG_NONE)) {
       throw new Error('TypeError: object is not iterable');
     }
     while (true) {
@@ -3610,9 +3840,199 @@ BASE_IMPORTS = """\
     if (bytearray) {
       return boxPtr({ type: 'bytes', data: Uint8Array.from(bytearray.data) });
     }
-    return boxNone();
+    if (getStrObj(val) !== null) {
+      throw new Error('TypeError: string argument without an encoding');
+    }
+    const emitRangeError = () => {
+      throw new Error('ValueError: bytes must be in range(0, 256)');
+    };
+    const toCount = (bits) => {
+      const value = getBigIntValue(bits);
+      if (value === null) return null;
+      if (value < 0n) {
+        throw new Error('ValueError: negative count');
+      }
+      if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new Error("OverflowError: cannot fit 'int' into an index-sized integer");
+      }
+      return Number(value);
+    };
+    const byteFromItem = (itemBits) => {
+      let value = getBigIntValue(itemBits);
+      if (value === null) {
+        const indexAttr = lookupAttr(itemBits, '__index__');
+        if (indexAttr !== undefined) {
+          const res = callCallable0(indexAttr);
+          if (exceptionPending() !== 0n) return null;
+          value = getBigIntValue(res);
+          if (value === null) {
+            throw new Error(
+              `TypeError: __index__ returned non-int (type ${typeName(res)})`,
+            );
+          }
+        }
+      }
+      if (value === null) {
+        throw new Error(
+          `TypeError: '${typeName(itemBits)}' object cannot be interpreted as an integer`,
+        );
+      }
+      if (value < 0n || value > 255n) {
+        emitRangeError();
+      }
+      return Number(value);
+    };
+    const directCount = toCount(val);
+    if (directCount !== null) {
+      return boxPtr({ type: 'bytes', data: new Uint8Array(directCount) });
+    }
+    const indexAttr = lookupAttr(val, '__index__');
+    if (indexAttr !== undefined) {
+      const res = callCallable0(indexAttr);
+      if (exceptionPending() !== 0n) return boxNone();
+      const count = toCount(res);
+      if (count === null) {
+        throw new Error(
+          `TypeError: __index__ returned non-int (type ${typeName(res)})`,
+        );
+      }
+      return boxPtr({ type: 'bytes', data: new Uint8Array(count) });
+    }
+    const list = getList(val);
+    const tuple = getTuple(val);
+    if (list || tuple) {
+      const items = list ? list.items : tuple.items;
+      const out = [];
+      for (const item of items) {
+        const byte = byteFromItem(item);
+        if (byte === null) return boxNone();
+        out.push(byte);
+      }
+      return boxPtr({ type: 'bytes', data: Uint8Array.from(out) });
+    }
+    const iterBits = baseImports.iter(val);
+    if (isTag(iterBits, TAG_NONE)) {
+      throw new Error(`TypeError: cannot convert '${typeName(val)}' object to bytes`);
+    }
+    const out = [];
+    while (true) {
+      const pairBits = baseImports.iter_next(iterBits);
+      const pair = getTuple(pairBits);
+      if (!pair || pair.items.length < 2) {
+        throw new Error('TypeError: object is not an iterator');
+      }
+      const doneBits = pair.items[1];
+      if (isTruthyBits(doneBits)) {
+        break;
+      }
+      const byte = byteFromItem(pair.items[0]);
+      if (byte === null) return boxNone();
+      out.push(byte);
+    }
+    return boxPtr({ type: 'bytes', data: Uint8Array.from(out) });
   },
-  bytearray_from_obj: () => boxNone(),
+  bytearray_from_obj: (val) => {
+    const bytes = getBytes(val);
+    if (bytes) {
+      return boxPtr({ type: 'bytearray', data: Uint8Array.from(bytes.data) });
+    }
+    const bytearray = getBytearray(val);
+    if (bytearray) {
+      return boxPtr({ type: 'bytearray', data: Uint8Array.from(bytearray.data) });
+    }
+    if (getStrObj(val) !== null) {
+      throw new Error('TypeError: string argument without an encoding');
+    }
+    const emitRangeError = () => {
+      throw new Error('ValueError: byte must be in range(0, 256)');
+    };
+    const toCount = (bits) => {
+      const value = getBigIntValue(bits);
+      if (value === null) return null;
+      if (value < 0n) {
+        throw new Error('ValueError: negative count');
+      }
+      if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new Error("OverflowError: cannot fit 'int' into an index-sized integer");
+      }
+      return Number(value);
+    };
+    const byteFromItem = (itemBits) => {
+      let value = getBigIntValue(itemBits);
+      if (value === null) {
+        const indexAttr = lookupAttr(itemBits, '__index__');
+        if (indexAttr !== undefined) {
+          const res = callCallable0(indexAttr);
+          if (exceptionPending() !== 0n) return null;
+          value = getBigIntValue(res);
+          if (value === null) {
+            throw new Error(
+              `TypeError: __index__ returned non-int (type ${typeName(res)})`,
+            );
+          }
+        }
+      }
+      if (value === null) {
+        throw new Error(
+          `TypeError: '${typeName(itemBits)}' object cannot be interpreted as an integer`,
+        );
+      }
+      if (value < 0n || value > 255n) {
+        emitRangeError();
+      }
+      return Number(value);
+    };
+    const directCount = toCount(val);
+    if (directCount !== null) {
+      return boxPtr({ type: 'bytearray', data: new Uint8Array(directCount) });
+    }
+    const indexAttr = lookupAttr(val, '__index__');
+    if (indexAttr !== undefined) {
+      const res = callCallable0(indexAttr);
+      if (exceptionPending() !== 0n) return boxNone();
+      const count = toCount(res);
+      if (count === null) {
+        throw new Error(
+          `TypeError: __index__ returned non-int (type ${typeName(res)})`,
+        );
+      }
+      return boxPtr({ type: 'bytearray', data: new Uint8Array(count) });
+    }
+    const list = getList(val);
+    const tuple = getTuple(val);
+    if (list || tuple) {
+      const items = list ? list.items : tuple.items;
+      const out = [];
+      for (const item of items) {
+        const byte = byteFromItem(item);
+        if (byte === null) return boxNone();
+        out.push(byte);
+      }
+      return boxPtr({ type: 'bytearray', data: Uint8Array.from(out) });
+    }
+    const iterBits = baseImports.iter(val);
+    if (isTag(iterBits, TAG_NONE)) {
+      throw new Error(
+        `TypeError: cannot convert '${typeName(val)}' object to bytearray`,
+      );
+    }
+    const out = [];
+    while (true) {
+      const pairBits = baseImports.iter_next(iterBits);
+      const pair = getTuple(pairBits);
+      if (!pair || pair.items.length < 2) {
+        throw new Error('TypeError: object is not an iterator');
+      }
+      const doneBits = pair.items[1];
+      if (isTruthyBits(doneBits)) {
+        break;
+      }
+      const byte = byteFromItem(pair.items[0]);
+      if (byte === null) return boxNone();
+      out.push(byte);
+    }
+    return boxPtr({ type: 'bytearray', data: Uint8Array.from(out) });
+  },
   bytes_from_str: (val, encodingBits, errorsBits) => {
     const text = getStrObj(val);
     if (text === null) return boxNone();
@@ -3842,7 +4262,9 @@ BASE_IMPORTS = """\
       }
     }
     if (codePoint === null) {
-      throw new Error(`TypeError: an integer is required (got type ${typeName(val)})`);
+      throw new Error(
+        `TypeError: '${typeName(val)}' object cannot be interpreted as an integer`,
+      );
     }
     if (codePoint < 0n || codePoint > 0x10ffffn) {
       throw new Error('ValueError: chr() arg not in range(0x110000)');
@@ -4136,6 +4558,77 @@ BASE_IMPORTS = """\
       compareTypeError('<', error.left, error.right);
     }
     return listFromArray(items.map((item) => item.val));
+  },
+  map_builtin: (funcBits, iterablesBits) => {
+    const iterables = getTuple(iterablesBits);
+    if (!iterables) {
+      throw new Error('TypeError: map expects a tuple');
+    }
+    if (iterables.items.length === 0) {
+      throw new Error('TypeError: map() must have at least two arguments');
+    }
+    const iters = [];
+    for (const iterable of iterables.items) {
+      const iterBits = baseImports.iter(iterable);
+      if (isTag(iterBits, TAG_NONE)) {
+        throw new Error('TypeError: object is not iterable');
+      }
+      iters.push(iterBits);
+    }
+    return boxPtr({ type: 'map', func: funcBits, iters });
+  },
+  filter_builtin: (funcBits, iterableBits) => {
+    const iterBits = baseImports.iter(iterableBits);
+    if (isTag(iterBits, TAG_NONE)) {
+      throw new Error('TypeError: object is not iterable');
+    }
+    return boxPtr({ type: 'filter', func: funcBits, iterBits });
+  },
+  zip_builtin: (iterablesBits) => {
+    const iterables = getTuple(iterablesBits);
+    if (!iterables) {
+      throw new Error('TypeError: zip expects a tuple');
+    }
+    const iters = [];
+    for (const iterable of iterables.items) {
+      const iterBits = baseImports.iter(iterable);
+      if (isTag(iterBits, TAG_NONE)) {
+        throw new Error('TypeError: object is not iterable');
+      }
+      iters.push(iterBits);
+    }
+    return boxPtr({ type: 'zip', iters });
+  },
+  reversed_builtin: (seqBits) => {
+    const list = getList(seqBits);
+    if (list) {
+      return boxPtr({ type: 'reversed', target: seqBits, idx: list.items.length });
+    }
+    const tup = getTuple(seqBits);
+    if (tup) {
+      return boxPtr({ type: 'reversed', target: seqBits, idx: tup.items.length });
+    }
+    const bytes = getBytes(seqBits);
+    if (bytes) {
+      return boxPtr({ type: 'reversed', target: seqBits, idx: bytes.data.length });
+    }
+    const bytearray = getBytearray(seqBits);
+    if (bytearray) {
+      return boxPtr({ type: 'reversed', target: seqBits, idx: bytearray.data.length });
+    }
+    const dict = getDict(seqBits);
+    if (dict) {
+      return boxPtr({ type: 'reversed', target: seqBits, idx: dict.entries.length });
+    }
+    const strVal = getStrObj(seqBits);
+    if (strVal !== null) {
+      return boxPtr({
+        type: 'reversed',
+        target: seqBits,
+        idx: Array.from(strVal).length,
+      });
+    }
+    throw new Error(`TypeError: '${typeName(seqBits)}' object is not reversible`);
   },
   context_enter: (val) => val,
   context_exit: () => boxBool(false),

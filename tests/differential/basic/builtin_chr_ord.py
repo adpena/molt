@@ -31,6 +31,11 @@ except ValueError as exc:
     print(f"chr-range:{exc}")
 
 try:
+    chr(IndexObj(0x110000))
+except ValueError as exc:
+    print(f"chr-index-range:{exc}")
+
+try:
     chr("x")
 except TypeError as exc:
     print(f"chr-type:{exc}")

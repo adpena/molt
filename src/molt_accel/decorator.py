@@ -6,7 +6,7 @@ import threading
 from typing import Any, Callable
 
 from importlib.resources import files
-from molt_accel.client import CancelCheck, Hook, MoltClient
+from molt_accel.client import CancelCheck, Hook, MoltClient, MoltClientPool
 from molt_accel.contracts import build_list_items_payload
 from molt_accel.errors import (
     MoltAccelError,
@@ -62,25 +62,33 @@ def raw_json_response_factory(payload: Any, status: int) -> Any:
         return {"status": status, "payload": payload}
 
 
-_SHARED_CLIENT: MoltClient | None = None
+_SHARED_CLIENT: MoltClient | MoltClientPool | None = None
 _SHARED_CLIENT_LOCK = threading.Lock()
 
 
-def _build_client() -> MoltClient:
+def _pool_size_from_env() -> int:
+    raw = os.environ.get("MOLT_ACCEL_POOL_SIZE")
+    if raw is None or raw == "":
+        return 1
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 1
+    return max(1, value)
+
+
+def _resolve_worker_cmd() -> tuple[list[str], str | None]:
     cmd = os.environ.get("MOLT_WORKER_CMD")
     wire = os.environ.get("MOLT_WORKER_WIRE") or os.environ.get("MOLT_WIRE")
     if cmd:
-        return MoltClient(worker_cmd=cmd.split(), wire=wire)
+        return cmd.split(), wire
 
     # Fallback: try to locate a `molt-worker` binary in PATH and use the packaged demo exports manifest.
     worker_bin = shutil.which("molt-worker") or shutil.which("molt_worker")
     if worker_bin:
         try:
             exports = files("molt_accel").joinpath("default_exports.json")
-            return MoltClient(
-                worker_cmd=[worker_bin, "--stdio", "--exports", str(exports)],
-                wire=wire,
-            )
+            return [worker_bin, "--stdio", "--exports", str(exports)], wire
         except Exception as exc:  # pragma: no cover - defensive
             raise MoltWorkerUnavailable(
                 "Failed to locate default exports manifest"
@@ -91,9 +99,19 @@ def _build_client() -> MoltClient:
     )
 
 
+def _build_client() -> MoltClient:
+    cmd, wire = _resolve_worker_cmd()
+    return MoltClient(worker_cmd=cmd, wire=wire)
+
+
+def _build_client_pool(pool_size: int) -> MoltClientPool:
+    cmd, wire = _resolve_worker_cmd()
+    return MoltClientPool(worker_cmd=cmd, wire=wire, pool_size=pool_size)
+
+
 def _resolve_client(
-    client: MoltClient | None, client_mode: ClientMode | None
-) -> tuple[MoltClient, bool]:
+    client: MoltClient | MoltClientPool | None, client_mode: ClientMode | None
+) -> tuple[MoltClient | MoltClientPool, bool]:
     if client is not None:
         return client, False
 
@@ -105,7 +123,11 @@ def _resolve_client(
         global _SHARED_CLIENT
         with _SHARED_CLIENT_LOCK:
             if _SHARED_CLIENT is None:
-                _SHARED_CLIENT = _build_client()
+                pool_size = _pool_size_from_env()
+                if pool_size > 1:
+                    _SHARED_CLIENT = _build_client_pool(pool_size)
+                else:
+                    _SHARED_CLIENT = _build_client()
             return _SHARED_CLIENT, False
 
     return _build_client(), True
@@ -134,7 +156,7 @@ def molt_offload(
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             request = args[0] if args else None
             build_payload = payload_builder or build_list_items_payload
-            active_client: MoltClient | None = None
+            active_client: MoltClient | MoltClientPool
             close_after = False
             build_response = response_factory or _default_response_factory
             poll_cancel: CancelCheck | None = None

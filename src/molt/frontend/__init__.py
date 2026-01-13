@@ -85,6 +85,10 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
         "molt_round_builtin", ("value", "ndigits"), (_MOLT_MISSING,)
     ),
     "iter": BuiltinFuncSpec("molt_iter", ("obj",)),
+    "map": BuiltinFuncSpec("molt_map_builtin", ("func",), vararg="iterables"),
+    "filter": BuiltinFuncSpec("molt_filter_builtin", ("func", "iterable")),
+    "zip": BuiltinFuncSpec("molt_zip_builtin", (), vararg="iterables"),
+    "reversed": BuiltinFuncSpec("molt_reversed_builtin", ("seq",)),
     "any": BuiltinFuncSpec("molt_any_builtin", ("iterable",)),
     "all": BuiltinFuncSpec("molt_all_builtin", ("iterable",)),
     "sum": BuiltinFuncSpec(
@@ -6195,8 +6199,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             res = MoltValue(self.next_var(), type_hint=res_hint)
             self.emit(MoltOp(kind="CALL", args=[func_symbol] + args, result=res))
             return res
+        callargs = self._emit_call_args_builder(node)
         res = MoltValue(self.next_var(), type_hint=res_hint)
-        self.emit(MoltOp(kind="CALL_FUNC", args=[callee] + args, result=res))
+        self.emit(MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res))
         return res
 
     def visit_Call(self, node: ast.Call) -> Any:
@@ -8398,7 +8403,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
             if target_info and str(target_info.type_hint).startswith("Func:"):
                 target_name = target_info.type_hint.split(":")[1]
-                if needs_bind:
+                direct_ok = target_name in self.func_default_specs
+                if needs_bind or not direct_ok:
                     callargs = self._emit_call_args_builder(node)
                     callee = target_info
                     if (
@@ -8459,6 +8465,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         callee.type_hint, str
                     ) and callee.type_hint.startswith("Func:"):
                         func_symbol = callee.type_hint.split(":", 1)[1]
+                        if func_symbol not in self.func_default_specs:
+                            res = MoltValue(self.next_var(), type_hint="Any")
+                            callargs = self._emit_call_args_builder(node)
+                            self.emit(
+                                MoltOp(
+                                    kind="CALL_BIND",
+                                    args=[callee, callargs],
+                                    result=res,
+                                )
+                            )
+                            return res
                         args, func_obj = self._emit_direct_call_args_for_symbol(
                             func_symbol, node, func_obj=callee
                         )
@@ -8476,6 +8493,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         callee.type_hint, str
                     ) and callee.type_hint.startswith("ClosureFunc:"):
                         func_symbol = callee.type_hint.split(":", 1)[1]
+                        if func_symbol not in self.func_default_specs:
+                            res = MoltValue(self.next_var(), type_hint="Any")
+                            callargs = self._emit_call_args_builder(node)
+                            self.emit(
+                                MoltOp(
+                                    kind="CALL_BIND",
+                                    args=[callee, callargs],
+                                    result=res,
+                                )
+                            )
+                            return res
                         args, _ = self._emit_direct_call_args_for_symbol(
                             func_symbol, node, func_obj=callee
                         )
@@ -8833,6 +8861,69 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                 )
                 return res
+            if func_id == "map":
+                if (
+                    any(isinstance(arg, ast.Starred) for arg in node.args)
+                    or node.keywords
+                ):
+                    callee = self._emit_builtin_function(func_id)
+                    res = MoltValue(self.next_var(), type_hint="Any")
+                    callargs = self._emit_call_args_builder(node)
+                    self.emit(
+                        MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res)
+                    )
+                    return res
+                if len(node.args) < 2:
+                    return self._emit_type_error_value(
+                        "map() must have at least two arguments"
+                    )
+                func_val = self.visit(node.args[0])
+                if func_val is None:
+                    raise NotImplementedError("Unsupported map function")
+                iter_vals: list[MoltValue] = []
+                for expr in node.args[1:]:
+                    iter_val = self.visit(expr)
+                    if iter_val is None:
+                        raise NotImplementedError("Unsupported map iterable")
+                    iter_vals.append(iter_val)
+                iter_tuple = MoltValue(self.next_var(), type_hint="tuple")
+                self.emit(MoltOp(kind="TUPLE_NEW", args=iter_vals, result=iter_tuple))
+                callee = self._emit_builtin_function(func_id)
+                res = MoltValue(self.next_var(), type_hint="Any")
+                self.emit(
+                    MoltOp(
+                        kind="CALL_FUNC",
+                        args=[callee, func_val, iter_tuple],
+                        result=res,
+                    )
+                )
+                return res
+            if func_id == "zip":
+                if (
+                    any(isinstance(arg, ast.Starred) for arg in node.args)
+                    or node.keywords
+                ):
+                    callee = self._emit_builtin_function(func_id)
+                    res = MoltValue(self.next_var(), type_hint="Any")
+                    callargs = self._emit_call_args_builder(node)
+                    self.emit(
+                        MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res)
+                    )
+                    return res
+                iter_vals: list[MoltValue] = []
+                for expr in node.args:
+                    iter_val = self.visit(expr)
+                    if iter_val is None:
+                        raise NotImplementedError("Unsupported zip iterable")
+                    iter_vals.append(iter_val)
+                iter_tuple = MoltValue(self.next_var(), type_hint="tuple")
+                self.emit(MoltOp(kind="TUPLE_NEW", args=iter_vals, result=iter_tuple))
+                callee = self._emit_builtin_function(func_id)
+                res = MoltValue(self.next_var(), type_hint="Any")
+                self.emit(
+                    MoltOp(kind="CALL_FUNC", args=[callee, iter_tuple], result=res)
+                )
+                return res
             if func_id in {"min", "max"}:
                 if any(isinstance(arg, ast.Starred) for arg in node.args) or any(
                     kw.arg is None for kw in node.keywords
@@ -8995,12 +9086,57 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
                 return res
             if func_id == "iter":
-                if len(node.args) != 1:
-                    raise NotImplementedError("iter expects 1 argument")
-                iterable = self.visit(node.args[0])
-                if iterable is None:
-                    raise NotImplementedError("Unsupported iterable in iter()")
-                return self._emit_iter_new(iterable)
+                if node.keywords:
+                    return self._emit_type_error_value(
+                        "iter() takes no keyword arguments", "iter"
+                    )
+                if len(node.args) == 1:
+                    iterable = self.visit(node.args[0])
+                    if iterable is None:
+                        raise NotImplementedError("Unsupported iterable in iter()")
+                    return self._emit_iter_new(iterable)
+                if len(node.args) == 2:
+                    callable_val = self.visit(node.args[0])
+                    sentinel_val = self.visit(node.args[1])
+                    if callable_val is None or sentinel_val is None:
+                        raise NotImplementedError("Unsupported iter() arguments")
+                    callee = MoltValue(self.next_var(), type_hint="function")
+                    self.emit(
+                        MoltOp(
+                            kind="BUILTIN_FUNC",
+                            args=["molt_iter_sentinel", 2],
+                            result=callee,
+                        )
+                    )
+                    self._emit_function_metadata(
+                        callee,
+                        name="iter",
+                        qualname="iter",
+                        posonly_params=["callable", "sentinel"],
+                        pos_or_kw_params=[],
+                        kwonly_params=[],
+                        vararg=None,
+                        varkw=None,
+                        default_exprs=[],
+                        kw_default_exprs=[],
+                        docstring=None,
+                        module_override="builtins",
+                    )
+                    res = MoltValue(self.next_var(), type_hint="iter")
+                    self.emit(
+                        MoltOp(
+                            kind="CALL_FUNC",
+                            args=[callee, callable_val, sentinel_val],
+                            result=res,
+                        )
+                    )
+                    return res
+                if not node.args:
+                    return self._emit_type_error_value(
+                        "iter expected 1 argument, got 0", "iter"
+                    )
+                msg = f"iter expected at most 2 arguments, got {len(node.args)}"
+                return self._emit_type_error_value(msg, "iter")
             if func_id == "list":
                 if len(node.args) > 1:
                     raise NotImplementedError("list expects 0 or 1 arguments")

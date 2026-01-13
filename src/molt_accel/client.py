@@ -399,3 +399,88 @@ class MoltClient:
         start = time.monotonic()
         self.call(entry="__ping__", payload=b"", codec="raw", timeout_ms=timeout_ms)
         return time.monotonic() - start
+
+
+class MoltClientPool:
+    """Round-robin pool of Molt workers for higher concurrency."""
+
+    def __init__(
+        self,
+        *,
+        worker_cmd: list[str],
+        pool_size: int,
+        wire: str | None = None,
+        max_frame_size: int = 64 * 1024 * 1024,
+        restart_on_failure: bool = True,
+        max_restarts: int = 1,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> None:
+        if pool_size < 1:
+            raise ValueError("pool_size must be >= 1")
+        self._clients = [
+            MoltClient(
+                worker_cmd=worker_cmd,
+                wire=wire,
+                max_frame_size=max_frame_size,
+                restart_on_failure=restart_on_failure,
+                max_restarts=max_restarts,
+                env=env,
+                cwd=cwd,
+            )
+            for _ in range(pool_size)
+        ]
+        self._lock = threading.Lock()
+        self._next_index = 0
+
+    @property
+    def clients(self) -> tuple[MoltClient, ...]:
+        return tuple(self._clients)
+
+    def __enter__(self) -> "MoltClientPool":
+        for client in self._clients:
+            client.__enter__()
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        self.close()
+
+    def close(self) -> None:
+        for client in self._clients:
+            client.close()
+
+    def call(
+        self,
+        *,
+        entry: str,
+        payload: Any,
+        codec: str = "msgpack",
+        timeout_ms: int = 250,
+        idempotent: bool = False,
+        decode_response: bool = True,
+        before_send: Hook | None = None,
+        after_recv: Hook | None = None,
+        metrics_hook: Hook | None = None,
+        cancel_check: CancelCheck | None = None,
+    ) -> Any:
+        with self._lock:
+            client = self._clients[self._next_index]
+            self._next_index = (self._next_index + 1) % len(self._clients)
+        return client.call(
+            entry=entry,
+            payload=payload,
+            codec=codec,
+            timeout_ms=timeout_ms,
+            idempotent=idempotent,
+            decode_response=decode_response,
+            before_send=before_send,
+            after_recv=after_recv,
+            metrics_hook=metrics_hook,
+            cancel_check=cancel_check,
+        )
+
+    def ping(self, timeout_ms: int = 100) -> float:
+        with self._lock:
+            client = self._clients[self._next_index]
+            self._next_index = (self._next_index + 1) % len(self._clients)
+        return client.ping(timeout_ms=timeout_ms)

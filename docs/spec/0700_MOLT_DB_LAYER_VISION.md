@@ -4,7 +4,7 @@
 **Priority:** P0 for service usefulness
 **Audience:** runtime engineers, DB engineers, AI coding agents
 **Goal:** Deliver a Molt-native async DB layer (starting with Postgres) that enables Go-class concurrency for web services and provides a practical Django adapter/migration path—without rewriting the Django ORM.
-**Implementation status:** `runtime/molt-db` now contains a bounded pool skeleton (sync, connection-agnostic). Async drivers, Postgres protocol, and cancellation-aware query execution are still pending.
+**Implementation status:** `runtime/molt-db` contains a bounded pool skeleton (sync, connection-agnostic), an async pool primitive (feature-gated), and a native-only SQLite connector used by `molt-worker` for real DB reads. Async drivers, Postgres protocol, and cancellation-aware query execution are still pending.
 
 ---
 
@@ -64,4 +64,5 @@ This yields most of the real-world performance and concurrency wins at a fractio
 - `molt_db` crate (Rust)
 - Molt runtime bindings (MIR ops or runtime calls)
 - `molt_sql` query builder (subset)
-- `molt_django_adapter` (Python package) using IPC to call `molt_worker` DB endpoints (Phase 1)
+- `molt_db_adapter` (Python package) using IPC to call `molt_worker` DB endpoints (Phase 1)
+- Framework-agnostic DB IPC contract (`docs/spec/0915_MOLT_DB_IPC_CONTRACT.md`) to share payload builders across Django/Flask/FastAPI.

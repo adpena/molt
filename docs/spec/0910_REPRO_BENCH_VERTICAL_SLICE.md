@@ -107,8 +107,9 @@ docs/spec/0910_*.md          # these specs
 - must provide a markdown summary output for easy sharing
 
 **Implementation note:** the Django demo uses `molt_accel` metrics hooks to emit per-request
-metrics (queue_ms, exec_ms, queue_depth) into a JSONL file configured by
-`MOLT_DEMO_METRICS_PATH`; the bench runner aggregates these into the JSON+markdown outputs.
+metrics (queue_us/queue_ms, handler_us, exec_us/exec_ms, decode_us, queue_depth) into a JSONL
+file configured by `MOLT_DEMO_METRICS_PATH`; the bench runner aggregates these into the
+JSON+markdown outputs.
 
 ---
 

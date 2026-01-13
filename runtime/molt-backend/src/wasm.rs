@@ -361,6 +361,7 @@ impl WasmBackend {
         add_import("recursion_guard_exit", 8, &mut self.import_ids);
         add_import("round_builtin", 3, &mut self.import_ids);
         add_import("enumerate_builtin", 3, &mut self.import_ids);
+        add_import("iter_sentinel", 3, &mut self.import_ids);
         add_import("next_builtin", 3, &mut self.import_ids);
         add_import("any_builtin", 2, &mut self.import_ids);
         add_import("all_builtin", 2, &mut self.import_ids);
@@ -368,6 +369,10 @@ impl WasmBackend {
         add_import("min_builtin", 5, &mut self.import_ids);
         add_import("max_builtin", 5, &mut self.import_ids);
         add_import("sorted_builtin", 5, &mut self.import_ids);
+        add_import("map_builtin", 3, &mut self.import_ids);
+        add_import("filter_builtin", 3, &mut self.import_ids);
+        add_import("zip_builtin", 2, &mut self.import_ids);
+        add_import("reversed_builtin", 2, &mut self.import_ids);
         add_import("getattr_builtin", 5, &mut self.import_ids);
         add_import("anext_builtin", 3, &mut self.import_ids);
         add_import("print_builtin", 2, &mut self.import_ids);
@@ -607,12 +612,13 @@ impl WasmBackend {
             .import("env", "memory", EntityType::Memory(memory_ty));
         self.exports.export("molt_memory", ExportKind::Memory, 0);
 
-        let builtin_table_funcs: [(&str, &str); 35] = [
+        let builtin_table_funcs: [(&str, &str); 40] = [
             ("molt_missing", "missing"),
             ("molt_repr_builtin", "repr_builtin"),
             ("molt_callable_builtin", "callable_builtin"),
             ("molt_round_builtin", "round_builtin"),
             ("molt_enumerate_builtin", "enumerate_builtin"),
+            ("molt_iter_sentinel", "iter_sentinel"),
             ("molt_next_builtin", "next_builtin"),
             ("molt_any_builtin", "any_builtin"),
             ("molt_all_builtin", "all_builtin"),
@@ -620,6 +626,10 @@ impl WasmBackend {
             ("molt_min_builtin", "min_builtin"),
             ("molt_max_builtin", "max_builtin"),
             ("molt_sorted_builtin", "sorted_builtin"),
+            ("molt_map_builtin", "map_builtin"),
+            ("molt_filter_builtin", "filter_builtin"),
+            ("molt_zip_builtin", "zip_builtin"),
+            ("molt_reversed_builtin", "reversed_builtin"),
             ("molt_getattr_builtin", "getattr_builtin"),
             ("molt_anext_builtin", "anext_builtin"),
             ("molt_print_builtin", "print_builtin"),

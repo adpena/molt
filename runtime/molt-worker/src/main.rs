@@ -19,7 +19,18 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use molt_db::{AcquireError, Pool, Pooled};
+use molt_db::{AcquireError, CancelToken, Pool, Pooled, SqliteConn, SqliteOpenMode};
+use rusqlite::{params_from_iter, types::Value};
+use sqlparser::ast::{
+    Expr as SqlExpr, GroupByExpr as SqlGroupByExpr, Ident as SqlIdent,
+    Query as SqlQuery, Select as SqlSelect, SelectItem as SqlSelectItem,
+    SetExpr as SqlSetExpr, Statement as SqlStatement, TableAlias as SqlTableAlias,
+    TableFactor as SqlTableFactor, TableWithJoins as SqlTableWithJoins,
+    Value as SqlValue, WildcardAdditionalOptions as SqlWildcardAdditionalOptions,
+};
+use sqlparser::dialect::PostgreSqlDialect;
+use sqlparser::parser::Parser;
+use tokio_postgres::types::{ToSql, Type};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WireCodec {
@@ -99,6 +110,134 @@ struct ListItemsRequest {
     cursor: Option<String>,
 }
 
+#[allow(dead_code)]
+#[derive(Deserialize)]
+struct DbQueryRequest {
+    #[serde(default)]
+    db_alias: Option<String>,
+    sql: String,
+    #[serde(default)]
+    params: DbParams,
+    #[serde(default)]
+    max_rows: Option<u32>,
+    #[serde(default)]
+    result_format: Option<String>,
+    #[serde(default)]
+    allow_write: Option<bool>,
+    #[serde(default)]
+    tag: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+enum DbParams {
+    Positional { values: Vec<DbParam> },
+    Named { values: Vec<DbNamedParam> },
+}
+
+impl Default for DbParams {
+    fn default() -> Self {
+        DbParams::Positional { values: Vec::new() }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum DbParam {
+    Raw(DbParamValue),
+    Typed {
+        value: DbParamValue,
+        #[serde(default)]
+        r#type: Option<String>,
+    },
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize)]
+struct DbNamedParam {
+    name: String,
+    #[serde(flatten)]
+    param: DbParam,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
+enum DbParamValue {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    String(String),
+    Bytes(Vec<u8>),
+}
+
+impl<'de> Deserialize<'de> for DbParamValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct DbParamVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for DbParamVisitor {
+            type Value = DbParamValue;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("null, bool, int, float, string, or bytes")
+            }
+
+            fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+                Ok(DbParamValue::Bool(value))
+            }
+
+            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+                Ok(DbParamValue::Int(value))
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                if value > i64::MAX as u64 {
+                    return Err(E::custom("integer out of range"));
+                }
+                Ok(DbParamValue::Int(value as i64))
+            }
+
+            fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E> {
+                Ok(DbParamValue::Float(value))
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(DbParamValue::String(value.to_string()))
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+                Ok(DbParamValue::String(value))
+            }
+
+            fn visit_bytes<E>(self, value: &[u8]) -> Result<Self::Value, E> {
+                Ok(DbParamValue::Bytes(value.to_vec()))
+            }
+
+            fn visit_byte_buf<E>(self, value: Vec<u8>) -> Result<Self::Value, E> {
+                Ok(DbParamValue::Bytes(value))
+            }
+
+            fn visit_none<E>(self) -> Result<Self::Value, E> {
+                Ok(DbParamValue::Null)
+            }
+
+            fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                Ok(DbParamValue::Null)
+            }
+        }
+
+        deserializer.deserialize_any(DbParamVisitor)
+    }
+}
+
 #[derive(Deserialize)]
 struct CancelRequest {
     request_id: u64,
@@ -127,15 +266,97 @@ struct ListItemsResponse {
     counts: CountSummary,
 }
 
+#[allow(dead_code)]
+#[derive(Serialize)]
+struct DbQueryResponse {
+    columns: Vec<String>,
+    rows: Vec<Vec<DbRowValue>>,
+    row_count: usize,
+}
+
+#[allow(dead_code)]
+#[derive(Serialize)]
+#[serde(untagged)]
+enum DbRowValue {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    String(String),
+    Bytes(ByteBuf),
+}
+
 struct DecodedRequest {
     envelope: RequestEnvelope,
     wire: WireCodec,
     queued_at: Instant,
+    decode_us: u64,
 }
 
 type CancelSet = Arc<Mutex<HashSet<u64>>>;
+#[allow(dead_code)]
+type AsyncCancelRegistry = Arc<CancelRegistry>;
 
-type DbPool = Arc<Pool<FakeDbConn>>;
+type DbPool = Arc<Pool<DbConn>>;
+
+struct CancelRegistry {
+    pending: Mutex<HashSet<u64>>,
+    tokens: Mutex<HashMap<u64, CancelToken>>,
+}
+
+#[allow(dead_code)]
+impl CancelRegistry {
+    fn new() -> Self {
+        Self {
+            pending: Mutex::new(HashSet::new()),
+            tokens: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn register(&self, request_id: u64) -> CancelToken {
+        let token = CancelToken::new();
+        {
+            let mut tokens = self.tokens.lock().unwrap();
+            tokens.insert(request_id, token.clone());
+        }
+        let cancelled = {
+            let mut pending = self.pending.lock().unwrap();
+            pending.remove(&request_id)
+        };
+        if cancelled {
+            token.cancel();
+        }
+        token
+    }
+
+    fn mark_cancelled(&self, request_id: u64) {
+        {
+            let mut pending = self.pending.lock().unwrap();
+            pending.insert(request_id);
+        }
+        let token = {
+            let tokens = self.tokens.lock().unwrap();
+            tokens.get(&request_id).cloned()
+        };
+        if let Some(token) = token {
+            token.cancel();
+        }
+    }
+
+    fn take_cancelled(&self, request_id: u64) -> bool {
+        let mut pending = self.pending.lock().unwrap();
+        pending.remove(&request_id)
+    }
+
+    fn clear(&self, request_id: u64) {
+        {
+            let mut tokens = self.tokens.lock().unwrap();
+            tokens.remove(&request_id);
+        }
+        let mut pending = self.pending.lock().unwrap();
+        pending.remove(&request_id);
+    }
+}
 
 #[derive(Clone)]
 struct WorkerContext {
@@ -163,6 +384,55 @@ struct ExecContext<'a> {
 struct ExecError {
     status: &'static str,
     message: String,
+}
+
+#[allow(dead_code)]
+enum PgParam {
+    Bool(bool),
+    Int2(i16),
+    Int4(i32),
+    Int8(i64),
+    Float4(f32),
+    Float8(f64),
+    String(String),
+    Bytes(Vec<u8>),
+    NullBool(Option<bool>),
+    NullInt2(Option<i16>),
+    NullInt4(Option<i32>),
+    NullInt8(Option<i64>),
+    NullFloat4(Option<f32>),
+    NullFloat8(Option<f64>),
+    NullString(Option<String>),
+    NullBytes(Option<Vec<u8>>),
+}
+
+#[allow(dead_code)]
+impl PgParam {
+    fn as_tosql(&self) -> &(dyn ToSql + Sync) {
+        match self {
+            PgParam::Bool(value) => value,
+            PgParam::Int2(value) => value,
+            PgParam::Int4(value) => value,
+            PgParam::Int8(value) => value,
+            PgParam::Float4(value) => value,
+            PgParam::Float8(value) => value,
+            PgParam::String(value) => value,
+            PgParam::Bytes(value) => value,
+            PgParam::NullBool(value) => value,
+            PgParam::NullInt2(value) => value,
+            PgParam::NullInt4(value) => value,
+            PgParam::NullInt8(value) => value,
+            PgParam::NullFloat4(value) => value,
+            PgParam::NullFloat8(value) => value,
+            PgParam::NullString(value) => value,
+            PgParam::NullBytes(value) => value,
+        }
+    }
+}
+
+enum DbConn {
+    Fake(FakeDbConn),
+    Sqlite(SqliteConn),
 }
 
 struct FakeDbConn;
@@ -238,19 +508,24 @@ fn write_frame<W: Write>(writer: &mut W, payload: &[u8]) -> io::Result<()> {
 }
 
 fn decode_request(bytes: &[u8]) -> Result<DecodedRequest, String> {
+    let start = Instant::now();
     if let Ok(env) = rmp_serde::from_slice::<RequestEnvelope>(bytes) {
+        let decode_us = start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
         return Ok(DecodedRequest {
             envelope: env,
             wire: WireCodec::Msgpack,
             queued_at: Instant::now(),
+            decode_us,
         });
     }
     let env = serde_json::from_slice::<RequestEnvelope>(bytes)
         .map_err(|err| format!("Invalid request: {err}"))?;
+    let decode_us = start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
     Ok(DecodedRequest {
         envelope: env,
         wire: WireCodec::Json,
         queued_at: Instant::now(),
+        decode_us,
     })
 }
 
@@ -312,7 +587,7 @@ fn acquire_connection(
     request_id: u64,
     exec_start: Instant,
     timeout: Option<Duration>,
-) -> Result<Pooled<FakeDbConn>, ExecError> {
+) -> Result<Pooled<DbConn>, ExecError> {
     check_timeout(exec_start, timeout)?;
     let remaining = timeout.map(|limit| limit.saturating_sub(exec_start.elapsed()));
     match pool.acquire_with_cancel(remaining, || is_cancelled(cancelled, request_id)) {
@@ -335,6 +610,7 @@ fn mark_cancelled(cancelled: &CancelSet, request_id: u64) {
 fn handle_cancel_request(
     envelope: &RequestEnvelope,
     cancelled: &CancelSet,
+    async_cancel: Option<&CancelRegistry>,
 ) -> Result<(), ExecError> {
     let payload = extract_payload(envelope).map_err(|err| ExecError {
         status: "InvalidInput",
@@ -344,8 +620,11 @@ fn handle_cancel_request(
         decode_payload::<CancelRequest>(&payload, &envelope.codec).map_err(|err| ExecError {
             status: "InvalidInput",
             message: err,
-        })?;
+    })?;
     mark_cancelled(cancelled, cancel.request_id);
+    if let Some(registry) = async_cancel {
+        registry.mark_cancelled(cancel.request_id);
+    }
     Ok(())
 }
 
@@ -435,17 +714,527 @@ fn sleep_decode_cost(
     )
 }
 
+#[allow(dead_code)]
+#[derive(Clone)]
+struct DbParamSpec {
+    value: DbParamValue,
+    type_hint: Option<String>,
+}
+
+#[allow(dead_code)]
+fn parse_param_spec(param: DbParam) -> DbParamSpec {
+    match param {
+        DbParam::Raw(value) => DbParamSpec {
+            value,
+            type_hint: None,
+        },
+        DbParam::Typed { value, r#type } => DbParamSpec {
+            value,
+            type_hint: r#type,
+        },
+    }
+}
+
+#[allow(dead_code)]
+fn normalize_params_and_sql(
+    sql: &str,
+    params: DbParams,
+) -> Result<(String, Vec<DbParamSpec>), ExecError> {
+    match params {
+        DbParams::Positional { values } => {
+            let specs = values.into_iter().map(parse_param_spec).collect();
+            Ok((sql.to_string(), specs))
+        }
+        DbParams::Named { values } => normalize_named_params(sql, values),
+    }
+}
+
+#[allow(dead_code)]
+fn normalize_named_params(
+    sql: &str,
+    params: Vec<DbNamedParam>,
+) -> Result<(String, Vec<DbParamSpec>), ExecError> {
+    let mut map = HashMap::new();
+    for param in params {
+        let name = param.name.trim().to_string();
+        if name.is_empty() {
+            return Err(ExecError {
+                status: "InvalidInput",
+                message: "Named params must use non-empty names".to_string(),
+            });
+        }
+        if map.contains_key(&name) {
+            return Err(ExecError {
+                status: "InvalidInput",
+                message: format!("Duplicate named param '{name}'"),
+            });
+        }
+        map.insert(name, parse_param_spec(param.param));
+    }
+
+    let mut ordered = Vec::new();
+    let mut index_map: HashMap<String, usize> = HashMap::new();
+    let mut used = HashSet::new();
+    let mut out = String::with_capacity(sql.len());
+
+    let bytes = sql.as_bytes();
+    let mut i = 0;
+    let mut state = SqlScanState::Normal;
+    while i < bytes.len() {
+        let ch = bytes[i] as char;
+        match state {
+            SqlScanState::Normal => match ch {
+                '\'' => {
+                    out.push(ch);
+                    state = SqlScanState::SingleQuote;
+                    i += 1;
+                }
+                '"' => {
+                    out.push(ch);
+                    state = SqlScanState::DoubleQuote;
+                    i += 1;
+                }
+                '-' if i + 1 < bytes.len() && bytes[i + 1] == b'-' => {
+                    out.push_str("--");
+                    state = SqlScanState::LineComment;
+                    i += 2;
+                }
+                '/' if i + 1 < bytes.len() && bytes[i + 1] == b'*' => {
+                    out.push_str("/*");
+                    state = SqlScanState::BlockComment;
+                    i += 2;
+                }
+                '$' => {
+                    if let Some(tag) = parse_dollar_tag(sql, i) {
+                        out.push_str(&tag);
+                        state = SqlScanState::DollarQuote(tag);
+                        i += state.len();
+                    } else {
+                        out.push(ch);
+                        i += 1;
+                    }
+                }
+                ':' => {
+                    if i + 1 < bytes.len() && bytes[i + 1] == b':' {
+                        out.push_str("::");
+                        i += 2;
+                        continue;
+                    }
+                    if i + 1 < bytes.len() && bytes[i + 1] == b'=' {
+                        out.push_str(":=");
+                        i += 2;
+                        continue;
+                    }
+                    if i + 1 < bytes.len() && is_ident_start(bytes[i + 1] as char) {
+                        let start = i + 1;
+                        let mut end = start + 1;
+                        while end < bytes.len()
+                            && is_ident_continue(bytes[end] as char)
+                        {
+                            end += 1;
+                        }
+                        let name = &sql[start..end];
+                        let spec = map.get(name).ok_or_else(|| ExecError {
+                            status: "InvalidInput",
+                            message: format!("Missing param value for '{name}'"),
+                        })?;
+                        let idx = if let Some(existing) = index_map.get(name) {
+                            *existing
+                        } else {
+                            let next_idx = ordered.len() + 1;
+                            ordered.push(spec.clone());
+                            index_map.insert(name.to_string(), next_idx);
+                            used.insert(name.to_string());
+                            next_idx
+                        };
+                        out.push('$');
+                        out.push_str(&idx.to_string());
+                        i = end;
+                    } else {
+                        out.push(ch);
+                        i += 1;
+                    }
+                }
+                _ => {
+                    out.push(ch);
+                    i += 1;
+                }
+            },
+            SqlScanState::SingleQuote => {
+                out.push(ch);
+                if ch == '\'' {
+                    if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                        out.push('\'');
+                        i += 2;
+                    } else {
+                        state = SqlScanState::Normal;
+                        i += 1;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            SqlScanState::DoubleQuote => {
+                out.push(ch);
+                if ch == '"' {
+                    if i + 1 < bytes.len() && bytes[i + 1] == b'"' {
+                        out.push('"');
+                        i += 2;
+                    } else {
+                        state = SqlScanState::Normal;
+                        i += 1;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            SqlScanState::LineComment => {
+                out.push(ch);
+                i += 1;
+                if ch == '\n' {
+                    state = SqlScanState::Normal;
+                }
+            }
+            SqlScanState::BlockComment => {
+                out.push(ch);
+                if ch == '*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                    out.push('/');
+                    i += 2;
+                    state = SqlScanState::Normal;
+                } else {
+                    i += 1;
+                }
+            }
+            SqlScanState::DollarQuote(ref tag) => {
+                out.push(ch);
+                if ch == '$' && sql[i..].starts_with(tag) {
+                    out.push_str(&tag[1..]);
+                    i += tag.len();
+                    state = SqlScanState::Normal;
+                } else {
+                    i += 1;
+                }
+            }
+        }
+    }
+
+    if used.len() != map.len() {
+        let unused: Vec<String> = map
+            .keys()
+            .filter(|name| !used.contains(*name))
+            .cloned()
+            .collect();
+        return Err(ExecError {
+            status: "InvalidInput",
+            message: format!("Unused params: {}", unused.join(", ")),
+        });
+    }
+
+    Ok((out, ordered))
+}
+
+#[allow(dead_code)]
+#[derive(Clone)]
+enum SqlScanState {
+    Normal,
+    SingleQuote,
+    DoubleQuote,
+    LineComment,
+    BlockComment,
+    DollarQuote(String),
+}
+
+#[allow(dead_code)]
+impl SqlScanState {
+    fn len(&self) -> usize {
+        match self {
+            SqlScanState::DollarQuote(tag) => tag.len(),
+            _ => 1,
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn parse_dollar_tag(sql: &str, start: usize) -> Option<String> {
+    let bytes = sql.as_bytes();
+    if bytes[start] != b'$' {
+        return None;
+    }
+    let mut end = start + 1;
+    while end < bytes.len() && bytes[end] != b'$' {
+        let ch = bytes[end] as char;
+        if !is_ident_continue(ch) {
+            return None;
+        }
+        end += 1;
+    }
+    if end >= bytes.len() || bytes[end] != b'$' {
+        return None;
+    }
+    Some(sql[start..=end].to_string())
+}
+
+#[allow(dead_code)]
+fn is_ident_start(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphabetic()
+}
+
+#[allow(dead_code)]
+fn is_ident_continue(ch: char) -> bool {
+    is_ident_start(ch) || ch.is_ascii_digit()
+}
+
+#[allow(dead_code)]
+fn validate_query(
+    sql: &str,
+    max_rows: u32,
+    allow_write: bool,
+) -> Result<String, ExecError> {
+    let dialect = PostgreSqlDialect {};
+    let mut statements = Parser::parse_sql(&dialect, sql).map_err(|err| ExecError {
+        status: "InvalidInput",
+        message: format!("SQL parse error: {err}"),
+    })?;
+    if statements.len() != 1 {
+        return Err(ExecError {
+            status: "InvalidInput",
+            message: "SQL must contain exactly one statement".to_string(),
+        });
+    }
+    let stmt = statements.remove(0);
+    match stmt {
+        SqlStatement::Query(query) => {
+            let wrapped = wrap_query_limit(*query, max_rows);
+            Ok(wrapped.to_string())
+        }
+        _ if allow_write => Err(ExecError {
+            status: "InvalidInput",
+            message: "Write statements require db_exec (not yet implemented)".to_string(),
+        }),
+        _ => Err(ExecError {
+            status: "InvalidInput",
+            message: "Only read-only SELECT/CTE queries are supported".to_string(),
+        }),
+    }
+}
+
+#[allow(dead_code)]
+fn wrap_query_limit(query: SqlQuery, max_rows: u32) -> SqlStatement {
+    let subquery = SqlQuery {
+        body: query.body,
+        order_by: query.order_by,
+        limit: query.limit,
+        limit_by: query.limit_by,
+        offset: query.offset,
+        fetch: query.fetch,
+        locks: query.locks,
+        for_clause: query.for_clause,
+        with: query.with,
+    };
+    let select = SqlSelect {
+        distinct: None,
+        top: None,
+        projection: vec![SqlSelectItem::Wildcard(
+            SqlWildcardAdditionalOptions::default(),
+        )],
+        into: None,
+        from: vec![SqlTableWithJoins {
+            relation: SqlTableFactor::Derived {
+                lateral: false,
+                subquery: Box::new(subquery),
+                alias: Some(SqlTableAlias {
+                    name: SqlIdent::new("_molt_sub"),
+                    columns: Vec::new(),
+                }),
+            },
+            joins: Vec::new(),
+        }],
+        lateral_views: Vec::new(),
+        selection: None,
+        group_by: SqlGroupByExpr::Expressions(Vec::new()),
+        cluster_by: Vec::new(),
+        distribute_by: Vec::new(),
+        sort_by: Vec::new(),
+        having: None,
+        named_window: Vec::new(),
+        qualify: None,
+        window_before_qualify: false,
+        value_table_mode: None,
+        connect_by: None,
+    };
+    let wrapper = SqlQuery {
+        with: None,
+        body: Box::new(SqlSetExpr::Select(Box::new(select))),
+        order_by: Vec::new(),
+        limit: Some(SqlExpr::Value(SqlValue::Number(max_rows.to_string(), false))),
+        limit_by: Vec::new(),
+        offset: None,
+        fetch: None,
+        locks: Vec::new(),
+        for_clause: None,
+    };
+    SqlStatement::Query(Box::new(wrapper))
+}
+
+#[allow(dead_code)]
+fn resolve_pg_params(specs: Vec<DbParamSpec>) -> Result<(Vec<PgParam>, Vec<Type>), ExecError> {
+    let mut params = Vec::with_capacity(specs.len());
+    let mut types = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let (param, ty) = resolve_pg_param(spec)?;
+        params.push(param);
+        types.push(ty);
+    }
+    Ok((params, types))
+}
+
+#[allow(dead_code)]
+fn resolve_pg_param(spec: DbParamSpec) -> Result<(PgParam, Type), ExecError> {
+    let type_hint = spec.type_hint.as_ref().map(|t| t.trim().to_lowercase());
+    let hint = type_hint.as_deref();
+    match spec.value {
+        DbParamValue::Null => {
+            let pg_type = hint
+                .and_then(parse_pg_type)
+                .ok_or_else(|| ExecError {
+                    status: "InvalidInput",
+                    message: "Null params must include an explicit type".to_string(),
+                })?;
+            let param = match pg_type {
+                Type::BOOL => PgParam::NullBool(None),
+                Type::INT2 => PgParam::NullInt2(None),
+                Type::INT4 => PgParam::NullInt4(None),
+                Type::INT8 => PgParam::NullInt8(None),
+                Type::FLOAT4 => PgParam::NullFloat4(None),
+                Type::FLOAT8 => PgParam::NullFloat8(None),
+                Type::TEXT | Type::VARCHAR | Type::BPCHAR => PgParam::NullString(None),
+                Type::BYTEA => PgParam::NullBytes(None),
+                _ => {
+                    return Err(ExecError {
+                        status: "InvalidInput",
+                        message: format!("Unsupported null param type {pg_type}"),
+                    })
+                }
+            };
+            Ok((param, pg_type))
+        }
+        DbParamValue::Bool(value) => {
+            let pg_type = hint.and_then(parse_pg_type).unwrap_or(Type::BOOL);
+            if pg_type != Type::BOOL {
+                return Err(ExecError {
+                    status: "InvalidInput",
+                    message: format!("Expected bool for type {pg_type}"),
+                });
+            }
+            Ok((PgParam::Bool(value), pg_type))
+        }
+        DbParamValue::Int(value) => resolve_int_param(value, hint),
+        DbParamValue::Float(value) => resolve_float_param(value, hint),
+        DbParamValue::String(value) => resolve_string_param(value, hint),
+        DbParamValue::Bytes(value) => {
+            let pg_type = hint.and_then(parse_pg_type).unwrap_or(Type::BYTEA);
+            if pg_type != Type::BYTEA {
+                return Err(ExecError {
+                    status: "InvalidInput",
+                    message: format!("Expected bytes for type {pg_type}"),
+                });
+            }
+            Ok((PgParam::Bytes(value), pg_type))
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn resolve_int_param(value: i64, hint: Option<&str>) -> Result<(PgParam, Type), ExecError> {
+    let pg_type = hint.and_then(parse_pg_type).unwrap_or(Type::INT8);
+    match pg_type {
+        Type::INT2 => {
+            let cast = i16::try_from(value).map_err(|_| ExecError {
+                status: "InvalidInput",
+                message: "Value out of range for int2".to_string(),
+            })?;
+            Ok((PgParam::Int2(cast), pg_type))
+        }
+        Type::INT4 => {
+            let cast = i32::try_from(value).map_err(|_| ExecError {
+                status: "InvalidInput",
+                message: "Value out of range for int4".to_string(),
+            })?;
+            Ok((PgParam::Int4(cast), pg_type))
+        }
+        Type::INT8 => Ok((PgParam::Int8(value), pg_type)),
+        Type::FLOAT4 => Ok((PgParam::Float4(value as f32), pg_type)),
+        Type::FLOAT8 => Ok((PgParam::Float8(value as f64), pg_type)),
+        _ => Err(ExecError {
+            status: "InvalidInput",
+            message: format!("Expected integer for type {pg_type}"),
+        }),
+    }
+}
+
+#[allow(dead_code)]
+fn resolve_float_param(value: f64, hint: Option<&str>) -> Result<(PgParam, Type), ExecError> {
+    let pg_type = hint.and_then(parse_pg_type).unwrap_or(Type::FLOAT8);
+    match pg_type {
+        Type::FLOAT4 => Ok((PgParam::Float4(value as f32), pg_type)),
+        Type::FLOAT8 => Ok((PgParam::Float8(value), pg_type)),
+        _ => Err(ExecError {
+            status: "InvalidInput",
+            message: format!("Expected float for type {pg_type}"),
+        }),
+    }
+}
+
+#[allow(dead_code)]
+fn resolve_string_param(value: String, hint: Option<&str>) -> Result<(PgParam, Type), ExecError> {
+    let pg_type = hint.and_then(parse_pg_type).unwrap_or(Type::TEXT);
+    match pg_type {
+        Type::TEXT | Type::VARCHAR | Type::BPCHAR => Ok((PgParam::String(value), pg_type)),
+        _ => Err(ExecError {
+            status: "InvalidInput",
+            message: format!("Expected string for type {pg_type}"),
+        }),
+    }
+}
+
+#[allow(dead_code)]
+fn parse_pg_type(name: &str) -> Option<Type> {
+    match name {
+        "bool" | "boolean" => Some(Type::BOOL),
+        "int2" | "smallint" => Some(Type::INT2),
+        "int4" | "int" | "integer" => Some(Type::INT4),
+        "int8" | "bigint" => Some(Type::INT8),
+        "float4" | "real" => Some(Type::FLOAT4),
+        "float8" | "double" | "double precision" => Some(Type::FLOAT8),
+        "text" => Some(Type::TEXT),
+        "varchar" | "character varying" => Some(Type::VARCHAR),
+        "bpchar" | "char" | "character" => Some(Type::BPCHAR),
+        "bytea" => Some(Type::BYTEA),
+        _ => None,
+    }
+}
+
 fn list_items_response(
     request: &ListItemsRequest,
     ctx: &ExecContext<'_>,
 ) -> Result<ListItemsResponse, ExecError> {
-    let _conn = acquire_connection(
+    let conn = acquire_connection(
         ctx.pool,
         ctx.cancelled,
         ctx.request_id,
         ctx.exec_start,
         ctx.timeout,
     )?;
+    match conn.as_ref() {
+        DbConn::Sqlite(sqlite) => list_items_sqlite_response(request, ctx, sqlite),
+        DbConn::Fake(_) => list_items_fake_response(request, ctx),
+    }
+}
+
+fn list_items_fake_response(
+    request: &ListItemsRequest,
+    ctx: &ExecContext<'_>,
+) -> Result<ListItemsResponse, ExecError> {
     check_timeout(ctx.exec_start, ctx.timeout)?;
     if ctx.fake_delay.as_millis() > 0 {
         sleep_with_cancel(
@@ -510,6 +1299,86 @@ fn list_items_response(
     }
 
     let next_cursor = if items.len() == limit {
+        Some(format!("{}:{}", request.user_id, limit))
+    } else {
+        None
+    };
+
+    Ok(ListItemsResponse {
+        items,
+        next_cursor,
+        counts: CountSummary { open, closed },
+    })
+}
+
+fn list_items_sqlite_response(
+    request: &ListItemsRequest,
+    ctx: &ExecContext<'_>,
+    sqlite: &SqliteConn,
+) -> Result<ListItemsResponse, ExecError> {
+    check_timeout(ctx.exec_start, ctx.timeout)?;
+    check_cancelled(ctx.cancelled, ctx.request_id)?;
+    let limit = request.limit.unwrap_or(50).min(500) as i64;
+    let mut sql = String::from(
+        "SELECT id, created_at, status, title, score, unread FROM items WHERE user_id = ?",
+    );
+    let mut params: Vec<Value> = vec![Value::from(request.user_id)];
+    if let Some(status) = request.status.as_ref() {
+        sql.push_str(" AND status = ?");
+        params.push(Value::from(status.clone()));
+    }
+    if let Some(query) = request.q.as_ref() {
+        sql.push_str(" AND title LIKE ?");
+        params.push(Value::from(format!("%{query}%")));
+    }
+    sql.push_str(" ORDER BY id ASC LIMIT ?");
+    params.push(Value::from(limit));
+
+    let conn = sqlite.connection();
+    let mut stmt = conn.prepare(&sql).map_err(|err| ExecError {
+        status: "InternalError",
+        message: format!("SQLite prepare failed: {err}"),
+    })?;
+    let rows = stmt.query_map(params_from_iter(params), |row| {
+        let id: i64 = row.get(0)?;
+        let created_at: String = row.get(1)?;
+        let status: String = row.get(2)?;
+        let title: String = row.get(3)?;
+        let score: f64 = row.get(4)?;
+        let unread_raw: i64 = row.get(5)?;
+        Ok(ItemRow {
+            id,
+            created_at,
+            status,
+            title,
+            score,
+            unread: unread_raw != 0,
+        })
+    });
+
+    let mut items = Vec::with_capacity(limit as usize);
+    let mut open = 0u32;
+    let mut closed = 0u32;
+    let rows_iter = rows.map_err(|err| ExecError {
+        status: "InternalError",
+        message: format!("SQLite query failed: {err}"),
+    })?;
+    for item in rows_iter {
+        check_cancelled(ctx.cancelled, ctx.request_id)?;
+        check_timeout(ctx.exec_start, ctx.timeout)?;
+        let item = item.map_err(|err| ExecError {
+            status: "InternalError",
+            message: format!("SQLite row decode failed: {err}"),
+        })?;
+        if item.status == "open" {
+            open += 1;
+        } else if item.status == "closed" {
+            closed += 1;
+        }
+        items.push(item);
+    }
+
+    let next_cursor = if items.len() == limit as usize {
         Some(format!("{}:{}", request.user_id, limit))
     } else {
         None
@@ -692,12 +1561,15 @@ fn handle_request(
     let envelope = request.envelope;
     let request_id = envelope.request_id;
     let exec_start = Instant::now();
-    let queue_ms = exec_start
+    let queue_us = exec_start
         .duration_since(request.queued_at)
-        .as_millis()
+        .as_micros()
         .min(u128::from(u64::MAX)) as u64;
+    let queue_ms = queue_us / 1_000;
     let mut metrics = HashMap::new();
+    metrics.insert("decode_us".to_string(), request.decode_us);
     metrics.insert("queue_ms".to_string(), queue_ms);
+    metrics.insert("queue_us".to_string(), queue_us);
     metrics.insert("queue_depth".to_string(), queue_depth as u64);
     metrics.insert("pool_in_flight".to_string(), ctx.pool.in_flight() as u64);
     metrics.insert("pool_idle".to_string(), ctx.pool.idle_count() as u64);
@@ -753,8 +1625,16 @@ fn handle_request(
         fake_decode_us_per_row: ctx.fake_decode_us_per_row,
         fake_cpu_iters: ctx.fake_cpu_iters,
     };
+    let handler_start = Instant::now();
     let result = execute_entry(&envelope, &exec_ctx, &ctx.exports, &ctx.compiled_entries);
-    let exec_ms = exec_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    let handler_us = handler_start
+        .elapsed()
+        .as_micros()
+        .min(u128::from(u64::MAX)) as u64;
+    let exec_us = exec_start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+    let exec_ms = exec_us / 1_000;
+    metrics.insert("handler_us".to_string(), handler_us);
+    metrics.insert("exec_us".to_string(), exec_us);
     metrics.insert("exec_ms".to_string(), exec_ms);
     if let Some(limit) = timeout {
         if exec_start.elapsed() > limit {
@@ -846,8 +1726,15 @@ fn load_exports(path: &str) -> Result<HashSet<String>, String> {
 fn main() -> io::Result<()> {
     let mut exports_path = None;
     let mut compiled_exports = None;
-    let mut max_queue = 64usize;
-    let mut threads = None;
+    let mut max_queue = env::var("MOLT_WORKER_MAX_QUEUE")
+        .ok()
+        .and_then(|val| val.parse::<usize>().ok())
+        .filter(|val| *val > 0)
+        .unwrap_or(64);
+    let mut threads = env::var("MOLT_WORKER_THREADS")
+        .ok()
+        .and_then(|val| val.parse::<usize>().ok())
+        .filter(|val| *val > 0);
     let fake_delay_ms = env::var("MOLT_FAKE_DB_DELAY_MS")
         .ok()
         .and_then(|val| val.parse::<u64>().ok())
@@ -860,6 +1747,22 @@ fn main() -> io::Result<()> {
         .ok()
         .and_then(|val| val.parse::<u64>().ok())
         .unwrap_or(0);
+    let sqlite_path = env::var("MOLT_DB_SQLITE_PATH").ok().and_then(|val| {
+        if val.trim().is_empty() {
+            None
+        } else {
+            Some(val)
+        }
+    });
+    let sqlite_readwrite = env::var("MOLT_DB_SQLITE_READWRITE")
+        .ok()
+        .map(|val| matches!(val.as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+    let sqlite_mode = if sqlite_readwrite {
+        SqliteOpenMode::ReadWrite
+    } else {
+        SqliteOpenMode::ReadOnly
+    };
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -911,13 +1814,31 @@ fn main() -> io::Result<()> {
         .and_then(|val| val.parse::<usize>().ok())
         .unwrap_or(thread_count.max(1));
     let conn_counter = Arc::new(AtomicUsize::new(0));
-    let pool = Pool::new(pool_size, {
-        let counter = conn_counter.clone();
-        move || {
-            counter.fetch_add(1, Ordering::SeqCst);
-            FakeDbConn
+    let pool = if let Some(path) = sqlite_path {
+        let path = PathBuf::from(path);
+        if let Err(err) = SqliteConn::open(&path, sqlite_mode) {
+            return Err(io::Error::other(format!(
+                "Failed to open SQLite DB {}: {err}",
+                path.display()
+            )));
         }
-    });
+        Pool::new(pool_size, {
+            let counter = conn_counter.clone();
+            let path = path.clone();
+            move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+                DbConn::Sqlite(SqliteConn::open(&path, sqlite_mode).expect("sqlite open failed"))
+            }
+        })
+    } else {
+        Pool::new(pool_size, {
+            let counter = conn_counter.clone();
+            move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+                DbConn::Fake(FakeDbConn)
+            }
+        })
+    };
     let fake_delay = Duration::from_millis(fake_delay_ms);
     let worker_ctx = WorkerContext {
         exports: exports.clone(),
@@ -957,7 +1878,7 @@ fn main() -> io::Result<()> {
             }
         };
         if decoded.envelope.entry == "__cancel__" {
-            let response = match handle_cancel_request(&decoded.envelope, &cancelled) {
+            let response = match handle_cancel_request(&decoded.envelope, &cancelled, None) {
                 Ok(()) => ResponseEnvelope {
                     request_id: decoded.envelope.request_id,
                     status: "Ok".to_string(),
@@ -1037,8 +1958,9 @@ fn write_loop(response_rx: Receiver<(WireCodec, ResponseEnvelope)>) {
 mod tests {
     use super::{
         dispatch_compiled, load_compiled_entries, load_exports, mark_cancelled, CancelSet,
-        CompiledEntry, DbPool, ExecContext, ListItemsRequest, ListItemsResponse, Pool,
+        CompiledEntry, DbConn, DbPool, ExecContext, ListItemsRequest, ListItemsResponse, Pool,
     };
+    use rusqlite::Connection;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
@@ -1058,6 +1980,57 @@ mod tests {
         now.as_nanos() as u64
     }
 
+    fn temp_db_path() -> PathBuf {
+        let mut path = std::env::temp_dir();
+        let name = format!("molt_demo_db_{}_{}.sqlite", std::process::id(), rand_id());
+        path.push(name);
+        path
+    }
+
+    fn seed_sqlite_db(path: &PathBuf) {
+        let conn = Connection::open(path).expect("sqlite open");
+        conn.execute_batch(
+            r#"
+            DROP TABLE IF EXISTS items;
+            CREATE TABLE items (
+                id INTEGER PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                status TEXT NOT NULL,
+                title TEXT NOT NULL,
+                score REAL NOT NULL,
+                unread INTEGER NOT NULL
+            );
+            "#,
+        )
+        .expect("create table");
+        let mut rows = Vec::new();
+        for idx in 0..3 {
+            let item_id = 1000 + idx;
+            let status = if idx % 2 == 0 { "open" } else { "closed" };
+            let created_at = format!("2026-01-{:02}T00:00:{:02}Z", (idx % 28) + 1, idx % 60);
+            rows.push((
+                item_id,
+                1i64,
+                created_at,
+                status.to_string(),
+                format!("Item {item_id}"),
+                (idx % 100) as f64 / 100.0,
+                if idx % 3 == 0 { 1 } else { 0 },
+            ));
+        }
+        conn.execute_batch("BEGIN").expect("begin");
+        for row in rows {
+            conn.execute(
+                "INSERT INTO items (id, user_id, created_at, status, title, score, unread) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![row.0, row.1, row.2, row.3, row.4, row.5, row.6],
+            )
+            .expect("insert");
+        }
+        conn.execute_batch("COMMIT").expect("commit");
+    }
+
     fn exec_ctx<'a>(
         cancelled: &'a CancelSet,
         pool: &'a DbPool,
@@ -1073,6 +2046,10 @@ mod tests {
             fake_decode_us_per_row: 0,
             fake_cpu_iters: 0,
         }
+    }
+
+    fn fake_pool() -> DbPool {
+        Pool::new(1, || DbConn::Fake(super::FakeDbConn))
     }
 
     #[test]
@@ -1096,7 +2073,7 @@ mod tests {
             codec_out: "msgpack".to_string(),
         };
         let cancel = CancelSet::default();
-        let pool: DbPool = Pool::new(1, || super::FakeDbConn);
+        let pool = fake_pool();
         let req = ListItemsRequest {
             user_id: 7,
             q: None,
@@ -1123,7 +2100,7 @@ mod tests {
         };
         let cancel = CancelSet::default();
         mark_cancelled(&cancel, 42);
-        let pool: DbPool = Pool::new(1, || super::FakeDbConn);
+        let pool = fake_pool();
         let req = ListItemsRequest {
             user_id: 1,
             q: None,
@@ -1148,7 +2125,7 @@ mod tests {
         let entry = map.get("list_items").expect("list_items entry");
         assert_eq!(entry.codec_in, "msgpack");
         let cancel = CancelSet::default();
-        let pool: DbPool = Pool::new(1, || super::FakeDbConn);
+        let pool = fake_pool();
         let req = ListItemsRequest {
             user_id: 3,
             q: Some("x".into()),
@@ -1174,7 +2151,7 @@ mod tests {
         let _ = fs::remove_file(&path);
         let entry = map.get("unknown").expect("unknown entry");
         let cancel = CancelSet::default();
-        let pool: DbPool = Pool::new(1, || super::FakeDbConn);
+        let pool = fake_pool();
         let payload = super::encode_payload(
             &ListItemsRequest {
                 user_id: 1,
@@ -1190,5 +2167,31 @@ mod tests {
         let result = dispatch_compiled(entry, &payload, &ctx);
         assert!(result.is_err());
         assert_eq!(result.err().unwrap().status, "InternalError");
+    }
+
+    #[test]
+    fn sqlite_list_items_roundtrip() {
+        let path = temp_db_path();
+        seed_sqlite_db(&path);
+        let pool_path = path.clone();
+        let cancel = CancelSet::default();
+        let pool: DbPool = Pool::new(1, move || {
+            DbConn::Sqlite(
+                super::SqliteConn::open(&pool_path, super::SqliteOpenMode::ReadOnly)
+                    .expect("sqlite open"),
+            )
+        });
+        let req = ListItemsRequest {
+            user_id: 1,
+            q: None,
+            status: None,
+            limit: Some(2),
+            cursor: None,
+        };
+        let ctx = exec_ctx(&cancel, &pool, 1);
+        let response = super::list_items_response(&req, &ctx).expect("sqlite list items");
+        assert_eq!(response.items.len(), 2);
+        assert_eq!(response.counts.open + response.counts.closed, 2);
+        let _ = fs::remove_file(&path);
     }
 }

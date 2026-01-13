@@ -4,7 +4,7 @@
 **Priority:** P0
 **Audience:** runtime engineers, AI coding agents
 **Goal:** Define the minimal worker that can execute exported entrypoints safely and predictably.
-**Implementation status:** Initial Rust stdio shell exists in `runtime/molt-worker` with framing, export allowlist, and deterministic demo entrypoints (`list_items`, `compute`, `offload_table`, `health`). Cancellation and timeout checks are enforced in the fake DB path, compiled dispatch loops, and pool waits, with queue/pool metrics emitted per request; compiled entrypoints are now routed via the manifest with `codec_in`/`codec_out` validation.
+**Implementation status:** Initial Rust stdio shell exists in `runtime/molt-worker` with framing, export allowlist, and deterministic demo entrypoints (`list_items`, `compute`, `offload_table`, `health`). Cancellation and timeout checks are enforced in the fake DB path, compiled dispatch loops, and pool waits, with queue/pool metrics emitted per request (microsecond + millisecond fields); compiled entrypoints are now routed via the manifest with `codec_in`/`codec_out` validation.
 
 ---
 
@@ -62,6 +62,16 @@ Entrypoints are invoked by name with a payload.
   - deadline
   - cancellation token (triggerable by client cancel frame or disconnect)
 
+### 3.1 Tuning knobs (env + CLI)
+- Threads: `--threads` overrides `MOLT_WORKER_THREADS` (defaults to CPU count).
+- Queue depth: `--max-queue` overrides `MOLT_WORKER_MAX_QUEUE` (defaults to 64).
+
+### 3.2 SQLite DB mode (native)
+- Set `MOLT_DB_SQLITE_PATH` to enable SQLite-backed `list_items` reads.
+- Default is read-only; set `MOLT_DB_SQLITE_READWRITE=1` for read-write opens.
+- Planned `db_query` entrypoint must follow `docs/spec/0915_MOLT_DB_IPC_CONTRACT.md`
+  to keep Django/Flask/FastAPI adapters aligned.
+
 ---
 
 ## 4. Timeouts and cancellation
@@ -109,7 +119,7 @@ Entrypoints are invoked by name with a payload.
   - status
 - Optional: emit a JSON line per request for easy parsing
 
-**Implementation note:** responses now include a `metrics` map with `queue_ms` and `exec_ms` fields for basic latency insight.
+**Implementation note:** responses now include a `metrics` map with `queue_us`, `handler_us`, `exec_us`, `decode_us`, plus `queue_ms`/`exec_ms` for basic latency insight.
 
 ---
 

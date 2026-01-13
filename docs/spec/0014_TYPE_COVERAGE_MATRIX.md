@@ -47,7 +47,7 @@
 | bytearray | bytearray constructor | Partial | P0 | TC1 | frontend/runtime |
 | bytes | bytes constructor | Planned | P1 | TC2 | frontend/runtime |
 | callable | callable predicate | Partial | P2 | TC3 | runtime |
-| chr | int to Unicode char | Partial | P2 | TC3 | runtime |
+| chr | int to Unicode char | Supported | P2 | TC3 | runtime |
 | classmethod | descriptor constructor | Partial | P1 | TC2 | runtime |
 | compile | code object (restricted) | Planned | P2 | TC3 | stdlib |
 | complex | complex constructor | Planned | P1 | TC2 | frontend/runtime |
@@ -58,7 +58,7 @@
 | enumerate | lazy iterator with index | Partial | P1 | TC2 | frontend/runtime |
 | eval | eval (restricted) | Planned | P2 | TC3 | stdlib |
 | exec | exec (restricted) | Planned | P2 | TC3 | stdlib |
-| filter | lazy iterator predicate | Planned | P1 | TC2 | frontend/runtime |
+| filter | lazy iterator predicate | Partial | P1 | TC2 | frontend/runtime |
 | float | float constructor | Supported | P1 | TC2 | frontend/runtime |
 | format | format protocol | Partial | P2 | TC3 | runtime |
 | frozenset | frozenset constructor | Partial | P1 | TC2 | frontend/runtime |
@@ -77,7 +77,7 @@
 | len | container/sequence length | Supported | P0 | TC1 | frontend/runtime |
 | list | list constructor | Partial | P0 | TC1 | frontend/runtime |
 | locals | locals dict | Planned | P2 | TC3 | stdlib |
-| map | lazy iterator calling callable | Planned | P1 | TC2 | frontend/runtime |
+| map | lazy iterator calling callable | Partial | P1 | TC2 | frontend/runtime |
 | max | reduction with key/default | Partial | P1 | TC2 | frontend/runtime |
 | memoryview | memoryview constructor | Partial | P2 | TC3 | runtime |
 | min | reduction with key/default | Partial | P1 | TC2 | frontend/runtime |
@@ -85,13 +85,13 @@
 | object | base object constructor | Partial | P2 | TC3 | runtime |
 | oct | integer to octal string | Partial | P2 | TC3 | runtime |
 | open | file I/O (gated) | Planned | P2 | TC3 | stdlib |
-| ord | char to int | Partial | P2 | TC3 | runtime |
+| ord | char to int | Supported | P2 | TC3 | runtime |
 | pow | power with mod | Partial | P1 | TC2 | frontend/runtime |
 | print | output formatting | Supported | P0 | TC0 | runtime |
 | property | descriptor constructor | Partial | P1 | TC2 | runtime |
 | range | range object construction + errors | Partial | P0 | TC1 | frontend/runtime |
 | repr | repr protocol | Partial | P1 | TC2 | runtime |
-| reversed | reverse iterator | Planned | P1 | TC2 | frontend/runtime |
+| reversed | reverse iterator | Partial | P1 | TC2 | frontend/runtime |
 | round | rounding | Partial | P1 | TC2 | frontend/runtime |
 | set | set constructor | Partial | P1 | TC2 | frontend/runtime |
 | setattr | attribute set | Partial | P1 | TC2 | runtime |
@@ -104,7 +104,7 @@
 | tuple | tuple constructor | Planned | P1 | TC2 | frontend/runtime |
 | type | type constructor (no metaclass) | Partial | P2 | TC3 | runtime |
 | vars | vars dict | Planned | P2 | TC3 | runtime |
-| zip | lazy iterator over iterables | Planned | P1 | TC2 | frontend/runtime |
+| zip | lazy iterator over iterables | Partial | P1 | TC2 | frontend/runtime |
 | __import__ | import hook | Planned | P2 | TC3 | stdlib |
 
 ## 2. Milestones
@@ -128,7 +128,7 @@
   - TODO(type-coverage, owner:runtime, milestone:TC2): generator state objects + StopIteration.
   - Implemented: comprehension lowering to iterators (list/set/dict comprehensions + generator expressions).
   - TODO(type-coverage, owner:frontend, milestone:TC2): async comprehensions (async for/await in comprehensions).
-  - TODO(type-coverage, owner:frontend, milestone:TC2): builtin iterators (`iter`, `next`, `reversed`, `zip`, `map`, `filter`).
+  - Implemented (partial): builtin iterators (`iter` with sentinel, `next`, `reversed`, `zip`, `map`, `filter`).
   - Implemented (partial): builtin numeric ops (`abs`, `divmod`, `min`, `max`, `sum`) for numeric types.
   - TODO(type-coverage, owner:frontend, milestone:TC2): builtin conversions (`complex`, `str`, `bool`).
   - Implemented (partial): `round`/`trunc` lowering with `__round__`/`__trunc__` hooks.

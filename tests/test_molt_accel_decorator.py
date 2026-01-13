@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 import json
 
-from molt_accel.client import MoltClient
+from molt_accel.client import MoltClient, MoltClientPool
 from molt_accel.decorator import molt_offload
 
 
@@ -41,3 +41,25 @@ def test_molt_offload_decorator() -> None:
     assert status == 200
     assert payload["request"]["user_id"] == 7
     client.close()
+
+
+def test_molt_offload_decorator_pool() -> None:
+    pool = MoltClientPool(
+        worker_cmd=_worker_cmd(), wire="json", env=_worker_env(), pool_size=2
+    )
+
+    @molt_offload(entry="list_items", codec="json", client=pool)
+    def handler(request):
+        return {"fallback": True}
+
+    request = type("Req", (), {"GET": {"user_id": "7"}})()
+    response = handler(request)
+    if isinstance(response, dict):
+        status = response["status"]
+        payload = response["payload"]
+    else:
+        status = response.status_code
+        payload = json.loads(response.content)
+    assert status == 200
+    assert payload["request"]["user_id"] == 7
+    pool.close()

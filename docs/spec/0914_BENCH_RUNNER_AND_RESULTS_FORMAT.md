@@ -48,10 +48,13 @@ Store:
   - p50/p95/p99/p999
   - error rate
   - payload bytes per request (sent/received)
-- worker metrics summary (queue depth, queue/exec time, payload bytes when available)
+- worker metrics summary (queue depth, queue/handler/exec/decode time in us+ms when available, payload bytes)
 - process metrics (server/worker CPU avg/max, RSS avg/max KB, proc count, samples)
 - process context (server mode and worker/server PIDs used for sampling)
 - fake DB config when set (delay_ms, decode_us_per_row, cpu_iters)
+- molt accel config when set (client_mode, pool_size, wire)
+- molt worker tuning when set (threads, max_queue)
+- molt DB config when set (sqlite_path, demo_db_path, sqlite_readwrite)
 
 ---
 

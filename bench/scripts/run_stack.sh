@@ -75,16 +75,20 @@ fi
 EXPORTS="$ROOT/demo/molt_worker_app/molt_exports.json"
 WORKER_CMD="$WORKER_BIN --stdio --exports $EXPORTS --compiled-exports $EXPORTS"
 
+export MOLT_WORKER_CMD="$WORKER_CMD"
+export MOLT_ACCEL_CLIENT_MODE="${MOLT_ACCEL_CLIENT_MODE:-shared}"
+export DJANGO_SETTINGS_MODULE=demoapp.settings
+export PYTHONPATH=$ROOT/src:$ROOT/demo/django_app
+if [[ -n "${MOLT_DEMO_DB_PATH:-}" ]]; then
+  export MOLT_DB_SQLITE_PATH="${MOLT_DB_SQLITE_PATH:-$MOLT_DEMO_DB_PATH}"
+  "${RUN_PY[@]}" -m demoapp.db_seed --path "$MOLT_DEMO_DB_PATH"
+fi
+
 # Start worker
 $WORKER_CMD > /tmp/molt_worker.log 2>&1 &
 WORKER_PID=$!
 trap 'kill $WORKER_PID 2>/dev/null || true' EXIT
 export MOLT_DEMO_WORKER_PID="$WORKER_PID"
-
-export MOLT_WORKER_CMD="$WORKER_CMD"
-export MOLT_ACCEL_CLIENT_MODE="${MOLT_ACCEL_CLIENT_MODE:-shared}"
-export DJANGO_SETTINGS_MODULE=demoapp.settings
-export PYTHONPATH=$ROOT/src:$ROOT/demo/django_app
 METRICS_PATH="${MOLT_DEMO_METRICS_PATH:-/tmp/molt_demo_metrics.jsonl}"
 rm -f "$METRICS_PATH"
 export MOLT_DEMO_METRICS_PATH="$METRICS_PATH"

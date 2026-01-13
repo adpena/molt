@@ -22,7 +22,7 @@ README/ROADMAP in sync.
 - Sets: literals + constructor with add/contains/iter/len + algebra (`|`, `&`, `-`, `^`); `frozenset` constructor + algebra.
 - Numeric builtins: `int()`/`abs()`/`divmod()`/`round()`/`math.trunc()` with `__int__`/`__index__`/`__round__`/`__trunc__` hooks and base parsing for string/bytes.
 - Formatting builtins: `ascii()`/`bin()`/`oct()`/`hex()` with `__index__` fallback and CPython parity errors for non-integers.
-- `chr()` and `ord()` parity errors for type/range checks; `chr()` accepts `__index__`.
+- `chr()` and `ord()` parity errors for type/range checks; `chr()` accepts `__index__` and `ord()` enforces length-1 for `str`/`bytes`/`bytearray`.
 - BigInt heap fallback for ints beyond inline range (arithmetic/bitwise/shift parity for large ints).
 - Format mini-language for ints/floats + f-string conversion flags (`!r`, `!s`, `!a`).
 - memoryview exposes 1D `format`/`shape`/`strides`/`nbytes` for bytes/bytearray views.
@@ -38,7 +38,8 @@ README/ROADMAP in sync.
 - Dict/set key hashability parity for common unhashable types (list/dict/set/bytearray/memoryview).
 - Importable `builtins` module binds supported builtins (see stdlib matrix).
 - `enumerate` builtin returns an iterator over `(index, value)` with optional `start`.
-- Builtin function objects for allowlisted builtins (`any`, `all`, `abs`, `ascii`, `bin`, `oct`, `hex`, `chr`, `ord`, `divmod`, `callable`, `repr`, `getattr`, `hasattr`, `round`, `next`, `anext`, `print`, `super`, `sum`, `min`, `max`, `sorted`).
+- `iter(callable, sentinel)`, `map`, `filter`, `zip`, and `reversed` return lazy iterator objects with CPython-style stop conditions.
+- Builtin function objects for allowlisted builtins (`any`, `all`, `abs`, `ascii`, `bin`, `oct`, `hex`, `chr`, `ord`, `divmod`, `callable`, `repr`, `getattr`, `hasattr`, `round`, `iter`, `next`, `anext`, `print`, `super`, `sum`, `min`, `max`, `sorted`, `map`, `filter`, `zip`, `reversed`).
 - Builtin reductions: `sum`, `min`, `max` with key/default support across core ordering types.
 - Lexicographic ordering for `str`/`bytes`/`bytearray`/`list`/`tuple` (cross-type ordering raises `TypeError`).
 - Ordering comparisons fall back to `__lt__`/`__le__`/`__gt__`/`__ge__` for user-defined objects
@@ -46,8 +47,10 @@ README/ROADMAP in sync.
 - Lambda expressions lower to function objects with closures, defaults, and varargs/kw-only args.
 - Indexing honors user-defined `__getitem__`/`__setitem__` when builtin paths do not apply.
 - CPython shim: minimal ASGI adapter for http/lifespan via `molt.asgi.asgi_adapter`.
-- `molt_accel` client/decorator expose before/after hooks, metrics callbacks, cancel-checks, concurrent in-flight requests in the shared client, and raw-response pass-through; timeouts schedule a worker restart after in-flight requests drain; wire selection honors `MOLT_WORKER_WIRE`/`MOLT_WIRE`.
-- `molt_worker` enforces cancellation/timeout checks in the fake DB path, compiled dispatch loops, and pool waits; validates export manifests; reports queue/pool metrics per request; fake DB decode cost can be simulated via `MOLT_FAKE_DB_DECODE_US_PER_ROW` and CPU work via `MOLT_FAKE_DB_CPU_ITERS`.
+- `molt_accel` client/decorator expose before/after hooks, metrics callbacks, cancel-checks, concurrent in-flight requests in the shared client, optional worker pooling via `MOLT_ACCEL_POOL_SIZE`, and raw-response pass-through; timeouts schedule a worker restart after in-flight requests drain; wire selection honors `MOLT_WORKER_WIRE`/`MOLT_WIRE`.
+- `molt_worker` enforces cancellation/timeout checks in the fake DB path, compiled dispatch loops, and pool waits; validates export manifests; reports queue/pool metrics per request (queue_us/handler_us/exec_us/decode_us plus ms rollups); fake DB decode cost can be simulated via `MOLT_FAKE_DB_DECODE_US_PER_ROW` and CPU work via `MOLT_FAKE_DB_CPU_ITERS`. Thread and queue tuning are available via `MOLT_WORKER_THREADS` and `MOLT_WORKER_MAX_QUEUE` (CLI overrides).
+- `molt-db` provides a bounded pool, a feature-gated async pool primitive, and a native-only SQLite connector (feature-gated in `molt-worker`) for real DB reads; async drivers and Postgres protocol remain pending.
+- `molt_db_adapter` exposes a framework-agnostic DB IPC payload builder aligned with `docs/spec/0915_MOLT_DB_IPC_CONTRACT.md` (no worker-side `db_query` yet).
 - WASM harness runs via `run_wasm.js` with shared memory/table and direct runtime imports (legacy wrapper fallback via `MOLT_WASM_LEGACY=1`), including async/channel benches on WASI.
 - Instance `__getattr__`/`__setattr__` hooks for user-defined classes.
 - Instance `__getattribute__` hooks for user-defined classes.
@@ -117,6 +120,7 @@ README/ROADMAP in sync.
 ## Django Demo Blockers (Current)
 - Missing `functools`/`itertools`/`operator`/`collections` parity needed for common Django internals.
 - Async loop/task APIs + `contextvars` are incomplete; cancellation injection and long-running workload hardening are pending.
+- Top priority: async Postgres pool + cancellation-aware query execution (see `docs/spec/0701_ASYNC_PG_POOL_AND_PROTOCOL.md`), required before full DB adapter expansion.
 - Capability-gated I/O/runtime modules (`os`, `sys`, `pathlib`, `logging`, `time`, `selectors`) need deterministic parity.
 - HTTP/ASGI runtime surface and DB driver/pool integration are not implemented (shim adapter exists).
 - Descriptor hooks still lack metaclass behaviors, limiting idiomatic Django patterns.
@@ -132,6 +136,7 @@ README/ROADMAP in sync.
 - uv-managed Python 3.14 hangs on arm64; system Python 3.14 used as workaround.
 - Browser host for WASM is still pending; current harness targets WASI via
   `run_wasm.js` and uses a single-threaded scheduler.
+- SQLite connector support is not available in WASM yet; DB connectors remain native-only.
 - True single-module WASM link (no JS boundary) is still pending; current direct-link harness still uses a JS stub for `molt_call_indirect1`.
 - TODO(runtime-provenance, owner:runtime, milestone:RT1): remove handle-table lock overhead via sharded or lock-free lookups.
 - Single-module wasm linking remains experimental; wasm-ld now links relocatable output when `MOLT_WASM_LINK=1`, but broader coverage + table/element relocation validation and removal of the JS `molt_call_indirect1` stub are still pending.

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from molt_accel.client import MoltClient
+from molt_accel.client import MoltClient, MoltClientPool
 from molt_accel.codec import decode_payload
 from molt_accel.errors import MoltCancelled, MoltInvalidInput
 
@@ -131,3 +131,18 @@ def test_client_concurrent_calls() -> None:
     assert not errors
     assert sorted(results) == [0, 1, 2, 3]
     client.close()
+
+
+def test_client_pool_round_robin() -> None:
+    pool = MoltClientPool(
+        worker_cmd=_worker_cmd(), wire="json", env=_worker_env(), pool_size=2
+    )
+    first = pool.call(entry="echo", payload={"id": 1}, codec="json", timeout_ms=500)
+    second = pool.call(entry="echo", payload={"id": 2}, codec="json", timeout_ms=500)
+    assert first["id"] == 1
+    assert second["id"] == 2
+    clients = pool.clients
+    assert len(clients) == 2
+    assert clients[0]._proc is not None
+    assert clients[1]._proc is not None
+    pool.close()

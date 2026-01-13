@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from molt_accel.client import MoltClient
+from molt_accel.client import MoltClient, MoltClientPool
 from molt_accel.decorator import molt_offload, raw_json_response_factory
 from molt_accel.errors import (
     MoltAccelError,
@@ -20,6 +20,7 @@ __all__ = [
     "MoltBusy",
     "MoltCancelled",
     "MoltClient",
+    "MoltClientPool",
     "MoltInternalError",
     "MoltInvalidInput",
     "MoltProtocolError",

@@ -44,7 +44,7 @@ DF1:
 
 ## 2. Django adapter (Phase 1: IPC-based)
 ### 2.1 Design
-- `molt_django_adapter` installs:
+- `molt_db_adapter` installs:
   - a DB router or helper API
   - a decorator/middleware for offloading
 - Uses the `molt_worker` IPC protocol:
@@ -53,12 +53,15 @@ DF1:
   - returns results as:
     - Arrow IPC (preferred for bulk)
     - MsgPack (for small result sets)
+- IPC payloads must follow `docs/spec/0915_MOLT_DB_IPC_CONTRACT.md` so the same
+  builder can be reused by Flask/FastAPI adapters without Django-specific logic.
 
 ### 2.2 What we offload first
 - reporting endpoints
 - list views with heavy filtering
 - batch jobs and exports
 - expensive joins/aggregations
+ - Phase 0: SQLite-backed list endpoint for the demo (real DB path before Postgres)
 
 ### 2.3 What stays in Django
 - admin
