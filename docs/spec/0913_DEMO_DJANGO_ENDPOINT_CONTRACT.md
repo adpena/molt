@@ -8,7 +8,8 @@
 ---
 
 ## 0. Endpoint
-- `GET /api/items`
+- Demo endpoints: `GET /baseline/` and `GET /offload/` (same contract)
+- Reserved contract alias: `GET /api/items` (future adapter/DB path)
 - Query params:
   - `user_id` (int)
   - `q` (string, optional)

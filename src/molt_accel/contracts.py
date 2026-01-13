@@ -35,11 +35,17 @@ def build_list_items_payload(request: Any) -> dict[str, Any]:
     except (TypeError, ValueError) as exc:
         raise MoltInvalidInput("user_id must be an integer") from exc
 
+    raw_limit = _get("limit", 50)
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError) as exc:
+        raise MoltInvalidInput("limit must be an integer") from exc
+
     payload: dict[str, Any] = {
         "user_id": user_id,
         "q": _get("q"),
         "status": _get("status"),
-        "limit": int(_get("limit", 50)),
+        "limit": max(1, min(limit, 500)),
         "cursor": _get("cursor"),
     }
     return payload

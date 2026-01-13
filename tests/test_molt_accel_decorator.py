@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+import json
 
 from molt_accel.client import MoltClient
 from molt_accel.decorator import molt_offload
@@ -31,6 +32,12 @@ def test_molt_offload_decorator() -> None:
 
     request = type("Req", (), {"GET": {"user_id": "7"}})()
     response = handler(request)
-    assert response["status"] == 200
-    assert response["payload"]["request"]["user_id"] == 7
+    if isinstance(response, dict):
+        status = response["status"]
+        payload = response["payload"]
+    else:
+        status = response.status_code
+        payload = json.loads(response.content)
+    assert status == 200
+    assert payload["request"]["user_id"] == 7
     client.close()

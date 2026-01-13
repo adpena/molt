@@ -190,8 +190,49 @@ fn parse_inst_id(text: &str) -> Option<usize> {
     None
 }
 
-fn should_dump_ir() -> Option<String> {
-    std::env::var("MOLT_DUMP_IR").ok()
+struct DumpIrConfig {
+    mode: String,
+    filter: Option<String>,
+}
+
+fn should_dump_ir() -> Option<DumpIrConfig> {
+    let raw = std::env::var("MOLT_DUMP_IR").ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    let (mode, filter) = if let Some((left, right)) = trimmed.split_once(':') {
+        let left_trim = left.trim();
+        let right_trim = right.trim();
+        let mode = if left_trim.eq_ignore_ascii_case("full") {
+            "full"
+        } else {
+            "control"
+        };
+        let filter = if right_trim.is_empty() {
+            None
+        } else {
+            Some(right_trim.to_string())
+        };
+        (mode.to_string(), filter)
+    } else if lower == "full" || lower == "control" || lower == "1" || lower == "all" {
+        let mode = if lower == "full" { "full" } else { "control" };
+        (mode.to_string(), None)
+    } else {
+        ("control".to_string(), Some(trimmed.to_string()))
+    };
+    Some(DumpIrConfig { mode, filter })
+}
+
+fn dump_ir_matches(config: &DumpIrConfig, func_name: &str) -> bool {
+    let Some(filter) = config.filter.as_ref() else {
+        return true;
+    };
+    if filter == "1" || filter.eq_ignore_ascii_case("all") {
+        return true;
+    }
+    func_name == filter || func_name.contains(filter)
 }
 
 fn dump_ir_ops(func_ir: &FunctionIR, mode: &str) {
@@ -3010,6 +3051,27 @@ impl SimpleBackend {
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
+                "bytes_from_str" => {
+                    let args = op.args.as_ref().unwrap();
+                    let src = vars.get(&args[0]).expect("Bytes source not found");
+                    let encoding = vars.get(&args[1]).expect("Bytes encoding not found");
+                    let errors = vars.get(&args[2]).expect("Bytes errors not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_bytes_from_str", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder
+                        .ins()
+                        .call(local_callee, &[*src, *encoding, *errors]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
                 "bytearray_from_obj" => {
                     let args = op.args.as_ref().unwrap();
                     let src = vars.get(&args[0]).expect("Bytearray source not found");
@@ -3022,6 +3084,27 @@ impl SimpleBackend {
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*src]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "bytearray_from_str" => {
+                    let args = op.args.as_ref().unwrap();
+                    let src = vars.get(&args[0]).expect("Bytearray source not found");
+                    let encoding = vars.get(&args[1]).expect("Bytearray encoding not found");
+                    let errors = vars.get(&args[2]).expect("Bytearray errors not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_bytearray_from_str", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder
+                        .ins()
+                        .call(local_callee, &[*src, *encoding, *errors]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
@@ -4328,8 +4411,50 @@ impl SimpleBackend {
                         .declare_function(target_name, Linkage::Export, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let mut guard_sig = self.module.make_signature();
+                    guard_sig.returns.push(AbiParam::new(types::I64));
+                    let guard_enter = self
+                        .module
+                        .declare_function("molt_recursion_guard_enter", Linkage::Import, &guard_sig)
+                        .unwrap();
+                    let guard_enter_local =
+                        self.module.declare_func_in_func(guard_enter, builder.func);
+                    let guard_exit = self
+                        .module
+                        .declare_function(
+                            "molt_recursion_guard_exit",
+                            Linkage::Import,
+                            &self.module.make_signature(),
+                        )
+                        .unwrap();
+                    let guard_exit_local =
+                        self.module.declare_func_in_func(guard_exit, builder.func);
+                    let merge_block = builder.create_block();
+                    builder.append_block_param(merge_block, types::I64);
+                    let guard_call = builder.ins().call(guard_enter_local, &[]);
+                    let guard_val = builder.inst_results(guard_call)[0];
+                    let guard_ok = builder.ins().icmp_imm(IntCC::NotEqual, guard_val, 0);
+                    let call_block = builder.create_block();
+                    let fail_block = builder.create_block();
+                    builder
+                        .ins()
+                        .brif(guard_ok, call_block, &[], fail_block, &[]);
+
+                    builder.switch_to_block(call_block);
+                    builder.seal_block(call_block);
                     let call = builder.ins().call(local_callee, &args);
                     let res = builder.inst_results(call)[0];
+                    let _ = builder.ins().call(guard_exit_local, &[]);
+                    builder.ins().jump(merge_block, &[res]);
+
+                    builder.switch_to_block(fail_block);
+                    builder.seal_block(fail_block);
+                    let none_bits = builder.ins().iconst(types::I64, box_none());
+                    builder.ins().jump(merge_block, &[none_bits]);
+
+                    builder.switch_to_block(merge_block);
+                    builder.seal_block(merge_block);
+                    let res = builder.block_params(merge_block)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
                 "call_guarded" => {
@@ -4367,6 +4492,24 @@ impl SimpleBackend {
                         .declare_function("molt_is_truthy", Linkage::Import, &check_sig)
                         .unwrap();
                     let truthy_local = self.module.declare_func_in_func(truthy, builder.func);
+                    let mut guard_sig = self.module.make_signature();
+                    guard_sig.returns.push(AbiParam::new(types::I64));
+                    let guard_enter = self
+                        .module
+                        .declare_function("molt_recursion_guard_enter", Linkage::Import, &guard_sig)
+                        .unwrap();
+                    let guard_enter_local =
+                        self.module.declare_func_in_func(guard_enter, builder.func);
+                    let guard_exit = self
+                        .module
+                        .declare_function(
+                            "molt_recursion_guard_exit",
+                            Linkage::Import,
+                            &self.module.make_signature(),
+                        )
+                        .unwrap();
+                    let guard_exit_local =
+                        self.module.declare_func_in_func(guard_exit, builder.func);
                     let is_func_call = builder.ins().call(is_func_local, &[*callee_bits]);
                     let is_func_bits = builder.inst_results(is_func_call)[0];
                     let truthy_call = builder.ins().call(truthy_local, &[is_func_bits]);
@@ -4455,16 +4598,50 @@ impl SimpleBackend {
 
                     builder.switch_to_block(then_block);
                     builder.seal_block(then_block);
+                    let guard_call = builder.ins().call(guard_enter_local, &[]);
+                    let guard_val = builder.inst_results(guard_call)[0];
+                    let guard_ok = builder.ins().icmp_imm(IntCC::NotEqual, guard_val, 0);
+                    let then_call_block = builder.create_block();
+                    let then_fail_block = builder.create_block();
+                    builder
+                        .ins()
+                        .brif(guard_ok, then_call_block, &[], then_fail_block, &[]);
+
+                    builder.switch_to_block(then_call_block);
+                    builder.seal_block(then_call_block);
                     let direct_call = builder.ins().call(local_callee, &args);
                     let direct_res = builder.inst_results(direct_call)[0];
+                    let _ = builder.ins().call(guard_exit_local, &[]);
                     builder.ins().jump(merge_block, &[direct_res]);
+
+                    builder.switch_to_block(then_fail_block);
+                    builder.seal_block(then_fail_block);
+                    let none_bits = builder.ins().iconst(types::I64, box_none());
+                    builder.ins().jump(merge_block, &[none_bits]);
 
                     builder.switch_to_block(else_block);
                     builder.seal_block(else_block);
+                    let guard_call = builder.ins().call(guard_enter_local, &[]);
+                    let guard_val = builder.inst_results(guard_call)[0];
+                    let guard_ok = builder.ins().icmp_imm(IntCC::NotEqual, guard_val, 0);
+                    let else_call_block = builder.create_block();
+                    let else_fail_block = builder.create_block();
+                    builder
+                        .ins()
+                        .brif(guard_ok, else_call_block, &[], else_fail_block, &[]);
+
+                    builder.switch_to_block(else_call_block);
+                    builder.seal_block(else_call_block);
                     let sig_ref = builder.import_signature(sig);
                     let fallback_call = builder.ins().call_indirect(sig_ref, fn_ptr, &args);
                     let fallback_res = builder.inst_results(fallback_call)[0];
+                    let _ = builder.ins().call(guard_exit_local, &[]);
                     builder.ins().jump(merge_block, &[fallback_res]);
+
+                    builder.switch_to_block(else_fail_block);
+                    builder.seal_block(else_fail_block);
+                    let none_bits = builder.ins().iconst(types::I64, box_none());
+                    builder.ins().jump(merge_block, &[none_bits]);
 
                     builder.switch_to_block(merge_block);
                     builder.seal_block(merge_block);
@@ -4536,6 +4713,24 @@ impl SimpleBackend {
                         .unwrap();
                     let arity_error_local =
                         self.module.declare_func_in_func(arity_error, builder.func);
+                    let mut guard_sig = self.module.make_signature();
+                    guard_sig.returns.push(AbiParam::new(types::I64));
+                    let guard_enter = self
+                        .module
+                        .declare_function("molt_recursion_guard_enter", Linkage::Import, &guard_sig)
+                        .unwrap();
+                    let guard_enter_local =
+                        self.module.declare_func_in_func(guard_enter, builder.func);
+                    let guard_exit = self
+                        .module
+                        .declare_function(
+                            "molt_recursion_guard_exit",
+                            Linkage::Import,
+                            &self.module.make_signature(),
+                        )
+                        .unwrap();
+                    let guard_exit_local =
+                        self.module.declare_func_in_func(guard_exit, builder.func);
                     let is_bound_call = builder.ins().call(is_bound_local, &[*func_bits]);
                     let is_bound_bits = builder.inst_results(is_bound_call)[0];
                     let truthy_call = builder.ins().call(truthy_local, &[is_bound_bits]);
@@ -4695,12 +4890,29 @@ impl SimpleBackend {
                     }
                     bound_sig.returns.push(AbiParam::new(types::I64));
                     let bound_sig_ref = builder.import_signature(bound_sig);
+                    let guard_call = builder.ins().call(guard_enter_local, &[]);
+                    let guard_val = builder.inst_results(guard_call)[0];
+                    let guard_ok = builder.ins().icmp_imm(IntCC::NotEqual, guard_val, 0);
+                    let bound_call_block = builder.create_block();
+                    let bound_fail_block = builder.create_block();
+                    builder
+                        .ins()
+                        .brif(guard_ok, bound_call_block, &[], bound_fail_block, &[]);
+
+                    builder.switch_to_block(bound_call_block);
+                    builder.seal_block(bound_call_block);
                     let bound_call =
                         builder
                             .ins()
                             .call_indirect(bound_sig_ref, bound_fn_ptr, &bound_args);
                     let bound_res = builder.inst_results(bound_call)[0];
+                    let _ = builder.ins().call(guard_exit_local, &[]);
                     builder.ins().jump(merge_block, &[bound_res]);
+
+                    builder.switch_to_block(bound_fail_block);
+                    builder.seal_block(bound_fail_block);
+                    let none_bits = builder.ins().iconst(types::I64, box_none());
+                    builder.ins().jump(merge_block, &[none_bits]);
 
                     builder.switch_to_block(bound_missing_one_block);
                     builder.seal_block(bound_missing_one_block);
@@ -4751,12 +4963,29 @@ impl SimpleBackend {
                     }
                     bound_sig.returns.push(AbiParam::new(types::I64));
                     let bound_sig_ref = builder.import_signature(bound_sig);
+                    let guard_call = builder.ins().call(guard_enter_local, &[]);
+                    let guard_val = builder.inst_results(guard_call)[0];
+                    let guard_ok = builder.ins().icmp_imm(IntCC::NotEqual, guard_val, 0);
+                    let bound_call_block = builder.create_block();
+                    let bound_fail_block = builder.create_block();
+                    builder
+                        .ins()
+                        .brif(guard_ok, bound_call_block, &[], bound_fail_block, &[]);
+
+                    builder.switch_to_block(bound_call_block);
+                    builder.seal_block(bound_call_block);
                     let bound_call =
                         builder
                             .ins()
                             .call_indirect(bound_sig_ref, bound_fn_ptr, &bound_args);
                     let bound_res = builder.inst_results(bound_call)[0];
+                    let _ = builder.ins().call(guard_exit_local, &[]);
                     builder.ins().jump(merge_block, &[bound_res]);
+
+                    builder.switch_to_block(bound_fail_block);
+                    builder.seal_block(bound_fail_block);
+                    let none_bits = builder.ins().iconst(types::I64, box_none());
+                    builder.ins().jump(merge_block, &[none_bits]);
 
                     builder.switch_to_block(bound_missing_one_pop);
                     builder.seal_block(bound_missing_one_pop);
@@ -4771,12 +5000,29 @@ impl SimpleBackend {
                     }
                     bound_sig.returns.push(AbiParam::new(types::I64));
                     let bound_sig_ref = builder.import_signature(bound_sig);
+                    let guard_call = builder.ins().call(guard_enter_local, &[]);
+                    let guard_val = builder.inst_results(guard_call)[0];
+                    let guard_ok = builder.ins().icmp_imm(IntCC::NotEqual, guard_val, 0);
+                    let bound_call_block = builder.create_block();
+                    let bound_fail_block = builder.create_block();
+                    builder
+                        .ins()
+                        .brif(guard_ok, bound_call_block, &[], bound_fail_block, &[]);
+
+                    builder.switch_to_block(bound_call_block);
+                    builder.seal_block(bound_call_block);
                     let bound_call =
                         builder
                             .ins()
                             .call_indirect(bound_sig_ref, bound_fn_ptr, &bound_args);
                     let bound_res = builder.inst_results(bound_call)[0];
+                    let _ = builder.ins().call(guard_exit_local, &[]);
                     builder.ins().jump(merge_block, &[bound_res]);
+
+                    builder.switch_to_block(bound_fail_block);
+                    builder.seal_block(bound_fail_block);
+                    let none_bits = builder.ins().iconst(types::I64, box_none());
+                    builder.ins().jump(merge_block, &[none_bits]);
 
                     builder.switch_to_block(bound_missing_one_update);
                     builder.seal_block(bound_missing_one_update);
@@ -4803,12 +5049,29 @@ impl SimpleBackend {
                     }
                     bound_sig.returns.push(AbiParam::new(types::I64));
                     let bound_sig_ref = builder.import_signature(bound_sig);
+                    let guard_call = builder.ins().call(guard_enter_local, &[]);
+                    let guard_val = builder.inst_results(guard_call)[0];
+                    let guard_ok = builder.ins().icmp_imm(IntCC::NotEqual, guard_val, 0);
+                    let bound_call_block = builder.create_block();
+                    let bound_fail_block = builder.create_block();
+                    builder
+                        .ins()
+                        .brif(guard_ok, bound_call_block, &[], bound_fail_block, &[]);
+
+                    builder.switch_to_block(bound_call_block);
+                    builder.seal_block(bound_call_block);
                     let bound_call =
                         builder
                             .ins()
                             .call_indirect(bound_sig_ref, bound_fn_ptr, &bound_args);
                     let bound_res = builder.inst_results(bound_call)[0];
+                    let _ = builder.ins().call(guard_exit_local, &[]);
                     builder.ins().jump(merge_block, &[bound_res]);
+
+                    builder.switch_to_block(bound_fail_block);
+                    builder.seal_block(bound_fail_block);
+                    let none_bits = builder.ins().iconst(types::I64, box_none());
+                    builder.ins().jump(merge_block, &[none_bits]);
 
                     builder.switch_to_block(bound_missing_two_block);
                     builder.seal_block(bound_missing_two_block);
@@ -4840,12 +5103,29 @@ impl SimpleBackend {
                     }
                     bound_sig.returns.push(AbiParam::new(types::I64));
                     let bound_sig_ref = builder.import_signature(bound_sig);
+                    let guard_call = builder.ins().call(guard_enter_local, &[]);
+                    let guard_val = builder.inst_results(guard_call)[0];
+                    let guard_ok = builder.ins().icmp_imm(IntCC::NotEqual, guard_val, 0);
+                    let bound_call_block = builder.create_block();
+                    let bound_fail_block = builder.create_block();
+                    builder
+                        .ins()
+                        .brif(guard_ok, bound_call_block, &[], bound_fail_block, &[]);
+
+                    builder.switch_to_block(bound_call_block);
+                    builder.seal_block(bound_call_block);
                     let bound_call =
                         builder
                             .ins()
                             .call_indirect(bound_sig_ref, bound_fn_ptr, &bound_args);
                     let bound_res = builder.inst_results(bound_call)[0];
+                    let _ = builder.ins().call(guard_exit_local, &[]);
                     builder.ins().jump(merge_block, &[bound_res]);
+
+                    builder.switch_to_block(bound_fail_block);
+                    builder.seal_block(bound_fail_block);
+                    let none_bits = builder.ins().iconst(types::I64, box_none());
+                    builder.ins().jump(merge_block, &[none_bits]);
 
                     builder.switch_to_block(bound_error_block);
                     builder.seal_block(bound_error_block);
@@ -4991,9 +5271,26 @@ impl SimpleBackend {
                     }
                     sig.returns.push(AbiParam::new(types::I64));
                     let sig_ref = builder.import_signature(sig);
+                    let guard_call = builder.ins().call(guard_enter_local, &[]);
+                    let guard_val = builder.inst_results(guard_call)[0];
+                    let guard_ok = builder.ins().icmp_imm(IntCC::NotEqual, guard_val, 0);
+                    let func_call_block = builder.create_block();
+                    let func_fail_block = builder.create_block();
+                    builder
+                        .ins()
+                        .brif(guard_ok, func_call_block, &[], func_fail_block, &[]);
+
+                    builder.switch_to_block(func_call_block);
+                    builder.seal_block(func_call_block);
                     let call = builder.ins().call_indirect(sig_ref, fn_ptr, &args);
                     let res = builder.inst_results(call)[0];
+                    let _ = builder.ins().call(guard_exit_local, &[]);
                     builder.ins().jump(merge_block, &[res]);
+
+                    builder.switch_to_block(func_fail_block);
+                    builder.seal_block(func_fail_block);
+                    let none_bits = builder.ins().iconst(types::I64, box_none());
+                    builder.ins().jump(merge_block, &[none_bits]);
 
                     builder.switch_to_block(merge_block);
                     builder.seal_block(merge_block);
@@ -5036,6 +5333,24 @@ impl SimpleBackend {
                     let resolve_local = self
                         .module
                         .declare_func_in_func(resolve_callee, builder.func);
+                    let mut guard_sig = self.module.make_signature();
+                    guard_sig.returns.push(AbiParam::new(types::I64));
+                    let guard_enter = self
+                        .module
+                        .declare_function("molt_recursion_guard_enter", Linkage::Import, &guard_sig)
+                        .unwrap();
+                    let guard_enter_local =
+                        self.module.declare_func_in_func(guard_enter, builder.func);
+                    let guard_exit = self
+                        .module
+                        .declare_function(
+                            "molt_recursion_guard_exit",
+                            Linkage::Import,
+                            &self.module.make_signature(),
+                        )
+                        .unwrap();
+                    let guard_exit_local =
+                        self.module.declare_func_in_func(guard_exit, builder.func);
                     let resolve_call = builder.ins().call(resolve_local, &[*method_bits]);
                     let method_ptr = builder.inst_results(resolve_call)[0];
                     let func_bits = builder
@@ -5058,8 +5373,32 @@ impl SimpleBackend {
                     }
                     sig.returns.push(AbiParam::new(types::I64));
                     let sig_ref = builder.import_signature(sig);
+                    let merge_block = builder.create_block();
+                    builder.append_block_param(merge_block, types::I64);
+                    let guard_call = builder.ins().call(guard_enter_local, &[]);
+                    let guard_val = builder.inst_results(guard_call)[0];
+                    let guard_ok = builder.ins().icmp_imm(IntCC::NotEqual, guard_val, 0);
+                    let call_block = builder.create_block();
+                    let fail_block = builder.create_block();
+                    builder
+                        .ins()
+                        .brif(guard_ok, call_block, &[], fail_block, &[]);
+
+                    builder.switch_to_block(call_block);
+                    builder.seal_block(call_block);
                     let call = builder.ins().call_indirect(sig_ref, fn_ptr, &args);
                     let res = builder.inst_results(call)[0];
+                    let _ = builder.ins().call(guard_exit_local, &[]);
+                    builder.ins().jump(merge_block, &[res]);
+
+                    builder.switch_to_block(fail_block);
+                    builder.seal_block(fail_block);
+                    let none_bits = builder.ins().iconst(types::I64, box_none());
+                    builder.ins().jump(merge_block, &[none_bits]);
+
+                    builder.switch_to_block(merge_block);
+                    builder.seal_block(merge_block);
+                    let res = builder.block_params(merge_block)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
                 "module_new" => {
@@ -7321,6 +7660,12 @@ impl SimpleBackend {
         builder.seal_all_blocks();
         builder.finalize();
 
+        if let Some(config) = should_dump_ir() {
+            if dump_ir_matches(&config, &func_ir.name) {
+                dump_ir_ops(&func_ir, &config.mode);
+            }
+        }
+
         if let Ok(filter) = std::env::var("MOLT_DUMP_CLIF") {
             if filter == "1" || filter == func_ir.name || func_ir.name.contains(&filter) {
                 eprintln!("CLIF {}:\n{}", func_ir.name, self.ctx.func.display());
@@ -7337,8 +7682,10 @@ impl SimpleBackend {
                 "Backend verification failed in {}: {err_text}",
                 func_ir.name
             );
-            if let Some(mode) = should_dump_ir() {
-                dump_ir_ops(&func_ir, &mode);
+            if let Some(config) = should_dump_ir() {
+                if dump_ir_matches(&config, &func_ir.name) {
+                    dump_ir_ops(&func_ir, &config.mode);
+                }
             }
             if let Ok(flag) = std::env::var("MOLT_DUMP_CLIF_ON_ERROR") {
                 let clif = self.ctx.func.display().to_string();

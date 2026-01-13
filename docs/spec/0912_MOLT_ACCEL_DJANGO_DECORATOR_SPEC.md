@@ -4,7 +4,7 @@
 **Priority:** P0
 **Audience:** Python integrators, AI coding agents
 **Goal:** Provide a minimal, reliable client library that makes offloading one endpoint trivial.
-**Implementation status:** Initial stdio client + decorator scaffolding exists in `src/molt_accel` (framing + JSON/MsgPack payloads). Timeouts send a best-effort cancel and restart the worker; retries/metrics and Django test-client coverage are still pending.
+**Implementation status:** Initial stdio client + decorator scaffolding exists in `src/molt_accel` (framing + JSON/MsgPack payloads). Timeouts send a best-effort cancel and restart the worker; metrics hooks/cancel checks are wired, but Django test-client coverage and richer retry policy remain pending. `molt_accel` ships as an optional dependency group (`pip install .[accel]`) with a packaged default exports manifest so the decorator can fall back to `molt-worker` in PATH when `MOLT_WORKER_CMD` is unset. A demo app scaffold lives in `demo/`.
 
 ---
 
@@ -39,6 +39,7 @@ Decorator semantics:
 - prepares payload from request (defined by demo contract)
 - calls worker
 - returns Django JsonResponse
+- uses `MOLT_WORKER_CMD` when set; otherwise falls back to `molt-worker` in PATH plus the packaged default exports manifest
 
 ---
 
@@ -63,12 +64,24 @@ No stack traces leaked by default.
 
 ## 4. Retries and restart policy
 - If worker dies:
-  - restart worker once (configurable)
-  - re-send request only if idempotent flag is set (default false)
+- restart worker once (configurable)
+- re-send request only if idempotent flag is set (default false)
 
 **Implementation note:** `MoltClient.call(..., idempotent=True)` will retry once after restarting the worker. The decorator exposes `idempotent=` to opt in.
 
 ---
+
+## 7. Decorator options and behaviors
+- `entry`: the worker export name. Changing this routes the request to a different compiled handler. If the name is not present in the compiled manifest or built-in handlers, compilation fails (Static) or returns `InvalidInput`/`InternalError` at runtime (compiled path missing).
+- `codec`: payload encoding for request/response (`msgpack` preferred; `json` as fallback). Must match the compiled export manifest (`codec_in`/`codec_out`).
+- `timeout_ms`: client-side timeout; on timeout the client sends `__cancel__` and closes the worker pipes.
+- `client`: optional `MoltClient` instance; otherwise the decorator constructs one using `MOLT_WORKER_CMD` or `molt-worker` in PATH with packaged exports.
+- `client_mode`: `shared` (default) reuses a single long-lived `MoltClient`; `per_request` spawns a client per request and closes it after the call. Defaults from `MOLT_ACCEL_CLIENT_MODE`.
+- `payload_builder`: transforms the Django request into the payload sent to the worker. Set this to match your contract when using a different `entry`.
+- `response_factory`: builds the HTTP response from the worker result.
+- `allow_fallback`: when True, failures call the original view instead of returning an error response.
+- Hooks: `before_send`, `after_recv`, `metrics_hook`, and `cancel_check(request)` provide observability and cancellation integration.
+- `idempotent`: when True, the client will retry once after a worker restart.
 
 ## 5. Metrics hooks
 Expose hooks:

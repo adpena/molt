@@ -78,7 +78,10 @@
 - Compare alternatives with explicit tradeoffs and include checklists for validation and regression prevention.
 
 ## Multi-Agent Workflow
-- Use `AGENT_LOCKS.md` to coordinate file ownership and avoid collisions.
+- Use `docs/AGENT_LOCKS.md` to coordinate file ownership and avoid collisions.
+- Before opening any file or starting work on a feature, read `docs/AGENT_LOCKS.md` and honor any locks; if it is missing or unclear, stop and ask for direction before proceeding.
+- Use `docs/AGENT_MEMORY.md` as an append-only coordination log during parallel work: record intended scope before starting and summarize changes/tests/benchmarks after finishing.
+- When multiple agents are active, read both `docs/AGENT_LOCKS.md` and `docs/AGENT_MEMORY.md` first to avoid overlapping scopes, then update the memory log as you progress.
 - Agents may use `gh` (GitHub CLI) and git over SSH to open/merge PRs; commit frequently with clear messages.
 - Run linting/testing once after a cohesive change set is complete (`tools/dev.py lint`, `tools/dev.py test`, plus relevant `cargo` checks); avoid repetitive cycles mid-implementation.
 - Prioritize clear, explicit communication: scope, files touched, and tests run.

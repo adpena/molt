@@ -1,9 +1,10 @@
-import cbor2
-import msgpack
 import pytest
 
 import molt_msgpack
 from molt import shims
+
+msgpack = pytest.importorskip("msgpack")
+cbor2 = pytest.importorskip("cbor2")
 
 
 def test_msgpack_scalars():

@@ -69,7 +69,12 @@ class _Wraps:
         self._updated = updated
 
     def __call__(self, wrapper: Callable[..., Any]) -> Callable[..., Any]:
-        return update_wrapper(wrapper, self._wrapped)
+        return update_wrapper(
+            wrapper,
+            self._wrapped,
+            assigned=self._assigned,
+            updated=self._updated,
+        )
 
 
 def wraps(
@@ -77,27 +82,46 @@ def wraps(
     assigned: Iterable[str] = WRAPPER_ASSIGNMENTS,
     updated: Iterable[str] = WRAPPER_UPDATES,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-    # TODO(stdlib-compat, owner:stdlib, milestone:SL1): honor assigned/updated.
     return _Wraps(wrapped, assigned, updated)
 
 
 class _Partial:
-    def __init__(self, func: Callable[..., Any], arg: Any) -> None:
+    def __init__(
+        self,
+        func: Callable[..., Any],
+        args: tuple[Any, ...],
+        keywords: dict[str, Any] | None,
+    ) -> None:
         if func is None:
             raise TypeError("partial() requires a callable")
         self.func = func
-        self.arg = arg
+        self.args = args
+        self.keywords = keywords
 
-    def __call__(self, arg: Any) -> Any:
-        return self.func(self.arg, arg)
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        if self.keywords:
+            merged = dict(self.keywords)
+            merged.update(kwargs)
+        else:
+            merged = kwargs
+        return self.func(*self.args, *args, **merged)
 
     def __repr__(self) -> str:
-        return f"functools.partial({self.func!r}, ({self.arg!r},))"
+        if self.keywords:
+            return (
+                "functools.partial("
+                + repr(self.func)
+                + ", "
+                + repr(self.args)
+                + ", "
+                + repr(self.keywords)
+                + ")"
+            )
+        return "functools.partial(" + repr(self.func) + ", " + repr(self.args) + ")"
 
 
-def partial(func: Callable[..., Any], arg: Any) -> _Partial:
-    # TODO(stdlib-compat, owner:stdlib, milestone:SL1): support full arg/kw binding.
-    return _Partial(func, arg)
+def partial(func: Callable[..., Any], *args: Any, **keywords: Any) -> _Partial:
+    return _Partial(func, args, keywords or None)
 
 
 class _CacheInfo:
@@ -133,7 +157,6 @@ class _LruCacheWrapper:
     def __init__(
         self, func: Callable[..., Any], maxsize: int | None, typed: bool
     ) -> None:
-        # TODO(stdlib-compat, owner:stdlib, milestone:SL1): include typed in cache key.
         self._func = func
         self._maxsize = maxsize
         self._typed = typed
@@ -142,12 +165,11 @@ class _LruCacheWrapper:
         self._hits = 0
         self._misses = 0
 
-    def __call__(self, arg0: Any) -> Any:
-        # TODO(stdlib-compat, owner:stdlib, milestone:SL1): support *args/**kwargs.
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
         if self._maxsize == 0:
             self._misses += 1
-            return self._func(arg0)
-        key = (arg0,)
+            return self._func(*args, **kwargs)
+        key = _make_lru_key(args, kwargs, self._typed)
         if key in self._cache:
             self._hits += 1
             if self._maxsize is not None:
@@ -158,7 +180,7 @@ class _LruCacheWrapper:
                 self._order.append(key)
             return self._cache[key]
         self._misses += 1
-        result = self._func(arg0)
+        result = self._func(*args, **kwargs)
         self._cache[key] = result
         if self._maxsize is not None:
             self._order.append(key)
@@ -178,6 +200,27 @@ class _LruCacheWrapper:
 
     def cache_parameters(self) -> dict[str, Any]:
         return {"maxsize": self._maxsize, "typed": self._typed}
+
+
+def _make_lru_key(
+    args: tuple[Any, ...], kwargs: dict[str, Any], typed: bool
+) -> tuple[Any, ...]:
+    if kwargs:
+        items: list[tuple[str, Any]] = []
+        for item in kwargs.items():
+            items.append(item)
+        key: tuple[Any, ...] = args + (_kwd_mark,) + tuple(items)
+    else:
+        key = args
+    if typed:
+        types: list[type[Any]] = []
+        for val in args:
+            types.append(type(val))
+        if kwargs:
+            for _, val in kwargs.items():
+                types.append(type(val))
+        key = key + tuple(types)
+    return key
 
 
 class _LruCacheFactory:

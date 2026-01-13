@@ -110,6 +110,10 @@ def _module_dependencies(
                 continue
             if candidate in module_graph and candidate != module_name:
                 deps.add(candidate)
+            if candidate.startswith("molt.stdlib."):
+                stdlib_candidate = candidate[len("molt.stdlib.") :]
+                if stdlib_candidate in module_graph and stdlib_candidate != module_name:
+                    deps.add(stdlib_candidate)
     return deps
 
 

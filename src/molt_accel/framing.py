@@ -3,10 +3,14 @@ from __future__ import annotations
 import select
 import struct
 import time
-from typing import IO
+from typing import Callable, IO
 
 
 class FrameTooLargeError(ValueError):
+    pass
+
+
+class CancelledError(RuntimeError):
     pass
 
 
@@ -26,16 +30,38 @@ def _wait_for_read(stream: IO[bytes], timeout: float | None) -> None:
         raise TimeoutError("Timed out waiting for IPC frame")
 
 
-def _read_exact(stream: IO[bytes], size: int, timeout: float | None) -> bytes:
+CANCEL_POLL_INTERVAL = 0.05
+
+
+def _read_exact(
+    stream: IO[bytes],
+    size: int,
+    timeout: float | None,
+    cancel_check: Callable[[], bool] | None,
+) -> bytes:
     buf = bytearray()
     deadline = None if timeout is None else time.monotonic() + timeout
     while len(buf) < size:
+        if cancel_check is not None and cancel_check():
+            raise CancelledError("IPC read cancelled")
         remaining = None
         if deadline is not None:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError("Timed out waiting for IPC frame")
-        _wait_for_read(stream, remaining)
+        wait_time = remaining
+        if cancel_check is not None:
+            wait_time = (
+                min(remaining, CANCEL_POLL_INTERVAL)
+                if remaining is not None
+                else CANCEL_POLL_INTERVAL
+            )
+        try:
+            _wait_for_read(stream, wait_time)
+        except TimeoutError:
+            if cancel_check is None:
+                raise
+            continue
         chunk = stream.read(size - len(buf))
         if not chunk:
             raise EOFError("IPC stream closed")
@@ -48,12 +74,13 @@ def read_frame(
     *,
     timeout: float | None = None,
     max_size: int = 64 * 1024 * 1024,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> bytes:
-    header = _read_exact(stream, 4, timeout)
+    header = _read_exact(stream, 4, timeout, cancel_check)
     (size,) = struct.unpack("<I", header)
     if size > max_size:
         raise FrameTooLargeError(f"Frame size {size} exceeds max {max_size}")
-    return _read_exact(stream, size, timeout)
+    return _read_exact(stream, size, timeout, cancel_check)
 
 
 def write_frame(

@@ -88,16 +88,21 @@ class Counter:
     ) -> None:
         self._data: dict = {}
         if iterable is not None:
-            if isinstance(iterable, dict) or hasattr(iterable, "items"):
+            if isinstance(iterable, dict):
+                mapping: dict = iterable
+                for key, val in mapping.items():
+                    self._data[key] = self._data.get(key, 0) + int(cast(int, val))
+            elif hasattr(iterable, "items"):
                 mapping = cast(Any, iterable)
                 for key, val in mapping.items():
-                    self._data[key] = self._data.get(key, 0) + int(val)
+                    self._data[key] = self._data.get(key, 0) + int(cast(int, val))
             else:
                 for item in iterable:
                     self._data[item] = self._data.get(item, 0) + 1
         if kwargs:
-            for key, val in kwargs.items():
-                self._data[key] = self._data.get(key, 0) + int(val)
+            kw_map: dict = kwargs
+            for key, val in kw_map.items():
+                self._data[key] = self._data.get(key, 0) + int(cast(int, val))
 
     def __getitem__(self, key: Any) -> int:
         return self._data.get(key, 0)
@@ -109,16 +114,26 @@ class Counter:
         return self._data.items()
 
     def update(
-        self, iterable: abc.Mapping[Any, Any] | Iterable[Any] | None = None
+        self,
+        iterable: abc.Mapping[Any, Any] | Iterable[Any] | None = None,
+        **kwargs: Any,
     ) -> None:
         if iterable is not None:
-            if isinstance(iterable, dict) or hasattr(iterable, "items"):
+            if isinstance(iterable, dict):
+                mapping: dict = iterable
+                for key, val in mapping.items():
+                    self._data[key] = self._data.get(key, 0) + int(cast(int, val))
+            elif hasattr(iterable, "items"):
                 mapping = cast(Any, iterable)
                 for key, val in mapping.items():
-                    self._data[key] = self._data.get(key, 0) + int(val)
+                    self._data[key] = self._data.get(key, 0) + int(cast(int, val))
             else:
                 for item in iterable:
                     self._data[item] = self._data.get(item, 0) + 1
+        if kwargs:
+            kw_map: dict = kwargs
+            for key, val in kw_map.items():
+                self._data[key] = self._data.get(key, 0) + int(cast(int, val))
 
     def most_common(self, n: int | None = None):
         items: list[Any] = []

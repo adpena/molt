@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import os
+import shutil
+import threading
 from typing import Any, Callable
 
-from molt_accel.client import MoltClient
+from importlib.resources import files
+from molt_accel.client import CancelCheck, Hook, MoltClient
 from molt_accel.contracts import build_list_items_payload
 from molt_accel.errors import (
     MoltAccelError,
@@ -16,6 +19,7 @@ from molt_accel.errors import (
 )
 
 ResponseFactory = Callable[[Any, int], Any]
+ClientMode = str
 
 
 def _default_response_factory(payload: Any, status: int) -> Any:
@@ -43,11 +47,53 @@ def _status_for_error(error: MoltAccelError) -> int:
     return 500
 
 
-def _default_client() -> MoltClient:
+_SHARED_CLIENT: MoltClient | None = None
+_SHARED_CLIENT_LOCK = threading.Lock()
+
+
+def _build_client() -> MoltClient:
     cmd = os.environ.get("MOLT_WORKER_CMD")
-    if not cmd:
-        raise MoltWorkerUnavailable("MOLT_WORKER_CMD is not set")
-    return MoltClient(worker_cmd=cmd.split())
+    wire = os.environ.get("MOLT_WORKER_WIRE") or os.environ.get("MOLT_WIRE")
+    if cmd:
+        return MoltClient(worker_cmd=cmd.split(), wire=wire)
+
+    # Fallback: try to locate a `molt-worker` binary in PATH and use the packaged demo exports manifest.
+    worker_bin = shutil.which("molt-worker") or shutil.which("molt_worker")
+    if worker_bin:
+        try:
+            exports = files("molt_accel").joinpath("default_exports.json")
+            return MoltClient(
+                worker_cmd=[worker_bin, "--stdio", "--exports", str(exports)],
+                wire=wire,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            raise MoltWorkerUnavailable(
+                "Failed to locate default exports manifest"
+            ) from exc
+
+    raise MoltWorkerUnavailable(
+        "MOLT_WORKER_CMD is not set and molt-worker was not found in PATH"
+    )
+
+
+def _resolve_client(
+    client: MoltClient | None, client_mode: ClientMode | None
+) -> tuple[MoltClient, bool]:
+    if client is not None:
+        return client, False
+
+    mode = (client_mode or os.environ.get("MOLT_ACCEL_CLIENT_MODE", "shared")).lower()
+    if mode not in {"shared", "per_request"}:
+        mode = "shared"
+
+    if mode == "shared":
+        global _SHARED_CLIENT
+        with _SHARED_CLIENT_LOCK:
+            if _SHARED_CLIENT is None:
+                _SHARED_CLIENT = _build_client()
+            return _SHARED_CLIENT, False
+
+    return _build_client(), True
 
 
 def molt_offload(
@@ -56,10 +102,15 @@ def molt_offload(
     codec: str = "msgpack",
     timeout_ms: int = 250,
     client: MoltClient | None = None,
+    client_mode: ClientMode | None = None,
     payload_builder: Callable[..., Any] | None = None,
     response_factory: ResponseFactory | None = None,
     allow_fallback: bool = False,
     idempotent: bool = False,
+    before_send: Hook | None = None,
+    after_recv: Hook | None = None,
+    metrics_hook: Hook | None = None,
+    cancel_check: Callable[[Any], bool] | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorate a handler to offload the core work to a Molt worker."""
 
@@ -67,9 +118,18 @@ def molt_offload(
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             request = args[0] if args else None
             build_payload = payload_builder or build_list_items_payload
-            active_client = client or _default_client()
+            active_client: MoltClient | None = None
+            close_after = False
             build_response = response_factory or _default_response_factory
+            poll_cancel: CancelCheck | None = None
+            if cancel_check is not None:
+
+                def _poll_cancel() -> bool:
+                    return cancel_check(request)
+
+                poll_cancel = _poll_cancel
             try:
+                active_client, close_after = _resolve_client(client, client_mode)
                 payload = build_payload(request, *args[1:], **kwargs)
                 result = active_client.call(
                     entry=entry,
@@ -77,6 +137,10 @@ def molt_offload(
                     codec=codec,
                     timeout_ms=timeout_ms,
                     idempotent=idempotent,
+                    before_send=before_send,
+                    after_recv=after_recv,
+                    metrics_hook=metrics_hook,
+                    cancel_check=poll_cancel,
                 )
                 return build_response(result, 200)
             except MoltAccelError as exc:
@@ -85,6 +149,9 @@ def molt_offload(
                 status = _status_for_error(exc)
                 payload = {"error": exc.__class__.__name__, "detail": str(exc)}
                 return build_response(payload, status)
+            finally:
+                if close_after and active_client is not None:
+                    active_client.close()
 
         return wrapper
 

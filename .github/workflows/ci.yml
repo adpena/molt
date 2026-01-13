@@ -65,6 +65,22 @@ jobs:
         with:
           name: bench-smoke
           path: bench/results/ci_smoke.json
+      - name: Demo k6 (stack)
+        if: matrix.python-version == '3.12'
+        run: |
+          chmod +x bench/scripts/run_stack.sh
+          ./bench/scripts/run_stack.sh
+      - name: Upload demo k6 artifacts
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-k6
+          path: bench/results/demo_k6_*.json
+      - name: Django offload smoke
+        if: matrix.python-version == '3.12'
+        run: |
+          uv sync --dev --python 3.12 --frozen
+          uv run pytest tests/test_django_demo.py
 
   test-rust:
     runs-on: ubuntu-latest

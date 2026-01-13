@@ -75,9 +75,10 @@ This spec defines:
 
 ### 4.1 Evaluation order
 
-Molt must preserve Python’s left-to-right evaluation order for:
+Molt must preserve Python’s evaluation order for:
 1. The callee expression (`f` in `f(...)`)
-2. Each argument expression **in source order**, including `*expr` and `**expr`
+2. All positional arguments (including `*expr`) left-to-right
+3. All keyword arguments (including `**expr`) left-to-right
 
 Side effects from argument expressions must occur before binding errors are raised (except for errors that can be proven at compile time without evaluating expressions).
 

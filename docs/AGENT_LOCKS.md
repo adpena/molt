@@ -8,4 +8,4 @@ This file coordinates parallel agent work to prevent file collisions.
 - Remove your claim when finished.
 
 ## Active locks
-- codex -> runtime/molt-runtime/, runtime/molt-backend/, src/molt/, tests/, docs/spec/, wit/
+- codex -> runtime/molt-runtime/, src/molt/frontend/, tests/differential/basic/, docs/spec/0014_TYPE_COVERAGE_MATRIX.md, docs/spec/STATUS.md, ROADMAP.md

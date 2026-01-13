@@ -31,6 +31,9 @@ class BuiltinFuncSpec:
     params: tuple[str, ...]
     defaults: tuple[ast.expr, ...] = ()
     vararg: str | None = None
+    pos_or_kw_params: tuple[str, ...] = ()
+    kwonly_params: tuple[str, ...] = ()
+    kw_defaults: tuple[ast.expr | None, ...] = ()
 
 
 GEN_SEND_OFFSET = 0
@@ -66,6 +69,12 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
     "len": BuiltinFuncSpec("molt_len", ("obj",)),
     "ord": BuiltinFuncSpec("molt_ord", ("obj",)),
     "chr": BuiltinFuncSpec("molt_chr", ("obj",)),
+    "abs": BuiltinFuncSpec("molt_abs_builtin", ("obj",)),
+    "ascii": BuiltinFuncSpec("molt_ascii_from_obj", ("obj",)),
+    "bin": BuiltinFuncSpec("molt_bin_builtin", ("obj",)),
+    "oct": BuiltinFuncSpec("molt_oct_builtin", ("obj",)),
+    "hex": BuiltinFuncSpec("molt_hex_builtin", ("obj",)),
+    "divmod": BuiltinFuncSpec("molt_divmod_builtin", ("a", "b")),
     "repr": BuiltinFuncSpec("molt_repr_builtin", ("obj",)),
     "callable": BuiltinFuncSpec("molt_callable_builtin", ("obj",)),
     "id": BuiltinFuncSpec("molt_id", ("obj",)),
@@ -78,6 +87,26 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
     "iter": BuiltinFuncSpec("molt_iter", ("obj",)),
     "any": BuiltinFuncSpec("molt_any_builtin", ("iterable",)),
     "all": BuiltinFuncSpec("molt_all_builtin", ("iterable",)),
+    "sum": BuiltinFuncSpec(
+        "molt_sum_builtin",
+        ("iterable",),
+        (ast.Constant(0),),
+        pos_or_kw_params=("start",),
+    ),
+    "min": BuiltinFuncSpec(
+        "molt_min_builtin",
+        (),
+        vararg="args",
+        kwonly_params=("key", "default"),
+        kw_defaults=(ast.Constant(None), _MOLT_MISSING),
+    ),
+    "max": BuiltinFuncSpec(
+        "molt_max_builtin",
+        (),
+        vararg="args",
+        kwonly_params=("key", "default"),
+        kw_defaults=(ast.Constant(None), _MOLT_MISSING),
+    ),
     "next": BuiltinFuncSpec(
         "molt_next_builtin", ("iterator", "default"), (_MOLT_MISSING,)
     ),
@@ -93,6 +122,8 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
     "hasattr": BuiltinFuncSpec("molt_has_attr_name", ("obj", "name")),
     "super": BuiltinFuncSpec("molt_super_builtin", ("type", "obj")),
     "print": BuiltinFuncSpec("molt_print_builtin", (), (), vararg="args"),
+    "_molt_getrecursionlimit": BuiltinFuncSpec("molt_getrecursionlimit", ()),
+    "_molt_setrecursionlimit": BuiltinFuncSpec("molt_setrecursionlimit", ("limit",)),
 }
 
 MOLT_REEXPORT_FUNCTIONS = {
@@ -216,6 +247,11 @@ MOLT_DIRECT_CALLS = {
     },
 }
 
+MOLT_DIRECT_CALL_BIND_ALWAYS = {
+    "functools": {"partial"},
+    "operator": {"attrgetter", "itemgetter", "methodcaller"},
+}
+
 STDLIB_DIRECT_CALL_MODULES = {
     module for module in MOLT_DIRECT_CALLS if not module.startswith("molt.")
 }
@@ -247,6 +283,7 @@ class ClassInfo(TypedDict, total=False):
     field_order: list[str]
     defaults: dict[str, ast.expr]
     class_attrs: dict[str, ast.expr]
+    module: str
     base: str | None
     bases: list[str]
     mro: list[str]
@@ -2162,6 +2199,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         )
         return exc_val
 
+    def _emit_type_error_value(self, message: str, type_hint: str = "Any") -> MoltValue:
+        err_val = self._emit_exception_new("TypeError", message)
+        self.emit(MoltOp(kind="RAISE", args=[err_val], result=MoltValue("none")))
+        res = MoltValue(self.next_var(), type_hint=type_hint)
+        self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
+        return res
+
     def _emit_stop_iteration_from_value(self, value: MoltValue) -> None:
         zero = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[0], result=zero))
@@ -2240,16 +2284,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self._emit_guard_type(value, hint)
             self._apply_hint_to_value(name, value, hint)
             return
-        if self.type_hint_policy == "trust":
+        if self.type_hint_policy == "trust" or self.stdlib_hint_trust:
             self._apply_hint_to_value(name, value, hint)
 
     def _emit_builtin_function(self, func_id: str) -> MoltValue:
         spec = BUILTIN_FUNC_SPECS[func_id]
+        arity = len(spec.params) + len(spec.pos_or_kw_params) + len(spec.kwonly_params)
+        if spec.vararg is not None:
+            arity += 1
         func_val = MoltValue(self.next_var(), type_hint="function")
         self.emit(
             MoltOp(
                 kind="BUILTIN_FUNC",
-                args=[spec.runtime, len(spec.params)],
+                args=[spec.runtime, arity],
                 result=func_val,
             )
         )
@@ -2258,12 +2305,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             name=func_id,
             qualname=func_id,
             posonly_params=list(spec.params),
-            pos_or_kw_params=[],
-            kwonly_params=[],
+            pos_or_kw_params=list(spec.pos_or_kw_params),
+            kwonly_params=list(spec.kwonly_params),
             vararg=spec.vararg,
             varkw=None,
             default_exprs=list(spec.defaults),
-            kw_default_exprs=[],
+            kw_default_exprs=list(spec.kw_defaults),
             docstring=None,
             module_override="builtins",
         )
@@ -5155,6 +5202,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 "defaults": field_defaults,
                 "field_hints": field_hints,
                 "class_attrs": class_attrs,
+                "module": self.module_name,
                 "bases": base_names,
                 "mro": mro_names,
                 "dynamic": False,
@@ -5275,6 +5323,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 defaults=field_defaults,
                 field_hints=field_hints,
                 class_attrs=class_attrs,
+                module=self.module_name,
                 bases=base_names,
                 mro=mro_names,
                 dynamic=dynamic,
@@ -6070,6 +6119,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             method_info = None
             if lookup_class:
                 method_info, _ = self._resolve_method_info(lookup_class, method)
+            if method_info and (
+                needs_bind
+                or method_info.get("has_vararg", False)
+                or method_info.get("has_varkw", False)
+            ):
+                callee = self.visit(node.func)
+                if callee is None:
+                    raise NotImplementedError("Unsupported call target")
+                callargs = self._emit_call_args_builder(node)
+                res = MoltValue(self.next_var(), type_hint="Any")
+                self.emit(
+                    MoltOp(
+                        kind="CALL_BIND",
+                        args=[callee, callargs],
+                        result=res,
+                    )
+                )
+                return res
             if method_info and not needs_bind:
                 func_val = method_info["func"]
                 descriptor = method_info["descriptor"]
@@ -6125,18 +6192,28 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                     )
                                 )
                                 args = args[:fixed_param_count] + [tuple_val]
-                            else:
-                                tuple_val = MoltValue(
+                            elif len(args) == fixed_param_count:
+                                empty_tuple = MoltValue(
                                     self.next_var(), type_hint="tuple"
                                 )
                                 self.emit(
-                                    MoltOp(kind="TUPLE_NEW", args=[], result=tuple_val)
+                                    MoltOp(
+                                        kind="TUPLE_NEW",
+                                        args=[],
+                                        result=empty_tuple,
+                                    )
                                 )
-                                args.append(tuple_val)
+                                args = args + [empty_tuple]
                         if has_varkw:
-                            dict_val = MoltValue(self.next_var(), type_hint="dict")
-                            self.emit(MoltOp(kind="DICT_NEW", args=[], result=dict_val))
-                            args.append(dict_val)
+                            empty_kwargs = MoltValue(self.next_var(), type_hint="dict")
+                            self.emit(
+                                MoltOp(
+                                    kind="DICT_NEW",
+                                    args=[],
+                                    result=empty_kwargs,
+                                )
+                            )
+                            args = args + [empty_kwargs]
                     res_hint = "Any"
                     return_hint = method_info["return_hint"]
                     if return_hint and return_hint in self.classes:
@@ -6824,7 +6901,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     allowlist_key in MOLT_DIRECT_CALLS
                     and func_id in MOLT_DIRECT_CALLS[allowlist_key]
                 ):
-                    if needs_bind:
+                    force_bind = func_id in MOLT_DIRECT_CALL_BIND_ALWAYS.get(
+                        allowlist_key, set()
+                    )
+                    if needs_bind or force_bind:
                         callee = self.visit(node.func)
                         if callee is None:
                             raise NotImplementedError("Unsupported call target")
@@ -6851,7 +6931,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     callee = self.visit(node.func)
                     if callee is None:
                         raise NotImplementedError("Unsupported call target")
-                    res = MoltValue(self.next_var(), type_hint="Any")
+                    res_hint = func_id if func_id in self.classes else "Any"
+                    res = MoltValue(self.next_var(), type_hint=res_hint)
                     callargs = self._emit_call_args_builder(node)
                     self.emit(
                         MoltOp(
@@ -8002,11 +8083,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 target_name = target_info.type_hint.split(":")[1]
                 if needs_bind:
                     callargs = self._emit_call_args_builder(node)
+                    callee = target_info
+                    if (
+                        self.current_func_name != "molt_main"
+                        and func_id not in self.locals
+                    ):
+                        callee = self._emit_module_attr_get(func_id)
                     res = MoltValue(self.next_var(), type_hint="int")
                     self.emit(
                         MoltOp(
                             kind="CALL_BIND",
-                            args=[target_info, callargs],
+                            args=[callee, callargs],
                             result=res,
                         )
                     )
@@ -8337,6 +8424,152 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 res = MoltValue(self.next_var(), type_hint="Any")
                 self.emit(MoltOp(kind="INDEX", args=[res_cell, zero], result=res))
                 return res
+            if func_id == "sum":
+                if any(isinstance(arg, ast.Starred) for arg in node.args) or any(
+                    kw.arg is None for kw in node.keywords
+                ):
+                    callee = self._emit_builtin_function(func_id)
+                    res = MoltValue(self.next_var(), type_hint="Any")
+                    if needs_bind:
+                        callargs = self._emit_call_args_builder(node)
+                        self.emit(
+                            MoltOp(
+                                kind="CALL_BIND", args=[callee, callargs], result=res
+                            )
+                        )
+                    else:
+                        args = self._emit_call_args(node.args)
+                        self.emit(
+                            MoltOp(kind="CALL_FUNC", args=[callee] + args, result=res)
+                        )
+                    return res
+                if not node.args:
+                    return self._emit_type_error_value(
+                        "sum expected at least 1 argument, got 0"
+                    )
+                if len(node.args) > 2:
+                    return self._emit_type_error_value(
+                        f"sum expected at most 2 arguments, got {len(node.args)}"
+                    )
+                start_expr = None
+                has_start = False
+                if len(node.args) == 2:
+                    start_expr = node.args[1]
+                    has_start = True
+                for keyword in node.keywords:
+                    if keyword.arg != "start":
+                        msg = (
+                            f"sum() got an unexpected keyword argument '{keyword.arg}'"
+                        )
+                        return self._emit_type_error_value(msg)
+                    if has_start:
+                        return self._emit_type_error_value(
+                            "sum() got multiple values for argument 'start'"
+                        )
+                    start_expr = keyword.value
+                    has_start = True
+                iterable = self.visit(node.args[0])
+                if iterable is None:
+                    raise NotImplementedError("Unsupported sum iterable")
+                if start_expr is None:
+                    start_val = MoltValue(self.next_var(), type_hint="int")
+                    self.emit(MoltOp(kind="CONST", args=[0], result=start_val))
+                else:
+                    start_val = self.visit(start_expr)
+                    if start_val is None:
+                        raise NotImplementedError("Unsupported sum start value")
+                callee = self._emit_builtin_function(func_id)
+                res = MoltValue(self.next_var(), type_hint="Any")
+                self.emit(
+                    MoltOp(
+                        kind="CALL_FUNC", args=[callee, iterable, start_val], result=res
+                    )
+                )
+                return res
+            if func_id in {"min", "max"}:
+                if any(isinstance(arg, ast.Starred) for arg in node.args) or any(
+                    kw.arg is None for kw in node.keywords
+                ):
+                    callee = self._emit_builtin_function(func_id)
+                    res = MoltValue(self.next_var(), type_hint="Any")
+                    if needs_bind:
+                        callargs = self._emit_call_args_builder(node)
+                        self.emit(
+                            MoltOp(
+                                kind="CALL_BIND", args=[callee, callargs], result=res
+                            )
+                        )
+                    else:
+                        args = self._emit_call_args(node.args)
+                        self.emit(
+                            MoltOp(kind="CALL_FUNC", args=[callee] + args, result=res)
+                        )
+                    return res
+                if not node.args:
+                    return self._emit_type_error_value(
+                        f"{func_id} expected at least 1 argument, got 0"
+                    )
+                key_expr = None
+                default_expr = None
+                for keyword in node.keywords:
+                    if keyword.arg not in {"key", "default"}:
+                        msg = (
+                            f"{func_id}() got an unexpected keyword argument "
+                            f"'{keyword.arg}'"
+                        )
+                        return self._emit_type_error_value(msg)
+                    if keyword.arg == "key":
+                        if key_expr is not None:
+                            return self._emit_type_error_value(
+                                f"{func_id}() got multiple values for argument 'key'"
+                            )
+                        key_expr = keyword.value
+                    else:
+                        if default_expr is not None:
+                            return self._emit_type_error_value(
+                                f"{func_id}() got multiple values for argument 'default'"
+                            )
+                        default_expr = keyword.value
+                if len(node.args) > 1 and default_expr is not None:
+                    msg = (
+                        f"Cannot specify a default for {func_id}() with "
+                        "multiple positional arguments"
+                    )
+                    return self._emit_type_error_value(msg)
+                arg_vals: list[MoltValue] = []
+                for expr in node.args:
+                    arg_val = self.visit(expr)
+                    if arg_val is None:
+                        raise NotImplementedError(
+                            f"Unsupported {func_id} positional argument"
+                        )
+                    arg_vals.append(arg_val)
+                args_tuple = MoltValue(self.next_var(), type_hint="tuple")
+                self.emit(MoltOp(kind="TUPLE_NEW", args=arg_vals, result=args_tuple))
+                if key_expr is None:
+                    key_val = MoltValue(self.next_var(), type_hint="None")
+                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=key_val))
+                else:
+                    key_val = self.visit(key_expr)
+                    if key_val is None:
+                        raise NotImplementedError(f"Unsupported {func_id} key")
+                if default_expr is None:
+                    default_val = MoltValue(self.next_var(), type_hint="Any")
+                    self.emit(MoltOp(kind="MISSING", args=[], result=default_val))
+                else:
+                    default_val = self.visit(default_expr)
+                    if default_val is None:
+                        raise NotImplementedError(f"Unsupported {func_id} default")
+                callee = self._emit_builtin_function(func_id)
+                res = MoltValue(self.next_var(), type_hint="Any")
+                self.emit(
+                    MoltOp(
+                        kind="CALL_FUNC",
+                        args=[callee, args_tuple, key_val, default_val],
+                        result=res,
+                    )
+                )
+                return res
             if func_id == "iter":
                 if len(node.args) != 1:
                     raise NotImplementedError("iter expects 1 argument")
@@ -8368,8 +8601,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     raise NotImplementedError("Unsupported list input")
                 return self._emit_list_from_iter(iterable)
             if func_id == "tuple":
+                if node.keywords:
+                    return self._emit_type_error_value(
+                        "tuple() takes no keyword arguments", "tuple"
+                    )
                 if len(node.args) > 1:
-                    raise NotImplementedError("tuple expects 0 or 1 arguments")
+                    msg = f"tuple expected at most 1 argument, got {len(node.args)}"
+                    return self._emit_type_error_value(msg, "tuple")
                 if not node.args:
                     res = MoltValue(self.next_var(), type_hint="tuple")
                     self.emit(MoltOp(kind="TUPLE_NEW", args=[], result=res))
@@ -8400,7 +8638,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return self._emit_tuple_from_iter(iterable)
             if func_id == "dict":
                 if len(node.args) > 1:
-                    raise NotImplementedError("dict expects 0 or 1 arguments")
+                    msg = f"dict expected at most 1 argument, got {len(node.args)}"
+                    return self._emit_type_error_value(msg, "dict")
                 res = MoltValue(self.next_var(), type_hint="dict")
                 if not node.args:
                     self.emit(MoltOp(kind="DICT_NEW", args=[], result=res))
@@ -8601,28 +8840,174 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return self._emit_frozenset_from_iter(iterable)
                 return self._emit_tuple_from_iter(iterable)
             if func_id == "bytes":
-                if len(node.args) > 1:
-                    raise NotImplementedError("bytes expects 0 or 1 arguments")
-                if not node.args:
+                if any(kw.arg is None for kw in node.keywords):
+                    raise NotImplementedError("bytes does not support **kwargs")
+                if len(node.args) > 3:
+                    msg = f"bytes() takes at most 3 arguments ({len(node.args)} given)"
+                    return self._emit_type_error_value(msg, "bytes")
+                source_expr = node.args[0] if node.args else None
+                encoding_expr = node.args[1] if len(node.args) > 1 else None
+                errors_expr = node.args[2] if len(node.args) > 2 else None
+                has_encoding = encoding_expr is not None
+                has_errors = errors_expr is not None
+                for kw in node.keywords:
+                    if kw.arg == "source":
+                        if source_expr is not None:
+                            return self._emit_type_error_value(
+                                "bytes() got multiple values for argument 'source'",
+                                "bytes",
+                            )
+                        source_expr = kw.value
+                    elif kw.arg == "encoding":
+                        if has_encoding:
+                            return self._emit_type_error_value(
+                                "bytes() got multiple values for argument 'encoding'",
+                                "bytes",
+                            )
+                        encoding_expr = kw.value
+                        has_encoding = True
+                    elif kw.arg == "errors":
+                        if has_errors:
+                            return self._emit_type_error_value(
+                                "bytes() got multiple values for argument 'errors'",
+                                "bytes",
+                            )
+                        errors_expr = kw.value
+                        has_errors = True
+                    else:
+                        msg = f"bytes() got an unexpected keyword argument '{kw.arg}'"
+                        return self._emit_type_error_value(msg, "bytes")
+                if source_expr is None and not has_encoding and not has_errors:
                     res = MoltValue(self.next_var(), type_hint="bytes")
                     self.emit(MoltOp(kind="CONST_BYTES", args=[b""], result=res))
                     return res
-                arg = self.visit(node.args[0])
-                if arg is None:
-                    raise NotImplementedError("Unsupported bytes input")
+                if source_expr is None:
+                    source_val = MoltValue(self.next_var(), type_hint="None")
+                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=source_val))
+                else:
+                    source_val = self.visit(source_expr)
+                    if source_val is None:
+                        raise NotImplementedError("Unsupported bytes input")
+                if has_encoding:
+                    if encoding_expr is None:
+                        raise NotImplementedError("Unsupported bytes encoding")
+                    encoding_val = self.visit(encoding_expr)
+                    if encoding_val is None:
+                        raise NotImplementedError("Unsupported bytes encoding")
+                else:
+                    encoding_val = MoltValue(self.next_var(), type_hint="None")
+                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=encoding_val))
+                if has_errors:
+                    if errors_expr is None:
+                        raise NotImplementedError("Unsupported bytes errors")
+                    errors_val = self.visit(errors_expr)
+                    if errors_val is None:
+                        raise NotImplementedError("Unsupported bytes errors")
+                else:
+                    errors_val = MoltValue(self.next_var(), type_hint="None")
+                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=errors_val))
                 res = MoltValue(self.next_var(), type_hint="bytes")
-                self.emit(MoltOp(kind="BYTES_FROM_OBJ", args=[arg], result=res))
+                if has_encoding or has_errors:
+                    self.emit(
+                        MoltOp(
+                            kind="BYTES_FROM_STR",
+                            args=[source_val, encoding_val, errors_val],
+                            result=res,
+                        )
+                    )
+                else:
+                    self.emit(
+                        MoltOp(kind="BYTES_FROM_OBJ", args=[source_val], result=res)
+                    )
                 return res
             if func_id == "bytearray":
-                if len(node.args) > 1:
-                    raise NotImplementedError("bytearray expects 0 or 1 arguments")
-                if node.args:
-                    arg = self.visit(node.args[0])
-                else:
+                if any(kw.arg is None for kw in node.keywords):
+                    raise NotImplementedError("bytearray does not support **kwargs")
+                if len(node.args) > 3:
+                    msg = f"bytearray() takes at most 3 arguments ({len(node.args)} given)"
+                    return self._emit_type_error_value(msg, "bytearray")
+                source_expr = node.args[0] if node.args else None
+                encoding_expr = node.args[1] if len(node.args) > 1 else None
+                errors_expr = node.args[2] if len(node.args) > 2 else None
+                has_encoding = encoding_expr is not None
+                has_errors = errors_expr is not None
+                for kw in node.keywords:
+                    if kw.arg == "source":
+                        if source_expr is not None:
+                            return self._emit_type_error_value(
+                                "bytearray() got multiple values for argument 'source'",
+                                "bytearray",
+                            )
+                        source_expr = kw.value
+                    elif kw.arg == "encoding":
+                        if has_encoding:
+                            return self._emit_type_error_value(
+                                "bytearray() got multiple values for argument 'encoding'",
+                                "bytearray",
+                            )
+                        encoding_expr = kw.value
+                        has_encoding = True
+                    elif kw.arg == "errors":
+                        if has_errors:
+                            return self._emit_type_error_value(
+                                "bytearray() got multiple values for argument 'errors'",
+                                "bytearray",
+                            )
+                        errors_expr = kw.value
+                        has_errors = True
+                    else:
+                        msg = (
+                            f"bytearray() got an unexpected keyword argument '{kw.arg}'"
+                        )
+                        return self._emit_type_error_value(msg, "bytearray")
+                if source_expr is None and not has_encoding and not has_errors:
                     arg = MoltValue(self.next_var(), type_hint="bytes")
                     self.emit(MoltOp(kind="CONST_BYTES", args=[b""], result=arg))
+                    res = MoltValue(self.next_var(), type_hint="bytearray")
+                    self.emit(MoltOp(kind="BYTEARRAY_FROM_OBJ", args=[arg], result=res))
+                    return res
+                if source_expr is None:
+                    source_val = MoltValue(self.next_var(), type_hint="None")
+                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=source_val))
+                else:
+                    source_val = self.visit(source_expr)
+                    if source_val is None:
+                        raise NotImplementedError("Unsupported bytearray input")
+                if has_encoding:
+                    if encoding_expr is None:
+                        raise NotImplementedError("Unsupported bytearray encoding")
+                    encoding_val = self.visit(encoding_expr)
+                    if encoding_val is None:
+                        raise NotImplementedError("Unsupported bytearray encoding")
+                else:
+                    encoding_val = MoltValue(self.next_var(), type_hint="None")
+                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=encoding_val))
+                if has_errors:
+                    if errors_expr is None:
+                        raise NotImplementedError("Unsupported bytearray errors")
+                    errors_val = self.visit(errors_expr)
+                    if errors_val is None:
+                        raise NotImplementedError("Unsupported bytearray errors")
+                else:
+                    errors_val = MoltValue(self.next_var(), type_hint="None")
+                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=errors_val))
                 res = MoltValue(self.next_var(), type_hint="bytearray")
-                self.emit(MoltOp(kind="BYTEARRAY_FROM_OBJ", args=[arg], result=res))
+                if has_encoding or has_errors:
+                    self.emit(
+                        MoltOp(
+                            kind="BYTEARRAY_FROM_STR",
+                            args=[source_val, encoding_val, errors_val],
+                            result=res,
+                        )
+                    )
+                else:
+                    self.emit(
+                        MoltOp(
+                            kind="BYTEARRAY_FROM_OBJ",
+                            args=[source_val],
+                            result=res,
+                        )
+                    )
                 return res
             if func_id == "memoryview":
                 if len(node.args) != 1:
@@ -8907,6 +9292,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if (
                 class_info
                 and not class_info.get("dynamic")
+                and class_info.get("module") == self.module_name
                 and node.attr not in fields
                 and not self._instance_attr_mutated(obj.type_hint, node.attr)
             ):
@@ -9660,6 +10046,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
     def visit_UnaryOp(self, node: ast.UnaryOp) -> Any:
         operand = self.visit(node.operand)
+        if operand is None:
+            raise NotImplementedError("Unsupported unary operand")
         if isinstance(node.op, ast.UAdd):
             return operand
         if isinstance(node.op, ast.USub):
@@ -13557,10 +13945,26 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "out": op.result.name,
                     }
                 )
+            elif op.kind == "BYTES_FROM_STR":
+                json_ops.append(
+                    {
+                        "kind": "bytes_from_str",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "BYTEARRAY_FROM_OBJ":
                 json_ops.append(
                     {
                         "kind": "bytearray_from_obj",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "BYTEARRAY_FROM_STR":
+                json_ops.append(
+                    {
+                        "kind": "bytearray_from_str",
                         "args": [arg.name for arg in op.args],
                         "out": op.result.name,
                     }

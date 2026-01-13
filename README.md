@@ -45,7 +45,7 @@ Canonical status lives in `docs/spec/STATUS.md` (README and ROADMAP are kept in 
 - **Numeric tower**: complex/decimal not implemented; missing int helpers (e.g., `bit_length`, `to_bytes`, `from_bytes`).
 - **Format protocol**: no `__format__` fallback or named fields; locale-aware grouping still pending.
 - **memoryview**: partial buffer protocol (no multidimensional shapes or advanced buffer exports).
-- **Offload demo**: `molt_accel` scaffolding exists and a `molt_worker` stdio shell returns a deterministic `list_items` response; compiled entrypoint dispatch, cancellation, and Django demo wiring are still pending.
+- **Offload demo**: `molt_accel` scaffolding exists (optional dep `pip install .[accel]`), with hooks/metrics/cancel checks, and a `molt_worker` stdio shell returns deterministic responses. The decorator can fall back to `molt-worker` in PATH using a packaged default exports manifest when `MOLT_WORKER_CMD` is unset. A Django demo scaffold and k6 harness live in `demo/` and `bench/k6/`; compiled entrypoint dispatch is partially wired (`list_items`, `compute`) and full demo wiring is still pending.
 - **DB layer**: `molt-db` pool skeleton exists; async drivers and Postgres protocol integration are not implemented yet.
 
 ## Quick start
@@ -62,7 +62,20 @@ python3 -m molt.cli build examples/hello.py
 
 # Use JSON parsing only when explicitly requested
 python3 -m molt.cli build --codec json examples/hello.py
+
+# Optional: accel/decorator support
+pip install .[accel]  # brings in msgpack and packaged default exports for molt_accel
+export MOLT_WORKER_CMD="molt-worker --stdio --exports demo/molt_worker_app/molt_exports.json --compiled-exports demo/molt_worker_app/molt_exports.json"
 ```
+
+### Accel decorator options (DX)
+- `entry`: worker export name; must be present in the exports/compiled manifest (e.g., `list_items`, `compute`). Mismatch → compile-time error or runtime `InvalidInput`/`InternalError`.
+- `codec`: `msgpack` preferred; must match manifest `codec_in`/`codec_out`.
+- `timeout_ms`: client timeout; on timeout we send `__cancel__` and close pipes.
+- `payload_builder`/`response_factory`: customize request/response shaping for your endpoint contract.
+- `allow_fallback`: when True, falls back to the original view on accel failure.
+- Hooks: `before_send`, `after_recv`, `metrics_hook`, `cancel_check`.
+- Sample entries in demo manifests: `list_items` (msgpack), `compute` (msgpack), `offload_table` (json).
 
 ## ASGI shim (CPython)
 

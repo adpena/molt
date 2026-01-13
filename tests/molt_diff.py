@@ -4,10 +4,30 @@ import os
 from pathlib import Path
 
 
+def _collect_env_overrides(file_path: str) -> dict[str, str]:
+    overrides: dict[str, str] = {}
+    try:
+        text = Path(file_path).read_text()
+    except OSError:
+        return overrides
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("# MOLT_ENV:"):
+            continue
+        payload = stripped[len("# MOLT_ENV:") :].strip()
+        for token in payload.split():
+            if "=" not in token:
+                continue
+            key, value = token.split("=", 1)
+            overrides[key] = value
+    return overrides
+
+
 def run_cpython(file_path, python_exe=sys.executable):
     env = os.environ.copy()
     paths = [env.get("PYTHONPATH", ""), ".", "src"]
     env["PYTHONPATH"] = os.pathsep.join(p for p in paths if p)
+    env.update(_collect_env_overrides(file_path))
     bootstrap = (
         "import runpy, sys; "
         "import molt.shims as shims; "
@@ -32,6 +52,7 @@ def run_molt(file_path):
     env = os.environ.copy()
     env["PYTHONPATH"] = "src"
     env.setdefault("MOLT_DEBUG_AWAITABLE", "1")
+    env.update(_collect_env_overrides(file_path))
     build_res = subprocess.run(
         [sys.executable, "-m", "molt.cli", "build", file_path],
         env=env,

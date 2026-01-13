@@ -51,6 +51,28 @@ def main() -> None:
             except Exception as exc:  # pragma: no cover - defensive
                 status = "InvalidInput"
                 error = str(exc)
+        elif entry == "compute":
+            try:
+                req = decode_payload(payload, codec)
+                values = req.get("values", [])
+                scale = req.get("scale", 1.0)
+                offset = req.get("offset", 0.0)
+                scaled = [(float(v) * float(scale)) + float(offset) for v in values]
+                response = {"count": len(scaled), "sum": sum(scaled), "scaled": scaled}
+                response_payload = encode_payload(response, codec)
+            except Exception as exc:
+                status = "InvalidInput"
+                error = str(exc)
+        elif entry == "offload_table":
+            try:
+                req = decode_payload(payload, codec)
+                rows = int(req.get("rows", 0))
+                sample = [{"id": i, "value": i % 7} for i in range(min(rows, 8))]
+                response = {"rows": rows, "sample": sample}
+                response_payload = encode_payload(response, codec)
+            except Exception as exc:
+                status = "InvalidInput"
+                error = str(exc)
         elif entry == "__error__":
             status = "InternalError"
             error = "boom"

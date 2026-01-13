@@ -263,12 +263,15 @@ const TYPE_TAG_SET: i64 = 17;
 const TYPE_TAG_FROZENSET: i64 = 18;
 const BUILTIN_TAG_OBJECT: i64 = 100;
 const BUILTIN_TAG_TYPE: i64 = 101;
+const DEFAULT_RECURSION_LIMIT: usize = 1000;
 
 thread_local! {
     static PARSE_ARENA: RefCell<TempArena> = RefCell::new(TempArena::new(8 * 1024));
     static CONTEXT_STACK: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
     static EXCEPTION_STACK: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     static FRAME_STACK: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+    static RECURSION_LIMIT: Cell<usize> = const { Cell::new(DEFAULT_RECURSION_LIMIT) };
+    static RECURSION_DEPTH: Cell<usize> = const { Cell::new(0) };
     static ACTIVE_EXCEPTION_STACK: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
     static ACTIVE_EXCEPTION_FALLBACK: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
     static GENERATOR_EXCEPTION_STACKS: RefCell<HashMap<usize, Vec<u64>>> =
@@ -528,6 +531,43 @@ fn index_i64_from_obj(obj_bits: u64, err: &str) -> i64 {
         }
     }
     raise!("TypeError", err)
+}
+
+fn index_bigint_from_obj(obj_bits: u64, err: &str) -> Option<BigInt> {
+    let obj = obj_from_bits(obj_bits);
+    if let Some(i) = to_i64(obj) {
+        return Some(BigInt::from(i));
+    }
+    if let Some(ptr) = bigint_ptr_from_bits(obj_bits) {
+        return Some(unsafe { bigint_ref(ptr).clone() });
+    }
+    if let Some(ptr) = maybe_ptr_from_bits(obj_bits) {
+        unsafe {
+            let index_name_bits = intern_static_name(&INTERN_INDEX_NAME, b"__index__");
+            if let Some(call_bits) = attr_lookup_ptr(ptr, index_name_bits) {
+                let res_bits = call_callable0(call_bits);
+                dec_ref_bits(call_bits);
+                let res_obj = obj_from_bits(res_bits);
+                if let Some(i) = to_i64(res_obj) {
+                    return Some(BigInt::from(i));
+                }
+                if let Some(big_ptr) = bigint_ptr_from_bits(res_bits) {
+                    let big = bigint_ref(big_ptr).clone();
+                    dec_ref_bits(res_bits);
+                    return Some(big);
+                }
+                let res_type = class_name_for_error(type_of_bits(res_bits));
+                if res_obj.as_ptr().is_some() {
+                    dec_ref_bits(res_bits);
+                }
+                let msg = format!("__index__ returned non-int (type {res_type})");
+                raise_exception::<u64>("TypeError", &msg);
+                return None;
+            }
+        }
+    }
+    raise_exception::<u64>("TypeError", err);
+    None
 }
 
 fn to_f64(obj: MoltObject) -> Option<f64> {
@@ -2765,6 +2805,36 @@ fn frame_stack_trace_bits() -> Option<u64> {
         return None;
     }
     Some(MoltObject::from_ptr(tuple_ptr).bits())
+}
+
+fn recursion_limit_get() -> usize {
+    RECURSION_LIMIT.with(|limit| limit.get())
+}
+
+fn recursion_limit_set(limit: usize) {
+    RECURSION_LIMIT.with(|cell| cell.set(limit));
+}
+
+fn recursion_guard_enter() -> bool {
+    let limit = recursion_limit_get();
+    RECURSION_DEPTH.with(|depth| {
+        let current = depth.get();
+        if current + 1 > limit {
+            false
+        } else {
+            depth.set(current + 1);
+            true
+        }
+    })
+}
+
+fn recursion_guard_exit() {
+    RECURSION_DEPTH.with(|depth| {
+        let current = depth.get();
+        if current > 0 {
+            depth.set(current - 1);
+        }
+    });
 }
 
 fn exception_stack_depth() -> usize {
@@ -6124,6 +6194,61 @@ pub extern "C" fn molt_dict_new(capacity_bits: u64) -> u64 {
     MoltObject::from_ptr(ptr).bits()
 }
 
+enum DictSeqError {
+    NotIterable,
+    BadLen(usize),
+    Exception,
+}
+
+fn dict_pair_from_item(item_bits: u64) -> Result<(u64, u64), DictSeqError> {
+    let item_obj = obj_from_bits(item_bits);
+    if let Some(item_ptr) = item_obj.as_ptr() {
+        unsafe {
+            let type_id = object_type_id(item_ptr);
+            if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                let elems = seq_vec_ref(item_ptr);
+                if elems.len() != 2 {
+                    return Err(DictSeqError::BadLen(elems.len()));
+                }
+                return Ok((elems[0], elems[1]));
+            }
+        }
+    }
+    let iter_bits = molt_iter(item_bits);
+    if obj_from_bits(iter_bits).is_none() {
+        return Err(DictSeqError::NotIterable);
+    }
+    let mut elems = Vec::new();
+    loop {
+        let pair_bits = molt_iter_next(iter_bits);
+        if exception_pending() {
+            return Err(DictSeqError::Exception);
+        }
+        let pair_obj = obj_from_bits(pair_bits);
+        let Some(pair_ptr) = pair_obj.as_ptr() else {
+            return Err(DictSeqError::Exception);
+        };
+        unsafe {
+            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                return Err(DictSeqError::Exception);
+            }
+            let pair_elems = seq_vec_ref(pair_ptr);
+            if pair_elems.len() < 2 {
+                return Err(DictSeqError::Exception);
+            }
+            let done_bits = pair_elems[1];
+            if is_truthy(obj_from_bits(done_bits)) {
+                break;
+            }
+            elems.push(pair_elems[0]);
+        }
+    }
+    if elems.len() != 2 {
+        return Err(DictSeqError::BadLen(elems.len()));
+    }
+    Ok((elems[0], elems[1]))
+}
+
 #[no_mangle]
 pub extern "C" fn molt_dict_from_obj(obj_bits: u64) -> u64 {
     let obj = obj_from_bits(obj_bits);
@@ -6147,8 +6272,6 @@ pub extern "C" fn molt_dict_from_obj(obj_bits: u64) -> u64 {
     let Some(dict_ptr) = maybe_ptr_from_bits(dict_bits) else {
         return MoltObject::none().bits();
     };
-    let zero = MoltObject::from_int(0).bits();
-    let one = MoltObject::from_int(1).bits();
     let source_bits = iter_bits;
     let iter = molt_iter(iter_bits);
     if obj_from_bits(iter).is_none() {
@@ -6208,24 +6331,51 @@ pub extern "C" fn molt_dict_from_obj(obj_bits: u64) -> u64 {
         }
         return dict_bits;
     }
+    let mut elem_index = 0usize;
     loop {
-        let pair = molt_iter_next(iter);
-        let done_bits = molt_index(pair, one);
-        if obj_from_bits(done_bits).as_bool().unwrap_or(false) {
-            break;
-        }
-        let item = molt_index(pair, zero);
-        if obj_from_bits(item).is_none() {
+        let pair_bits = molt_iter_next(iter);
+        if exception_pending() {
             return MoltObject::none().bits();
         }
-        let key = molt_index(item, zero);
-        let val = molt_index(item, one);
-        if obj_from_bits(key).is_none() || obj_from_bits(val).is_none() {
+        let pair_obj = obj_from_bits(pair_bits);
+        let Some(pair_ptr) = pair_obj.as_ptr() else {
             return MoltObject::none().bits();
-        }
+        };
         unsafe {
-            dict_set_in_place(dict_ptr, key, val);
+            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                return MoltObject::none().bits();
+            }
+            let elems = seq_vec_ref(pair_ptr);
+            if elems.len() < 2 {
+                return MoltObject::none().bits();
+            }
+            let done_bits = elems[1];
+            if is_truthy(obj_from_bits(done_bits)) {
+                break;
+            }
+            let item_bits = elems[0];
+            match dict_pair_from_item(item_bits) {
+                Ok((key, val)) => {
+                    dict_set_in_place(dict_ptr, key, val);
+                }
+                Err(DictSeqError::NotIterable) => {
+                    let msg = format!(
+                        "cannot convert dictionary update sequence element #{elem_index} to a sequence"
+                    );
+                    raise!("TypeError", &msg);
+                }
+                Err(DictSeqError::BadLen(len)) => {
+                    let msg = format!(
+                        "dictionary update sequence element #{elem_index} has length {len}; 2 is required"
+                    );
+                    raise!("ValueError", &msg);
+                }
+                Err(DictSeqError::Exception) => {
+                    return MoltObject::none().bits();
+                }
+            }
         }
+        elem_index += 1;
     }
     dict_bits
 }
@@ -8958,6 +9108,68 @@ pub extern "C" fn molt_ascii_from_obj(val_bits: u64) -> u64 {
     MoltObject::from_ptr(ptr).bits()
 }
 
+fn format_int_base(value: &BigInt, base: u32, prefix: &str, upper: bool) -> String {
+    let negative = value.is_negative();
+    let mut abs_val = if negative { -value } else { value.clone() };
+    if abs_val.is_zero() {
+        abs_val = BigInt::from(0);
+    }
+    let mut digits = abs_val.to_str_radix(base);
+    if upper {
+        digits = digits.to_uppercase();
+    }
+    if negative {
+        format!("-{prefix}{digits}")
+    } else {
+        format!("{prefix}{digits}")
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_bin_builtin(val_bits: u64) -> u64 {
+    let type_name = class_name_for_error(type_of_bits(val_bits));
+    let msg = format!("'{type_name}' object cannot be interpreted as an integer");
+    let Some(value) = index_bigint_from_obj(val_bits, &msg) else {
+        return MoltObject::none().bits();
+    };
+    let text = format_int_base(&value, 2, "0b", false);
+    let ptr = alloc_string(text.as_bytes());
+    if ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    MoltObject::from_ptr(ptr).bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_oct_builtin(val_bits: u64) -> u64 {
+    let type_name = class_name_for_error(type_of_bits(val_bits));
+    let msg = format!("'{type_name}' object cannot be interpreted as an integer");
+    let Some(value) = index_bigint_from_obj(val_bits, &msg) else {
+        return MoltObject::none().bits();
+    };
+    let text = format_int_base(&value, 8, "0o", false);
+    let ptr = alloc_string(text.as_bytes());
+    if ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    MoltObject::from_ptr(ptr).bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_hex_builtin(val_bits: u64) -> u64 {
+    let type_name = class_name_for_error(type_of_bits(val_bits));
+    let msg = format!("'{type_name}' object cannot be interpreted as an integer");
+    let Some(value) = index_bigint_from_obj(val_bits, &msg) else {
+        return MoltObject::none().bits();
+    };
+    let text = format_int_base(&value, 16, "0x", false);
+    let ptr = alloc_string(text.as_bytes());
+    if ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    MoltObject::from_ptr(ptr).bits()
+}
+
 fn parse_float_from_bytes(bytes: &[u8]) -> Result<f64, ()> {
     let text = std::str::from_utf8(bytes).map_err(|_| ())?;
     let trimmed = text.trim();
@@ -10923,9 +11135,51 @@ pub extern "C" fn molt_len(val: u64) -> u64 {
                 let len = range_len_i64(range_start(ptr), range_stop(ptr), range_step(ptr));
                 return MoltObject::from_int(len).bits();
             }
+            if let Some(name_bits) = attr_name_bits_from_bytes(b"__len__") {
+                let call_bits = attr_lookup_ptr(ptr, name_bits);
+                dec_ref_bits(name_bits);
+                if let Some(call_bits) = call_bits {
+                    let res_bits = call_callable0(call_bits);
+                    dec_ref_bits(call_bits);
+                    if exception_pending() {
+                        return MoltObject::none().bits();
+                    }
+                    let res_obj = obj_from_bits(res_bits);
+                    if let Some(i) = to_i64(res_obj) {
+                        if i < 0 {
+                            raise!("ValueError", "__len__() should return >= 0");
+                        }
+                        return MoltObject::from_int(i).bits();
+                    }
+                    if let Some(big_ptr) = bigint_ptr_from_bits(res_bits) {
+                        let big = bigint_ref(big_ptr);
+                        if big.is_negative() {
+                            raise!("ValueError", "__len__() should return >= 0");
+                        }
+                        let Some(len) = big.to_usize() else {
+                            raise!(
+                                "OverflowError",
+                                "cannot fit 'int' into an index-sized integer"
+                            );
+                        };
+                        if len > i64::MAX as usize {
+                            raise!(
+                                "OverflowError",
+                                "cannot fit 'int' into an index-sized integer"
+                            );
+                        }
+                        return MoltObject::from_int(len as i64).bits();
+                    }
+                    let res_type = class_name_for_error(type_of_bits(res_bits));
+                    let msg = format!("'{}' object cannot be interpreted as an integer", res_type);
+                    raise!("TypeError", &msg);
+                }
+            }
         }
     }
-    MoltObject::none().bits()
+    let type_name = class_name_for_error(type_of_bits(val));
+    let msg = format!("object of type '{type_name}' has no len()");
+    raise!("TypeError", &msg);
 }
 
 #[no_mangle]
@@ -10944,39 +11198,48 @@ pub extern "C" fn molt_ord(val: u64) -> u64 {
                 let Ok(s) = std::str::from_utf8(bytes) else {
                     return MoltObject::none().bits();
                 };
-                let mut chars = s.chars();
-                let Some(first) = chars.next() else {
-                    return MoltObject::none().bits();
-                };
-                if chars.next().is_some() {
-                    return MoltObject::none().bits();
+                let char_count = s.chars().count();
+                if char_count != 1 {
+                    let msg = format!(
+                        "ord() expected a character, but string of length {char_count} found"
+                    );
+                    raise!("TypeError", &msg);
                 }
-                return MoltObject::from_int(first as i64).bits();
+                let ch = s.chars().next().unwrap_or('\0');
+                return MoltObject::from_int(ch as i64).bits();
             }
             if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
                 let len = bytes_len(ptr);
                 if len != 1 {
-                    return MoltObject::none().bits();
+                    let msg =
+                        format!("ord() expected a character, but string of length {len} found");
+                    raise!("TypeError", &msg);
                 }
                 let bytes = std::slice::from_raw_parts(bytes_data(ptr), len);
                 return MoltObject::from_int(bytes[0] as i64).bits();
             }
         }
     }
-    MoltObject::none().bits()
+    let type_name = class_name_for_error(type_of_bits(val));
+    let msg = format!("ord() expected string of length 1, but {type_name} found");
+    raise!("TypeError", &msg);
 }
 
 #[no_mangle]
 pub extern "C" fn molt_chr(val: u64) -> u64 {
-    let obj = obj_from_bits(val);
-    let Some(code) = obj.as_int() else {
+    let type_name = class_name_for_error(type_of_bits(val));
+    let msg = format!("'{type_name}' object cannot be interpreted as an integer");
+    let Some(value) = index_bigint_from_obj(val, &msg) else {
         return MoltObject::none().bits();
     };
-    if !(0..=0x10FFFF).contains(&code) {
-        return MoltObject::none().bits();
+    if value.is_negative() || value > BigInt::from(0x10FFFF) {
+        raise!("ValueError", "chr() arg not in range(0x110000)");
     }
-    let Some(ch) = std::char::from_u32(code as u32) else {
-        return MoltObject::none().bits();
+    let Some(code) = value.to_u32() else {
+        raise!("ValueError", "chr() arg not in range(0x110000)");
+    };
+    let Some(ch) = std::char::from_u32(code) else {
+        raise!("ValueError", "chr() arg not in range(0x110000)");
     };
     let mut buf = [0u8; 4];
     let s = ch.encode_utf8(&mut buf);
@@ -10992,6 +11255,67 @@ pub extern "C" fn molt_missing() -> u64 {
     let bits = missing_bits();
     inc_ref_bits(bits);
     bits
+}
+
+#[no_mangle]
+pub extern "C" fn molt_getrecursionlimit() -> u64 {
+    MoltObject::from_int(recursion_limit_get() as i64).bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_setrecursionlimit(limit_bits: u64) -> u64 {
+    let obj = obj_from_bits(limit_bits);
+    let limit = if let Some(value) = to_i64(obj) {
+        if value < 1 {
+            raise!(
+                "ValueError",
+                "recursion limit must be greater or equal than 1"
+            );
+        }
+        value as usize
+    } else if let Some(big_ptr) = bigint_ptr_from_bits(limit_bits) {
+        let big = unsafe { bigint_ref(big_ptr) };
+        if big.is_negative() {
+            raise!(
+                "ValueError",
+                "recursion limit must be greater or equal than 1"
+            );
+        }
+        let Some(value) = big.to_usize() else {
+            raise!(
+                "OverflowError",
+                "cannot fit 'int' into an index-sized integer"
+            );
+        };
+        value
+    } else {
+        let type_name = class_name_for_error(type_of_bits(limit_bits));
+        let msg = format!("'{type_name}' object cannot be interpreted as an integer");
+        raise!("TypeError", &msg);
+    };
+    let depth = RECURSION_DEPTH.with(|depth| depth.get());
+    if limit <= depth {
+        let msg = format!(
+            "cannot set the recursion limit to {limit} at the recursion depth {depth}: the limit is too low"
+        );
+        raise!("RecursionError", &msg);
+    }
+    recursion_limit_set(limit);
+    MoltObject::none().bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_recursion_guard_enter() -> i64 {
+    if recursion_guard_enter() {
+        1
+    } else {
+        raise_exception::<i64>("RecursionError", "maximum recursion depth exceeded")
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_recursion_guard_exit() {
+    recursion_guard_exit();
 }
 
 #[no_mangle]
@@ -11126,6 +11450,363 @@ pub extern "C" fn molt_all_builtin(iter_bits: u64) -> u64 {
             if !is_truthy(obj_from_bits(val_bits)) {
                 return MoltObject::from_bool(false).bits();
             }
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_abs_builtin(val_bits: u64) -> u64 {
+    let obj = obj_from_bits(val_bits);
+    if let Some(i) = to_i64(obj) {
+        return int_bits_from_i128((i as i128).abs());
+    }
+    if let Some(big) = to_bigint(obj) {
+        let abs_val = big.abs();
+        if let Some(i) = bigint_to_inline(&abs_val) {
+            return MoltObject::from_int(i).bits();
+        }
+        return bigint_bits(abs_val);
+    }
+    if let Some(f) = to_f64(obj) {
+        return MoltObject::from_float(f.abs()).bits();
+    }
+    if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
+        if let Some(name_bits) = attr_name_bits_from_bytes(b"__abs__") {
+            unsafe {
+                let call_bits = attr_lookup_ptr(ptr, name_bits);
+                dec_ref_bits(name_bits);
+                if let Some(call_bits) = call_bits {
+                    let res_bits = call_callable0(call_bits);
+                    dec_ref_bits(call_bits);
+                    return res_bits;
+                }
+            }
+        }
+    }
+    let type_name = class_name_for_error(type_of_bits(val_bits));
+    let msg = format!("bad operand type for abs(): '{type_name}'");
+    raise!("TypeError", &msg);
+}
+
+#[no_mangle]
+pub extern "C" fn molt_divmod_builtin(a_bits: u64, b_bits: u64) -> u64 {
+    let lhs = obj_from_bits(a_bits);
+    let rhs = obj_from_bits(b_bits);
+    if let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+        if ri == 0 {
+            raise!("ZeroDivisionError", "integer division or modulo by zero");
+        }
+        let li128 = li as i128;
+        let ri128 = ri as i128;
+        let mut rem = li128 % ri128;
+        if rem != 0 && (rem > 0) != (ri128 > 0) {
+            rem += ri128;
+        }
+        let quot = (li128 - rem) / ri128;
+        let q_bits = int_bits_from_i128(quot);
+        let r_bits = int_bits_from_i128(rem);
+        let tuple_ptr = alloc_tuple(&[q_bits, r_bits]);
+        if tuple_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        return MoltObject::from_ptr(tuple_ptr).bits();
+    }
+    if let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
+        if r_big.is_zero() {
+            raise!("ZeroDivisionError", "division by zero");
+        }
+        let quot = l_big.div_floor(&r_big);
+        let rem = l_big.mod_floor(&r_big);
+        let q_bits = if let Some(i) = bigint_to_inline(&quot) {
+            MoltObject::from_int(i).bits()
+        } else {
+            bigint_bits(quot)
+        };
+        let r_bits = if let Some(i) = bigint_to_inline(&rem) {
+            MoltObject::from_int(i).bits()
+        } else {
+            bigint_bits(rem)
+        };
+        let tuple_ptr = alloc_tuple(&[q_bits, r_bits]);
+        if tuple_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        return MoltObject::from_ptr(tuple_ptr).bits();
+    }
+    if let Some((lf, rf)) = float_pair_from_obj(lhs, rhs) {
+        if rf == 0.0 {
+            raise!("ZeroDivisionError", "float divmod()");
+        }
+        let quot = (lf / rf).floor();
+        let mut rem = lf % rf;
+        if rem != 0.0 && (rem > 0.0) != (rf > 0.0) {
+            rem += rf;
+        }
+        let q_bits = MoltObject::from_float(quot).bits();
+        let r_bits = MoltObject::from_float(rem).bits();
+        let tuple_ptr = alloc_tuple(&[q_bits, r_bits]);
+        if tuple_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        return MoltObject::from_ptr(tuple_ptr).bits();
+    }
+    let left = class_name_for_error(type_of_bits(a_bits));
+    let right = class_name_for_error(type_of_bits(b_bits));
+    let msg = format!("unsupported operand type(s) for divmod(): '{left}' and '{right}'");
+    raise!("TypeError", &msg);
+}
+
+#[inline]
+fn minmax_compare(best_key_bits: u64, cand_key_bits: u64, want_max: bool) -> Option<bool> {
+    let lhs = obj_from_bits(cand_key_bits);
+    let rhs = obj_from_bits(best_key_bits);
+    if let Some(ordering) = compare_numbers(lhs, rhs) {
+        return Some(if want_max {
+            ordering == Ordering::Greater
+        } else {
+            ordering == Ordering::Less
+        });
+    }
+    if lhs.is_float() || rhs.is_float() {
+        return Some(false);
+    }
+    None
+}
+
+fn molt_minmax_builtin(
+    args_bits: u64,
+    key_bits: u64,
+    default_bits: u64,
+    want_max: bool,
+    name: &str,
+) -> u64 {
+    let missing = missing_bits();
+    let args_obj = obj_from_bits(args_bits);
+    let Some(args_ptr) = args_obj.as_ptr() else {
+        let msg = format!("{name} expected at least 1 argument, got 0");
+        raise!("TypeError", &msg);
+    };
+    unsafe {
+        if object_type_id(args_ptr) != TYPE_ID_TUPLE {
+            let msg = format!("{name} expected at least 1 argument, got 0");
+            raise!("TypeError", &msg);
+        }
+        let args = seq_vec_ref(args_ptr);
+        if args.is_empty() {
+            let msg = format!("{name} expected at least 1 argument, got 0");
+            raise!("TypeError", &msg);
+        }
+        let has_default = default_bits != missing;
+        if args.len() > 1 && has_default {
+            let msg =
+                format!("Cannot specify a default for {name}() with multiple positional arguments");
+            raise!("TypeError", &msg);
+        }
+        let use_key = !obj_from_bits(key_bits).is_none();
+        let mut best_bits;
+        let mut best_key_bits: u64;
+        if args.len() == 1 {
+            let iter_bits = molt_iter(args[0]);
+            if obj_from_bits(iter_bits).is_none() {
+                raise!("TypeError", "object is not iterable");
+            }
+            let pair_bits = molt_iter_next(iter_bits);
+            let pair_obj = obj_from_bits(pair_bits);
+            let Some(pair_ptr) = pair_obj.as_ptr() else {
+                raise!("TypeError", "object is not an iterator");
+            };
+            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                raise!("TypeError", "object is not an iterator");
+            }
+            let elems = seq_vec_ref(pair_ptr);
+            if elems.len() < 2 {
+                raise!("TypeError", "object is not an iterator");
+            }
+            let val_bits = elems[0];
+            let done_bits = elems[1];
+            if is_truthy(obj_from_bits(done_bits)) {
+                if has_default {
+                    inc_ref_bits(default_bits);
+                    return default_bits;
+                }
+                let msg = format!("{name}() iterable argument is empty");
+                raise!("ValueError", &msg);
+            }
+            best_bits = val_bits;
+            if use_key {
+                best_key_bits = call_callable1(key_bits, best_bits);
+                if exception_pending() {
+                    return MoltObject::none().bits();
+                }
+            } else {
+                best_key_bits = best_bits;
+            }
+            loop {
+                let pair_bits = molt_iter_next(iter_bits);
+                let pair_obj = obj_from_bits(pair_bits);
+                let Some(pair_ptr) = pair_obj.as_ptr() else {
+                    raise!("TypeError", "object is not an iterator");
+                };
+                if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                    raise!("TypeError", "object is not an iterator");
+                }
+                let elems = seq_vec_ref(pair_ptr);
+                if elems.len() < 2 {
+                    raise!("TypeError", "object is not an iterator");
+                }
+                let val_bits = elems[0];
+                let done_bits = elems[1];
+                if is_truthy(obj_from_bits(done_bits)) {
+                    if use_key {
+                        dec_ref_bits(best_key_bits);
+                    }
+                    inc_ref_bits(best_bits);
+                    return best_bits;
+                }
+                let cand_key_bits = if use_key {
+                    let res_bits = call_callable1(key_bits, val_bits);
+                    if exception_pending() {
+                        return MoltObject::none().bits();
+                    }
+                    res_bits
+                } else {
+                    val_bits
+                };
+                let Some(replace) = minmax_compare(best_key_bits, cand_key_bits, want_max) else {
+                    return compare_type_error(
+                        obj_from_bits(cand_key_bits),
+                        obj_from_bits(best_key_bits),
+                        if want_max { ">" } else { "<" },
+                    );
+                };
+                if replace {
+                    if use_key {
+                        dec_ref_bits(best_key_bits);
+                    }
+                    best_bits = val_bits;
+                    best_key_bits = cand_key_bits;
+                } else if use_key {
+                    dec_ref_bits(cand_key_bits);
+                }
+            }
+        }
+        best_bits = args[0];
+        if use_key {
+            best_key_bits = call_callable1(key_bits, best_bits);
+            if exception_pending() {
+                return MoltObject::none().bits();
+            }
+        } else {
+            best_key_bits = best_bits;
+        }
+        for &val_bits in args.iter().skip(1) {
+            let cand_key_bits = if use_key {
+                let res_bits = call_callable1(key_bits, val_bits);
+                if exception_pending() {
+                    return MoltObject::none().bits();
+                }
+                res_bits
+            } else {
+                val_bits
+            };
+            let Some(replace) = minmax_compare(best_key_bits, cand_key_bits, want_max) else {
+                return compare_type_error(
+                    obj_from_bits(cand_key_bits),
+                    obj_from_bits(best_key_bits),
+                    if want_max { ">" } else { "<" },
+                );
+            };
+            if replace {
+                if use_key {
+                    dec_ref_bits(best_key_bits);
+                }
+                best_bits = val_bits;
+                best_key_bits = cand_key_bits;
+            } else if use_key {
+                dec_ref_bits(cand_key_bits);
+            }
+        }
+        if use_key {
+            dec_ref_bits(best_key_bits);
+        }
+        inc_ref_bits(best_bits);
+        best_bits
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_min_builtin(args_bits: u64, key_bits: u64, default_bits: u64) -> u64 {
+    molt_minmax_builtin(args_bits, key_bits, default_bits, false, "min")
+}
+
+#[no_mangle]
+pub extern "C" fn molt_max_builtin(args_bits: u64, key_bits: u64, default_bits: u64) -> u64 {
+    molt_minmax_builtin(args_bits, key_bits, default_bits, true, "max")
+}
+
+#[no_mangle]
+pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
+    let start_obj = obj_from_bits(start_bits);
+    if let Some(ptr) = start_obj.as_ptr() {
+        unsafe {
+            let type_id = object_type_id(ptr);
+            if type_id == TYPE_ID_STRING {
+                raise!(
+                    "TypeError",
+                    "sum() can't sum strings [use ''.join(seq) instead]"
+                );
+            }
+            if type_id == TYPE_ID_BYTES {
+                raise!(
+                    "TypeError",
+                    "sum() can't sum bytes [use b''.join(seq) instead]"
+                );
+            }
+            if type_id == TYPE_ID_BYTEARRAY {
+                raise!(
+                    "TypeError",
+                    "sum() can't sum bytearray [use b''.join(seq) instead]"
+                );
+            }
+        }
+    }
+    let iter_obj = molt_iter(iter_bits);
+    if obj_from_bits(iter_obj).is_none() {
+        raise!("TypeError", "object is not iterable");
+    }
+    let mut total_bits = start_bits;
+    let mut total_owned = false;
+    loop {
+        let pair_bits = molt_iter_next(iter_obj);
+        let pair_obj = obj_from_bits(pair_bits);
+        let Some(pair_ptr) = pair_obj.as_ptr() else {
+            raise!("TypeError", "object is not an iterator");
+        };
+        unsafe {
+            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                raise!("TypeError", "object is not an iterator");
+            }
+            let elems = seq_vec_ref(pair_ptr);
+            if elems.len() < 2 {
+                raise!("TypeError", "object is not an iterator");
+            }
+            let val_bits = elems[0];
+            let done_bits = elems[1];
+            if is_truthy(obj_from_bits(done_bits)) {
+                if !total_owned {
+                    inc_ref_bits(total_bits);
+                }
+                return total_bits;
+            }
+            let next_bits = molt_add(total_bits, val_bits);
+            if obj_from_bits(next_bits).is_none() {
+                if exception_pending() {
+                    return MoltObject::none().bits();
+                }
+                return binary_type_error(obj_from_bits(total_bits), obj_from_bits(val_bits), "+");
+            }
+            total_bits = next_bits;
+            total_owned = true;
         }
     }
 }
@@ -13121,88 +13802,544 @@ pub extern "C" fn molt_tuple_from_list(bits: u64) -> u64 {
     MoltObject::none().bits()
 }
 
-#[no_mangle]
-pub extern "C" fn molt_bytes_from_obj(bits: u64) -> u64 {
+#[derive(Clone, Copy)]
+enum BytesCtorKind {
+    Bytes,
+    Bytearray,
+}
+
+impl BytesCtorKind {
+    fn name(self) -> &'static str {
+        match self {
+            BytesCtorKind::Bytes => "bytes",
+            BytesCtorKind::Bytearray => "bytearray",
+        }
+    }
+
+    fn ctor_label(self) -> &'static str {
+        match self {
+            BytesCtorKind::Bytes => "bytes()",
+            BytesCtorKind::Bytearray => "bytearray()",
+        }
+    }
+
+    fn range_error(self) -> &'static str {
+        match self {
+            BytesCtorKind::Bytes => "bytes must be in range(0, 256)",
+            BytesCtorKind::Bytearray => "byte must be in range(0, 256)",
+        }
+    }
+
+    fn non_iterable_message(self, type_name: &str) -> String {
+        format!("cannot convert '{}' object to {}", type_name, self.name())
+    }
+
+    fn arg_type_message(self, arg: &str, type_name: &str) -> String {
+        format!(
+            "{} argument '{}' must be str, not {}",
+            self.ctor_label(),
+            arg,
+            type_name
+        )
+    }
+}
+
+#[derive(Clone, Copy)]
+enum EncodingKind {
+    Utf8,
+    Latin1,
+    Ascii,
+    Utf16,
+    Utf16LE,
+    Utf16BE,
+    Utf32,
+    Utf32LE,
+    Utf32BE,
+}
+
+impl EncodingKind {
+    fn name(self) -> &'static str {
+        match self {
+            EncodingKind::Utf8 => "utf-8",
+            EncodingKind::Latin1 => "latin-1",
+            EncodingKind::Ascii => "ascii",
+            EncodingKind::Utf16 => "utf-16",
+            EncodingKind::Utf16LE => "utf-16-le",
+            EncodingKind::Utf16BE => "utf-16-be",
+            EncodingKind::Utf32 => "utf-32",
+            EncodingKind::Utf32LE => "utf-32-le",
+            EncodingKind::Utf32BE => "utf-32-be",
+        }
+    }
+
+    fn ordinal_limit(self) -> u32 {
+        match self {
+            EncodingKind::Ascii => 128,
+            EncodingKind::Latin1 => 256,
+            EncodingKind::Utf8
+            | EncodingKind::Utf16
+            | EncodingKind::Utf16LE
+            | EncodingKind::Utf16BE
+            | EncodingKind::Utf32
+            | EncodingKind::Utf32LE
+            | EncodingKind::Utf32BE => u32::MAX,
+        }
+    }
+}
+
+enum EncodeError {
+    UnknownEncoding(String),
+    UnknownErrorHandler(String),
+    InvalidChar {
+        encoding: &'static str,
+        ch: char,
+        pos: usize,
+        limit: u32,
+    },
+}
+
+fn normalize_encoding(name: &str) -> Option<EncodingKind> {
+    let normalized = name.to_ascii_lowercase().replace('_', "-");
+    match normalized.as_str() {
+        "utf-8" | "utf8" => Some(EncodingKind::Utf8),
+        "latin-1" | "latin1" | "iso-8859-1" | "iso8859-1" => Some(EncodingKind::Latin1),
+        "ascii" => Some(EncodingKind::Ascii),
+        "utf-16" | "utf16" => Some(EncodingKind::Utf16),
+        "utf-16le" | "utf-16-le" | "utf16le" => Some(EncodingKind::Utf16LE),
+        "utf-16be" | "utf-16-be" | "utf16be" => Some(EncodingKind::Utf16BE),
+        "utf-32" | "utf32" => Some(EncodingKind::Utf32),
+        "utf-32le" | "utf-32-le" | "utf32le" => Some(EncodingKind::Utf32LE),
+        "utf-32be" | "utf-32-be" | "utf32be" => Some(EncodingKind::Utf32BE),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Endian {
+    Little,
+    Big,
+}
+
+fn native_endian() -> Endian {
+    if cfg!(target_endian = "big") {
+        Endian::Big
+    } else {
+        Endian::Little
+    }
+}
+
+fn push_u16(out: &mut Vec<u8>, val: u16, endian: Endian) {
+    match endian {
+        Endian::Little => out.extend_from_slice(&val.to_le_bytes()),
+        Endian::Big => out.extend_from_slice(&val.to_be_bytes()),
+    }
+}
+
+fn push_u32(out: &mut Vec<u8>, val: u32, endian: Endian) {
+    match endian {
+        Endian::Little => out.extend_from_slice(&val.to_le_bytes()),
+        Endian::Big => out.extend_from_slice(&val.to_be_bytes()),
+    }
+}
+
+fn encode_utf16(text: &str, endian: Endian, with_bom: bool) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len().saturating_mul(2) + if with_bom { 2 } else { 0 });
+    if with_bom {
+        push_u16(&mut out, 0xFEFF, endian);
+    }
+    for code in text.encode_utf16() {
+        push_u16(&mut out, code, endian);
+    }
+    out
+}
+
+fn encode_utf32(text: &str, endian: Endian, with_bom: bool) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len().saturating_mul(4) + if with_bom { 4 } else { 0 });
+    if with_bom {
+        push_u32(&mut out, 0x0000_FEFF, endian);
+    }
+    for ch in text.chars() {
+        push_u32(&mut out, ch as u32, endian);
+    }
+    out
+}
+
+fn unicode_escape(ch: char) -> String {
+    let code = ch as u32;
+    if code <= 0xFF {
+        format!("\\x{code:02x}")
+    } else if code <= 0xFFFF {
+        format!("\\u{code:04x}")
+    } else {
+        format!("\\U{code:08x}")
+    }
+}
+
+fn encode_string_with_errors(
+    text: &str,
+    encoding: &str,
+    errors: Option<&str>,
+) -> Result<Vec<u8>, EncodeError> {
+    let Some(kind) = normalize_encoding(encoding) else {
+        return Err(EncodeError::UnknownEncoding(encoding.to_string()));
+    };
+    match kind {
+        EncodingKind::Utf8 => Ok(text.as_bytes().to_vec()),
+        EncodingKind::Utf16 => Ok(encode_utf16(text, native_endian(), true)),
+        EncodingKind::Utf16LE => Ok(encode_utf16(text, Endian::Little, false)),
+        EncodingKind::Utf16BE => Ok(encode_utf16(text, Endian::Big, false)),
+        EncodingKind::Utf32 => Ok(encode_utf32(text, native_endian(), true)),
+        EncodingKind::Utf32LE => Ok(encode_utf32(text, Endian::Little, false)),
+        EncodingKind::Utf32BE => Ok(encode_utf32(text, Endian::Big, false)),
+        EncodingKind::Latin1 | EncodingKind::Ascii => {
+            let limit = kind.ordinal_limit();
+            let mut out = Vec::with_capacity(text.len());
+            for (idx, ch) in text.chars().enumerate() {
+                let code = ch as u32;
+                if code < limit {
+                    out.push(code as u8);
+                    continue;
+                }
+                match errors.unwrap_or("strict") {
+                    "ignore" => continue,
+                    "replace" => out.push(b'?'),
+                    "strict" => {
+                        return Err(EncodeError::InvalidChar {
+                            encoding: kind.name(),
+                            ch,
+                            pos: idx,
+                            limit,
+                        });
+                    }
+                    "surrogateescape" | "surrogatepass" => {
+                        return Err(EncodeError::InvalidChar {
+                            encoding: kind.name(),
+                            ch,
+                            pos: idx,
+                            limit,
+                        });
+                    }
+                    other => {
+                        return Err(EncodeError::UnknownErrorHandler(other.to_string()));
+                    }
+                }
+            }
+            Ok(out)
+        }
+    }
+}
+
+fn bytes_from_count(len: usize, type_id: u32) -> u64 {
+    let ptr = alloc_bytes_like_with_len(len, type_id);
+    if ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    unsafe {
+        let data_ptr = ptr.add(std::mem::size_of::<usize>());
+        std::ptr::write_bytes(data_ptr, 0, len);
+    }
+    MoltObject::from_ptr(ptr).bits()
+}
+
+fn bytes_item_to_u8(bits: u64, kind: BytesCtorKind) -> Option<u8> {
+    let type_name = class_name_for_error(type_of_bits(bits));
+    let msg = format!("'{}' object cannot be interpreted as an integer", type_name);
+    let val = index_i64_from_obj(bits, &msg);
+    if exception_pending() {
+        return None;
+    }
+    if !(0..=255).contains(&val) {
+        raise!("ValueError", kind.range_error());
+    }
+    Some(val as u8)
+}
+
+fn bytes_collect_from_iter(iter_bits: u64, kind: BytesCtorKind) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    loop {
+        let pair_bits = molt_iter_next(iter_bits);
+        if exception_pending() {
+            return None;
+        }
+        let pair_ptr = obj_from_bits(pair_bits).as_ptr()?;
+        unsafe {
+            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                return None;
+            }
+            let elems = seq_vec_ref(pair_ptr);
+            if elems.len() < 2 {
+                return None;
+            }
+            let done_bits = elems[1];
+            if is_truthy(obj_from_bits(done_bits)) {
+                break;
+            }
+            let val_bits = elems[0];
+            let byte = bytes_item_to_u8(val_bits, kind)?;
+            out.push(byte);
+        }
+    }
+    Some(out)
+}
+
+fn bytes_from_obj_impl(bits: u64, kind: BytesCtorKind) -> u64 {
     let obj = obj_from_bits(bits);
+    if let Some(i) = to_i64(obj) {
+        if i < 0 {
+            raise!("ValueError", "negative count");
+        }
+        let len = match usize::try_from(i) {
+            Ok(len) => len,
+            Err(_) => {
+                raise!(
+                    "OverflowError",
+                    "cannot fit 'int' into an index-sized integer"
+                );
+            }
+        };
+        let type_id = match kind {
+            BytesCtorKind::Bytes => TYPE_ID_BYTES,
+            BytesCtorKind::Bytearray => TYPE_ID_BYTEARRAY,
+        };
+        return bytes_from_count(len, type_id);
+    }
     if let Some(ptr) = obj.as_ptr() {
         unsafe {
-            if object_type_id(ptr) == TYPE_ID_BYTES {
+            let type_id = object_type_id(ptr);
+            if type_id == TYPE_ID_STRING {
+                raise!("TypeError", "string argument without an encoding");
+            }
+            if type_id == TYPE_ID_BYTES && matches!(kind, BytesCtorKind::Bytes) {
                 inc_ref_bits(bits);
                 return bits;
             }
             if let Some(slice) = bytes_like_slice(ptr) {
-                let out_ptr = alloc_bytes(slice);
+                let out_ptr = match kind {
+                    BytesCtorKind::Bytes => alloc_bytes(slice),
+                    BytesCtorKind::Bytearray => alloc_bytearray(slice),
+                };
                 if out_ptr.is_null() {
                     return MoltObject::none().bits();
                 }
                 return MoltObject::from_ptr(out_ptr).bits();
             }
-            if object_type_id(ptr) == TYPE_ID_MEMORYVIEW {
+            if type_id == TYPE_ID_MEMORYVIEW {
                 if let Some(out) = memoryview_collect_bytes(ptr) {
-                    let out_ptr = alloc_bytes(&out);
+                    let out_ptr = match kind {
+                        BytesCtorKind::Bytes => alloc_bytes(&out),
+                        BytesCtorKind::Bytearray => alloc_bytearray(&out),
+                    };
                     if out_ptr.is_null() {
                         return MoltObject::none().bits();
                     }
                     return MoltObject::from_ptr(out_ptr).bits();
                 }
             }
+            if type_id == TYPE_ID_BIGINT {
+                let big = bigint_ref(ptr);
+                if big.is_negative() {
+                    raise!("ValueError", "negative count");
+                }
+                let Some(len) = big.to_usize() else {
+                    raise!(
+                        "OverflowError",
+                        "cannot fit 'int' into an index-sized integer"
+                    );
+                };
+                let type_id = match kind {
+                    BytesCtorKind::Bytes => TYPE_ID_BYTES,
+                    BytesCtorKind::Bytearray => TYPE_ID_BYTEARRAY,
+                };
+                return bytes_from_count(len, type_id);
+            }
+            let index_name_bits = intern_static_name(&INTERN_INDEX_NAME, b"__index__");
+            let call_bits = attr_lookup_ptr(ptr, index_name_bits);
+            dec_ref_bits(index_name_bits);
+            if let Some(call_bits) = call_bits {
+                let res_bits = call_callable0(call_bits);
+                dec_ref_bits(call_bits);
+                if exception_pending() {
+                    return MoltObject::none().bits();
+                }
+                let res_obj = obj_from_bits(res_bits);
+                if let Some(i) = to_i64(res_obj) {
+                    if i < 0 {
+                        raise!("ValueError", "negative count");
+                    }
+                    let len = match usize::try_from(i) {
+                        Ok(len) => len,
+                        Err(_) => {
+                            raise!(
+                                "OverflowError",
+                                "cannot fit 'int' into an index-sized integer"
+                            );
+                        }
+                    };
+                    let type_id = match kind {
+                        BytesCtorKind::Bytes => TYPE_ID_BYTES,
+                        BytesCtorKind::Bytearray => TYPE_ID_BYTEARRAY,
+                    };
+                    return bytes_from_count(len, type_id);
+                }
+                if let Some(big_ptr) = bigint_ptr_from_bits(res_bits) {
+                    let big = bigint_ref(big_ptr);
+                    if big.is_negative() {
+                        raise!("ValueError", "negative count");
+                    }
+                    let Some(len) = big.to_usize() else {
+                        raise!(
+                            "OverflowError",
+                            "cannot fit 'int' into an index-sized integer"
+                        );
+                    };
+                    dec_ref_bits(res_bits);
+                    let type_id = match kind {
+                        BytesCtorKind::Bytes => TYPE_ID_BYTES,
+                        BytesCtorKind::Bytearray => TYPE_ID_BYTEARRAY,
+                    };
+                    return bytes_from_count(len, type_id);
+                }
+                let res_type = class_name_for_error(type_of_bits(res_bits));
+                if res_obj.as_ptr().is_some() {
+                    dec_ref_bits(res_bits);
+                }
+                let msg = format!("__index__ returned non-int (type {res_type})");
+                raise!("TypeError", &msg);
+            }
         }
     }
-    MoltObject::none().bits()
+    let iter_bits = molt_iter(bits);
+    if obj_from_bits(iter_bits).is_none() {
+        let type_name = class_name_for_error(type_of_bits(bits));
+        let msg = kind.non_iterable_message(&type_name);
+        raise!("TypeError", &msg);
+    }
+    let Some(out) = bytes_collect_from_iter(iter_bits, kind) else {
+        return MoltObject::none().bits();
+    };
+    let out_ptr = match kind {
+        BytesCtorKind::Bytes => alloc_bytes(&out),
+        BytesCtorKind::Bytearray => alloc_bytearray(&out),
+    };
+    if out_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    MoltObject::from_ptr(out_ptr).bits()
+}
+
+fn bytes_from_str_impl(
+    src_bits: u64,
+    encoding_bits: u64,
+    errors_bits: u64,
+    kind: BytesCtorKind,
+) -> u64 {
+    let encoding_obj = obj_from_bits(encoding_bits);
+    let errors_obj = obj_from_bits(errors_bits);
+    let encoding = if encoding_obj.is_none() {
+        None
+    } else {
+        let Some(encoding) = string_obj_to_owned(encoding_obj) else {
+            let type_name = class_name_for_error(type_of_bits(encoding_bits));
+            let msg = kind.arg_type_message("encoding", &type_name);
+            raise!("TypeError", &msg);
+        };
+        Some(encoding)
+    };
+    let errors = if errors_obj.is_none() {
+        None
+    } else {
+        let Some(errors) = string_obj_to_owned(errors_obj) else {
+            let type_name = class_name_for_error(type_of_bits(errors_bits));
+            let msg = kind.arg_type_message("errors", &type_name);
+            raise!("TypeError", &msg);
+        };
+        Some(errors)
+    };
+    let src_obj = obj_from_bits(src_bits);
+    let Some(src_ptr) = src_obj.as_ptr() else {
+        if encoding.is_some() {
+            raise!("TypeError", "encoding without a string argument");
+        }
+        if errors.is_some() {
+            raise!("TypeError", "errors without a string argument");
+        }
+        return MoltObject::none().bits();
+    };
+    unsafe {
+        if object_type_id(src_ptr) != TYPE_ID_STRING {
+            if encoding.is_some() {
+                raise!("TypeError", "encoding without a string argument");
+            }
+            if errors.is_some() {
+                raise!("TypeError", "errors without a string argument");
+            }
+            return MoltObject::none().bits();
+        }
+    }
+    let Some(encoding) = encoding else {
+        raise!("TypeError", "string argument without an encoding");
+    };
+    let text = string_obj_to_owned(src_obj).unwrap_or_default();
+    let out = match encode_string_with_errors(&text, &encoding, errors.as_deref()) {
+        Ok(bytes) => bytes,
+        Err(EncodeError::UnknownEncoding(name)) => {
+            let msg = format!("unknown encoding: {name}");
+            raise!("LookupError", &msg);
+        }
+        Err(EncodeError::UnknownErrorHandler(name)) => {
+            let msg = format!("unknown error handler name '{name}'");
+            raise!("LookupError", &msg);
+        }
+        Err(EncodeError::InvalidChar {
+            encoding,
+            ch,
+            pos,
+            limit,
+        }) => {
+            let escaped = unicode_escape(ch);
+            let msg = format!(
+                "'{encoding}' codec can't encode character '{escaped}' in position {pos}: ordinal not in range({limit})"
+            );
+            raise!("UnicodeEncodeError", &msg);
+        }
+    };
+    let out_ptr = match kind {
+        BytesCtorKind::Bytes => alloc_bytes(&out),
+        BytesCtorKind::Bytearray => alloc_bytearray(&out),
+    };
+    if out_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    MoltObject::from_ptr(out_ptr).bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_bytes_from_obj(bits: u64) -> u64 {
+    bytes_from_obj_impl(bits, BytesCtorKind::Bytes)
 }
 
 #[no_mangle]
 pub extern "C" fn molt_bytearray_from_obj(bits: u64) -> u64 {
-    let obj = obj_from_bits(bits);
-    if let Some(ptr) = obj.as_ptr() {
-        unsafe {
-            if let Some(slice) = bytes_like_slice(ptr) {
-                let out_ptr = alloc_bytearray(slice);
-                if out_ptr.is_null() {
-                    return MoltObject::none().bits();
-                }
-                return MoltObject::from_ptr(out_ptr).bits();
-            }
-            if object_type_id(ptr) == TYPE_ID_MEMORYVIEW {
-                let owner_bits = memoryview_owner_bits(ptr);
-                let owner = obj_from_bits(owner_bits);
-                let owner_ptr = match owner.as_ptr() {
-                    Some(ptr) => ptr,
-                    None => return MoltObject::none().bits(),
-                };
-                let base = match bytes_like_slice_raw(owner_ptr) {
-                    Some(slice) => slice,
-                    None => return MoltObject::none().bits(),
-                };
-                let offset = memoryview_offset(ptr);
-                let len = memoryview_len(ptr);
-                let itemsize = memoryview_itemsize(ptr);
-                let stride = memoryview_stride(ptr);
-                if offset < 0 {
-                    return MoltObject::none().bits();
-                }
-                let mut out = Vec::with_capacity(len.saturating_mul(itemsize));
-                for idx in 0..len {
-                    let start = offset + (idx as isize) * stride;
-                    if start < 0 {
-                        return MoltObject::none().bits();
-                    }
-                    let start = start as usize;
-                    let end = start.saturating_add(itemsize);
-                    if end > base.len() {
-                        return MoltObject::none().bits();
-                    }
-                    out.extend_from_slice(&base[start..end]);
-                }
-                let out_ptr = alloc_bytearray(&out);
-                if out_ptr.is_null() {
-                    return MoltObject::none().bits();
-                }
-                return MoltObject::from_ptr(out_ptr).bits();
-            }
-        }
-    }
-    MoltObject::none().bits()
+    bytes_from_obj_impl(bits, BytesCtorKind::Bytearray)
+}
+
+#[no_mangle]
+pub extern "C" fn molt_bytes_from_str(src_bits: u64, encoding_bits: u64, errors_bits: u64) -> u64 {
+    bytes_from_str_impl(src_bits, encoding_bits, errors_bits, BytesCtorKind::Bytes)
+}
+
+#[no_mangle]
+pub extern "C" fn molt_bytearray_from_str(
+    src_bits: u64,
+    encoding_bits: u64,
+    errors_bits: u64,
+) -> u64 {
+    bytes_from_str_impl(
+        src_bits,
+        encoding_bits,
+        errors_bits,
+        BytesCtorKind::Bytearray,
+    )
 }
 
 #[no_mangle]
@@ -14374,8 +15511,6 @@ pub extern "C" fn molt_dict_update(dict_bits: u64, other_bits: u64) -> u64 {
                 }
             }
         }
-        let zero = MoltObject::from_int(0).bits();
-        let one = MoltObject::from_int(1).bits();
         let source_bits = iter_bits;
         let iter = molt_iter(iter_bits);
         if obj_from_bits(iter).is_none() {
@@ -14433,25 +15568,52 @@ pub extern "C" fn molt_dict_update(dict_bits: u64, other_bits: u64) -> u64 {
             }
             return MoltObject::none().bits();
         }
+        let mut elem_index = 0usize;
         loop {
-            let pair = molt_iter_next(iter);
-            let done_bits = molt_index(pair, one);
-            if obj_from_bits(done_bits).as_bool().unwrap_or(false) {
-                break;
-            }
-            let item = molt_index(pair, zero);
-            if obj_from_bits(item).is_none() {
-                return MoltObject::none().bits();
-            }
-            let key = molt_index(item, zero);
-            let val = molt_index(item, one);
-            if obj_from_bits(key).is_none() || obj_from_bits(val).is_none() {
-                return MoltObject::none().bits();
-            }
-            dict_set_in_place(dict_ptr, key, val);
+            let pair_bits = molt_iter_next(iter);
             if exception_pending() {
                 return MoltObject::none().bits();
             }
+            let pair_obj = obj_from_bits(pair_bits);
+            let Some(pair_ptr) = pair_obj.as_ptr() else {
+                return MoltObject::none().bits();
+            };
+            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                return MoltObject::none().bits();
+            }
+            let elems = seq_vec_ref(pair_ptr);
+            if elems.len() < 2 {
+                return MoltObject::none().bits();
+            }
+            let done_bits = elems[1];
+            if is_truthy(obj_from_bits(done_bits)) {
+                break;
+            }
+            let item_bits = elems[0];
+            match dict_pair_from_item(item_bits) {
+                Ok((key, val)) => {
+                    dict_set_in_place(dict_ptr, key, val);
+                    if exception_pending() {
+                        return MoltObject::none().bits();
+                    }
+                }
+                Err(DictSeqError::NotIterable) => {
+                    let msg = format!(
+                        "cannot convert dictionary update sequence element #{elem_index} to a sequence"
+                    );
+                    raise!("TypeError", &msg);
+                }
+                Err(DictSeqError::BadLen(len)) => {
+                    let msg = format!(
+                        "dictionary update sequence element #{elem_index} has length {len}; 2 is required"
+                    );
+                    raise!("ValueError", &msg);
+                }
+                Err(DictSeqError::Exception) => {
+                    return MoltObject::none().bits();
+                }
+            }
+            elem_index += 1;
         }
         MoltObject::none().bits()
     }
@@ -17765,6 +18927,9 @@ unsafe fn call_function_obj1(func_bits: u64, arg0_bits: u64) -> u64 {
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
     let name_bits = function_name_bits(func_ptr);
+    if !recursion_guard_enter() {
+        raise!("RecursionError", "maximum recursion depth exceeded");
+    }
     frame_stack_push(name_bits);
     let res = if closure_bits != 0 {
         let func: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
@@ -17774,6 +18939,7 @@ unsafe fn call_function_obj1(func_bits: u64, arg0_bits: u64) -> u64 {
         func(arg0_bits) as u64
     };
     frame_stack_pop();
+    recursion_guard_exit();
     res
 }
 
@@ -17793,6 +18959,9 @@ unsafe fn call_function_obj0(func_bits: u64) -> u64 {
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
     let name_bits = function_name_bits(func_ptr);
+    if !recursion_guard_enter() {
+        raise!("RecursionError", "maximum recursion depth exceeded");
+    }
     frame_stack_push(name_bits);
     let res = if closure_bits != 0 {
         let func: extern "C" fn(u64) -> i64 = std::mem::transmute(fn_ptr as usize);
@@ -17802,6 +18971,7 @@ unsafe fn call_function_obj0(func_bits: u64) -> u64 {
         func() as u64
     };
     frame_stack_pop();
+    recursion_guard_exit();
     res
 }
 
@@ -17821,6 +18991,9 @@ unsafe fn call_function_obj2(func_bits: u64, arg0_bits: u64, arg1_bits: u64) -> 
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
     let name_bits = function_name_bits(func_ptr);
+    if !recursion_guard_enter() {
+        raise!("RecursionError", "maximum recursion depth exceeded");
+    }
     frame_stack_push(name_bits);
     let res = if closure_bits != 0 {
         let func: extern "C" fn(u64, u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
@@ -17830,6 +19003,7 @@ unsafe fn call_function_obj2(func_bits: u64, arg0_bits: u64, arg1_bits: u64) -> 
         func(arg0_bits, arg1_bits) as u64
     };
     frame_stack_pop();
+    recursion_guard_exit();
     res
 }
 
@@ -17854,6 +19028,9 @@ unsafe fn call_function_obj3(
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
     let name_bits = function_name_bits(func_ptr);
+    if !recursion_guard_enter() {
+        raise!("RecursionError", "maximum recursion depth exceeded");
+    }
     frame_stack_push(name_bits);
     let res = if closure_bits != 0 {
         let func: extern "C" fn(u64, u64, u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
@@ -17863,6 +19040,7 @@ unsafe fn call_function_obj3(
         func(arg0_bits, arg1_bits, arg2_bits) as u64
     };
     frame_stack_pop();
+    recursion_guard_exit();
     res
 }
 
@@ -17888,6 +19066,9 @@ unsafe fn call_function_obj4(
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
     let name_bits = function_name_bits(func_ptr);
+    if !recursion_guard_enter() {
+        raise!("RecursionError", "maximum recursion depth exceeded");
+    }
     frame_stack_push(name_bits);
     let res = if closure_bits != 0 {
         let func: extern "C" fn(u64, u64, u64, u64, u64) -> i64 =
@@ -17898,6 +19079,7 @@ unsafe fn call_function_obj4(
         func(arg0_bits, arg1_bits, arg2_bits, arg3_bits) as u64
     };
     frame_stack_pop();
+    recursion_guard_exit();
     res
 }
 
@@ -17924,6 +19106,9 @@ unsafe fn call_function_obj5(
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
     let name_bits = function_name_bits(func_ptr);
+    if !recursion_guard_enter() {
+        raise!("RecursionError", "maximum recursion depth exceeded");
+    }
     frame_stack_push(name_bits);
     let res = if closure_bits != 0 {
         let func: extern "C" fn(u64, u64, u64, u64, u64, u64) -> i64 =
@@ -17942,6 +19127,7 @@ unsafe fn call_function_obj5(
         func(arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits) as u64
     };
     frame_stack_pop();
+    recursion_guard_exit();
     res
 }
 
@@ -17969,6 +19155,9 @@ unsafe fn call_function_obj6(
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
     let name_bits = function_name_bits(func_ptr);
+    if !recursion_guard_enter() {
+        raise!("RecursionError", "maximum recursion depth exceeded");
+    }
     frame_stack_push(name_bits);
     let res = if closure_bits != 0 {
         let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> i64 =
@@ -17990,6 +19179,7 @@ unsafe fn call_function_obj6(
         ) as u64
     };
     frame_stack_pop();
+    recursion_guard_exit();
     res
 }
 
@@ -18019,6 +19209,9 @@ unsafe fn call_function_obj7(
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
     let name_bits = function_name_bits(func_ptr);
+    if !recursion_guard_enter() {
+        raise!("RecursionError", "maximum recursion depth exceeded");
+    }
     frame_stack_push(name_bits);
     let res = if closure_bits != 0 {
         let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
@@ -18041,6 +19234,7 @@ unsafe fn call_function_obj7(
         ) as u64
     };
     frame_stack_pop();
+    recursion_guard_exit();
     res
 }
 
@@ -18071,6 +19265,9 @@ unsafe fn call_function_obj8(
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
     let name_bits = function_name_bits(func_ptr);
+    if !recursion_guard_enter() {
+        raise!("RecursionError", "maximum recursion depth exceeded");
+    }
     frame_stack_push(name_bits);
     let res = if closure_bits != 0 {
         let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
@@ -18094,6 +19291,7 @@ unsafe fn call_function_obj8(
         ) as u64
     };
     frame_stack_pop();
+    recursion_guard_exit();
     res
 }
 

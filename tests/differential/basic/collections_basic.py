@@ -19,6 +19,8 @@ c = collections.Counter("aba")
 print(c["a"], c["b"], c["z"])
 c.update({"a": 2})
 print(c["a"])
+c.update(b=3)
+print(c["b"])
 print(c.most_common(1))
 
 dd = collections.defaultdict(list)

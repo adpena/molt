@@ -15,9 +15,10 @@
    - Emits minimal metrics
 
 2) **`molt_accel` (Python client library)**
-   - Starts or attaches to a worker process
+   - Starts or attaches to a worker process (fallbacks to `molt-worker` in PATH with packaged exports)
    - Provides `@molt_offload(...)` decorator for Django (and a lower-level client API)
    - Handles worker restarts and transient failures cleanly
+   - Exposes before/after hooks, metrics callbacks, and cancellation checks for request plumbing
 
 3) **Demo Django app**
    - Two endpoints: `/baseline` (CPython-only) and `/offload` (calls worker)
@@ -25,8 +26,8 @@
    - Optional: a “fake DB” simulation mode for stable benchmarking
 
 4) **Benchmark harness**
-   - k6 scripts for baseline/offload
-   - A runner script to execute both, store results, and print a summary
+   - k6 scripts for baseline/offload (+ optional data path)
+   - A runner script (`bench/scripts/run_demo_bench.py`) to execute both, store results, and print a summary
    - Optional CI gates (nightly) for regressions
 
 ---
@@ -104,6 +105,10 @@ docs/spec/0910_*.md          # these specs
   - worker queue depth and time-in-queue
 - must store results to a dated JSON artifact
 - must provide a markdown summary output for easy sharing
+
+**Implementation note:** the Django demo uses `molt_accel` metrics hooks to emit per-request
+metrics (queue_ms, exec_ms, queue_depth) into a JSONL file configured by
+`MOLT_DEMO_METRICS_PATH`; the bench runner aggregates these into the JSON+markdown outputs.
 
 ---
 

@@ -6,6 +6,17 @@ compiled code without introducing dynamic indirection.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+
+    def _molt_getrecursionlimit() -> int:
+        return 0
+
+    def _molt_setrecursionlimit(limit: int) -> None:
+        return None
+
+
 __all__ = [
     "object",
     "type",
@@ -14,10 +25,19 @@ __all__ = [
     "len",
     "ord",
     "chr",
+    "ascii",
+    "bin",
+    "oct",
+    "hex",
+    "abs",
+    "divmod",
     "repr",
     "callable",
     "any",
     "all",
+    "sum",
+    "min",
+    "max",
     "id",
     "str",
     "range",
@@ -57,10 +77,19 @@ issubclass = issubclass
 len = len
 ord = ord
 chr = chr
+ascii = ascii
+bin = bin
+oct = oct
+hex = hex
+abs = abs
+divmod = divmod
 repr = repr
 callable = callable
 any = any
 all = all
+sum = sum
+min = min
+max = max
 id = id
 str = str
 range = range
@@ -88,3 +117,9 @@ delattr = delattr
 hasattr = hasattr
 super = super
 print = print
+
+try:
+    _molt_getrecursionlimit = _molt_getrecursionlimit
+    _molt_setrecursionlimit = _molt_setrecursionlimit
+except NameError:
+    pass

@@ -35,8 +35,9 @@ Canonical current status: `docs/spec/STATUS.md`. This roadmap is forward-looking
 - Import-only allowlist expanded for `base64`, `binascii`, `pickle`, `unittest`, `site`, `sysconfig`, `collections.abc`, `importlib`, and `importlib.util` (API parity pending).
 
 ## Offload / IPC
-- Partial: `molt_accel` v0 scaffolding (stdio framing + client + decorator) + initial `molt_worker` stdio shell (built-in `list_items` demo handler).
-- TODO(offload, owner:runtime, milestone:SL1): compiled entrypoint dispatch + cancellation propagation + queue/timeout metrics.
+- Partial: `molt_accel` v0 scaffolding (stdio framing + client + decorator) + `molt_worker` stdio shell with demo handlers and compiled dispatch (`list_items`/`compute`/`offload_table`/`health`).
+- Implemented: compiled export loader + manifest validation (schema, reserved-name filtering, error mapping) with queue/timeout metrics.
+- TODO(offload, owner:runtime, milestone:SL1): propagate cancellation into pool waits and real DB tasks; extend compiled handlers beyond demo coverage.
 
 ## DB
 - Partial: `molt-db` pool skeleton (bounded, sync); async drivers + Postgres protocol + cancellation-aware queries still pending.

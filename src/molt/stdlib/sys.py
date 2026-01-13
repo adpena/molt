@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+
 try:
     from molt import capabilities as _capabilities
 
@@ -68,13 +69,25 @@ _recursionlimit = 1000
 
 
 def getrecursionlimit() -> int:
+    try:
+        return _molt_getrecursionlimit()  # type: ignore[unresolved-reference]
+    except NameError:
+        pass
     return _recursionlimit
 
 
 def setrecursionlimit(limit: int) -> None:
     global _recursionlimit
+    try:
+        _molt_setrecursionlimit(limit)  # type: ignore[unresolved-reference]
+        return
+    except NameError:
+        pass
+    if not isinstance(limit, int):
+        name = type(limit).__name__
+        raise TypeError(f"'{name}' object cannot be interpreted as an integer")
     if limit < 1:
-        raise ValueError("recursion limit must be >= 1")
+        raise ValueError("recursion limit must be greater or equal than 1")
     _recursionlimit = limit
 
 

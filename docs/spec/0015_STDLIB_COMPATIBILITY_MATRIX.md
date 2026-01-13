@@ -36,11 +36,11 @@
 | Module | Tier | Status | Priority | Milestone | Owner | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | builtins | Core | Partial | P0 | SL1 | runtime/frontend | Importable module binds supported builtins (including function objects for allowlisted builtins); missing names raise `AttributeError`. |
-| functools | Core-adjacent | Partial | P1 | SL1 | stdlib/runtime | `partial`, `reduce`, `lru_cache`, `wraps` shim (no fast paths yet). |
+| functools | Core-adjacent | Partial | P1 | SL1 | stdlib/runtime | `partial`, `reduce`, `lru_cache`, `wraps` shim; `partial`/`lru_cache` accept `*args`/`**kwargs` (no fast paths yet). |
 | itertools | Core-adjacent | Partial | P1 | SL1 | stdlib/runtime | `chain`, `islice`, `repeat` shim; vectorized kernels pending. |
 | operator | Core-adjacent | Partial | P1 | SL1 | stdlib/runtime | Basic helpers (`add`, `mul`, `eq`, `itemgetter`, `attrgetter`, `methodcaller`). |
 | math | Core-adjacent | Planned | P1 | SL1 | stdlib/runtime | SIMD-friendly numeric intrinsics. |
-| collections | Stdlib | Partial | P1 | SL1 | stdlib | `deque`, `Counter`, `defaultdict` basics (wrapper shims; `Counter`/`defaultdict` are not dict subclasses; `Counter.update` lacks `**kwargs`). |
+| collections | Stdlib | Partial | P1 | SL1 | stdlib | `deque`, `Counter`, `defaultdict` basics (wrapper shims; `Counter`/`defaultdict` are not dict subclasses). |
 | heapq | Stdlib | Planned | P1 | SL1 | stdlib | Heap primitives. |
 | bisect | Stdlib | Planned | P1 | SL1 | stdlib | Binary search helpers. |
 | array | Stdlib | Planned | P1 | SL1 | runtime | Typed array storage, interop-ready. |

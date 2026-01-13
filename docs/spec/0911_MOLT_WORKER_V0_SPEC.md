@@ -4,7 +4,7 @@
 **Priority:** P0
 **Audience:** runtime engineers, AI coding agents
 **Goal:** Define the minimal worker that can execute exported entrypoints safely and predictably.
-**Implementation status:** Initial Rust stdio shell exists in `runtime/molt-worker` with framing, export allowlist, and a deterministic `list_items` demo entrypoint. Cancellation, compiled entrypoint dispatch, and metrics are pending.
+**Implementation status:** Initial Rust stdio shell exists in `runtime/molt-worker` with framing, export allowlist, and deterministic demo entrypoints (`list_items`, `compute`, `offload_table`, `health`). Cancellation and timeout checks are enforced in the fake DB path and compiled dispatch loops, with queue/pool metrics emitted per request; compiled entrypoints are now routed via the manifest with `codec_in`/`codec_out` validation.
 
 ---
 
@@ -71,17 +71,35 @@ Entrypoints are invoked by name with a payload.
   - drop/rollback resources
 - Do not leak memory, tasks, or DB connections
 
-**Implementation note:** current worker accepts `__cancel__` requests carrying a `request_id` payload; cancellation is best-effort and only affects the built-in demo handler. Full propagation into compiled entrypoints/DB tasks is still pending.
+**Implementation note:** current worker accepts `__cancel__` requests carrying a `request_id` payload; cancellation is best-effort for pool waits, but compiled entrypoints and the fake DB handler now observe cancel/timeout checks during execution.
 
 ---
 
 ## 5. Safety hardening
 - Validate entry name exists
+- Reject invalid export names (empty or `__*` reserved); dedupe entries.
 - Validate payload size limits
 - Reject oversized frames early
 - Never panic on malformed input (return InvalidInput)
 
 ---
+
+## 7. Compiled Entrypoint Dispatch Plan (accepted, wire next)
+- Compile the agreed plan; dispatch wiring is now unblocked by design.
+- Schema (v0): `abi_version`, `exports` array of `{name, codec_in, codec_out}`; names must be non-empty, non-reserved, unique.
+- Resolution: entry name must exist in the manifest; otherwise `InvalidInput`.
+- Loader: compiled entries are registered at startup; if missing at runtime, return `InternalError` with a clear message.
+- Cancellation: compiled calls must observe the same cancel/timeout tokens as fake DB; cancellation breaks long loops promptly and returns `Cancelled` with metrics.
+- Error mapping: decoding errors → `InvalidInput`; uncaught panics → `InternalError`; missing codec → `InvalidInput`.
+- Metrics: emit queue_ms, exec_ms, queue_depth, pool_in_flight/idle (where applicable) for compiled paths as well.
+- Acceptance: add a parity test that compiled entries are discoverable from the manifest and that cancellation/timeout/error mapping match the fake handler behavior.
+- Manifest schema (v0): `abi_version`, `exports` array of `{name, codec_in, codec_out}`; names must be non-empty, non-reserved, unique.
+- Resolution: entry name must exist in the manifest; otherwise `InvalidInput`.
+- Loader: compiled entries are registered at startup; if missing at runtime, return `InternalError` with a clear message.
+- Cancellation: compiled calls must observe the same cancel/timeout tokens as fake DB; cancellation breaks long loops promptly and returns `Cancelled` with metrics.
+- Error mapping: decoding errors → `InvalidInput`; uncaught panics → `InternalError`; missing codec → `InvalidInput`.
+- Metrics: emit queue_ms, exec_ms, queue_depth, pool_in_flight/idle (where applicable) for compiled paths as well.
+- Acceptance: add a parity test that compiled entries are discoverable from the manifest and that cancellation/timeout/error mapping match the fake handler behavior.
 
 ## 6. Observability (minimal v0)
 - Log per-request:

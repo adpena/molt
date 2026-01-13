@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 import threading
 import time
-from typing import Any, IO
+from typing import Any, Callable, IO
 
 from molt_accel.codec import (
     CodecUnavailableError,
@@ -22,7 +22,7 @@ from molt_accel.errors import (
     MoltTimeout,
     MoltWorkerUnavailable,
 )
-from molt_accel.framing import read_frame, write_frame
+from molt_accel.framing import CancelledError, read_frame, write_frame
 
 
 _STATUS_ERRORS: dict[str, type[Exception]] = {
@@ -32,6 +32,9 @@ _STATUS_ERRORS: dict[str, type[Exception]] = {
     "Cancelled": MoltCancelled,
     "InternalError": MoltInternalError,
 }
+
+Hook = Callable[[dict[str, Any]], None]
+CancelCheck = Callable[[], bool]
 
 
 class MoltClient:
@@ -109,6 +112,10 @@ class MoltClient:
         codec: str = "msgpack",
         timeout_ms: int = 250,
         idempotent: bool = False,
+        before_send: Hook | None = None,
+        after_recv: Hook | None = None,
+        metrics_hook: Hook | None = None,
+        cancel_check: CancelCheck | None = None,
     ) -> Any:
         attempts = 0
         while True:
@@ -118,6 +125,10 @@ class MoltClient:
                     payload=payload,
                     codec=codec,
                     timeout_ms=timeout_ms,
+                    before_send=before_send,
+                    after_recv=after_recv,
+                    metrics_hook=metrics_hook,
+                    cancel_check=cancel_check,
                 )
             except MoltWorkerUnavailable:
                 if (
@@ -136,6 +147,10 @@ class MoltClient:
         payload: Any,
         codec: str,
         timeout_ms: int,
+        before_send: Hook | None,
+        after_recv: Hook | None,
+        metrics_hook: Hook | None,
+        cancel_check: CancelCheck | None,
     ) -> Any:
         self._ensure_process()
         if self._stdin is None or self._stdout is None:
@@ -156,7 +171,19 @@ class MoltClient:
             "payload": payload_bytes,
         }
         wire_payload = encode_message(message, self._wire)
+        if cancel_check is not None and cancel_check():
+            raise MoltCancelled("Request cancelled before send")
+        request_meta = {
+            "request_id": request_id,
+            "entry": entry,
+            "codec": codec,
+            "timeout_ms": timeout_ms,
+            "payload_bytes": len(payload_bytes),
+        }
+        if before_send is not None:
+            before_send(dict(request_meta))
         timeout_s = None if timeout_ms <= 0 else timeout_ms / 1000.0
+        start = time.monotonic()
         with self._lock:
             try:
                 write_frame(self._stdin, wire_payload, max_size=self._max_frame_size)
@@ -164,7 +191,12 @@ class MoltClient:
                     self._stdout,
                     timeout=timeout_s,
                     max_size=self._max_frame_size,
+                    cancel_check=cancel_check,
                 )
+            except CancelledError as exc:
+                self._send_cancel_locked(request_id)
+                self.close()
+                raise MoltCancelled("Request cancelled") from exc
             except TimeoutError as exc:
                 self._send_cancel_locked(request_id)
                 self.close()
@@ -173,12 +205,32 @@ class MoltClient:
                 raise MoltWorkerUnavailable("Worker closed the stream") from exc
 
         response = decode_message(response_bytes, self._wire)
+        elapsed_ms = int((time.monotonic() - start) * 1000)
         if response.get("request_id") != request_id:
             raise MoltProtocolError("Mismatched response id")
         status = response.get("status", "InternalError")
         if status != "Ok":
             error_cls = _STATUS_ERRORS.get(status, MoltInternalError)
             raise error_cls(response.get("error", status))
+
+        response_metrics = response.get("metrics")
+        if isinstance(response_metrics, dict):
+            response_metrics = dict(response_metrics)
+        else:
+            response_metrics = {}
+        response_metrics["client_ms"] = elapsed_ms
+        if metrics_hook is not None:
+            metrics_hook(dict(response_metrics))
+        if after_recv is not None:
+            recv_meta = dict(request_meta)
+            recv_meta.update(
+                {
+                    "status": status,
+                    "client_ms": elapsed_ms,
+                    "metrics": response_metrics,
+                }
+            )
+            after_recv(recv_meta)
 
         payload_data = response.get("payload", b"")
         response_codec = response.get("codec", codec)

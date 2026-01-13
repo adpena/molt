@@ -35,26 +35,26 @@
 ### Builtin functions
 | Builtin | Required Semantics (short) | Status | Priority | Milestone | Owner |
 | --- | --- | --- | --- | --- | --- |
-| abs | numeric absolute value | Planned | P1 | TC2 | frontend/runtime |
+| abs | numeric absolute value | Partial | P1 | TC2 | frontend/runtime |
 | aiter | async iterator protocol | Supported | P1 | TC2 | frontend/runtime |
 | all | truthiness reduction | Partial | P1 | TC2 | frontend/runtime |
 | anext | async next with default | Partial | P1 | TC2 | frontend/runtime |
 | any | truthiness reduction | Partial | P1 | TC2 | frontend/runtime |
-| ascii | ASCII repr escaping | Planned | P2 | TC3 | runtime |
-| bin | integer to binary string | Planned | P2 | TC3 | runtime |
+| ascii | ASCII repr escaping | Partial | P2 | TC3 | runtime |
+| bin | integer to binary string | Partial | P2 | TC3 | runtime |
 | bool | bool constructor | Planned | P1 | TC2 | frontend/runtime |
 | breakpoint | debugger hook (gated) | Planned | P2 | TC3 | stdlib |
 | bytearray | bytearray constructor | Partial | P0 | TC1 | frontend/runtime |
 | bytes | bytes constructor | Planned | P1 | TC2 | frontend/runtime |
 | callable | callable predicate | Partial | P2 | TC3 | runtime |
-| chr | int to Unicode char | Planned | P2 | TC3 | runtime |
+| chr | int to Unicode char | Partial | P2 | TC3 | runtime |
 | classmethod | descriptor constructor | Partial | P1 | TC2 | runtime |
 | compile | code object (restricted) | Planned | P2 | TC3 | stdlib |
 | complex | complex constructor | Planned | P1 | TC2 | frontend/runtime |
 | delattr | attribute deletion | Partial | P2 | TC3 | runtime |
 | dict | dict constructor | Partial | P1 | TC2 | frontend/runtime |
 | dir | attribute listing | Planned | P2 | TC3 | runtime |
-| divmod | quotient/remainder | Planned | P1 | TC2 | frontend/runtime |
+| divmod | quotient/remainder | Partial | P1 | TC2 | frontend/runtime |
 | enumerate | lazy iterator with index | Partial | P1 | TC2 | frontend/runtime |
 | eval | eval (restricted) | Planned | P2 | TC3 | stdlib |
 | exec | exec (restricted) | Planned | P2 | TC3 | stdlib |
@@ -67,25 +67,25 @@
 | hasattr | attribute predicate | Partial | P1 | TC2 | runtime |
 | hash | hash protocol | Planned | P2 | TC3 | runtime |
 | help | help system (gated) | Planned | P2 | TC3 | stdlib |
-| hex | integer to hex string | Planned | P2 | TC3 | runtime |
+| hex | integer to hex string | Partial | P2 | TC3 | runtime |
 | id | identity (deterministic) | Partial | P2 | TC3 | runtime |
 | input | stdin (gated) | Planned | P2 | TC3 | stdlib |
 | int | int constructor | Partial | P1 | TC2 | frontend/runtime |
 | isinstance | type check + tuple-of-types | Partial | P2 | TC3 | runtime |
 | issubclass | type check + tuple-of-types | Partial | P2 | TC3 | runtime |
 | iter | iterator construction | Partial | P1 | TC2 | frontend/runtime |
-| len | container/sequence length | Partial | P0 | TC1 | frontend/runtime |
+| len | container/sequence length | Supported | P0 | TC1 | frontend/runtime |
 | list | list constructor | Partial | P0 | TC1 | frontend/runtime |
 | locals | locals dict | Planned | P2 | TC3 | stdlib |
 | map | lazy iterator calling callable | Planned | P1 | TC2 | frontend/runtime |
-| max | reduction with key/default | Planned | P1 | TC2 | frontend/runtime |
+| max | reduction with key/default | Partial | P1 | TC2 | frontend/runtime |
 | memoryview | memoryview constructor | Partial | P2 | TC3 | runtime |
-| min | reduction with key/default | Planned | P1 | TC2 | frontend/runtime |
+| min | reduction with key/default | Partial | P1 | TC2 | frontend/runtime |
 | next | iterator next with default | Partial | P1 | TC2 | frontend/runtime |
 | object | base object constructor | Partial | P2 | TC3 | runtime |
-| oct | integer to octal string | Planned | P2 | TC3 | runtime |
+| oct | integer to octal string | Partial | P2 | TC3 | runtime |
 | open | file I/O (gated) | Planned | P2 | TC3 | stdlib |
-| ord | char to int | Planned | P2 | TC3 | runtime |
+| ord | char to int | Partial | P2 | TC3 | runtime |
 | pow | power with mod | Partial | P1 | TC2 | frontend/runtime |
 | print | output formatting | Supported | P0 | TC0 | runtime |
 | property | descriptor constructor | Partial | P1 | TC2 | runtime |
@@ -99,7 +99,7 @@
 | sorted | stable sort + key/reverse | Planned | P2 | TC3 | frontend/runtime |
 | staticmethod | descriptor constructor | Partial | P1 | TC2 | runtime |
 | str | str constructor | Partial | P1 | TC2 | frontend/runtime |
-| sum | reduction with start | Planned | P1 | TC2 | frontend/runtime |
+| sum | reduction with start | Partial | P1 | TC2 | frontend/runtime |
 | super | super() resolution | Implemented | P2 | TC3 | runtime |
 | tuple | tuple constructor | Planned | P1 | TC2 | frontend/runtime |
 | type | type constructor (no metaclass) | Partial | P2 | TC3 | runtime |
@@ -115,8 +115,10 @@
   - Implemented: `BaseException` root class + `SystemExit`/`KeyboardInterrupt`/`GeneratorExit` base selection.
   - TODO(type-coverage, owner:runtime, milestone:TC1): typed exception matching beyond kind-name classes.
 - Implemented: comparison ops (`==`, `!=`, `<`, `<=`, `>`, `>=`, `is`, `in`, chained comparisons) + lowering rules for core types (list/tuple/dict/str/bytes/bytearray/range).
-  - TODO(type-coverage, owner:frontend, milestone:TC1): builtin reductions (`sum/min/max`) and `len` parity.
-  - TODO(type-coverage, owner:frontend, milestone:TC1): constructor parity for `bytes`/`bytearray` encoding overloads and exact `tuple`/`dict` error parity.
+  - Implemented: builtin reductions (`sum`/`min`/`max`) and `len` parity.
+  - Implemented: `tuple`/`dict` constructor arg-count + sequence-length error parity.
+  - Partial: `bytes`/`bytearray` constructors accept int/iterables + str with `utf-8`/`latin-1`/`ascii`/`utf-16`/`utf-32` encodings and basic error handlers (`strict`/`ignore`/`replace`).
+  - TODO(type-coverage, owner:runtime, milestone:TC1): expand `bytes`/`bytearray` encoding coverage (additional codecs + full error handlers).
 - **TC2 (Mid):** set/frozenset, generators/coroutines, callable objects.
   - Implemented: generator protocol (`send`/`throw`/`close`, `yield from`) + closure slot load/store intrinsics across native + wasm backends.
 - Implemented: async state machine (`await`, `asyncio.run`/`asyncio.sleep`) with delay/result semantics and pending sentinel across native + wasm harness.
@@ -124,7 +126,7 @@
   - TODO(type-coverage, owner:runtime, milestone:TC2): generator state objects + StopIteration.
   - TODO(type-coverage, owner:frontend, milestone:TC2): comprehension lowering to iterators.
   - TODO(type-coverage, owner:frontend, milestone:TC2): builtin iterators (`iter`, `next`, `reversed`, `zip`, `map`, `filter`).
-  - TODO(type-coverage, owner:frontend, milestone:TC2): builtin numeric ops (`abs`, `divmod`, `min`, `max`, `sum`).
+  - Implemented (partial): builtin numeric ops (`abs`, `divmod`, `min`, `max`, `sum`) for numeric types.
   - TODO(type-coverage, owner:frontend, milestone:TC2): builtin conversions (`complex`, `str`, `bool`).
   - Implemented (partial): `round`/`trunc` lowering with `__round__`/`__trunc__` hooks.
   - Implemented (partial): `int` conversion from int/float/str/bytes + `__int__`/`__index__` hooks.
@@ -150,11 +152,11 @@
   - Implemented: exception class objects derived from `BaseException` for typed `type(exc)`.
   - Implemented: `__traceback__` capture as a tuple of function names.
 - TODO(type-coverage, owner:runtime, milestone:TC2): object-level `__setattr__`/`__getattr__`/`__getattribute__` builtins.
-- TODO(type-coverage, owner:runtime, milestone:TC2): formatting builtins (`ascii`, `bin`, `hex`, `oct`, `chr`, `ord`) + full `format` protocol (`__format__`, named fields, locale-aware grouping).
+- TODO(type-coverage, owner:runtime, milestone:TC2): full `format` protocol (`__format__`, named fields, locale-aware grouping).
 - TODO(type-coverage, owner:runtime, milestone:TC2): rounding intrinsics (`floor`, `ceil`) + full deterministic semantics for edge cases.
 - TODO(type-coverage, owner:runtime, milestone:TC2): identity builtins (`hash`) with deterministic hashing policy.
 - Implemented: BigInt heap fallback + arithmetic parity beyond 47-bit inline ints.
-- TODO(type-coverage, owner:runtime, milestone:TC1): recursion limits + `RecursionError` guard semantics.
+- Implemented: recursion limits + `RecursionError` guard semantics.
 - Implemented: descriptor deleter semantics (`__delete__`, property deleter) + attribute deletion wiring.
 
 ## 4. Frontend + IR Coverage

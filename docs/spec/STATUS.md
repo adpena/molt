@@ -1,6 +1,6 @@
 # STATUS (Canonical)
 
-Last updated: 2026-01-12
+Last updated: 2026-01-13
 
 This document is the source of truth for Molt's current capabilities and
 limitations. Update this file whenever behavior or scope changes, and keep
@@ -10,6 +10,7 @@ README/ROADMAP in sync.
 - Tier 0 structification for typed classes (fixed layout).
 - Native async/await lowering with state-machine poll loops.
 - Call argument binding for Molt-defined functions: positional/keyword/`*args`/`**kwargs` with pos-only/kw-only enforcement.
+- Call argument evaluation matches CPython ordering (positional/`*` left-to-right, then keyword/`**` left-to-right).
 - Function decorators (non-contextmanager) are lowered; sync/async free-var closures are captured via closure tuples.
 - Local/closure function calls (decorators, `__call__`) lower through dynamic call paths when not allowlisted.
 - Async iteration: `__aiter__`/`__anext__`, `aiter`/`anext`, and `async for`.
@@ -19,7 +20,9 @@ README/ROADMAP in sync.
 - Differential testing vs CPython 3.12 for supported constructs.
 - Molt packages for Rust-backed deps using MsgPack/CBOR and Arrow IPC.
 - Sets: literals + constructor with add/contains/iter/len + algebra (`|`, `&`, `-`, `^`); `frozenset` constructor + algebra.
-- Numeric builtins: `int()`/`round()`/`math.trunc()` with `__int__`/`__index__`/`__round__`/`__trunc__` hooks and base parsing for string/bytes.
+- Numeric builtins: `int()`/`abs()`/`divmod()`/`round()`/`math.trunc()` with `__int__`/`__index__`/`__round__`/`__trunc__` hooks and base parsing for string/bytes.
+- Formatting builtins: `ascii()`/`bin()`/`oct()`/`hex()` with `__index__` fallback and CPython parity errors for non-integers.
+- `chr()` and `ord()` parity errors for type/range checks; `chr()` accepts `__index__`.
 - BigInt heap fallback for ints beyond inline range (arithmetic/bitwise/shift parity for large ints).
 - Format mini-language for ints/floats + f-string conversion flags (`!r`, `!s`, `!a`).
 - memoryview exposes 1D `format`/`shape`/`strides`/`nbytes` for bytes/bytearray views.
@@ -29,20 +32,30 @@ README/ROADMAP in sync.
 - `list.extend` accepts iterable inputs (range/generator/etc.) via the iter protocol.
 - `dict()` supports positional mapping/iterable inputs (keys/`__getitem__` mapping fallback) plus keyword/`**` expansion
   (string key enforcement for `**`); `dict.update` mirrors the mapping fallback.
+- `bytes`/`bytearray` constructors accept int counts, iterable-of-ints, and str+encoding (`utf-8`/`latin-1`/`ascii`/`utf-16`/`utf-32`) with basic error handlers (`strict`/`ignore`/`replace`) and parity errors for negative counts/range checks.
+- `dict`/`dict.update` raise CPython parity errors for non-iterable elements and invalid pair lengths.
+- `len()` falls back to `__len__` with CPython parity errors for negative, non-int, and overflow results.
 - Dict/set key hashability parity for common unhashable types (list/dict/set/bytearray/memoryview).
 - Importable `builtins` module binds supported builtins (see stdlib matrix).
 - `enumerate` builtin returns an iterator over `(index, value)` with optional `start`.
-- Builtin function objects for allowlisted builtins (`any`, `all`, `callable`, `repr`, `getattr`, `hasattr`, `round`, `next`, `anext`, `print`, `super`).
+- Builtin function objects for allowlisted builtins (`any`, `all`, `abs`, `ascii`, `bin`, `oct`, `hex`, `chr`, `ord`, `divmod`, `callable`, `repr`, `getattr`, `hasattr`, `round`, `next`, `anext`, `print`, `super`, `sum`, `min`, `max`).
+- Builtin reductions: `sum`, `min`, `max` with key/default support for numeric comparisons.
 - Indexing honors user-defined `__getitem__`/`__setitem__` when builtin paths do not apply.
 - CPython shim: minimal ASGI adapter for http/lifespan via `molt.asgi.asgi_adapter`.
+- `molt_accel` client/decorator expose before/after hooks, metrics callbacks, and cancel-checks; wire selection honors `MOLT_WORKER_WIRE`/`MOLT_WIRE`.
+- `molt_worker` enforces cancellation/timeout checks in the fake DB path and compiled dispatch loops, validates export manifests, and reports queue/pool metrics per request.
 - WASM harness runs via `run_wasm.js` with shared memory/table and direct runtime imports (legacy wrapper fallback via `MOLT_WASM_LEGACY=1`), including async/channel benches on WASI.
 - Instance `__getattr__`/`__setattr__` hooks for user-defined classes.
 - Instance `__getattribute__` hooks for user-defined classes.
 - `**kwargs` expansion accepts dicts and mapping-like objects with `keys()` + `__getitem__`.
+- `functools.partial` and `functools.lru_cache` accept `*args`/`**kwargs`, and `functools.wraps` honors assigned/updated.
 - C3 MRO + multiple inheritance for attribute lookup, `super()` resolution, and descriptor precedence for
   `__get__`/`__set__`/`__delete__`.
 - Exceptions: BaseException root, non-string messages lowered through `str()`, and `__traceback__` captured as a
   tuple of function names.
+- Recursion limits enforced via call dispatch guards with `sys.getrecursionlimit`/`sys.setrecursionlimit` wired to runtime limits.
+- `molt_accel` is packaged as an optional dependency group (`[project.optional-dependencies].accel`) with a packaged default exports manifest; the decorator falls back to `molt-worker` in PATH when `MOLT_WORKER_CMD` is unset. A demo Django app/worker scaffold lives under `demo/`.
+- `molt_worker` compiled-entry dispatch is wired for demo handlers (`list_items`/`compute`/`offload_table`/`health`) using codec_in/codec_out; other exported names still return a clear error until compiled handlers exist.
 
 ## Limitations (Current)
 - Classes/object model: no metaclasses or dynamic `type()` construction.
@@ -73,8 +86,8 @@ README/ROADMAP in sync.
   buffer exports).
 - Cancellation: cooperative checks only; automatic cancellation injection into
   awaits and I/O still pending.
-- collections: shim `Counter`/`defaultdict` are wrapper implementations (not dict subclasses); `Counter.update` does
-  not accept `**kwargs`, and `defaultdict` default_factory is only fast-pathed for `list`.
+- collections: shim `Counter`/`defaultdict` are wrapper implementations (not dict subclasses); `defaultdict`
+  default_factory is only fast-pathed for `list`.
 
 ## Async + Concurrency Notes
 - Awaitables that return pending now resume at a labeled state to avoid

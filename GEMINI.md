@@ -61,7 +61,10 @@ The Molt compiler itself is designed to be "AI-friendly". Its modular IR and cle
 - Capability-gate any OS, I/O, network, or process modules and record the policy in specs.
 - Use `ruff format` (black-style) as the canonical Python formatter before builds to avoid inconsistent quoting or formatting drift.
 - When a potential optimization is complex or needs extended focus, add a fully specced entry to `OPTIMIZATIONS_PLAN.md` and propose a detailed evaluation plan (alternatives, checklists, perf matrix, regression gates, and research references; prefer papers and modern algorithms).
-- Use `AGENT_LOCKS.md` for multi-agent coordination and keep communication explicit about scope, touched files, and tests.
+- Use `docs/AGENT_LOCKS.md` for multi-agent coordination and keep communication explicit about scope, touched files, and tests.
+- Before opening any file or starting work on a feature, read `docs/AGENT_LOCKS.md` and honor any locks; if it is missing or unclear, stop and ask for direction before proceeding.
+- Use `docs/AGENT_MEMORY.md` as an append-only coordination log during parallel work: record intended scope before starting and summarize changes/tests/benchmarks after finishing.
+- When multiple agents are active, read both `docs/AGENT_LOCKS.md` and `docs/AGENT_MEMORY.md` first to avoid overlapping scopes, then update the memory log as you progress.
 - Agents may use `gh` and git over SSH; commit after cohesive changes and run lint/test once at the end rather than in repeated cycles.
 - After any push, monitor CI logs until green; if failures appear, propose fixes, implement them, push again, and repeat until green.
 - Avoid infinite commit/push/CI loops: only repeat when there are new changes or an explicit request to re-run; otherwise stop and ask before looping again.

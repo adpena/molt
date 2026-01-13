@@ -19,7 +19,14 @@ class SimpleNamespace:
             setattr(self, key, val)
 
     def __repr__(self) -> str:
-        items = sorted(self.__dict__.items())
+        items = list(self.__dict__.items())
+        for idx in range(1, len(items)):
+            current = items[idx]
+            pos = idx - 1
+            while pos >= 0 and items[pos][0] > current[0]:
+                items[pos + 1] = items[pos]
+                pos -= 1
+            items[pos + 1] = current
         if not items:
             return "namespace()"
         parts_list: list[str] = []

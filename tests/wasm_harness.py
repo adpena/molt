@@ -27,6 +27,25 @@ const unboxInt = (val) => {
   }
   return v;
 };
+const formatIntBase = (val, base, prefix) => {
+  let num = null;
+  if (isTag(val, TAG_INT)) {
+    num = unboxInt(val);
+  } else if (isTag(val, TAG_BOOL)) {
+    num = (val & 1n) === 1n ? 1n : 0n;
+  } else {
+    const obj = getObj(val);
+    if (obj && obj.type === 'bigint') {
+      num = obj.value;
+    }
+  }
+  if (num === null) return boxNone();
+  const negative = num < 0n;
+  const absVal = negative ? -num : num;
+  const digits = absVal.toString(base);
+  const value = `${negative ? '-' : ''}${prefix}${digits}`;
+  return boxPtr({ type: 'str', value });
+};
 const boxInt = (n) => {
   const v = BigInt(n) & INT_MASK;
   return QNAN | TAG_INT | v;
@@ -52,6 +71,12 @@ const isIntLike = (val) => isTag(val, TAG_INT) || isTag(val, TAG_BOOL);
 const unboxIntLike = (val) => {
   if (isTag(val, TAG_INT)) return unboxInt(val);
   return (val & 1n) === 1n ? 1n : 0n;
+};
+const getBigIntValue = (val) => {
+  if (isIntLike(val)) return unboxIntLike(val);
+  const obj = getObj(val);
+  if (obj && obj.type === 'bigint') return obj.value;
+  return null;
 };
 const BUILTIN_TYPE_TAGS = new Map([
   [1, 'int'],
@@ -117,6 +142,8 @@ let currentTokenId = 1n;
 let currentTaskPtr = 0n;
 let nextChanId = 1n;
 let heapPtr = 1 << 20;
+let recursionLimit = 1000;
+let recursionDepth = 0;
 const HEADER_SIZE = 40;
 const HEADER_POLL_FN_OFFSET = HEADER_SIZE - 8;
 const HEADER_STATE_OFFSET = HEADER_SIZE - 16;
@@ -424,6 +451,22 @@ const compareTypeError = (op, left, right) => {
       left,
     )}' and '${typeName(right)}'`
   );
+};
+const compareKeys = (left, right, op) => {
+  const leftBig = getBigIntValue(left);
+  const rightBig = getBigIntValue(right);
+  if (leftBig !== null && rightBig !== null) {
+    if (leftBig === rightBig) return 0;
+    return leftBig < rightBig ? -1 : 1;
+  }
+  const leftNum = numberFromVal(left);
+  const rightNum = numberFromVal(right);
+  if (leftNum !== null && rightNum !== null) {
+    if (leftNum === rightNum) return 0;
+    return leftNum < rightNum ? -1 : 1;
+  }
+  compareTypeError(op, left, right);
+  return 0;
 };
 const formatFloat = (val) => {
   if (Number.isNaN(val)) return 'nan';
@@ -2443,6 +2486,9 @@ BASE_IMPORTS = """\
     }
     return boxPtr({ type: 'str', value: '<obj>' });
   },
+  bin_builtin: (val) => formatIntBase(val, 2, '0b'),
+  oct_builtin: (val) => formatIntBase(val, 8, '0o'),
+  hex_builtin: (val) => formatIntBase(val, 16, '0x'),
   int_from_obj: (val, baseBits, hasBase) => {
     const hasB = isTag(hasBase, TAG_BOOL) && (hasBase & 1n) === 1n;
     const parseLiteral = (text, base) => {
@@ -3399,6 +3445,30 @@ BASE_IMPORTS = """\
     return boxNone();
   },
   bytearray_from_obj: () => boxNone(),
+  bytes_from_str: (val, encodingBits, errorsBits) => {
+    const text = getStrObj(val);
+    if (text === null) return boxNone();
+    let encoding = 'utf8';
+    const enc = getStrObj(encodingBits);
+    if (enc) {
+      const normalized = enc.toLowerCase();
+      if (normalized === 'utf-16' || normalized === 'utf16') {
+        encoding = 'utf16le';
+      } else if (normalized === 'latin-1' || normalized === 'latin1') {
+        encoding = 'latin1';
+      } else {
+        encoding = normalized;
+      }
+    }
+    const data = Buffer.from(text, encoding);
+    return boxPtr({ type: 'bytes', data: Uint8Array.from(data) });
+  },
+  bytearray_from_str: (val, encodingBits, errorsBits) => {
+    const bytes = baseImports.bytes_from_str(val, encodingBits, errorsBits);
+    const obj = getBytes(bytes);
+    if (!obj) return boxNone();
+    return boxPtr({ type: 'bytearray', data: Uint8Array.from(obj.data) });
+  },
   intarray_from_seq: () => boxNone(),
   buffer2d_new: () => boxNone(),
   buffer2d_get: () => boxNone(),
@@ -3610,6 +3680,232 @@ BASE_IMPORTS = """\
       throw new Error('ValueError: chr() arg not in range(0x110000)');
     }
     return boxPtr({ type: 'str', value: String.fromCodePoint(Number(codePoint)) });
+  },
+  abs_builtin: (val) => {
+    const big = getBigIntValue(val);
+    if (big !== null) {
+      const absVal = big < 0n ? -big : big;
+      if (isTag(val, TAG_INT) || isTag(val, TAG_BOOL)) {
+        return boxInt(absVal);
+      }
+      const obj = getObj(val);
+      if (obj && obj.type === 'bigint') {
+        return boxPtr({ type: 'bigint', value: absVal });
+      }
+      return boxInt(absVal);
+    }
+    if (isFloat(val)) {
+      return boxFloat(Math.abs(bitsToFloat(val)));
+    }
+    const absAttr = lookupAttr(val, '__abs__');
+    if (absAttr !== undefined) {
+      return callCallable0(absAttr);
+    }
+    throw new Error(`TypeError: bad operand type for abs(): '${typeName(val)}'`);
+  },
+  divmod_builtin: (a, b) => {
+    const li = getBigIntValue(a);
+    const ri = getBigIntValue(b);
+    if (li !== null && ri !== null) {
+      if (ri === 0n) {
+        throw new Error('ZeroDivisionError: division by zero');
+      }
+      let q = li / ri;
+      let r = li % ri;
+      if (r !== 0n && (r > 0n) !== (ri > 0n)) {
+        q -= 1n;
+        r += ri;
+      }
+      return tupleFromArray([boxInt(q), boxInt(r)]);
+    }
+    const lf = numberFromVal(a);
+    const rf = numberFromVal(b);
+    if (lf !== null && rf !== null) {
+      if (rf === 0) {
+        throw new Error('ZeroDivisionError: division by zero');
+      }
+      const q = Math.floor(lf / rf);
+      let r = lf % rf;
+      if (r !== 0 && (r > 0) !== (rf > 0)) {
+        r += rf;
+      }
+      return tupleFromArray([boxFloat(q), boxFloat(r)]);
+    }
+    throw new Error(
+      `TypeError: unsupported operand type(s) for divmod(): '${typeName(
+        a,
+      )}' and '${typeName(b)}'`,
+    );
+  },
+  getrecursionlimit: () => boxInt(BigInt(recursionLimit)),
+  setrecursionlimit: (limitBits) => {
+    if (!isIntLike(limitBits)) {
+      throw new Error(
+        `TypeError: '${typeName(limitBits)}' object cannot be interpreted as an integer`,
+      );
+    }
+    const limit = Number(unboxIntLike(limitBits));
+    if (limit < 1) {
+      throw new Error('ValueError: recursion limit must be greater or equal than 1');
+    }
+    if (limit <= recursionDepth) {
+      throw new Error(
+        `RecursionError: cannot set the recursion limit to ${limit} at the recursion depth ${recursionDepth}: the limit is too low`,
+      );
+    }
+    recursionLimit = limit;
+    return boxNone();
+  },
+  recursion_guard_enter: () => {
+    if (recursionDepth + 1 > recursionLimit) {
+      throw new Error('RecursionError: maximum recursion depth exceeded');
+    }
+    recursionDepth += 1;
+    return 1n;
+  },
+  recursion_guard_exit: () => {
+    if (recursionDepth > 0) {
+      recursionDepth -= 1;
+    }
+  },
+  sum_builtin: (iterableBits, startBits) => {
+    const iterBits = baseImports.iter(iterableBits);
+    if (isTag(iterBits, TAG_NONE)) {
+      throw new Error('TypeError: object is not iterable');
+    }
+    let total = startBits;
+    while (true) {
+      const pairBits = baseImports.iter_next(iterBits);
+      const pair = getTuple(pairBits);
+      if (!pair || pair.items.length < 2) {
+        throw new Error('TypeError: object is not an iterator');
+      }
+      const doneBits = pair.items[1];
+      if (isTag(doneBits, TAG_BOOL) && (doneBits & 1n) === 1n) {
+        return total;
+      }
+      total = baseImports.add(total, pair.items[0]);
+    }
+  },
+  min_builtin: (argsBits, keyBits, defaultBits) => {
+    const args = getTuple(argsBits);
+    if (!args || args.items.length === 0) {
+      throw new Error('TypeError: min expected at least 1 argument, got 0');
+    }
+    const missing = missingSentinel();
+    const hasDefault = defaultBits !== missing;
+    if (args.items.length > 1 && hasDefault) {
+      throw new Error(
+        'TypeError: Cannot specify a default for min() with multiple positional arguments',
+      );
+    }
+    const useKey = !isTag(keyBits, TAG_NONE);
+    if (args.items.length === 1) {
+      const iterBits = baseImports.iter(args.items[0]);
+      if (isTag(iterBits, TAG_NONE)) {
+        throw new Error('TypeError: object is not iterable');
+      }
+      let best = null;
+      let bestKey = null;
+      while (true) {
+        const pairBits = baseImports.iter_next(iterBits);
+        const pair = getTuple(pairBits);
+        if (!pair || pair.items.length < 2) {
+          throw new Error('TypeError: object is not an iterator');
+        }
+        const doneBits = pair.items[1];
+        if (isTag(doneBits, TAG_BOOL) && (doneBits & 1n) === 1n) {
+          if (best === null) {
+            if (hasDefault) {
+              return defaultBits;
+            }
+            throw new Error('ValueError: min() arg is an empty sequence');
+          }
+          return best;
+        }
+        const valBits = pair.items[0];
+        if (best === null) {
+          best = valBits;
+          bestKey = useKey ? callCallable1(keyBits, valBits) : valBits;
+          continue;
+        }
+        const candKey = useKey ? callCallable1(keyBits, valBits) : valBits;
+        if (compareKeys(candKey, bestKey, '<') < 0) {
+          best = valBits;
+          bestKey = candKey;
+        }
+      }
+    }
+    let best = args.items[0];
+    let bestKey = useKey ? callCallable1(keyBits, best) : best;
+    for (const valBits of args.items.slice(1)) {
+      const candKey = useKey ? callCallable1(keyBits, valBits) : valBits;
+      if (compareKeys(candKey, bestKey, '<') < 0) {
+        best = valBits;
+        bestKey = candKey;
+      }
+    }
+    return best;
+  },
+  max_builtin: (argsBits, keyBits, defaultBits) => {
+    const args = getTuple(argsBits);
+    if (!args || args.items.length === 0) {
+      throw new Error('TypeError: max expected at least 1 argument, got 0');
+    }
+    const missing = missingSentinel();
+    const hasDefault = defaultBits !== missing;
+    if (args.items.length > 1 && hasDefault) {
+      throw new Error(
+        'TypeError: Cannot specify a default for max() with multiple positional arguments',
+      );
+    }
+    const useKey = !isTag(keyBits, TAG_NONE);
+    if (args.items.length === 1) {
+      const iterBits = baseImports.iter(args.items[0]);
+      if (isTag(iterBits, TAG_NONE)) {
+        throw new Error('TypeError: object is not iterable');
+      }
+      let best = null;
+      let bestKey = null;
+      while (true) {
+        const pairBits = baseImports.iter_next(iterBits);
+        const pair = getTuple(pairBits);
+        if (!pair || pair.items.length < 2) {
+          throw new Error('TypeError: object is not an iterator');
+        }
+        const doneBits = pair.items[1];
+        if (isTag(doneBits, TAG_BOOL) && (doneBits & 1n) === 1n) {
+          if (best === null) {
+            if (hasDefault) {
+              return defaultBits;
+            }
+            throw new Error('ValueError: max() arg is an empty sequence');
+          }
+          return best;
+        }
+        const valBits = pair.items[0];
+        if (best === null) {
+          best = valBits;
+          bestKey = useKey ? callCallable1(keyBits, valBits) : valBits;
+          continue;
+        }
+        const candKey = useKey ? callCallable1(keyBits, valBits) : valBits;
+        if (compareKeys(candKey, bestKey, '>') > 0) {
+          best = valBits;
+          bestKey = candKey;
+        }
+      }
+    }
+    let best = args.items[0];
+    let bestKey = useKey ? callCallable1(keyBits, best) : best;
+    for (const valBits of args.items.slice(1)) {
+      const candKey = useKey ? callCallable1(keyBits, valBits) : valBits;
+      if (compareKeys(candKey, bestKey, '>') > 0) {
+        best = valBits;
+        bestKey = candKey;
+      }
+    }
+    return best;
   },
   context_enter: (val) => val,
   context_exit: () => boxBool(false),
