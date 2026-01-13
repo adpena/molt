@@ -19,8 +19,11 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use molt_db::{AcquireError, CancelToken, Pool, Pooled, SqliteConn, SqliteOpenMode};
-use rusqlite::{params_from_iter, types::Value};
+use molt_db::{
+    AcquireError, AsyncAcquireError, CancelToken, PgPool, PgPoolConfig, Pool, Pooled, SqliteConn,
+    SqliteOpenMode,
+};
+use rusqlite::{params_from_iter, types::Value, types::ValueRef};
 use sqlparser::ast::{
     Expr as SqlExpr, GroupByExpr as SqlGroupByExpr, Ident as SqlIdent, Query as SqlQuery,
     Select as SqlSelect, SelectItem as SqlSelectItem, SetExpr as SqlSetExpr,
@@ -30,12 +33,63 @@ use sqlparser::ast::{
 };
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::runtime::Builder as TokioRuntimeBuilder;
+use tokio::sync::mpsc;
+use tokio::task::spawn_blocking;
+use tokio::time::{sleep as tokio_sleep};
 use tokio_postgres::types::{ToSql, Type};
+use tokio_postgres::Row as PgRow;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WireCodec {
     Json,
     Msgpack,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorkerRuntime {
+    Sync,
+    Async,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ParamStyle {
+    DollarNumbered,
+    QuestionNumbered,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DbResultFormat {
+    Json,
+    Msgpack,
+    ArrowIpc,
+}
+
+impl DbResultFormat {
+    fn parse(value: Option<&str>) -> Result<Self, ExecError> {
+        let format = value
+            .unwrap_or("json")
+            .trim()
+            .to_lowercase();
+        match format.as_str() {
+            "json" => Ok(Self::Json),
+            "msgpack" => Ok(Self::Msgpack),
+            "arrow_ipc" => Ok(Self::ArrowIpc),
+            _ => Err(ExecError {
+                status: "InvalidInput",
+                message: format!("Unsupported result_format '{format}'"),
+            }),
+        }
+    }
+
+    fn codec(self) -> &'static str {
+        match self {
+            DbResultFormat::Json => "json",
+            DbResultFormat::Msgpack => "msgpack",
+            DbResultFormat::ArrowIpc => "arrow_ipc",
+        }
+    }
 }
 
 const MAX_FRAME_SIZE: usize = 64 * 1024 * 1024;
@@ -57,7 +111,7 @@ struct CompiledEntry {
     codec_out: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct RequestEnvelope {
     request_id: u64,
     entry: String,
@@ -367,6 +421,7 @@ struct WorkerContext {
     fake_delay: Duration,
     fake_decode_us_per_row: u64,
     fake_cpu_iters: u32,
+    default_max_rows: u32,
 }
 
 struct ExecContext<'a> {
@@ -378,6 +433,35 @@ struct ExecContext<'a> {
     fake_delay: Duration,
     fake_decode_us_per_row: u64,
     fake_cpu_iters: u32,
+    default_max_rows: u32,
+}
+
+#[derive(Clone)]
+struct AsyncWorkerContext {
+    exports: Arc<HashSet<String>>,
+    cancelled: CancelSet,
+    cancel_registry: AsyncCancelRegistry,
+    pool: DbPool,
+    pg_pool: Option<Arc<PgPool>>,
+    compiled_entries: Arc<HashMap<String, CompiledEntry>>,
+    fake_delay: Duration,
+    fake_decode_us_per_row: u64,
+    fake_cpu_iters: u32,
+    default_max_rows: u32,
+}
+
+struct AsyncExecContext<'a> {
+    cancelled: &'a CancelSet,
+    cancel_token: CancelToken,
+    request_id: u64,
+    pool: &'a DbPool,
+    pg_pool: Option<&'a PgPool>,
+    timeout: Option<Duration>,
+    exec_start: Instant,
+    fake_delay: Duration,
+    fake_decode_us_per_row: u64,
+    fake_cpu_iters: u32,
+    default_max_rows: u32,
 }
 
 #[derive(Debug)]
@@ -739,13 +823,14 @@ fn parse_param_spec(param: DbParam) -> DbParamSpec {
 fn normalize_params_and_sql(
     sql: &str,
     params: DbParams,
+    style: ParamStyle,
 ) -> Result<(String, Vec<DbParamSpec>), ExecError> {
     match params {
         DbParams::Positional { values } => {
             let specs = values.into_iter().map(parse_param_spec).collect();
             Ok((sql.to_string(), specs))
         }
-        DbParams::Named { values } => normalize_named_params(sql, values),
+        DbParams::Named { values } => normalize_named_params(sql, values, style),
     }
 }
 
@@ -753,6 +838,7 @@ fn normalize_params_and_sql(
 fn normalize_named_params(
     sql: &str,
     params: Vec<DbNamedParam>,
+    style: ParamStyle,
 ) -> Result<(String, Vec<DbParamSpec>), ExecError> {
     let mut map = HashMap::new();
     for param in params {
@@ -845,8 +931,16 @@ fn normalize_named_params(
                             used.insert(name.to_string());
                             next_idx
                         };
-                        out.push('$');
-                        out.push_str(&idx.to_string());
+                        match style {
+                            ParamStyle::DollarNumbered => {
+                                out.push('$');
+                                out.push_str(&idx.to_string());
+                            }
+                            ParamStyle::QuestionNumbered => {
+                                out.push('?');
+                                out.push_str(&idx.to_string());
+                            }
+                        }
                         i = end;
                     } else {
                         out.push(ch);
@@ -1209,6 +1303,94 @@ fn parse_pg_type(name: &str) -> Option<Type> {
     }
 }
 
+fn resolve_sqlite_params(specs: Vec<DbParamSpec>) -> Result<Vec<Value>, ExecError> {
+    let mut params = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let value = match spec.value {
+            DbParamValue::Null => {
+                if spec.type_hint.is_none() {
+                    return Err(ExecError {
+                        status: "InvalidInput",
+                        message: "Null params must include an explicit type".to_string(),
+                    });
+                }
+                Value::Null
+            }
+            DbParamValue::Bool(value) => Value::Integer(if value { 1 } else { 0 }),
+            DbParamValue::Int(value) => Value::Integer(value),
+            DbParamValue::Float(value) => Value::Real(value),
+            DbParamValue::String(value) => Value::Text(value),
+            DbParamValue::Bytes(value) => Value::Blob(value),
+        };
+        params.push(value);
+    }
+    Ok(params)
+}
+
+fn sqlite_value_to_row(value: ValueRef<'_>) -> Result<DbRowValue, ExecError> {
+    match value {
+        ValueRef::Null => Ok(DbRowValue::Null),
+        ValueRef::Integer(value) => Ok(DbRowValue::Int(value)),
+        ValueRef::Real(value) => Ok(DbRowValue::Float(value)),
+        ValueRef::Text(value) => {
+            let text = std::str::from_utf8(value).map_err(|err| ExecError {
+                status: "InternalError",
+                message: format!("SQLite text decode failed: {err}"),
+            })?;
+            Ok(DbRowValue::String(text.to_string()))
+        }
+        ValueRef::Blob(value) => Ok(DbRowValue::Bytes(ByteBuf::from(value.to_vec()))),
+    }
+}
+
+fn pg_row_values(
+    row: &PgRow,
+    columns: &[tokio_postgres::Column],
+) -> Result<Vec<DbRowValue>, ExecError> {
+    let mut values = Vec::with_capacity(columns.len());
+    for (idx, col) in columns.iter().enumerate() {
+        let ty = col.type_();
+        let value = match *ty {
+            Type::BOOL => row
+                .try_get::<_, Option<bool>>(idx)
+                .map(|val| val.map(DbRowValue::Bool).unwrap_or(DbRowValue::Null)),
+            Type::INT2 => row
+                .try_get::<_, Option<i16>>(idx)
+                .map(|val| val.map(|v| DbRowValue::Int(v as i64)).unwrap_or(DbRowValue::Null)),
+            Type::INT4 => row
+                .try_get::<_, Option<i32>>(idx)
+                .map(|val| val.map(|v| DbRowValue::Int(v as i64)).unwrap_or(DbRowValue::Null)),
+            Type::INT8 => row
+                .try_get::<_, Option<i64>>(idx)
+                .map(|val| val.map(DbRowValue::Int).unwrap_or(DbRowValue::Null)),
+            Type::FLOAT4 => row
+                .try_get::<_, Option<f32>>(idx)
+                .map(|val| val.map(|v| DbRowValue::Float(v as f64)).unwrap_or(DbRowValue::Null)),
+            Type::FLOAT8 => row
+                .try_get::<_, Option<f64>>(idx)
+                .map(|val| val.map(DbRowValue::Float).unwrap_or(DbRowValue::Null)),
+            Type::TEXT | Type::VARCHAR | Type::BPCHAR => row
+                .try_get::<_, Option<String>>(idx)
+                .map(|val| val.map(DbRowValue::String).unwrap_or(DbRowValue::Null)),
+            Type::BYTEA => row
+                .try_get::<_, Option<Vec<u8>>>(idx)
+                .map(|val| {
+                    val.map(|v| DbRowValue::Bytes(ByteBuf::from(v)))
+                        .unwrap_or(DbRowValue::Null)
+                }),
+            _ => row
+                .try_get::<_, Option<String>>(idx)
+                .map(|val| val.map(DbRowValue::String).unwrap_or(DbRowValue::Null)),
+        }
+        .map_err(|err| ExecError {
+            status: "InvalidInput",
+            message: format!("Unsupported column type {ty}: {err}"),
+        })?;
+        values.push(value);
+    }
+    Ok(values)
+}
+
 fn list_items_response(
     request: &ListItemsRequest,
     ctx: &ExecContext<'_>,
@@ -1386,6 +1568,337 @@ fn list_items_sqlite_response(
     })
 }
 
+fn decode_db_query_request(envelope: &RequestEnvelope) -> Result<DbQueryRequest, ExecError> {
+    let payload = extract_payload(envelope).map_err(|err| ExecError {
+        status: "InvalidInput",
+        message: err,
+    })?;
+    decode_payload::<DbQueryRequest>(&payload, &envelope.codec).map_err(|err| ExecError {
+        status: "InvalidInput",
+        message: err,
+    })
+}
+
+fn execute_db_query_sync(
+    envelope: &RequestEnvelope,
+    ctx: &ExecContext<'_>,
+) -> Result<(String, Vec<u8>), ExecError> {
+    let request = decode_db_query_request(envelope)?;
+    let sql = request.sql.trim();
+    if sql.is_empty() {
+        return Err(ExecError {
+            status: "InvalidInput",
+            message: "SQL must be non-empty".to_string(),
+        });
+    }
+    let alias = request.db_alias.as_deref().unwrap_or("default");
+    if alias != "default" {
+        return Err(ExecError {
+            status: "InvalidInput",
+            message: format!("Unknown db_alias '{alias}'"),
+        });
+    }
+    let result_format = DbResultFormat::parse(request.result_format.as_deref())?;
+    if matches!(result_format, DbResultFormat::ArrowIpc) {
+        return Err(ExecError {
+            status: "InvalidInput",
+            message: "arrow_ipc result_format is not supported yet".to_string(),
+        });
+    }
+    let max_rows = request.max_rows.unwrap_or(ctx.default_max_rows);
+    let allow_write = request.allow_write.unwrap_or(false);
+    let (normalized_sql, specs) =
+        normalize_params_and_sql(sql, request.params, ParamStyle::QuestionNumbered)?;
+    let validated_sql = validate_query(&normalized_sql, max_rows, allow_write)?;
+    let response = db_query_sqlite_response(&validated_sql, specs, ctx)?;
+    let encoded = encode_payload(&response, result_format.codec()).map_err(|err| ExecError {
+        status: "InternalError",
+        message: err,
+    })?;
+    Ok((result_format.codec().to_string(), encoded))
+}
+
+fn db_query_sqlite_response(
+    sql: &str,
+    params: Vec<DbParamSpec>,
+    ctx: &ExecContext<'_>,
+) -> Result<DbQueryResponse, ExecError> {
+    let conn = acquire_connection(
+        ctx.pool,
+        ctx.cancelled,
+        ctx.request_id,
+        ctx.exec_start,
+        ctx.timeout,
+    )?;
+    let sqlite = match conn.as_ref() {
+        DbConn::Sqlite(sqlite) => sqlite,
+        DbConn::Fake(_) => {
+            return Err(ExecError {
+                status: "InvalidInput",
+                message: "db_query requires a real SQLite or Postgres connection".to_string(),
+            })
+        }
+    };
+    check_timeout(ctx.exec_start, ctx.timeout)?;
+    check_cancelled(ctx.cancelled, ctx.request_id)?;
+    let values = resolve_sqlite_params(params)?;
+    let conn = sqlite.connection();
+    let mut stmt = conn.prepare(sql).map_err(|err| ExecError {
+        status: "InternalError",
+        message: format!("SQLite prepare failed: {err}"),
+    })?;
+    let columns: Vec<String> = stmt
+        .column_names()
+        .iter()
+        .map(|name| name.to_string())
+        .collect();
+    let mut rows_iter = stmt
+        .query(params_from_iter(values))
+        .map_err(|err| ExecError {
+            status: "InternalError",
+            message: format!("SQLite query failed: {err}"),
+        })?;
+    let mut rows = Vec::new();
+    while let Some(row) = rows_iter.next().map_err(|err| ExecError {
+        status: "InternalError",
+        message: format!("SQLite row fetch failed: {err}"),
+    })? {
+        check_timeout(ctx.exec_start, ctx.timeout)?;
+        check_cancelled(ctx.cancelled, ctx.request_id)?;
+        let mut row_values = Vec::with_capacity(columns.len());
+        for idx in 0..columns.len() {
+            let value = row.get_ref(idx).map_err(|err| ExecError {
+                status: "InternalError",
+                message: format!("SQLite row decode failed: {err}"),
+            })?;
+            row_values.push(sqlite_value_to_row(value)?);
+        }
+        rows.push(row_values);
+    }
+    Ok(DbQueryResponse {
+        columns,
+        row_count: rows.len(),
+        rows,
+    })
+}
+
+async fn execute_db_query_async(
+    envelope: RequestEnvelope,
+    ctx: &AsyncExecContext<'_>,
+) -> Result<(String, Vec<u8>), ExecError> {
+    if ctx.pg_pool.is_some() {
+        return execute_db_query_postgres(&envelope, ctx).await;
+    }
+    let cancelled = ctx.cancelled.clone();
+    let pool = ctx.pool.clone();
+    let exec_start = ctx.exec_start;
+    let timeout = ctx.timeout;
+    let request_id = ctx.request_id;
+    let fake_delay = ctx.fake_delay;
+    let fake_decode_us_per_row = ctx.fake_decode_us_per_row;
+    let fake_cpu_iters = ctx.fake_cpu_iters;
+    let default_max_rows = ctx.default_max_rows;
+    spawn_blocking(move || {
+        let exec_ctx = ExecContext {
+            cancelled: &cancelled,
+            request_id,
+            pool: &pool,
+            timeout,
+            exec_start,
+            fake_delay,
+            fake_decode_us_per_row,
+            fake_cpu_iters,
+            default_max_rows,
+        };
+        execute_db_query_sync(&envelope, &exec_ctx)
+    })
+    .await
+    .map_err(|err| ExecError {
+        status: "InternalError",
+        message: format!("db_query worker join failed: {err}"),
+    })?
+}
+
+async fn execute_db_query_postgres(
+    envelope: &RequestEnvelope,
+    ctx: &AsyncExecContext<'_>,
+) -> Result<(String, Vec<u8>), ExecError> {
+    let request = decode_db_query_request(envelope)?;
+    let sql = request.sql.trim();
+    if sql.is_empty() {
+        return Err(ExecError {
+            status: "InvalidInput",
+            message: "SQL must be non-empty".to_string(),
+        });
+    }
+    let alias = request.db_alias.as_deref().unwrap_or("default");
+    if alias != "default" {
+        return Err(ExecError {
+            status: "InvalidInput",
+            message: format!("Unknown db_alias '{alias}'"),
+        });
+    }
+    let result_format = DbResultFormat::parse(request.result_format.as_deref())?;
+    if matches!(result_format, DbResultFormat::ArrowIpc) {
+        return Err(ExecError {
+            status: "InvalidInput",
+            message: "arrow_ipc result_format is not supported yet".to_string(),
+        });
+    }
+    let max_rows = request.max_rows.unwrap_or(ctx.default_max_rows);
+    let allow_write = request.allow_write.unwrap_or(false);
+    let (normalized_sql, specs) =
+        normalize_params_and_sql(sql, request.params, ParamStyle::DollarNumbered)?;
+    let validated_sql = validate_query(&normalized_sql, max_rows, allow_write)?;
+    let (pg_params, pg_types) = resolve_pg_params(specs)?;
+    let params_refs: Vec<&(dyn ToSql + Sync)> = pg_params.iter().map(|p| p.as_tosql()).collect();
+    let pool = ctx.pg_pool.ok_or_else(|| ExecError {
+        status: "InvalidInput",
+        message: "Postgres pool not configured".to_string(),
+    })?;
+    let mut conn = acquire_pg_connection(
+        pool,
+        &ctx.cancel_token,
+        ctx.exec_start,
+        ctx.timeout,
+    )
+    .await?;
+    let statement = conn
+        .as_ref()
+        .prepare_cached(&validated_sql, &pg_types)
+        .await
+        .map_err(|err| ExecError {
+            status: "InternalError",
+            message: format!("Postgres prepare failed: {err}"),
+        })?;
+    let columns = statement.columns().to_vec();
+    let rows = execute_pg_query(
+        &mut conn,
+        &statement,
+        &params_refs,
+        &ctx.cancel_token,
+        ctx.exec_start,
+        ctx.timeout,
+    )
+    .await?;
+    let mut decoded_rows = Vec::with_capacity(rows.len());
+    for row in rows {
+        decoded_rows.push(pg_row_values(&row, &columns)?);
+    }
+    let column_names = columns
+        .iter()
+        .map(|col| col.name().to_string())
+        .collect();
+    let response = DbQueryResponse {
+        columns: column_names,
+        row_count: decoded_rows.len(),
+        rows: decoded_rows,
+    };
+    let encoded = encode_payload(&response, result_format.codec()).map_err(|err| ExecError {
+        status: "InternalError",
+        message: err,
+    })?;
+    Ok((result_format.codec().to_string(), encoded))
+}
+
+async fn acquire_pg_connection(
+    pool: &PgPool,
+    cancel: &CancelToken,
+    exec_start: Instant,
+    timeout: Option<Duration>,
+) -> Result<molt_db::AsyncPooled<molt_db::PgConn>, ExecError> {
+    if let Some(limit) = timeout {
+        if exec_start.elapsed() >= limit {
+            return Err(timeout_error());
+        }
+        let remaining = limit.saturating_sub(exec_start.elapsed());
+        let acquire = pool.acquire(Some(cancel));
+        let conn = tokio::select! {
+            _ = tokio_sleep(remaining) => return Err(timeout_error()),
+            result = acquire => result,
+        };
+        return map_pg_acquire(conn);
+    }
+    let conn = pool.acquire(Some(cancel)).await;
+    map_pg_acquire(conn)
+}
+
+fn map_pg_acquire(
+    result: Result<molt_db::AsyncPooled<molt_db::PgConn>, AsyncAcquireError>,
+) -> Result<molt_db::AsyncPooled<molt_db::PgConn>, ExecError> {
+    match result {
+        Ok(conn) => Ok(conn),
+        Err(AsyncAcquireError::Timeout) => Err(ExecError {
+            status: "Busy",
+            message: "Postgres pool exhausted".to_string(),
+        }),
+        Err(AsyncAcquireError::Cancelled) => Err(cancelled_error()),
+        Err(AsyncAcquireError::Create(err)) => Err(ExecError {
+            status: "InternalError",
+            message: format!("Postgres connect failed: {err}"),
+        }),
+    }
+}
+
+async fn execute_pg_query(
+    conn: &mut molt_db::AsyncPooled<molt_db::PgConn>,
+    statement: &tokio_postgres::Statement,
+    params: &[&(dyn ToSql + Sync)],
+    cancel: &CancelToken,
+    exec_start: Instant,
+    timeout: Option<Duration>,
+) -> Result<Vec<PgRow>, ExecError> {
+    let query = conn.as_ref().client().query(statement, params);
+    let rows = if let Some(limit) = timeout {
+        if exec_start.elapsed() >= limit {
+            return Err(timeout_error());
+        }
+        let remaining = limit.saturating_sub(exec_start.elapsed());
+        tokio::select! {
+            _ = tokio_sleep(remaining) => {
+                let _ = conn.as_ref().cancel_query().await;
+                conn.discard();
+                return Err(timeout_error());
+            }
+            _ = cancel.cancelled() => {
+                let _ = conn.as_ref().cancel_query().await;
+                conn.discard();
+                return Err(cancelled_error());
+            }
+            result = query => result,
+        }
+    } else {
+        tokio::select! {
+            _ = cancel.cancelled() => {
+                let _ = conn.as_ref().cancel_query().await;
+                conn.discard();
+                return Err(cancelled_error());
+            }
+            result = query => result,
+        }
+    };
+    match rows {
+        Ok(rows) => {
+            conn.as_ref().touch();
+            Ok(rows)
+        }
+        Err(err) => {
+            if err.is_closed() {
+                conn.discard();
+            }
+            let status = if err.as_db_error().is_some() {
+                "InvalidInput"
+            } else {
+                "InternalError"
+            };
+            Err(ExecError {
+                status,
+                message: format!("Postgres query failed: {err}"),
+            })
+        }
+    }
+}
+
 fn dispatch_compiled(
     entry: &CompiledEntry,
     payload_bytes: &[u8],
@@ -1526,6 +2039,7 @@ fn execute_entry(
             })?;
             Ok((codec.to_string(), encoded))
         }
+        "db_query" => execute_db_query_sync(envelope, ctx),
         _ => {
             if let Some(entry) = compiled_entries.get(&envelope.entry) {
                 return dispatch_compiled(entry, &payload_bytes, ctx);
@@ -1619,6 +2133,7 @@ fn handle_request(
         fake_delay: ctx.fake_delay,
         fake_decode_us_per_row: ctx.fake_decode_us_per_row,
         fake_cpu_iters: ctx.fake_cpu_iters,
+        default_max_rows: ctx.default_max_rows,
     };
     let handler_start = Instant::now();
     let result = execute_entry(&envelope, &exec_ctx, &ctx.exports, &ctx.compiled_entries);
