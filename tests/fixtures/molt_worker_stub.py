@@ -75,6 +75,14 @@ def main() -> None:
             except Exception as exc:
                 status = "InvalidInput"
                 error = str(exc)
+        elif entry == "db_exec":
+            try:
+                decode_payload(payload, codec)
+                response = {"rows_affected": 1, "last_insert_id": None}
+                response_payload = encode_payload(response, codec)
+            except Exception as exc:
+                status = "InvalidInput"
+                error = str(exc)
         elif entry == "__error__":
             status = "InternalError"
             error = "boom"

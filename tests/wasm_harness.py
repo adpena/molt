@@ -196,6 +196,73 @@ const allocRaw = (payload) => {
   return addr + HEADER_SIZE;
 };
 const isNone = (val) => isTag(val, TAG_NONE);
+const SLICE_INDEX_ERR =
+  'slice indices must be integers or None or have an __index__ method';
+const MAX_SLICE_STEP = BigInt(Number.MAX_SAFE_INTEGER);
+const decodeSliceBound = (bits, len, defaultVal) => {
+  if (isNone(bits)) return defaultVal;
+  const idx = indexBigIntFromBits(bits, SLICE_INDEX_ERR);
+  if (idx === null) return null;
+  let value = idx;
+  const lenBig = BigInt(len);
+  if (value < 0n) value += lenBig;
+  if (value < 0n) return 0;
+  if (value > lenBig) return len;
+  return Number(value);
+};
+const decodeSliceBoundNeg = (bits, len, defaultVal) => {
+  if (isNone(bits)) return defaultVal;
+  const idx = indexBigIntFromBits(bits, SLICE_INDEX_ERR);
+  if (idx === null) return null;
+  let value = idx;
+  const lenBig = BigInt(len);
+  if (value < 0n) value += lenBig;
+  if (value < -1n) return -1;
+  if (value >= lenBig) return len - 1;
+  return Number(value);
+};
+const decodeSliceStep = (bits) => {
+  if (isNone(bits)) return 1;
+  const step = indexBigIntFromBits(bits, SLICE_INDEX_ERR);
+  if (step === null) return null;
+  if (step === 0n) {
+    throw new Error('ValueError: slice step cannot be zero');
+  }
+  if (step > MAX_SLICE_STEP) return Number(MAX_SLICE_STEP);
+  if (step < -MAX_SLICE_STEP) return Number(-MAX_SLICE_STEP);
+  return Number(step);
+};
+const normalizeSliceIndices = (len, startBits, stopBits, stepBits) => {
+  const step = decodeSliceStep(stepBits);
+  if (step === null) return null;
+  if (step > 0) {
+    const start = decodeSliceBound(startBits, len, 0);
+    if (start === null) return null;
+    const stop = decodeSliceBound(stopBits, len, len);
+    if (stop === null) return null;
+    return { start, stop, step };
+  }
+  const startDefault = len === 0 ? -1 : len - 1;
+  const stopDefault = -1;
+  const start = decodeSliceBoundNeg(startBits, len, startDefault);
+  if (start === null) return null;
+  const stop = decodeSliceBoundNeg(stopBits, len, stopDefault);
+  if (stop === null) return null;
+  return { start, stop, step };
+};
+const collectSliceIndices = (start, stop, step) => {
+  const out = [];
+  if (step > 0) {
+    for (let i = start; i < stop; i += step) {
+      out.push(i);
+    }
+  } else {
+    for (let i = start; i > stop; i += step) {
+      out.push(i);
+    }
+  }
+  return out;
+};
 const boxPtrAddr = (addr) => QNAN | TAG_PTR | (BigInt(addr) & POINTER_MASK);
 const ptrAddr = (val) => Number(val & POINTER_MASK);
 const boxPtr = (obj) => {
@@ -469,6 +536,8 @@ const typeName = (val) => {
     if (obj.type === 'bytearray') return 'bytearray';
     if (obj.type === 'list') return 'list';
     if (obj.type === 'tuple') return 'tuple';
+    if (obj.type === 'slice') return 'slice';
+    if (obj.type === 'memoryview') return 'memoryview';
     if (obj.type === 'set') return 'set';
     if (obj.type === 'frozenset') return 'frozenset';
     if (obj.type === 'dict') return 'dict';
@@ -491,6 +560,109 @@ const typeName = (val) => {
     }
   }
   return 'object';
+};
+const byteFromBits = (valBits) => {
+  let value = getBigIntValue(valBits);
+  if (value === null) {
+    const indexAttr = lookupAttr(valBits, '__index__');
+    if (indexAttr !== undefined) {
+      const res = callCallable0(indexAttr);
+      if (exceptionPending() !== 0n) return null;
+      value = getBigIntValue(res);
+      if (value === null) {
+        throw new Error(`TypeError: __index__ returned non-int (type ${typeName(res)})`);
+      }
+    }
+  }
+  if (value === null) {
+    throw new Error(
+      `TypeError: '${typeName(valBits)}' object cannot be interpreted as an integer`,
+    );
+  }
+  if (value < 0n || value > 255n) {
+    throw new Error('ValueError: byte must be in range(0, 256)');
+  }
+  return Number(value);
+};
+const collectIterableValues = (bits, errMsg) => {
+  const iterBits = baseImports.iter(bits);
+  if (isNone(iterBits)) {
+    if (exceptionPending() !== 0n) return null;
+    throw new Error(`TypeError: ${errMsg}`);
+  }
+  const out = [];
+  while (true) {
+    const pairBits = baseImports.iter_next(iterBits);
+    if (exceptionPending() !== 0n) return null;
+    const tuple = getTuple(pairBits);
+    if (!tuple || tuple.items.length < 2) return null;
+    if (isTruthyBits(tuple.items[1])) break;
+    out.push(tuple.items[0]);
+  }
+  return out;
+};
+const memoryviewBytes = (view) => {
+  const owner = getBytes(view.ownerBits) || getBytearray(view.ownerBits);
+  if (!owner) return null;
+  const data = owner.data;
+  const out = [];
+  let pos = view.offset;
+  const stride = view.stride;
+  for (let i = 0; i < view.len; i++) {
+    if (pos < 0 || pos >= data.length) return null;
+    out.push(data[pos]);
+    pos += stride;
+  }
+  return out;
+};
+const collectBytearrayAssignBytes = (bits) => {
+  const bytes = getBytes(bits);
+  if (bytes) return [...bytes.data];
+  const bytearray = getBytearray(bits);
+  if (bytearray) return [...bytearray.data];
+  const view = getMemoryview(bits);
+  if (view) return memoryviewBytes(view);
+  const strVal = getStrObj(bits);
+  if (strVal !== null) {
+    throw new Error(
+      'TypeError: can assign only bytes, buffers, or iterables of ints in range(0, 256)',
+    );
+  }
+  const iterBits = baseImports.iter(bits);
+  if (isNone(iterBits)) {
+    if (exceptionPending() !== 0n) return null;
+    throw new Error(
+      'TypeError: can assign only bytes, buffers, or iterables of ints in range(0, 256)',
+    );
+  }
+  const out = [];
+  while (true) {
+    const pairBits = baseImports.iter_next(iterBits);
+    if (exceptionPending() !== 0n) return null;
+    const tuple = getTuple(pairBits);
+    if (!tuple || tuple.items.length < 2) return null;
+    if (isTruthyBits(tuple.items[1])) break;
+    const byte = byteFromBits(tuple.items[0]);
+    if (byte === null) return null;
+    out.push(byte);
+  }
+  return out;
+};
+const collectMemoryviewAssignBytes = (bits) => {
+  const bytes = getBytes(bits);
+  if (bytes) return [...bytes.data];
+  const bytearray = getBytearray(bits);
+  if (bytearray) return [...bytearray.data];
+  const view = getMemoryview(bits);
+  if (view) return memoryviewBytes(view);
+  throw new Error(`TypeError: a bytes-like object is required, not '${typeName(bits)}'`);
+};
+const memoryviewItemByte = (valBits) => {
+  if (isIntLike(valBits)) {
+    const value = Number(unboxIntLike(valBits));
+    if (value >= 0 && value <= 255) return value;
+  }
+  throw new Error('TypeError: memoryview item must be int 0-255');
 };
 const compareTypeError = (op, left, right) => {
   throw new Error(
@@ -673,6 +845,11 @@ const getTuple = (val) => {
   if (!obj || obj.type !== 'tuple') return null;
   return obj;
 };
+const getSlice = (val) => {
+  const obj = getObj(val);
+  if (!obj || obj.type !== 'slice') return null;
+  return obj;
+};
 const getIter = (val) => {
   const obj = getObj(val);
   if (!obj || obj.type !== 'iter') return null;
@@ -783,6 +960,11 @@ const getBytes = (val) => {
 const getBytearray = (val) => {
   const obj = getObj(val);
   if (!obj || obj.type !== 'bytearray') return null;
+  return obj;
+};
+const getMemoryview = (val) => {
+  const obj = getObj(val);
+  if (!obj || obj.type !== 'memoryview') return null;
   return obj;
 };
 const getCallArgs = (val) => {
@@ -1850,6 +2032,38 @@ BASE_IMPORTS = """\
       }
     }
     return res;
+  },
+  future_poll: (futureBits) => {
+    const ptrBits = normalizePtrBits(futureBits);
+    if (!isPtr(ptrBits) || heap.has(ptrBits & POINTER_MASK) || !memory || !table) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        boxPtr({ type: 'str', value: 'object is not awaitable' }),
+      );
+      raiseException(exc);
+      return boxNone();
+    }
+    if (tokenIsCancelled(currentTokenId)) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'CancelledError' }),
+        boxPtr({ type: 'str', value: '' }),
+      );
+      raiseException(exc);
+      return boxNone();
+    }
+    const addr = ptrAddr(ptrBits);
+    const view = new DataView(memory.buffer);
+    const pollIdx = view.getUint32(addr - HEADER_POLL_FN_OFFSET, true);
+    const poll = table.get(pollIdx);
+    if (!poll) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        boxPtr({ type: 'str', value: 'object is not awaitable' }),
+      );
+      raiseException(exc);
+      return boxNone();
+    }
+    return poll(ptrBits);
   },
   future_poll_fn: (futureBits) => {
     const ptrBits = normalizePtrBits(futureBits);
@@ -3001,8 +3215,47 @@ BASE_IMPORTS = """\
       return boxNone();
     }
   },
-  memoryview_new: () => boxNone(),
-  memoryview_tobytes: () => boxNone(),
+  memoryview_new: (bits) => {
+    const view = getMemoryview(bits);
+    if (view) {
+      return boxPtr({
+        type: 'memoryview',
+        ownerBits: view.ownerBits,
+        offset: view.offset,
+        len: view.len,
+        itemsize: view.itemsize,
+        stride: view.stride,
+        readonly: view.readonly,
+        formatBits: view.formatBits,
+      });
+    }
+    const bytes = getBytes(bits);
+    const bytearray = getBytearray(bits);
+    if (bytes || bytearray) {
+      const data = bytes ? bytes.data : bytearray.data;
+      const formatBits = boxPtr({ type: 'str', value: 'B' });
+      return boxPtr({
+        type: 'memoryview',
+        ownerBits: bits,
+        offset: 0,
+        len: data.length,
+        itemsize: 1,
+        stride: 1,
+        readonly: bytes !== null,
+        formatBits,
+      });
+    }
+    throw new Error('TypeError: memoryview expects a bytes-like object');
+  },
+  memoryview_tobytes: (bits) => {
+    const view = getMemoryview(bits);
+    if (!view) {
+      throw new Error('TypeError: tobytes expects a memoryview');
+    }
+    const data = memoryviewBytes(view);
+    if (data === null) return boxNone();
+    return boxPtr({ type: 'bytes', data });
+  },
   str_from_obj: (val) => {
     if (isTag(val, TAG_INT)) {
       return boxPtr({ type: 'str', value: unboxInt(val).toString() });
@@ -3276,12 +3529,15 @@ BASE_IMPORTS = """\
     if (bytes) return boxInt(bytes.data.length);
     const bytearray = getBytearray(val);
     if (bytearray) return boxInt(bytearray.data.length);
+    const view = getMemoryview(val);
+    if (view) return boxInt(view.len);
     const strVal = getStrObj(val);
     if (strVal !== null) return boxInt(Array.from(strVal).length);
     return boxInt(0);
   },
   slice: () => boxNone(),
-  slice_new: () => boxNone(),
+  slice_new: (start, stop, step) =>
+    boxPtr({ type: 'slice', start, stop, step }),
   range_new: () => boxNone(),
   list_builder_new: () => boxPtr({ type: 'list_builder', items: [] }),
   list_builder_append: (builder, val) => {
@@ -4203,6 +4459,42 @@ BASE_IMPORTS = """\
   store_index: (seq, idxBits, val) => {
     const list = getList(seq);
     if (list) {
+      const sliceObj = getSlice(idxBits);
+      if (sliceObj) {
+        const indices = normalizeSliceIndices(
+          list.items.length,
+          sliceObj.start,
+          sliceObj.stop,
+          sliceObj.step,
+        );
+        if (indices === null) return boxNone();
+        const newItems = collectIterableValues(
+          val,
+          'must assign iterable to extended slice',
+        );
+        if (newItems === null) return boxNone();
+        if (indices.step === 1) {
+          let start = indices.start;
+          let stop = indices.stop;
+          if (start > stop) stop = start;
+          list.items.splice(start, stop - start, ...newItems);
+          return seq;
+        }
+        const sliceIndices = collectSliceIndices(
+          indices.start,
+          indices.stop,
+          indices.step,
+        );
+        if (sliceIndices.length !== newItems.length) {
+          throw new Error(
+            `ValueError: attempt to assign sequence of size ${newItems.length} to extended slice of size ${sliceIndices.length}`,
+          );
+        }
+        for (let i = 0; i < sliceIndices.length; i++) {
+          list.items[sliceIndices[i]] = newItems[i];
+        }
+        return seq;
+      }
       const errMsg = `list indices must be integers or slices, not ${typeName(idxBits)}`;
       const idx = indexFromBitsWithOverflow(
         idxBits,
@@ -4220,6 +4512,39 @@ BASE_IMPORTS = """\
     }
     const bytearray = getBytearray(seq);
     if (bytearray) {
+      const sliceObj = getSlice(idxBits);
+      if (sliceObj) {
+        const indices = normalizeSliceIndices(
+          bytearray.data.length,
+          sliceObj.start,
+          sliceObj.stop,
+          sliceObj.step,
+        );
+        if (indices === null) return boxNone();
+        const srcBytes = collectBytearrayAssignBytes(val);
+        if (srcBytes === null) return boxNone();
+        if (indices.step === 1) {
+          let start = indices.start;
+          let stop = indices.stop;
+          if (start > stop) stop = start;
+          bytearray.data.splice(start, stop - start, ...srcBytes);
+          return seq;
+        }
+        const sliceIndices = collectSliceIndices(
+          indices.start,
+          indices.stop,
+          indices.step,
+        );
+        if (sliceIndices.length !== srcBytes.length) {
+          throw new Error(
+            `ValueError: attempt to assign bytes of size ${srcBytes.length} to extended slice of size ${sliceIndices.length}`,
+          );
+        }
+        for (let i = 0; i < sliceIndices.length; i++) {
+          bytearray.data[sliceIndices[i]] = srcBytes[i];
+        }
+        return seq;
+      }
       const errMsg = `bytearray indices must be integers or slices, not ${typeName(idxBits)}`;
       const idx = indexFromBitsWithOverflow(
         idxBits,
@@ -4256,6 +4581,172 @@ BASE_IMPORTS = """\
       }
       bytearray.data[i] = Number(value);
       return seq;
+    }
+    const view = getMemoryview(seq);
+    if (view) {
+      if (view.readonly) {
+        throw new Error('TypeError: cannot modify read-only memory');
+      }
+      const owner = getBytearray(view.ownerBits);
+      if (!owner) {
+        throw new Error('TypeError: memoryview is not writable');
+      }
+      if (view.itemsize !== 1) {
+        throw new Error('TypeError: memoryview itemsize not supported');
+      }
+      const sliceObj = getSlice(idxBits);
+      if (sliceObj) {
+        const indices = normalizeSliceIndices(
+          view.len,
+          sliceObj.start,
+          sliceObj.stop,
+          sliceObj.step,
+        );
+        if (indices === null) return boxNone();
+        const srcBytes = collectMemoryviewAssignBytes(val);
+        if (srcBytes === null) return boxNone();
+        const sliceIndices = collectSliceIndices(
+          indices.start,
+          indices.stop,
+          indices.step,
+        );
+        if (sliceIndices.length !== srcBytes.length) {
+          throw new Error(
+            'ValueError: memoryview assignment: lvalue and rvalue have different structures',
+          );
+        }
+        let pos = view.offset + indices.start * view.stride;
+        const stepStride = view.stride * indices.step;
+        for (const byte of srcBytes) {
+          if (pos < 0 || pos >= owner.data.length) return boxNone();
+          owner.data[pos] = byte;
+          pos += stepStride;
+        }
+        return seq;
+      }
+      const idx = indexFromBitsWithOverflow(
+        idxBits,
+        'memoryview: invalid slice key',
+        null,
+      );
+      if (idx === null) return boxNone();
+      let i = idx;
+      if (i < 0) i += view.len;
+      if (i < 0 || i >= view.len) {
+        throw new Error('IndexError: index out of bounds on dimension 1');
+      }
+      const pos = view.offset + i * view.stride;
+      if (pos < 0 || pos >= owner.data.length) {
+        throw new Error('IndexError: index out of bounds on dimension 1');
+      }
+      const byte = memoryviewItemByte(val);
+      owner.data[pos] = byte;
+      return seq;
+    }
+    return boxNone();
+  },
+  del_index: (seq, idxBits) => {
+    const list = getList(seq);
+    if (list) {
+      const sliceObj = getSlice(idxBits);
+      if (sliceObj) {
+        const indices = normalizeSliceIndices(
+          list.items.length,
+          sliceObj.start,
+          sliceObj.stop,
+          sliceObj.step,
+        );
+        if (indices === null) return boxNone();
+        if (indices.step === 1) {
+          let start = indices.start;
+          let stop = indices.stop;
+          if (start > stop) stop = start;
+          list.items.splice(start, stop - start);
+          return seq;
+        }
+        const sliceIndices = collectSliceIndices(
+          indices.start,
+          indices.stop,
+          indices.step,
+        );
+        if (indices.step > 0) {
+          for (let i = sliceIndices.length - 1; i >= 0; i--) {
+            list.items.splice(sliceIndices[i], 1);
+          }
+        } else {
+          for (let i = 0; i < sliceIndices.length; i++) {
+            list.items.splice(sliceIndices[i], 1);
+          }
+        }
+        return seq;
+      }
+      const errMsg = `list indices must be integers or slices, not ${typeName(idxBits)}`;
+      const idx = indexFromBitsWithOverflow(
+        idxBits,
+        errMsg,
+        null,
+      );
+      if (idx === null) return boxNone();
+      let i = idx;
+      if (i < 0) i += list.items.length;
+      if (i < 0 || i >= list.items.length) {
+        throw new Error('IndexError: list assignment index out of range');
+      }
+      list.items.splice(i, 1);
+      return seq;
+    }
+    const bytearray = getBytearray(seq);
+    if (bytearray) {
+      const sliceObj = getSlice(idxBits);
+      if (sliceObj) {
+        const indices = normalizeSliceIndices(
+          bytearray.data.length,
+          sliceObj.start,
+          sliceObj.stop,
+          sliceObj.step,
+        );
+        if (indices === null) return boxNone();
+        if (indices.step === 1) {
+          let start = indices.start;
+          let stop = indices.stop;
+          if (start > stop) stop = start;
+          bytearray.data.splice(start, stop - start);
+          return seq;
+        }
+        const sliceIndices = collectSliceIndices(
+          indices.start,
+          indices.stop,
+          indices.step,
+        );
+        if (indices.step > 0) {
+          for (let i = sliceIndices.length - 1; i >= 0; i--) {
+            bytearray.data.splice(sliceIndices[i], 1);
+          }
+        } else {
+          for (let i = 0; i < sliceIndices.length; i++) {
+            bytearray.data.splice(sliceIndices[i], 1);
+          }
+        }
+        return seq;
+      }
+      const errMsg = `bytearray indices must be integers or slices, not ${typeName(idxBits)}`;
+      const idx = indexFromBitsWithOverflow(
+        idxBits,
+        errMsg,
+        "cannot fit 'int' into an index-sized integer",
+      );
+      if (idx === null) return boxNone();
+      let i = idx;
+      if (i < 0) i += bytearray.data.length;
+      if (i < 0 || i >= bytearray.data.length) {
+        throw new Error('IndexError: bytearray index out of range');
+      }
+      bytearray.data.splice(i, 1);
+      return seq;
+    }
+    const view = getMemoryview(seq);
+    if (view) {
+      throw new Error('TypeError: cannot delete memory');
     }
     return boxNone();
   },
@@ -5118,6 +5609,22 @@ BASE_IMPORTS = """\
   file_read: () => boxNone(),
   file_write: () => boxNone(),
   file_close: () => boxNone(),
+  db_query: (_ptr, _len, out, _token) => {
+    if (!memory) return 7;
+    const view = new DataView(memory.buffer);
+    const outAddr = ptrAddr(out);
+    if (outAddr === 0) return 2;
+    view.setBigInt64(outAddr, 0n, true);
+    return 7;
+  },
+  db_exec: (_ptr, _len, out, _token) => {
+    if (!memory) return 7;
+    const view = new DataView(memory.buffer);
+    const outAddr = ptrAddr(out);
+    if (outAddr === 0) return 2;
+    view.setBigInt64(outAddr, 0n, true);
+    return 7;
+  },
   stream_new: () => 0n,
   stream_send: () => 0n,
   stream_recv: () => 0n,

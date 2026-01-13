@@ -18,6 +18,8 @@ def test_wasm_async_protocol_parity(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "async_protocol.py"
     src.write_text(
+        "import asyncio\n"
+        "\n"
         "class Counter:\n"
         "    def __init__(self, n):\n"
         "        self.i = 1\n"

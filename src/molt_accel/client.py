@@ -351,11 +351,18 @@ class MoltClient:
             error_cls = _STATUS_ERRORS.get(status, MoltInternalError)
             raise error_cls(response.get("error", status))
 
+        payload_data = response.get("payload", b"")
+        if not isinstance(payload_data, (bytes, bytearray)):
+            payload_data = b""
+        response_codec = response.get("codec", codec)
+
         response_metrics = response.get("metrics")
         if isinstance(response_metrics, dict):
             response_metrics = dict(response_metrics)
         else:
             response_metrics = {}
+        response_metrics.setdefault("payload_bytes", request_meta["payload_bytes"])
+        response_metrics["response_bytes"] = len(payload_data)
         response_metrics["client_ms"] = elapsed_ms
         if metrics_hook is not None:
             metrics_hook(dict(response_metrics))
@@ -370,8 +377,6 @@ class MoltClient:
             )
             after_recv(recv_meta)
 
-        payload_data = response.get("payload", b"")
-        response_codec = response.get("codec", codec)
         if not decode_response:
             return payload_data
         return decode_payload(payload_data, response_codec)

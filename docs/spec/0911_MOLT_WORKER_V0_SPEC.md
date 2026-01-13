@@ -4,7 +4,7 @@
 **Priority:** P0
 **Audience:** runtime engineers, AI coding agents
 **Goal:** Define the minimal worker that can execute exported entrypoints safely and predictably.
-**Implementation status:** Initial Rust stdio shell exists in `runtime/molt-worker` with framing, export allowlist, and deterministic demo entrypoints (`list_items`, `compute`, `offload_table`, `health`). Cancellation and timeout checks are enforced in the fake DB path, compiled dispatch loops, and pool waits, with queue/pool metrics emitted per request (microsecond + millisecond fields); compiled entrypoints are now routed via the manifest with `codec_in`/`codec_out` validation.
+**Implementation status:** Rust stdio shell exists in `runtime/molt-worker` with framing, export allowlist, deterministic demo entrypoints (`list_items`, `compute`, `offload_table`, `health`), plus `db_query`/`db_exec` (SQLite in sync mode, async Postgres with cancellation). `db_exec` requires `allow_write=true` and uses `db.write` capability gating. Cancellation and timeout checks are enforced in the fake DB path, compiled dispatch loops, pool waits, and Postgres queries, with queue/pool metrics emitted per request (microsecond + millisecond fields). Worker runtime is selectable via `--runtime sync|async` / `MOLT_WORKER_RUNTIME`.
 
 ---
 
@@ -65,12 +65,24 @@ Entrypoints are invoked by name with a payload.
 ### 3.1 Tuning knobs (env + CLI)
 - Threads: `--threads` overrides `MOLT_WORKER_THREADS` (defaults to CPU count).
 - Queue depth: `--max-queue` overrides `MOLT_WORKER_MAX_QUEUE` (defaults to 64).
+- Runtime: `--runtime sync|async` overrides `MOLT_WORKER_RUNTIME` (defaults to `sync`).
+- Max rows: `MOLT_DB_MAX_ROWS` sets the default `db_query` row cap (default 1000).
 
 ### 3.2 SQLite DB mode (native)
 - Set `MOLT_DB_SQLITE_PATH` to enable SQLite-backed `list_items` reads.
 - Default is read-only; set `MOLT_DB_SQLITE_READWRITE=1` for read-write opens.
-- Planned `db_query` entrypoint must follow `docs/spec/0915_MOLT_DB_IPC_CONTRACT.md`
-  to keep Django/Flask/FastAPI adapters aligned.
+- `db_query` is available for SQLite reads and `db_exec` for SQLite writes (with `allow_write=true`), following
+  `docs/spec/0915_MOLT_DB_IPC_CONTRACT.md` to keep Django/Flask/FastAPI adapters aligned.
+
+### 3.3 Postgres DB mode (async)
+- Set `MOLT_DB_POSTGRES_DSN` to enable async Postgres reads (`db_query`) and writes (`db_exec`).
+- Requires `--runtime async` or `MOLT_WORKER_RUNTIME=async`.
+- Optional tuning:
+  - `MOLT_DB_POSTGRES_MIN_CONNS`, `MOLT_DB_POSTGRES_MAX_CONNS`
+  - `MOLT_DB_POSTGRES_MAX_IDLE_MS`, `MOLT_DB_POSTGRES_HEALTH_CHECK_MS`
+  - `MOLT_DB_POSTGRES_CONNECT_TIMEOUT_MS`, `MOLT_DB_POSTGRES_QUERY_TIMEOUT_MS`
+  - `MOLT_DB_POSTGRES_MAX_WAIT_MS`, `MOLT_DB_POSTGRES_STATEMENT_CACHE_SIZE`
+  - `MOLT_DB_POSTGRES_SSL_ROOT_CERT`
 
 ---
 
@@ -81,7 +93,7 @@ Entrypoints are invoked by name with a payload.
   - drop/rollback resources
 - Do not leak memory, tasks, or DB connections
 
-**Implementation note:** current worker accepts `__cancel__` requests carrying a `request_id` payload; cancellation is honored during pool waits and execution (fake DB + compiled entrypoints). Real DB tasks still need cancel propagation.
+**Implementation note:** current worker accepts `__cancel__` requests carrying a `request_id` payload; cancellation is honored during pool waits and execution (fake DB + compiled entrypoints). Async Postgres queries now propagate cancellation via protocol cancel; SQLite remains cooperative via periodic checks.
 
 ---
 
@@ -119,7 +131,7 @@ Entrypoints are invoked by name with a payload.
   - status
 - Optional: emit a JSON line per request for easy parsing
 
-**Implementation note:** responses now include a `metrics` map with `queue_us`, `handler_us`, `exec_us`, `decode_us`, plus `queue_ms`/`exec_ms` for basic latency insight.
+**Implementation note:** responses now include a `metrics` map with `queue_us`, `handler_us`, `exec_us`, `decode_us`, plus `queue_ms`/`exec_ms` for basic latency insight. `db_query` responses also include `db_alias`, `db_tag` (when set), `db_row_count`, `db_bytes_in`, `db_bytes_out`, and `db_result_format`.
 
 ---
 

@@ -29,6 +29,8 @@ def test_native_async_protocol(tmp_path: Path) -> None:
 
     src = tmp_path / "async_protocol.py"
     src.write_text(
+        "import asyncio\n"
+        "\n"
         "class Counter:\n"
         "    def __init__(self, n):\n"
         "        self.i = 1\n"

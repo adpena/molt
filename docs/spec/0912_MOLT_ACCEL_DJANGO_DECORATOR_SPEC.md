@@ -60,6 +60,9 @@ No stack traces leaked by default.
   - cancel in-flight worker request
   - do not continue work
   - release resources promptly
+**Implementation note:** when `cancel_check` is not supplied, the decorator
+auto-detects request helpers like `is_aborted()` or `is_disconnected()` and
+polls them when available.
 
 ---
 
@@ -80,6 +83,9 @@ No stack traces leaked by default.
 - `client_mode`: `shared` (default) reuses a single long-lived `MoltClient`; `per_request` spawns a client per request and closes it after the call. Defaults from `MOLT_ACCEL_CLIENT_MODE`.
 - Pooling: set `MOLT_ACCEL_POOL_SIZE` to a value >1 to use a `MoltClientPool` when `client_mode=shared`.
 - `payload_builder`: transforms the Django request into the payload sent to the worker. Set this to match your contract when using a different `entry`.
+  Built-in helpers live in `molt_accel.contracts` (`build_list_items_payload`,
+  `build_compute_payload`, `build_offload_table_payload`), including JSON-body
+  parsing for the offload-table demo.
 - `response_factory`: builds the HTTP response from the worker result (use `raw_json_response_factory` for JSON pass-through).
 - `allow_fallback`: when True, failures call the original view instead of returning an error response.
 - `decode_response`: when False, return raw payload bytes to the response factory (useful for JSON pass-through).
@@ -91,6 +97,8 @@ Expose hooks:
 - before_send / after_recv
 - latency measurements
 - optional Prometheus integration later
+Metrics hooks include `client_ms` plus payload sizes (`payload_bytes`,
+`response_bytes`) in addition to any worker-provided metrics.
 
 ---
 

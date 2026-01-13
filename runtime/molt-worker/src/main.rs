@@ -1,22 +1,25 @@
 use arrow::array::{
-    ArrayRef, BinaryBuilder, BooleanBuilder, Float64Builder, Int64Builder, NullArray,
-    StringBuilder,
+    make_builder, ArrayBuilder, ArrayRef, BinaryBuilder, BooleanBuilder, Float64Builder,
+    Int32Builder, Int64Builder, ListBuilder, NullArray, NullBuilder, StringBuilder, StructBuilder,
 };
-use arrow::datatypes::{DataType, Field, Schema};
+use arrow::datatypes::{DataType, Field, Fields, Schema};
 use arrow::ipc::writer::StreamWriter;
 use arrow::record_batch::RecordBatch;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
+use fallible_iterator::FallibleIterator;
 mod diagnostics;
 
 use diagnostics::{
     ComputeRequest, ComputeResponse, HealthResponse, OffloadTableRequest, OffloadTableResponse,
 };
+use postgres_protocol::types::{array_from_sql, range_from_sql, ArrayDimension, Range, RangeBound};
+use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
 use std::fs;
 use std::hint::black_box;
@@ -46,8 +49,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::runtime::Builder as TokioRuntimeBuilder;
 use tokio::sync::mpsc;
 use tokio::task::spawn_blocking;
-use tokio::time::{sleep as tokio_sleep};
-use tokio_postgres::types::{ToSql, Type};
+use tokio::time::sleep as tokio_sleep;
+use tokio_postgres::types::{FromSql, Kind, ToSql, Type};
 use tokio_postgres::Row as PgRow;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,10 +80,7 @@ enum DbResultFormat {
 
 impl DbResultFormat {
     fn parse(value: Option<&str>) -> Result<Self, ExecError> {
-        let format = value
-            .unwrap_or("json")
-            .trim()
-            .to_lowercase();
+        let format = value.unwrap_or("json").trim().to_lowercase();
         match format.as_str() {
             "json" => Ok(Self::Json),
             "msgpack" => Ok(Self::Msgpack),
@@ -249,11 +249,33 @@ enum DbParam {
 }
 
 #[allow(dead_code)]
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize)]
 struct DbNamedParam {
     name: String,
     #[serde(flatten)]
     param: DbParam,
+}
+
+impl serde::Serialize for DbNamedParam {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("name", &self.name)?;
+        match &self.param {
+            DbParam::Raw(value) => {
+                map.serialize_entry("value", value)?;
+            }
+            DbParam::Typed { value, r#type } => {
+                map.serialize_entry("value", value)?;
+                if let Some(type_name) = r#type {
+                    map.serialize_entry("type", type_name)?;
+                }
+            }
+        }
+        map.end()
+    }
 }
 
 #[allow(dead_code)]
@@ -369,8 +391,15 @@ struct DbQueryResponse {
     row_count: usize,
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize, Serialize)]
+struct DbExecResponse {
+    rows_affected: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_insert_id: Option<i64>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 enum DbRowValue {
     Null,
@@ -379,6 +408,36 @@ enum DbRowValue {
     Float(f64),
     String(String),
     Bytes(ByteBuf),
+    Array(Vec<DbRowValue>),
+    ArrayWithBounds(DbArray),
+    Range(Box<DbRange>),
+    Interval(DbInterval),
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct DbArray {
+    lower_bounds: Vec<i32>,
+    values: Vec<DbRowValue>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct DbInterval {
+    months: i32,
+    days: i32,
+    micros: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct DbRangeBound {
+    value: DbRowValue,
+    inclusive: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct DbRange {
+    empty: bool,
+    lower: Option<DbRangeBound>,
+    upper: Option<DbRangeBound>,
 }
 
 struct DbQueryExecResult {
@@ -390,12 +449,23 @@ struct DbQueryExecResult {
     result_format: DbResultFormat,
 }
 
+struct DbExecResult {
+    codec: String,
+    payload: Vec<u8>,
+    rows_affected: u64,
+    last_insert_id: Option<i64>,
+    db_alias: String,
+    tag: Option<String>,
+    result_format: DbResultFormat,
+}
+
 enum ExecOutcome {
     Standard { codec: String, payload: Vec<u8> },
     DbQuery(DbQueryExecResult),
+    DbExec(DbExecResult),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 enum ArrowColumnType {
     Null,
     Bool,
@@ -403,6 +473,14 @@ enum ArrowColumnType {
     Float64,
     Utf8,
     Binary,
+    Array {
+        element: Box<ArrowColumnType>,
+        dims: usize,
+    },
+    Range {
+        element: Box<ArrowColumnType>,
+    },
+    Interval,
 }
 
 struct DecodedRequest {
@@ -1223,12 +1301,56 @@ fn validate_query(
         }
         _ if allow_write => Err(ExecError {
             status: "InvalidInput",
-            message: "Write statements require db_exec (not yet implemented)".to_string(),
+            message: "Write statements require db_exec".to_string(),
         }),
         _ => Err(ExecError {
             status: "InvalidInput",
             message: "Only read-only SELECT/CTE queries are supported".to_string(),
         }),
+    }
+}
+
+#[allow(dead_code)]
+struct ValidatedExec {
+    sql: String,
+    is_insert: bool,
+}
+
+#[allow(dead_code)]
+fn validate_exec(
+    sql: &str,
+    allow_write: bool,
+    dialect: &dyn sqlparser::dialect::Dialect,
+) -> Result<ValidatedExec, ExecError> {
+    if !allow_write {
+        return Err(ExecError {
+            status: "InvalidInput",
+            message: "db_exec requires allow_write=true".to_string(),
+        });
+    }
+    let mut statements = Parser::parse_sql(dialect, sql).map_err(|err| ExecError {
+        status: "InvalidInput",
+        message: format!("SQL parse error: {err}"),
+    })?;
+    if statements.len() != 1 {
+        return Err(ExecError {
+            status: "InvalidInput",
+            message: "SQL must contain exactly one statement".to_string(),
+        });
+    }
+    let stmt = statements.remove(0);
+    match stmt {
+        SqlStatement::Query(_) => Err(ExecError {
+            status: "InvalidInput",
+            message: "db_exec requires a write statement".to_string(),
+        }),
+        other => {
+            let is_insert = matches!(&other, SqlStatement::Insert { .. });
+            Ok(ValidatedExec {
+                sql: other.to_string(),
+                is_insert,
+            })
+        }
     }
 }
 
@@ -1509,7 +1631,6 @@ fn parse_pg_timestamptz(value: &str) -> Result<DateTime<Utc>, ExecError> {
         })
 }
 
-
 fn resolve_sqlite_params(specs: Vec<DbParamSpec>) -> Result<Vec<Value>, ExecError> {
     let mut params = Vec::with_capacity(specs.len());
     for spec in specs {
@@ -1555,16 +1676,9 @@ fn db_query_arrow_ipc_bytes(response: &DbQueryResponse) -> Result<Vec<u8>, ExecE
     let mut arrays = Vec::with_capacity(response.columns.len());
     for (idx, name) in response.columns.iter().enumerate() {
         let column_type = infer_arrow_column_type(&response.rows, idx, name)?;
-        let data_type = match column_type {
-            ArrowColumnType::Null => DataType::Null,
-            ArrowColumnType::Bool => DataType::Boolean,
-            ArrowColumnType::Int64 => DataType::Int64,
-            ArrowColumnType::Float64 => DataType::Float64,
-            ArrowColumnType::Utf8 => DataType::Utf8,
-            ArrowColumnType::Binary => DataType::Binary,
-        };
+        let data_type = arrow_data_type(&column_type);
         fields.push(Field::new(name, data_type.clone(), true));
-        arrays.push(build_arrow_array(&response.rows, idx, column_type)?);
+        arrays.push(build_arrow_array(&response.rows, idx, &column_type)?);
     }
     let schema = Arc::new(Schema::new(fields));
     let batch = RecordBatch::try_new(schema.clone(), arrays).map_err(|err| ExecError {
@@ -1601,67 +1715,10 @@ fn infer_arrow_column_type(
             status: "InternalError",
             message: format!("Row length mismatch for column '{name}'"),
         })?;
-        let next = match value {
-            DbRowValue::Null => current,
-            DbRowValue::Bool(_) => match current {
-                None | Some(ArrowColumnType::Bool) => Some(ArrowColumnType::Bool),
-                _ => {
-                    return Err(ExecError {
-                        status: "InvalidInput",
-                        message: format!(
-                            "Arrow IPC requires consistent types; column '{name}' mixed bool"
-                        ),
-                    })
-                }
-            },
-            DbRowValue::Int(_) => match current {
-                None | Some(ArrowColumnType::Int64) => Some(ArrowColumnType::Int64),
-                Some(ArrowColumnType::Float64) => Some(ArrowColumnType::Float64),
-                _ => {
-                    return Err(ExecError {
-                        status: "InvalidInput",
-                        message: format!(
-                            "Arrow IPC requires consistent types; column '{name}' mixed int"
-                        ),
-                    })
-                }
-            },
-            DbRowValue::Float(_) => match current {
-                None | Some(ArrowColumnType::Float64) => Some(ArrowColumnType::Float64),
-                Some(ArrowColumnType::Int64) => Some(ArrowColumnType::Float64),
-                _ => {
-                    return Err(ExecError {
-                        status: "InvalidInput",
-                        message: format!(
-                            "Arrow IPC requires consistent types; column '{name}' mixed float"
-                        ),
-                    })
-                }
-            },
-            DbRowValue::String(_) => match current {
-                None | Some(ArrowColumnType::Utf8) => Some(ArrowColumnType::Utf8),
-                _ => {
-                    return Err(ExecError {
-                        status: "InvalidInput",
-                        message: format!(
-                            "Arrow IPC requires consistent types; column '{name}' mixed string"
-                        ),
-                    })
-                }
-            },
-            DbRowValue::Bytes(_) => match current {
-                None | Some(ArrowColumnType::Binary) => Some(ArrowColumnType::Binary),
-                _ => {
-                    return Err(ExecError {
-                        status: "InvalidInput",
-                        message: format!(
-                            "Arrow IPC requires consistent types; column '{name}' mixed bytes"
-                        ),
-                    })
-                }
-            },
-        };
-        current = next;
+        let next = infer_arrow_value_type(value, name)?;
+        if let Some(next) = next {
+            current = Some(merge_arrow_types(current, next, name)?);
+        }
     }
     Ok(current.unwrap_or(ArrowColumnType::Null))
 }
@@ -1669,112 +1726,1109 @@ fn infer_arrow_column_type(
 fn build_arrow_array(
     rows: &[Vec<DbRowValue>],
     idx: usize,
-    column_type: ArrowColumnType,
+    column_type: &ArrowColumnType,
 ) -> Result<ArrayRef, ExecError> {
+    if matches!(column_type, ArrowColumnType::Null) {
+        return Ok(Arc::new(NullArray::new(rows.len())));
+    }
+    let data_type = arrow_data_type(column_type);
+    let mut builder = make_builder(&data_type, rows.len());
+    for row in rows {
+        let value = row.get(idx).ok_or_else(|| ExecError {
+            status: "InternalError",
+            message: "Row length mismatch while encoding Arrow IPC".to_string(),
+        })?;
+        append_arrow_value(column_type, value, builder.as_mut())?;
+    }
+    Ok(builder.finish())
+}
+
+fn arrow_data_type(column_type: &ArrowColumnType) -> DataType {
     match column_type {
-        ArrowColumnType::Null => Ok(Arc::new(NullArray::new(rows.len()))),
-        ArrowColumnType::Bool => {
-            let mut builder = BooleanBuilder::with_capacity(rows.len());
-            for row in rows {
-                let value = row.get(idx).ok_or_else(|| ExecError {
-                    status: "InternalError",
-                    message: "Row length mismatch while encoding Arrow IPC".to_string(),
-                })?;
-                match value {
-                    DbRowValue::Null => builder.append_null(),
-                    DbRowValue::Bool(val) => builder.append_value(*val),
-                    _ => {
-                        return Err(ExecError {
-                            status: "InternalError",
-                            message: "Arrow IPC type mismatch (bool)".to_string(),
-                        })
-                    }
-                }
-            }
-            Ok(Arc::new(builder.finish()))
+        ArrowColumnType::Null => DataType::Null,
+        ArrowColumnType::Bool => DataType::Boolean,
+        ArrowColumnType::Int64 => DataType::Int64,
+        ArrowColumnType::Float64 => DataType::Float64,
+        ArrowColumnType::Utf8 => DataType::Utf8,
+        ArrowColumnType::Binary => DataType::Binary,
+        ArrowColumnType::Interval => DataType::Struct(Fields::from(vec![
+            Field::new("months", DataType::Int32, true),
+            Field::new("days", DataType::Int32, true),
+            Field::new("micros", DataType::Int64, true),
+        ])),
+        ArrowColumnType::Range { element } => {
+            let bound = DataType::Struct(Fields::from(vec![
+                Field::new("value", arrow_data_type(element), true),
+                Field::new("inclusive", DataType::Boolean, true),
+            ]));
+            DataType::Struct(Fields::from(vec![
+                Field::new("empty", DataType::Boolean, true),
+                Field::new("lower", bound.clone(), true),
+                Field::new("upper", bound, true),
+            ]))
         }
-        ArrowColumnType::Int64 => {
-            let mut builder = Int64Builder::with_capacity(rows.len());
-            for row in rows {
-                let value = row.get(idx).ok_or_else(|| ExecError {
-                    status: "InternalError",
-                    message: "Row length mismatch while encoding Arrow IPC".to_string(),
-                })?;
-                match value {
-                    DbRowValue::Null => builder.append_null(),
-                    DbRowValue::Int(val) => builder.append_value(*val),
-                    _ => {
-                        return Err(ExecError {
-                            status: "InternalError",
-                            message: "Arrow IPC type mismatch (int)".to_string(),
-                        })
-                    }
-                }
-            }
-            Ok(Arc::new(builder.finish()))
-        }
-        ArrowColumnType::Float64 => {
-            let mut builder = Float64Builder::with_capacity(rows.len());
-            for row in rows {
-                let value = row.get(idx).ok_or_else(|| ExecError {
-                    status: "InternalError",
-                    message: "Row length mismatch while encoding Arrow IPC".to_string(),
-                })?;
-                match value {
-                    DbRowValue::Null => builder.append_null(),
-                    DbRowValue::Float(val) => builder.append_value(*val),
-                    DbRowValue::Int(val) => builder.append_value(*val as f64),
-                    _ => {
-                        return Err(ExecError {
-                            status: "InternalError",
-                            message: "Arrow IPC type mismatch (float)".to_string(),
-                        })
-                    }
-                }
-            }
-            Ok(Arc::new(builder.finish()))
-        }
-        ArrowColumnType::Utf8 => {
-            let mut builder = StringBuilder::new();
-            for row in rows {
-                let value = row.get(idx).ok_or_else(|| ExecError {
-                    status: "InternalError",
-                    message: "Row length mismatch while encoding Arrow IPC".to_string(),
-                })?;
-                match value {
-                    DbRowValue::Null => builder.append_null(),
-                    DbRowValue::String(val) => builder.append_value(val),
-                    _ => {
-                        return Err(ExecError {
-                            status: "InternalError",
-                            message: "Arrow IPC type mismatch (string)".to_string(),
-                        })
-                    }
-                }
-            }
-            Ok(Arc::new(builder.finish()))
-        }
-        ArrowColumnType::Binary => {
-            let mut builder = BinaryBuilder::new();
-            for row in rows {
-                let value = row.get(idx).ok_or_else(|| ExecError {
-                    status: "InternalError",
-                    message: "Row length mismatch while encoding Arrow IPC".to_string(),
-                })?;
-                match value {
-                    DbRowValue::Null => builder.append_null(),
-                    DbRowValue::Bytes(val) => builder.append_value(val.as_ref()),
-                    _ => {
-                        return Err(ExecError {
-                            status: "InternalError",
-                            message: "Arrow IPC type mismatch (bytes)".to_string(),
-                        })
-                    }
-                }
-            }
-            Ok(Arc::new(builder.finish()))
+        ArrowColumnType::Array { element, dims } => {
+            let lower_bounds = DataType::List(Arc::new(Field::new("item", DataType::Int32, true)));
+            let values = list_data_type(element, *dims);
+            DataType::Struct(Fields::from(vec![
+                Field::new("lower_bounds", lower_bounds, true),
+                Field::new("values", values, true),
+            ]))
         }
     }
+}
+
+fn list_data_type(element: &ArrowColumnType, depth: usize) -> DataType {
+    let mut out = arrow_data_type(element);
+    for _ in 0..depth {
+        out = DataType::List(Arc::new(Field::new("item", out, true)));
+    }
+    out
+}
+
+fn arrow_type_label(column_type: &ArrowColumnType) -> &'static str {
+    match column_type {
+        ArrowColumnType::Null => "null",
+        ArrowColumnType::Bool => "bool",
+        ArrowColumnType::Int64 => "int",
+        ArrowColumnType::Float64 => "float",
+        ArrowColumnType::Utf8 => "string",
+        ArrowColumnType::Binary => "bytes",
+        ArrowColumnType::Array { .. } => "array",
+        ArrowColumnType::Range { .. } => "range",
+        ArrowColumnType::Interval => "interval",
+    }
+}
+
+fn merge_arrow_types(
+    current: Option<ArrowColumnType>,
+    next: ArrowColumnType,
+    name: &str,
+) -> Result<ArrowColumnType, ExecError> {
+    match current {
+        None => Ok(next),
+        Some(current) => merge_arrow_non_null(current, next, name),
+    }
+}
+
+fn merge_arrow_non_null(
+    current: ArrowColumnType,
+    next: ArrowColumnType,
+    name: &str,
+) -> Result<ArrowColumnType, ExecError> {
+    if matches!(current, ArrowColumnType::Null) {
+        return Ok(next);
+    }
+    if matches!(next, ArrowColumnType::Null) {
+        return Ok(current);
+    }
+    match (current, next) {
+        (ArrowColumnType::Int64, ArrowColumnType::Float64)
+        | (ArrowColumnType::Float64, ArrowColumnType::Int64) => Ok(ArrowColumnType::Float64),
+        (left, right) if left == right => Ok(left),
+        (
+            ArrowColumnType::Array {
+                element: left,
+                dims: left_dims,
+            },
+            ArrowColumnType::Array {
+                element: right,
+                dims: right_dims,
+            },
+        ) => {
+            if left_dims != right_dims {
+                return Err(ExecError {
+                    status: "InvalidInput",
+                    message: format!(
+                        "Arrow IPC requires consistent array dimensions; column '{name}' mixed {left_dims} and {right_dims}"
+                    ),
+                });
+            }
+            let merged = merge_arrow_non_null(*left, *right, name)?;
+            Ok(ArrowColumnType::Array {
+                element: Box::new(merged),
+                dims: left_dims,
+            })
+        }
+        (ArrowColumnType::Range { element: left }, ArrowColumnType::Range { element: right }) => {
+            let merged = merge_arrow_non_null(*left, *right, name)?;
+            Ok(ArrowColumnType::Range {
+                element: Box::new(merged),
+            })
+        }
+        (left, right) => Err(ExecError {
+            status: "InvalidInput",
+            message: format!(
+                "Arrow IPC requires consistent types; column '{name}' mixed {} and {}",
+                arrow_type_label(&left),
+                arrow_type_label(&right)
+            ),
+        }),
+    }
+}
+
+fn infer_arrow_value_type(
+    value: &DbRowValue,
+    name: &str,
+) -> Result<Option<ArrowColumnType>, ExecError> {
+    match value {
+        DbRowValue::Null => Ok(None),
+        DbRowValue::Bool(_) => Ok(Some(ArrowColumnType::Bool)),
+        DbRowValue::Int(_) => Ok(Some(ArrowColumnType::Int64)),
+        DbRowValue::Float(_) => Ok(Some(ArrowColumnType::Float64)),
+        DbRowValue::String(_) => Ok(Some(ArrowColumnType::Utf8)),
+        DbRowValue::Bytes(_) => Ok(Some(ArrowColumnType::Binary)),
+        DbRowValue::Array(values) => {
+            let (element, dims) = infer_array_shape(values, name)?;
+            Ok(Some(ArrowColumnType::Array {
+                element: Box::new(element),
+                dims,
+            }))
+        }
+        DbRowValue::ArrayWithBounds(array) => {
+            let (element, dims) = infer_array_shape(&array.values, name)?;
+            if array.lower_bounds.len() != dims {
+                return Err(ExecError {
+                    status: "InvalidInput",
+                    message: format!(
+                        "Arrow IPC requires consistent array dimensions; column '{name}' has {} bounds for {dims} dims",
+                        array.lower_bounds.len()
+                    ),
+                });
+            }
+            Ok(Some(ArrowColumnType::Array {
+                element: Box::new(element),
+                dims,
+            }))
+        }
+        DbRowValue::Range(range) => Ok(Some(ArrowColumnType::Range {
+            element: Box::new(infer_range_element_type(range, name)?),
+        })),
+        DbRowValue::Interval(_) => Ok(Some(ArrowColumnType::Interval)),
+    }
+}
+
+fn infer_array_shape(
+    values: &[DbRowValue],
+    name: &str,
+) -> Result<(ArrowColumnType, usize), ExecError> {
+    let mut element_type: Option<ArrowColumnType> = None;
+    let mut nested_dims: Option<usize> = None;
+    for value in values {
+        match value {
+            DbRowValue::Null => continue,
+            DbRowValue::Array(inner) => {
+                let (inner_type, inner_dims) = infer_array_shape(inner, name)?;
+                match nested_dims {
+                    None => nested_dims = Some(inner_dims),
+                    Some(existing) if existing == inner_dims => {}
+                    Some(existing) => {
+                        return Err(ExecError {
+                            status: "InvalidInput",
+                            message: format!(
+                                "Arrow IPC requires consistent array dimensions; column '{name}' mixed nested dims {existing} and {inner_dims}"
+                            ),
+                        });
+                    }
+                }
+                element_type = Some(merge_arrow_types(element_type, inner_type, name)?);
+            }
+            DbRowValue::ArrayWithBounds(array) => {
+                let (inner_type, inner_dims) = infer_array_shape(&array.values, name)?;
+                if array.lower_bounds.len() != inner_dims {
+                    return Err(ExecError {
+                        status: "InvalidInput",
+                        message: format!(
+                            "Arrow IPC requires consistent array dimensions; column '{name}' has {} bounds for {inner_dims} dims",
+                            array.lower_bounds.len()
+                        ),
+                    });
+                }
+                match nested_dims {
+                    None => nested_dims = Some(inner_dims),
+                    Some(existing) if existing == inner_dims => {}
+                    Some(existing) => {
+                        return Err(ExecError {
+                            status: "InvalidInput",
+                            message: format!(
+                                "Arrow IPC requires consistent array dimensions; column '{name}' mixed nested dims {existing} and {inner_dims}"
+                            ),
+                        });
+                    }
+                }
+                element_type = Some(merge_arrow_types(element_type, inner_type, name)?);
+            }
+            other => {
+                if nested_dims.is_some() {
+                    return Err(ExecError {
+                        status: "InvalidInput",
+                        message: format!(
+                            "Arrow IPC requires consistent array dimensions; column '{name}' mixed scalars and arrays"
+                        ),
+                    });
+                }
+                let next = infer_arrow_value_type(other, name)?.unwrap_or(ArrowColumnType::Null);
+                element_type = Some(merge_arrow_types(element_type, next, name)?);
+            }
+        }
+    }
+    let element_type = element_type.unwrap_or(ArrowColumnType::Null);
+    let dims = nested_dims.map(|dims| dims + 1).unwrap_or(1);
+    Ok((element_type, dims))
+}
+
+fn infer_range_element_type(range: &DbRange, name: &str) -> Result<ArrowColumnType, ExecError> {
+    let mut current: Option<ArrowColumnType> = None;
+    if let Some(bound) = range.lower.as_ref() {
+        if let Some(next) = infer_arrow_value_type(&bound.value, name)? {
+            current = Some(merge_arrow_types(current, next, name)?);
+        }
+    }
+    if let Some(bound) = range.upper.as_ref() {
+        if let Some(next) = infer_arrow_value_type(&bound.value, name)? {
+            current = Some(merge_arrow_types(current, next, name)?);
+        }
+    }
+    Ok(current.unwrap_or(ArrowColumnType::Null))
+}
+
+fn append_arrow_value(
+    column_type: &ArrowColumnType,
+    value: &DbRowValue,
+    builder: &mut dyn ArrayBuilder,
+) -> Result<(), ExecError> {
+    match column_type {
+        ArrowColumnType::Null => {
+            let builder = builder
+                .as_any_mut()
+                .downcast_mut::<NullBuilder>()
+                .ok_or_else(|| arrow_builder_mismatch("null"))?;
+            match value {
+                DbRowValue::Null => builder.append_null(),
+                _ => {
+                    return Err(ExecError {
+                        status: "InternalError",
+                        message: "Arrow IPC type mismatch (null)".to_string(),
+                    })
+                }
+            }
+        }
+        ArrowColumnType::Bool => {
+            let builder = builder
+                .as_any_mut()
+                .downcast_mut::<BooleanBuilder>()
+                .ok_or_else(|| arrow_builder_mismatch("bool"))?;
+            match value {
+                DbRowValue::Null => builder.append_null(),
+                DbRowValue::Bool(val) => builder.append_value(*val),
+                _ => {
+                    return Err(ExecError {
+                        status: "InternalError",
+                        message: "Arrow IPC type mismatch (bool)".to_string(),
+                    })
+                }
+            }
+        }
+        ArrowColumnType::Int64 => {
+            let builder = builder
+                .as_any_mut()
+                .downcast_mut::<Int64Builder>()
+                .ok_or_else(|| arrow_builder_mismatch("int"))?;
+            match value {
+                DbRowValue::Null => builder.append_null(),
+                DbRowValue::Int(val) => builder.append_value(*val),
+                _ => {
+                    return Err(ExecError {
+                        status: "InternalError",
+                        message: "Arrow IPC type mismatch (int)".to_string(),
+                    })
+                }
+            }
+        }
+        ArrowColumnType::Float64 => {
+            let builder = builder
+                .as_any_mut()
+                .downcast_mut::<Float64Builder>()
+                .ok_or_else(|| arrow_builder_mismatch("float"))?;
+            match value {
+                DbRowValue::Null => builder.append_null(),
+                DbRowValue::Float(val) => builder.append_value(*val),
+                DbRowValue::Int(val) => builder.append_value(*val as f64),
+                _ => {
+                    return Err(ExecError {
+                        status: "InternalError",
+                        message: "Arrow IPC type mismatch (float)".to_string(),
+                    })
+                }
+            }
+        }
+        ArrowColumnType::Utf8 => {
+            let builder = builder
+                .as_any_mut()
+                .downcast_mut::<StringBuilder>()
+                .ok_or_else(|| arrow_builder_mismatch("string"))?;
+            match value {
+                DbRowValue::Null => builder.append_null(),
+                DbRowValue::String(val) => builder.append_value(val),
+                _ => {
+                    return Err(ExecError {
+                        status: "InternalError",
+                        message: "Arrow IPC type mismatch (string)".to_string(),
+                    })
+                }
+            }
+        }
+        ArrowColumnType::Binary => {
+            let builder = builder
+                .as_any_mut()
+                .downcast_mut::<BinaryBuilder>()
+                .ok_or_else(|| arrow_builder_mismatch("bytes"))?;
+            match value {
+                DbRowValue::Null => builder.append_null(),
+                DbRowValue::Bytes(val) => builder.append_value(val.as_ref()),
+                _ => {
+                    return Err(ExecError {
+                        status: "InternalError",
+                        message: "Arrow IPC type mismatch (bytes)".to_string(),
+                    })
+                }
+            }
+        }
+        ArrowColumnType::Array { element, dims } => {
+            let builder = builder
+                .as_any_mut()
+                .downcast_mut::<StructBuilder>()
+                .ok_or_else(|| arrow_builder_mismatch("array"))?;
+            append_array_struct(builder, element, *dims, value)?;
+        }
+        ArrowColumnType::Range { element } => {
+            let builder = builder
+                .as_any_mut()
+                .downcast_mut::<StructBuilder>()
+                .ok_or_else(|| arrow_builder_mismatch("range"))?;
+            append_range_struct(builder, element, value)?;
+        }
+        ArrowColumnType::Interval => {
+            let builder = builder
+                .as_any_mut()
+                .downcast_mut::<StructBuilder>()
+                .ok_or_else(|| arrow_builder_mismatch("interval"))?;
+            append_interval_struct(builder, value)?;
+        }
+    }
+    Ok(())
+}
+
+type DynListBuilder = ListBuilder<Box<dyn ArrayBuilder>>;
+
+fn append_array_struct(
+    builder: &mut StructBuilder,
+    element: &ArrowColumnType,
+    dims: usize,
+    value: &DbRowValue,
+) -> Result<(), ExecError> {
+    match value {
+        DbRowValue::Null => {
+            {
+                let lower_builder = builder
+                    .field_builder::<DynListBuilder>(0)
+                    .ok_or_else(|| arrow_builder_mismatch("array lower_bounds"))?;
+                append_list_null(lower_builder);
+            }
+            {
+                let values_builder = builder
+                    .field_builder::<DynListBuilder>(1)
+                    .ok_or_else(|| arrow_builder_mismatch("array values"))?;
+                append_list_null(values_builder);
+            }
+            builder.append(false);
+        }
+        DbRowValue::Array(values) => {
+            {
+                let lower_builder = builder
+                    .field_builder::<DynListBuilder>(0)
+                    .ok_or_else(|| arrow_builder_mismatch("array lower_bounds"))?;
+                append_i32_list(lower_builder, &default_array_bounds(dims))?;
+            }
+            {
+                let values_builder = builder
+                    .field_builder::<DynListBuilder>(1)
+                    .ok_or_else(|| arrow_builder_mismatch("array values"))?;
+                append_list_value(values_builder, element, dims, values)?;
+            }
+            builder.append(true);
+        }
+        DbRowValue::ArrayWithBounds(array) => {
+            if array.lower_bounds.len() != dims {
+                return Err(ExecError {
+                    status: "InternalError",
+                    message: "Arrow IPC array bounds mismatch".to_string(),
+                });
+            }
+            {
+                let lower_builder = builder
+                    .field_builder::<DynListBuilder>(0)
+                    .ok_or_else(|| arrow_builder_mismatch("array lower_bounds"))?;
+                append_i32_list(lower_builder, &array.lower_bounds)?;
+            }
+            {
+                let values_builder = builder
+                    .field_builder::<DynListBuilder>(1)
+                    .ok_or_else(|| arrow_builder_mismatch("array values"))?;
+                append_list_value(values_builder, element, dims, &array.values)?;
+            }
+            builder.append(true);
+        }
+        _ => {
+            return Err(ExecError {
+                status: "InternalError",
+                message: "Arrow IPC type mismatch (array)".to_string(),
+            })
+        }
+    }
+    Ok(())
+}
+
+fn append_range_struct(
+    builder: &mut StructBuilder,
+    element: &ArrowColumnType,
+    value: &DbRowValue,
+) -> Result<(), ExecError> {
+    match value {
+        DbRowValue::Null => {
+            {
+                let empty_builder = builder
+                    .field_builder::<BooleanBuilder>(0)
+                    .ok_or_else(|| arrow_builder_mismatch("range empty"))?;
+                empty_builder.append_null();
+            }
+            {
+                let lower_builder = builder
+                    .field_builder::<StructBuilder>(1)
+                    .ok_or_else(|| arrow_builder_mismatch("range lower"))?;
+                append_range_bound(lower_builder, None, element)?;
+            }
+            {
+                let upper_builder = builder
+                    .field_builder::<StructBuilder>(2)
+                    .ok_or_else(|| arrow_builder_mismatch("range upper"))?;
+                append_range_bound(upper_builder, None, element)?;
+            }
+            builder.append(false);
+        }
+        DbRowValue::Range(range) => {
+            {
+                let empty_builder = builder
+                    .field_builder::<BooleanBuilder>(0)
+                    .ok_or_else(|| arrow_builder_mismatch("range empty"))?;
+                empty_builder.append_value(range.empty);
+            }
+            {
+                let lower_builder = builder
+                    .field_builder::<StructBuilder>(1)
+                    .ok_or_else(|| arrow_builder_mismatch("range lower"))?;
+                append_range_bound(lower_builder, range.lower.as_ref(), element)?;
+            }
+            {
+                let upper_builder = builder
+                    .field_builder::<StructBuilder>(2)
+                    .ok_or_else(|| arrow_builder_mismatch("range upper"))?;
+                append_range_bound(upper_builder, range.upper.as_ref(), element)?;
+            }
+            builder.append(true);
+        }
+        _ => {
+            return Err(ExecError {
+                status: "InternalError",
+                message: "Arrow IPC type mismatch (range)".to_string(),
+            })
+        }
+    }
+    Ok(())
+}
+
+fn append_range_bound(
+    builder: &mut StructBuilder,
+    bound: Option<&DbRangeBound>,
+    element: &ArrowColumnType,
+) -> Result<(), ExecError> {
+    match bound {
+        None => {
+            append_struct_field_value(builder, 0, element, &DbRowValue::Null)?;
+            let inclusive_builder = builder
+                .field_builder::<BooleanBuilder>(1)
+                .ok_or_else(|| arrow_builder_mismatch("range bound inclusive"))?;
+            inclusive_builder.append_null();
+            builder.append(false);
+        }
+        Some(bound) => {
+            append_struct_field_value(builder, 0, element, &bound.value)?;
+            let inclusive_builder = builder
+                .field_builder::<BooleanBuilder>(1)
+                .ok_or_else(|| arrow_builder_mismatch("range bound inclusive"))?;
+            inclusive_builder.append_value(bound.inclusive);
+            builder.append(true);
+        }
+    }
+    Ok(())
+}
+
+fn append_interval_struct(
+    builder: &mut StructBuilder,
+    value: &DbRowValue,
+) -> Result<(), ExecError> {
+    match value {
+        DbRowValue::Null => {
+            {
+                let months_builder = builder
+                    .field_builder::<Int32Builder>(0)
+                    .ok_or_else(|| arrow_builder_mismatch("interval months"))?;
+                months_builder.append_null();
+            }
+            {
+                let days_builder = builder
+                    .field_builder::<Int32Builder>(1)
+                    .ok_or_else(|| arrow_builder_mismatch("interval days"))?;
+                days_builder.append_null();
+            }
+            {
+                let micros_builder = builder
+                    .field_builder::<Int64Builder>(2)
+                    .ok_or_else(|| arrow_builder_mismatch("interval micros"))?;
+                micros_builder.append_null();
+            }
+            builder.append(false);
+        }
+        DbRowValue::Interval(interval) => {
+            {
+                let months_builder = builder
+                    .field_builder::<Int32Builder>(0)
+                    .ok_or_else(|| arrow_builder_mismatch("interval months"))?;
+                months_builder.append_value(interval.months);
+            }
+            {
+                let days_builder = builder
+                    .field_builder::<Int32Builder>(1)
+                    .ok_or_else(|| arrow_builder_mismatch("interval days"))?;
+                days_builder.append_value(interval.days);
+            }
+            {
+                let micros_builder = builder
+                    .field_builder::<Int64Builder>(2)
+                    .ok_or_else(|| arrow_builder_mismatch("interval micros"))?;
+                micros_builder.append_value(interval.micros);
+            }
+            builder.append(true);
+        }
+        _ => {
+            return Err(ExecError {
+                status: "InternalError",
+                message: "Arrow IPC type mismatch (interval)".to_string(),
+            })
+        }
+    }
+    Ok(())
+}
+
+fn append_list_value(
+    builder: &mut DynListBuilder,
+    element: &ArrowColumnType,
+    dims: usize,
+    values: &[DbRowValue],
+) -> Result<(), ExecError> {
+    if dims == 0 {
+        return Err(ExecError {
+            status: "InternalError",
+            message: "Arrow IPC array dimension mismatch".to_string(),
+        });
+    }
+    if dims == 1 {
+        for value in values {
+            append_arrow_value(element, value, builder.values().as_mut())?;
+        }
+    } else {
+        let nested_builder = builder
+            .values()
+            .as_any_mut()
+            .downcast_mut::<DynListBuilder>()
+            .ok_or_else(|| arrow_builder_mismatch("array nested list"))?;
+        for value in values {
+            match value {
+                DbRowValue::Array(inner) => {
+                    append_list_value(nested_builder, element, dims - 1, inner)?
+                }
+                DbRowValue::ArrayWithBounds(array) => {
+                    append_list_value(nested_builder, element, dims - 1, &array.values)?
+                }
+                DbRowValue::Null => {
+                    append_list_null(nested_builder);
+                }
+                _ => {
+                    return Err(ExecError {
+                        status: "InternalError",
+                        message: "Arrow IPC array nested type mismatch".to_string(),
+                    })
+                }
+            }
+        }
+    }
+    builder.append(true);
+    Ok(())
+}
+
+fn append_i32_list(builder: &mut DynListBuilder, values: &[i32]) -> Result<(), ExecError> {
+    let value_builder = builder
+        .values()
+        .as_any_mut()
+        .downcast_mut::<Int32Builder>()
+        .ok_or_else(|| arrow_builder_mismatch("array lower_bounds values"))?;
+    for value in values {
+        value_builder.append_value(*value);
+    }
+    builder.append(true);
+    Ok(())
+}
+
+fn append_struct_field_value(
+    builder: &mut StructBuilder,
+    idx: usize,
+    field_type: &ArrowColumnType,
+    value: &DbRowValue,
+) -> Result<(), ExecError> {
+    match field_type {
+        ArrowColumnType::Null => {
+            let field_builder = builder
+                .field_builder::<NullBuilder>(idx)
+                .ok_or_else(|| arrow_builder_mismatch("struct null field"))?;
+            append_arrow_value(field_type, value, field_builder)
+        }
+        ArrowColumnType::Bool => {
+            let field_builder = builder
+                .field_builder::<BooleanBuilder>(idx)
+                .ok_or_else(|| arrow_builder_mismatch("struct bool field"))?;
+            append_arrow_value(field_type, value, field_builder)
+        }
+        ArrowColumnType::Int64 => {
+            let field_builder = builder
+                .field_builder::<Int64Builder>(idx)
+                .ok_or_else(|| arrow_builder_mismatch("struct int field"))?;
+            append_arrow_value(field_type, value, field_builder)
+        }
+        ArrowColumnType::Float64 => {
+            let field_builder = builder
+                .field_builder::<Float64Builder>(idx)
+                .ok_or_else(|| arrow_builder_mismatch("struct float field"))?;
+            append_arrow_value(field_type, value, field_builder)
+        }
+        ArrowColumnType::Utf8 => {
+            let field_builder = builder
+                .field_builder::<StringBuilder>(idx)
+                .ok_or_else(|| arrow_builder_mismatch("struct string field"))?;
+            append_arrow_value(field_type, value, field_builder)
+        }
+        ArrowColumnType::Binary => {
+            let field_builder = builder
+                .field_builder::<BinaryBuilder>(idx)
+                .ok_or_else(|| arrow_builder_mismatch("struct binary field"))?;
+            append_arrow_value(field_type, value, field_builder)
+        }
+        ArrowColumnType::Array { .. }
+        | ArrowColumnType::Range { .. }
+        | ArrowColumnType::Interval => {
+            let field_builder = builder
+                .field_builder::<StructBuilder>(idx)
+                .ok_or_else(|| arrow_builder_mismatch("struct nested field"))?;
+            append_arrow_value(field_type, value, field_builder)
+        }
+    }
+}
+
+fn append_list_null(builder: &mut DynListBuilder) {
+    builder.append(false);
+}
+
+fn default_array_bounds(dims: usize) -> Vec<i32> {
+    vec![1; dims.max(1)]
+}
+
+fn arrow_builder_mismatch(context: &str) -> ExecError {
+    ExecError {
+        status: "InternalError",
+        message: format!("Arrow IPC builder mismatch ({context})"),
+    }
+}
+
+struct PgRawValue(Vec<u8>);
+
+impl PgRawValue {
+    fn as_slice(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl<'a> FromSql<'a> for PgRawValue {
+    fn from_sql(_: &Type, raw: &'a [u8]) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+        Ok(Self(raw.to_vec()))
+    }
+
+    fn accepts(_: &Type) -> bool {
+        true
+    }
+}
+
+fn decode_pg_raw_value(ty: &Type, raw: Option<&[u8]>) -> Result<DbRowValue, ExecError> {
+    let Some(raw) = raw else {
+        return Ok(DbRowValue::Null);
+    };
+    let mut base = ty;
+    while let Kind::Domain(inner) = base.kind() {
+        base = inner;
+    }
+    match base.kind() {
+        Kind::Array(_) => return decode_pg_array_value(base, raw),
+        Kind::Range(_) => return decode_pg_range_value(base, raw),
+        Kind::Multirange(_) => return decode_pg_multirange_value(base, raw),
+        _ => {}
+    }
+    let value = match *base {
+        Type::BOOL => DbRowValue::Bool(bool::from_sql(base, raw).map_err(|err| ExecError {
+            status: "InvalidInput",
+            message: format!("Postgres decode failed for {}: {err}", base.name()),
+        })?),
+        Type::INT2 => {
+            let val = i16::from_sql(base, raw).map_err(|err| ExecError {
+                status: "InvalidInput",
+                message: format!("Postgres decode failed for {}: {err}", base.name()),
+            })?;
+            DbRowValue::Int(val as i64)
+        }
+        Type::INT4 => {
+            let val = i32::from_sql(base, raw).map_err(|err| ExecError {
+                status: "InvalidInput",
+                message: format!("Postgres decode failed for {}: {err}", base.name()),
+            })?;
+            DbRowValue::Int(val as i64)
+        }
+        Type::INT8 => {
+            let val = i64::from_sql(base, raw).map_err(|err| ExecError {
+                status: "InvalidInput",
+                message: format!("Postgres decode failed for {}: {err}", base.name()),
+            })?;
+            DbRowValue::Int(val)
+        }
+        Type::FLOAT4 => {
+            let val = f32::from_sql(base, raw).map_err(|err| ExecError {
+                status: "InvalidInput",
+                message: format!("Postgres decode failed for {}: {err}", base.name()),
+            })?;
+            DbRowValue::Float(val as f64)
+        }
+        Type::FLOAT8 => {
+            let val = f64::from_sql(base, raw).map_err(|err| ExecError {
+                status: "InvalidInput",
+                message: format!("Postgres decode failed for {}: {err}", base.name()),
+            })?;
+            DbRowValue::Float(val)
+        }
+        Type::TEXT | Type::VARCHAR | Type::BPCHAR => {
+            let val = String::from_sql(base, raw).map_err(|err| ExecError {
+                status: "InvalidInput",
+                message: format!("Postgres decode failed for {}: {err}", base.name()),
+            })?;
+            DbRowValue::String(val)
+        }
+        Type::BYTEA => {
+            let val = Vec::<u8>::from_sql(base, raw).map_err(|err| ExecError {
+                status: "InvalidInput",
+                message: format!("Postgres decode failed for {}: {err}", base.name()),
+            })?;
+            DbRowValue::Bytes(ByteBuf::from(val))
+        }
+        Type::UUID => {
+            let val = Uuid::from_sql(base, raw).map_err(|err| ExecError {
+                status: "InvalidInput",
+                message: format!("Postgres decode failed for {}: {err}", base.name()),
+            })?;
+            DbRowValue::String(val.to_string())
+        }
+        Type::JSON | Type::JSONB => {
+            let val = serde_json::Value::from_sql(base, raw).map_err(|err| ExecError {
+                status: "InvalidInput",
+                message: format!("Postgres decode failed for {}: {err}", base.name()),
+            })?;
+            DbRowValue::String(val.to_string())
+        }
+        Type::DATE => {
+            let val = NaiveDate::from_sql(base, raw).map_err(|err| ExecError {
+                status: "InvalidInput",
+                message: format!("Postgres decode failed for {}: {err}", base.name()),
+            })?;
+            DbRowValue::String(val.to_string())
+        }
+        Type::TIME => {
+            let val = NaiveTime::from_sql(base, raw).map_err(|err| ExecError {
+                status: "InvalidInput",
+                message: format!("Postgres decode failed for {}: {err}", base.name()),
+            })?;
+            DbRowValue::String(val.format("%H:%M:%S%.f").to_string())
+        }
+        Type::TIMESTAMP => {
+            let val = NaiveDateTime::from_sql(base, raw).map_err(|err| ExecError {
+                status: "InvalidInput",
+                message: format!("Postgres decode failed for {}: {err}", base.name()),
+            })?;
+            DbRowValue::String(val.format("%Y-%m-%dT%H:%M:%S%.f").to_string())
+        }
+        Type::TIMESTAMPTZ => {
+            let val = DateTime::<Utc>::from_sql(base, raw).map_err(|err| ExecError {
+                status: "InvalidInput",
+                message: format!("Postgres decode failed for {}: {err}", base.name()),
+            })?;
+            DbRowValue::String(val.to_rfc3339())
+        }
+        Type::INTERVAL => DbRowValue::Interval(decode_pg_interval(raw)?),
+        _ => {
+            if <String as FromSql>::accepts(base) {
+                let val = String::from_sql(base, raw).map_err(|err| ExecError {
+                    status: "InvalidInput",
+                    message: format!("Postgres decode failed for {}: {err}", base.name()),
+                })?;
+                DbRowValue::String(val)
+            } else {
+                return Err(ExecError {
+                    status: "InvalidInput",
+                    message: format!("Postgres type '{}' is not supported yet", base.name()),
+                });
+            }
+        }
+    };
+    Ok(value)
+}
+
+fn decode_pg_array_value(ty: &Type, raw: &[u8]) -> Result<DbRowValue, ExecError> {
+    let element_type = match ty.kind() {
+        Kind::Array(element_type) => element_type,
+        _ => {
+            return Err(ExecError {
+                status: "InvalidInput",
+                message: format!("Postgres type '{}' is not an array", ty.name()),
+            })
+        }
+    };
+    let array = array_from_sql(raw).map_err(|err| ExecError {
+        status: "InvalidInput",
+        message: format!("Postgres array decode failed: {err}"),
+    })?;
+    let mut dimensions = Vec::new();
+    let mut lower_bounds = Vec::new();
+    let mut dims_iter = array.dimensions();
+    while let Some(dim) = dims_iter.next().map_err(|err| ExecError {
+        status: "InvalidInput",
+        message: format!("Postgres array dimension decode failed: {err}"),
+    })? {
+        lower_bounds.push(dim.lower_bound);
+        dimensions.push(dim);
+    }
+    let mut values = Vec::new();
+    let mut values_iter = array.values();
+    while let Some(raw_val) = values_iter.next().map_err(|err| ExecError {
+        status: "InvalidInput",
+        message: format!("Postgres array value decode failed: {err}"),
+    })? {
+        values.push(decode_pg_raw_value(element_type, raw_val)?);
+    }
+    let mut queue = VecDeque::from(values);
+    let nested = build_pg_array(&dimensions, &mut queue)?;
+    if !queue.is_empty() {
+        return Err(ExecError {
+            status: "InternalError",
+            message: "Postgres array decode mismatch (extra values)".to_string(),
+        });
+    }
+    if lower_bounds.iter().all(|bound| *bound == 1) {
+        Ok(DbRowValue::Array(nested))
+    } else {
+        Ok(DbRowValue::ArrayWithBounds(DbArray {
+            lower_bounds,
+            values: nested,
+        }))
+    }
+}
+
+fn build_pg_array(
+    dimensions: &[ArrayDimension],
+    values: &mut VecDeque<DbRowValue>,
+) -> Result<Vec<DbRowValue>, ExecError> {
+    if dimensions.is_empty() {
+        return Ok(Vec::new());
+    }
+    let len = usize::try_from(dimensions[0].len).map_err(|_| ExecError {
+        status: "InvalidInput",
+        message: format!(
+            "Postgres array dimension length {} is invalid",
+            dimensions[0].len
+        ),
+    })?;
+    let mut out = Vec::with_capacity(len);
+    if dimensions.len() == 1 {
+        for _ in 0..len {
+            let value = values.pop_front().ok_or_else(|| ExecError {
+                status: "InternalError",
+                message: "Postgres array decode mismatch (missing values)".to_string(),
+            })?;
+            out.push(value);
+        }
+    } else {
+        for _ in 0..len {
+            let nested = build_pg_array(&dimensions[1..], values)?;
+            out.push(DbRowValue::Array(nested));
+        }
+    }
+    Ok(out)
+}
+
+fn read_be_i32(buf: &mut &[u8], context: &str) -> Result<i32, ExecError> {
+    if buf.len() < 4 {
+        return Err(ExecError {
+            status: "InvalidInput",
+            message: format!("Postgres {context} decode failed: unexpected end of buffer"),
+        });
+    }
+    let (head, tail) = buf.split_at(4);
+    *buf = tail;
+    let raw: [u8; 4] = head.try_into().map_err(|_| ExecError {
+        status: "InvalidInput",
+        message: format!("Postgres {context} decode failed: malformed int32"),
+    })?;
+    Ok(i32::from_be_bytes(raw))
+}
+
+fn decode_pg_range_value(ty: &Type, raw: &[u8]) -> Result<DbRowValue, ExecError> {
+    let element_type = match ty.kind() {
+        Kind::Range(element_type) => element_type,
+        _ => {
+            return Err(ExecError {
+                status: "InvalidInput",
+                message: format!("Postgres type '{}' is not a range", ty.name()),
+            })
+        }
+    };
+    let decoded = decode_pg_range_raw(element_type, raw)?;
+    Ok(DbRowValue::Range(Box::new(decoded)))
+}
+
+fn decode_pg_range_raw(element_type: &Type, raw: &[u8]) -> Result<DbRange, ExecError> {
+    let range = range_from_sql(raw).map_err(|err| ExecError {
+        status: "InvalidInput",
+        message: format!("Postgres range decode failed: {err}"),
+    })?;
+    let decoded = match range {
+        Range::Empty => DbRange {
+            empty: true,
+            lower: None,
+            upper: None,
+        },
+        Range::Nonempty(lower, upper) => DbRange {
+            empty: false,
+            lower: decode_pg_range_bound(lower, element_type)?,
+            upper: decode_pg_range_bound(upper, element_type)?,
+        },
+    };
+    Ok(decoded)
+}
+
+fn decode_pg_multirange_value(ty: &Type, raw: &[u8]) -> Result<DbRowValue, ExecError> {
+    let element_type = match ty.kind() {
+        Kind::Multirange(element_type) => element_type,
+        _ => {
+            return Err(ExecError {
+                status: "InvalidInput",
+                message: format!("Postgres type '{}' is not a multirange", ty.name()),
+            })
+        }
+    };
+    let mut buf = raw;
+    let count = read_be_i32(&mut buf, "multirange count")?;
+    if count < 0 {
+        return Err(ExecError {
+            status: "InvalidInput",
+            message: "Postgres multirange count must be non-negative".to_string(),
+        });
+    }
+    let mut ranges = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let len = read_be_i32(&mut buf, "multirange entry length")?;
+        if len < 0 {
+            return Err(ExecError {
+                status: "InvalidInput",
+                message: "Postgres multirange entry length must be non-negative".to_string(),
+            });
+        }
+        let len = len as usize;
+        if buf.len() < len {
+            return Err(ExecError {
+                status: "InvalidInput",
+                message: "Postgres multirange entry length exceeds buffer".to_string(),
+            });
+        }
+        let (range_bytes, rest) = buf.split_at(len);
+        buf = rest;
+        let range = decode_pg_range_raw(element_type, range_bytes)?;
+        ranges.push(DbRowValue::Range(Box::new(range)));
+    }
+    if !buf.is_empty() {
+        return Err(ExecError {
+            status: "InvalidInput",
+            message: "Postgres multirange decode left trailing bytes".to_string(),
+        });
+    }
+    Ok(DbRowValue::Array(ranges))
+}
+
+fn decode_pg_range_bound(
+    bound: RangeBound<Option<&[u8]>>,
+    element_type: &Type,
+) -> Result<Option<DbRangeBound>, ExecError> {
+    match bound {
+        RangeBound::Unbounded => Ok(None),
+        RangeBound::Inclusive(raw) => Ok(Some(DbRangeBound {
+            value: decode_pg_raw_value(element_type, raw)?,
+            inclusive: true,
+        })),
+        RangeBound::Exclusive(raw) => Ok(Some(DbRangeBound {
+            value: decode_pg_raw_value(element_type, raw)?,
+            inclusive: false,
+        })),
+    }
+}
+
+fn decode_pg_interval(raw: &[u8]) -> Result<DbInterval, ExecError> {
+    if raw.len() != 16 {
+        return Err(ExecError {
+            status: "InvalidInput",
+            message: format!(
+                "Postgres interval decode expected 16 bytes, got {}",
+                raw.len()
+            ),
+        });
+    }
+    let micros = i64::from_be_bytes(raw[0..8].try_into().map_err(|_| ExecError {
+        status: "InvalidInput",
+        message: "Postgres interval microseconds were malformed".to_string(),
+    })?);
+    let days = i32::from_be_bytes(raw[8..12].try_into().map_err(|_| ExecError {
+        status: "InvalidInput",
+        message: "Postgres interval days were malformed".to_string(),
+    })?);
+    let months = i32::from_be_bytes(raw[12..16].try_into().map_err(|_| ExecError {
+        status: "InvalidInput",
+        message: "Postgres interval months were malformed".to_string(),
+    })?);
+    Ok(DbInterval {
+        months,
+        days,
+        micros,
+    })
 }
 
 fn pg_row_values(
@@ -1784,84 +2838,167 @@ fn pg_row_values(
     let mut values = Vec::with_capacity(columns.len());
     for (idx, col) in columns.iter().enumerate() {
         let ty = col.type_();
-        let value = match *ty {
-            Type::BOOL => row
-                .try_get::<_, Option<bool>>(idx)
-                .map(|val| val.map(DbRowValue::Bool).unwrap_or(DbRowValue::Null)),
-            Type::INT2 => row
-                .try_get::<_, Option<i16>>(idx)
-                .map(|val| val.map(|v| DbRowValue::Int(v as i64)).unwrap_or(DbRowValue::Null)),
-            Type::INT4 => row
-                .try_get::<_, Option<i32>>(idx)
-                .map(|val| val.map(|v| DbRowValue::Int(v as i64)).unwrap_or(DbRowValue::Null)),
-            Type::INT8 => row
-                .try_get::<_, Option<i64>>(idx)
-                .map(|val| val.map(DbRowValue::Int).unwrap_or(DbRowValue::Null)),
-            Type::FLOAT4 => row
-                .try_get::<_, Option<f32>>(idx)
-                .map(|val| val.map(|v| DbRowValue::Float(v as f64)).unwrap_or(DbRowValue::Null)),
-            Type::FLOAT8 => row
-                .try_get::<_, Option<f64>>(idx)
-                .map(|val| val.map(DbRowValue::Float).unwrap_or(DbRowValue::Null)),
-            Type::TEXT | Type::VARCHAR | Type::BPCHAR => row
-                .try_get::<_, Option<String>>(idx)
-                .map(|val| val.map(DbRowValue::String).unwrap_or(DbRowValue::Null)),
-            Type::BYTEA => row
-                .try_get::<_, Option<Vec<u8>>>(idx)
-                .map(|val| {
-                    val.map(|v| DbRowValue::Bytes(ByteBuf::from(v)))
-                        .unwrap_or(DbRowValue::Null)
-                }),
-            Type::UUID => row
-                .try_get::<_, Option<Uuid>>(idx)
-                .map(|val| {
-                    val.map(|v| DbRowValue::String(v.to_string()))
-                        .unwrap_or(DbRowValue::Null)
-                }),
-            Type::JSON | Type::JSONB => row
-                .try_get::<_, Option<serde_json::Value>>(idx)
-                .map(|val| {
-                    val.map(|v| DbRowValue::String(v.to_string()))
-                        .unwrap_or(DbRowValue::Null)
-                }),
-            Type::DATE => row
-                .try_get::<_, Option<NaiveDate>>(idx)
-                .map(|val| {
-                    val.map(|v| DbRowValue::String(v.to_string()))
-                        .unwrap_or(DbRowValue::Null)
-                }),
-            Type::TIME => row
-                .try_get::<_, Option<NaiveTime>>(idx)
-                .map(|val| {
-                    val.map(|v| {
-                        DbRowValue::String(v.format("%H:%M:%S%.f").to_string())
-                    })
-                    .unwrap_or(DbRowValue::Null)
-                }),
-            Type::TIMESTAMP => row
-                .try_get::<_, Option<NaiveDateTime>>(idx)
-                .map(|val| {
-                    val.map(|v| {
-                        DbRowValue::String(v.format("%Y-%m-%dT%H:%M:%S%.f").to_string())
-                    })
-                    .unwrap_or(DbRowValue::Null)
-                }),
-            Type::TIMESTAMPTZ => row
-                .try_get::<_, Option<DateTime<Utc>>>(idx)
-                .map(|val| {
-                    val.map(|v| DbRowValue::String(v.to_rfc3339()))
-                        .unwrap_or(DbRowValue::Null)
-                }),
-            _ => {
-                // TODO(offload, owner:runtime, milestone:SL1): add typed decoding for common PG types.
-                row.try_get::<_, Option<String>>(idx)
-                    .map(|val| val.map(DbRowValue::String).unwrap_or(DbRowValue::Null))
+        let value = match ty.kind() {
+            Kind::Array(_) | Kind::Range(_) | Kind::Multirange(_) | Kind::Domain(_) => {
+                let raw = row
+                    .try_get::<_, Option<PgRawValue>>(idx)
+                    .map_err(|err| ExecError {
+                        status: "InvalidInput",
+                        message: format!("Unsupported column type {ty}: {err}"),
+                    })?;
+                let raw = raw.as_ref().map(PgRawValue::as_slice);
+                decode_pg_raw_value(ty, raw)
             }
-        }
-        .map_err(|err| ExecError {
-            status: "InvalidInput",
-            message: format!("Unsupported column type {ty}: {err}"),
-        })?;
+            _ => match *ty {
+                Type::INTERVAL => {
+                    let raw =
+                        row.try_get::<_, Option<PgRawValue>>(idx)
+                            .map_err(|err| ExecError {
+                                status: "InvalidInput",
+                                message: format!("Unsupported column type {ty}: {err}"),
+                            })?;
+                    let raw = raw.as_ref().map(PgRawValue::as_slice);
+                    decode_pg_raw_value(ty, raw)
+                }
+                Type::BOOL => row
+                    .try_get::<_, Option<bool>>(idx)
+                    .map(|val| val.map(DbRowValue::Bool).unwrap_or(DbRowValue::Null))
+                    .map_err(|err| ExecError {
+                        status: "InvalidInput",
+                        message: format!("Unsupported column type {ty}: {err}"),
+                    }),
+                Type::INT2 => row
+                    .try_get::<_, Option<i16>>(idx)
+                    .map(|val| {
+                        val.map(|v| DbRowValue::Int(v as i64))
+                            .unwrap_or(DbRowValue::Null)
+                    })
+                    .map_err(|err| ExecError {
+                        status: "InvalidInput",
+                        message: format!("Unsupported column type {ty}: {err}"),
+                    }),
+                Type::INT4 => row
+                    .try_get::<_, Option<i32>>(idx)
+                    .map(|val| {
+                        val.map(|v| DbRowValue::Int(v as i64))
+                            .unwrap_or(DbRowValue::Null)
+                    })
+                    .map_err(|err| ExecError {
+                        status: "InvalidInput",
+                        message: format!("Unsupported column type {ty}: {err}"),
+                    }),
+                Type::INT8 => row
+                    .try_get::<_, Option<i64>>(idx)
+                    .map(|val| val.map(DbRowValue::Int).unwrap_or(DbRowValue::Null))
+                    .map_err(|err| ExecError {
+                        status: "InvalidInput",
+                        message: format!("Unsupported column type {ty}: {err}"),
+                    }),
+                Type::FLOAT4 => row
+                    .try_get::<_, Option<f32>>(idx)
+                    .map(|val| {
+                        val.map(|v| DbRowValue::Float(v as f64))
+                            .unwrap_or(DbRowValue::Null)
+                    })
+                    .map_err(|err| ExecError {
+                        status: "InvalidInput",
+                        message: format!("Unsupported column type {ty}: {err}"),
+                    }),
+                Type::FLOAT8 => row
+                    .try_get::<_, Option<f64>>(idx)
+                    .map(|val| val.map(DbRowValue::Float).unwrap_or(DbRowValue::Null))
+                    .map_err(|err| ExecError {
+                        status: "InvalidInput",
+                        message: format!("Unsupported column type {ty}: {err}"),
+                    }),
+                Type::TEXT | Type::VARCHAR | Type::BPCHAR => row
+                    .try_get::<_, Option<String>>(idx)
+                    .map(|val| val.map(DbRowValue::String).unwrap_or(DbRowValue::Null))
+                    .map_err(|err| ExecError {
+                        status: "InvalidInput",
+                        message: format!("Unsupported column type {ty}: {err}"),
+                    }),
+                Type::BYTEA => row
+                    .try_get::<_, Option<Vec<u8>>>(idx)
+                    .map(|val| {
+                        val.map(|v| DbRowValue::Bytes(ByteBuf::from(v)))
+                            .unwrap_or(DbRowValue::Null)
+                    })
+                    .map_err(|err| ExecError {
+                        status: "InvalidInput",
+                        message: format!("Unsupported column type {ty}: {err}"),
+                    }),
+                Type::UUID => row
+                    .try_get::<_, Option<Uuid>>(idx)
+                    .map(|val| {
+                        val.map(|v| DbRowValue::String(v.to_string()))
+                            .unwrap_or(DbRowValue::Null)
+                    })
+                    .map_err(|err| ExecError {
+                        status: "InvalidInput",
+                        message: format!("Unsupported column type {ty}: {err}"),
+                    }),
+                Type::JSON | Type::JSONB => row
+                    .try_get::<_, Option<serde_json::Value>>(idx)
+                    .map(|val| {
+                        val.map(|v| DbRowValue::String(v.to_string()))
+                            .unwrap_or(DbRowValue::Null)
+                    })
+                    .map_err(|err| ExecError {
+                        status: "InvalidInput",
+                        message: format!("Unsupported column type {ty}: {err}"),
+                    }),
+                Type::DATE => row
+                    .try_get::<_, Option<NaiveDate>>(idx)
+                    .map(|val| {
+                        val.map(|v| DbRowValue::String(v.to_string()))
+                            .unwrap_or(DbRowValue::Null)
+                    })
+                    .map_err(|err| ExecError {
+                        status: "InvalidInput",
+                        message: format!("Unsupported column type {ty}: {err}"),
+                    }),
+                Type::TIME => row
+                    .try_get::<_, Option<NaiveTime>>(idx)
+                    .map(|val| {
+                        val.map(|v| DbRowValue::String(v.format("%H:%M:%S%.f").to_string()))
+                            .unwrap_or(DbRowValue::Null)
+                    })
+                    .map_err(|err| ExecError {
+                        status: "InvalidInput",
+                        message: format!("Unsupported column type {ty}: {err}"),
+                    }),
+                Type::TIMESTAMP => row
+                    .try_get::<_, Option<NaiveDateTime>>(idx)
+                    .map(|val| {
+                        val.map(|v| {
+                            DbRowValue::String(v.format("%Y-%m-%dT%H:%M:%S%.f").to_string())
+                        })
+                        .unwrap_or(DbRowValue::Null)
+                    })
+                    .map_err(|err| ExecError {
+                        status: "InvalidInput",
+                        message: format!("Unsupported column type {ty}: {err}"),
+                    }),
+                Type::TIMESTAMPTZ => row
+                    .try_get::<_, Option<DateTime<Utc>>>(idx)
+                    .map(|val| {
+                        val.map(|v| DbRowValue::String(v.to_rfc3339()))
+                            .unwrap_or(DbRowValue::Null)
+                    })
+                    .map_err(|err| ExecError {
+                        status: "InvalidInput",
+                        message: format!("Unsupported column type {ty}: {err}"),
+                    }),
+                _ => row
+                    .try_get::<_, Option<String>>(idx)
+                    .map(|val| val.map(DbRowValue::String).unwrap_or(DbRowValue::Null))
+                    .map_err(|err| ExecError {
+                        status: "InvalidInput",
+                        message: format!("Unsupported column type {ty}: {err}"),
+                    }),
+            },
+        }?;
         values.push(value);
     }
     Ok(values)
@@ -2055,6 +3192,49 @@ fn decode_db_query_request(envelope: &RequestEnvelope) -> Result<DbQueryRequest,
     })
 }
 
+fn execute_db_exec_sync(
+    envelope: &RequestEnvelope,
+    ctx: &ExecContext<'_>,
+) -> Result<(String, Vec<u8>), ExecError> {
+    let result = execute_db_exec_sync_result(envelope, ctx)?;
+    Ok((result.codec, result.payload))
+}
+
+fn execute_db_exec_sync_result(
+    envelope: &RequestEnvelope,
+    ctx: &ExecContext<'_>,
+) -> Result<DbExecResult, ExecError> {
+    let request = decode_db_query_request(envelope)?;
+    let sql = request.sql.trim();
+    if sql.is_empty() {
+        return Err(ExecError {
+            status: "InvalidInput",
+            message: "SQL must be non-empty".to_string(),
+        });
+    }
+    let alias = request.db_alias.as_deref().unwrap_or("default");
+    if alias != "default" {
+        return Err(ExecError {
+            status: "InvalidInput",
+            message: format!("Unknown db_alias '{alias}'"),
+        });
+    }
+    let result_format = DbResultFormat::parse(request.result_format.as_deref())?;
+    if matches!(result_format, DbResultFormat::ArrowIpc) {
+        return Err(ExecError {
+            status: "InvalidInput",
+            message: "db_exec does not support arrow_ipc".to_string(),
+        });
+    }
+    let allow_write = request.allow_write.unwrap_or(false);
+    let (normalized_sql, specs) =
+        normalize_params_and_sql(sql, request.params, ParamStyle::QuestionNumbered)?;
+    let dialect = SQLiteDialect {};
+    let validated = validate_exec(&normalized_sql, allow_write, &dialect)?;
+    let response = db_exec_sqlite_response(&validated.sql, validated.is_insert, specs, ctx)?;
+    finalize_db_exec_response(response, result_format, alias.to_string(), request.tag)
+}
+
 fn execute_db_query_sync(
     envelope: &RequestEnvelope,
     ctx: &ExecContext<'_>,
@@ -2090,12 +3270,55 @@ fn execute_db_query_sync_result(
     let dialect = SQLiteDialect {};
     let validated_sql = validate_query(&normalized_sql, max_rows, allow_write, &dialect)?;
     let response = db_query_sqlite_response(&validated_sql, specs, ctx)?;
-    finalize_db_query_response(
-        response,
-        result_format,
-        alias.to_string(),
-        request.tag,
-    )
+    finalize_db_query_response(response, result_format, alias.to_string(), request.tag)
+}
+
+fn db_exec_sqlite_response(
+    sql: &str,
+    is_insert: bool,
+    params: Vec<DbParamSpec>,
+    ctx: &ExecContext<'_>,
+) -> Result<DbExecResponse, ExecError> {
+    let conn = acquire_connection(
+        ctx.pool,
+        ctx.cancelled,
+        ctx.request_id,
+        ctx.exec_start,
+        ctx.timeout,
+    )?;
+    let sqlite = match conn.as_ref() {
+        DbConn::Sqlite(sqlite) => sqlite,
+        DbConn::Fake(_) => {
+            return Err(ExecError {
+                status: "InvalidInput",
+                message: "db_exec requires a real SQLite or Postgres connection".to_string(),
+            })
+        }
+    };
+    check_timeout(ctx.exec_start, ctx.timeout)?;
+    check_cancelled(ctx.cancelled, ctx.request_id)?;
+    let values = resolve_sqlite_params(params)?;
+    let conn = sqlite.connection();
+    let affected = conn
+        .execute(sql, params_from_iter(values))
+        .map_err(|err| ExecError {
+            status: "InternalError",
+            message: format!("SQLite exec failed: {err}"),
+        })?;
+    let last_insert_id = if is_insert {
+        let rowid = conn.last_insert_rowid();
+        if rowid == 0 {
+            None
+        } else {
+            Some(rowid)
+        }
+    } else {
+        None
+    };
+    Ok(DbExecResponse {
+        rows_affected: affected as u64,
+        last_insert_id,
+    })
 }
 
 fn db_query_sqlite_response(
@@ -2162,6 +3385,27 @@ fn db_query_sqlite_response(
     })
 }
 
+fn finalize_db_exec_response(
+    response: DbExecResponse,
+    result_format: DbResultFormat,
+    db_alias: String,
+    tag: Option<String>,
+) -> Result<DbExecResult, ExecError> {
+    let payload = encode_payload(&response, result_format.codec()).map_err(|err| ExecError {
+        status: "InternalError",
+        message: err,
+    })?;
+    Ok(DbExecResult {
+        codec: result_format.codec().to_string(),
+        payload,
+        rows_affected: response.rows_affected,
+        last_insert_id: response.last_insert_id,
+        db_alias,
+        tag,
+        result_format,
+    })
+}
+
 fn finalize_db_query_response(
     response: DbQueryResponse,
     result_format: DbResultFormat,
@@ -2185,6 +3429,51 @@ fn finalize_db_query_response(
         tag,
         result_format,
     })
+}
+
+async fn execute_db_exec_async(
+    envelope: RequestEnvelope,
+    ctx: &AsyncExecContext<'_>,
+) -> Result<(String, Vec<u8>), ExecError> {
+    let result = execute_db_exec_async_result(envelope, ctx).await?;
+    Ok((result.codec, result.payload))
+}
+
+async fn execute_db_exec_async_result(
+    envelope: RequestEnvelope,
+    ctx: &AsyncExecContext<'_>,
+) -> Result<DbExecResult, ExecError> {
+    if ctx.pg_pool.is_some() {
+        return execute_db_exec_postgres_result(&envelope, ctx).await;
+    }
+    let cancelled = ctx.cancelled.clone();
+    let pool = ctx.pool.clone();
+    let exec_start = ctx.exec_start;
+    let timeout = ctx.timeout;
+    let request_id = ctx.request_id;
+    let fake_delay = ctx.fake_delay;
+    let fake_decode_us_per_row = ctx.fake_decode_us_per_row;
+    let fake_cpu_iters = ctx.fake_cpu_iters;
+    let default_max_rows = ctx.default_max_rows;
+    spawn_blocking(move || {
+        let exec_ctx = ExecContext {
+            cancelled: &cancelled,
+            request_id,
+            pool: &pool,
+            timeout,
+            exec_start,
+            fake_delay,
+            fake_decode_us_per_row,
+            fake_cpu_iters,
+            default_max_rows,
+        };
+        execute_db_exec_sync_result(&envelope, &exec_ctx)
+    })
+    .await
+    .map_err(|err| ExecError {
+        status: "InternalError",
+        message: format!("db_exec worker join failed: {err}"),
+    })?
 }
 
 async fn execute_db_query_async(
@@ -2273,21 +3562,16 @@ async fn execute_db_query_postgres_result(
             None => Some(query_timeout),
         }
     };
-    let conn = acquire_pg_connection(
-        pool,
+    let conn = acquire_pg_connection(pool, &ctx.cancel_token, ctx.exec_start, ctx.timeout).await?;
+    let (conn, statement) = prepare_pg_statement(
+        conn,
+        &validated_sql,
+        &pg_types,
         &ctx.cancel_token,
         ctx.exec_start,
-        ctx.timeout,
+        effective_timeout,
     )
     .await?;
-    let statement = conn
-        .as_ref()
-        .prepare_cached(&validated_sql, &pg_types)
-        .await
-        .map_err(|err| ExecError {
-            status: "InternalError",
-            message: format!("Postgres prepare failed: {err}"),
-        })?;
     let columns = statement.columns();
     let rows = execute_pg_query(
         conn,
@@ -2300,23 +3584,91 @@ async fn execute_db_query_postgres_result(
     .await?;
     let mut decoded_rows = Vec::with_capacity(rows.len());
     for row in rows {
+        if ctx.cancel_token.is_cancelled() {
+            return Err(cancelled_error());
+        }
+        check_timeout(ctx.exec_start, ctx.timeout)?;
         decoded_rows.push(pg_row_values(&row, columns)?);
     }
-    let column_names = columns
-        .iter()
-        .map(|col| col.name().to_string())
-        .collect();
+    let column_names = columns.iter().map(|col| col.name().to_string()).collect();
     let response = DbQueryResponse {
         columns: column_names,
         row_count: decoded_rows.len(),
         rows: decoded_rows,
     };
-    finalize_db_query_response(
-        response,
-        result_format,
-        alias.to_string(),
-        request.tag,
+    finalize_db_query_response(response, result_format, alias.to_string(), request.tag)
+}
+
+async fn execute_db_exec_postgres_result(
+    envelope: &RequestEnvelope,
+    ctx: &AsyncExecContext<'_>,
+) -> Result<DbExecResult, ExecError> {
+    let request = decode_db_query_request(envelope)?;
+    let sql = request.sql.trim();
+    if sql.is_empty() {
+        return Err(ExecError {
+            status: "InvalidInput",
+            message: "SQL must be non-empty".to_string(),
+        });
+    }
+    let alias = request.db_alias.as_deref().unwrap_or("default");
+    if alias != "default" {
+        return Err(ExecError {
+            status: "InvalidInput",
+            message: format!("Unknown db_alias '{alias}'"),
+        });
+    }
+    let result_format = DbResultFormat::parse(request.result_format.as_deref())?;
+    if matches!(result_format, DbResultFormat::ArrowIpc) {
+        return Err(ExecError {
+            status: "InvalidInput",
+            message: "db_exec does not support arrow_ipc".to_string(),
+        });
+    }
+    let allow_write = request.allow_write.unwrap_or(false);
+    let (normalized_sql, specs) =
+        normalize_params_and_sql(sql, request.params, ParamStyle::DollarNumbered)?;
+    let dialect = PostgreSqlDialect {};
+    let validated = validate_exec(&normalized_sql, allow_write, &dialect)?;
+    let (pg_params, pg_types) = resolve_pg_params(specs)?;
+    let params_refs: Vec<&(dyn ToSql + Sync)> = pg_params.iter().map(|p| p.as_tosql()).collect();
+    let pool = ctx.pg_pool.ok_or_else(|| ExecError {
+        status: "InvalidInput",
+        message: "Postgres pool not configured".to_string(),
+    })?;
+    let query_timeout = pool.config().query_timeout;
+    let effective_timeout = if query_timeout.is_zero() {
+        ctx.timeout
+    } else {
+        match ctx.timeout {
+            Some(limit) => Some(limit.min(query_timeout)),
+            None => Some(query_timeout),
+        }
+    };
+    let conn = acquire_pg_connection(pool, &ctx.cancel_token, ctx.exec_start, ctx.timeout).await?;
+    let (conn, statement) = prepare_pg_statement(
+        conn,
+        &validated.sql,
+        &pg_types,
+        &ctx.cancel_token,
+        ctx.exec_start,
+        effective_timeout,
     )
+    .await?;
+    let affected = execute_pg_exec(
+        conn,
+        &statement,
+        &params_refs,
+        &ctx.cancel_token,
+        ctx.exec_start,
+        effective_timeout,
+    )
+    .await?;
+    let response = DbExecResponse {
+        rows_affected: affected,
+        last_insert_id: None,
+    };
+    finalize_db_exec_response(response, result_format, alias.to_string(), request.tag)
 }
 
 async fn acquire_pg_connection(
@@ -2412,6 +3764,122 @@ async fn execute_pg_query(
             Err(ExecError {
                 status,
                 message: format!("Postgres query failed: {err}"),
+            })
+        }
+    }
+}
+
+async fn execute_pg_exec(
+    conn: molt_db::AsyncPooled<molt_db::PgConn>,
+    statement: &tokio_postgres::Statement,
+    params: &[&(dyn ToSql + Sync)],
+    cancel: &CancelToken,
+    exec_start: Instant,
+    timeout: Option<Duration>,
+) -> Result<u64, ExecError> {
+    let exec = conn.as_ref().client().execute(statement, params);
+    let rows = if let Some(limit) = timeout {
+        if exec_start.elapsed() >= limit {
+            return Err(timeout_error());
+        }
+        let remaining = limit.saturating_sub(exec_start.elapsed());
+        tokio::select! {
+            _ = tokio_sleep(remaining) => {
+                let _ = conn.as_ref().cancel_query().await;
+                conn.discard();
+                return Err(timeout_error());
+            }
+            _ = cancel.cancelled() => {
+                let _ = conn.as_ref().cancel_query().await;
+                conn.discard();
+                return Err(cancelled_error());
+            }
+            result = exec => result,
+        }
+    } else {
+        tokio::select! {
+            _ = cancel.cancelled() => {
+                let _ = conn.as_ref().cancel_query().await;
+                conn.discard();
+                return Err(cancelled_error());
+            }
+            result = exec => result,
+        }
+    };
+    match rows {
+        Ok(count) => {
+            conn.as_ref().touch();
+            Ok(count)
+        }
+        Err(err) => {
+            if err.is_closed() {
+                conn.discard();
+            }
+            let status = if err.as_db_error().is_some() {
+                "InvalidInput"
+            } else {
+                "InternalError"
+            };
+            Err(ExecError {
+                status,
+                message: format!("Postgres exec failed: {err}"),
+            })
+        }
+    }
+}
+
+async fn prepare_pg_statement(
+    conn: molt_db::AsyncPooled<molt_db::PgConn>,
+    sql: &str,
+    types: &[tokio_postgres::types::Type],
+    cancel: &CancelToken,
+    exec_start: Instant,
+    timeout: Option<Duration>,
+) -> Result<
+    (
+        molt_db::AsyncPooled<molt_db::PgConn>,
+        tokio_postgres::Statement,
+    ),
+    ExecError,
+> {
+    let prepare = conn.as_ref().prepare_cached(sql, types);
+    let statement = if let Some(limit) = timeout {
+        if exec_start.elapsed() >= limit {
+            return Err(timeout_error());
+        }
+        let remaining = limit.saturating_sub(exec_start.elapsed());
+        tokio::select! {
+            _ = tokio_sleep(remaining) => {
+                let _ = conn.as_ref().cancel_query().await;
+                conn.discard();
+                return Err(timeout_error());
+            }
+            _ = cancel.cancelled() => {
+                let _ = conn.as_ref().cancel_query().await;
+                conn.discard();
+                return Err(cancelled_error());
+            }
+            result = prepare => result,
+        }
+    } else {
+        tokio::select! {
+            _ = cancel.cancelled() => {
+                let _ = conn.as_ref().cancel_query().await;
+                conn.discard();
+                return Err(cancelled_error());
+            }
+            result = prepare => result,
+        }
+    };
+    match statement {
+        Ok(statement) => Ok((conn, statement)),
+        Err(err) => {
+            if err.is_closed() {
+                conn.discard();
+            }
+            Err(ExecError {
+                status: "InternalError",
+                message: format!("Postgres prepare failed: {err}"),
             })
         }
     }
@@ -2558,6 +4026,7 @@ fn execute_entry(
             Ok((codec.to_string(), encoded))
         }
         "db_query" => execute_db_query_sync(envelope, ctx),
+        "db_exec" => execute_db_exec_sync(envelope, ctx),
         _ => {
             if let Some(entry) = compiled_entries.get(&envelope.entry) {
                 return dispatch_compiled(entry, &payload_bytes, ctx);
@@ -2602,7 +4071,10 @@ fn handle_request(
         "pool_in_flight".to_string(),
         (ctx.pool.in_flight() as u64).into(),
     );
-    metrics.insert("pool_idle".to_string(), (ctx.pool.idle_count() as u64).into());
+    metrics.insert(
+        "pool_idle".to_string(),
+        (ctx.pool.idle_count() as u64).into(),
+    );
     let payload_bytes = envelope.payload.as_ref().map(|p| p.len()).unwrap_or(0) as u64;
     metrics.insert("payload_bytes".to_string(), payload_bytes.into());
     if is_cancelled(&ctx.cancelled, request_id) {
@@ -2657,6 +4129,8 @@ fn handle_request(
     let handler_start = Instant::now();
     let result = if envelope.entry == "db_query" {
         execute_db_query_sync_result(&envelope, &exec_ctx).map(ExecOutcome::DbQuery)
+    } else if envelope.entry == "db_exec" {
+        execute_db_exec_sync_result(&envelope, &exec_ctx).map(ExecOutcome::DbExec)
     } else {
         execute_entry(&envelope, &exec_ctx, &ctx.exports, &ctx.compiled_entries)
             .map(|(codec, payload)| ExecOutcome::Standard { codec, payload })
@@ -2672,6 +4146,33 @@ fn handle_request(
     metrics.insert("exec_ms".to_string(), exec_ms.into());
     if let Ok(ExecOutcome::DbQuery(db_result)) = &result {
         metrics.insert("db_row_count".to_string(), db_result.row_count.into());
+        metrics.insert("db_bytes_in".to_string(), payload_bytes.into());
+        metrics.insert(
+            "db_bytes_out".to_string(),
+            (db_result.payload.len() as u64).into(),
+        );
+        metrics.insert(
+            "db_alias".to_string(),
+            MetricValue::from(db_result.db_alias.as_str()),
+        );
+        metrics.insert(
+            "db_result_format".to_string(),
+            MetricValue::from(db_result.result_format.codec()),
+        );
+        if let Some(tag) = db_result.tag.as_deref() {
+            metrics.insert("db_tag".to_string(), MetricValue::from(tag));
+        }
+    }
+    if let Ok(ExecOutcome::DbExec(db_result)) = &result {
+        metrics.insert(
+            "db_rows_affected".to_string(),
+            db_result.rows_affected.into(),
+        );
+        if let Some(last_id) = db_result.last_insert_id {
+            if last_id >= 0 {
+                metrics.insert("db_last_insert_id".to_string(), (last_id as u64).into());
+            }
+        }
         metrics.insert("db_bytes_in".to_string(), payload_bytes.into());
         metrics.insert(
             "db_bytes_out".to_string(),
@@ -2722,6 +4223,19 @@ fn handle_request(
             },
         ),
         Ok(ExecOutcome::DbQuery(db_result)) => (
+            wire,
+            ResponseEnvelope {
+                request_id,
+                status: "Ok".to_string(),
+                codec: db_result.codec,
+                payload: Some(ByteBuf::from(db_result.payload)),
+                metrics: Some(metrics),
+                error: None,
+                entry: Some(entry_name),
+                compiled: Some(compiled_flag),
+            },
+        ),
+        Ok(ExecOutcome::DbExec(db_result)) => (
             wire,
             ResponseEnvelope {
                 request_id,
@@ -2836,6 +4350,10 @@ async fn handle_request_async(
         execute_db_query_async_result(envelope, &exec_ctx)
             .await
             .map(ExecOutcome::DbQuery)
+    } else if entry_name == "db_exec" {
+        execute_db_exec_async_result(envelope, &exec_ctx)
+            .await
+            .map(ExecOutcome::DbExec)
     } else {
         execute_entry_async(
             envelope,
@@ -2858,6 +4376,33 @@ async fn handle_request_async(
     metrics.insert("exec_ms".to_string(), exec_ms.into());
     if let Ok(ExecOutcome::DbQuery(db_result)) = &result {
         metrics.insert("db_row_count".to_string(), db_result.row_count.into());
+        metrics.insert("db_bytes_in".to_string(), payload_bytes.into());
+        metrics.insert(
+            "db_bytes_out".to_string(),
+            (db_result.payload.len() as u64).into(),
+        );
+        metrics.insert(
+            "db_alias".to_string(),
+            MetricValue::from(db_result.db_alias.as_str()),
+        );
+        metrics.insert(
+            "db_result_format".to_string(),
+            MetricValue::from(db_result.result_format.codec()),
+        );
+        if let Some(tag) = db_result.tag.as_deref() {
+            metrics.insert("db_tag".to_string(), MetricValue::from(tag));
+        }
+    }
+    if let Ok(ExecOutcome::DbExec(db_result)) = &result {
+        metrics.insert(
+            "db_rows_affected".to_string(),
+            db_result.rows_affected.into(),
+        );
+        if let Some(last_id) = db_result.last_insert_id {
+            if last_id >= 0 {
+                metrics.insert("db_last_insert_id".to_string(), (last_id as u64).into());
+            }
+        }
         metrics.insert("db_bytes_in".to_string(), payload_bytes.into());
         metrics.insert(
             "db_bytes_out".to_string(),
@@ -2920,6 +4465,19 @@ async fn handle_request_async(
                 compiled: Some(compiled_flag),
             },
         ),
+        Ok(ExecOutcome::DbExec(db_result)) => (
+            wire,
+            ResponseEnvelope {
+                request_id,
+                status: "Ok".to_string(),
+                codec: db_result.codec,
+                payload: Some(ByteBuf::from(db_result.payload)),
+                metrics: Some(metrics),
+                error: None,
+                entry: Some(entry_name),
+                compiled: Some(compiled_flag),
+            },
+        ),
         Err(err) => (
             wire,
             ResponseEnvelope {
@@ -2944,6 +4502,9 @@ async fn execute_entry_async(
 ) -> Result<(String, Vec<u8>), ExecError> {
     if envelope.entry == "db_query" {
         return execute_db_query_async(envelope, ctx).await;
+    }
+    if envelope.entry == "db_exec" {
+        return execute_db_exec_async(envelope, ctx).await;
     }
     let cancelled = ctx.cancelled.clone();
     let pool = ctx.pool.clone();
@@ -3326,9 +4887,7 @@ fn main() -> io::Result<()> {
                 .map_err(|err| io::Error::other(format!("Failed to build tokio runtime: {err}")))?;
             runtime.block_on(async move {
                 let pg_pool = if let Some(config) = pg_config {
-                    Some(
-                        PgPool::new(config).await.map_err(io::Error::other)?,
-                    )
+                    Some(PgPool::new(config).await.map_err(io::Error::other)?)
                 } else {
                     None
                 };
@@ -3404,9 +4963,7 @@ async fn read_loop_async(
                     entry: None,
                     compiled: None,
                 };
-                let _ = response_tx
-                    .send((WireCodec::Json, response))
-                    .await;
+                let _ = response_tx.send((WireCodec::Json, response)).await;
                 break;
             }
         };
@@ -3423,9 +4980,7 @@ async fn read_loop_async(
                     entry: None,
                     compiled: None,
                 };
-                let _ = response_tx
-                    .send((WireCodec::Json, response))
-                    .await;
+                let _ = response_tx.send((WireCodec::Json, response)).await;
                 continue;
             }
         };
@@ -3568,18 +5123,27 @@ async fn run_async(
 #[cfg(test)]
 mod tests {
     use super::{
-        dispatch_compiled, execute_db_query_sync, load_compiled_entries, load_exports,
-        mark_cancelled, CancelSet, CompiledEntry, DbConn, DbNamedParam, DbParam, DbParamValue,
-        DbParams, DbPool, DbQueryRequest, DbQueryResponse, ExecContext, ListItemsRequest,
-        ListItemsResponse, Pool, RequestEnvelope, SqliteConn, SqliteOpenMode,
+        db_query_arrow_ipc_bytes, decode_pg_raw_value, dispatch_compiled, execute_db_exec_sync,
+        execute_db_query_sync, load_compiled_entries, load_exports, mark_cancelled, CancelSet,
+        CompiledEntry, DbArray, DbConn, DbExecResponse, DbInterval, DbNamedParam, DbParam,
+        DbParamValue, DbParams, DbPool, DbQueryRequest, DbQueryResponse, DbRange, DbRangeBound,
+        DbRowValue, ExecContext, ListItemsRequest, ListItemsResponse, Pool, RequestEnvelope,
+        SqliteConn, SqliteOpenMode,
     };
+    use arrow::array::{BooleanArray, Int32Array, Int64Array, ListArray, StructArray};
     use arrow::ipc::reader::StreamReader;
+    use bytes::BytesMut;
+    use postgres_protocol::types::{
+        array_to_sql, int4_to_sql, range_to_sql, ArrayDimension, RangeBound,
+    };
+    use postgres_protocol::IsNull;
     use rusqlite::Connection;
     use serde_bytes::ByteBuf;
     use std::fs;
     use std::io::Cursor;
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
+    use tokio_postgres::types::Type;
 
     fn temp_manifest(contents: &str) -> PathBuf {
         let mut path = std::env::temp_dir();
@@ -3738,9 +5302,7 @@ mod tests {
         seed_sqlite_db(&path);
         let pool_path = path.clone();
         let pool = Pool::new(1, move || {
-            DbConn::Sqlite(
-                SqliteConn::open(&pool_path, SqliteOpenMode::ReadWrite).expect("sqlite"),
-            )
+            DbConn::Sqlite(SqliteConn::open(&pool_path, SqliteOpenMode::ReadWrite).expect("sqlite"))
         });
         let cancel = CancelSet::default();
         let ctx = exec_ctx(&cancel, &pool, 99);
@@ -3772,10 +5334,65 @@ mod tests {
         };
         let (codec, payload) = execute_db_query_sync(&envelope, &ctx).expect("db_query");
         assert_eq!(codec, "json");
-        let response: DbQueryResponse =
-            super::decode_payload(&payload, "json").expect("decode");
-        assert_eq!(response.columns, vec!["id".to_string(), "status".to_string()]);
+        let response: DbQueryResponse = super::decode_payload(&payload, "json").expect("decode");
+        assert_eq!(
+            response.columns,
+            vec!["id".to_string(), "status".to_string()]
+        );
         assert!(response.row_count > 0);
+    }
+
+    #[test]
+    fn db_exec_sqlite_roundtrip() {
+        let path = temp_db_path();
+        seed_sqlite_db(&path);
+        let pool_path = path.clone();
+        let pool = Pool::new(1, move || {
+            DbConn::Sqlite(SqliteConn::open(&pool_path, SqliteOpenMode::ReadWrite).expect("sqlite"))
+        });
+        let cancel = CancelSet::default();
+        let ctx = exec_ctx(&cancel, &pool, 77);
+        let request = DbQueryRequest {
+            db_alias: None,
+            sql: "update items set status = :status where id = :id".to_string(),
+            params: DbParams::Named {
+                values: vec![
+                    DbNamedParam {
+                        name: "status".to_string(),
+                        param: DbParam::Raw(DbParamValue::String("closed".to_string())),
+                    },
+                    DbNamedParam {
+                        name: "id".to_string(),
+                        param: DbParam::Raw(DbParamValue::Int(1000)),
+                    },
+                ],
+            },
+            max_rows: None,
+            result_format: Some("json".to_string()),
+            allow_write: Some(true),
+            tag: None,
+        };
+        let payload = rmp_serde::to_vec_named(&request).expect("encode");
+        let envelope = RequestEnvelope {
+            request_id: 77,
+            entry: "db_exec".to_string(),
+            timeout_ms: 0,
+            codec: "msgpack".to_string(),
+            payload: Some(ByteBuf::from(payload)),
+            payload_b64: None,
+        };
+        let (codec, payload) = execute_db_exec_sync(&envelope, &ctx).expect("db_exec");
+        assert_eq!(codec, "json");
+        let response: DbExecResponse = super::decode_payload(&payload, "json").expect("decode");
+        assert_eq!(response.rows_affected, 1);
+        assert!(response.last_insert_id.is_none());
+        let conn = Connection::open(path).expect("sqlite open");
+        let status: String = conn
+            .query_row("select status from items where id = 1000", [], |row| {
+                row.get(0)
+            })
+            .expect("query");
+        assert_eq!(status, "closed");
     }
 
     #[test]
@@ -3784,9 +5401,7 @@ mod tests {
         seed_sqlite_db(&path);
         let pool_path = path.clone();
         let pool = Pool::new(1, move || {
-            DbConn::Sqlite(
-                SqliteConn::open(&pool_path, SqliteOpenMode::ReadWrite).expect("sqlite"),
-            )
+            DbConn::Sqlite(SqliteConn::open(&pool_path, SqliteOpenMode::ReadWrite).expect("sqlite"))
         });
         let cancel = CancelSet::default();
         let ctx = exec_ctx(&cancel, &pool, 88);
@@ -3828,13 +5443,366 @@ mod tests {
     }
 
     #[test]
+    fn arrow_ipc_complex_types() {
+        let response = DbQueryResponse {
+            columns: vec![
+                "arr".to_string(),
+                "range".to_string(),
+                "interval".to_string(),
+            ],
+            rows: vec![
+                vec![
+                    DbRowValue::Array(vec![DbRowValue::Int(1), DbRowValue::Int(2)]),
+                    DbRowValue::Range(Box::new(DbRange {
+                        empty: false,
+                        lower: Some(DbRangeBound {
+                            value: DbRowValue::Int(1),
+                            inclusive: true,
+                        }),
+                        upper: Some(DbRangeBound {
+                            value: DbRowValue::Int(10),
+                            inclusive: false,
+                        }),
+                    })),
+                    DbRowValue::Interval(DbInterval {
+                        months: 1,
+                        days: 2,
+                        micros: 300,
+                    }),
+                ],
+                vec![
+                    DbRowValue::ArrayWithBounds(DbArray {
+                        lower_bounds: vec![0],
+                        values: vec![DbRowValue::Int(3)],
+                    }),
+                    DbRowValue::Range(Box::new(DbRange {
+                        empty: true,
+                        lower: None,
+                        upper: None,
+                    })),
+                    DbRowValue::Interval(DbInterval {
+                        months: 0,
+                        days: 0,
+                        micros: 0,
+                    }),
+                ],
+            ],
+            row_count: 2,
+        };
+        let payload = db_query_arrow_ipc_bytes(&response).expect("arrow ipc");
+        let mut reader = StreamReader::try_new(Cursor::new(payload), None).expect("arrow reader");
+        let batch = reader.next().expect("batch").expect("read batch");
+        assert_eq!(batch.num_columns(), 3);
+        assert_eq!(batch.num_rows(), 2);
+
+        let arr_struct = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .expect("array struct");
+        let lower_bounds = arr_struct
+            .column(0)
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .expect("lower bounds");
+        let lb0 = lower_bounds.value(0);
+        let lb0 = lb0
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .expect("lower bounds 0");
+        assert_eq!(lb0.value(0), 1);
+        let lb1 = lower_bounds.value(1);
+        let lb1 = lb1
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .expect("lower bounds 1");
+        assert_eq!(lb1.value(0), 0);
+        let values = arr_struct
+            .column(1)
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .expect("array values");
+        let values0 = values.value(0);
+        let values0 = values0
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("array values 0");
+        assert_eq!(values0.value(0), 1);
+        assert_eq!(values0.value(1), 2);
+        let values1 = values.value(1);
+        let values1 = values1
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("array values 1");
+        assert_eq!(values1.value(0), 3);
+
+        let range_struct = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .expect("range struct");
+        let empty = range_struct
+            .column(0)
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .expect("range empty");
+        assert!(!empty.value(0));
+        assert!(empty.value(1));
+        let lower = range_struct
+            .column(1)
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .expect("range lower");
+        let lower_values = lower
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("range lower values");
+        let lower_inclusive = lower
+            .column(1)
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .expect("range lower inclusive");
+        assert_eq!(lower_values.value(0), 1);
+        assert!(lower_inclusive.value(0));
+        let upper = range_struct
+            .column(2)
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .expect("range upper");
+        let upper_values = upper
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("range upper values");
+        let upper_inclusive = upper
+            .column(1)
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .expect("range upper inclusive");
+        assert_eq!(upper_values.value(0), 10);
+        assert!(!upper_inclusive.value(0));
+
+        let interval = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .expect("interval struct");
+        let months = interval
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .expect("interval months");
+        let days = interval
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .expect("interval days");
+        let micros = interval
+            .column(2)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("interval micros");
+        assert_eq!(months.value(0), 1);
+        assert_eq!(days.value(0), 2);
+        assert_eq!(micros.value(0), 300);
+    }
+
+    #[test]
+    fn pg_interval_decode() {
+        let micros: i64 = 1_234_567;
+        let days: i32 = -7;
+        let months: i32 = 3;
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&micros.to_be_bytes());
+        raw.extend_from_slice(&days.to_be_bytes());
+        raw.extend_from_slice(&months.to_be_bytes());
+        let value = decode_pg_raw_value(&Type::INTERVAL, Some(&raw)).expect("interval decode");
+        match value {
+            DbRowValue::Interval(interval) => {
+                assert_eq!(interval.micros, micros);
+                assert_eq!(interval.days, days);
+                assert_eq!(interval.months, months);
+            }
+            other => panic!("unexpected interval decode: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pg_range_decode() {
+        let mut buf = BytesMut::new();
+        range_to_sql(
+            |buf| {
+                int4_to_sql(1, buf);
+                Ok(RangeBound::Inclusive(IsNull::No))
+            },
+            |buf| {
+                int4_to_sql(10, buf);
+                Ok(RangeBound::Exclusive(IsNull::No))
+            },
+            &mut buf,
+        )
+        .expect("range encode");
+        let value = decode_pg_raw_value(&Type::INT4_RANGE, Some(&buf)).expect("range decode");
+        match value {
+            DbRowValue::Range(range) => {
+                let range = *range;
+                assert!(!range.empty);
+                let lower = range.lower.expect("lower");
+                let upper = range.upper.expect("upper");
+                assert!(lower.inclusive);
+                assert!(!upper.inclusive);
+                match lower.value {
+                    DbRowValue::Int(val) => assert_eq!(val, 1),
+                    other => panic!("unexpected lower bound: {other:?}"),
+                }
+                match upper.value {
+                    DbRowValue::Int(val) => assert_eq!(val, 10),
+                    other => panic!("unexpected upper bound: {other:?}"),
+                }
+            }
+            other => panic!("unexpected range decode: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pg_multirange_decode() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&2i32.to_be_bytes());
+        for (start, end) in [(1, 5), (10, 12)] {
+            let mut range_buf = BytesMut::new();
+            range_to_sql(
+                |buf| {
+                    int4_to_sql(start, buf);
+                    Ok(RangeBound::Inclusive(IsNull::No))
+                },
+                |buf| {
+                    int4_to_sql(end, buf);
+                    Ok(RangeBound::Exclusive(IsNull::No))
+                },
+                &mut range_buf,
+            )
+            .expect("range encode");
+            let len = i32::try_from(range_buf.len()).expect("range len");
+            buf.extend_from_slice(&len.to_be_bytes());
+            buf.extend_from_slice(&range_buf);
+        }
+        let value =
+            decode_pg_raw_value(&Type::INT4MULTI_RANGE, Some(&buf)).expect("multirange decode");
+        match value {
+            DbRowValue::Array(values) => {
+                assert_eq!(values.len(), 2);
+                for (idx, value) in values.into_iter().enumerate() {
+                    match value {
+                        DbRowValue::Range(range) => {
+                            let range = *range;
+                            let lower = range.lower.expect("lower");
+                            let upper = range.upper.expect("upper");
+                            match lower.value {
+                                DbRowValue::Int(val) => {
+                                    let expected = if idx == 0 { 1 } else { 10 };
+                                    assert_eq!(val, expected);
+                                }
+                                other => panic!("unexpected multirange lower: {other:?}"),
+                            }
+                            match upper.value {
+                                DbRowValue::Int(val) => {
+                                    let expected = if idx == 0 { 5 } else { 12 };
+                                    assert_eq!(val, expected);
+                                }
+                                other => panic!("unexpected multirange upper: {other:?}"),
+                            }
+                        }
+                        other => panic!("unexpected multirange entry: {other:?}"),
+                    }
+                }
+            }
+            other => panic!("unexpected multirange decode: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pg_array_decode() {
+        let dims = vec![ArrayDimension {
+            len: 3,
+            lower_bound: 1,
+        }];
+        let elements = vec![Some(1), None, Some(3)];
+        let mut buf = BytesMut::new();
+        array_to_sql(
+            dims,
+            Type::INT4.oid(),
+            elements,
+            |val, buf| match val {
+                Some(val) => {
+                    int4_to_sql(val, buf);
+                    Ok(IsNull::No)
+                }
+                None => Ok(IsNull::Yes),
+            },
+            &mut buf,
+        )
+        .expect("array encode");
+        let value = decode_pg_raw_value(&Type::INT4_ARRAY, Some(&buf)).expect("array decode");
+        match value {
+            DbRowValue::Array(values) => {
+                assert_eq!(values.len(), 3);
+                match values[0] {
+                    DbRowValue::Int(val) => assert_eq!(val, 1),
+                    ref other => panic!("unexpected array[0]: {other:?}"),
+                }
+                assert!(matches!(values[1], DbRowValue::Null));
+                match values[2] {
+                    DbRowValue::Int(val) => assert_eq!(val, 3),
+                    ref other => panic!("unexpected array[2]: {other:?}"),
+                }
+            }
+            other => panic!("unexpected array decode: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pg_array_lower_bounds() {
+        let dims = vec![ArrayDimension {
+            len: 1,
+            lower_bound: 0,
+        }];
+        let elements = vec![Some(1)];
+        let mut buf = BytesMut::new();
+        array_to_sql(
+            dims,
+            Type::INT4.oid(),
+            elements,
+            |val, buf| match val {
+                Some(val) => {
+                    int4_to_sql(val, buf);
+                    Ok(IsNull::No)
+                }
+                None => Ok(IsNull::Yes),
+            },
+            &mut buf,
+        )
+        .expect("array encode");
+        let value = decode_pg_raw_value(&Type::INT4_ARRAY, Some(&buf)).expect("array lower bounds");
+        match value {
+            DbRowValue::ArrayWithBounds(array) => {
+                assert_eq!(array.lower_bounds, vec![0]);
+                assert_eq!(array.values.len(), 1);
+                match array.values[0] {
+                    DbRowValue::Int(val) => assert_eq!(val, 1),
+                    ref other => panic!("unexpected array value: {other:?}"),
+                }
+            }
+            other => panic!("unexpected array lower bounds decode: {other:?}"),
+        }
+    }
+
+    #[test]
     fn db_query_null_requires_type() {
         let path = temp_db_path();
         let pool_path = path.clone();
         let pool = Pool::new(1, move || {
-            DbConn::Sqlite(
-                SqliteConn::open(&pool_path, SqliteOpenMode::ReadWrite).expect("sqlite"),
-            )
+            DbConn::Sqlite(SqliteConn::open(&pool_path, SqliteOpenMode::ReadWrite).expect("sqlite"))
         });
         let cancel = CancelSet::default();
         let ctx = exec_ctx(&cancel, &pool, 1);

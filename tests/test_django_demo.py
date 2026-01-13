@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -89,3 +90,21 @@ def test_demo_baseline_sqlite_mode(
     payload = resp.json()
     assert len(payload["items"]) == 3
     assert payload["counts"] == {"open": 2, "closed": 1}
+
+
+def test_demo_offload_table_body() -> None:
+    _setup_django()
+    _setup_worker_env()
+    from django.test import Client
+
+    client = Client()
+    resp = client.post(
+        "/offload_table/",
+        data=json.dumps({"rows": 123}),
+        content_type="application/json",
+    )
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["rows"] == 123
+    assert "sample" in payload

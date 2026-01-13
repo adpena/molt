@@ -26,7 +26,7 @@ def choose_wire(preferred: str | None = None) -> str:
 
 
 def encode_payload(obj: Any, codec: str) -> bytes:
-    if codec == "raw":
+    if codec in ("raw", "arrow_ipc"):
         if isinstance(obj, (bytes, bytearray)):
             return bytes(obj)
         raise TypeError("raw payloads must be bytes")
@@ -40,7 +40,7 @@ def encode_payload(obj: Any, codec: str) -> bytes:
 
 
 def decode_payload(data: bytes, codec: str) -> Any:
-    if codec == "raw":
+    if codec in ("raw", "arrow_ipc"):
         return data
     if codec == "json":
         return json.loads(data.decode("utf-8"))

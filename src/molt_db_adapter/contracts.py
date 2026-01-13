@@ -8,6 +8,7 @@ from molt_accel.errors import MoltInvalidInput
 
 
 _ALLOWED_FORMATS = {"arrow_ipc", "json", "msgpack"}
+_ALLOWED_EXEC_FORMATS = {"json", "msgpack"}
 
 
 @dataclass(frozen=True)
@@ -131,10 +132,32 @@ def build_db_query_payload(
     }
 
 
+def build_db_exec_payload(
+    *,
+    db_alias: str | None = "default",
+    sql: str,
+    params: Sequence[Any] | Mapping[str, Any] | None = None,
+    result_format: str = "json",
+    tag: str | None = None,
+) -> dict[str, Any]:
+    if result_format not in _ALLOWED_EXEC_FORMATS:
+        raise MoltInvalidInput("db_exec only supports json or msgpack result_format")
+    return build_db_query_payload(
+        db_alias=db_alias,
+        sql=sql,
+        params=params,
+        max_rows=None,
+        result_format=result_format,
+        allow_write=True,
+        tag=tag,
+    )
+
+
 __all__ = [
     "DbParam",
     "DbParamsSpec",
     "DbQueryPayload",
     "build_db_query_payload",
+    "build_db_exec_payload",
     "build_list_items_payload",
 ]

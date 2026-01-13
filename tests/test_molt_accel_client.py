@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from molt_accel.client import MoltClient, MoltClientPool
-from molt_accel.codec import decode_payload
+from molt_accel.codec import decode_payload, encode_payload
 from molt_accel.errors import MoltCancelled, MoltInvalidInput
 
 
@@ -53,9 +53,10 @@ def test_client_hooks_and_metrics() -> None:
         events.append(f"after:{meta.get('status')}")
 
     def on_metrics(meta: dict[str, object]) -> None:
-        value = meta.get("client_ms")
-        if isinstance(value, int):
-            metrics["client_ms"] = float(value)
+        for key in ("client_ms", "payload_bytes", "response_bytes"):
+            value = meta.get(key)
+            if isinstance(value, (int, float)):
+                metrics[key] = float(value)
 
     result = client.call(
         entry="echo",
@@ -70,6 +71,8 @@ def test_client_hooks_and_metrics() -> None:
     assert events[0] == "before:echo"
     assert events[-1] == "after:Ok"
     assert "client_ms" in metrics
+    assert "payload_bytes" in metrics
+    assert "response_bytes" in metrics
     client.close()
 
 
@@ -99,6 +102,12 @@ def test_client_decode_response_false() -> None:
     assert isinstance(result, (bytes, bytearray))
     assert decode_payload(result, "json") == payload
     client.close()
+
+
+def test_arrow_ipc_codec_passthrough() -> None:
+    payload = b"arrow-bytes"
+    assert encode_payload(payload, "arrow_ipc") == payload
+    assert decode_payload(payload, "arrow_ipc") == payload
 
 
 def test_client_concurrent_calls() -> None:

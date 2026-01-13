@@ -133,6 +133,23 @@ def _resolve_client(
     return _build_client(), True
 
 
+def _auto_cancel_check(request: Any) -> CancelCheck | None:
+    if request is None:
+        return None
+    for attr in ("is_aborted", "is_disconnected"):
+        checker = getattr(request, attr, None)
+        if callable(checker):
+
+            def _poll_cancel(checker: Callable[[], bool] = checker) -> bool:
+                try:
+                    return bool(checker())
+                except Exception:
+                    return False
+
+            return _poll_cancel
+    return None
+
+
 def molt_offload(
     *,
     entry: str,
@@ -166,6 +183,8 @@ def molt_offload(
                     return cancel_check(request)
 
                 poll_cancel = _poll_cancel
+            else:
+                poll_cancel = _auto_cancel_check(request)
             try:
                 active_client, close_after = _resolve_client(client, client_mode)
                 payload = build_payload(request, *args[1:], **kwargs)

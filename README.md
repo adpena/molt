@@ -38,15 +38,15 @@ Canonical status lives in `docs/spec/STATUS.md` (README and ROADMAP are kept in 
 - **Stdlib**: partial shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pprint`, `string`, `typing`, `sys`, `os`, `asyncio`, `threading`; import-only stubs for `collections.abc`, `importlib`, `importlib.util` (dynamic import hooks pending).
 - **Reflection**: `type`, `isinstance`, `issubclass`, and `object` are supported with single-inheritance base chains; no metaclasses or dynamic `type()` construction.
 - **Async iteration**: `anext` returns an awaitable; `__aiter__` must return an async iterator (awaitable `__aiter__` still pending).
-- **Asyncio**: shim exposes `run`/`sleep` plus `set_event_loop`/`new_event_loop` stubs (no loop/task APIs).
+- **Asyncio**: shim exposes `run`/`sleep`, `EventLoop`, `Task`/`Future`, `create_task`/`ensure_future`/`current_task`, `Event`, and basic `gather`; timeouts/task groups/wait/shield and I/O adapters pending.
 - **ASGI**: shim only (no websocket support) and not integrated into compiled runtime yet.
 - **Async with**: only a single context manager and simple name binding are supported.
 - **Matmul**: `@` is supported only for `molt_buffer`/`buffer2d`; other types raise `TypeError`.
 - **Numeric tower**: complex/decimal not implemented; missing int helpers (e.g., `bit_length`, `to_bytes`, `from_bytes`).
 - **Format protocol**: no `__format__` fallback or named fields; locale-aware grouping still pending.
 - **memoryview**: partial buffer protocol (no multidimensional shapes or advanced buffer exports).
-- **Offload demo**: `molt_accel` scaffolding exists (optional dep `pip install .[accel]`), with hooks/metrics/cancel checks, and a `molt_worker` stdio shell returns deterministic responses. The decorator can fall back to `molt-worker` in PATH using a packaged default exports manifest when `MOLT_WORKER_CMD` is unset. A Django demo scaffold and k6 harness live in `demo/` and `bench/k6/`; compiled entrypoint dispatch is partially wired (`list_items`, `compute`) and full demo wiring is still pending. `molt_db_adapter` adds a framework-agnostic DB IPC payload builder to share with Django/Flask/FastAPI adapters.
-- **DB layer**: `molt-db` includes the bounded pool plus a SQLite connector (native-only, feature-gated); async drivers and Postgres protocol integration are not implemented yet.
+- **Offload demo**: `molt_accel` scaffolding exists (optional dep `pip install .[accel]`), with hooks/metrics (including payload/response byte sizes), auto cancel-check detection, and shared demo payload builders; a `molt_worker` stdio shell supports sync/async runtimes plus `db_query`/`db_exec` (SQLite sync + Postgres async). The decorator can fall back to `molt-worker` in PATH using a packaged default exports manifest when `MOLT_WORKER_CMD` is unset. A Django demo scaffold and k6 harness live in `demo/` and `bench/k6/`; compiled entrypoint dispatch is partially wired (`list_items`, `compute`) and full demo wiring is still pending. `molt_db_adapter` adds a framework-agnostic DB IPC payload builder to share with Django/Flask/FastAPI adapters.
+- **DB layer**: `molt-db` includes the bounded pool, async pool primitive, SQLite connector (native-only), and an async Postgres connector with per-connection statement cache; Arrow IPC output supports arrays/ranges/intervals/multiranges via struct/list encodings and preserves array lower bounds. WASM builds now have a DB host interface with `db.read`/`db.write` gating, but host adapters/client shims remain pending.
 
 ## Quick start
 
@@ -75,7 +75,7 @@ export MOLT_WORKER_CMD="molt-worker --stdio --exports demo/molt_worker_app/molt_
 - `payload_builder`/`response_factory`: customize request/response shaping for your endpoint contract.
 - `allow_fallback`: when True, falls back to the original view on accel failure.
 - Hooks: `before_send`, `after_recv`, `metrics_hook`, `cancel_check`.
-- Sample entries in demo manifests: `list_items` (msgpack), `compute` (msgpack), `offload_table` (json).
+- Sample entries in demo manifests: `list_items` (msgpack), `compute` (msgpack), `offload_table` (json), `db_query` (msgpack), `db_exec` (msgpack).
 
 ## ASGI shim (CPython)
 
@@ -140,17 +140,20 @@ Type-hint specialization is available via `--type-hints=trust` (no guards, faste
 or `--type-hints=check` (guards inserted). `trust` requires clean `ty` results and
 assumes hints are correct; incorrect hints are user error and may miscompile.
 
-Latest run: 2026-01-13 (macOS x86_64, CPython 3.14.0).
-Top speedups: `bench_sum.py` 227.46x, `bench_channel_throughput.py` 47.06x,
-`bench_async_await.py` 13.17x, `bench_matrix_math.py` 10.50x,
-`bench_parse_msgpack.py` 9.11x.
-Regressions: none (slowest wins: `bench_fib.py` 1.28x, `bench_struct.py` 1.55x).
-Build/run failures: Cython/Numba baselines skipped; Codon skipped for async_await,
-channel_throughput, matrix_math, bytearray_find, bytearray_replace,
-memoryview_tobytes, parse_msgpack, struct, and sum_list_hints benches.
-WASM run: 2026-01-13 (macOS x86_64, CPython 3.14.0). Slowest: `bench_deeply_nested_loop.py`
-5.58s, `bench_struct.py` 2.23s; largest sizes: `bench_channel_throughput.py` 141.4 KB,
-`bench_async_await.py` 82.5 KB; all benches produced timings.
+Latest run: 2026-01-13 (macOS arm64, CPython 3.14.0).
+Top speedups: `bench_sum.py` 230.78x, `bench_channel_throughput.py` 45.02x,
+`bench_parse_msgpack.py` 8.50x, `bench_prod_list.py` 6.29x,
+`bench_bytearray_replace.py` 6.19x.
+Regressions: `bench_tuple_index.py` 0.66x, `bench_tuple_pack.py` 0.70x,
+`bench_struct.py` 0.75x, `bench_min_list.py` 0.77x, `bench_max_list.py` 0.79x.
+Build/run failures: Cython/Numba baselines skipped; Codon skipped for
+bench_sum_list_hints, bench_struct, bench_async_await, bench_channel_throughput,
+bench_matrix_math, bench_bytearray_find, bench_bytearray_replace,
+bench_memoryview_tobytes, and bench_parse_msgpack.
+WASM run: 2026-01-13 (macOS arm64, CPython 3.14.0). Slowest: `bench_deeply_nested_loop.py`
+16.85s, `bench_struct.py` 2.42s, `bench_descriptor_property.py` 0.71s; largest sizes:
+`bench_channel_throughput.py` 295.8 KB, `bench_async_await.py` 237.7 KB,
+`bench_descriptor_property.py` 12.9 KB.
 
 ### Performance Gates
 - Vector reductions (`bench_sum_list.py`, `bench_min_list.py`, `bench_max_list.py`, `bench_prod_list.py`): regression >5% fails the gate.
@@ -158,8 +161,8 @@ WASM run: 2026-01-13 (macOS x86_64, CPython 3.14.0). Slowest: `bench_deeply_nest
 - Matrix/buffer kernels (`bench_matrix_math.py`): regression >5% fails the gate.
 - Any expected perf deltas from new kernels must be recorded here after the run; complex regressions move to `OPTIMIZATIONS_PLAN.md`.
 
-Baseline microbenchmarks (2026-01-13): `bench_min_list.py` 1.92x, `bench_max_list.py` 1.92x,
-`bench_prod_list.py` 6.36x, `bench_str_find_unicode.py` 4.82x, `bench_str_count_unicode.py` 1.89x.
+Baseline microbenchmarks (2026-01-13): `bench_min_list.py` 0.77x, `bench_max_list.py` 0.79x,
+`bench_prod_list.py` 6.29x, `bench_str_find_unicode.py` 4.74x, `bench_str_count_unicode.py` 2.04x.
 
 | Benchmark | Molt vs CPython | Notes |
 | --- | --- | --- |

@@ -344,10 +344,12 @@ def build(
     entry_imports = set(_collect_imports(entry_tree))
     stub_parents = STUB_PARENT_MODULES - entry_imports
     project_root = _find_project_root(source_path.resolve())
+    cwd_root = _find_project_root(Path.cwd())
     module_roots: list[Path] = []
-    src_root = project_root / "src"
-    if src_root.exists():
-        module_roots.append(src_root)
+    for root in (project_root, cwd_root):
+        src_root = root / "src"
+        if src_root.exists():
+            module_roots.append(src_root)
     module_roots.append(source_path.parent)
     module_roots = list(dict.fromkeys(root.resolve() for root in module_roots))
     roots = module_roots + [stdlib_root]

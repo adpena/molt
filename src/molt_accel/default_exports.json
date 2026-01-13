@@ -4,6 +4,8 @@
     {"name": "list_items", "codec_in": "msgpack", "codec_out": "json"},
     {"name": "compute", "codec_in": "msgpack", "codec_out": "msgpack"},
     {"name": "offload_table", "codec_in": "json", "codec_out": "json"},
+    {"name": "db_query", "codec_in": "msgpack", "codec_out": "msgpack"},
+    {"name": "db_exec", "codec_in": "msgpack", "codec_out": "msgpack"},
     {"name": "health", "codec_in": "json", "codec_out": "json"}
   ]
 }

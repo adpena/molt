@@ -153,6 +153,15 @@ Example:
 
 **v0.1 recommendation:** keep I/O out of portable modules; focus on shared logic and compute.
 
+### 5.4 DB host interface (capability-gated)
+For wasm builds that need database access, the host must expose:
+- `db_query(ptr, len, out, cancel_token) -> i32`
+- `db_exec(ptr, len, out, cancel_token) -> i32`
+
+These accept MsgPack-encoded requests (see `docs/spec/0915_MOLT_DB_IPC_CONTRACT.md`)
+and return a stream handle for response bytes. Access is gated by `db.read` and
+`db.write` capabilities.
+
 ---
 
 ## 6. Exported Function Conventions

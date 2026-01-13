@@ -214,6 +214,11 @@ impl WasmBackend {
             std::iter::repeat_n(ValType::I64, 7),
             std::iter::once(ValType::I64),
         );
+        // Type 11: (i64, i64, i64, i64) -> i32 (db_query/db_exec)
+        self.types.function(
+            std::iter::repeat_n(ValType::I64, 4),
+            std::iter::once(ValType::I32),
+        );
 
         let mut import_idx = 0;
         let mut add_import = |name: &str, ty: u32, ids: &mut HashMap<String, u32>| {
@@ -232,7 +237,7 @@ impl WasmBackend {
         add_import("alloc_class_static", 3, &mut self.import_ids);
         add_import("async_sleep", 2, &mut self.import_ids);
         add_import("anext_default_poll", 2, &mut self.import_ids);
-        add_import("future_poll_fn", 2, &mut self.import_ids);
+        add_import("future_poll", 2, &mut self.import_ids);
         add_import("sleep_register", 3, &mut self.import_ids);
         add_import("block_on", 2, &mut self.import_ids);
         add_import("cancel_token_new", 2, &mut self.import_ids);
@@ -448,6 +453,7 @@ impl WasmBackend {
         add_import("is_callable", 2, &mut self.import_ids);
         add_import("index", 3, &mut self.import_ids);
         add_import("store_index", 5, &mut self.import_ids);
+        add_import("del_index", 3, &mut self.import_ids);
         add_import("bytes_find", 3, &mut self.import_ids);
         add_import("bytearray_find", 3, &mut self.import_ids);
         add_import("string_find", 3, &mut self.import_ids);
@@ -526,6 +532,8 @@ impl WasmBackend {
         add_import("exception_context_set", 2, &mut self.import_ids);
         add_import("raise", 2, &mut self.import_ids);
         add_import("bridge_unavailable", 2, &mut self.import_ids);
+        add_import("db_query", 11, &mut self.import_ids);
+        add_import("db_exec", 11, &mut self.import_ids);
         add_import("file_open", 3, &mut self.import_ids);
         add_import("file_read", 3, &mut self.import_ids);
         add_import("file_write", 3, &mut self.import_ids);
@@ -579,7 +587,8 @@ impl WasmBackend {
         user_type_map.insert(4, 7);
         user_type_map.insert(6, 9);
         user_type_map.insert(7, 10);
-        let mut next_type_idx = 11u32;
+        // Types 0-11 are defined above; start new signatures after them.
+        let mut next_type_idx = 12u32;
         for func_ir in &ir.functions {
             if func_ir.name.ends_with("_poll") {
                 continue;
@@ -917,12 +926,7 @@ impl WasmBackend {
         } else {
             None
         };
-        let poll_local = {
-            let idx = local_count;
-            local_types.push(ValType::I64);
-            idx
-        };
-
+        let _ = local_count;
         let mut func = Function::new_with_locals_types(local_types);
         #[derive(Clone, Copy)]
         enum ControlKind {
@@ -2348,6 +2352,20 @@ impl WasmBackend {
                             func.instruction(&Instruction::Drop);
                         }
                     }
+                    "del_index" => {
+                        let args = op.args.as_ref().unwrap();
+                        let obj = locals[&args[0]];
+                        let idx = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(obj));
+                        func.instruction(&Instruction::LocalGet(idx));
+                        emit_call(func, reloc_enabled, import_ids["del_index"]);
+                        if let Some(out) = op.out.as_ref() {
+                            let res = locals[out];
+                            func.instruction(&Instruction::LocalSet(res));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
                     "slice" => {
                         let args = op.args.as_ref().unwrap();
                         let obj = locals[&args[0]];
@@ -3643,22 +3661,8 @@ impl WasmBackend {
                             memory_index: 0,
                         }));
                         func.instruction(&Instruction::LocalGet(future));
-                        emit_call(func, reloc_enabled, import_ids["future_poll_fn"]);
-                        func.instruction(&Instruction::LocalSet(poll_local));
-                        func.instruction(&Instruction::LocalGet(poll_local));
-                        func.instruction(&Instruction::I64Const(-1));
-                        func.instruction(&Instruction::I64Eq);
-                        func.instruction(&Instruction::If(BlockType::Empty));
-                        func.instruction(&Instruction::I64Const(box_none()));
+                        emit_call(func, reloc_enabled, import_ids["future_poll"]);
                         func.instruction(&Instruction::LocalSet(out));
-                        func.instruction(&Instruction::Else);
-                        func.instruction(&Instruction::LocalGet(future));
-                        emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-                        func.instruction(&Instruction::LocalGet(poll_local));
-                        func.instruction(&Instruction::I32WrapI64);
-                        emit_call_indirect(func, reloc_enabled, 2, 0);
-                        func.instruction(&Instruction::LocalSet(out));
-                        func.instruction(&Instruction::End);
                         if let Some(slot) = slot_bits {
                             func.instruction(&Instruction::LocalGet(0));
                             func.instruction(&Instruction::LocalGet(slot));
@@ -4981,21 +4985,8 @@ impl WasmBackend {
                             memory_index: 0,
                         }));
                         func.instruction(&Instruction::LocalGet(future));
-                        emit_call(func, reloc_enabled, import_ids["future_poll_fn"]);
-                        func.instruction(&Instruction::LocalSet(poll_local));
-                        func.instruction(&Instruction::LocalGet(poll_local));
-                        func.instruction(&Instruction::I64Const(-1));
-                        func.instruction(&Instruction::I64Eq);
-                        func.instruction(&Instruction::If(BlockType::Empty));
-                        func.instruction(&Instruction::I64Const(box_none()));
+                        emit_call(func, reloc_enabled, import_ids["future_poll"]);
                         func.instruction(&Instruction::LocalSet(out));
-                        func.instruction(&Instruction::Else);
-                        func.instruction(&Instruction::LocalGet(future));
-                        func.instruction(&Instruction::LocalGet(poll_local));
-                        func.instruction(&Instruction::I32WrapI64);
-                        emit_call_indirect(func, reloc_enabled, 2, 0);
-                        func.instruction(&Instruction::LocalSet(out));
-                        func.instruction(&Instruction::End);
                         func.instruction(&Instruction::LocalGet(out));
                         func.instruction(&Instruction::I64Const(box_pending()));
                         func.instruction(&Instruction::I64Eq);

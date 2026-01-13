@@ -141,6 +141,17 @@ Benchmarks violating this contract are invalid.
 
 ---
 
+## Secondary Diagnostics (Non-Primary)
+These metrics do not replace the core slide metrics, but they are required for
+debugging demo behavior and DB offload performance:
+
+- Worker: `queue_us`, `handler_us`, `exec_us`, `decode_us`, `queue_depth`,
+  `pool_in_flight`, `pool_idle`, `payload_bytes`.
+- DB (`db_query`): `db_alias` (string), `db_tag` (string), `db_row_count`,
+  `db_bytes_in`, `db_bytes_out`, `db_result_format`.
+
+---
+
 ## AI AGENT INSTRUCTIONS (MANDATORY)
 
 ### Canonical Metrics Rule

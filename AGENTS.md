@@ -78,8 +78,13 @@
 - Compare alternatives with explicit tradeoffs and include checklists for validation and regression prevention.
 
 ## Multi-Agent Workflow
+- This project is fundamentally low-level systems work blended with powerful higher-level abstractions; bring aspirational, genius-level rigor with gritty follow-through, seek the hardest problems first, own complexity end-to-end, and lean into building the future.
 - Use `docs/AGENT_LOCKS.md` to coordinate file ownership and avoid collisions.
 - Before opening any file or starting work on a feature, read `docs/AGENT_LOCKS.md` and honor any locks; if it is missing or unclear, stop and ask for direction before proceeding.
+- Before touching non-doc code or tests, write a narrow lock entry for your scope in `docs/AGENT_LOCKS.md`. Update locks whenever you switch files/clusters, and remove them as soon as you finish with a file or scope (be aggressive—re-lock later if needed).
+- Use a unique lock name: `codex-{process_id[:50]}` where `process_id` is the Codex CLI parent PID from `echo $PPID` or `python3 - <<'PY'\nimport os\nprint(os.getppid())\nPY`; never reuse the generic `codex` label.
+- Documentation is generally safe to share across agents; still read locks, but doc-only edits can be co-owned unless a lock explicitly reserves them.
+- If working on a lower-level layer (runtime/backend) with implications for higher-level code, lock and coordinate across both layers; avoid overlapping clusters at the same level without explicit coordination.
 - Use `docs/AGENT_MEMORY.md` as an append-only coordination log during parallel work: record intended scope before starting and summarize changes/tests/benchmarks after finishing.
 - When multiple agents are active, read both `docs/AGENT_LOCKS.md` and `docs/AGENT_MEMORY.md` first to avoid overlapping scopes, then update the memory log as you progress.
 - Agents may use `gh` (GitHub CLI) and git over SSH to open/merge PRs; commit frequently with clear messages.

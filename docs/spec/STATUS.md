@@ -11,7 +11,7 @@ README/ROADMAP in sync.
 - Native async/await lowering with state-machine poll loops.
 - Call argument binding for Molt-defined functions: positional/keyword/`*args`/`**kwargs` with pos-only/kw-only enforcement.
 - Call argument evaluation matches CPython ordering (positional/`*` left-to-right, then keyword/`**` left-to-right).
-- Function decorators (non-contextmanager) are lowered; sync/async free-var closures are captured via closure tuples.
+- Function decorators (non-contextmanager) are lowered; sync/async free-var closures and `nonlocal` rebinding are captured via closure tuples.
 - Local/closure function calls (decorators, `__call__`) lower through dynamic call paths when not allowlisted.
 - Async iteration: `__aiter__`/`__anext__`, `aiter`/`anext`, and `async for`.
 - Async context managers: `async with` lowering for `__aenter__`/`__aexit__`.
@@ -31,6 +31,7 @@ README/ROADMAP in sync.
   `dict.clear`/`dict.copy`/`dict.popitem`/`dict.setdefault`/`dict.update`.
 - `list.extend` accepts iterable inputs (range/generator/etc.) via the iter protocol.
 - Indexing and slicing honor `__index__` for integer indices (including slice bounds/steps).
+- Slice assignment/deletion parity for list/bytearray/memoryview (including `__index__` errors; memoryview delete raises `TypeError`).
 - Augmented assignment (`+=`, `*=`, `|=`, `&=`, `^=`, `-=`) uses in-place list/bytearray/set semantics for name/attribute/subscript targets.
 - `dict()` supports positional mapping/iterable inputs (keys/`__getitem__` mapping fallback) plus keyword/`**` expansion
   (string key enforcement for `**`); `dict.update` mirrors the mapping fallback.
@@ -49,10 +50,11 @@ README/ROADMAP in sync.
 - Lambda expressions lower to function objects with closures, defaults, and varargs/kw-only args.
 - Indexing honors user-defined `__getitem__`/`__setitem__` when builtin paths do not apply.
 - CPython shim: minimal ASGI adapter for http/lifespan via `molt.asgi.asgi_adapter`.
-- `molt_accel` client/decorator expose before/after hooks, metrics callbacks, cancel-checks, concurrent in-flight requests in the shared client, optional worker pooling via `MOLT_ACCEL_POOL_SIZE`, and raw-response pass-through; timeouts schedule a worker restart after in-flight requests drain; wire selection honors `MOLT_WORKER_WIRE`/`MOLT_WIRE`.
+- `molt_accel` client/decorator expose before/after hooks, metrics callbacks (including payload/response byte sizes), cancel-checks with auto-detection of request abort helpers, concurrent in-flight requests in the shared client, optional worker pooling via `MOLT_ACCEL_POOL_SIZE`, and raw-response pass-through; timeouts schedule a worker restart after in-flight requests drain; wire selection honors `MOLT_WORKER_WIRE`/`MOLT_WIRE`.
+- `molt_accel.contracts` provides shared payload builders for demo endpoints (`list_items`, `compute`, `offload_table`), including JSON-body parsing for the offload table demo path.
 - `molt_worker` supports sync/async runtimes (`MOLT_WORKER_RUNTIME` / `--runtime`), enforces cancellation/timeout checks in the fake DB path, compiled dispatch loops, pool waits, and Postgres queries; validates export manifests; reports queue/pool metrics per request (queue_us/handler_us/exec_us/decode_us plus ms rollups); fake DB decode cost can be simulated via `MOLT_FAKE_DB_DECODE_US_PER_ROW` and CPU work via `MOLT_FAKE_DB_CPU_ITERS`. Thread and queue tuning are available via `MOLT_WORKER_THREADS` and `MOLT_WORKER_MAX_QUEUE` (CLI overrides).
 - `molt-db` provides a bounded pool, a feature-gated async pool primitive, a native-only SQLite connector (feature-gated in `molt-worker`), and an async Postgres connector (tokio-postgres + rustls) with per-connection statement caching.
-- `molt_db_adapter` exposes a framework-agnostic DB IPC payload builder aligned with `docs/spec/0915_MOLT_DB_IPC_CONTRACT.md`; worker-side `db_query` supports SQLite (sync) and Postgres (async) with json/msgpack/arrow_ipc results, db-specific metrics, and structured decoding for Postgres arrays/ranges/intervals/multiranges in json/msgpack (with lower-bound metadata when needed).
+- `molt_db_adapter` exposes a framework-agnostic DB IPC payload builder aligned with `docs/spec/0915_MOLT_DB_IPC_CONTRACT.md`; worker-side `db_query`/`db_exec` support SQLite (sync) and Postgres (async) with json/msgpack results (Arrow IPC for `db_query`), db-specific metrics, and structured decoding for Postgres arrays/ranges/intervals/multiranges in json/msgpack plus Arrow IPC struct/list encodings (including lower-bound metadata). WASM DB host intrinsics (`db_query`/`db_exec`) are defined with stream handles and `db.read`/`db.write` capability gating, and the Node/WASI host adapter is wired in `run_wasm.js`.
 - WASM harness runs via `run_wasm.js` with shared memory/table and direct runtime imports (legacy wrapper fallback via `MOLT_WASM_LEGACY=1`), including async/channel benches on WASI.
 - Instance `__getattr__`/`__setattr__` hooks for user-defined classes.
 - Instance `__getattribute__` hooks for user-defined classes.
@@ -83,21 +85,23 @@ README/ROADMAP in sync.
   traceback objects/line info and exception args remain message-only (see type coverage matrix).
 - Imports: static module graph only; no dynamic import hooks or full package
   resolution.
-- Asyncio: shim exposes `run`/`sleep` plus `set_event_loop`/`new_event_loop` stubs; loop/task APIs still pending and no
-  full event-loop/task surface.
+- Asyncio: shim exposes `run`/`sleep`, `EventLoop`, `Task`/`Future`, and core task helpers; `gather` + advanced loop APIs
+  and I/O adapters remain pending.
 - Async with: only a single context manager and simple name binding are supported.
 - Matmul (`@`): supported only for `molt_buffer`/`buffer2d`; other types raise
   `TypeError` (TODO(type-coverage, owner:runtime, milestone:TC2): consider
   `__matmul__`/`__rmatmul__` fallback for custom types).
+- Roadmap focus: async runtime core (Task/Future scheduler, contextvars, cancellation injection), capability-gated async I/O,
+  DB semantics expansion, WASM DB parity, framework adapters, and production hardening (see ROADMAP).
 - Numeric tower: complex/decimal pending; `int` still missing full method surface
   (e.g., `bit_length`, `to_bytes`, `from_bytes`).
 - Format protocol: no `__format__` fallback or named fields; locale-aware grouping
   still pending.
 - memoryview: partial buffer protocol (no multidimensional shapes or advanced
   buffer exports).
-- Cancellation: cooperative checks only; automatic cancellation injection into
-  awaits and I/O still pending.
-- `db_query` Arrow IPC is supported, but arrays/ranges/multiranges/intervals are rejected in Arrow IPC (use json/msgpack); wasm parity is pending.
+- Cancellation: cooperative checks plus automatic cancellation injection on await
+  boundaries; async I/O cancellation propagation still pending.
+- `db_query` Arrow IPC uses best-effort type inference; mixed-type columns error without a declared schema; wasm-side client shims remain pending (Node/WASI host adapter is implemented in `run_wasm.js`).
 - collections: shim `Counter`/`defaultdict` are wrapper implementations (not dict subclasses); `defaultdict`
   default_factory is only fast-pathed for `list`.
 
@@ -108,25 +112,35 @@ README/ROADMAP in sync.
   NOT of the resume op index) and decoded before dispatch.
 - Channel send/recv yield on pending and resume at labeled states.
 - `asyncio.sleep` honors delay/result and avoids busy-spin via scheduler sleep
-  registration.
+  registration (sleep queue + block_on integration); `asyncio.gather` and
+  `asyncio.Event` are supported for core patterns; `asyncio.wait_for` now
+  supports timeout + cancellation propagation across task boundaries.
+- `asyncio.Event` prunes cancelled waiters during task teardown and cooperates
+  with cancellation propagation.
+- Raising non-exception objects is coerced to exception types by class name as a
+  stopgap; full BaseException subclass semantics remain pending.
 - Cancellation tokens are available with request-scoped defaults and task-scoped
-  overrides; cancellation is cooperative via `molt.cancelled()` checks.
+  overrides; awaits inject `CancelledError`, and cooperative checks via
+  `molt.cancelled()` remain available.
+- Await lowering now consults `__await__` when present to bridge stdlib `Task`/`Future` shims.
 - WASM runs a single-threaded scheduler loop (no background workers); pending
   sleeps are handled by blocking registration in the same task loop.
 
 ## Stdlib Coverage
 - Partial shims: `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`,
-  `pprint`, `string`, `typing`, `sys`, `os`, `asyncio`, `threading`,
+  `pprint`, `string`, `typing`, `sys`, `os`, `asyncio`, `contextvars`, `threading`,
   `functools`, `itertools`, `operator`, `collections`.
 - Import-only stubs: `collections.abc`, `importlib`, `importlib.util`.
 - See `docs/spec/0015_STDLIB_COMPATIBILITY_MATRIX.md` for the full matrix.
 
 ## Django Demo Blockers (Current)
 - Missing `functools`/`itertools`/`operator`/`collections` parity needed for common Django internals.
-- Async loop/task APIs + `contextvars` are incomplete; cancellation injection and long-running workload hardening are pending.
-- Top priority: finish wasm parity and Arrow IPC complex-type support (arrays/ranges/multiranges/intervals) before full DB adapter expansion (see `docs/spec/0701_ASYNC_PG_POOL_AND_PROTOCOL.md`).
+- Async loop/task APIs + `contextvars` cover Task/Future/gather/Event/`wait_for`;
+  task groups/wait/shield plus async I/O cancellation propagation and long-running
+  workload hardening are pending.
+- Top priority: finish wasm parity for DB connectors before full DB adapter expansion (see `docs/spec/0701_ASYNC_PG_POOL_AND_PROTOCOL.md`).
 - Capability-gated I/O/runtime modules (`os`, `sys`, `pathlib`, `logging`, `time`, `selectors`) need deterministic parity.
-- HTTP/ASGI runtime surface is not implemented (shim adapter exists); DB driver/pool integration is partial (`db_query` only, wasm parity pending, Arrow IPC rejects complex types).
+- HTTP/ASGI runtime surface is not implemented (shim adapter exists); DB driver/pool integration is partial (`db_query` only; wasm parity pending).
 - Descriptor hooks still lack metaclass behaviors, limiting idiomatic Django patterns.
 
 ## Tooling + Verification
@@ -140,7 +154,7 @@ README/ROADMAP in sync.
 - uv-managed Python 3.14 hangs on arm64; system Python 3.14 used as workaround.
 - Browser host for WASM is still pending; current harness targets WASI via
   `run_wasm.js` and uses a single-threaded scheduler.
-- SQLite connector support is not available in WASM yet; DB connectors remain native-only.
+- SQLite/Postgres connectors remain native-only; wasm DB host adapters and client shims are still pending.
 - True single-module WASM link (no JS boundary) is still pending; current direct-link harness still uses a JS stub for `molt_call_indirect1`.
 - TODO(runtime-provenance, owner:runtime, milestone:RT1): remove handle-table lock overhead via sharded or lock-free lookups.
 - Single-module wasm linking remains experimental; wasm-ld now links relocatable output when `MOLT_WASM_LINK=1`, but broader coverage + table/element relocation validation and removal of the JS `molt_call_indirect1` stub are still pending.

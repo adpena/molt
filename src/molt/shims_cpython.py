@@ -14,7 +14,7 @@ import queue
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from molt import net as net_mod
 
@@ -30,6 +30,7 @@ _CANCEL_TOKENS: dict[int, dict[str, int | bool]] = {
 }
 _CANCEL_NEXT_ID = 2
 _CANCEL_CURRENT = 1
+_ORIG_ASYNCIO_SLEEP: Any | None = None
 
 
 def _box_int(value: int) -> int:
@@ -406,7 +407,11 @@ def molt_block_on(task: Any) -> Any:
 
 def molt_async_sleep(_delay: float = 0.0, _result: Any | None = None) -> Any:
     async def _sleep() -> Any:
+        if molt_cancelled():
+            raise asyncio.CancelledError()
         await asyncio.sleep(_delay)
+        if molt_cancelled():
+            raise asyncio.CancelledError()
         return _result
 
     return _sleep()
@@ -464,6 +469,21 @@ def molt_chan_recv(chan: Any) -> Any:
 
 def install() -> None:
     import builtins
+
+    global _ORIG_ASYNCIO_SLEEP
+    if _ORIG_ASYNCIO_SLEEP is None:
+        _ORIG_ASYNCIO_SLEEP = asyncio.sleep
+
+        async def _molt_sleep(delay: float = 0.0, result: Any | None = None) -> Any:
+            if molt_cancelled():
+                raise asyncio.CancelledError()
+            try:
+                return await _ORIG_ASYNCIO_SLEEP(delay, result)
+            finally:
+                if molt_cancelled():
+                    raise asyncio.CancelledError()
+
+        asyncio.sleep = cast(Any, _molt_sleep)
 
     setattr(builtins, "molt_spawn", molt_spawn)
     setattr(builtins, "molt_chan_new", molt_chan_new)

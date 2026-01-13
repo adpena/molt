@@ -61,8 +61,13 @@ The Molt compiler itself is designed to be "AI-friendly". Its modular IR and cle
 - Capability-gate any OS, I/O, network, or process modules and record the policy in specs.
 - Use `ruff format` (black-style) as the canonical Python formatter before builds to avoid inconsistent quoting or formatting drift.
 - When a potential optimization is complex or needs extended focus, add a fully specced entry to `OPTIMIZATIONS_PLAN.md` and propose a detailed evaluation plan (alternatives, checklists, perf matrix, regression gates, and research references; prefer papers and modern algorithms).
+- This project is fundamentally low-level systems work blended with powerful higher-level abstractions; bring aspirational, genius-level rigor with gritty follow-through, seek the hardest problems first, own complexity end-to-end, and lean into building the future.
 - Use `docs/AGENT_LOCKS.md` for multi-agent coordination and keep communication explicit about scope, touched files, and tests.
 - Before opening any file or starting work on a feature, read `docs/AGENT_LOCKS.md` and honor any locks; if it is missing or unclear, stop and ask for direction before proceeding.
+- Before touching non-doc code or tests, write a narrow lock entry for your scope in `docs/AGENT_LOCKS.md`. Update locks whenever you switch files/clusters, and remove them as soon as you finish with a file or scope (be aggressive—re-lock later if needed).
+- Use a unique lock name: `codex-{process_id[:50]}` where `process_id` is the Codex CLI parent PID from `echo $PPID` or `python3 - <<'PY'\nimport os\nprint(os.getppid())\nPY`; never reuse the generic `codex` label.
+- Documentation is generally safe to share across agents; still read locks, but doc-only edits can be co-owned unless a lock explicitly reserves them.
+- If working on a lower-level layer (runtime/backend) with implications for higher-level code, lock and coordinate across both layers; avoid overlapping clusters at the same level without explicit coordination.
 - Use `docs/AGENT_MEMORY.md` as an append-only coordination log during parallel work: record intended scope before starting and summarize changes/tests/benchmarks after finishing.
 - When multiple agents are active, read both `docs/AGENT_LOCKS.md` and `docs/AGENT_MEMORY.md` first to avoid overlapping scopes, then update the memory log as you progress.
 - Agents may use `gh` and git over SSH; commit after cohesive changes and run lint/test once at the end rather than in repeated cycles.

@@ -15,15 +15,15 @@
 | complex | arithmetic, comparisons, repr | Planned | P1 | TC2 | runtime |
 | str | len, index/slice via `__index__`, iter, find/split/replace/startswith/endswith/count/join/lower/upper, concat, repr | Partial | P0 | TC1 | runtime/frontend |
 | bytes | len, index/slice via `__index__`, iter, find/split/replace, concat | Partial | P0 | TC1 | runtime |
-| bytearray | mutability, index/slice via `__index__`, iter, find/split/replace, concat, in-place concat/repeat | Partial | P0 | TC1 | runtime |
-| list | literals, index/slice via `__index__`, append/extend/insert/remove/pop/count/index/clear/copy/reverse, iter, in-place add/mul | Partial | P0 | TC1 | runtime/frontend |
+| bytearray | mutability, index/slice via `__index__`, slice assign/delete, iter, find/split/replace, concat, in-place concat/repeat | Partial | P0 | TC1 | runtime |
+| list | literals, index/slice via `__index__`, slice assign/delete, append/extend/insert/remove/pop/count/index/clear/copy/reverse, iter, in-place add/mul | Partial | P0 | TC1 | runtime/frontend |
 | tuple | literals, index/slice via `__index__`, hash, iter | Partial | P0 | TC1 | runtime/frontend |
 | dict | literals, index/set, views, iter, basic methods (keys/values/items/get/pop/clear/copy/popitem/setdefault/update) | Partial | P0 | TC1 | runtime/frontend |
 | set | literals, constructor, add/remove/contains/iter/len, algebra (`|`, `&`, `-`, `^`) + in-place updates (dict view RHS) | Partial | P1 | TC2 | runtime/frontend |
 | frozenset | constructor, hash, contains/iter/len, algebra (`|`, `&`, `-`, `^`) | Partial | P1 | TC2 | runtime/frontend |
 | range | len/index via `__index__`/iter; step==0 error | Partial | P0 | TC1 | runtime/frontend |
 | slice | slice objects + normalization + step + `__index__` bounds | Partial | P1 | TC2 | runtime/frontend |
-| memoryview | buffer protocol (1D format/shape/strides), slicing, writable views | Partial | P2 | TC3 | runtime |
+| memoryview | buffer protocol (1D format/shape/strides), slicing + slice assignment, writable views | Partial | P2 | TC3 | runtime |
 | iterator | iter/next protocol, StopIteration | Partial | P0 | TC1 | runtime |
 | generator/coroutine | send/throw/close, await | Partial | P0 | TC2 | runtime/frontend |
 | exceptions | BaseException hierarchy, raise/try, chaining, `__traceback__` (names) | Partial | P0 | TC1 | frontend/runtime |
@@ -123,6 +123,7 @@
 - **TC2 (Mid):** set/frozenset, generators/coroutines, callable objects.
   - Implemented: generator protocol (`send`/`throw`/`close`, `yield from`) + closure slot load/store intrinsics across native + wasm backends.
   - Implemented: generator function closures capture free vars in generator frames.
+  - Implemented: `nonlocal` rebinding in nested sync/async closures.
 - Implemented: async state machine (`await`, `asyncio.run`/`asyncio.sleep`) with delay/result semantics and pending sentinel across native + wasm harness.
   - Implemented: `async with` lowering for `__aenter__`/`__aexit__` (single manager, simple name binding).
   - TODO(type-coverage, owner:runtime, milestone:TC2): generator state objects + StopIteration.

@@ -418,6 +418,8 @@ struct IfFrame {
     has_else: bool,
     then_exit: Option<(Block, bool)>,
     else_exit: Option<(Block, bool)>,
+    then_terminal: bool,
+    else_terminal: bool,
     phi_ops: Option<Vec<(String, String, String)>>,
 }
 
@@ -2860,6 +2862,27 @@ impl SimpleBackend {
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
+                "del_index" => {
+                    let args = op.args.as_ref().unwrap();
+                    let obj = vars.get(&args[0]).unwrap_or_else(|| {
+                        panic!("Obj not found in {} op {}", func_ir.name, op_idx)
+                    });
+                    let idx = vars.get(&args[1]).unwrap_or_else(|| {
+                        panic!("Index not found in {} op {}", func_ir.name, op_idx)
+                    });
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_del_index", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*obj, *idx]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
                 "slice" => {
                     let args = op.args.as_ref().unwrap();
                     let target = vars.get(&args[0]).expect("Slice target not found");
@@ -4034,41 +4057,11 @@ impl SimpleBackend {
                     poll_sig.returns.push(AbiParam::new(types::I64));
                     let poll_callee = self
                         .module
-                        .declare_function("molt_future_poll_fn", Linkage::Import, &poll_sig)
+                        .declare_function("molt_future_poll", Linkage::Import, &poll_sig)
                         .unwrap();
                     let local_poll = self.module.declare_func_in_func(poll_callee, builder.func);
                     let poll_call = builder.ins().call(local_poll, &[*future]);
-                    let poll_fn_addr = builder.inst_results(poll_call)[0];
-                    let zero = builder.ins().iconst(types::I64, 0);
-                    let invalid = builder.ins().icmp(IntCC::Equal, poll_fn_addr, zero);
-
-                    let poll_block = builder.create_block();
-                    let invalid_block = builder.create_block();
-                    let join_block = builder.create_block();
-                    builder
-                        .ins()
-                        .brif(invalid, invalid_block, &[], poll_block, &[]);
-
-                    builder.switch_to_block(invalid_block);
-                    builder.seal_block(invalid_block);
-                    let none_bits = builder.ins().iconst(types::I64, box_none());
-                    builder.ins().jump(join_block, &[none_bits]);
-
-                    builder.switch_to_block(poll_block);
-                    builder.seal_block(poll_block);
-                    let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let sig_ref = builder.import_signature(sig);
-                    let call = builder
-                        .ins()
-                        .call_indirect(sig_ref, poll_fn_addr, &[future_ptr]);
-                    let res = builder.inst_results(call)[0];
-                    builder.ins().jump(join_block, &[res]);
-
-                    builder.switch_to_block(join_block);
-                    builder.seal_block(join_block);
-                    let res = builder.append_block_param(join_block, types::I64);
+                    let res = builder.inst_results(poll_call)[0];
 
                     let pending_const = builder.ins().iconst(types::I64, pending_bits());
                     let is_pending = builder.ins().icmp(IntCC::Equal, res, pending_const);
@@ -6356,6 +6349,8 @@ impl SimpleBackend {
                         has_else: false,
                         then_exit: None,
                         else_exit: None,
+                        then_terminal: false,
+                        else_terminal: false,
                         phi_ops: None,
                     });
                 }
@@ -6364,6 +6359,7 @@ impl SimpleBackend {
                     if let Some(block) = builder.current_block() {
                         frame.then_exit = Some((block, is_block_filled));
                     }
+                    frame.then_terminal = is_block_filled;
                     if !is_block_filled {
                         if frame.phi_ops.is_none() {
                             let mut depth = 0usize;
@@ -6449,9 +6445,12 @@ impl SimpleBackend {
 
                     if frame.has_else {
                         frame.else_exit = Some((current_block, is_block_filled));
+                        frame.else_terminal = is_block_filled;
                     } else {
                         frame.then_exit = Some((current_block, is_block_filled));
                         frame.else_exit = Some((frame.else_block, false));
+                        frame.then_terminal = is_block_filled;
+                        frame.else_terminal = false;
                     }
 
                     let phi_prepared = frame.phi_ops.is_some();
@@ -6501,17 +6500,7 @@ impl SimpleBackend {
                         else_args.push(else_val);
                     }
 
-                    let then_filled = frame
-                        .then_exit
-                        .as_ref()
-                        .map(|(_, filled)| *filled)
-                        .unwrap_or(false);
-                    let else_filled = frame
-                        .else_exit
-                        .as_ref()
-                        .map(|(_, filled)| *filled)
-                        .unwrap_or(false);
-                    let both_filled = then_filled && else_filled;
+                    let both_filled = frame.then_terminal && frame.else_terminal;
 
                     let current_block = builder.current_block();
                     let mut emit_jump = |block: Block, filled: bool, args: &[Value]| {

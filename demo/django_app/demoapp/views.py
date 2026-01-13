@@ -10,7 +10,17 @@ from typing import Any
 
 from django.http import JsonResponse
 
-from molt_accel import MoltAccelError, molt_offload, raw_json_response_factory
+from molt_accel import (
+    MoltAccelError,
+    MoltInvalidInput,
+    molt_offload,
+    raw_json_response_factory,
+)
+from molt_accel.contracts import (
+    build_compute_payload,
+    build_list_items_payload,
+    build_offload_table_payload,
+)
 
 
 _METRICS_LOCK = threading.Lock()
@@ -36,28 +46,8 @@ def _metrics_hook(entry: str):
     return hook
 
 
-def _query_param(request: Any, key: str, default: str | None = None) -> str | None:
-    params = getattr(request, "GET", None)
-    if params is None:
-        return default
-    value = params.get(key, default)
-    if value is None:
-        return default
-    return value
-
-
 def _bad_request(detail: str) -> JsonResponse:
     return JsonResponse({"error": "InvalidInput", "detail": detail}, status=400)
-
-
-def _parse_limit(raw: str | None) -> int:
-    if raw is None:
-        return 50
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        return 50
-    return max(1, min(value, 500))
 
 
 def _env_int(name: str, default: int = 0) -> int:
@@ -203,18 +193,16 @@ def _build_items_response(
 
 
 def baseline_items(request: Any) -> JsonResponse:
-    raw_user = _query_param(request, "user_id")
-    if raw_user is None:
-        return _bad_request("Missing required query param: user_id")
     try:
-        user_id = int(raw_user)
-    except (TypeError, ValueError):
-        return _bad_request("user_id must be an integer")
+        payload = build_list_items_payload(request)
+    except MoltInvalidInput as exc:
+        return _bad_request(str(exc))
 
-    q = _query_param(request, "q")
-    status = _query_param(request, "status")
-    cursor = _query_param(request, "cursor")
-    limit = _parse_limit(_query_param(request, "limit"))
+    user_id = payload["user_id"]
+    q = payload.get("q")
+    status = payload.get("status")
+    cursor = payload.get("cursor")
+    limit = payload.get("limit", 50)
     cpu_iters = _env_int("MOLT_FAKE_DB_CPU_ITERS", 0)
     db_path = _db_path()
 
@@ -272,40 +260,24 @@ def offload_items(request: Any) -> JsonResponse:
 
 
 def compute_view(request: Any) -> JsonResponse:
-    values_raw = _query_param(request, "values")
-    if values_raw is None:
-        values = []
-    else:
-        try:
-            values = [float(x) for x in values_raw.split(",")]
-        except Exception:
-            values = []
-    scale = float(_query_param(request, "scale", "1.0") or "1.0")
-    offset = float(_query_param(request, "offset", "0.0") or "0.0")
+    try:
+        payload = build_compute_payload(request)
+    except MoltInvalidInput as exc:
+        return _bad_request(str(exc))
+    values = payload["values"]
+    scale = payload["scale"]
+    offset = payload["offset"]
     scaled = [(v * scale) + offset for v in values]
     return JsonResponse(
         {"count": len(scaled), "sum": sum(scaled), "scaled": scaled}, status=200
     )
 
 
-def _build_compute_payload(request: Any) -> dict[str, Any]:
-    values_raw = _query_param(request, "values")
-    values = []
-    if values_raw is not None:
-        try:
-            values = [float(x) for x in values_raw.split(",")]
-        except Exception:
-            values = []
-    scale = float(_query_param(request, "scale", "1.0") or "1.0")
-    offset = float(_query_param(request, "offset", "0.0") or "0.0")
-    return {"values": values, "scale": scale, "offset": offset}
-
-
 @molt_offload(
     entry="compute",
     codec="msgpack",
     timeout_ms=250,
-    payload_builder=_build_compute_payload,
+    payload_builder=build_compute_payload,
     metrics_hook=_metrics_hook("compute"),
 )
 def compute_offload_view(request: Any) -> JsonResponse:
@@ -317,20 +289,15 @@ def compute_offload_view(request: Any) -> JsonResponse:
         )
 
 
-def _build_table_payload(request: Any) -> dict[str, Any]:
-    rows = int(_query_param(request, "rows", "10000") or "10000")
-    return {"rows": rows}
-
-
 @molt_offload(
     entry="offload_table",
     codec="json",
     timeout_ms=500,
-    payload_builder=_build_table_payload,
+    payload_builder=build_offload_table_payload,
     metrics_hook=_metrics_hook("offload_table"),
 )
 def offload_table(request: Any) -> JsonResponse:
-    rows = int(_query_param(request, "rows", "10000") or "10000")
+    rows = build_offload_table_payload(request)["rows"]
     cpu_iters = _env_int("MOLT_FAKE_DB_CPU_ITERS", 0)
     _sleep_fake_db(rows)
     burn_rows = min(rows, 5000)
@@ -339,7 +306,7 @@ def offload_table(request: Any) -> JsonResponse:
         if cpu_iters > 0 and i < burn_rows:
             _burn_cpu(cpu_iters, i)
         data.append({"id": i, "value": i % 7})
-    return JsonResponse({"rows": rows, "data": data[:5]}, status=200)
+    return JsonResponse({"rows": rows, "sample": data[:5]}, status=200)
 
 
 @molt_offload(

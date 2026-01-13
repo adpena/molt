@@ -3,7 +3,11 @@ from __future__ import annotations
 import pytest
 
 from molt_accel.errors import MoltInvalidInput
-from molt_db_adapter.contracts import DbParam, build_db_query_payload
+from molt_db_adapter.contracts import (
+    DbParam,
+    build_db_exec_payload,
+    build_db_query_payload,
+)
 
 
 def test_build_db_query_payload_positional() -> None:
@@ -77,3 +81,20 @@ def test_build_db_query_payload_invalid_db_alias() -> None:
 def test_build_db_query_payload_invalid_params_shape() -> None:
     with pytest.raises(MoltInvalidInput):
         build_db_query_payload(sql="select 1", params="oops")
+
+
+def test_build_db_exec_payload_defaults() -> None:
+    payload = build_db_exec_payload(
+        sql="update items set status = :status where id = :id",
+        params={"status": "open", "id": 1},
+    )
+    assert payload["allow_write"] is True
+    assert payload["max_rows"] is None
+    assert payload["result_format"] == "json"
+
+
+def test_build_db_exec_payload_invalid_format() -> None:
+    with pytest.raises(MoltInvalidInput):
+        build_db_exec_payload(
+            sql="update items set status = 'x'", result_format="arrow_ipc"
+        )

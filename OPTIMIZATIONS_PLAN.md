@@ -198,6 +198,68 @@ and regression control.
 - Differential cases: handle-heavy list/dict operations and attribute access.
 - Guard/fallback behavior: invalid handle returns `None`/error, never dereference freed memory.
 
+### OPT-0004: End-to-End Profiling + Hot-Path Optimization Pass
+
+**Problem**
+- Bench results show wide variance (hot-path regressions vs wins), but we lack a structured profiling pass that ties native/wasm hotspots, allocation pressure, and dispatch costs back to specific runtime and compiler layers.
+
+**Hypotheses**
+- H1: Call dispatch, attribute lookup, and container iteration dominate wall time on multiple microbenches; shrinking dynamic dispatch overhead by 20-40% yields broad wins.
+- H2: Avoidable allocations (temporary tuples/iterators/boxing) account for >30% of runtime in list/tuple/string-heavy benches and can be reduced with targeted fast paths.
+- H3: WASM failures in async benches are masking real performance; bringing wasm parity back will unlock actionable profiling data for async/await.
+
+**Alternatives**
+1) Targeted micro-optimizations only (fast to ship, but risks whack-a-mole regressions and misses cross-layer wins).
+2) Full profiling pass + architectural fast paths (higher cost, best long-term gains, requires careful guards).
+3) Narrow pass focused on string/bytes pipelines (lower risk, but ignores call/dispatch bottlenecks).
+
+**Research References**
+- CPython specialization/inline cache work (PEP 659): https://peps.python.org/pep-0659/
+- PyPy JIT and object space notes: https://doc.pypy.org/en/latest/
+- Rust profiling: cargo-flamegraph/pprof guides (sampling + allocation views)
+- Wasmtime/Wasmer perf notes (AOT vs JIT, perf counters)
+
+**Plan**
+- Phase 0: Baseline and profiling harness
+  - Capture native+wasm bench JSON and keep per-commit deltas.
+  - Add repeatable profiling scripts (CPU + alloc) for top 10 benches.
+  - Establish perf gates (e.g., <=5% regression allowed) and store summaries in `bench/results/`.
+- Phase 1: Hot-path identification
+  - Native: use `cargo flamegraph`/`perf` (or macOS Instruments) on `bench_deeply_nested_loop`, `bench_sum_list`, `bench_str_find*`, `bench_dict_ops`, `bench_attr_access`.
+  - Python frontend: `py-spy`/`scalene` on compiler CLI for compile-time hotspots.
+  - WASM: capture wasm-level profiles (wasmtime `--profile`, `perf` on AOT, or node `--prof` for `run_wasm.js`).
+- Phase 2: Targeted optimizations (ranked by impact)
+  - Dispatch: inline cache for method/attribute lookup; fast-path for common builtins.
+  - Containers: iterator+index fast paths (range/list/tuple) and avoid temporary boxing.
+  - Strings/bytes: reduce UTF-8 decode churn, reuse search state, tighten slicing.
+  - Async: fix wasm compat issue and validate async benches for real perf data.
+- Phase 3: Integration and regression control
+  - Add targeted differential tests for any fast-path guards.
+  - Update README/STATUS/ROADMAP with perf deltas and guardrails.
+  - Lock in perf gates in `bench/results/` and document any tradeoffs.
+
+**Benchmark Matrix**
+- bench_deeply_nested_loop.py: expected +1.2-2.0x (dispatch + alloc wins).
+- bench_sum_list.py: expected +1.3-1.6x (iterator/boxing cuts).
+- bench_attr_access.py: expected +1.3-1.8x (inline cache).
+- bench_dict_ops.py: expected +1.2-1.5x (fewer temporaries).
+- bench_str_find_unicode.py / bench_str_count_unicode.py: expected +1.2-1.5x.
+- bench_async_await.py / bench_channel_throughput.py (wasm): restore to "n/a" -> measurable.
+
+**Correctness Plan**
+- New unit tests for cache invalidation (type changes, attribute writes).
+- Differential cases that force slow-path fallback.
+- Guard/fallback behavior: auto-disable fast path on type mismatch or missing invariants.
+
+**Risk + Rollback**
+- Risk: aggressive fast paths introduce subtle semantic divergences.
+- Rollback: keep feature flags and runtime guards; revert to slow path if mismatch detected.
+
+**Success Criteria**
+- >=20% median speedup across top 10 benches; no regressions >5% on remaining suite.
+- WASM async benches compile+run; parity gaps documented if still blocked.
+- Updated perf summary in README and bench artifacts captured in `bench/results/`.
+
 **Risk + Rollback**
 - Risk: lookup contention or handle table growth hurting perf/memory.
 - Rollback: keep handle table behind a feature flag and revert to pointer tagging.

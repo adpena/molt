@@ -13,6 +13,7 @@ interface intrinsics {
     async_sleep: func(obj: u64) -> u64;
     anext_default_poll: func(obj: u64) -> u64;
     future_poll_fn: func(obj: u64) -> u64;
+    future_poll: func(obj: u64) -> u64;
     sleep_register: func(task: molt-ptr, future: molt-ptr) -> u64;
     block_on: func(task: u64) -> u64;
     cancel_token_new: func(parent: molt-object) -> molt-object;
@@ -221,6 +222,7 @@ interface intrinsics {
     is_callable: func(obj: molt-object) -> molt-object;
     index: func(obj: molt-object, key: molt-object) -> molt-object;
     store_index: func(obj: molt-object, key: molt-object, val: molt-object) -> molt-object;
+    del_index: func(obj: molt-object, key: molt-object) -> molt-object;
     bytes_find: func(haystack: molt-object, needle: molt-object) -> molt-object;
     bytearray_find: func(haystack: molt-object, needle: molt-object) -> molt-object;
     string_find: func(haystack: molt-object, needle: molt-object) -> molt-object;
@@ -298,6 +300,8 @@ interface intrinsics {
     file_write: func(handle: molt-object, data: molt-object) -> molt-object;
     file_close: func(handle: molt-object) -> molt-object;
     bridge_unavailable: func(msg: molt-object) -> molt-object;
+    db_query: func(ptr: molt-ptr, len: u64, out: molt-ptr, cancel_token: molt-object) -> s32;
+    db_exec: func(ptr: molt-ptr, len: u64, out: molt-ptr, cancel_token: molt-object) -> s32;
     stream_new: func(capacity: u64) -> u64;
     stream_send: func(handle: u64, ptr: molt-ptr, len: u64) -> u64;
     stream_recv: func(handle: u64) -> u64;

@@ -4,7 +4,7 @@
 **Priority:** P0 for service usefulness
 **Audience:** runtime engineers, DB engineers, AI coding agents
 **Goal:** Deliver a Molt-native async DB layer (starting with Postgres) that enables Go-class concurrency for web services and provides a practical Django adapter/migration path—without rewriting the Django ORM.
-**Implementation status:** `runtime/molt-db` contains a bounded pool skeleton (sync, connection-agnostic), an async pool primitive (feature-gated), and a native-only SQLite connector used by `molt-worker` for real DB reads. Async drivers, Postgres protocol, and cancellation-aware query execution are still pending.
+**Implementation status:** `runtime/molt-db` contains a bounded pool skeleton (sync, connection-agnostic), a feature-gated async pool primitive, a native-only SQLite connector used by `molt-worker`, and an async Postgres connector (tokio-postgres + rustls) with cancellation + statement caching. `molt-worker` now exposes `db_query`/`db_exec` for SQLite (sync) and Postgres (async) with Arrow IPC output for reads (including complex-type struct encodings for arrays/ranges/intervals/multiranges) and expanded Postgres type decoding (uuid/json/date/time → strings, arrays/ranges/intervals/multiranges → structured with lower-bound metadata). WASM parity now has a defined host interface + capability gating with a Node/WASI adapter in `run_wasm.js`; wasm-side client shims remain pending.
 
 ---
 

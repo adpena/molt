@@ -11,6 +11,11 @@ uv sync --group dev --python 3.12  # optional: tests/lint
 cargo run -p molt-worker -- --stdio --exports demo/molt_worker_app/molt_exports.json --compiled-exports demo/molt_worker_app/molt_exports.json
 export MOLT_WORKER_CMD="target/debug/molt-worker --stdio --exports demo/molt_worker_app/molt_exports.json --compiled-exports demo/molt_worker_app/molt_exports.json"
 ```
+If you want async Postgres-backed `db_query`, set:
+```
+export MOLT_WORKER_RUNTIME=async
+export MOLT_DB_POSTGRES_DSN="postgres://user:pass@localhost:5432/dbname"
+```
 
 3. Start Django:
 ```
@@ -23,6 +28,7 @@ python3 manage.py runserver
 - `http://127.0.0.1:8000/baseline/?user_id=1` vs `/offload/?user_id=1`
 - `http://127.0.0.1:8000/compute/?values=1,2,3&scale=2&offset=1` vs `/compute_offload/?...`
 - `http://127.0.0.1:8000/offload_table/?rows=10000`
+  (or `POST /offload_table/` with JSON `{"rows": 10000}` to override rows)
 
 5. Perf harness:
 ```
@@ -39,6 +45,9 @@ seed it with `python3 -m demoapp.db_seed --path "$MOLT_DEMO_DB_PATH"` (or let
 `MOLT_DB_SQLITE_PATH` (defaults to `MOLT_DEMO_DB_PATH` in the bench script). Use
 `MOLT_DB_SQLITE_READWRITE=1` to open the worker connection read-write (default is
 read-only).
+Set `MOLT_WORKER_RUNTIME=async` + `MOLT_DB_POSTGRES_DSN` to use Postgres for `db_query`.
+Tune async pool behavior with `MOLT_DB_POSTGRES_QUERY_TIMEOUT_MS`,
+`MOLT_DB_POSTGRES_MAX_WAIT_MS`, and `MOLT_DB_POSTGRES_MAX_CONNS`.
 Process CPU/RSS summaries are captured by sampling the process table; the bench
 runner uses `MOLT_DEMO_SERVER_PID`/`MOLT_DEMO_WORKER_PID` when available,
 prefers listen-PIDs from `MOLT_SERVER_PORT` when `lsof` is present, and falls

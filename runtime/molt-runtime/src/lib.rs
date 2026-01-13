@@ -16,7 +16,9 @@ use std::collections::BinaryHeap;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::OpenOptions;
 use std::io::{Cursor, Read, Write};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering as AtomicOrdering};
+use std::sync::atomic::{
+    AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering as AtomicOrdering,
+};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::Condvar;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -28,6 +30,10 @@ use std::time::{Duration, Instant};
 extern "C" {
     #[link_name = "molt_call_indirect1"]
     fn molt_call_indirect1(func_idx: u64, arg0: u64) -> i64;
+    #[link_name = "molt_db_query_host"]
+    fn molt_db_query_host(req_bits: u64, len_bits: u64, out_bits: u64, token_id: u64) -> i32;
+    #[link_name = "molt_db_exec_host"]
+    fn molt_db_exec_host(req_bits: u64, len_bits: u64, out_bits: u64, token_id: u64) -> i32;
 }
 
 #[repr(C)]
@@ -269,6 +275,8 @@ const TYPE_TAG_SET: i64 = 17;
 const TYPE_TAG_FROZENSET: i64 = 18;
 const BUILTIN_TAG_OBJECT: i64 = 100;
 const BUILTIN_TAG_TYPE: i64 = 101;
+const BUILTIN_TAG_BASE_EXCEPTION: i64 = 102;
+const BUILTIN_TAG_EXCEPTION: i64 = 103;
 const DEFAULT_RECURSION_LIMIT: usize = 1000;
 
 thread_local! {
@@ -278,6 +286,7 @@ thread_local! {
     static FRAME_STACK: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
     static RECURSION_LIMIT: Cell<usize> = const { Cell::new(DEFAULT_RECURSION_LIMIT) };
     static RECURSION_DEPTH: Cell<usize> = const { Cell::new(0) };
+    static GIL_DEPTH: Cell<usize> = const { Cell::new(0) };
     static ACTIVE_EXCEPTION_STACK: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
     static ACTIVE_EXCEPTION_FALLBACK: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
     static GENERATOR_EXCEPTION_STACKS: RefCell<HashMap<usize, Vec<u64>>> =
@@ -574,6 +583,9 @@ fn index_bigint_from_obj(obj_bits: u64, err: &str) -> Option<BigInt> {
             if let Some(call_bits) = attr_lookup_ptr(ptr, index_name_bits) {
                 let res_bits = call_callable0(call_bits);
                 dec_ref_bits(call_bits);
+                if exception_pending() {
+                    return None;
+                }
                 let res_obj = obj_from_bits(res_bits);
                 if let Some(i) = to_i64(res_obj) {
                     return Some(BigInt::from(i));
@@ -772,7 +784,10 @@ fn type_name(obj: MoltObject) -> &'static str {
 }
 
 fn raise_not_iterable<T: ExceptionSentinel>(bits: u64) -> T {
-    let msg = format!("'{}' object is not iterable", type_name(obj_from_bits(bits)));
+    let msg = format!(
+        "'{}' object is not iterable",
+        type_name(obj_from_bits(bits))
+    );
     raise_exception::<T>("TypeError", &msg)
 }
 
@@ -968,6 +983,44 @@ fn pending_bits_i64() -> i64 {
     MoltObject::pending().bits() as i64
 }
 
+fn molt_gil() -> &'static Mutex<()> {
+    MOLT_GIL.get_or_init(|| Mutex::new(()))
+}
+
+struct GilGuard {
+    guard: Option<std::sync::MutexGuard<'static, ()>>,
+}
+
+impl GilGuard {
+    fn new() -> Self {
+        let needs_lock = GIL_DEPTH.with(|depth| {
+            let current = depth.get();
+            depth.set(current + 1);
+            current == 0
+        });
+        let guard = if needs_lock {
+            Some(molt_gil().lock().unwrap())
+        } else {
+            None
+        };
+        Self { guard }
+    }
+}
+
+impl Drop for GilGuard {
+    fn drop(&mut self) {
+        let should_release = GIL_DEPTH.with(|depth| {
+            let current = depth.get();
+            let next = current.saturating_sub(1);
+            depth.set(next);
+            next == 0
+        });
+        if should_release {
+            self.guard.take();
+        }
+    }
+}
+
 #[inline]
 unsafe fn call_poll_fn(poll_fn_addr: u64, task_ptr: *mut u8) -> i64 {
     #[cfg(target_arch = "wasm32")]
@@ -980,6 +1033,38 @@ unsafe fn call_poll_fn(poll_fn_addr: u64, task_ptr: *mut u8) -> i64 {
         let poll_fn: extern "C" fn(u64) -> i64 = std::mem::transmute(poll_fn_addr as usize);
         poll_fn(task_ptr as u64)
     }
+}
+
+unsafe fn poll_future_with_task_stack(task_ptr: *mut u8, poll_fn_addr: u64) -> i64 {
+    let caller_depth = exception_stack_depth();
+    let caller_active =
+        ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
+    let caller_context = caller_active
+        .last()
+        .copied()
+        .unwrap_or(MoltObject::none().bits());
+    exception_context_fallback_push(caller_context);
+    let task_active = task_exception_stack_take(task_ptr);
+    ACTIVE_EXCEPTION_STACK.with(|stack| {
+        *stack.borrow_mut() = task_active;
+    });
+    let task_depth = task_exception_depth_take(task_ptr);
+    exception_stack_set_depth(task_depth);
+    let prev_raise = task_raise_active();
+    set_task_raise_active(true);
+    let res = call_poll_fn(poll_fn_addr, task_ptr);
+    set_task_raise_active(prev_raise);
+    let new_depth = exception_stack_depth();
+    task_exception_depth_store(task_ptr, new_depth);
+    exception_context_align_depth(new_depth);
+    let task_active = ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
+    task_exception_stack_store(task_ptr, task_active);
+    ACTIVE_EXCEPTION_STACK.with(|stack| {
+        *stack.borrow_mut() = caller_active;
+    });
+    exception_stack_set_depth(caller_depth);
+    exception_context_fallback_pop();
+    res
 }
 
 fn inline_int_from_i128(val: i128) -> Option<i64> {
@@ -2815,10 +2900,23 @@ fn close_payload(payload_bits: u64) {
 }
 
 fn record_exception(ptr: *mut u8) {
-    let cell = LAST_EXCEPTION.get_or_init(|| Mutex::new(None));
-    let mut guard = cell.lock().unwrap();
+    let task_key = current_task_key();
+    let mut prior_ptr = None;
     let mut context_bits: Option<u64> = None;
-    if let Some(old_ptr) = guard.take() {
+    if let Some(task_key) = task_key {
+        if let Some(old_ptr) = task_last_exceptions().lock().unwrap().remove(&task_key) {
+            prior_ptr = Some(old_ptr);
+        }
+    } else {
+        let mut guard = LAST_EXCEPTION
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap();
+        if let Some(old_ptr) = guard.take() {
+            prior_ptr = Some(old_ptr);
+        }
+    }
+    if let Some(old_ptr) = prior_ptr {
         let old_bits = MoltObject::from_ptr(old_ptr as *mut u8).bits();
         if old_ptr as *mut u8 != ptr {
             context_bits = Some(old_bits);
@@ -2858,14 +2956,34 @@ fn record_exception(ptr: *mut u8) {
             *(ptr.add(5 * std::mem::size_of::<u64>()) as *mut u64) = MoltObject::none().bits();
         }
     }
-    *guard = Some(ptr as usize);
+    if let Some(task_key) = task_key {
+        task_last_exceptions()
+            .lock()
+            .unwrap()
+            .insert(task_key, ptr as usize);
+    } else {
+        let mut guard = LAST_EXCEPTION
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap();
+        *guard = Some(ptr as usize);
+    }
     let new_bits = MoltObject::from_ptr(ptr).bits();
     inc_ref_bits(new_bits);
 }
 
 fn clear_exception() {
-    let cell = LAST_EXCEPTION.get_or_init(|| Mutex::new(None));
-    let mut guard = cell.lock().unwrap();
+    if let Some(task_key) = current_task_key() {
+        if let Some(old_ptr) = task_last_exceptions().lock().unwrap().remove(&task_key) {
+            let old_bits = MoltObject::from_ptr(old_ptr as *mut u8).bits();
+            dec_ref_bits(old_bits);
+        }
+        return;
+    }
+    let mut guard = LAST_EXCEPTION
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap();
     if let Some(old_ptr) = guard.take() {
         let old_bits = MoltObject::from_ptr(old_ptr as *mut u8).bits();
         dec_ref_bits(old_bits);
@@ -2873,9 +2991,15 @@ fn clear_exception() {
 }
 
 fn exception_pending() -> bool {
-    let cell = LAST_EXCEPTION.get_or_init(|| Mutex::new(None));
-    let guard = cell.lock().unwrap();
-    guard.is_some()
+    if let Some(task_key) = current_task_key() {
+        let guard = task_last_exceptions().lock().unwrap();
+        return guard.contains_key(&task_key);
+    }
+    LAST_EXCEPTION
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap()
+        .is_some()
 }
 
 fn exception_handler_active() -> bool {
@@ -2964,6 +3088,14 @@ fn set_generator_raise(active: bool) {
     GENERATOR_RAISE.with(|flag| flag.set(active));
 }
 
+fn task_raise_active() -> bool {
+    TASK_RAISE_ACTIVE.with(|flag| flag.get())
+}
+
+fn set_task_raise_active(active: bool) {
+    TASK_RAISE_ACTIVE.with(|flag| flag.set(active));
+}
+
 fn exception_stack_push() {
     EXCEPTION_STACK.with(|stack| {
         stack.borrow_mut().push(0);
@@ -2976,6 +3108,10 @@ fn exception_stack_push() {
 fn exception_stack_pop() {
     let underflow = EXCEPTION_STACK.with(|stack| stack.borrow_mut().pop().is_none());
     if underflow {
+        if token_is_cancelled(current_token_id()) {
+            exception_context_align_depth(0);
+            return;
+        }
         raise!("RuntimeError", "exception handler stack underflow");
     }
     ACTIVE_EXCEPTION_STACK.with(|stack| {
@@ -3091,6 +3227,65 @@ fn generator_exception_stack_drop(ptr: *mut u8) {
             }
         }
     });
+}
+
+fn task_exception_stack_take(ptr: *mut u8) -> Vec<u64> {
+    task_exception_stacks()
+        .lock()
+        .unwrap()
+        .remove(&(ptr as usize))
+        .unwrap_or_default()
+}
+
+fn task_exception_stack_store(ptr: *mut u8, stack: Vec<u64>) {
+    task_exception_stacks()
+        .lock()
+        .unwrap()
+        .insert(ptr as usize, stack);
+}
+
+fn task_exception_stack_drop(ptr: *mut u8) {
+    let stack = task_exception_stacks()
+        .lock()
+        .unwrap()
+        .remove(&(ptr as usize));
+    if let Some(stack) = stack {
+        for bits in stack {
+            if !obj_from_bits(bits).is_none() {
+                dec_ref_bits(bits);
+            }
+        }
+    }
+}
+
+fn task_exception_depth_take(ptr: *mut u8) -> usize {
+    task_exception_depths()
+        .lock()
+        .unwrap()
+        .remove(&(ptr as usize))
+        .unwrap_or(0)
+}
+
+fn task_exception_depth_store(ptr: *mut u8, depth: usize) {
+    task_exception_depths()
+        .lock()
+        .unwrap()
+        .insert(ptr as usize, depth);
+}
+
+fn task_exception_depth_drop(ptr: *mut u8) {
+    task_exception_depths()
+        .lock()
+        .unwrap()
+        .remove(&(ptr as usize));
+}
+
+fn task_last_exception_drop(ptr: *mut u8) {
+    let task_key = ptr as usize;
+    if let Some(old_ptr) = task_last_exceptions().lock().unwrap().remove(&task_key) {
+        let old_bits = MoltObject::from_ptr(old_ptr as *mut u8).bits();
+        dec_ref_bits(old_bits);
+    }
 }
 
 fn raise_exception<T: ExceptionSentinel>(kind: &str, message: &str) -> T {
@@ -3494,6 +3689,8 @@ fn builtin_type_bits(tag: i64) -> Option<u64> {
         TYPE_TAG_MEMORYVIEW => Some(builtins.memoryview),
         BUILTIN_TAG_OBJECT => Some(builtins.object),
         BUILTIN_TAG_TYPE => Some(builtins.type_obj),
+        BUILTIN_TAG_BASE_EXCEPTION => Some(builtins.base_exception),
+        BUILTIN_TAG_EXCEPTION => Some(builtins.exception),
         _ => None,
     }
 }
@@ -3789,6 +3986,11 @@ fn alloc_set_like_with_entries(entries: &[u64], type_id: u32) -> *mut u8 {
 
 fn alloc_set_with_entries(entries: &[u64]) -> *mut u8 {
     alloc_set_like_with_entries(entries, TYPE_ID_SET)
+}
+
+#[no_mangle]
+pub extern "C" fn molt_header_size() -> u64 {
+    std::mem::size_of::<MoltHeader>() as u64
 }
 
 #[no_mangle]
@@ -5845,15 +6047,25 @@ pub extern "C" fn molt_exception_set_last(exc_bits: u64) {
 
 #[no_mangle]
 pub extern "C" fn molt_exception_last() -> u64 {
-    let cell = LAST_EXCEPTION.get_or_init(|| Mutex::new(None));
-    let guard = cell.lock().unwrap();
+    if let Some(task_key) = current_task_key() {
+        let guard = task_last_exceptions().lock().unwrap();
+        if let Some(ptr) = guard.get(&task_key).copied() {
+            let bits = MoltObject::from_ptr(ptr as *mut u8).bits();
+            inc_ref_bits(bits);
+            return bits;
+        }
+        return MoltObject::none().bits();
+    }
+    let guard = LAST_EXCEPTION
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap();
     if let Some(ptr) = *guard {
         let bits = MoltObject::from_ptr(ptr as *mut u8).bits();
         inc_ref_bits(bits);
-        bits
-    } else {
-        MoltObject::none().bits()
+        return bits;
     }
+    MoltObject::none().bits()
 }
 
 #[no_mangle]
@@ -5891,11 +6103,33 @@ pub extern "C" fn molt_raise(exc_bits: u64) -> u64 {
     };
     unsafe {
         if object_type_id(ptr) != TYPE_ID_EXCEPTION {
-            raise!("TypeError", "expected exception object");
+            let kind = match object_type_id(ptr) {
+                TYPE_ID_TYPE => class_name_for_error(exc_bits),
+                TYPE_ID_OBJECT => {
+                    let class_bits = object_class_bits(ptr);
+                    if class_bits != 0 {
+                        class_name_for_error(class_bits)
+                    } else {
+                        type_name(exc_obj).to_string()
+                    }
+                }
+                _ => type_name(exc_obj).to_string(),
+            };
+            let exc_ptr = alloc_exception(&kind, "");
+            if exc_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            record_exception(exc_ptr);
+            if !exception_handler_active() && !generator_raise_active() && !task_raise_active() {
+                context_stack_unwind(MoltObject::from_ptr(exc_ptr).bits());
+                eprintln!("{}", format_exception(exc_ptr));
+                std::process::exit(1);
+            }
+            return MoltObject::none().bits();
         }
     }
     record_exception(ptr);
-    if !exception_handler_active() && !generator_raise_active() {
+    if !exception_handler_active() && !generator_raise_active() && !task_raise_active() {
         context_stack_unwind(MoltObject::from_ptr(ptr).bits());
         eprintln!("{}", format_exception(ptr));
         std::process::exit(1);
@@ -7008,13 +7242,26 @@ pub extern "C" fn molt_ws_new_with_hooks(
 }
 
 type WsConnectHook = extern "C" fn(*const u8, usize) -> *mut u8;
+type DbHostHook = extern "C" fn(*const u8, usize, *mut u64, u64) -> i32;
 
 static WS_CONNECT_HOOK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static DB_QUERY_HOOK: AtomicUsize = AtomicUsize::new(0);
+static DB_EXEC_HOOK: AtomicUsize = AtomicUsize::new(0);
 static CAPABILITIES: OnceLock<HashSet<String>> = OnceLock::new();
 
 #[no_mangle]
 pub extern "C" fn molt_ws_set_connect_hook(ptr: usize) {
     WS_CONNECT_HOOK.store(ptr, AtomicOrdering::Release);
+}
+
+#[no_mangle]
+pub extern "C" fn molt_db_set_query_hook(ptr: usize) {
+    DB_QUERY_HOOK.store(ptr, AtomicOrdering::Release);
+}
+
+#[no_mangle]
+pub extern "C" fn molt_db_set_exec_hook(ptr: usize) {
+    DB_EXEC_HOOK.store(ptr, AtomicOrdering::Release);
 }
 
 fn load_capabilities() -> HashSet<String> {
@@ -7059,6 +7306,90 @@ pub unsafe extern "C" fn molt_ws_connect(url_bits: u64, url_len_bits: u64, out_b
     }
     *out = bits_from_ptr(ws_ptr);
     0
+}
+
+#[no_mangle]
+/// # Safety
+/// Caller must ensure `req_bits` is valid for `len_bits` bytes and `out` is writable.
+pub unsafe extern "C" fn molt_db_query(
+    req_bits: u64,
+    len_bits: u64,
+    out_bits: u64,
+    token_bits: u64,
+) -> i32 {
+    let out = ptr_from_bits(out_bits) as *mut u64;
+    let req_ptr = ptr_from_const_bits(req_bits);
+    let len = usize_from_bits(len_bits);
+    if out.is_null() {
+        return 2;
+    }
+    if req_ptr.is_null() && len != 0 {
+        return 1;
+    }
+    if !has_capability("db.read") {
+        return 6;
+    }
+    cancel_tokens();
+    let token_id = match token_id_from_bits(token_bits) {
+        Some(0) => current_token_id(),
+        Some(id) => id,
+        None => return 1,
+    };
+    #[cfg(target_arch = "wasm32")]
+    {
+        return molt_db_query_host(req_bits, len_bits, out_bits, token_id);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let hook_ptr = DB_QUERY_HOOK.load(AtomicOrdering::Acquire);
+        if hook_ptr == 0 {
+            return 7;
+        }
+        let hook: DbHostHook = std::mem::transmute(hook_ptr);
+        hook(req_ptr, len, out, token_id)
+    }
+}
+
+#[no_mangle]
+/// # Safety
+/// Caller must ensure `req_bits` is valid for `len_bits` bytes and `out` is writable.
+pub unsafe extern "C" fn molt_db_exec(
+    req_bits: u64,
+    len_bits: u64,
+    out_bits: u64,
+    token_bits: u64,
+) -> i32 {
+    let out = ptr_from_bits(out_bits) as *mut u64;
+    let req_ptr = ptr_from_const_bits(req_bits);
+    let len = usize_from_bits(len_bits);
+    if out.is_null() {
+        return 2;
+    }
+    if req_ptr.is_null() && len != 0 {
+        return 1;
+    }
+    if !has_capability("db.write") {
+        return 6;
+    }
+    cancel_tokens();
+    let token_id = match token_id_from_bits(token_bits) {
+        Some(0) => current_token_id(),
+        Some(id) => id,
+        None => return 1,
+    };
+    #[cfg(target_arch = "wasm32")]
+    {
+        return molt_db_exec_host(req_bits, len_bits, out_bits, token_id);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let hook_ptr = DB_EXEC_HOOK.load(AtomicOrdering::Acquire);
+        if hook_ptr == 0 {
+            return 7;
+        }
+        let hook: DbHostHook = std::mem::transmute(hook_ptr);
+        hook(req_ptr, len, out, token_id)
+    }
 }
 
 #[no_mangle]
@@ -7174,6 +7505,10 @@ struct CancelTokenEntry {
 static CANCEL_TOKENS: OnceLock<Mutex<HashMap<u64, CancelTokenEntry>>> = OnceLock::new();
 static NEXT_CANCEL_TOKEN_ID: AtomicU64 = AtomicU64::new(2);
 static TASK_TOKENS: OnceLock<Mutex<HashMap<usize, u64>>> = OnceLock::new();
+static TASK_EXCEPTION_STACKS: OnceLock<Mutex<HashMap<usize, Vec<u64>>>> = OnceLock::new();
+static TASK_EXCEPTION_DEPTHS: OnceLock<Mutex<HashMap<usize, usize>>> = OnceLock::new();
+static TASK_LAST_EXCEPTIONS: OnceLock<Mutex<HashMap<usize, usize>>> = OnceLock::new();
+static MOLT_GIL: OnceLock<Mutex<()>> = OnceLock::new();
 
 thread_local! {
     static CURRENT_TASK: Cell<usize> = const { Cell::new(0) };
@@ -7197,6 +7532,35 @@ fn cancel_tokens() -> &'static Mutex<HashMap<u64, CancelTokenEntry>> {
 
 fn task_tokens() -> &'static Mutex<HashMap<usize, u64>> {
     TASK_TOKENS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn task_exception_stacks() -> &'static Mutex<HashMap<usize, Vec<u64>>> {
+    TASK_EXCEPTION_STACKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn task_exception_depths() -> &'static Mutex<HashMap<usize, usize>> {
+    TASK_EXCEPTION_DEPTHS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn task_last_exceptions() -> &'static Mutex<HashMap<usize, usize>> {
+    TASK_LAST_EXCEPTIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn task_has_token(task_ptr: *mut u8) -> bool {
+    let task_key = task_ptr as usize;
+    let map = task_tokens().lock().unwrap();
+    map.contains_key(&task_key)
+}
+
+fn current_task_key() -> Option<usize> {
+    CURRENT_TASK.with(|cell| {
+        let value = cell.get();
+        if value == 0 {
+            None
+        } else {
+            Some(value)
+        }
+    })
 }
 
 fn token_id_from_bits(bits: u64) -> Option<u64> {
@@ -7271,6 +7635,9 @@ fn clear_task_token(task_ptr: *mut u8) {
     if let Some(token) = task_tokens().lock().unwrap().remove(&task_key) {
         release_token(token);
     }
+    task_last_exception_drop(task_ptr);
+    task_exception_stack_drop(task_ptr);
+    task_exception_depth_drop(task_ptr);
 }
 
 fn token_is_cancelled(id: u64) -> bool {
@@ -7586,6 +7953,7 @@ impl MoltScheduler {
                 let header = task_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
                 let poll_fn_addr = (*header).poll_fn;
                 if poll_fn_addr != 0 {
+                    let _gil = GilGuard::new();
                     let prev_task = CURRENT_TASK.with(|cell| {
                         let prev = cell.get();
                         cell.set(task_ptr as usize);
@@ -7593,6 +7961,22 @@ impl MoltScheduler {
                     });
                     let token = ensure_task_token(task_ptr, current_token_id());
                     let prev_token = set_current_token(token);
+                    let caller_depth = exception_stack_depth();
+                    let caller_active = ACTIVE_EXCEPTION_STACK
+                        .with(|stack| std::mem::take(&mut *stack.borrow_mut()));
+                    let caller_context = caller_active
+                        .last()
+                        .copied()
+                        .unwrap_or(MoltObject::none().bits());
+                    exception_context_fallback_push(caller_context);
+                    let task_active = task_exception_stack_take(task_ptr);
+                    ACTIVE_EXCEPTION_STACK.with(|stack| {
+                        *stack.borrow_mut() = task_active;
+                    });
+                    let task_depth = task_exception_depth_take(task_ptr);
+                    exception_stack_set_depth(task_depth);
+                    let prev_raise = task_raise_active();
+                    set_task_raise_active(true);
                     loop {
                         let res = call_poll_fn(poll_fn_addr, task_ptr);
                         let pending = res == pending_bits_i64();
@@ -7608,7 +7992,19 @@ impl MoltScheduler {
                             }
                             continue;
                         }
+                        let new_depth = exception_stack_depth();
+                        task_exception_depth_store(task_ptr, new_depth);
+                        exception_context_align_depth(new_depth);
+                        let task_active = ACTIVE_EXCEPTION_STACK
+                            .with(|stack| std::mem::take(&mut *stack.borrow_mut()));
+                        task_exception_stack_store(task_ptr, task_active);
+                        ACTIVE_EXCEPTION_STACK.with(|stack| {
+                            *stack.borrow_mut() = caller_active;
+                        });
+                        exception_stack_set_depth(caller_depth);
+                        exception_context_fallback_pop();
                         clear_task_token(task_ptr);
+                        set_task_raise_active(prev_raise);
                         break;
                     }
                     set_current_token(prev_token);
@@ -7624,6 +8020,7 @@ impl MoltScheduler {
                 let header = task_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
                 let poll_fn_addr = (*header).poll_fn;
                 if poll_fn_addr != 0 {
+                    let _gil = GilGuard::new();
                     let prev_task = CURRENT_TASK.with(|cell| {
                         let prev = cell.get();
                         cell.set(task_ptr as usize);
@@ -7631,9 +8028,36 @@ impl MoltScheduler {
                     });
                     let token = ensure_task_token(task_ptr, current_token_id());
                     let prev_token = set_current_token(token);
+                    let caller_depth = exception_stack_depth();
+                    let caller_active = ACTIVE_EXCEPTION_STACK
+                        .with(|stack| std::mem::take(&mut *stack.borrow_mut()));
+                    let caller_context = caller_active
+                        .last()
+                        .copied()
+                        .unwrap_or(MoltObject::none().bits());
+                    exception_context_fallback_push(caller_context);
+                    let task_active = task_exception_stack_take(task_ptr);
+                    ACTIVE_EXCEPTION_STACK.with(|stack| {
+                        *stack.borrow_mut() = task_active;
+                    });
+                    let task_depth = task_exception_depth_take(task_ptr);
+                    exception_stack_set_depth(task_depth);
+                    let prev_raise = task_raise_active();
+                    set_task_raise_active(true);
                     let res = call_poll_fn(poll_fn_addr, task_ptr);
                     let pending = res == pending_bits_i64();
                     record_async_poll(task_ptr, pending, "scheduler");
+                    let new_depth = exception_stack_depth();
+                    task_exception_depth_store(task_ptr, new_depth);
+                    exception_context_align_depth(new_depth);
+                    let task_active = ACTIVE_EXCEPTION_STACK
+                        .with(|stack| std::mem::take(&mut *stack.borrow_mut()));
+                    task_exception_stack_store(task_ptr, task_active);
+                    ACTIVE_EXCEPTION_STACK.with(|stack| {
+                        *stack.borrow_mut() = caller_active;
+                    });
+                    exception_stack_set_depth(caller_depth);
+                    exception_context_fallback_pop();
                     if pending {
                         if !SLEEP_QUEUE.is_scheduled(task_ptr) {
                             injector.push(task);
@@ -7641,6 +8065,7 @@ impl MoltScheduler {
                     } else {
                         clear_task_token(task_ptr);
                     }
+                    set_task_raise_active(prev_raise);
                     set_current_token(prev_token);
                     CURRENT_TASK.with(|cell| cell.set(prev_task));
                 }
@@ -7680,6 +8105,7 @@ thread_local! {
     static DESCRIPTOR_CACHE_TLS: RefCell<Option<DescriptorCacheEntry>> = const { RefCell::new(None) };
     static UTF8_COUNT_TLS: RefCell<Option<Utf8CountCacheEntry>> = const { RefCell::new(None) };
     static BLOCK_ON_TASK: Cell<usize> = const { Cell::new(0) };
+    static TASK_RAISE_ACTIVE: Cell<bool> = const { Cell::new(false) };
 }
 
 /// # Safety
@@ -7843,9 +8269,28 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
     });
     let token = ensure_task_token(task_ptr, current_token_id());
     let prev_token = set_current_token(token);
+    let caller_depth = exception_stack_depth();
+    let caller_active =
+        ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
+    let caller_context = caller_active
+        .last()
+        .copied()
+        .unwrap_or(MoltObject::none().bits());
+    exception_context_fallback_push(caller_context);
+    let task_active = task_exception_stack_take(task_ptr);
+    ACTIVE_EXCEPTION_STACK.with(|stack| {
+        *stack.borrow_mut() = task_active;
+    });
+    let task_depth = task_exception_depth_take(task_ptr);
+    exception_stack_set_depth(task_depth);
     BLOCK_ON_TASK.with(|cell| cell.set(task_ptr as usize));
+    let prev_raise = task_raise_active();
+    set_task_raise_active(true);
     let result = loop {
-        let res = call_poll_fn(poll_fn_addr, task_ptr);
+        let res = {
+            let _gil = GilGuard::new();
+            call_poll_fn(poll_fn_addr, task_ptr)
+        };
         let pending = res == pending_bits_i64();
         record_async_poll(task_ptr, pending, "block_on");
         if pending {
@@ -7855,13 +8300,24 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                     std::thread::sleep(deadline - now);
                 }
             } else {
-                std::thread::yield_now();
+                std::thread::sleep(Duration::from_micros(50));
             }
             continue;
         }
         break res;
     };
+    let new_depth = exception_stack_depth();
+    task_exception_depth_store(task_ptr, new_depth);
+    exception_context_align_depth(new_depth);
+    let task_active = ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
+    task_exception_stack_store(task_ptr, task_active);
+    ACTIVE_EXCEPTION_STACK.with(|stack| {
+        *stack.borrow_mut() = caller_active;
+    });
+    exception_stack_set_depth(caller_depth);
+    exception_context_fallback_pop();
     BLOCK_ON_TASK.with(|cell| cell.set(0));
+    set_task_raise_active(prev_raise);
     set_current_token(prev_token);
     CURRENT_TASK.with(|cell| cell.set(prev_task));
     clear_task_token(task_ptr);
@@ -7883,6 +8339,7 @@ pub extern "C" fn molt_future_poll_fn(future_bits: u64) -> u64 {
         return 0;
     };
     unsafe {
+        let _gil = GilGuard::new();
         let header = header_from_obj_ptr(ptr);
         let poll_fn_addr = (*header).poll_fn;
         if poll_fn_addr == 0 {
@@ -7906,7 +8363,37 @@ pub extern "C" fn molt_future_poll_fn(future_bits: u64) -> u64 {
             raise_exception::<()>("TypeError", "object is not awaitable");
             return 0;
         }
+        if token_is_cancelled(current_token_id()) {
+            raise_exception::<()>("CancelledError", "");
+            return 0;
+        }
         poll_fn_addr
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
+    let obj = obj_from_bits(future_bits);
+    let Some(ptr) = obj.as_ptr() else {
+        raise_exception::<i64>("TypeError", "object is not awaitable");
+        return 0;
+    };
+    unsafe {
+        let header = header_from_obj_ptr(ptr);
+        let poll_fn_addr = (*header).poll_fn;
+        if poll_fn_addr == 0 {
+            raise_exception::<i64>("TypeError", "object is not awaitable");
+            return 0;
+        }
+        if token_is_cancelled(current_token_id()) {
+            return raise_exception::<i64>("CancelledError", "");
+        }
+        let res = poll_future_with_task_stack(ptr, poll_fn_addr);
+        if res != pending_bits_i64() && !task_has_token(ptr) {
+            task_exception_stack_drop(ptr);
+            task_exception_depth_drop(ptr);
+        }
+        res
     }
 }
 
@@ -8022,6 +8509,9 @@ pub unsafe extern "C" fn molt_anext_default_poll(obj_bits: u64) -> i64 {
     if _obj_ptr.is_null() {
         return MoltObject::none().bits() as i64;
     }
+    if token_is_cancelled(current_token_id()) {
+        return raise_exception::<i64>("CancelledError", "");
+    }
     let header = header_from_obj_ptr(_obj_ptr);
     let payload_bytes = (*header)
         .size
@@ -8047,7 +8537,7 @@ pub unsafe extern "C" fn molt_anext_default_poll(obj_bits: u64) -> i64 {
     if poll_fn_addr == 0 {
         return MoltObject::none().bits() as i64;
     }
-    let res = call_poll_fn(poll_fn_addr, await_ptr);
+    let res = poll_future_with_task_stack(await_ptr, poll_fn_addr);
     if res == pending_bits_i64() {
         return res;
     }
@@ -8522,8 +9012,7 @@ pub extern "C" fn molt_inplace_mul(a: u64, b: u64) -> u64 {
             let ltype = object_type_id(ptr);
             if ltype == TYPE_ID_LIST || ltype == TYPE_ID_BYTEARRAY {
                 let rhs_type = type_name(obj_from_bits(b));
-                let msg =
-                    format!("can't multiply sequence by non-int of type '{rhs_type}'");
+                let msg = format!("can't multiply sequence by non-int of type '{rhs_type}'");
                 let count = index_i64_from_obj(b, &msg);
                 if exception_pending() {
                     return MoltObject::none().bits();
@@ -12013,6 +12502,74 @@ fn collect_slice_indices(start: isize, stop: isize, step: isize) -> Vec<usize> {
         }
     }
     out
+}
+
+fn collect_iterable_values(bits: u64, err_msg: &str) -> Option<Vec<u64>> {
+    let iter_bits = molt_iter(bits);
+    if obj_from_bits(iter_bits).is_none() {
+        if exception_pending() {
+            return None;
+        }
+        raise!("TypeError", err_msg);
+    }
+    let mut out = Vec::new();
+    loop {
+        let pair_bits = molt_iter_next(iter_bits);
+        if exception_pending() {
+            return None;
+        }
+        let pair_ptr = obj_from_bits(pair_bits).as_ptr()?;
+        unsafe {
+            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                return None;
+            }
+            let elems = seq_vec_ref(pair_ptr);
+            if elems.len() < 2 {
+                return None;
+            }
+            let done_bits = elems[1];
+            if is_truthy(obj_from_bits(done_bits)) {
+                break;
+            }
+            out.push(elems[0]);
+        }
+    }
+    Some(out)
+}
+
+fn collect_bytearray_assign_bytes(bits: u64) -> Option<Vec<u8>> {
+    let obj = obj_from_bits(bits);
+    if let Some(ptr) = obj.as_ptr() {
+        unsafe {
+            let type_id = object_type_id(ptr);
+            if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
+                return Some(bytes_like_slice_raw(ptr).unwrap_or(&[]).to_vec());
+            }
+            if type_id == TYPE_ID_STRING {
+                raise!(
+                    "TypeError",
+                    "can assign only bytes, buffers, or iterables of ints in range(0, 256)"
+                );
+            }
+            if type_id == TYPE_ID_MEMORYVIEW {
+                if let Some(slice) = memoryview_bytes_slice(ptr) {
+                    return Some(slice.to_vec());
+                }
+                return memoryview_collect_bytes(ptr);
+            }
+        }
+    }
+    let iter_bits = molt_iter(bits);
+    if obj_from_bits(iter_bits).is_none() {
+        if exception_pending() {
+            return None;
+        }
+        raise!(
+            "TypeError",
+            "can assign only bytes, buffers, or iterables of ints in range(0, 256)"
+        );
+    }
+    bytes_collect_from_iter(iter_bits, BytesCtorKind::Bytearray)
 }
 
 #[no_mangle]
@@ -15827,11 +16384,9 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                         return MoltObject::from_ptr(out_ptr).bits();
                     }
                 }
-                let Some(idx) = index_i64_with_overflow(
-                    key_bits,
-                    "memoryview: invalid slice key",
-                    None,
-                ) else {
+                let Some(idx) =
+                    index_i64_with_overflow(key_bits, "memoryview: invalid slice key", None)
+                else {
                     return MoltObject::none().bits();
                 };
                 let owner_bits = memoryview_owner_bits(ptr);
@@ -15923,10 +16478,7 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     }
                 }
                 let type_err = if type_id == TYPE_ID_STRING {
-                    format!(
-                        "string indices must be integers, not '{}'",
-                        type_name(key)
-                    )
+                    format!("string indices must be integers, not '{}'", type_name(key))
                 } else if type_id == TYPE_ID_BYTES {
                     format!(
                         "byte indices must be integers or slices, not {}",
@@ -15938,11 +16490,7 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                         type_name(key)
                     )
                 };
-                let Some(idx) = index_i64_with_overflow(
-                    key_bits,
-                    &type_err,
-                    None,
-                ) else {
+                let Some(idx) = index_i64_with_overflow(key_bits, &type_err, None) else {
                     return MoltObject::none().bits();
                 };
                 if type_id == TYPE_ID_STRING {
@@ -16023,11 +16571,7 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     "list indices must be integers or slices, not {}",
                     type_name(key)
                 );
-                let Some(idx) = index_i64_with_overflow(
-                    key_bits,
-                    &type_err,
-                    None,
-                ) else {
+                let Some(idx) = index_i64_with_overflow(key_bits, &type_err, None) else {
                     return MoltObject::none().bits();
                 };
                 let len = list_len(ptr) as i64;
@@ -16082,11 +16626,7 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     "tuple indices must be integers or slices, not {}",
                     type_name(key)
                 );
-                let Some(idx) = index_i64_with_overflow(
-                    key_bits,
-                    &type_err,
-                    None,
-                ) else {
+                let Some(idx) = index_i64_with_overflow(key_bits, &type_err, None) else {
                     return MoltObject::none().bits();
                 };
                 let len = tuple_len(ptr) as i64;
@@ -16206,15 +16746,70 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
         unsafe {
             let type_id = object_type_id(ptr);
             if type_id == TYPE_ID_LIST {
+                if let Some(slice_ptr) = key.as_ptr() {
+                    if object_type_id(slice_ptr) == TYPE_ID_SLICE {
+                        let len = list_len(ptr) as isize;
+                        let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
+                        let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
+                        let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
+                        let (start, stop, step) =
+                            match normalize_slice_indices(len, start_obj, stop_obj, step_obj) {
+                                Ok(vals) => vals,
+                                Err(err) => return slice_error(err),
+                            };
+                        let new_items = match collect_iterable_values(
+                            val_bits,
+                            "must assign iterable to extended slice",
+                        ) {
+                            Some(items) => items,
+                            None => return MoltObject::none().bits(),
+                        };
+                        let elems = seq_vec(ptr);
+                        if step == 1 {
+                            let s = start as usize;
+                            let mut e = stop as usize;
+                            if s > e {
+                                e = s;
+                            }
+                            for &item in new_items.iter() {
+                                inc_ref_bits(item);
+                            }
+                            let removed: Vec<u64> =
+                                elems.splice(s..e, new_items.iter().copied()).collect();
+                            for old_bits in removed {
+                                dec_ref_bits(old_bits);
+                            }
+                            return obj_bits;
+                        }
+                        let indices = collect_slice_indices(start, stop, step);
+                        if indices.len() != new_items.len() {
+                            raise!(
+                                "ValueError",
+                                &format!(
+                                    "attempt to assign sequence of size {} to extended slice of size {}",
+                                    new_items.len(),
+                                    indices.len()
+                                ),
+                            );
+                        }
+                        for &item in new_items.iter() {
+                            inc_ref_bits(item);
+                        }
+                        for (idx, &item) in indices.iter().zip(new_items.iter()) {
+                            let old_bits = elems[*idx];
+                            if old_bits != item {
+                                dec_ref_bits(old_bits);
+                                elems[*idx] = item;
+                            }
+                        }
+                        return obj_bits;
+                    }
+                }
                 let type_err = format!(
                     "list indices must be integers or slices, not {}",
                     type_name(key)
                 );
-                let Some(idx) = index_i64_with_overflow(
-                    key_bits,
-                    &type_err,
-                    None,
-                ) else {
+                let Some(idx) = index_i64_with_overflow(key_bits, &type_err, None) else {
                     return MoltObject::none().bits();
                 };
                 let len = list_len(ptr) as i64;
@@ -16238,15 +16833,53 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                 return MoltObject::none().bits();
             }
             if type_id == TYPE_ID_BYTEARRAY {
+                if let Some(slice_ptr) = key.as_ptr() {
+                    if object_type_id(slice_ptr) == TYPE_ID_SLICE {
+                        let len = bytes_len(ptr) as isize;
+                        let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
+                        let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
+                        let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
+                        let (start, stop, step) =
+                            match normalize_slice_indices(len, start_obj, stop_obj, step_obj) {
+                                Ok(vals) => vals,
+                                Err(err) => return slice_error(err),
+                            };
+                        let src_bytes = match collect_bytearray_assign_bytes(val_bits) {
+                            Some(bytes) => bytes,
+                            None => return MoltObject::none().bits(),
+                        };
+                        let elems = bytearray_vec(ptr);
+                        if step == 1 {
+                            let s = start as usize;
+                            let mut e = stop as usize;
+                            if s > e {
+                                e = s;
+                            }
+                            elems.splice(s..e, src_bytes.iter().copied());
+                            return obj_bits;
+                        }
+                        let indices = collect_slice_indices(start, stop, step);
+                        if indices.len() != src_bytes.len() {
+                            raise!(
+                                "ValueError",
+                                &format!(
+                                    "attempt to assign bytes of size {} to extended slice of size {}",
+                                    src_bytes.len(),
+                                    indices.len()
+                                ),
+                            );
+                        }
+                        for (idx, byte) in indices.iter().zip(src_bytes.iter()) {
+                            elems[*idx] = *byte;
+                        }
+                        return obj_bits;
+                    }
+                }
                 let type_err = format!(
                     "bytearray indices must be integers or slices, not {}",
                     type_name(key)
                 );
-                let Some(idx) = index_i64_with_overflow(
-                    key_bits,
-                    &type_err,
-                    None,
-                ) else {
+                let Some(idx) = index_i64_with_overflow(key_bits, &type_err, None) else {
                     return MoltObject::none().bits();
                 };
                 let len = bytes_len(ptr) as i64;
@@ -16351,11 +16984,9 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                         return obj_bits;
                     }
                 }
-                let Some(idx) = index_i64_with_overflow(
-                    key_bits,
-                    "memoryview: invalid slice key",
-                    None,
-                ) else {
+                let Some(idx) =
+                    index_i64_with_overflow(key_bits, "memoryview: invalid slice key", None)
+                else {
                     return MoltObject::none().bits();
                 };
                 let owner_bits = memoryview_owner_bits(ptr);
@@ -16411,6 +17042,150 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                     dec_ref_bits(name_bits);
                     exception_stack_push();
                     let _ = call_callable2(call_bits, key_bits, val_bits);
+                    dec_ref_bits(call_bits);
+                    if exception_pending() {
+                        exception_stack_pop();
+                        return MoltObject::none().bits();
+                    }
+                    exception_stack_pop();
+                    return obj_bits;
+                }
+                dec_ref_bits(name_bits);
+            }
+        }
+    }
+    MoltObject::none().bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_del_index(obj_bits: u64, key_bits: u64) -> u64 {
+    let obj = obj_from_bits(obj_bits);
+    let key = obj_from_bits(key_bits);
+    if let Some(ptr) = obj.as_ptr() {
+        unsafe {
+            let type_id = object_type_id(ptr);
+            if type_id == TYPE_ID_LIST {
+                if let Some(slice_ptr) = key.as_ptr() {
+                    if object_type_id(slice_ptr) == TYPE_ID_SLICE {
+                        let len = list_len(ptr) as isize;
+                        let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
+                        let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
+                        let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
+                        let (start, stop, step) =
+                            match normalize_slice_indices(len, start_obj, stop_obj, step_obj) {
+                                Ok(vals) => vals,
+                                Err(err) => return slice_error(err),
+                            };
+                        let elems = seq_vec(ptr);
+                        if step == 1 {
+                            let s = start as usize;
+                            let mut e = stop as usize;
+                            if s > e {
+                                e = s;
+                            }
+                            let removed: Vec<u64> = elems.drain(s..e).collect();
+                            for old_bits in removed {
+                                dec_ref_bits(old_bits);
+                            }
+                            return obj_bits;
+                        }
+                        let indices = collect_slice_indices(start, stop, step);
+                        if step > 0 {
+                            for &idx in indices.iter().rev() {
+                                let old_bits = elems.remove(idx);
+                                dec_ref_bits(old_bits);
+                            }
+                        } else {
+                            for &idx in indices.iter() {
+                                let old_bits = elems.remove(idx);
+                                dec_ref_bits(old_bits);
+                            }
+                        }
+                        return obj_bits;
+                    }
+                }
+                let type_err = format!(
+                    "list indices must be integers or slices, not {}",
+                    type_name(key)
+                );
+                let Some(idx) = index_i64_with_overflow(key_bits, &type_err, None) else {
+                    return MoltObject::none().bits();
+                };
+                let len = list_len(ptr) as i64;
+                let mut i = idx;
+                if i < 0 {
+                    i += len;
+                }
+                if i < 0 || i >= len {
+                    raise!("IndexError", "list assignment index out of range");
+                }
+                let elems = seq_vec(ptr);
+                let old_bits = elems.remove(i as usize);
+                dec_ref_bits(old_bits);
+                return obj_bits;
+            }
+            if type_id == TYPE_ID_BYTEARRAY {
+                if let Some(slice_ptr) = key.as_ptr() {
+                    if object_type_id(slice_ptr) == TYPE_ID_SLICE {
+                        let len = bytes_len(ptr) as isize;
+                        let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
+                        let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
+                        let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
+                        let (start, stop, step) =
+                            match normalize_slice_indices(len, start_obj, stop_obj, step_obj) {
+                                Ok(vals) => vals,
+                                Err(err) => return slice_error(err),
+                            };
+                        let elems = bytearray_vec(ptr);
+                        if step == 1 {
+                            let s = start as usize;
+                            let mut e = stop as usize;
+                            if s > e {
+                                e = s;
+                            }
+                            elems.drain(s..e);
+                            return obj_bits;
+                        }
+                        let indices = collect_slice_indices(start, stop, step);
+                        if step > 0 {
+                            for &idx in indices.iter().rev() {
+                                elems.remove(idx);
+                            }
+                        } else {
+                            for &idx in indices.iter() {
+                                elems.remove(idx);
+                            }
+                        }
+                        return obj_bits;
+                    }
+                }
+                let type_err = format!(
+                    "bytearray indices must be integers or slices, not {}",
+                    type_name(key)
+                );
+                let Some(idx) = index_i64_with_overflow(key_bits, &type_err, None) else {
+                    return MoltObject::none().bits();
+                };
+                let len = bytes_len(ptr) as i64;
+                let mut i = idx;
+                if i < 0 {
+                    i += len;
+                }
+                if i < 0 || i >= len {
+                    raise!("IndexError", "bytearray index out of range");
+                }
+                let elems = bytearray_vec(ptr);
+                elems.remove(i as usize);
+                return obj_bits;
+            }
+            if type_id == TYPE_ID_MEMORYVIEW {
+                raise!("TypeError", "cannot delete memory");
+            }
+            if let Some(name_bits) = attr_name_bits_from_bytes(b"__delitem__") {
+                if let Some(call_bits) = attr_lookup_ptr(ptr, name_bits) {
+                    dec_ref_bits(name_bits);
+                    exception_stack_push();
+                    let _ = call_callable1(call_bits, key_bits);
                     dec_ref_bits(call_bits);
                     if exception_pending() {
                         exception_stack_pop();
