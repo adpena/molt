@@ -47,6 +47,21 @@ def _status_for_error(error: MoltAccelError) -> int:
     return 500
 
 
+def raw_json_response_factory(payload: Any, status: int) -> Any:
+    try:
+        from django.http import HttpResponse, JsonResponse  # type: ignore
+
+        if isinstance(payload, (bytes, bytearray)):
+            return HttpResponse(
+                payload,
+                status=status,
+                content_type="application/json",
+            )
+        return JsonResponse(payload, status=status, safe=isinstance(payload, dict))
+    except Exception:
+        return {"status": status, "payload": payload}
+
+
 _SHARED_CLIENT: MoltClient | None = None
 _SHARED_CLIENT_LOCK = threading.Lock()
 
@@ -107,6 +122,7 @@ def molt_offload(
     response_factory: ResponseFactory | None = None,
     allow_fallback: bool = False,
     idempotent: bool = False,
+    decode_response: bool = True,
     before_send: Hook | None = None,
     after_recv: Hook | None = None,
     metrics_hook: Hook | None = None,
@@ -137,6 +153,7 @@ def molt_offload(
                     codec=codec,
                     timeout_ms=timeout_ms,
                     idempotent=idempotent,
+                    decode_response=decode_response,
                     before_send=before_send,
                     after_recv=after_recv,
                     metrics_hook=metrics_hook,

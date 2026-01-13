@@ -22,6 +22,7 @@ Canonical current status: `docs/spec/STATUS.md`. This roadmap is forward-looking
 - Implemented: `sorted()` builtin with stable ordering + key/reverse (core ordering types).
 - Implemented: `list.sort` with key/reverse and rich-compare fallback for user-defined types.
 - Implemented: `str.lower`/`str.upper`, `list.clear`/`list.copy`/`list.reverse`, and `dict.setdefault`/`dict.update`.
+- TODO(type-coverage, owner:frontend, milestone:TC2): async comprehensions (async for/await in comprehensions).
 - TODO(type-coverage, owner:runtime, milestone:TC2): full format protocol (`__format__`, named fields, locale-aware grouping).
 - TODO(type-coverage, owner:runtime, milestone:TC2): matmul dunder hooks (`__matmul__`/`__rmatmul__`) with buffer2d fast path.
 - Partial: wasm generator state machines + closure slot intrinsics + channel send/recv intrinsics + async pending/block_on parity landed; remaining generator state object and scheduler semantics.
@@ -40,7 +41,7 @@ Canonical current status: `docs/spec/STATUS.md`. This roadmap is forward-looking
 ## Offload / IPC
 - Partial: `molt_accel` v0 scaffolding (stdio framing + client + decorator) + `molt_worker` stdio shell with demo handlers and compiled dispatch (`list_items`/`compute`/`offload_table`/`health`).
 - Implemented: compiled export loader + manifest validation (schema, reserved-name filtering, error mapping) with queue/timeout metrics.
-- TODO(offload, owner:runtime, milestone:SL1): propagate cancellation into pool waits and real DB tasks; extend compiled handlers beyond demo coverage.
+- TODO(offload, owner:runtime, milestone:SL1): propagate cancellation into real DB tasks; extend compiled handlers beyond demo coverage.
 
 ## DB
 - Partial: `molt-db` pool skeleton (bounded, sync); async drivers + Postgres protocol + cancellation-aware queries still pending.

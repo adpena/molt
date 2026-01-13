@@ -114,7 +114,7 @@
   - Implemented: exception type objects for `type()`/`__name__` via kind-based classes (base `BaseException`).
   - Implemented: `BaseException` root class + `SystemExit`/`KeyboardInterrupt`/`GeneratorExit` base selection.
   - TODO(type-coverage, owner:runtime, milestone:TC1): typed exception matching beyond kind-name classes.
-- Implemented: comparison ops (`==`, `!=`, `<`, `<=`, `>`, `>=`, `is`, `in`, chained comparisons) for numbers + str/bytes/bytearray/list/tuple; ordering for custom objects uses `__lt__`/`__le__`/`__gt__`/`__ge__` (NotImplemented semantics still pending).
+- Implemented: comparison ops (`==`, `!=`, `<`, `<=`, `>`, `>=`, `is`, `in`, chained comparisons) for numbers + str/bytes/bytearray/list/tuple; ordering for custom objects uses `__lt__`/`__le__`/`__gt__`/`__ge__` with `NotImplemented` semantics.
   - Implemented: builtin reductions (`sum`/`min`/`max`) and `len` parity.
   - Implemented: `list.sort` with key/reverse (stable).
   - Implemented: `tuple`/`dict` constructor arg-count + sequence-length error parity.
@@ -122,10 +122,12 @@
   - TODO(type-coverage, owner:runtime, milestone:TC1): expand `bytes`/`bytearray` encoding coverage (additional codecs + full error handlers).
 - **TC2 (Mid):** set/frozenset, generators/coroutines, callable objects.
   - Implemented: generator protocol (`send`/`throw`/`close`, `yield from`) + closure slot load/store intrinsics across native + wasm backends.
+  - Implemented: generator function closures capture free vars in generator frames.
 - Implemented: async state machine (`await`, `asyncio.run`/`asyncio.sleep`) with delay/result semantics and pending sentinel across native + wasm harness.
   - Implemented: `async with` lowering for `__aenter__`/`__aexit__` (single manager, simple name binding).
   - TODO(type-coverage, owner:runtime, milestone:TC2): generator state objects + StopIteration.
-  - TODO(type-coverage, owner:frontend, milestone:TC2): comprehension lowering to iterators.
+  - Implemented: comprehension lowering to iterators (list/set/dict comprehensions + generator expressions).
+  - TODO(type-coverage, owner:frontend, milestone:TC2): async comprehensions (async for/await in comprehensions).
   - TODO(type-coverage, owner:frontend, milestone:TC2): builtin iterators (`iter`, `next`, `reversed`, `zip`, `map`, `filter`).
   - Implemented (partial): builtin numeric ops (`abs`, `divmod`, `min`, `max`, `sum`) for numeric types.
   - TODO(type-coverage, owner:frontend, milestone:TC2): builtin conversions (`complex`, `str`, `bool`).

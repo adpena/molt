@@ -225,6 +225,7 @@ const TYPE_ID_FROZENSET: u32 = 232;
 const TYPE_ID_BIGINT: u32 = 233;
 const TYPE_ID_ENUMERATE: u32 = 234;
 const TYPE_ID_CALLARGS: u32 = 235;
+const TYPE_ID_NOT_IMPLEMENTED: u32 = 236;
 
 const INLINE_INT_MIN_I128: i128 = -(1_i128 << 46);
 const INLINE_INT_MAX_I128: i128 = (1_i128 << 46) - 1;
@@ -339,6 +340,7 @@ static LIST_METHOD_INDEX: OnceLock<u64> = OnceLock::new();
 static LIST_METHOD_SORT: OnceLock<u64> = OnceLock::new();
 static PROFILE_ENABLED: OnceLock<bool> = OnceLock::new();
 static MOLT_MISSING: OnceLock<u64> = OnceLock::new();
+static MOLT_NOT_IMPLEMENTED: OnceLock<u64> = OnceLock::new();
 static CALL_DISPATCH_COUNT: AtomicU64 = AtomicU64::new(0);
 static STRING_COUNT_CACHE_HIT: AtomicU64 = AtomicU64::new(0);
 static STRING_COUNT_CACHE_MISS: AtomicU64 = AtomicU64::new(0);
@@ -713,6 +715,7 @@ fn type_name(obj: MoltObject) -> &'static str {
                 TYPE_ID_SLICE => "slice",
                 TYPE_ID_MEMORYVIEW => "memoryview",
                 TYPE_ID_INTARRAY => "intarray",
+                TYPE_ID_NOT_IMPLEMENTED => "NotImplementedType",
                 TYPE_ID_EXCEPTION => "Exception",
                 TYPE_ID_DATACLASS => "dataclass",
                 TYPE_ID_BUFFER2D => "buffer2d",
@@ -3003,6 +3006,26 @@ fn missing_bits() -> u64 {
     })
 }
 
+fn not_implemented_bits() -> u64 {
+    *MOLT_NOT_IMPLEMENTED.get_or_init(|| {
+        let total_size = std::mem::size_of::<MoltHeader>();
+        let ptr = alloc_object(total_size, TYPE_ID_NOT_IMPLEMENTED);
+        if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+fn is_not_implemented_bits(bits: u64) -> bool {
+    if let Some(ptr) = maybe_ptr_from_bits(bits) {
+        unsafe { object_type_id(ptr) == TYPE_ID_NOT_IMPLEMENTED }
+    } else {
+        false
+    }
+}
+
 fn dict_method_bits(name: &str) -> Option<u64> {
     match name {
         "keys" => Some(builtin_func_bits(
@@ -3129,6 +3152,7 @@ struct BuiltinClasses {
     object: u64,
     type_obj: u64,
     none_type: u64,
+    not_implemented_type: u64,
     base_exception: u64,
     exception: u64,
     int: u64,
@@ -3169,6 +3193,7 @@ fn builtin_classes() -> &'static BuiltinClasses {
         let object = make_builtin_class("object");
         let type_obj = make_builtin_class("type");
         let none_type = make_builtin_class("NoneType");
+        let not_implemented_type = make_builtin_class("NotImplementedType");
         let base_exception = make_builtin_class("BaseException");
         let exception = make_builtin_class("Exception");
         let int = make_builtin_class("int");
@@ -3192,6 +3217,7 @@ fn builtin_classes() -> &'static BuiltinClasses {
         let _ = molt_class_set_base(object, MoltObject::none().bits());
         let _ = molt_class_set_base(type_obj, object);
         let _ = molt_class_set_base(none_type, object);
+        let _ = molt_class_set_base(not_implemented_type, object);
         let _ = molt_class_set_base(base_exception, object);
         let _ = molt_class_set_base(exception, base_exception);
         let _ = molt_class_set_base(int, object);
@@ -3216,6 +3242,7 @@ fn builtin_classes() -> &'static BuiltinClasses {
             object,
             type_obj,
             none_type,
+            not_implemented_type,
             base_exception,
             exception,
             int,
@@ -3268,6 +3295,7 @@ fn is_builtin_class_bits(bits: u64) -> bool {
     bits == builtins.object
         || bits == builtins.type_obj
         || bits == builtins.none_type
+        || bits == builtins.not_implemented_type
         || bits == builtins.base_exception
         || bits == builtins.exception
         || bits == builtins.int
@@ -3382,6 +3410,7 @@ fn type_of_bits(val_bits: u64) -> u64 {
                 TYPE_ID_RANGE => builtins.range,
                 TYPE_ID_SLICE => builtins.slice,
                 TYPE_ID_MEMORYVIEW => builtins.memoryview,
+                TYPE_ID_NOT_IMPLEMENTED => builtins.not_implemented_type,
                 TYPE_ID_EXCEPTION => exception_type_bits(exception_kind_bits(ptr)),
                 TYPE_ID_FUNCTION => builtins.function,
                 TYPE_ID_MODULE => builtins.module,
@@ -9094,13 +9123,17 @@ fn rich_compare_bool(
                     dec_ref_bits(res_bits);
                     return CompareBoolOutcome::Error;
                 }
-                let truthy = is_truthy(obj_from_bits(res_bits));
-                dec_ref_bits(res_bits);
-                return if truthy {
-                    CompareBoolOutcome::True
+                if is_not_implemented_bits(res_bits) {
+                    dec_ref_bits(res_bits);
                 } else {
-                    CompareBoolOutcome::False
-                };
+                    let truthy = is_truthy(obj_from_bits(res_bits));
+                    dec_ref_bits(res_bits);
+                    return if truthy {
+                        CompareBoolOutcome::True
+                    } else {
+                        CompareBoolOutcome::False
+                    };
+                }
             }
             if exception_pending() {
                 return CompareBoolOutcome::Error;
@@ -9114,13 +9147,17 @@ fn rich_compare_bool(
                     dec_ref_bits(res_bits);
                     return CompareBoolOutcome::Error;
                 }
-                let truthy = is_truthy(obj_from_bits(res_bits));
-                dec_ref_bits(res_bits);
-                return if truthy {
-                    CompareBoolOutcome::True
+                if is_not_implemented_bits(res_bits) {
+                    dec_ref_bits(res_bits);
                 } else {
-                    CompareBoolOutcome::False
-                };
+                    let truthy = is_truthy(obj_from_bits(res_bits));
+                    dec_ref_bits(res_bits);
+                    return if truthy {
+                        CompareBoolOutcome::True
+                    } else {
+                        CompareBoolOutcome::False
+                    };
+                }
             }
             if exception_pending() {
                 return CompareBoolOutcome::Error;
@@ -11491,6 +11528,11 @@ pub extern "C" fn molt_missing() -> u64 {
     let bits = missing_bits();
     inc_ref_bits(bits);
     bits
+}
+
+#[no_mangle]
+pub extern "C" fn molt_not_implemented() -> u64 {
+    not_implemented_bits()
 }
 
 #[no_mangle]
@@ -17703,6 +17745,9 @@ fn format_obj(obj: MoltObject) -> String {
             if type_id == TYPE_ID_SLICE {
                 return format_slice(ptr);
             }
+            if type_id == TYPE_ID_NOT_IMPLEMENTED {
+                return "NotImplemented".to_string();
+            }
             if type_id == TYPE_ID_EXCEPTION {
                 return format_exception(ptr);
             }
@@ -18412,6 +18457,9 @@ pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
     }
     let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
     let header = &mut *header_ptr;
+    if header.type_id == TYPE_ID_NOT_IMPLEMENTED {
+        return;
+    }
     if header.ref_count.fetch_sub(1, AtomicOrdering::AcqRel) == 1 {
         std::sync::atomic::fence(AtomicOrdering::Acquire);
         match header.type_id {

@@ -1,7 +1,7 @@
 {
   "abi_version": "0.1",
   "exports": [
-    {"name": "list_items", "codec_in": "msgpack", "codec_out": "msgpack"},
+    {"name": "list_items", "codec_in": "msgpack", "codec_out": "json"},
     {"name": "compute", "codec_in": "msgpack", "codec_out": "msgpack"},
     {"name": "offload_table", "codec_in": "json", "codec_out": "json"},
     {"name": "health", "codec_in": "json", "codec_out": "json"}

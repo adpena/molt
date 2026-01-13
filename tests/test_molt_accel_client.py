@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 from pathlib import Path
 
 import pytest
 
 from molt_accel.client import MoltClient
+from molt_accel.codec import decode_payload
 from molt_accel.errors import MoltCancelled, MoltInvalidInput
 
 
@@ -81,4 +83,51 @@ def test_client_cancel_check() -> None:
             timeout_ms=500,
             cancel_check=lambda: True,
         )
+    client.close()
+
+
+def test_client_decode_response_false() -> None:
+    client = MoltClient(worker_cmd=_worker_cmd(), wire="json", env=_worker_env())
+    payload = {"ok": True, "count": 3}
+    result = client.call(
+        entry="echo",
+        payload=payload,
+        codec="json",
+        timeout_ms=500,
+        decode_response=False,
+    )
+    assert isinstance(result, (bytes, bytearray))
+    assert decode_payload(result, "json") == payload
+    client.close()
+
+
+def test_client_concurrent_calls() -> None:
+    client = MoltClient(worker_cmd=_worker_cmd(), wire="json", env=_worker_env())
+    results: list[int] = []
+    errors: list[BaseException] = []
+    lock = threading.Lock()
+
+    def worker(idx: int) -> None:
+        try:
+            payload = {"id": idx}
+            response = client.call(
+                entry="echo",
+                payload=payload,
+                codec="json",
+                timeout_ms=500,
+            )
+            with lock:
+                results.append(response["id"])
+        except BaseException as exc:
+            with lock:
+                errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(idx,)) for idx in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert not errors
+    assert sorted(results) == [0, 1, 2, 3]
     client.close()

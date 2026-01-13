@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import platform
 import shutil
 import subprocess
 import time
@@ -62,6 +63,39 @@ def read_process_table() -> list[tuple[int, int, float, int, str]]:
             continue
         rows.append((pid, ppid, cpu, rss, parts[4]))
     return rows
+
+
+def run_cmd(cmd: list[str]) -> str | None:
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+    except OSError:
+        return None
+    if proc.returncode != 0:
+        return None
+    output = proc.stdout.strip()
+    if not output:
+        output = proc.stderr.strip()
+    return output or None
+
+
+def collect_machine_info() -> dict[str, Any]:
+    return {
+        "platform": platform.platform(),
+        "system": platform.system(),
+        "release": platform.release(),
+        "version": platform.version(),
+        "machine": platform.machine(),
+        "processor": platform.processor(),
+        "cpu_count": os.cpu_count(),
+    }
+
+
+def collect_tool_versions() -> dict[str, str]:
+    versions: dict[str, str] = {"python": platform.python_version()}
+    k6_version = run_cmd(["k6", "version"])
+    if k6_version:
+        versions["k6"] = k6_version
+    return versions
 
 
 def extract_proc_matchers(env: dict[str, str]) -> dict[str, dict[str, object]]:
@@ -190,6 +224,21 @@ def summarize_proc_samples(
     return summaries
 
 
+def summarize_payload_bytes(summary: dict[str, Any]) -> dict[str, float]:
+    metrics = summary.get("metrics", {})
+    reqs = metrics.get("http_reqs", {}).get("count")
+    if not isinstance(reqs, (int, float)) or reqs <= 0:
+        return {}
+    sent = metrics.get("data_sent", {}).get("count")
+    recv = metrics.get("data_received", {}).get("count")
+    payload: dict[str, float] = {}
+    if isinstance(sent, (int, float)):
+        payload["sent_per_req"] = float(sent) / float(reqs)
+    if isinstance(recv, (int, float)):
+        payload["recv_per_req"] = float(recv) / float(reqs)
+    return payload
+
+
 def tail_lines(path: Path, limit: int = 20) -> list[str]:
     try:
         with path.open("rb") as handle:
@@ -251,6 +300,9 @@ def parse_k6_summary(name: str, summary: dict[str, Any]) -> BenchResult:
         p99 = durations.get("p(99)", 0.0)
         p999 = durations.get("p(99.9)", durations.get("p(99.99)", 0.0))
     error_rate = http.get("http_req_failed", {}).get("rate", 0.0)
+    payload_bytes = summarize_payload_bytes(summary)
+    if payload_bytes:
+        summary["payload_bytes_per_req"] = payload_bytes
     return BenchResult(name, reqs, p50, p95, p99, p999, error_rate, summary)
 
 
@@ -293,9 +345,9 @@ def summarize_worker_metrics(path: Path) -> dict[str, dict[str, float]]:
             continue
         bucket = by_entry.setdefault(
             entry,
-            {"queue_ms": [], "exec_ms": [], "queue_depth": []},
+            {"queue_ms": [], "exec_ms": [], "queue_depth": [], "payload_bytes": []},
         )
-        for key in ("queue_ms", "exec_ms", "queue_depth"):
+        for key in ("queue_ms", "exec_ms", "queue_depth", "payload_bytes"):
             value = payload.get(key)
             if isinstance(value, (int, float)):
                 bucket[key].append(float(value))
@@ -305,6 +357,7 @@ def summarize_worker_metrics(path: Path) -> dict[str, dict[str, float]]:
         queue_ms = metrics["queue_ms"]
         exec_ms = metrics["exec_ms"]
         queue_depth = metrics["queue_depth"]
+        payload_bytes = metrics["payload_bytes"]
         summary[entry] = {
             "count": max(len(queue_ms), len(exec_ms)),
             "queue_ms_p50": percentile(queue_ms, 50),
@@ -312,6 +365,11 @@ def summarize_worker_metrics(path: Path) -> dict[str, dict[str, float]]:
             "exec_ms_p50": percentile(exec_ms, 50),
             "exec_ms_p95": percentile(exec_ms, 95),
             "queue_depth_max": float(max(queue_depth) if queue_depth else 0.0),
+            "payload_bytes_avg": float(sum(payload_bytes) / len(payload_bytes))
+            if payload_bytes
+            else 0.0,
+            "payload_bytes_p50": percentile(payload_bytes, 50),
+            "payload_bytes_p95": percentile(payload_bytes, 95),
         }
     return summary
 
@@ -327,10 +385,19 @@ def main() -> None:
     artifact = {
         "timestamp": timestamp,
         "git": os.popen("git rev-parse HEAD").read().strip(),
+        "machine": collect_machine_info(),
+        "tool_versions": collect_tool_versions(),
         "baseline": baseline.raw,
         "offload": offload.raw,
         "offload_table": offload_table.raw,
     }
+    fake_db = {
+        "delay_ms": env.get("MOLT_FAKE_DB_DELAY_MS"),
+        "decode_us_per_row": env.get("MOLT_FAKE_DB_DECODE_US_PER_ROW"),
+        "cpu_iters": env.get("MOLT_FAKE_DB_CPU_ITERS"),
+    }
+    if any(value for value in fake_db.values() if value is not None):
+        artifact["fake_db"] = fake_db
     process_context = {
         "server": env.get("MOLT_SERVER"),
         "server_pid": env.get("MOLT_DEMO_SERVER_PID"),
@@ -367,19 +434,38 @@ def main() -> None:
             f"p50={result.p50:.1f}ms p95={result.p95:.1f}ms, "
             f"errors={result.error_rate * 100:.2f}%"
         )
+    payload_rows = []
+    for result in results:
+        payload = result.raw.get("payload_bytes_per_req")
+        if not isinstance(payload, dict):
+            continue
+        sent = payload.get("sent_per_req")
+        recv = payload.get("recv_per_req")
+        if isinstance(sent, (int, float)) or isinstance(recv, (int, float)):
+            payload_rows.append((result.name, sent, recv))
+    if payload_rows:
+        md_lines.append("")
+        md_lines.append("## Payload bytes per request (k6)")
+        md_lines.append("| entry | sent (B) | received (B) |")
+        md_lines.append("|---|---:|---:|")
+        for entry, sent, recv in payload_rows:
+            sent_cell = f"{sent:.1f}" if isinstance(sent, (int, float)) else "-"
+            recv_cell = f"{recv:.1f}" if isinstance(recv, (int, float)) else "-"
+            md_lines.append(f"| {entry} | {sent_cell} | {recv_cell} |")
     if worker_metrics:
         md_lines.append("")
         md_lines.append("## Worker metrics (molt_accel hooks)")
         md_lines.append(
-            "| entry | count | queue_ms p50 | queue_ms p95 | exec_ms p50 | exec_ms p95 | queue_depth max |"
+            "| entry | count | queue_ms p50 | queue_ms p95 | exec_ms p50 | "
+            "exec_ms p95 | queue_depth max | payload avg |"
         )
-        md_lines.append("|---|---:|---:|---:|---:|---:|---:|")
+        md_lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
         for entry, metrics in sorted(worker_metrics.items()):
             md_lines.append(
                 f"| {entry} | {metrics['count']:.0f} | "
                 f"{metrics['queue_ms_p50']:.1f} | {metrics['queue_ms_p95']:.1f} | "
                 f"{metrics['exec_ms_p50']:.1f} | {metrics['exec_ms_p95']:.1f} | "
-                f"{metrics['queue_depth_max']:.0f} |"
+                f"{metrics['queue_depth_max']:.0f} | {metrics['payload_bytes_avg']:.1f} |"
             )
     md_lines.append("")
     md_lines.append("## Per-entry metrics")
@@ -401,7 +487,8 @@ def main() -> None:
             "## Process metrics (CPU avg/max, RSS avg/max KB, process count avg/max)"
         )
         md_lines.append(
-            "| scenario | role | cpu_avg | cpu_max | rss_avg_kb | rss_max_kb | proc_count_avg | proc_count_max | samples |"
+            "| scenario | role | cpu_avg | cpu_max | rss_avg_kb | rss_max_kb | "
+            "proc_count_avg | proc_count_max | samples |"
         )
         md_lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|")
         for scenario, metrics in proc_metrics.items():
@@ -417,7 +504,8 @@ def main() -> None:
     def fmt(result: BenchResult) -> str:
         return (
             f"{result.name}: {result.req_per_s:.1f} req/s, "
-            f"p50={result.p50:.1f}ms p95={result.p95:.1f}ms p99={result.p99:.1f}ms p999={result.p999:.1f}ms, "
+            f"p50={result.p50:.1f}ms p95={result.p95:.1f}ms "
+            f"p99={result.p99:.1f}ms p999={result.p999:.1f}ms, "
             f"errors={result.error_rate * 100:.2f}%"
         )
 

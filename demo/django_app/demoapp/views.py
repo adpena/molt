@@ -8,7 +8,7 @@ from typing import Any
 
 from django.http import JsonResponse
 
-from molt_accel import MoltAccelError, molt_offload
+from molt_accel import MoltAccelError, molt_offload, raw_json_response_factory
 
 
 _METRICS_LOCK = threading.Lock()
@@ -58,6 +58,35 @@ def _parse_limit(raw: str | None) -> int:
     return max(1, min(value, 500))
 
 
+def _env_int(name: str, default: int = 0) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(0, value)
+
+
+def _burn_cpu(iters: int, seed: int) -> None:
+    if iters <= 0:
+        return
+    acc = seed & 0xFFFFFFFF
+    for idx in range(iters):
+        acc = (acc * 1664525 + 1013904223 + idx) & 0xFFFFFFFF
+    _ = acc
+
+
+def _sleep_fake_db(rows: int) -> None:
+    delay_ms = _env_int("MOLT_FAKE_DB_DELAY_MS", 0)
+    decode_us = _env_int("MOLT_FAKE_DB_DECODE_US_PER_ROW", 0)
+    if delay_ms > 0:
+        time.sleep(delay_ms / 1000.0)
+    if decode_us > 0 and rows > 0:
+        time.sleep((decode_us * rows) / 1_000_000.0)
+
+
 def _build_items_response(
     *,
     user_id: int,
@@ -65,6 +94,7 @@ def _build_items_response(
     status: str | None,
     limit: int,
     cursor: str | None,
+    cpu_iters: int,
 ) -> dict[str, Any]:
     q_len = len(q or "")
     status_len = len(status or "")
@@ -74,6 +104,8 @@ def _build_items_response(
     open_count = 0
     closed_count = 0
     for idx in range(limit):
+        if cpu_iters > 0:
+            _burn_cpu(cpu_iters, base + idx)
         is_open = idx % 2 == 0
         status_value = "open" if is_open else "closed"
         if is_open:
@@ -114,10 +146,9 @@ def baseline_items(request: Any) -> JsonResponse:
     status = _query_param(request, "status")
     cursor = _query_param(request, "cursor")
     limit = _parse_limit(_query_param(request, "limit"))
+    cpu_iters = _env_int("MOLT_FAKE_DB_CPU_ITERS", 0)
 
-    delay_ms = int(os.environ.get("MOLT_FAKE_DB_DELAY_MS", "0") or "0")
-    if delay_ms > 0:
-        time.sleep(delay_ms / 1000.0)
+    _sleep_fake_db(limit)
 
     payload = _build_items_response(
         user_id=user_id,
@@ -125,6 +156,7 @@ def baseline_items(request: Any) -> JsonResponse:
         status=status,
         limit=limit,
         cursor=cursor,
+        cpu_iters=cpu_iters,
     )
     return JsonResponse(payload, status=200)
 
@@ -134,6 +166,8 @@ def baseline_items(request: Any) -> JsonResponse:
     codec="msgpack",
     timeout_ms=250,
     metrics_hook=_metrics_hook("list_items"),
+    decode_response=False,
+    response_factory=raw_json_response_factory,
 )
 def offload_items(request: Any) -> JsonResponse:
     try:
@@ -204,7 +238,14 @@ def _build_table_payload(request: Any) -> dict[str, Any]:
 )
 def offload_table(request: Any) -> JsonResponse:
     rows = int(_query_param(request, "rows", "10000") or "10000")
-    data = [{"id": i, "value": i % 7} for i in range(rows)]
+    cpu_iters = _env_int("MOLT_FAKE_DB_CPU_ITERS", 0)
+    _sleep_fake_db(rows)
+    burn_rows = min(rows, 5000)
+    data = []
+    for i in range(rows):
+        if cpu_iters > 0 and i < burn_rows:
+            _burn_cpu(cpu_iters, i)
+        data.append({"id": i, "value": i % 7})
     return JsonResponse({"rows": rows, "data": data[:5]}, status=200)
 
 

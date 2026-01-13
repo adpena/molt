@@ -11,6 +11,7 @@ use serde_bytes::ByteBuf;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
+use std::hint::black_box;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -18,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use molt_db::{Pool, Pooled};
+use molt_db::{AcquireError, Pool, Pooled};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WireCodec {
@@ -135,6 +136,28 @@ struct DecodedRequest {
 type CancelSet = Arc<Mutex<HashSet<u64>>>;
 
 type DbPool = Arc<Pool<FakeDbConn>>;
+
+#[derive(Clone)]
+struct WorkerContext {
+    exports: Arc<HashSet<String>>,
+    cancelled: CancelSet,
+    pool: DbPool,
+    compiled_entries: Arc<HashMap<String, CompiledEntry>>,
+    fake_delay: Duration,
+    fake_decode_us_per_row: u64,
+    fake_cpu_iters: u32,
+}
+
+struct ExecContext<'a> {
+    cancelled: &'a CancelSet,
+    request_id: u64,
+    pool: &'a DbPool,
+    timeout: Option<Duration>,
+    exec_start: Instant,
+    fake_delay: Duration,
+    fake_decode_us_per_row: u64,
+    fake_cpu_iters: u32,
+}
 
 #[derive(Debug)]
 struct ExecError {
@@ -285,12 +308,18 @@ fn encode_payload<T: Serialize>(payload: &T, codec: &str) -> Result<Vec<u8>, Str
 
 fn acquire_connection(
     pool: &DbPool,
+    cancelled: &CancelSet,
+    request_id: u64,
+    exec_start: Instant,
     timeout: Option<Duration>,
 ) -> Result<Pooled<FakeDbConn>, ExecError> {
-    pool.acquire(timeout).ok_or_else(|| ExecError {
-        status: "Busy",
-        message: "DB pool exhausted".to_string(),
-    })
+    check_timeout(exec_start, timeout)?;
+    let remaining = timeout.map(|limit| limit.saturating_sub(exec_start.elapsed()));
+    match pool.acquire_with_cancel(remaining, || is_cancelled(cancelled, request_id)) {
+        Ok(conn) => Ok(conn),
+        Err(AcquireError::Cancelled) => Err(cancelled_error()),
+        Err(AcquireError::Timeout) => Err(timeout_error()),
+    }
 }
 
 fn is_cancelled(cancelled: &CancelSet, request_id: u64) -> bool {
@@ -369,21 +398,73 @@ fn sleep_with_cancel(
     Ok(())
 }
 
-fn list_items_response(
-    request: &ListItemsRequest,
+fn burn_cpu(iterations: u32, seed: u64) {
+    if iterations == 0 {
+        return;
+    }
+    let mut acc = seed;
+    for i in 0..iterations {
+        acc = acc
+            .wrapping_mul(1664525)
+            .wrapping_add(1013904223u64.wrapping_add(i as u64));
+    }
+    black_box(acc);
+}
+
+fn sleep_decode_cost(
+    rows: usize,
+    decode_us_per_row: u64,
     cancelled: &CancelSet,
     request_id: u64,
-    pool: &DbPool,
-    timeout: Option<Duration>,
     exec_start: Instant,
-    fake_delay: Duration,
+    timeout: Option<Duration>,
+) -> Result<(), ExecError> {
+    if decode_us_per_row == 0 || rows == 0 {
+        return Ok(());
+    }
+    let micros = decode_us_per_row.saturating_mul(rows as u64);
+    if micros == 0 {
+        return Ok(());
+    }
+    sleep_with_cancel(
+        Duration::from_micros(micros),
+        cancelled,
+        request_id,
+        exec_start,
+        timeout,
+    )
+}
+
+fn list_items_response(
+    request: &ListItemsRequest,
+    ctx: &ExecContext<'_>,
 ) -> Result<ListItemsResponse, ExecError> {
-    let _conn = acquire_connection(pool, timeout)?;
-    check_timeout(exec_start, timeout)?;
-    if fake_delay.as_millis() > 0 {
-        sleep_with_cancel(fake_delay, cancelled, request_id, exec_start, timeout)?;
+    let _conn = acquire_connection(
+        ctx.pool,
+        ctx.cancelled,
+        ctx.request_id,
+        ctx.exec_start,
+        ctx.timeout,
+    )?;
+    check_timeout(ctx.exec_start, ctx.timeout)?;
+    if ctx.fake_delay.as_millis() > 0 {
+        sleep_with_cancel(
+            ctx.fake_delay,
+            ctx.cancelled,
+            ctx.request_id,
+            ctx.exec_start,
+            ctx.timeout,
+        )?;
     }
     let limit = request.limit.unwrap_or(50).min(500) as usize;
+    sleep_decode_cost(
+        limit,
+        ctx.fake_decode_us_per_row,
+        ctx.cancelled,
+        ctx.request_id,
+        ctx.exec_start,
+        ctx.timeout,
+    )?;
     let q_len = request.q.as_ref().map(|q| q.len()).unwrap_or(0) as i64;
     let status_len = request
         .status
@@ -400,8 +481,12 @@ fn list_items_response(
     let mut open = 0u32;
     let mut closed = 0u32;
     for idx in 0..limit {
-        check_cancelled(cancelled, request_id)?;
-        check_timeout(exec_start, timeout)?;
+        check_cancelled(ctx.cancelled, ctx.request_id)?;
+        check_timeout(ctx.exec_start, ctx.timeout)?;
+        if ctx.fake_cpu_iters > 0 {
+            let seed = request.user_id.unsigned_abs() + idx as u64;
+            burn_cpu(ctx.fake_cpu_iters, seed);
+        }
         let id = base + idx as i64;
         let is_open = idx % 2 == 0;
         let status = if is_open { "open" } else { "closed" };
@@ -437,16 +522,10 @@ fn list_items_response(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn dispatch_compiled(
     entry: &CompiledEntry,
     payload_bytes: &[u8],
-    request_id: u64,
-    cancelled: &CancelSet,
-    pool: &DbPool,
-    timeout: Option<Duration>,
-    exec_start: Instant,
-    fake_delay: Duration,
+    ctx: &ExecContext<'_>,
 ) -> Result<(String, Vec<u8>), ExecError> {
     match entry.name.as_str() {
         "list_items" => {
@@ -456,9 +535,7 @@ fn dispatch_compiled(
                     message: err,
                 },
             )?;
-            let response = list_items_response(
-                &req, cancelled, request_id, pool, timeout, exec_start, fake_delay,
-            )?;
+            let response = list_items_response(&req, ctx)?;
             let encoded = encode_payload(&response, &entry.codec_out).map_err(|err| ExecError {
                 status: "InternalError",
                 message: err,
@@ -478,8 +555,8 @@ fn dispatch_compiled(
             let mut sum = 0.0f64;
             for (idx, v) in req.values.iter().enumerate() {
                 if idx % 1024 == 0 {
-                    check_cancelled(cancelled, request_id)?;
-                    check_timeout(exec_start, timeout)?;
+                    check_cancelled(ctx.cancelled, ctx.request_id)?;
+                    check_timeout(ctx.exec_start, ctx.timeout)?;
                 }
                 let val = v * scale + offset;
                 sum += val;
@@ -507,9 +584,27 @@ fn dispatch_compiled(
                     status: "InvalidInput",
                     message: err,
                 })?;
-            check_cancelled(cancelled, request_id)?;
-            check_timeout(exec_start, timeout)?;
+            check_cancelled(ctx.cancelled, ctx.request_id)?;
+            check_timeout(ctx.exec_start, ctx.timeout)?;
             let rows = req.rows.min(50_000);
+            sleep_decode_cost(
+                rows,
+                ctx.fake_decode_us_per_row,
+                ctx.cancelled,
+                ctx.request_id,
+                ctx.exec_start,
+                ctx.timeout,
+            )?;
+            if ctx.fake_cpu_iters > 0 {
+                let burn_rows = rows.min(5_000);
+                for idx in 0..burn_rows {
+                    if idx % 1024 == 0 {
+                        check_cancelled(ctx.cancelled, ctx.request_id)?;
+                        check_timeout(ctx.exec_start, ctx.timeout)?;
+                    }
+                    burn_cpu(ctx.fake_cpu_iters, idx as u64);
+                }
+            }
             let mut sample = Vec::with_capacity(rows.min(8));
             for i in 0..rows.min(8) {
                 let mut row = HashMap::new();
@@ -525,7 +620,7 @@ fn dispatch_compiled(
             Ok((entry.codec_out.clone(), encoded))
         }
         "health" => {
-            check_cancelled(cancelled, request_id)?;
+            check_cancelled(ctx.cancelled, ctx.request_id)?;
             let response = HealthResponse { ok: true };
             let encoded = encode_payload(&response, &entry.codec_out).map_err(|err| ExecError {
                 status: "InternalError",
@@ -540,16 +635,11 @@ fn dispatch_compiled(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn execute_entry(
     envelope: &RequestEnvelope,
-    cancelled: &CancelSet,
-    pool: &DbPool,
-    timeout: Option<Duration>,
-    exec_start: Instant,
+    ctx: &ExecContext<'_>,
     exports: &HashSet<String>,
     compiled_entries: &HashMap<String, CompiledEntry>,
-    fake_delay: Duration,
 ) -> Result<(String, Vec<u8>), ExecError> {
     let payload_bytes = extract_payload(envelope).map_err(|err| ExecError {
         status: "InvalidInput",
@@ -564,15 +654,7 @@ fn execute_entry(
                     message: err,
                 },
             )?;
-            let response = list_items_response(
-                &req,
-                cancelled,
-                envelope.request_id,
-                pool,
-                timeout,
-                exec_start,
-                fake_delay,
-            )?;
+            let response = list_items_response(&req, ctx)?;
             let codec = envelope.codec.as_str();
             let encoded = encode_payload(&response, codec).map_err(|err| ExecError {
                 status: "InternalError",
@@ -582,16 +664,7 @@ fn execute_entry(
         }
         _ => {
             if let Some(entry) = compiled_entries.get(&envelope.entry) {
-                return dispatch_compiled(
-                    entry,
-                    &payload_bytes,
-                    envelope.request_id,
-                    cancelled,
-                    pool,
-                    timeout,
-                    exec_start,
-                    fake_delay,
-                );
+                return dispatch_compiled(entry, &payload_bytes, ctx);
             }
             if exports.contains(&envelope.entry) {
                 return Err(ExecError {
@@ -613,11 +686,7 @@ fn execute_entry(
 fn handle_request(
     request: DecodedRequest,
     queue_depth: usize,
-    exports: &HashSet<String>,
-    cancelled: &CancelSet,
-    pool: &DbPool,
-    compiled_entries: &HashMap<String, CompiledEntry>,
-    fake_delay: Duration,
+    ctx: &WorkerContext,
 ) -> (WireCodec, ResponseEnvelope) {
     let wire = request.wire;
     let envelope = request.envelope;
@@ -630,13 +699,13 @@ fn handle_request(
     let mut metrics = HashMap::new();
     metrics.insert("queue_ms".to_string(), queue_ms);
     metrics.insert("queue_depth".to_string(), queue_depth as u64);
-    metrics.insert("pool_in_flight".to_string(), pool.in_flight() as u64);
-    metrics.insert("pool_idle".to_string(), pool.idle_count() as u64);
+    metrics.insert("pool_in_flight".to_string(), ctx.pool.in_flight() as u64);
+    metrics.insert("pool_idle".to_string(), ctx.pool.idle_count() as u64);
     metrics.insert(
         "payload_bytes".to_string(),
         envelope.payload.as_ref().map(|p| p.len()).unwrap_or(0) as u64,
     );
-    if is_cancelled(cancelled, request_id) {
+    if is_cancelled(&ctx.cancelled, request_id) {
         return (
             wire,
             ResponseEnvelope {
@@ -651,7 +720,7 @@ fn handle_request(
             },
         );
     }
-    if !envelope.entry.starts_with("__") && !exports.contains(&envelope.entry) {
+    if !envelope.entry.starts_with("__") && !ctx.exports.contains(&envelope.entry) {
         return (
             wire,
             ResponseEnvelope {
@@ -673,16 +742,22 @@ fn handle_request(
         Some(Duration::from_millis(envelope.timeout_ms as u64))
     };
     let entry_name = envelope.entry.clone();
-    let compiled_flag = compiled_entries.contains_key(&entry_name) as u64;
-    let result = execute_entry(
-        &envelope,
-        cancelled,
-        pool,
+    let compiled_flag = ctx.compiled_entries.contains_key(&entry_name) as u64;
+    let exec_ctx = ExecContext {
+        cancelled: &ctx.cancelled,
+        request_id,
+        pool: &ctx.pool,
         timeout,
         exec_start,
-        exports,
-        compiled_entries,
-        fake_delay,
+        fake_delay: ctx.fake_delay,
+        fake_decode_us_per_row: ctx.fake_decode_us_per_row,
+        fake_cpu_iters: ctx.fake_cpu_iters,
+    };
+    let result = execute_entry(
+        &envelope,
+        &exec_ctx,
+        &ctx.exports,
+        &ctx.compiled_entries,
     );
     let exec_ms = exec_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     metrics.insert("exec_ms".to_string(), exec_ms);
@@ -698,7 +773,7 @@ fn handle_request(
                     metrics: Some(metrics),
                     error: Some("Request timed out".to_string()),
                     entry: Some(envelope.entry.clone()),
-                    compiled: Some(compiled_entries.contains_key(&envelope.entry) as u64),
+                    compiled: Some(compiled_flag),
                 },
             );
         }
@@ -782,6 +857,14 @@ fn main() -> io::Result<()> {
         .ok()
         .and_then(|val| val.parse::<u64>().ok())
         .unwrap_or(0);
+    let fake_cpu_iters = env::var("MOLT_FAKE_DB_CPU_ITERS")
+        .ok()
+        .and_then(|val| val.parse::<u32>().ok())
+        .unwrap_or(0);
+    let fake_decode_us_per_row = env::var("MOLT_FAKE_DB_DECODE_US_PER_ROW")
+        .ok()
+        .and_then(|val| val.parse::<u64>().ok())
+        .unwrap_or(0);
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -841,26 +924,21 @@ fn main() -> io::Result<()> {
         }
     });
     let fake_delay = Duration::from_millis(fake_delay_ms);
+    let worker_ctx = WorkerContext {
+        exports: exports.clone(),
+        cancelled: cancelled.clone(),
+        pool: pool.clone(),
+        compiled_entries: compiled_entries.clone(),
+        fake_delay,
+        fake_decode_us_per_row,
+        fake_cpu_iters,
+    };
 
     for _ in 0..thread_count {
         let request_rx = request_rx.clone();
         let response_tx = response_tx.clone();
-        let exports = exports.clone();
-        let cancelled = cancelled.clone();
-        let pool = pool.clone();
-        let compiled_entries = compiled_entries.clone();
-        let delay = fake_delay;
-        thread::spawn(move || {
-            worker_loop(
-                request_rx,
-                response_tx,
-                exports,
-                cancelled,
-                pool,
-                compiled_entries,
-                delay,
-            )
-        });
+        let ctx = worker_ctx.clone();
+        thread::spawn(move || worker_loop(request_rx, response_tx, ctx));
     }
 
     let writer = thread::spawn(move || write_loop(response_rx));
@@ -932,24 +1010,12 @@ fn main() -> io::Result<()> {
 fn worker_loop(
     request_rx: Receiver<DecodedRequest>,
     response_tx: Sender<(WireCodec, ResponseEnvelope)>,
-    exports: Arc<HashSet<String>>,
-    cancelled: CancelSet,
-    pool: DbPool,
-    compiled_entries: Arc<HashMap<String, CompiledEntry>>,
-    fake_delay: Duration,
+    ctx: WorkerContext,
 ) {
-    // TODO(offload, owner:runtime, milestone:SL1): propagate cancellation into pool waits and real DB tasks.
+    // TODO(offload, owner:runtime, milestone:SL1): propagate cancellation into real DB tasks.
     while let Ok(request) = request_rx.recv() {
         let queue_depth = request_rx.len();
-        let response = handle_request(
-            request,
-            queue_depth,
-            &exports,
-            &cancelled,
-            &pool,
-            &compiled_entries,
-            fake_delay,
-        );
+        let response = handle_request(request, queue_depth, &ctx);
         let _ = response_tx.send(response);
     }
 }
@@ -976,7 +1042,7 @@ fn write_loop(response_rx: Receiver<(WireCodec, ResponseEnvelope)>) {
 mod tests {
     use super::{
         dispatch_compiled, load_compiled_entries, load_exports, mark_cancelled, CancelSet,
-        CompiledEntry, DbPool, ListItemsRequest, ListItemsResponse, Pool,
+        CompiledEntry, DbPool, ExecContext, ListItemsRequest, ListItemsResponse, Pool,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -995,6 +1061,23 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("time");
         now.as_nanos() as u64
+    }
+
+    fn exec_ctx<'a>(
+        cancelled: &'a CancelSet,
+        pool: &'a DbPool,
+        request_id: u64,
+    ) -> ExecContext<'a> {
+        ExecContext {
+            cancelled,
+            request_id,
+            pool,
+            timeout: None,
+            exec_start: Instant::now(),
+            fake_delay: Duration::from_millis(0),
+            fake_decode_us_per_row: 0,
+            fake_cpu_iters: 0,
+        }
     }
 
     #[test]
@@ -1027,17 +1110,8 @@ mod tests {
             cursor: None,
         };
         let payload = super::encode_payload(&req, "msgpack").expect("encode");
-        let result = dispatch_compiled(
-            &entry,
-            &payload,
-            7,
-            &cancel,
-            &pool,
-            None,
-            Instant::now(),
-            Duration::from_millis(0),
-        )
-        .expect("compiled dispatch");
+        let ctx = exec_ctx(&cancel, &pool, 7);
+        let result = dispatch_compiled(&entry, &payload, &ctx).expect("compiled dispatch");
         assert_eq!(result.0, "msgpack");
         let decoded: ListItemsResponse =
             super::decode_payload(&result.1, "msgpack").expect("decode");
@@ -1063,16 +1137,8 @@ mod tests {
             cursor: None,
         };
         let payload = super::encode_payload(&req, "msgpack").expect("encode");
-        let result = dispatch_compiled(
-            &entry,
-            &payload,
-            42,
-            &cancel,
-            &pool,
-            None,
-            Instant::now(),
-            Duration::from_millis(0),
-        );
+        let ctx = exec_ctx(&cancel, &pool, 42);
+        let result = dispatch_compiled(&entry, &payload, &ctx);
         assert!(result.is_err());
         assert_eq!(result.err().unwrap().status, "Cancelled");
     }
@@ -1096,17 +1162,8 @@ mod tests {
             cursor: None,
         };
         let payload = super::encode_payload(&req, "msgpack").expect("encode");
-        let result = dispatch_compiled(
-            entry,
-            &payload,
-            3,
-            &cancel,
-            &pool,
-            None,
-            Instant::now(),
-            Duration::from_millis(0),
-        )
-        .expect("dispatch");
+        let ctx = exec_ctx(&cancel, &pool, 3);
+        let result = dispatch_compiled(entry, &payload, &ctx).expect("dispatch");
         assert_eq!(result.0, "msgpack");
         let decoded: ListItemsResponse =
             super::decode_payload(&result.1, "msgpack").expect("decode");
@@ -1134,16 +1191,8 @@ mod tests {
             "msgpack",
         )
         .expect("encode");
-        let result = dispatch_compiled(
-            entry,
-            &payload,
-            1,
-            &cancel,
-            &pool,
-            None,
-            Instant::now(),
-            Duration::from_millis(0),
-        );
+        let ctx = exec_ctx(&cancel, &pool, 1);
+        let result = dispatch_compiled(entry, &payload, &ctx);
         assert!(result.is_err());
         assert_eq!(result.err().unwrap().status, "InternalError");
     }

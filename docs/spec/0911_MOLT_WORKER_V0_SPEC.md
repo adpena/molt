@@ -4,7 +4,7 @@
 **Priority:** P0
 **Audience:** runtime engineers, AI coding agents
 **Goal:** Define the minimal worker that can execute exported entrypoints safely and predictably.
-**Implementation status:** Initial Rust stdio shell exists in `runtime/molt-worker` with framing, export allowlist, and deterministic demo entrypoints (`list_items`, `compute`, `offload_table`, `health`). Cancellation and timeout checks are enforced in the fake DB path and compiled dispatch loops, with queue/pool metrics emitted per request; compiled entrypoints are now routed via the manifest with `codec_in`/`codec_out` validation.
+**Implementation status:** Initial Rust stdio shell exists in `runtime/molt-worker` with framing, export allowlist, and deterministic demo entrypoints (`list_items`, `compute`, `offload_table`, `health`). Cancellation and timeout checks are enforced in the fake DB path, compiled dispatch loops, and pool waits, with queue/pool metrics emitted per request; compiled entrypoints are now routed via the manifest with `codec_in`/`codec_out` validation.
 
 ---
 
@@ -71,7 +71,7 @@ Entrypoints are invoked by name with a payload.
   - drop/rollback resources
 - Do not leak memory, tasks, or DB connections
 
-**Implementation note:** current worker accepts `__cancel__` requests carrying a `request_id` payload; cancellation is best-effort for pool waits, but compiled entrypoints and the fake DB handler now observe cancel/timeout checks during execution.
+**Implementation note:** current worker accepts `__cancel__` requests carrying a `request_id` payload; cancellation is honored during pool waits and execution (fake DB + compiled entrypoints). Real DB tasks still need cancel propagation.
 
 ---
 

@@ -13,6 +13,7 @@ from molt_accel.framing import read_frame, write_frame
 
 
 WIRE = os.environ.get("MOLT_WIRE") or None
+LIST_ITEMS_CODEC_OUT = os.environ.get("MOLT_STUB_LIST_ITEMS_CODEC_OUT")
 
 
 def main() -> None:
@@ -47,7 +48,8 @@ def main() -> None:
                     "counts": {"open": 0, "closed": 0},
                     "request": req,
                 }
-                response_payload = encode_payload(response, codec)
+                response_codec = LIST_ITEMS_CODEC_OUT or codec
+                response_payload = encode_payload(response, response_codec)
             except Exception as exc:  # pragma: no cover - defensive
                 status = "InvalidInput"
                 error = str(exc)

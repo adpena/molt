@@ -66,6 +66,7 @@ __all__ = [
     "hasattr",
     "super",
     "print",
+    "NotImplemented",
 ]
 
 object = object
@@ -119,6 +120,7 @@ delattr = delattr
 hasattr = hasattr
 super = super
 print = print
+NotImplemented = NotImplemented
 
 try:
     _molt_getrecursionlimit = _molt_getrecursionlimit

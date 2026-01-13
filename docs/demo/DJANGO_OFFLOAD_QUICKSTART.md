@@ -30,6 +30,9 @@ python3 bench/scripts/run_stack.sh
 ```
 Artifacts land in `bench/results/` (k6 JSON + markdown summary).
 Worker metrics land in `/tmp/molt_demo_metrics.jsonl` unless `MOLT_DEMO_METRICS_PATH` is set.
+Set `MOLT_FAKE_DB_DELAY_MS` to simulate base DB latency,
+`MOLT_FAKE_DB_DECODE_US_PER_ROW` to simulate per-row decode cost, and
+`MOLT_FAKE_DB_CPU_ITERS` to simulate per-row CPU work.
 Process CPU/RSS summaries are captured by sampling the process table; the bench
 runner uses `MOLT_DEMO_SERVER_PID`/`MOLT_DEMO_WORKER_PID` when available,
 prefers listen-PIDs from `MOLT_SERVER_PORT` when `lsof` is present, and falls

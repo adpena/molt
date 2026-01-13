@@ -36,6 +36,19 @@ def kwonly():
 print(kwonly())
 
 
+def posonly():
+    fn = lambda x, /, y: (x, y)  # noqa: E731
+    return fn(1, 2)
+
+
+print(posonly())
+
+try:
+    (lambda x, /, y: (x, y))(x=1, y=2)  # noqa: E731
+except TypeError as exc:
+    print(type(exc).__name__)
+
+
 def nested_lambda():
     return (lambda x: (lambda y: x + y))(2)(3)
 

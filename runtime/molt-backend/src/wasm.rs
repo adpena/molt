@@ -329,6 +329,7 @@ impl WasmBackend {
         add_import("function_closure_bits", 2, &mut self.import_ids);
         add_import("call_arity_error", 3, &mut self.import_ids);
         add_import("missing", 0, &mut self.import_ids);
+        add_import("not_implemented", 0, &mut self.import_ids);
         add_import("json_parse_scalar", 4, &mut self.import_ids);
         add_import("msgpack_parse_scalar", 4, &mut self.import_ids);
         add_import("cbor_parse_scalar", 4, &mut self.import_ids);
@@ -947,6 +948,11 @@ impl WasmBackend {
                     }
                     "const_none" => {
                         func.instruction(&Instruction::I64Const(box_none()));
+                        let local_idx = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(local_idx));
+                    }
+                    "const_not_implemented" => {
+                        emit_call(func, reloc_enabled, import_ids["not_implemented"]);
                         let local_idx = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(local_idx));
                     }
@@ -3744,6 +3750,14 @@ impl WasmBackend {
                     "missing" => {
                         let out = locals[op.out.as_ref().unwrap()];
                         emit_call(func, reloc_enabled, import_ids["missing"]);
+                        func.instruction(&Instruction::LocalSet(out));
+                    }
+                    "function_closure_bits" => {
+                        let args = op.args.as_ref().unwrap();
+                        let func_bits = locals[&args[0]];
+                        let out = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalGet(func_bits));
+                        emit_call(func, reloc_enabled, import_ids["function_closure_bits"]);
                         func.instruction(&Instruction::LocalSet(out));
                     }
                     "bound_method_new" => {

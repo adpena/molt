@@ -127,3 +127,18 @@ benchmarks here to avoid collisions during parallel work.
   perf summary and STATUS limitations. Ran `tools/dev.py test`, `tools/dev.py lint`,
   `cargo test`, `cargo clippy -- -D warnings`, `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json`,
   and `uv run --python 3.14 python3 tools/bench_wasm.py --json-out bench/results/bench_wasm.json`.
+- 2026-01-13T05:37:58Z codex (git 519c2e510db7126ccb92c3205a1f5f90845c05eb; dirty):
+  ran uvicorn per_request steady-state sweep (K6_STEADY=60s).
+  - K6_TARGET=50: baseline=2094.8 req/s p99=39.5ms p999=43.9ms; offload=1574.0 req/s p99=48.4ms p999=52.2ms;
+    offload_table=1760.8 req/s p99=45.3ms p999=48.2ms. Artifact: `bench/results/demo_k6_20260113T052829.json`.
+  - K6_TARGET=100: baseline=1972.6 req/s p99=72.7ms p999=90.7ms; offload=1616.1 req/s p99=88.3ms p999=95.0ms;
+    offload_table=1832.9 req/s p99=79.3ms p999=83.9ms. Artifact: `bench/results/demo_k6_20260113T053233.json`.
+  - K6_TARGET=200: baseline=2001.1 req/s p99=119.6ms p999=122.9ms; offload=1569.6 req/s p99=154.0ms p999=183.5ms;
+    offload_table=1752.3 req/s p99=138.8ms p999=144.0ms. Artifact: `bench/results/demo_k6_20260113T053637.json`.
+- 2026-01-13T06:02:44Z codex (git 519c2e510db7126ccb92c3205a1f5f90845c05eb; dirty): generated sweep summary  comparing gunicorn shared vs uvicorn per_request K6_TARGET=50/100/200 (K6_STEADY=60s). No doc updates needed; no tests run.
+- 2026-01-13T06:03:01Z codex (git 519c2e510db7126ccb92c3205a1f5f90845c05eb; dirty): generated sweep summary `bench/results/demo_k6_sweep_20260113.md` comparing gunicorn shared vs uvicorn per_request K6_TARGET=50/100/200 (K6_STEADY=60s). No doc updates needed; no tests run.
+- 2026-01-13T06:07:42Z codex: starting proceed workflow for Django accel/offload demos; will inspect demo/molt_accel/molt-worker/bench scaffolding and update plan/spec/docs/tests as needed.
+- 2026-01-13T06:21:31Z codex: added cancel-aware DB pool acquisition and worker integration, fake DB decode-cost env var parity in Django baseline, enriched demo bench metadata/payload bytes, updated specs/roadmap/quickstart. Tests: not run.
+- 2026-01-13T06:27:27Z codex: ran tests/bench after Django offload updates. Tests: cargo test -p molt-db; cargo test -p molt-worker; uv run --python 3.12 python3 -m pytest tests/test_django_demo.py. Bench: bench/scripts/run_stack.sh (baseline=2042.6 req/s, offload=1532.1 req/s, offload_table=1808.6 req/s, errors 0%). Artifacts: bench/results/demo_k6_20260113T062712.json, bench/results/demo_k6_20260113T062712.md.
+- 2026-01-13T06:36:13Z codex: starting optimization+functionality push for molt_accel/molt_offload concurrency and throughput; will focus on src/molt_accel, demo bench, and relevant specs.
+- 2026-01-13T07:01:54Z codex (git 519c2e510db7126ccb92c3205a1f5f90845c05eb; dirty): fixed generator resume SSA by reloading index in async index loops, added lambda positional-only differential coverage, refactored molt-worker request handling to reduce arg counts + clippy, tightened molt_not_implemented return, and removed unused exception binding in molt_accel client. Tests: `tools/dev.py lint`, `tools/dev.py test`, `cargo test`, `cargo clippy -- -D warnings`. Bench: `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json`, `uv run --python 3.14 python3 tools/bench_wasm.py --json-out bench/results/bench_wasm.json`.

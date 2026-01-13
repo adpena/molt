@@ -81,6 +81,7 @@ interface intrinsics {
     callargs_expand_kwstar: func(builder: u64, mapping: molt-object) -> molt-object;
     call_bind: func(callable: molt-object, builder: u64) -> molt-object;
     missing: func() -> molt-object;
+    not_implemented: func() -> molt-object;
 
     json_parse_scalar: func(ptr: molt-ptr, len: u64, out: molt-ptr) -> s32;
     msgpack_parse_scalar: func(ptr: molt-ptr, len: u64, out: molt-ptr) -> s32;

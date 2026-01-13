@@ -178,6 +178,13 @@ const missingSentinel = () => {
   }
   return missingBits;
 };
+let notImplementedBits = null;
+const notImplementedSentinel = () => {
+  if (notImplementedBits === null) {
+    notImplementedBits = boxPtr({ type: 'not_implemented' });
+  }
+  return notImplementedBits;
+};
 let anextDefaultPollIdx = null;
 const normalizePtrBits = (val) => {
   if (val === 0n) return val;
@@ -4163,6 +4170,7 @@ BASE_IMPORTS = """\
   ws_recv: () => 0n,
   ws_close: () => {},
   missing: () => missingSentinel(),
+  not_implemented: () => notImplementedSentinel(),
   repr_builtin: (val) => baseImports.repr_from_obj(val),
   callable_builtin: (val) => baseImports.is_callable(val),
   round_builtin: (val, ndigitsBits) => {

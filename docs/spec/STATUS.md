@@ -46,8 +46,8 @@ README/ROADMAP in sync.
 - Lambda expressions lower to function objects with closures, defaults, and varargs/kw-only args.
 - Indexing honors user-defined `__getitem__`/`__setitem__` when builtin paths do not apply.
 - CPython shim: minimal ASGI adapter for http/lifespan via `molt.asgi.asgi_adapter`.
-- `molt_accel` client/decorator expose before/after hooks, metrics callbacks, and cancel-checks; wire selection honors `MOLT_WORKER_WIRE`/`MOLT_WIRE`.
-- `molt_worker` enforces cancellation/timeout checks in the fake DB path and compiled dispatch loops, validates export manifests, and reports queue/pool metrics per request.
+- `molt_accel` client/decorator expose before/after hooks, metrics callbacks, cancel-checks, concurrent in-flight requests in the shared client, and raw-response pass-through; timeouts schedule a worker restart after in-flight requests drain; wire selection honors `MOLT_WORKER_WIRE`/`MOLT_WIRE`.
+- `molt_worker` enforces cancellation/timeout checks in the fake DB path, compiled dispatch loops, and pool waits; validates export manifests; reports queue/pool metrics per request; fake DB decode cost can be simulated via `MOLT_FAKE_DB_DECODE_US_PER_ROW` and CPU work via `MOLT_FAKE_DB_CPU_ITERS`.
 - WASM harness runs via `run_wasm.js` with shared memory/table and direct runtime imports (legacy wrapper fallback via `MOLT_WASM_LEGACY=1`), including async/channel benches on WASI.
 - Instance `__getattr__`/`__setattr__` hooks for user-defined classes.
 - Instance `__getattribute__` hooks for user-defined classes.
@@ -71,8 +71,8 @@ README/ROADMAP in sync.
 - Call binding: allowlisted stdlib modules now permit dynamic calls (keyword/variadic via `CALL_BIND`);
   direct-call fast paths still require allowlisted functions and positional-only calls. Non-allowlisted imports
   remain blocked unless the bridge policy is enabled.
-- Closures for generator functions and generator decorators are still pending.
-- Comprehensions: list/set/dict comprehensions and generator expressions are not supported yet.
+- Generator decorators are still pending.
+- Comprehensions: list/set/dict comprehensions and generator expressions are supported; async comprehensions are still pending.
 - Exceptions: `try/except/else/finally` + `raise`/reraise; `__traceback__` lacks full
   traceback objects/line info and exception args remain message-only (see type coverage matrix).
 - Imports: static module graph only; no dynamic import hooks or full package
@@ -91,7 +91,6 @@ README/ROADMAP in sync.
   buffer exports).
 - Cancellation: cooperative checks only; automatic cancellation injection into
   awaits and I/O still pending.
-- Ordering: rich comparisons do not model `NotImplemented` semantics yet (truthiness is used).
 - collections: shim `Counter`/`defaultdict` are wrapper implementations (not dict subclasses); `defaultdict`
   default_factory is only fast-pathed for `list`.
 

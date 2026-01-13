@@ -41,16 +41,17 @@ A single script (bash or python) should:
 Store:
 - git commit hash
 - timestamp
-- machine info (best-effort)
-- tool versions
+- machine info (best-effort; platform/system/CPU count)
+- tool versions (python, k6)
 - for each scenario:
   - req/s
   - p50/p95/p99/p999
   - error rate
-  - payload size
-- worker metrics summary (queue depth, avg queue time)
+  - payload bytes per request (sent/received)
+- worker metrics summary (queue depth, queue/exec time, payload bytes when available)
 - process metrics (server/worker CPU avg/max, RSS avg/max KB, proc count, samples)
 - process context (server mode and worker/server PIDs used for sampling)
+- fake DB config when set (delay_ms, decode_us_per_row, cpu_iters)
 
 ---
 

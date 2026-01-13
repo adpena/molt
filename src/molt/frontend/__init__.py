@@ -405,6 +405,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.const_ints: dict[str, int] = {}
         self.in_generator = False
         self.lambda_counter = 0
+        self.genexpr_counter = 0
         self.qualname_stack: list[tuple[str, bool]] = []
         self.current_class: str | None = None
         self.current_method_first_param: str | None = None
@@ -782,6 +783,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.lambda_counter += 1
             symbol = f"{self.module_prefix}lambda_{self.lambda_counter}"
         self.func_symbol_names[symbol] = "<lambda>"
+        return symbol
+
+    def _genexpr_symbol(self) -> str:
+        self.genexpr_counter += 1
+        symbol = f"{self.module_prefix}genexpr_{self.genexpr_counter}"
+        while symbol in self.funcs_map:
+            self.genexpr_counter += 1
+            symbol = f"{self.module_prefix}genexpr_{self.genexpr_counter}"
+        self.func_symbol_names[symbol] = "<genexpr>"
         return symbol
 
     def _qualname_prefix(self) -> str:
@@ -2365,6 +2375,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 res = MoltValue(self.next_var(), type_hint="Any")
                 self.emit(MoltOp(kind="MISSING", args=[], result=res))
                 return res
+            if node.id == "NotImplemented":
+                res = MoltValue(self.next_var(), type_hint="Any")
+                self.emit(MoltOp(kind="CONST_NOT_IMPLEMENTED", args=[], result=res))
+                return res
             if node.id == "__name__":
                 module_name = (
                     "__main__"
@@ -2560,6 +2574,50 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return
 
         Collector().visit(node.body)
+        candidates = {name for name in used if name not in local_names}
+        outer_scope = set(self.locals) | set(self.boxed_locals)
+        return sorted(name for name in candidates if name in outer_scope)
+
+    def _collect_free_vars_comprehension(
+        self, node: ast.GeneratorExp | ast.ListComp | ast.SetComp | ast.DictComp
+    ) -> list[str]:
+        target_names: set[str] = set()
+        exprs: list[ast.expr] = []
+        for comp in node.generators:
+            target_names.update(self._collect_target_names(comp.target))
+            exprs.append(comp.iter)
+            exprs.extend(comp.ifs)
+        if isinstance(node, ast.DictComp):
+            exprs.append(node.key)
+            exprs.append(node.value)
+        else:
+            exprs.append(node.elt)
+        assigned = self._collect_assigned_names(
+            [ast.Expr(value=expr) for expr in exprs]
+        )
+        local_names = target_names | assigned
+        used: set[str] = set()
+
+        class Collector(ast.NodeVisitor):
+            def visit_Name(self, node: ast.Name) -> Any:
+                if isinstance(node.ctx, ast.Load):
+                    used.add(node.id)
+
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                return
+
+            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+                return
+
+            def visit_ClassDef(self, node: ast.ClassDef) -> None:
+                return
+
+            def visit_Lambda(self, node: ast.Lambda) -> None:
+                return
+
+        collector = Collector()
+        for expr in exprs:
+            collector.visit(expr)
         candidates = {name for name in used if name not in local_names}
         outer_scope = set(self.locals) | set(self.boxed_locals)
         return sorted(name for name in candidates if name in outer_scope)
@@ -2764,7 +2822,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         hint = source_info.type_hint
         if not isinstance(hint, str):
             return
-        if hint.startswith(("AsyncFunc:", "AsyncClosureFunc:", "GenFunc:")):
+        if hint.startswith(
+            ("AsyncFunc:", "AsyncClosureFunc:", "GenFunc:", "GenClosureFunc:")
+        ):
             symbol = hint.split(":")[1]
             base_symbol = (
                 symbol[: -len("_poll")] if symbol.endswith("_poll") else symbol
@@ -3562,10 +3622,18 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="INDEX", args=[seq_val, idx], result=item))
             self._emit_assign_target(target, item, None)
             self._visit_loop_body(node.body, guard_map)
+            idx_after = MoltValue(self.next_var(), type_hint="int")
+            self.emit(
+                MoltOp(
+                    kind="LOAD_CLOSURE",
+                    args=["self", idx_slot],
+                    result=idx_after,
+                )
+            )
             one = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="CONST", args=[1], result=one))
             next_idx = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="ADD", args=[idx, one], result=next_idx))
+            self.emit(MoltOp(kind="ADD", args=[idx_after, one], result=next_idx))
             self.emit(
                 MoltOp(
                     kind="STORE_CLOSURE",
@@ -5022,41 +5090,156 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             raise NotImplementedError("Unsupported f-string segment")
         return self._emit_string_join(parts)
 
+    def _build_comprehension_body(
+        self,
+        generators: list[ast.comprehension],
+        inner: list[ast.stmt],
+    ) -> list[ast.stmt]:
+        body = inner
+        for comp in reversed(generators):
+            if comp.is_async:
+                raise NotImplementedError("async comprehensions are not supported")
+            for test in reversed(comp.ifs):
+                body = [ast.If(test=test, body=body, orelse=[])]
+            body = [ast.For(target=comp.target, iter=comp.iter, body=body, orelse=[])]
+        return body
+
     def visit_ListComp(self, node: ast.ListComp) -> Any:
-        raise self.compat.unsupported(
-            node,
-            "list comprehensions are not supported yet",
-            impact="medium",
-            alternative="use a for-loop and list.append",
-            detail="comprehension lowering is not implemented",
-        )
+        genexp = ast.GeneratorExp(elt=node.elt, generators=node.generators)
+        gen_val = self.visit(genexp)
+        if gen_val is None:
+            raise NotImplementedError("Unsupported list comprehension")
+        return self._emit_list_from_iter(gen_val)
 
     def visit_SetComp(self, node: ast.SetComp) -> Any:
-        raise self.compat.unsupported(
-            node,
-            "set comprehensions are not supported yet",
-            impact="medium",
-            alternative="use a for-loop and set.add",
-            detail="comprehension lowering is not implemented",
-        )
+        genexp = ast.GeneratorExp(elt=node.elt, generators=node.generators)
+        gen_val = self.visit(genexp)
+        if gen_val is None:
+            raise NotImplementedError("Unsupported set comprehension")
+        return self._emit_set_from_iter(gen_val)
 
     def visit_DictComp(self, node: ast.DictComp) -> Any:
-        raise self.compat.unsupported(
-            node,
-            "dict comprehensions are not supported yet",
-            impact="medium",
-            alternative="use a for-loop and dict assignment",
-            detail="comprehension lowering is not implemented",
-        )
+        pair = ast.Tuple(elts=[node.key, node.value], ctx=ast.Load())
+        genexp = ast.GeneratorExp(elt=pair, generators=node.generators)
+        gen_val = self.visit(genexp)
+        if gen_val is None:
+            raise NotImplementedError("Unsupported dict comprehension")
+        res = MoltValue(self.next_var(), type_hint="dict")
+        self.emit(MoltOp(kind="DICT_NEW", args=[], result=res))
+        self._emit_dict_fill_from_iter(res, gen_val)
+        return res
 
     def visit_GeneratorExp(self, node: ast.GeneratorExp) -> Any:
-        raise self.compat.unsupported(
-            node,
-            "generator expressions are not supported yet",
-            impact="medium",
-            alternative="use a generator function",
-            detail="comprehension lowering is not implemented",
+        if any(comp.is_async for comp in node.generators):
+            raise self.compat.unsupported(
+                node,
+                "async comprehensions are not supported yet",
+                impact="high",
+                alternative="use an async generator function",
+                detail="async comprehension lowering is not implemented",
+            )
+        func_symbol = self._genexpr_symbol()
+        poll_func_name = f"{func_symbol}_poll"
+        prev_func = self.current_func_name
+        free_vars: list[str] = []
+        free_var_hints: dict[str, str] = {}
+        closure_val: MoltValue | None = None
+        has_closure = False
+        if self.current_func_name != "molt_main":
+            free_vars = self._collect_free_vars_comprehension(node)
+            if free_vars:
+                for name in free_vars:
+                    self._box_local(name)
+                for name in free_vars:
+                    hint = self.boxed_local_hints.get(name)
+                    if hint is None:
+                        value = self.locals.get(name)
+                        if value is not None and value.type_hint:
+                            hint = value.type_hint
+                    free_var_hints[name] = hint or "Any"
+                closure_items = [self.boxed_locals[name] for name in free_vars]
+                closure_val = MoltValue(self.next_var(), type_hint="tuple")
+                self.emit(
+                    MoltOp(kind="TUPLE_NEW", args=closure_items, result=closure_val)
+                )
+                has_closure = True
+        prev_state = self._capture_function_state()
+        self.start_function(
+            poll_func_name,
+            params=["self"],
+            type_facts_name=func_symbol,
+            needs_return_slot=False,
         )
+        self.global_decls = set()
+        self.in_generator = True
+        if has_closure:
+            self.async_closure_offset = GEN_CONTROL_SIZE
+            self.async_locals_base = GEN_CONTROL_SIZE + 8
+            self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
+            self.free_var_hints = free_var_hints
+        else:
+            self.async_locals_base = GEN_CONTROL_SIZE
+        self._store_return_slot_for_stateful()
+        self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
+        yield_stmt = ast.Expr(value=ast.Yield(value=node.elt))
+        body = self._build_comprehension_body(node.generators, [yield_stmt])
+        self._push_qualname("<genexpr>", True)
+        try:
+            for stmt in body:
+                self.visit(stmt)
+        finally:
+            self._pop_qualname()
+        if self.return_label is not None:
+            if not self._ends_with_return_jump():
+                none_val = MoltValue(self.next_var(), type_hint="None")
+                self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
+                closed = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=closed))
+                self.emit(
+                    MoltOp(
+                        kind="STORE_CLOSURE",
+                        args=["self", GEN_CLOSED_OFFSET, closed],
+                        result=MoltValue("none"),
+                    )
+                )
+                done = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=done))
+                pair = MoltValue(self.next_var(), type_hint="tuple")
+                self.emit(MoltOp(kind="TUPLE_NEW", args=[none_val, done], result=pair))
+                self._emit_return_value(pair)
+            self._emit_return_label()
+        elif not (self.current_ops and self.current_ops[-1].kind == "ret"):
+            none_val = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
+            closed = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=closed))
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", GEN_CLOSED_OFFSET, closed],
+                    result=MoltValue("none"),
+                )
+            )
+            done = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=done))
+            pair = MoltValue(self.next_var(), type_hint="tuple")
+            self.emit(MoltOp(kind="TUPLE_NEW", args=[none_val, done], result=pair))
+            self.emit(MoltOp(kind="ret", args=[pair], result=MoltValue("none")))
+        closure_size = self.async_locals_base + len(self.async_locals) * 8
+        self.resume_function(prev_func)
+        self._restore_function_state(prev_state)
+        res = MoltValue(self.next_var(), type_hint="generator")
+        args: list[MoltValue] = []
+        if has_closure and closure_val is not None:
+            args.append(closure_val)
+        self.emit(
+            MoltOp(
+                kind="ALLOC_GENERATOR",
+                args=[poll_func_name, closure_size] + args,
+                result=res,
+            )
+        )
+        return res
 
     def visit_List(self, node: ast.List) -> Any:
         elems = [self.visit(elt) for elt in node.elts]
@@ -8114,7 +8297,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                     )
                 return res
-            if target_info and str(target_info.type_hint).startswith("GenFunc:"):
+            if target_info and str(target_info.type_hint).startswith(
+                ("GenFunc:", "GenClosureFunc:")
+            ):
                 if needs_bind:
                     callargs = self._emit_call_args_builder(node)
                     res = MoltValue(self.next_var(), type_hint="generator")
@@ -8127,6 +8312,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                     return res
                 parts = target_info.type_hint.split(":")
+                func_kind = parts[0]
                 poll_func = parts[1]
                 closure_size = int(parts[2])
                 func_symbol = (
@@ -8135,6 +8321,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     else poll_func
                 )
                 args, _ = self._emit_direct_call_args_for_symbol(func_symbol, node)
+                if func_kind == "GenClosureFunc":
+                    closure_val = MoltValue(self.next_var(), type_hint="tuple")
+                    self.emit(
+                        MoltOp(
+                            kind="FUNCTION_CLOSURE_BITS",
+                            args=[target_info],
+                            result=closure_val,
+                        )
+                    )
+                    args = [closure_val] + args
                 res = MoltValue(self.next_var(), type_hint="generator")
                 self.emit(
                     MoltOp(
@@ -11869,16 +12065,49 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if node.args.kwarg is not None:
                 arg_nodes.append(node.args.kwarg)
 
+            free_vars: list[str] = []
+            free_var_hints: dict[str, str] = {}
+            closure_val: MoltValue | None = None
+            has_closure = False
+            if self.current_func_name != "molt_main":
+                free_vars = self._collect_free_vars(node)
+                if free_vars:
+                    for name in free_vars:
+                        self._box_local(name)
+                    for name in free_vars:
+                        hint = self.boxed_local_hints.get(name)
+                        if hint is None:
+                            value = self.locals.get(name)
+                            if value is not None and value.type_hint:
+                                hint = value.type_hint
+                        free_var_hints[name] = hint or "Any"
+                    closure_items = [self.boxed_locals[name] for name in free_vars]
+                    closure_val = MoltValue(self.next_var(), type_hint="tuple")
+                    self.emit(
+                        MoltOp(kind="TUPLE_NEW", args=closure_items, result=closure_val)
+                    )
+                    has_closure = True
+
+            func_kind = "GenClosureFunc" if has_closure else "GenFunc"
             func_val = MoltValue(
-                self.next_var(), type_hint=f"GenFunc:{poll_func_name}:0"
+                self.next_var(), type_hint=f"{func_kind}:{poll_func_name}:0"
             )
-            self.emit(
-                MoltOp(
-                    kind="FUNC_NEW",
-                    args=[poll_func_name, len(params)],
-                    result=func_val,
+            if has_closure and closure_val is not None:
+                self.emit(
+                    MoltOp(
+                        kind="FUNC_NEW_CLOSURE",
+                        args=[poll_func_name, len(params), closure_val],
+                        result=func_val,
+                    )
                 )
-            )
+            else:
+                self.emit(
+                    MoltOp(
+                        kind="FUNC_NEW",
+                        args=[poll_func_name, len(params)],
+                        result=func_val,
+                    )
+                )
             self._emit_function_metadata(
                 func_val,
                 name=func_name,
@@ -11908,7 +12137,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
             self.global_decls = self._collect_global_decls(node.body)
             self.in_generator = True
-            self.async_locals_base = GEN_CONTROL_SIZE
+            if has_closure:
+                self.async_closure_offset = GEN_CONTROL_SIZE
+                self.async_locals_base = GEN_CONTROL_SIZE + 8
+                self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
+                self.free_var_hints = free_var_hints
+            else:
+                self.async_locals_base = GEN_CONTROL_SIZE
             for i, arg in enumerate(arg_nodes):
                 self.async_locals[arg.arg] = self.async_locals_base + i * 8
                 if self._hints_enabled():
@@ -11973,7 +12208,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             closure_size = self.async_locals_base + len(self.async_locals) * 8
             self.resume_function(prev_func)
             self._restore_function_state(prev_state)
-            func_val.type_hint = f"GenFunc:{poll_func_name}:{closure_size}"
+            func_val.type_hint = f"{func_kind}:{poll_func_name}:{closure_size}"
             if self.current_func_name == "molt_main":
                 self.globals[func_name] = func_val
             else:
@@ -13160,6 +13395,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             elif op.kind == "CONST_NONE":
                 json_ops.append({"kind": "const_none", "out": op.result.name})
+            elif op.kind == "CONST_NOT_IMPLEMENTED":
+                json_ops.append(
+                    {"kind": "const_not_implemented", "out": op.result.name}
+                )
             elif op.kind == "ADD":
                 add_entry: dict[str, Any] = {
                     "kind": "add",
@@ -13490,6 +13729,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 json_ops.append(
                     {
                         "kind": "missing",
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "FUNCTION_CLOSURE_BITS":
+                json_ops.append(
+                    {
+                        "kind": "function_closure_bits",
+                        "args": [arg.name for arg in op.args],
                         "out": op.result.name,
                     }
                 )

@@ -735,6 +735,18 @@ impl SimpleBackend {
                     let iconst = builder.ins().iconst(types::I64, box_none());
                     vars.insert(op.out.unwrap(), iconst);
                 }
+                "const_not_implemented" => {
+                    let mut sig = self.module.make_signature();
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_not_implemented", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
                 "const_float" => {
                     let val = op.f_value.expect("Float value not found");
                     let boxed = box_float(val);
@@ -4372,6 +4384,21 @@ impl SimpleBackend {
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "function_closure_bits" => {
+                    let args = op.args.as_ref().unwrap();
+                    let func_bits = vars.get(&args[0]).expect("Func not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_function_closure_bits", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*func_bits]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }

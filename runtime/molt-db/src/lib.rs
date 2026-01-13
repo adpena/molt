@@ -17,6 +17,12 @@ pub struct Pool<T> {
     in_flight: AtomicUsize,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum AcquireError {
+    Timeout,
+    Cancelled,
+}
+
 /// A pooled value that returns to the pool on drop.
 pub struct Pooled<T> {
     pool: Arc<Pool<T>>,
@@ -72,6 +78,63 @@ impl<T> Pool<T> {
                     state = guard;
                     if Instant::now() >= limit {
                         return None;
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn acquire_with_cancel<F>(
+        self: &Arc<Self>,
+        timeout: Option<Duration>,
+        mut cancel_check: F,
+    ) -> Result<Pooled<T>, AcquireError>
+    where
+        F: FnMut() -> bool,
+    {
+        let deadline = timeout.map(|limit| Instant::now() + limit);
+        let poll = Duration::from_millis(5);
+        loop {
+            if cancel_check() {
+                return Err(AcquireError::Cancelled);
+            }
+            let mut state = self.state.lock().unwrap();
+            if let Some(item) = state.idle.pop() {
+                return Ok(Pooled {
+                    pool: Arc::clone(self),
+                    value: Some(item),
+                });
+            }
+
+            if self.in_flight.load(Ordering::SeqCst) < self.max {
+                self.in_flight.fetch_add(1, Ordering::SeqCst);
+                drop(state);
+                let item = (self.factory)();
+                return Ok(Pooled {
+                    pool: Arc::clone(self),
+                    value: Some(item),
+                });
+            }
+
+            if cancel_check() {
+                return Err(AcquireError::Cancelled);
+            }
+            match deadline {
+                None => {
+                    let (guard, _) = self.available.wait_timeout(state, poll).unwrap();
+                    state = guard;
+                }
+                Some(limit) => {
+                    let now = Instant::now();
+                    if now >= limit {
+                        return Err(AcquireError::Timeout);
+                    }
+                    let remaining = limit - now;
+                    let wait = if remaining > poll { poll } else { remaining };
+                    let (guard, _) = self.available.wait_timeout(state, wait).unwrap();
+                    state = guard;
+                    if Instant::now() >= limit {
+                        return Err(AcquireError::Timeout);
                     }
                 }
             }
@@ -136,5 +199,21 @@ mod tests {
         let _guard = pool.acquire(None).expect("guard");
         let result = pool.acquire(Some(Duration::from_millis(10)));
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn pool_cancelled_acquire() {
+        let pool = Pool::new(1, || 7usize);
+        let _guard = pool.acquire(None).expect("guard");
+        let result = pool.acquire_with_cancel(None, || true);
+        assert_eq!(result.err(), Some(AcquireError::Cancelled));
+    }
+
+    #[test]
+    fn pool_timeout_with_cancel_api() {
+        let pool = Pool::new(1, || 42usize);
+        let _guard = pool.acquire(None).expect("guard");
+        let result = pool.acquire_with_cancel(Some(Duration::from_millis(10)), || false);
+        assert_eq!(result.err(), Some(AcquireError::Timeout));
     }
 }
