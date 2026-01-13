@@ -19,7 +19,7 @@ README/ROADMAP in sync.
 - AOT compilation via Cranelift for native targets.
 - Differential testing vs CPython 3.12 for supported constructs.
 - Molt packages for Rust-backed deps using MsgPack/CBOR and Arrow IPC.
-- Sets: literals + constructor with add/contains/iter/len + algebra (`|`, `&`, `-`, `^`); `frozenset` constructor + algebra.
+- Sets: literals + constructor with add/contains/iter/len + algebra (`|`, `&`, `-`, `^`) over set/frozenset/dict view RHS; `frozenset` constructor + algebra.
 - Numeric builtins: `int()`/`abs()`/`divmod()`/`round()`/`math.trunc()` with `__int__`/`__index__`/`__round__`/`__trunc__` hooks and base parsing for string/bytes.
 - Formatting builtins: `ascii()`/`bin()`/`oct()`/`hex()` with `__index__` fallback and CPython parity errors for non-integers.
 - `chr()` and `ord()` parity errors for type/range checks; `chr()` accepts `__index__` and `ord()` enforces length-1 for `str`/`bytes`/`bytearray`.
@@ -30,6 +30,7 @@ README/ROADMAP in sync.
 - `str.lower`/`str.upper`, `list.clear`/`list.copy`/`list.reverse`/`list.sort`, and
   `dict.clear`/`dict.copy`/`dict.popitem`/`dict.setdefault`/`dict.update`.
 - `list.extend` accepts iterable inputs (range/generator/etc.) via the iter protocol.
+- Indexing and slicing honor `__index__` for integer indices (including slice bounds/steps).
 - Augmented assignment (`+=`, `*=`, `|=`, `&=`, `^=`, `-=`) uses in-place list/bytearray/set semantics for name/attribute/subscript targets.
 - `dict()` supports positional mapping/iterable inputs (keys/`__getitem__` mapping fallback) plus keyword/`**` expansion
   (string key enforcement for `**`); `dict.update` mirrors the mapping fallback.
@@ -51,7 +52,7 @@ README/ROADMAP in sync.
 - `molt_accel` client/decorator expose before/after hooks, metrics callbacks, cancel-checks, concurrent in-flight requests in the shared client, optional worker pooling via `MOLT_ACCEL_POOL_SIZE`, and raw-response pass-through; timeouts schedule a worker restart after in-flight requests drain; wire selection honors `MOLT_WORKER_WIRE`/`MOLT_WIRE`.
 - `molt_worker` supports sync/async runtimes (`MOLT_WORKER_RUNTIME` / `--runtime`), enforces cancellation/timeout checks in the fake DB path, compiled dispatch loops, pool waits, and Postgres queries; validates export manifests; reports queue/pool metrics per request (queue_us/handler_us/exec_us/decode_us plus ms rollups); fake DB decode cost can be simulated via `MOLT_FAKE_DB_DECODE_US_PER_ROW` and CPU work via `MOLT_FAKE_DB_CPU_ITERS`. Thread and queue tuning are available via `MOLT_WORKER_THREADS` and `MOLT_WORKER_MAX_QUEUE` (CLI overrides).
 - `molt-db` provides a bounded pool, a feature-gated async pool primitive, a native-only SQLite connector (feature-gated in `molt-worker`), and an async Postgres connector (tokio-postgres + rustls) with per-connection statement caching.
-- `molt_db_adapter` exposes a framework-agnostic DB IPC payload builder aligned with `docs/spec/0915_MOLT_DB_IPC_CONTRACT.md`; worker-side `db_query` supports SQLite (sync) and Postgres (async) with json/msgpack/arrow_ipc results plus db-specific metrics.
+- `molt_db_adapter` exposes a framework-agnostic DB IPC payload builder aligned with `docs/spec/0915_MOLT_DB_IPC_CONTRACT.md`; worker-side `db_query` supports SQLite (sync) and Postgres (async) with json/msgpack/arrow_ipc results, db-specific metrics, and structured decoding for Postgres arrays/ranges/intervals/multiranges in json/msgpack (with lower-bound metadata when needed).
 - WASM harness runs via `run_wasm.js` with shared memory/table and direct runtime imports (legacy wrapper fallback via `MOLT_WASM_LEGACY=1`), including async/channel benches on WASI.
 - Instance `__getattr__`/`__setattr__` hooks for user-defined classes.
 - Instance `__getattribute__` hooks for user-defined classes.
@@ -96,7 +97,7 @@ README/ROADMAP in sync.
   buffer exports).
 - Cancellation: cooperative checks only; automatic cancellation injection into
   awaits and I/O still pending.
-- `db_query` Arrow IPC is supported, but Postgres decoding still stringifies complex types (arrays/intervals/ranges) and wasm parity is pending.
+- `db_query` Arrow IPC is supported, but arrays/ranges/multiranges/intervals are rejected in Arrow IPC (use json/msgpack); wasm parity is pending.
 - collections: shim `Counter`/`defaultdict` are wrapper implementations (not dict subclasses); `defaultdict`
   default_factory is only fast-pathed for `list`.
 
@@ -123,9 +124,9 @@ README/ROADMAP in sync.
 ## Django Demo Blockers (Current)
 - Missing `functools`/`itertools`/`operator`/`collections` parity needed for common Django internals.
 - Async loop/task APIs + `contextvars` are incomplete; cancellation injection and long-running workload hardening are pending.
-- Top priority: finish wasm parity and remaining Postgres type decoding (arrays/intervals/ranges) before full DB adapter expansion (see `docs/spec/0701_ASYNC_PG_POOL_AND_PROTOCOL.md`).
+- Top priority: finish wasm parity and Arrow IPC complex-type support (arrays/ranges/multiranges/intervals) before full DB adapter expansion (see `docs/spec/0701_ASYNC_PG_POOL_AND_PROTOCOL.md`).
 - Capability-gated I/O/runtime modules (`os`, `sys`, `pathlib`, `logging`, `time`, `selectors`) need deterministic parity.
-- HTTP/ASGI runtime surface is not implemented (shim adapter exists); DB driver/pool integration is partial (`db_query` only, array/interval/range decoding and wasm parity pending).
+- HTTP/ASGI runtime surface is not implemented (shim adapter exists); DB driver/pool integration is partial (`db_query` only, wasm parity pending, Arrow IPC rejects complex types).
 - Descriptor hooks still lack metaclass behaviors, limiting idiomatic Django patterns.
 
 ## Tooling + Verification

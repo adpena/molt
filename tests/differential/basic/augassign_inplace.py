@@ -78,6 +78,39 @@ print(f"set_sub:{sorted(s)}")
 s ^= {5}
 print(f"set_xor:{sorted(s)}")
 
+view_src = {1: 10, 2: 20}
+s = {0}
+s |= view_src.keys()
+print(f"set_or_keys:{sorted(s)}")
+s = {0, 1, 2}
+s &= view_src.keys()
+print(f"set_and_keys:{sorted(s)}")
+s = {0, 1, 2}
+s -= view_src.keys()
+print(f"set_sub_keys:{sorted(s)}")
+s = {0, 1, 2}
+s ^= view_src.keys()
+print(f"set_xor_keys:{sorted(s)}")
+
+s = {(1, 10)}
+s |= view_src.items()
+print(f"set_or_items:{sorted(s)}")
+s = {(1, 10), (3, 30)}
+s &= view_src.items()
+print(f"set_and_items:{sorted(s)}")
+s = {(1, 10), (3, 30)}
+s -= view_src.items()
+print(f"set_sub_items:{sorted(s)}")
+s = {(1, 10), (3, 30)}
+s ^= view_src.items()
+print(f"set_xor_items:{sorted(s)}")
+
+try:
+    s = {1}
+    s |= view_src.values()
+except TypeError as exc:
+    print(f"set_or_values_err:{exc}")
+
 try:
     s = {1}
     s &= 1

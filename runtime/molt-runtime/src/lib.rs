@@ -545,6 +545,21 @@ fn index_i64_from_obj(obj_bits: u64, err: &str) -> i64 {
     raise!("TypeError", err)
 }
 
+fn index_i64_with_overflow(obj_bits: u64, err: &str, overflow_err: Option<&str>) -> Option<i64> {
+    let value = index_bigint_from_obj(obj_bits, err)?;
+    if let Some(i) = value.to_i64() {
+        return Some(i);
+    }
+    let msg = match overflow_err {
+        Some(msg) => msg.to_string(),
+        None => format!(
+            "cannot fit '{}' into an index-sized integer",
+            class_name_for_error(type_of_bits(obj_bits))
+        ),
+    };
+    raise!("IndexError", &msg)
+}
+
 fn index_bigint_from_obj(obj_bits: u64, err: &str) -> Option<BigInt> {
     let obj = obj_from_bits(obj_bits);
     if let Some(i) = to_i64(obj) {
@@ -1411,6 +1426,17 @@ fn is_set_like_type(type_id: u32) -> bool {
     type_id == TYPE_ID_SET || type_id == TYPE_ID_FROZENSET
 }
 
+fn is_set_inplace_rhs_type(type_id: u32) -> bool {
+    matches!(
+        type_id,
+        TYPE_ID_SET | TYPE_ID_FROZENSET | TYPE_ID_DICT_KEYS_VIEW | TYPE_ID_DICT_ITEMS_VIEW
+    )
+}
+
+fn is_set_view_type(type_id: u32) -> bool {
+    matches!(type_id, TYPE_ID_DICT_KEYS_VIEW | TYPE_ID_DICT_ITEMS_VIEW)
+}
+
 unsafe fn dict_view_dict_bits(ptr: *mut u8) -> u64 {
     *(ptr as *const u64)
 }
@@ -1441,6 +1467,38 @@ unsafe fn dict_view_entry(ptr: *mut u8, idx: usize) -> Option<(u64, u64)> {
         return Some((order[entry], order[entry + 1]));
     }
     None
+}
+
+unsafe fn dict_view_as_set_bits(view_ptr: *mut u8, view_type: u32) -> Option<u64> {
+    if !is_set_view_type(view_type) {
+        return None;
+    }
+    let len = dict_view_len(view_ptr);
+    let set_bits = molt_set_new(len as u64);
+    let set_ptr = obj_from_bits(set_bits).as_ptr()?;
+    for idx in 0..len {
+        if let Some((key_bits, val_bits)) = dict_view_entry(view_ptr, idx) {
+            let (entry_bits, needs_drop) = if view_type == TYPE_ID_DICT_ITEMS_VIEW {
+                let tuple_ptr = alloc_tuple(&[key_bits, val_bits]);
+                if tuple_ptr.is_null() {
+                    dec_ref_bits(set_bits);
+                    return None;
+                }
+                (MoltObject::from_ptr(tuple_ptr).bits(), true)
+            } else {
+                (key_bits, false)
+            };
+            set_add_in_place(set_ptr, entry_bits);
+            if needs_drop {
+                dec_ref_bits(entry_bits);
+            }
+            if exception_pending() {
+                dec_ref_bits(set_bits);
+                return None;
+            }
+        }
+    }
+    Some(set_bits)
 }
 
 unsafe fn iter_target_bits(ptr: *mut u8) -> u64 {
@@ -8182,6 +8240,48 @@ pub extern "C" fn molt_sub(a: u64, b: u64) -> u64 {
             if is_set_like_type(ltype) && is_set_like_type(rtype) {
                 return set_like_difference(lp, rp, ltype);
             }
+            if (is_set_like_type(ltype) || is_set_view_type(ltype))
+                && (is_set_like_type(rtype) || is_set_view_type(rtype))
+            {
+                let (lhs_ptr, lhs_bits) = if is_set_like_type(ltype) {
+                    (lp, None)
+                } else {
+                    let Some(bits) = dict_view_as_set_bits(lp, ltype) else {
+                        return MoltObject::none().bits();
+                    };
+                    let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+                        dec_ref_bits(bits);
+                        return MoltObject::none().bits();
+                    };
+                    (ptr, Some(bits))
+                };
+                let (rhs_ptr, rhs_bits) = if is_set_like_type(rtype) {
+                    (rp, None)
+                } else {
+                    let Some(bits) = dict_view_as_set_bits(rp, rtype) else {
+                        if let Some(bits) = lhs_bits {
+                            dec_ref_bits(bits);
+                        }
+                        return MoltObject::none().bits();
+                    };
+                    let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+                        if let Some(bits) = lhs_bits {
+                            dec_ref_bits(bits);
+                        }
+                        dec_ref_bits(bits);
+                        return MoltObject::none().bits();
+                    };
+                    (ptr, Some(bits))
+                };
+                let res = set_like_difference(lhs_ptr, rhs_ptr, TYPE_ID_SET);
+                if let Some(bits) = lhs_bits {
+                    dec_ref_bits(bits);
+                }
+                if let Some(bits) = rhs_bits {
+                    dec_ref_bits(bits);
+                }
+                return res;
+            }
         }
     }
     MoltObject::none().bits()
@@ -8196,7 +8296,7 @@ pub extern "C" fn molt_inplace_sub(a: u64, b: u64) -> u64 {
                 let rhs = obj_from_bits(b);
                 let ok = rhs
                     .as_ptr()
-                    .is_some_and(|rhs_ptr| is_set_like_type(object_type_id(rhs_ptr)));
+                    .is_some_and(|rhs_ptr| is_set_inplace_rhs_type(object_type_id(rhs_ptr)));
                 if !ok {
                     return raise_unsupported_inplace("-=", a, b);
                 }
@@ -9171,6 +9271,48 @@ pub extern "C" fn molt_bit_or(a: u64, b: u64) -> u64 {
             if is_set_like_type(ltype) && is_set_like_type(rtype) {
                 return set_like_union(lp, rp, set_like_result_type_id(ltype));
             }
+            if (is_set_like_type(ltype) || is_set_view_type(ltype))
+                && (is_set_like_type(rtype) || is_set_view_type(rtype))
+            {
+                let (lhs_ptr, lhs_bits) = if is_set_like_type(ltype) {
+                    (lp, None)
+                } else {
+                    let Some(bits) = dict_view_as_set_bits(lp, ltype) else {
+                        return MoltObject::none().bits();
+                    };
+                    let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+                        dec_ref_bits(bits);
+                        return MoltObject::none().bits();
+                    };
+                    (ptr, Some(bits))
+                };
+                let (rhs_ptr, rhs_bits) = if is_set_like_type(rtype) {
+                    (rp, None)
+                } else {
+                    let Some(bits) = dict_view_as_set_bits(rp, rtype) else {
+                        if let Some(bits) = lhs_bits {
+                            dec_ref_bits(bits);
+                        }
+                        return MoltObject::none().bits();
+                    };
+                    let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+                        if let Some(bits) = lhs_bits {
+                            dec_ref_bits(bits);
+                        }
+                        dec_ref_bits(bits);
+                        return MoltObject::none().bits();
+                    };
+                    (ptr, Some(bits))
+                };
+                let res = set_like_union(lhs_ptr, rhs_ptr, TYPE_ID_SET);
+                if let Some(bits) = lhs_bits {
+                    dec_ref_bits(bits);
+                }
+                if let Some(bits) = rhs_bits {
+                    dec_ref_bits(bits);
+                }
+                return res;
+            }
         }
     }
     binary_type_error(lhs, rhs, "|")
@@ -9185,7 +9327,7 @@ pub extern "C" fn molt_inplace_bit_or(a: u64, b: u64) -> u64 {
                 let rhs = obj_from_bits(b);
                 let ok = rhs
                     .as_ptr()
-                    .is_some_and(|rhs_ptr| is_set_like_type(object_type_id(rhs_ptr)));
+                    .is_some_and(|rhs_ptr| is_set_inplace_rhs_type(object_type_id(rhs_ptr)));
                 if !ok {
                     return raise_unsupported_inplace("|=", a, b);
                 }
@@ -9228,6 +9370,48 @@ pub extern "C" fn molt_bit_and(a: u64, b: u64) -> u64 {
             if is_set_like_type(ltype) && is_set_like_type(rtype) {
                 return set_like_intersection(lp, rp, set_like_result_type_id(ltype));
             }
+            if (is_set_like_type(ltype) || is_set_view_type(ltype))
+                && (is_set_like_type(rtype) || is_set_view_type(rtype))
+            {
+                let (lhs_ptr, lhs_bits) = if is_set_like_type(ltype) {
+                    (lp, None)
+                } else {
+                    let Some(bits) = dict_view_as_set_bits(lp, ltype) else {
+                        return MoltObject::none().bits();
+                    };
+                    let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+                        dec_ref_bits(bits);
+                        return MoltObject::none().bits();
+                    };
+                    (ptr, Some(bits))
+                };
+                let (rhs_ptr, rhs_bits) = if is_set_like_type(rtype) {
+                    (rp, None)
+                } else {
+                    let Some(bits) = dict_view_as_set_bits(rp, rtype) else {
+                        if let Some(bits) = lhs_bits {
+                            dec_ref_bits(bits);
+                        }
+                        return MoltObject::none().bits();
+                    };
+                    let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+                        if let Some(bits) = lhs_bits {
+                            dec_ref_bits(bits);
+                        }
+                        dec_ref_bits(bits);
+                        return MoltObject::none().bits();
+                    };
+                    (ptr, Some(bits))
+                };
+                let res = set_like_intersection(lhs_ptr, rhs_ptr, TYPE_ID_SET);
+                if let Some(bits) = lhs_bits {
+                    dec_ref_bits(bits);
+                }
+                if let Some(bits) = rhs_bits {
+                    dec_ref_bits(bits);
+                }
+                return res;
+            }
         }
     }
     binary_type_error(lhs, rhs, "&")
@@ -9242,7 +9426,7 @@ pub extern "C" fn molt_inplace_bit_and(a: u64, b: u64) -> u64 {
                 let rhs = obj_from_bits(b);
                 let ok = rhs
                     .as_ptr()
-                    .is_some_and(|rhs_ptr| is_set_like_type(object_type_id(rhs_ptr)));
+                    .is_some_and(|rhs_ptr| is_set_inplace_rhs_type(object_type_id(rhs_ptr)));
                 if !ok {
                     return raise_unsupported_inplace("&=", a, b);
                 }
@@ -9285,6 +9469,48 @@ pub extern "C" fn molt_bit_xor(a: u64, b: u64) -> u64 {
             if is_set_like_type(ltype) && is_set_like_type(rtype) {
                 return set_like_symdiff(lp, rp, set_like_result_type_id(ltype));
             }
+            if (is_set_like_type(ltype) || is_set_view_type(ltype))
+                && (is_set_like_type(rtype) || is_set_view_type(rtype))
+            {
+                let (lhs_ptr, lhs_bits) = if is_set_like_type(ltype) {
+                    (lp, None)
+                } else {
+                    let Some(bits) = dict_view_as_set_bits(lp, ltype) else {
+                        return MoltObject::none().bits();
+                    };
+                    let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+                        dec_ref_bits(bits);
+                        return MoltObject::none().bits();
+                    };
+                    (ptr, Some(bits))
+                };
+                let (rhs_ptr, rhs_bits) = if is_set_like_type(rtype) {
+                    (rp, None)
+                } else {
+                    let Some(bits) = dict_view_as_set_bits(rp, rtype) else {
+                        if let Some(bits) = lhs_bits {
+                            dec_ref_bits(bits);
+                        }
+                        return MoltObject::none().bits();
+                    };
+                    let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+                        if let Some(bits) = lhs_bits {
+                            dec_ref_bits(bits);
+                        }
+                        dec_ref_bits(bits);
+                        return MoltObject::none().bits();
+                    };
+                    (ptr, Some(bits))
+                };
+                let res = set_like_symdiff(lhs_ptr, rhs_ptr, TYPE_ID_SET);
+                if let Some(bits) = lhs_bits {
+                    dec_ref_bits(bits);
+                }
+                if let Some(bits) = rhs_bits {
+                    dec_ref_bits(bits);
+                }
+                return res;
+            }
         }
     }
     binary_type_error(lhs, rhs, "^")
@@ -9299,7 +9525,7 @@ pub extern "C" fn molt_inplace_bit_xor(a: u64, b: u64) -> u64 {
                 let rhs = obj_from_bits(b);
                 let ok = rhs
                     .as_ptr()
-                    .is_some_and(|rhs_ptr| is_set_like_type(object_type_id(rhs_ptr)));
+                    .is_some_and(|rhs_ptr| is_set_inplace_rhs_type(object_type_id(rhs_ptr)));
                 if !ok {
                     return raise_unsupported_inplace("^=", a, b);
                 }
@@ -11669,9 +11895,15 @@ enum SliceError {
 }
 
 fn slice_error(err: SliceError) -> u64 {
+    if exception_pending() {
+        return MoltObject::none().bits();
+    }
     match err {
         SliceError::Type => {
-            raise!("TypeError", "slice indices must be integers or None");
+            raise!(
+                "TypeError",
+                "slice indices must be integers or None or have an __index__ method"
+            );
         }
         SliceError::Value => {
             raise!("ValueError", "slice step cannot be zero");
@@ -11683,20 +11915,21 @@ fn decode_slice_bound(obj: MoltObject, len: isize, default: isize) -> Result<isi
     if obj.is_none() {
         return Ok(default);
     }
-    if let Some(i) = obj.as_int() {
-        let mut idx = i as isize;
-        if idx < 0 {
-            idx += len;
-        }
-        if idx < 0 {
-            idx = 0;
-        }
-        if idx > len {
-            idx = len;
-        }
-        return Ok(idx);
+    let msg = "slice indices must be integers or None or have an __index__ method";
+    let Some(mut idx) = index_bigint_from_obj(obj.bits(), msg) else {
+        return Err(SliceError::Type);
+    };
+    let len_big = BigInt::from(len);
+    if idx.is_negative() {
+        idx += &len_big;
     }
-    Err(SliceError::Type)
+    if idx < BigInt::zero() {
+        return Ok(0);
+    }
+    if idx > len_big {
+        return Ok(len);
+    }
+    Ok(idx.to_isize().unwrap_or(len))
 }
 
 fn decode_slice_bound_neg(
@@ -11707,34 +11940,42 @@ fn decode_slice_bound_neg(
     if obj.is_none() {
         return Ok(default);
     }
-    if let Some(i) = obj.as_int() {
-        let mut idx = i as isize;
-        if idx < 0 {
-            idx += len;
-        }
-        if idx < -1 {
-            idx = -1;
-        }
-        if idx >= len {
-            idx = len - 1;
-        }
-        return Ok(idx);
+    let msg = "slice indices must be integers or None or have an __index__ method";
+    let Some(mut idx) = index_bigint_from_obj(obj.bits(), msg) else {
+        return Err(SliceError::Type);
+    };
+    let len_big = BigInt::from(len);
+    if idx.is_negative() {
+        idx += &len_big;
     }
-    Err(SliceError::Type)
+    let neg_one = BigInt::from(-1);
+    if idx < neg_one {
+        return Ok(-1);
+    }
+    if idx >= len_big {
+        return Ok(len - 1);
+    }
+    Ok(idx.to_isize().unwrap_or(len - 1))
 }
 
 fn decode_slice_step(obj: MoltObject) -> Result<isize, SliceError> {
     if obj.is_none() {
         return Ok(1);
     }
-    if let Some(i) = obj.as_int() {
-        let step = i as isize;
-        if step == 0 {
-            return Err(SliceError::Value);
-        }
-        return Ok(step);
+    let msg = "slice indices must be integers or None or have an __index__ method";
+    let Some(step) = index_bigint_from_obj(obj.bits(), msg) else {
+        return Err(SliceError::Type);
+    };
+    if step.is_zero() {
+        return Err(SliceError::Value);
     }
-    Err(SliceError::Type)
+    if let Some(step) = step.to_i64() {
+        return Ok(step as isize);
+    }
+    if step.is_negative() {
+        return Ok(-(i64::MAX as isize));
+    }
+    Ok(i64::MAX as isize)
 }
 
 fn normalize_slice_indices(
@@ -15586,40 +15827,44 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                         return MoltObject::from_ptr(out_ptr).bits();
                     }
                 }
-                if let Some(idx) = key.as_int() {
-                    let owner_bits = memoryview_owner_bits(ptr);
-                    let owner = obj_from_bits(owner_bits);
-                    let owner_ptr = match owner.as_ptr() {
-                        Some(ptr) => ptr,
-                        None => return MoltObject::none().bits(),
-                    };
-                    let base = match bytes_like_slice_raw(owner_ptr) {
-                        Some(slice) => slice,
-                        None => return MoltObject::none().bits(),
-                    };
-                    let len = memoryview_len(ptr) as i64;
-                    let mut i = idx;
-                    if i < 0 {
-                        i += len;
-                    }
-                    if i < 0 || i >= len {
-                        return MoltObject::none().bits();
-                    }
-                    let offset = memoryview_offset(ptr);
-                    let stride = memoryview_stride(ptr);
-                    let itemsize = memoryview_itemsize(ptr);
-                    let start = offset + (i as isize) * stride;
-                    if start < 0 {
-                        return MoltObject::none().bits();
-                    }
-                    let start = start as usize;
-                    let end = start.saturating_add(itemsize);
-                    if end > base.len() {
-                        return MoltObject::none().bits();
-                    }
-                    return MoltObject::from_int(base[start] as i64).bits();
+                let Some(idx) = index_i64_with_overflow(
+                    key_bits,
+                    "memoryview: invalid slice key",
+                    None,
+                ) else {
+                    return MoltObject::none().bits();
+                };
+                let owner_bits = memoryview_owner_bits(ptr);
+                let owner = obj_from_bits(owner_bits);
+                let owner_ptr = match owner.as_ptr() {
+                    Some(ptr) => ptr,
+                    None => return MoltObject::none().bits(),
+                };
+                let base = match bytes_like_slice_raw(owner_ptr) {
+                    Some(slice) => slice,
+                    None => return MoltObject::none().bits(),
+                };
+                let len = memoryview_len(ptr) as i64;
+                let mut i = idx;
+                if i < 0 {
+                    i += len;
                 }
-                return MoltObject::none().bits();
+                if i < 0 || i >= len {
+                    raise!("IndexError", "index out of bounds on dimension 1");
+                }
+                let offset = memoryview_offset(ptr);
+                let stride = memoryview_stride(ptr);
+                let itemsize = memoryview_itemsize(ptr);
+                let start = offset + (i as isize) * stride;
+                if start < 0 {
+                    raise!("IndexError", "index out of bounds on dimension 1");
+                }
+                let start = start as usize;
+                let end = start.saturating_add(itemsize);
+                if end > base.len() {
+                    raise!("IndexError", "index out of bounds on dimension 1");
+                }
+                return MoltObject::from_int(base[start] as i64).bits();
             }
             if type_id == TYPE_ID_STRING || type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY
             {
@@ -15677,44 +15922,67 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                         return MoltObject::from_ptr(out_ptr).bits();
                     }
                 }
-                if let Some(idx) = key.as_int() {
-                    if type_id == TYPE_ID_STRING {
-                        let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
-                        let Ok(text) = std::str::from_utf8(bytes) else {
-                            return MoltObject::none().bits();
-                        };
-                        let mut i = idx;
-                        let len = text.chars().count() as i64;
-                        if i < 0 {
-                            i += len;
-                        }
-                        if i < 0 || i >= len {
-                            return MoltObject::none().bits();
-                        }
-                        let ch = match text.chars().nth(i as usize) {
-                            Some(val) => val,
-                            None => return MoltObject::none().bits(),
-                        };
-                        let mut buf = [0u8; 4];
-                        let out = ch.encode_utf8(&mut buf);
-                        let out_ptr = alloc_string(out.as_bytes());
-                        if out_ptr.is_null() {
-                            return MoltObject::none().bits();
-                        }
-                        return MoltObject::from_ptr(out_ptr).bits();
-                    }
-                    let bytes = std::slice::from_raw_parts(bytes_data(ptr), bytes_len(ptr));
-                    let len = bytes.len() as i64;
+                let type_err = if type_id == TYPE_ID_STRING {
+                    format!(
+                        "string indices must be integers, not '{}'",
+                        type_name(key)
+                    )
+                } else if type_id == TYPE_ID_BYTES {
+                    format!(
+                        "byte indices must be integers or slices, not {}",
+                        type_name(key)
+                    )
+                } else {
+                    format!(
+                        "bytearray indices must be integers or slices, not {}",
+                        type_name(key)
+                    )
+                };
+                let Some(idx) = index_i64_with_overflow(
+                    key_bits,
+                    &type_err,
+                    None,
+                ) else {
+                    return MoltObject::none().bits();
+                };
+                if type_id == TYPE_ID_STRING {
+                    let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
+                    let Ok(text) = std::str::from_utf8(bytes) else {
+                        return MoltObject::none().bits();
+                    };
                     let mut i = idx;
+                    let len = text.chars().count() as i64;
                     if i < 0 {
                         i += len;
                     }
                     if i < 0 || i >= len {
+                        raise!("IndexError", "string index out of range");
+                    }
+                    let ch = match text.chars().nth(i as usize) {
+                        Some(val) => val,
+                        None => raise!("IndexError", "string index out of range"),
+                    };
+                    let mut buf = [0u8; 4];
+                    let out = ch.encode_utf8(&mut buf);
+                    let out_ptr = alloc_string(out.as_bytes());
+                    if out_ptr.is_null() {
                         return MoltObject::none().bits();
                     }
-                    return MoltObject::from_int(bytes[i as usize] as i64).bits();
+                    return MoltObject::from_ptr(out_ptr).bits();
                 }
-                return MoltObject::none().bits();
+                let bytes = std::slice::from_raw_parts(bytes_data(ptr), bytes_len(ptr));
+                let len = bytes.len() as i64;
+                let mut i = idx;
+                if i < 0 {
+                    i += len;
+                }
+                if i < 0 || i >= len {
+                    if type_id == TYPE_ID_BYTEARRAY {
+                        raise!("IndexError", "bytearray index out of range");
+                    }
+                    raise!("IndexError", "index out of range");
+                }
+                return MoltObject::from_int(bytes[i as usize] as i64).bits();
             }
             if type_id == TYPE_ID_LIST {
                 if let Some(slice_ptr) = key.as_ptr() {
@@ -15751,21 +16019,29 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                         return MoltObject::from_ptr(out_ptr).bits();
                     }
                 }
-                if let Some(idx) = key.as_int() {
-                    let len = list_len(ptr) as i64;
-                    let mut i = idx;
-                    if i < 0 {
-                        i += len;
-                    }
-                    if i < 0 || i >= len {
-                        return MoltObject::none().bits();
-                    }
-                    let elems = seq_vec_ref(ptr);
-                    let val = elems[i as usize];
-                    inc_ref_bits(val);
-                    return val;
+                let type_err = format!(
+                    "list indices must be integers or slices, not {}",
+                    type_name(key)
+                );
+                let Some(idx) = index_i64_with_overflow(
+                    key_bits,
+                    &type_err,
+                    None,
+                ) else {
+                    return MoltObject::none().bits();
+                };
+                let len = list_len(ptr) as i64;
+                let mut i = idx;
+                if i < 0 {
+                    i += len;
                 }
-                return MoltObject::none().bits();
+                if i < 0 || i >= len {
+                    raise!("IndexError", "list index out of range");
+                }
+                let elems = seq_vec_ref(ptr);
+                let val = elems[i as usize];
+                inc_ref_bits(val);
+                return val;
             }
             if type_id == TYPE_ID_TUPLE {
                 if let Some(slice_ptr) = key.as_ptr() {
@@ -15802,39 +16078,55 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                         return MoltObject::from_ptr(out_ptr).bits();
                     }
                 }
-                if let Some(idx) = key.as_int() {
-                    let len = tuple_len(ptr) as i64;
-                    let mut i = idx;
-                    if i < 0 {
-                        i += len;
-                    }
-                    if i < 0 || i >= len {
-                        return MoltObject::none().bits();
-                    }
-                    let elems = seq_vec_ref(ptr);
-                    let val = elems[i as usize];
-                    inc_ref_bits(val);
-                    return val;
+                let type_err = format!(
+                    "tuple indices must be integers or slices, not {}",
+                    type_name(key)
+                );
+                let Some(idx) = index_i64_with_overflow(
+                    key_bits,
+                    &type_err,
+                    None,
+                ) else {
+                    return MoltObject::none().bits();
+                };
+                let len = tuple_len(ptr) as i64;
+                let mut i = idx;
+                if i < 0 {
+                    i += len;
                 }
-                return MoltObject::none().bits();
+                if i < 0 || i >= len {
+                    raise!("IndexError", "tuple index out of range");
+                }
+                let elems = seq_vec_ref(ptr);
+                let val = elems[i as usize];
+                inc_ref_bits(val);
+                return val;
             }
             if type_id == TYPE_ID_RANGE {
-                if let Some(idx) = key.as_int() {
-                    let start = range_start(ptr);
-                    let stop = range_stop(ptr);
-                    let step = range_step(ptr);
-                    let len = range_len_i64(start, stop, step);
-                    let mut i = idx;
-                    if i < 0 {
-                        i += len;
-                    }
-                    if i < 0 || i >= len {
-                        return MoltObject::none().bits();
-                    }
-                    let val = start + step * i;
-                    return MoltObject::from_int(val).bits();
+                let type_err = format!(
+                    "range indices must be integers or slices, not {}",
+                    type_name(key)
+                );
+                let Some(idx) = index_i64_with_overflow(
+                    key_bits,
+                    &type_err,
+                    Some("range object index out of range"),
+                ) else {
+                    return MoltObject::none().bits();
+                };
+                let start = range_start(ptr);
+                let stop = range_stop(ptr);
+                let step = range_step(ptr);
+                let len = range_len_i64(start, stop, step);
+                let mut i = idx;
+                if i < 0 {
+                    i += len;
                 }
-                return MoltObject::none().bits();
+                if i < 0 || i >= len {
+                    raise!("IndexError", "range object index out of range");
+                }
+                let val = start + step * i;
+                return MoltObject::from_int(val).bits();
             }
             if type_id == TYPE_ID_DICT {
                 if let Some(val) = dict_get_in_place(ptr, key_bits) {
@@ -15914,48 +16206,63 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
         unsafe {
             let type_id = object_type_id(ptr);
             if type_id == TYPE_ID_LIST {
-                if let Some(idx) = key.as_int() {
-                    let len = list_len(ptr) as i64;
-                    let mut i = idx;
-                    if i < 0 {
-                        i += len;
-                    }
-                    if i < 0 || i >= len {
-                        return MoltObject::none().bits();
-                    }
-                    let elems = seq_vec(ptr);
-                    let old_bits = elems[i as usize];
-                    if old_bits != val_bits {
-                        dec_ref_bits(old_bits);
-                        inc_ref_bits(val_bits);
-                        elems[i as usize] = val_bits;
-                    }
-                    return obj_bits;
+                let type_err = format!(
+                    "list indices must be integers or slices, not {}",
+                    type_name(key)
+                );
+                let Some(idx) = index_i64_with_overflow(
+                    key_bits,
+                    &type_err,
+                    None,
+                ) else {
+                    return MoltObject::none().bits();
+                };
+                let len = list_len(ptr) as i64;
+                let mut i = idx;
+                if i < 0 {
+                    i += len;
                 }
-                return MoltObject::none().bits();
+                if i < 0 || i >= len {
+                    raise!("IndexError", "list assignment index out of range");
+                }
+                let elems = seq_vec(ptr);
+                let old_bits = elems[i as usize];
+                if old_bits != val_bits {
+                    dec_ref_bits(old_bits);
+                    inc_ref_bits(val_bits);
+                    elems[i as usize] = val_bits;
+                }
+                return obj_bits;
             }
             if type_id == TYPE_ID_TUPLE {
                 return MoltObject::none().bits();
             }
             if type_id == TYPE_ID_BYTEARRAY {
-                if let Some(idx) = key.as_int() {
-                    let len = bytes_len(ptr) as i64;
-                    let mut i = idx;
-                    if i < 0 {
-                        i += len;
-                    }
-                    if i < 0 || i >= len {
-                        return MoltObject::none().bits();
-                    }
-                    let Some(byte) = bytes_item_to_u8(val_bits, BytesCtorKind::Bytearray)
-                    else {
-                        return MoltObject::none().bits();
-                    };
-                    let elems = bytearray_vec(ptr);
-                    elems[i as usize] = byte;
-                    return obj_bits;
+                let type_err = format!(
+                    "bytearray indices must be integers or slices, not {}",
+                    type_name(key)
+                );
+                let Some(idx) = index_i64_with_overflow(
+                    key_bits,
+                    &type_err,
+                    None,
+                ) else {
+                    return MoltObject::none().bits();
+                };
+                let len = bytes_len(ptr) as i64;
+                let mut i = idx;
+                if i < 0 {
+                    i += len;
                 }
-                return MoltObject::none().bits();
+                if i < 0 || i >= len {
+                    raise!("IndexError", "bytearray index out of range");
+                }
+                let Some(byte) = bytes_item_to_u8(val_bits, BytesCtorKind::Bytearray) else {
+                    return MoltObject::none().bits();
+                };
+                let elems = bytearray_vec(ptr);
+                elems[i as usize] = byte;
+                return obj_bits;
             }
             if type_id == TYPE_ID_MEMORYVIEW {
                 if memoryview_readonly(ptr) {
@@ -16044,49 +16351,53 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                         return obj_bits;
                     }
                 }
-                if let Some(idx) = key.as_int() {
-                    let owner_bits = memoryview_owner_bits(ptr);
-                    let owner = obj_from_bits(owner_bits);
-                    let owner_ptr = match owner.as_ptr() {
-                        Some(ptr) => ptr,
-                        None => return MoltObject::none().bits(),
-                    };
-                    if object_type_id(owner_ptr) != TYPE_ID_BYTEARRAY {
-                        raise!("TypeError", "memoryview is not writable");
-                    }
-                    let len = memoryview_len(ptr) as i64;
-                    let mut i = idx;
-                    if i < 0 {
-                        i += len;
-                    }
-                    if i < 0 || i >= len {
-                        return MoltObject::none().bits();
-                    }
-                    let itemsize = memoryview_itemsize(ptr);
-                    if itemsize != 1 {
-                        raise!("TypeError", "memoryview itemsize not supported");
-                    }
-                    let offset = memoryview_offset(ptr);
-                    let stride = memoryview_stride(ptr);
-                    let start = offset + (i as isize) * stride;
-                    if start < 0 {
-                        return MoltObject::none().bits();
-                    }
-                    let start = start as usize;
-                    let base_len = bytes_len(owner_ptr);
-                    if start >= base_len {
-                        return MoltObject::none().bits();
-                    }
-                    let val = obj_from_bits(val_bits);
-                    let byte = match val.as_int() {
-                        Some(v) if (0..=255).contains(&v) => v as u8,
-                        _ => raise!("TypeError", "memoryview item must be int 0-255"),
-                    };
-                    let data_ptr = bytes_data(owner_ptr) as *mut u8;
-                    *data_ptr.add(start) = byte;
-                    return obj_bits;
+                let Some(idx) = index_i64_with_overflow(
+                    key_bits,
+                    "memoryview: invalid slice key",
+                    None,
+                ) else {
+                    return MoltObject::none().bits();
+                };
+                let owner_bits = memoryview_owner_bits(ptr);
+                let owner = obj_from_bits(owner_bits);
+                let owner_ptr = match owner.as_ptr() {
+                    Some(ptr) => ptr,
+                    None => return MoltObject::none().bits(),
+                };
+                if object_type_id(owner_ptr) != TYPE_ID_BYTEARRAY {
+                    raise!("TypeError", "memoryview is not writable");
                 }
-                return MoltObject::none().bits();
+                let len = memoryview_len(ptr) as i64;
+                let mut i = idx;
+                if i < 0 {
+                    i += len;
+                }
+                if i < 0 || i >= len {
+                    raise!("IndexError", "index out of bounds on dimension 1");
+                }
+                let itemsize = memoryview_itemsize(ptr);
+                if itemsize != 1 {
+                    raise!("TypeError", "memoryview itemsize not supported");
+                }
+                let offset = memoryview_offset(ptr);
+                let stride = memoryview_stride(ptr);
+                let start = offset + (i as isize) * stride;
+                if start < 0 {
+                    raise!("IndexError", "index out of bounds on dimension 1");
+                }
+                let start = start as usize;
+                let base_len = bytes_len(owner_ptr);
+                if start >= base_len {
+                    raise!("IndexError", "index out of bounds on dimension 1");
+                }
+                let val = obj_from_bits(val_bits);
+                let byte = match val.as_int() {
+                    Some(v) if (0..=255).contains(&v) => v as u8,
+                    _ => raise!("TypeError", "memoryview item must be int 0-255"),
+                };
+                let data_ptr = bytes_data(owner_ptr) as *mut u8;
+                *data_ptr.add(start) = byte;
+                return obj_bits;
             }
             if type_id == TYPE_ID_DICT {
                 dict_set_in_place(ptr, key_bits, val_bits);

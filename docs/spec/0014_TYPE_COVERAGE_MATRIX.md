@@ -13,16 +13,16 @@
 | int | arithmetic, comparisons, hash | Supported | P0 | TC0 | runtime |
 | float | arithmetic, comparisons, repr | Supported | P0 | TC0 | runtime |
 | complex | arithmetic, comparisons, repr | Planned | P1 | TC2 | runtime |
-| str | len, slice, iter, find/split/replace/startswith/endswith/count/join/lower/upper, concat, repr | Partial | P0 | TC1 | runtime/frontend |
-| bytes | len, slice, iter, find/split/replace, concat | Partial | P0 | TC1 | runtime |
-| bytearray | mutability, iter, find/split/replace, concat, in-place concat/repeat | Partial | P0 | TC1 | runtime |
-| list | literals, index/slice, append/extend/insert/remove/pop/count/index/clear/copy/reverse, iter, in-place add/mul | Partial | P0 | TC1 | runtime/frontend |
-| tuple | literals, index/slice, hash, iter | Partial | P0 | TC1 | runtime/frontend |
+| str | len, index/slice via `__index__`, iter, find/split/replace/startswith/endswith/count/join/lower/upper, concat, repr | Partial | P0 | TC1 | runtime/frontend |
+| bytes | len, index/slice via `__index__`, iter, find/split/replace, concat | Partial | P0 | TC1 | runtime |
+| bytearray | mutability, index/slice via `__index__`, iter, find/split/replace, concat, in-place concat/repeat | Partial | P0 | TC1 | runtime |
+| list | literals, index/slice via `__index__`, append/extend/insert/remove/pop/count/index/clear/copy/reverse, iter, in-place add/mul | Partial | P0 | TC1 | runtime/frontend |
+| tuple | literals, index/slice via `__index__`, hash, iter | Partial | P0 | TC1 | runtime/frontend |
 | dict | literals, index/set, views, iter, basic methods (keys/values/items/get/pop/clear/copy/popitem/setdefault/update) | Partial | P0 | TC1 | runtime/frontend |
-| set | literals, constructor, add/remove/contains/iter/len, algebra (`|`, `&`, `-`, `^`) + in-place updates | Partial | P1 | TC2 | runtime/frontend |
+| set | literals, constructor, add/remove/contains/iter/len, algebra (`|`, `&`, `-`, `^`) + in-place updates (dict view RHS) | Partial | P1 | TC2 | runtime/frontend |
 | frozenset | constructor, hash, contains/iter/len, algebra (`|`, `&`, `-`, `^`) | Partial | P1 | TC2 | runtime/frontend |
-| range | len/index/iter; step==0 error | Partial | P0 | TC1 | runtime/frontend |
-| slice | slice objects + normalization + step | Partial | P1 | TC2 | runtime/frontend |
+| range | len/index via `__index__`/iter; step==0 error | Partial | P0 | TC1 | runtime/frontend |
+| slice | slice objects + normalization + step + `__index__` bounds | Partial | P1 | TC2 | runtime/frontend |
 | memoryview | buffer protocol (1D format/shape/strides), slicing, writable views | Partial | P2 | TC3 | runtime |
 | iterator | iter/next protocol, StopIteration | Partial | P0 | TC1 | runtime |
 | generator/coroutine | send/throw/close, await | Partial | P0 | TC2 | runtime/frontend |

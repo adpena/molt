@@ -78,6 +78,38 @@ const getBigIntValue = (val) => {
   if (obj && obj.type === 'bigint') return obj.value;
   return null;
 };
+const indexBigIntFromBits = (bits, errMsg) => {
+  let value = getBigIntValue(bits);
+  if (value === null) {
+    const indexAttr = lookupAttr(bits, '__index__');
+    if (indexAttr !== undefined) {
+      const res = callCallable0(indexAttr);
+      if (exceptionPending() !== 0n) return null;
+      value = getBigIntValue(res);
+      if (value === null) {
+        throw new Error(`TypeError: __index__ returned non-int (type ${typeName(res)})`);
+      }
+    }
+  }
+  if (value === null) {
+    throw new Error(`TypeError: ${errMsg}`);
+  }
+  return value;
+};
+const indexFromBitsWithOverflow = (bits, errMsg, overflowErr) => {
+  const value = indexBigIntFromBits(bits, errMsg);
+  if (value === null) return null;
+  const limit = BigInt(Number.MAX_SAFE_INTEGER);
+  if (value > limit || value < -limit) {
+    if (overflowErr) {
+      throw new Error(`IndexError: ${overflowErr}`);
+    }
+    throw new Error(
+      `IndexError: cannot fit '${typeName(bits)}' into an index-sized integer`,
+    );
+  }
+  return Number(value);
+};
 const BUILTIN_TYPE_TAGS = new Map([
   [1, 'int'],
   [2, 'float'],
@@ -440,6 +472,9 @@ const typeName = (val) => {
     if (obj.type === 'set') return 'set';
     if (obj.type === 'frozenset') return 'frozenset';
     if (obj.type === 'dict') return 'dict';
+    if (obj.type === 'dict_keys') return 'dict_keys';
+    if (obj.type === 'dict_values') return 'dict_values';
+    if (obj.type === 'dict_items') return 'dict_items';
     if (obj.type === 'module') return 'module';
     if (obj.type === 'function') return 'function';
     if (obj.type === 'map') return 'map';
@@ -678,6 +713,21 @@ const getDict = (val) => {
   if (!obj || obj.type !== 'dict') return null;
   return obj;
 };
+const getDictKeysView = (val) => {
+  const obj = getObj(val);
+  if (!obj || obj.type !== 'dict_keys') return null;
+  return obj;
+};
+const getDictValuesView = (val) => {
+  const obj = getObj(val);
+  if (!obj || obj.type !== 'dict_values') return null;
+  return obj;
+};
+const getDictItemsView = (val) => {
+  const obj = getObj(val);
+  if (!obj || obj.type !== 'dict_items') return null;
+  return obj;
+};
 const getSet = (val) => {
   const obj = getObj(val);
   if (!obj || obj.type !== 'set') return null;
@@ -692,6 +742,38 @@ const getSetLike = (val) => {
   const obj = getObj(val);
   if (!obj || (obj.type !== 'set' && obj.type !== 'frozenset')) return null;
   return obj;
+};
+const getSetInplaceRhs = (val) =>
+  getSetLike(val) || getDictKeysView(val) || getDictItemsView(val);
+const dictViewItems = (view) => {
+  const dict = getDict(view.dictBits);
+  if (!dict) return null;
+  const items = new Set();
+  for (const [keyBits, valBits] of dict.entries) {
+    if (view.type === 'dict_keys') {
+      items.add(keyBits);
+    } else if (view.type === 'dict_items') {
+      items.add(tupleFromArray([keyBits, valBits]));
+    } else {
+      return null;
+    }
+  }
+  return items;
+};
+const getSetOpItems = (val) => {
+  const setLike = getSetLike(val);
+  if (setLike) {
+    return { items: setLike.items, type: setLike.type, isView: false };
+  }
+  const dictKeys = getDictKeysView(val);
+  const dictItems = getDictItemsView(val);
+  const view = dictKeys || dictItems;
+  if (view) {
+    const items = dictViewItems(view);
+    if (!items) return null;
+    return { items, type: 'set', isView: true };
+  }
+  return null;
 };
 const getBytes = (val) => {
   const obj = getObj(val);
@@ -872,6 +954,25 @@ const iterNextInternal = (val) => {
       return tupleFromArray([boxNone(), boxBool(true)]);
     }
     const value = dict.entries[iter.idx][0];
+    iter.idx += 1;
+    return tupleFromArray([value, boxBool(false)]);
+  }
+  const dictKeys = getDictKeysView(target);
+  const dictValues = getDictValuesView(target);
+  const dictItems = getDictItemsView(target);
+  if (dictKeys || dictValues || dictItems) {
+    const view = dictKeys || dictValues || dictItems;
+    const dictView = getDict(view.dictBits);
+    if (!dictView || iter.idx >= dictView.entries.length) {
+      return tupleFromArray([boxNone(), boxBool(true)]);
+    }
+    const [keyBits, valBits] = dictView.entries[iter.idx];
+    let value = keyBits;
+    if (dictValues) {
+      value = valBits;
+    } else if (dictItems) {
+      value = tupleFromArray([keyBits, valBits]);
+    }
     iter.idx += 1;
     return tupleFromArray([value, boxBool(false)]);
   }
@@ -1952,8 +2053,8 @@ BASE_IMPORTS = """\
     if (lf !== null && rf !== null) {
       return boxFloat(lf - rf);
     }
-    const lset = getSetLike(a);
-    const rset = getSetLike(b);
+    const lset = getSetOpItems(a);
+    const rset = getSetOpItems(b);
     if (lset && rset) {
       const outItems = new Set();
       for (const item of lset.items) {
@@ -1961,14 +2062,15 @@ BASE_IMPORTS = """\
           outItems.add(item);
         }
       }
-      return boxPtr({ type: lset.type, items: outItems });
+      const outType = lset.isView || rset.isView ? 'set' : lset.type;
+      return boxPtr({ type: outType, items: outItems });
     }
     return boxNone();
   },
   inplace_sub: (a, b) => {
     const set = getSet(a);
     if (set) {
-      const other = getSetLike(b);
+      const other = getSetInplaceRhs(b);
       if (!other) {
         throw new Error(
           `TypeError: unsupported operand type(s) for -=: '${typeName(a)}' and '${typeName(
@@ -1990,14 +2092,15 @@ BASE_IMPORTS = """\
       }
       return boxInt(li | ri);
     }
-    const lset = getSetLike(a);
-    const rset = getSetLike(b);
+    const lset = getSetOpItems(a);
+    const rset = getSetOpItems(b);
     if (lset && rset) {
       const outItems = new Set(lset.items);
       for (const item of rset.items) {
         outItems.add(item);
       }
-      return boxPtr({ type: lset.type, items: outItems });
+      const outType = lset.isView || rset.isView ? 'set' : lset.type;
+      return boxPtr({ type: outType, items: outItems });
     }
     return boxNone();
   },
@@ -2010,8 +2113,8 @@ BASE_IMPORTS = """\
       }
       return boxInt(li & ri);
     }
-    const lset = getSetLike(a);
-    const rset = getSetLike(b);
+    const lset = getSetOpItems(a);
+    const rset = getSetOpItems(b);
     if (lset && rset) {
       const outItems = new Set();
       for (const item of lset.items) {
@@ -2019,7 +2122,8 @@ BASE_IMPORTS = """\
           outItems.add(item);
         }
       }
-      return boxPtr({ type: lset.type, items: outItems });
+      const outType = lset.isView || rset.isView ? 'set' : lset.type;
+      return boxPtr({ type: outType, items: outItems });
     }
     return boxNone();
   },
@@ -2032,8 +2136,8 @@ BASE_IMPORTS = """\
       }
       return boxInt(li ^ ri);
     }
-    const lset = getSetLike(a);
-    const rset = getSetLike(b);
+    const lset = getSetOpItems(a);
+    const rset = getSetOpItems(b);
     if (lset && rset) {
       const outItems = new Set();
       for (const item of lset.items) {
@@ -2046,14 +2150,15 @@ BASE_IMPORTS = """\
           outItems.add(item);
         }
       }
-      return boxPtr({ type: lset.type, items: outItems });
+      const outType = lset.isView || rset.isView ? 'set' : lset.type;
+      return boxPtr({ type: outType, items: outItems });
     }
     return boxNone();
   },
   inplace_bit_or: (a, b) => {
     const set = getSet(a);
     if (set) {
-      const other = getSetLike(b);
+      const other = getSetInplaceRhs(b);
       if (!other) {
         throw new Error(
           `TypeError: unsupported operand type(s) for |=: '${typeName(a)}' and '${typeName(
@@ -2069,7 +2174,7 @@ BASE_IMPORTS = """\
   inplace_bit_and: (a, b) => {
     const set = getSet(a);
     if (set) {
-      const other = getSetLike(b);
+      const other = getSetInplaceRhs(b);
       if (!other) {
         throw new Error(
           `TypeError: unsupported operand type(s) for &=: '${typeName(a)}' and '${typeName(
@@ -2085,7 +2190,7 @@ BASE_IMPORTS = """\
   inplace_bit_xor: (a, b) => {
     const set = getSet(a);
     if (set) {
-      const other = getSetLike(b);
+      const other = getSetInplaceRhs(b);
       if (!other) {
         throw new Error(
           `TypeError: unsupported operand type(s) for ^=: '${typeName(a)}' and '${typeName(
@@ -3160,8 +3265,19 @@ BASE_IMPORTS = """\
     if (tup) return boxInt(tup.items.length);
     const setLike = getSetLike(val);
     if (setLike) return boxInt(BigInt(setLike.items.size));
+    const dict = getDict(val);
+    if (dict) return boxInt(dict.entries.length);
+    const dictView = getDictKeysView(val) || getDictValuesView(val) || getDictItemsView(val);
+    if (dictView) {
+      const target = getDict(dictView.dictBits);
+      if (target) return boxInt(target.entries.length);
+    }
     const bytes = getBytes(val);
     if (bytes) return boxInt(bytes.data.length);
+    const bytearray = getBytearray(val);
+    if (bytearray) return boxInt(bytearray.data.length);
+    const strVal = getStrObj(val);
+    if (strVal !== null) return boxInt(Array.from(strVal).length);
     return boxInt(0);
   },
   slice: () => boxNone(),
@@ -3417,20 +3533,17 @@ BASE_IMPORTS = """\
   dict_keys: (dictBits) => {
     const dict = getDict(dictBits);
     if (!dict) return boxNone();
-    const keys = dict.entries.map((entry) => entry[0]);
-    return listFromArray(keys);
+    return boxPtr({ type: 'dict_keys', dictBits });
   },
   dict_values: (dictBits) => {
     const dict = getDict(dictBits);
     if (!dict) return boxNone();
-    const values = dict.entries.map((entry) => entry[1]);
-    return listFromArray(values);
+    return boxPtr({ type: 'dict_values', dictBits });
   },
   dict_items: (dictBits) => {
     const dict = getDict(dictBits);
     if (!dict) return boxNone();
-    const items = dict.entries.map((entry) => tupleFromArray([entry[0], entry[1]]));
-    return listFromArray(items);
+    return boxPtr({ type: 'dict_items', dictBits });
   },
   dict_copy: (dictBits) => {
     const dict = getDict(dictBits);
@@ -3669,6 +3782,9 @@ BASE_IMPORTS = """\
     }
     const dict = getDict(val);
     if (dict) {
+      return boxPtr({ type: 'iter', target: val, idx: 0 });
+    }
+    if (getDictKeysView(val) || getDictValuesView(val) || getDictItemsView(val)) {
       return boxPtr({ type: 'iter', target: val, idx: 0 });
     }
     const bytes = getBytes(val);
@@ -4021,42 +4137,101 @@ BASE_IMPORTS = """\
   },
   is_function_obj: (val) => boxBool(getFunction(val) !== null),
   index: (seq, idxBits) => {
-    const idx = Number(unboxInt(idxBits));
     const list = getList(seq);
     const tup = getTuple(seq);
     const bytes = getBytes(seq);
     const bytearray = getBytearray(seq);
+    const strVal = getStrObj(seq);
     const items = list ? list.items : tup ? tup.items : null;
     if (items) {
+      const errMsg = list
+        ? `list indices must be integers or slices, not ${typeName(idxBits)}`
+        : `tuple indices must be integers or slices, not ${typeName(idxBits)}`;
+      const idx = indexFromBitsWithOverflow(
+        idxBits,
+        errMsg,
+        null,
+      );
+      if (idx === null) return boxNone();
       let pos = idx;
       if (pos < 0) pos += items.length;
-      if (pos < 0 || pos >= items.length) return boxNone();
+      if (pos < 0 || pos >= items.length) {
+        throw new Error(
+          `IndexError: ${list ? 'list index out of range' : 'tuple index out of range'}`,
+        );
+      }
       return items[pos];
     }
     if (bytes || bytearray) {
+      const errMsg = bytes
+        ? `byte indices must be integers or slices, not ${typeName(idxBits)}`
+        : `bytearray indices must be integers or slices, not ${typeName(idxBits)}`;
+      const idx = indexFromBitsWithOverflow(
+        idxBits,
+        errMsg,
+        null,
+      );
+      if (idx === null) return boxNone();
       const data = bytes ? bytes.data : bytearray.data;
       let pos = idx;
       if (pos < 0) pos += data.length;
-      if (pos < 0 || pos >= data.length) return boxNone();
+      if (pos < 0 || pos >= data.length) {
+        throw new Error(
+          `IndexError: ${bytearray ? 'bytearray index out of range' : 'index out of range'}`,
+        );
+      }
       return boxInt(data[pos]);
+    }
+    if (strVal !== null) {
+      const errMsg = `string indices must be integers, not '${typeName(idxBits)}'`;
+      const idx = indexFromBitsWithOverflow(
+        idxBits,
+        errMsg,
+        null,
+      );
+      if (idx === null) return boxNone();
+      const chars = Array.from(strVal);
+      let pos = idx;
+      if (pos < 0) pos += chars.length;
+      if (pos < 0 || pos >= chars.length) {
+        throw new Error('IndexError: string index out of range');
+      }
+      return boxPtr({ type: 'str', value: chars[pos] });
     }
     return boxNone();
   },
   store_index: (seq, idxBits, val) => {
-    const idx = Number(unboxInt(idxBits));
     const list = getList(seq);
     if (list) {
+      const errMsg = `list indices must be integers or slices, not ${typeName(idxBits)}`;
+      const idx = indexFromBitsWithOverflow(
+        idxBits,
+        errMsg,
+        null,
+      );
+      if (idx === null) return boxNone();
       let i = idx;
       if (i < 0) i += list.items.length;
-      if (i < 0 || i >= list.items.length) return boxNone();
+      if (i < 0 || i >= list.items.length) {
+        throw new Error('IndexError: list assignment index out of range');
+      }
       list.items[i] = val;
       return seq;
     }
     const bytearray = getBytearray(seq);
     if (bytearray) {
+      const errMsg = `bytearray indices must be integers or slices, not ${typeName(idxBits)}`;
+      const idx = indexFromBitsWithOverflow(
+        idxBits,
+        errMsg,
+        "cannot fit 'int' into an index-sized integer",
+      );
+      if (idx === null) return boxNone();
       let i = idx;
       if (i < 0) i += bytearray.data.length;
-      if (i < 0 || i >= bytearray.data.length) return boxNone();
+      if (i < 0 || i >= bytearray.data.length) {
+        throw new Error('IndexError: bytearray index out of range');
+      }
       let value = getBigIntValue(val);
       if (value === null) {
         const indexAttr = lookupAttr(val, '__index__');
