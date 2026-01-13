@@ -65,6 +65,17 @@ jobs:
         with:
           name: bench-smoke
           path: bench/results/ci_smoke.json
+      - name: Install k6
+        if: matrix.python-version == '3.12'
+        run: |
+          if ! command -v k6 >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y ca-certificates curl gnupg
+            curl -fsSL https://dl.k6.io/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
+            echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list >/dev/null
+            sudo apt-get update
+            sudo apt-get install -y k6
+          fi
       - name: Demo k6 (stack)
         if: matrix.python-version == '3.12'
         run: |

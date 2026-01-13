@@ -61,6 +61,7 @@ PY
     SERVER="django"
   fi
 fi
+export MOLT_SERVER="$SERVER"
 
 # Build worker if needed
 if ! command -v molt-worker >/dev/null 2>&1; then

@@ -303,17 +303,20 @@ def main() -> None:
         )
     if proc_metrics:
         md_lines.append("")
-        md_lines.append("## Process metrics (CPU avg/max, RSS avg/max KB)")
         md_lines.append(
-            "| scenario | role | cpu_avg | cpu_max | rss_avg_kb | rss_max_kb | samples |"
+            "## Process metrics (CPU avg/max, RSS avg/max KB, process count avg/max)"
         )
-        md_lines.append("|---|---|---:|---:|---:|---:|---:|")
+        md_lines.append(
+            "| scenario | role | cpu_avg | cpu_max | rss_avg_kb | rss_max_kb | proc_count_avg | proc_count_max | samples |"
+        )
+        md_lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|")
         for scenario, metrics in proc_metrics.items():
             for role, stats in metrics.items():
                 md_lines.append(
                     f"| {scenario} | {role} | {stats['cpu_avg']:.2f} | "
                     f"{stats['cpu_max']:.2f} | {stats['rss_kb_avg']:.0f} | "
-                    f"{stats['rss_kb_max']:.0f} | {stats['samples']:.0f} |"
+                    f"{stats['rss_kb_max']:.0f} | {stats['proc_count_avg']:.2f} | "
+                    f"{stats['proc_count_max']:.0f} | {stats['samples']:.0f} |"
                 )
     md_path.write_text("\n".join(md_lines))
 
