@@ -891,6 +891,56 @@ impl SimpleBackend {
                     };
                     vars.insert(op.out.unwrap(), res);
                 }
+                "inplace_add" => {
+                    let args = op.args.as_ref().unwrap();
+                    let lhs = vars.get(&args[0]).expect("LHS not found");
+                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let res = if op.fast_int.unwrap_or(false) {
+                        let lhs_val = unbox_int(&mut builder, *lhs);
+                        let rhs_val = unbox_int(&mut builder, *rhs);
+                        let sum = builder.ins().iadd(lhs_val, rhs_val);
+                        box_int_value(&mut builder, sum)
+                    } else {
+                        let lhs_is_int = is_int_tag(&mut builder, *lhs);
+                        let rhs_is_int = is_int_tag(&mut builder, *rhs);
+                        let both_int = builder.ins().band(lhs_is_int, rhs_is_int);
+                        let fast_block = builder.create_block();
+                        let slow_block = builder.create_block();
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+                        builder
+                            .ins()
+                            .brif(both_int, fast_block, &[], slow_block, &[]);
+
+                        builder.switch_to_block(fast_block);
+                        builder.seal_block(fast_block);
+                        let lhs_val = unbox_int(&mut builder, *lhs);
+                        let rhs_val = unbox_int(&mut builder, *rhs);
+                        let sum = builder.ins().iadd(lhs_val, rhs_val);
+                        let fast_res = box_int_value(&mut builder, sum);
+                        builder.ins().jump(merge_block, &[fast_res]);
+
+                        builder.switch_to_block(slow_block);
+                        builder.seal_block(slow_block);
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_inplace_add", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                        let slow_res = builder.inst_results(call)[0];
+                        builder.ins().jump(merge_block, &[slow_res]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                        builder.block_params(merge_block)[0]
+                    };
+                    vars.insert(op.out.unwrap(), res);
+                }
                 "vec_sum_int" => {
                     let args = op.args.as_ref().unwrap();
                     let seq = vars.get(&args[0]).expect("Seq arg not found");
@@ -1233,6 +1283,60 @@ impl SimpleBackend {
                     };
                     vars.insert(op.out.unwrap(), res);
                 }
+                "inplace_sub" => {
+                    let args = op.args.as_ref().unwrap();
+                    let lhs = vars.get(&args[0]).unwrap_or_else(|| {
+                        panic!("LHS not found in {} op {}", func_ir.name, op_idx)
+                    });
+                    let rhs = vars.get(&args[1]).unwrap_or_else(|| {
+                        panic!("RHS not found in {} op {}", func_ir.name, op_idx)
+                    });
+                    let res = if op.fast_int.unwrap_or(false) {
+                        let lhs_val = unbox_int(&mut builder, *lhs);
+                        let rhs_val = unbox_int(&mut builder, *rhs);
+                        let diff = builder.ins().isub(lhs_val, rhs_val);
+                        box_int_value(&mut builder, diff)
+                    } else {
+                        let lhs_is_int = is_int_tag(&mut builder, *lhs);
+                        let rhs_is_int = is_int_tag(&mut builder, *rhs);
+                        let both_int = builder.ins().band(lhs_is_int, rhs_is_int);
+                        let fast_block = builder.create_block();
+                        let slow_block = builder.create_block();
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+                        builder
+                            .ins()
+                            .brif(both_int, fast_block, &[], slow_block, &[]);
+
+                        builder.switch_to_block(fast_block);
+                        builder.seal_block(fast_block);
+                        let lhs_val = unbox_int(&mut builder, *lhs);
+                        let rhs_val = unbox_int(&mut builder, *rhs);
+                        let diff = builder.ins().isub(lhs_val, rhs_val);
+                        let fast_res = box_int_value(&mut builder, diff);
+                        builder.ins().jump(merge_block, &[fast_res]);
+
+                        builder.switch_to_block(slow_block);
+                        builder.seal_block(slow_block);
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_inplace_sub", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                        let slow_res = builder.inst_results(call)[0];
+                        builder.ins().jump(merge_block, &[slow_res]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                        builder.block_params(merge_block)[0]
+                    };
+                    vars.insert(op.out.unwrap(), res);
+                }
                 "mul" => {
                     let args = op.args.as_ref().unwrap();
                     let lhs = vars.get(&args[0]).expect("LHS not found");
@@ -1283,6 +1387,56 @@ impl SimpleBackend {
                     };
                     vars.insert(op.out.unwrap(), res);
                 }
+                "inplace_mul" => {
+                    let args = op.args.as_ref().unwrap();
+                    let lhs = vars.get(&args[0]).expect("LHS not found");
+                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let res = if op.fast_int.unwrap_or(false) {
+                        let lhs_val = unbox_int(&mut builder, *lhs);
+                        let rhs_val = unbox_int(&mut builder, *rhs);
+                        let prod = builder.ins().imul(lhs_val, rhs_val);
+                        box_int_value(&mut builder, prod)
+                    } else {
+                        let lhs_is_int = is_int_tag(&mut builder, *lhs);
+                        let rhs_is_int = is_int_tag(&mut builder, *rhs);
+                        let both_int = builder.ins().band(lhs_is_int, rhs_is_int);
+                        let fast_block = builder.create_block();
+                        let slow_block = builder.create_block();
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+                        builder
+                            .ins()
+                            .brif(both_int, fast_block, &[], slow_block, &[]);
+
+                        builder.switch_to_block(fast_block);
+                        builder.seal_block(fast_block);
+                        let lhs_val = unbox_int(&mut builder, *lhs);
+                        let rhs_val = unbox_int(&mut builder, *rhs);
+                        let prod = builder.ins().imul(lhs_val, rhs_val);
+                        let fast_res = box_int_value(&mut builder, prod);
+                        builder.ins().jump(merge_block, &[fast_res]);
+
+                        builder.switch_to_block(slow_block);
+                        builder.seal_block(slow_block);
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_inplace_mul", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                        let slow_res = builder.inst_results(call)[0];
+                        builder.ins().jump(merge_block, &[slow_res]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                        builder.block_params(merge_block)[0]
+                    };
+                    vars.insert(op.out.unwrap(), res);
+                }
                 "bit_or" => {
                     let args = op.args.as_ref().unwrap();
                     let lhs = vars.get(&args[0]).expect("LHS not found");
@@ -1294,6 +1448,23 @@ impl SimpleBackend {
                     let callee = self
                         .module
                         .declare_function("molt_bit_or", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "inplace_bit_or" => {
+                    let args = op.args.as_ref().unwrap();
+                    let lhs = vars.get(&args[0]).expect("LHS not found");
+                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_inplace_bit_or", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
@@ -1317,6 +1488,23 @@ impl SimpleBackend {
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
+                "inplace_bit_and" => {
+                    let args = op.args.as_ref().unwrap();
+                    let lhs = vars.get(&args[0]).expect("LHS not found");
+                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_inplace_bit_and", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
                 "bit_xor" => {
                     let args = op.args.as_ref().unwrap();
                     let lhs = vars.get(&args[0]).expect("LHS not found");
@@ -1328,6 +1516,23 @@ impl SimpleBackend {
                     let callee = self
                         .module
                         .declare_function("molt_bit_xor", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "inplace_bit_xor" => {
+                    let args = op.args.as_ref().unwrap();
+                    let lhs = vars.get(&args[0]).expect("LHS not found");
+                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_inplace_bit_xor", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);

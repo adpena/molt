@@ -29,6 +29,7 @@ interface intrinsics {
     chan_recv: func(chan: molt-ptr) -> molt-object;
 
     add: func(a: molt-object, b: molt-object) -> molt-object;
+    inplace_add: func(a: molt-object, b: molt-object) -> molt-object;
     vec_sum_int: func(seq: molt-object, acc: molt-object) -> molt-object;
     vec_sum_int_trusted: func(seq: molt-object, acc: molt-object) -> molt-object;
     vec_prod_int: func(seq: molt-object, acc: molt-object) -> molt-object;
@@ -47,9 +48,14 @@ interface intrinsics {
     vec_max_int_range_trusted: func(seq: molt-object, acc: molt-object, start: molt-object) -> molt-object;
     sub: func(a: molt-object, b: molt-object) -> molt-object;
     mul: func(a: molt-object, b: molt-object) -> molt-object;
+    inplace_sub: func(a: molt-object, b: molt-object) -> molt-object;
+    inplace_mul: func(a: molt-object, b: molt-object) -> molt-object;
     bit_or: func(a: molt-object, b: molt-object) -> molt-object;
     bit_and: func(a: molt-object, b: molt-object) -> molt-object;
     bit_xor: func(a: molt-object, b: molt-object) -> molt-object;
+    inplace_bit_or: func(a: molt-object, b: molt-object) -> molt-object;
+    inplace_bit_and: func(a: molt-object, b: molt-object) -> molt-object;
+    inplace_bit_xor: func(a: molt-object, b: molt-object) -> molt-object;
     lshift: func(a: molt-object, b: molt-object) -> molt-object;
     rshift: func(a: molt-object, b: molt-object) -> molt-object;
     matmul: func(a: molt-object, b: molt-object) -> molt-object;

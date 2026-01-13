@@ -1,5 +1,13 @@
+use arrow::array::{
+    ArrayRef, BinaryBuilder, BooleanBuilder, Float64Builder, Int64Builder, NullArray,
+    StringBuilder,
+};
+use arrow::datatypes::{DataType, Field, Schema};
+use arrow::ipc::writer::StreamWriter;
+use arrow::record_batch::RecordBatch;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
+use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
 mod diagnostics;
 
@@ -18,6 +26,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+use uuid::Uuid;
 
 use molt_db::{
     AcquireError, AsyncAcquireError, CancelToken, PgPool, PgPoolConfig, Pool, Pooled, SqliteConn,
@@ -31,7 +40,7 @@ use sqlparser::ast::{
     TableWithJoins as SqlTableWithJoins, Value as SqlValue,
     WildcardAdditionalOptions as SqlWildcardAdditionalOptions,
 };
-use sqlparser::dialect::PostgreSqlDialect;
+use sqlparser::dialect::{PostgreSqlDialect, SQLiteDialect};
 use sqlparser::parser::Parser;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::runtime::Builder as TokioRuntimeBuilder;
@@ -129,7 +138,7 @@ struct ResponseEnvelope {
     #[serde(skip_serializing_if = "Option::is_none")]
     payload: Option<ByteBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    metrics: Option<HashMap<String, u64>>,
+    metrics: Option<HashMap<String, MetricValue>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -146,13 +155,44 @@ struct ResponseEnvelopeJson {
     #[serde(skip_serializing_if = "Option::is_none")]
     payload_b64: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    metrics: Option<HashMap<String, u64>>,
+    metrics: Option<HashMap<String, MetricValue>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     entry: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     compiled: Option<u64>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(untagged)]
+enum MetricValue {
+    Int(u64),
+    Str(String),
+}
+
+impl From<u64> for MetricValue {
+    fn from(value: u64) -> Self {
+        MetricValue::Int(value)
+    }
+}
+
+impl From<usize> for MetricValue {
+    fn from(value: usize) -> Self {
+        MetricValue::Int(value as u64)
+    }
+}
+
+impl From<String> for MetricValue {
+    fn from(value: String) -> Self {
+        MetricValue::Str(value)
+    }
+}
+
+impl From<&str> for MetricValue {
+    fn from(value: &str) -> Self {
+        MetricValue::Str(value.to_string())
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -165,7 +205,7 @@ struct ListItemsRequest {
 }
 
 #[allow(dead_code)]
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct DbQueryRequest {
     #[serde(default)]
     db_alias: Option<String>,
@@ -183,7 +223,7 @@ struct DbQueryRequest {
 }
 
 #[allow(dead_code)]
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 enum DbParams {
     Positional { values: Vec<DbParam> },
@@ -197,7 +237,7 @@ impl Default for DbParams {
 }
 
 #[allow(dead_code)]
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(untagged)]
 enum DbParam {
     Raw(DbParamValue),
@@ -209,7 +249,7 @@ enum DbParam {
 }
 
 #[allow(dead_code)]
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct DbNamedParam {
     name: String,
     #[serde(flatten)]
@@ -217,7 +257,8 @@ struct DbNamedParam {
 }
 
 #[allow(dead_code)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
+#[serde(untagged)]
 enum DbParamValue {
     Null,
     Bool(bool),
@@ -321,7 +362,7 @@ struct ListItemsResponse {
 }
 
 #[allow(dead_code)]
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 struct DbQueryResponse {
     columns: Vec<String>,
     rows: Vec<Vec<DbRowValue>>,
@@ -329,7 +370,7 @@ struct DbQueryResponse {
 }
 
 #[allow(dead_code)]
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(untagged)]
 enum DbRowValue {
     Null,
@@ -338,6 +379,30 @@ enum DbRowValue {
     Float(f64),
     String(String),
     Bytes(ByteBuf),
+}
+
+struct DbQueryExecResult {
+    codec: String,
+    payload: Vec<u8>,
+    row_count: usize,
+    db_alias: String,
+    tag: Option<String>,
+    result_format: DbResultFormat,
+}
+
+enum ExecOutcome {
+    Standard { codec: String, payload: Vec<u8> },
+    DbQuery(DbQueryExecResult),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArrowColumnType {
+    Null,
+    Bool,
+    Int64,
+    Float64,
+    Utf8,
+    Binary,
 }
 
 struct DecodedRequest {
@@ -480,6 +545,12 @@ enum PgParam {
     Float8(f64),
     String(String),
     Bytes(Vec<u8>),
+    Uuid(Uuid),
+    Json(serde_json::Value),
+    Date(NaiveDate),
+    Time(NaiveTime),
+    Timestamp(NaiveDateTime),
+    TimestampTz(DateTime<Utc>),
     NullBool(Option<bool>),
     NullInt2(Option<i16>),
     NullInt4(Option<i32>),
@@ -488,6 +559,12 @@ enum PgParam {
     NullFloat8(Option<f64>),
     NullString(Option<String>),
     NullBytes(Option<Vec<u8>>),
+    NullUuid(Option<Uuid>),
+    NullJson(Option<serde_json::Value>),
+    NullDate(Option<NaiveDate>),
+    NullTime(Option<NaiveTime>),
+    NullTimestamp(Option<NaiveDateTime>),
+    NullTimestampTz(Option<DateTime<Utc>>),
 }
 
 #[allow(dead_code)]
@@ -502,6 +579,12 @@ impl PgParam {
             PgParam::Float8(value) => value,
             PgParam::String(value) => value,
             PgParam::Bytes(value) => value,
+            PgParam::Uuid(value) => value,
+            PgParam::Json(value) => value,
+            PgParam::Date(value) => value,
+            PgParam::Time(value) => value,
+            PgParam::Timestamp(value) => value,
+            PgParam::TimestampTz(value) => value,
             PgParam::NullBool(value) => value,
             PgParam::NullInt2(value) => value,
             PgParam::NullInt4(value) => value,
@@ -510,6 +593,12 @@ impl PgParam {
             PgParam::NullFloat8(value) => value,
             PgParam::NullString(value) => value,
             PgParam::NullBytes(value) => value,
+            PgParam::NullUuid(value) => value,
+            PgParam::NullJson(value) => value,
+            PgParam::NullDate(value) => value,
+            PgParam::NullTime(value) => value,
+            PgParam::NullTimestamp(value) => value,
+            PgParam::NullTimestampTz(value) => value,
         }
     }
 }
@@ -588,6 +677,39 @@ fn write_frame<W: Write>(writer: &mut W, payload: &[u8]) -> io::Result<()> {
     writer.write_all(&size.to_le_bytes())?;
     writer.write_all(payload)?;
     writer.flush()?;
+    Ok(())
+}
+
+async fn read_frame_async<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut R,
+) -> io::Result<Option<Vec<u8>>> {
+    let mut header = [0u8; 4];
+    if let Err(err) = reader.read_exact(&mut header).await {
+        if err.kind() == io::ErrorKind::UnexpectedEof {
+            return Ok(None);
+        }
+        return Err(err);
+    }
+    let size = u32::from_le_bytes(header) as usize;
+    if size > MAX_FRAME_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Frame exceeds max size",
+        ));
+    }
+    let mut buf = vec![0u8; size];
+    reader.read_exact(&mut buf).await?;
+    Ok(Some(buf))
+}
+
+async fn write_frame_async<W: tokio::io::AsyncWrite + Unpin>(
+    writer: &mut W,
+    payload: &[u8],
+) -> io::Result<()> {
+    let size = payload.len() as u32;
+    writer.write_all(&size.to_le_bytes()).await?;
+    writer.write_all(payload).await?;
+    writer.flush().await?;
     Ok(())
 }
 
@@ -1077,9 +1199,13 @@ fn is_ident_continue(ch: char) -> bool {
 }
 
 #[allow(dead_code)]
-fn validate_query(sql: &str, max_rows: u32, allow_write: bool) -> Result<String, ExecError> {
-    let dialect = PostgreSqlDialect {};
-    let mut statements = Parser::parse_sql(&dialect, sql).map_err(|err| ExecError {
+fn validate_query(
+    sql: &str,
+    max_rows: u32,
+    allow_write: bool,
+    dialect: &dyn sqlparser::dialect::Dialect,
+) -> Result<String, ExecError> {
+    let mut statements = Parser::parse_sql(dialect, sql).map_err(|err| ExecError {
         status: "InvalidInput",
         message: format!("SQL parse error: {err}"),
     })?;
@@ -1198,6 +1324,12 @@ fn resolve_pg_param(spec: DbParamSpec) -> Result<(PgParam, Type), ExecError> {
                 Type::FLOAT8 => PgParam::NullFloat8(None),
                 Type::TEXT | Type::VARCHAR | Type::BPCHAR => PgParam::NullString(None),
                 Type::BYTEA => PgParam::NullBytes(None),
+                Type::UUID => PgParam::NullUuid(None),
+                Type::JSON | Type::JSONB => PgParam::NullJson(None),
+                Type::DATE => PgParam::NullDate(None),
+                Type::TIME => PgParam::NullTime(None),
+                Type::TIMESTAMP => PgParam::NullTimestamp(None),
+                Type::TIMESTAMPTZ => PgParam::NullTimestampTz(None),
                 _ => {
                     return Err(ExecError {
                         status: "InvalidInput",
@@ -1279,6 +1411,36 @@ fn resolve_string_param(value: String, hint: Option<&str>) -> Result<(PgParam, T
     let pg_type = hint.and_then(parse_pg_type).unwrap_or(Type::TEXT);
     match pg_type {
         Type::TEXT | Type::VARCHAR | Type::BPCHAR => Ok((PgParam::String(value), pg_type)),
+        Type::UUID => {
+            let parsed = Uuid::parse_str(&value).map_err(|_| ExecError {
+                status: "InvalidInput",
+                message: "Invalid uuid value".to_string(),
+            })?;
+            Ok((PgParam::Uuid(parsed), pg_type))
+        }
+        Type::JSON | Type::JSONB => {
+            let parsed = serde_json::from_str(&value).map_err(|err| ExecError {
+                status: "InvalidInput",
+                message: format!("Invalid json value: {err}"),
+            })?;
+            Ok((PgParam::Json(parsed), pg_type))
+        }
+        Type::DATE => {
+            let parsed = parse_pg_date(&value)?;
+            Ok((PgParam::Date(parsed), pg_type))
+        }
+        Type::TIME => {
+            let parsed = parse_pg_time(&value)?;
+            Ok((PgParam::Time(parsed), pg_type))
+        }
+        Type::TIMESTAMP => {
+            let parsed = parse_pg_timestamp(&value)?;
+            Ok((PgParam::Timestamp(parsed), pg_type))
+        }
+        Type::TIMESTAMPTZ => {
+            let parsed = parse_pg_timestamptz(&value)?;
+            Ok((PgParam::TimestampTz(parsed), pg_type))
+        }
         _ => Err(ExecError {
             status: "InvalidInput",
             message: format!("Expected string for type {pg_type}"),
@@ -1299,9 +1461,54 @@ fn parse_pg_type(name: &str) -> Option<Type> {
         "varchar" | "character varying" => Some(Type::VARCHAR),
         "bpchar" | "char" | "character" => Some(Type::BPCHAR),
         "bytea" => Some(Type::BYTEA),
+        "uuid" => Some(Type::UUID),
+        "json" => Some(Type::JSON),
+        "jsonb" => Some(Type::JSONB),
+        "date" => Some(Type::DATE),
+        "time" | "time without time zone" => Some(Type::TIME),
+        "timestamp" | "timestamp without time zone" => Some(Type::TIMESTAMP),
+        "timestamptz" | "timestamp with time zone" => Some(Type::TIMESTAMPTZ),
         _ => None,
     }
 }
+
+fn parse_pg_date(value: &str) -> Result<NaiveDate, ExecError> {
+    NaiveDate::parse_from_str(value, "%Y-%m-%d").map_err(|_| ExecError {
+        status: "InvalidInput",
+        message: "Invalid date format (expected YYYY-MM-DD)".to_string(),
+    })
+}
+
+fn parse_pg_time(value: &str) -> Result<NaiveTime, ExecError> {
+    NaiveTime::parse_from_str(value, "%H:%M:%S%.f")
+        .or_else(|_| NaiveTime::parse_from_str(value, "%H:%M:%S"))
+        .map_err(|_| ExecError {
+            status: "InvalidInput",
+            message: "Invalid time format (expected HH:MM:SS[.ffffff])".to_string(),
+        })
+}
+
+fn parse_pg_timestamp(value: &str) -> Result<NaiveDateTime, ExecError> {
+    NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
+        .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f"))
+        .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S"))
+        .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S"))
+        .map_err(|_| ExecError {
+            status: "InvalidInput",
+            message: "Invalid timestamp format (expected YYYY-MM-DD[ T]HH:MM:SS[.ffffff])"
+                .to_string(),
+        })
+}
+
+fn parse_pg_timestamptz(value: &str) -> Result<DateTime<Utc>, ExecError> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|dt| dt.with_timezone(&Utc))
+        .map_err(|_| ExecError {
+            status: "InvalidInput",
+            message: "Invalid timestamptz format (expected RFC3339)".to_string(),
+        })
+}
+
 
 fn resolve_sqlite_params(specs: Vec<DbParamSpec>) -> Result<Vec<Value>, ExecError> {
     let mut params = Vec::with_capacity(specs.len());
@@ -1343,6 +1550,233 @@ fn sqlite_value_to_row(value: ValueRef<'_>) -> Result<DbRowValue, ExecError> {
     }
 }
 
+fn db_query_arrow_ipc_bytes(response: &DbQueryResponse) -> Result<Vec<u8>, ExecError> {
+    let mut fields = Vec::with_capacity(response.columns.len());
+    let mut arrays = Vec::with_capacity(response.columns.len());
+    for (idx, name) in response.columns.iter().enumerate() {
+        let column_type = infer_arrow_column_type(&response.rows, idx, name)?;
+        let data_type = match column_type {
+            ArrowColumnType::Null => DataType::Null,
+            ArrowColumnType::Bool => DataType::Boolean,
+            ArrowColumnType::Int64 => DataType::Int64,
+            ArrowColumnType::Float64 => DataType::Float64,
+            ArrowColumnType::Utf8 => DataType::Utf8,
+            ArrowColumnType::Binary => DataType::Binary,
+        };
+        fields.push(Field::new(name, data_type.clone(), true));
+        arrays.push(build_arrow_array(&response.rows, idx, column_type)?);
+    }
+    let schema = Arc::new(Schema::new(fields));
+    let batch = RecordBatch::try_new(schema.clone(), arrays).map_err(|err| ExecError {
+        status: "InternalError",
+        message: format!("Arrow record batch failed: {err}"),
+    })?;
+    let mut buffer = Vec::new();
+    {
+        let mut writer =
+            StreamWriter::try_new(&mut buffer, schema.as_ref()).map_err(|err| ExecError {
+                status: "InternalError",
+                message: format!("Arrow IPC writer failed: {err}"),
+            })?;
+        writer.write(&batch).map_err(|err| ExecError {
+            status: "InternalError",
+            message: format!("Arrow IPC write failed: {err}"),
+        })?;
+        writer.finish().map_err(|err| ExecError {
+            status: "InternalError",
+            message: format!("Arrow IPC finish failed: {err}"),
+        })?;
+    }
+    Ok(buffer)
+}
+
+fn infer_arrow_column_type(
+    rows: &[Vec<DbRowValue>],
+    idx: usize,
+    name: &str,
+) -> Result<ArrowColumnType, ExecError> {
+    let mut current: Option<ArrowColumnType> = None;
+    for row in rows {
+        let value = row.get(idx).ok_or_else(|| ExecError {
+            status: "InternalError",
+            message: format!("Row length mismatch for column '{name}'"),
+        })?;
+        let next = match value {
+            DbRowValue::Null => current,
+            DbRowValue::Bool(_) => match current {
+                None | Some(ArrowColumnType::Bool) => Some(ArrowColumnType::Bool),
+                _ => {
+                    return Err(ExecError {
+                        status: "InvalidInput",
+                        message: format!(
+                            "Arrow IPC requires consistent types; column '{name}' mixed bool"
+                        ),
+                    })
+                }
+            },
+            DbRowValue::Int(_) => match current {
+                None | Some(ArrowColumnType::Int64) => Some(ArrowColumnType::Int64),
+                Some(ArrowColumnType::Float64) => Some(ArrowColumnType::Float64),
+                _ => {
+                    return Err(ExecError {
+                        status: "InvalidInput",
+                        message: format!(
+                            "Arrow IPC requires consistent types; column '{name}' mixed int"
+                        ),
+                    })
+                }
+            },
+            DbRowValue::Float(_) => match current {
+                None | Some(ArrowColumnType::Float64) => Some(ArrowColumnType::Float64),
+                Some(ArrowColumnType::Int64) => Some(ArrowColumnType::Float64),
+                _ => {
+                    return Err(ExecError {
+                        status: "InvalidInput",
+                        message: format!(
+                            "Arrow IPC requires consistent types; column '{name}' mixed float"
+                        ),
+                    })
+                }
+            },
+            DbRowValue::String(_) => match current {
+                None | Some(ArrowColumnType::Utf8) => Some(ArrowColumnType::Utf8),
+                _ => {
+                    return Err(ExecError {
+                        status: "InvalidInput",
+                        message: format!(
+                            "Arrow IPC requires consistent types; column '{name}' mixed string"
+                        ),
+                    })
+                }
+            },
+            DbRowValue::Bytes(_) => match current {
+                None | Some(ArrowColumnType::Binary) => Some(ArrowColumnType::Binary),
+                _ => {
+                    return Err(ExecError {
+                        status: "InvalidInput",
+                        message: format!(
+                            "Arrow IPC requires consistent types; column '{name}' mixed bytes"
+                        ),
+                    })
+                }
+            },
+        };
+        current = next;
+    }
+    Ok(current.unwrap_or(ArrowColumnType::Null))
+}
+
+fn build_arrow_array(
+    rows: &[Vec<DbRowValue>],
+    idx: usize,
+    column_type: ArrowColumnType,
+) -> Result<ArrayRef, ExecError> {
+    match column_type {
+        ArrowColumnType::Null => Ok(Arc::new(NullArray::new(rows.len()))),
+        ArrowColumnType::Bool => {
+            let mut builder = BooleanBuilder::with_capacity(rows.len());
+            for row in rows {
+                let value = row.get(idx).ok_or_else(|| ExecError {
+                    status: "InternalError",
+                    message: "Row length mismatch while encoding Arrow IPC".to_string(),
+                })?;
+                match value {
+                    DbRowValue::Null => builder.append_null(),
+                    DbRowValue::Bool(val) => builder.append_value(*val),
+                    _ => {
+                        return Err(ExecError {
+                            status: "InternalError",
+                            message: "Arrow IPC type mismatch (bool)".to_string(),
+                        })
+                    }
+                }
+            }
+            Ok(Arc::new(builder.finish()))
+        }
+        ArrowColumnType::Int64 => {
+            let mut builder = Int64Builder::with_capacity(rows.len());
+            for row in rows {
+                let value = row.get(idx).ok_or_else(|| ExecError {
+                    status: "InternalError",
+                    message: "Row length mismatch while encoding Arrow IPC".to_string(),
+                })?;
+                match value {
+                    DbRowValue::Null => builder.append_null(),
+                    DbRowValue::Int(val) => builder.append_value(*val),
+                    _ => {
+                        return Err(ExecError {
+                            status: "InternalError",
+                            message: "Arrow IPC type mismatch (int)".to_string(),
+                        })
+                    }
+                }
+            }
+            Ok(Arc::new(builder.finish()))
+        }
+        ArrowColumnType::Float64 => {
+            let mut builder = Float64Builder::with_capacity(rows.len());
+            for row in rows {
+                let value = row.get(idx).ok_or_else(|| ExecError {
+                    status: "InternalError",
+                    message: "Row length mismatch while encoding Arrow IPC".to_string(),
+                })?;
+                match value {
+                    DbRowValue::Null => builder.append_null(),
+                    DbRowValue::Float(val) => builder.append_value(*val),
+                    DbRowValue::Int(val) => builder.append_value(*val as f64),
+                    _ => {
+                        return Err(ExecError {
+                            status: "InternalError",
+                            message: "Arrow IPC type mismatch (float)".to_string(),
+                        })
+                    }
+                }
+            }
+            Ok(Arc::new(builder.finish()))
+        }
+        ArrowColumnType::Utf8 => {
+            let mut builder = StringBuilder::new();
+            for row in rows {
+                let value = row.get(idx).ok_or_else(|| ExecError {
+                    status: "InternalError",
+                    message: "Row length mismatch while encoding Arrow IPC".to_string(),
+                })?;
+                match value {
+                    DbRowValue::Null => builder.append_null(),
+                    DbRowValue::String(val) => builder.append_value(val),
+                    _ => {
+                        return Err(ExecError {
+                            status: "InternalError",
+                            message: "Arrow IPC type mismatch (string)".to_string(),
+                        })
+                    }
+                }
+            }
+            Ok(Arc::new(builder.finish()))
+        }
+        ArrowColumnType::Binary => {
+            let mut builder = BinaryBuilder::new();
+            for row in rows {
+                let value = row.get(idx).ok_or_else(|| ExecError {
+                    status: "InternalError",
+                    message: "Row length mismatch while encoding Arrow IPC".to_string(),
+                })?;
+                match value {
+                    DbRowValue::Null => builder.append_null(),
+                    DbRowValue::Bytes(val) => builder.append_value(val.as_ref()),
+                    _ => {
+                        return Err(ExecError {
+                            status: "InternalError",
+                            message: "Arrow IPC type mismatch (bytes)".to_string(),
+                        })
+                    }
+                }
+            }
+            Ok(Arc::new(builder.finish()))
+        }
+    }
+}
+
 fn pg_row_values(
     row: &PgRow,
     columns: &[tokio_postgres::Column],
@@ -1378,9 +1812,51 @@ fn pg_row_values(
                     val.map(|v| DbRowValue::Bytes(ByteBuf::from(v)))
                         .unwrap_or(DbRowValue::Null)
                 }),
-            _ => row
-                .try_get::<_, Option<String>>(idx)
-                .map(|val| val.map(DbRowValue::String).unwrap_or(DbRowValue::Null)),
+            Type::UUID => row
+                .try_get::<_, Option<Uuid>>(idx)
+                .map(|val| {
+                    val.map(|v| DbRowValue::String(v.to_string()))
+                        .unwrap_or(DbRowValue::Null)
+                }),
+            Type::JSON | Type::JSONB => row
+                .try_get::<_, Option<serde_json::Value>>(idx)
+                .map(|val| {
+                    val.map(|v| DbRowValue::String(v.to_string()))
+                        .unwrap_or(DbRowValue::Null)
+                }),
+            Type::DATE => row
+                .try_get::<_, Option<NaiveDate>>(idx)
+                .map(|val| {
+                    val.map(|v| DbRowValue::String(v.to_string()))
+                        .unwrap_or(DbRowValue::Null)
+                }),
+            Type::TIME => row
+                .try_get::<_, Option<NaiveTime>>(idx)
+                .map(|val| {
+                    val.map(|v| {
+                        DbRowValue::String(v.format("%H:%M:%S%.f").to_string())
+                    })
+                    .unwrap_or(DbRowValue::Null)
+                }),
+            Type::TIMESTAMP => row
+                .try_get::<_, Option<NaiveDateTime>>(idx)
+                .map(|val| {
+                    val.map(|v| {
+                        DbRowValue::String(v.format("%Y-%m-%dT%H:%M:%S%.f").to_string())
+                    })
+                    .unwrap_or(DbRowValue::Null)
+                }),
+            Type::TIMESTAMPTZ => row
+                .try_get::<_, Option<DateTime<Utc>>>(idx)
+                .map(|val| {
+                    val.map(|v| DbRowValue::String(v.to_rfc3339()))
+                        .unwrap_or(DbRowValue::Null)
+                }),
+            _ => {
+                // TODO(offload, owner:runtime, milestone:SL1): add typed decoding for common PG types.
+                row.try_get::<_, Option<String>>(idx)
+                    .map(|val| val.map(DbRowValue::String).unwrap_or(DbRowValue::Null))
+            }
         }
         .map_err(|err| ExecError {
             status: "InvalidInput",
@@ -1583,6 +2059,14 @@ fn execute_db_query_sync(
     envelope: &RequestEnvelope,
     ctx: &ExecContext<'_>,
 ) -> Result<(String, Vec<u8>), ExecError> {
+    let result = execute_db_query_sync_result(envelope, ctx)?;
+    Ok((result.codec, result.payload))
+}
+
+fn execute_db_query_sync_result(
+    envelope: &RequestEnvelope,
+    ctx: &ExecContext<'_>,
+) -> Result<DbQueryExecResult, ExecError> {
     let request = decode_db_query_request(envelope)?;
     let sql = request.sql.trim();
     if sql.is_empty() {
@@ -1599,23 +2083,19 @@ fn execute_db_query_sync(
         });
     }
     let result_format = DbResultFormat::parse(request.result_format.as_deref())?;
-    if matches!(result_format, DbResultFormat::ArrowIpc) {
-        return Err(ExecError {
-            status: "InvalidInput",
-            message: "arrow_ipc result_format is not supported yet".to_string(),
-        });
-    }
     let max_rows = request.max_rows.unwrap_or(ctx.default_max_rows);
     let allow_write = request.allow_write.unwrap_or(false);
     let (normalized_sql, specs) =
         normalize_params_and_sql(sql, request.params, ParamStyle::QuestionNumbered)?;
-    let validated_sql = validate_query(&normalized_sql, max_rows, allow_write)?;
+    let dialect = SQLiteDialect {};
+    let validated_sql = validate_query(&normalized_sql, max_rows, allow_write, &dialect)?;
     let response = db_query_sqlite_response(&validated_sql, specs, ctx)?;
-    let encoded = encode_payload(&response, result_format.codec()).map_err(|err| ExecError {
-        status: "InternalError",
-        message: err,
-    })?;
-    Ok((result_format.codec().to_string(), encoded))
+    finalize_db_query_response(
+        response,
+        result_format,
+        alias.to_string(),
+        request.tag,
+    )
 }
 
 fn db_query_sqlite_response(
@@ -1682,12 +2162,45 @@ fn db_query_sqlite_response(
     })
 }
 
+fn finalize_db_query_response(
+    response: DbQueryResponse,
+    result_format: DbResultFormat,
+    db_alias: String,
+    tag: Option<String>,
+) -> Result<DbQueryExecResult, ExecError> {
+    let payload = match result_format {
+        DbResultFormat::Json | DbResultFormat::Msgpack => {
+            encode_payload(&response, result_format.codec()).map_err(|err| ExecError {
+                status: "InternalError",
+                message: err,
+            })?
+        }
+        DbResultFormat::ArrowIpc => db_query_arrow_ipc_bytes(&response)?,
+    };
+    Ok(DbQueryExecResult {
+        codec: result_format.codec().to_string(),
+        payload,
+        row_count: response.row_count,
+        db_alias,
+        tag,
+        result_format,
+    })
+}
+
 async fn execute_db_query_async(
     envelope: RequestEnvelope,
     ctx: &AsyncExecContext<'_>,
 ) -> Result<(String, Vec<u8>), ExecError> {
+    let result = execute_db_query_async_result(envelope, ctx).await?;
+    Ok((result.codec, result.payload))
+}
+
+async fn execute_db_query_async_result(
+    envelope: RequestEnvelope,
+    ctx: &AsyncExecContext<'_>,
+) -> Result<DbQueryExecResult, ExecError> {
     if ctx.pg_pool.is_some() {
-        return execute_db_query_postgres(&envelope, ctx).await;
+        return execute_db_query_postgres_result(&envelope, ctx).await;
     }
     let cancelled = ctx.cancelled.clone();
     let pool = ctx.pool.clone();
@@ -1710,7 +2223,7 @@ async fn execute_db_query_async(
             fake_cpu_iters,
             default_max_rows,
         };
-        execute_db_query_sync(&envelope, &exec_ctx)
+        execute_db_query_sync_result(&envelope, &exec_ctx)
     })
     .await
     .map_err(|err| ExecError {
@@ -1719,10 +2232,10 @@ async fn execute_db_query_async(
     })?
 }
 
-async fn execute_db_query_postgres(
+async fn execute_db_query_postgres_result(
     envelope: &RequestEnvelope,
     ctx: &AsyncExecContext<'_>,
-) -> Result<(String, Vec<u8>), ExecError> {
+) -> Result<DbQueryExecResult, ExecError> {
     let request = decode_db_query_request(envelope)?;
     let sql = request.sql.trim();
     if sql.is_empty() {
@@ -1739,24 +2252,28 @@ async fn execute_db_query_postgres(
         });
     }
     let result_format = DbResultFormat::parse(request.result_format.as_deref())?;
-    if matches!(result_format, DbResultFormat::ArrowIpc) {
-        return Err(ExecError {
-            status: "InvalidInput",
-            message: "arrow_ipc result_format is not supported yet".to_string(),
-        });
-    }
     let max_rows = request.max_rows.unwrap_or(ctx.default_max_rows);
     let allow_write = request.allow_write.unwrap_or(false);
     let (normalized_sql, specs) =
         normalize_params_and_sql(sql, request.params, ParamStyle::DollarNumbered)?;
-    let validated_sql = validate_query(&normalized_sql, max_rows, allow_write)?;
+    let dialect = PostgreSqlDialect {};
+    let validated_sql = validate_query(&normalized_sql, max_rows, allow_write, &dialect)?;
     let (pg_params, pg_types) = resolve_pg_params(specs)?;
     let params_refs: Vec<&(dyn ToSql + Sync)> = pg_params.iter().map(|p| p.as_tosql()).collect();
     let pool = ctx.pg_pool.ok_or_else(|| ExecError {
         status: "InvalidInput",
         message: "Postgres pool not configured".to_string(),
     })?;
-    let mut conn = acquire_pg_connection(
+    let query_timeout = pool.config().query_timeout;
+    let effective_timeout = if query_timeout.is_zero() {
+        ctx.timeout
+    } else {
+        match ctx.timeout {
+            Some(limit) => Some(limit.min(query_timeout)),
+            None => Some(query_timeout),
+        }
+    };
+    let conn = acquire_pg_connection(
         pool,
         &ctx.cancel_token,
         ctx.exec_start,
@@ -1771,19 +2288,19 @@ async fn execute_db_query_postgres(
             status: "InternalError",
             message: format!("Postgres prepare failed: {err}"),
         })?;
-    let columns = statement.columns().to_vec();
+    let columns = statement.columns();
     let rows = execute_pg_query(
-        &mut conn,
+        conn,
         &statement,
         &params_refs,
         &ctx.cancel_token,
         ctx.exec_start,
-        ctx.timeout,
+        effective_timeout,
     )
     .await?;
     let mut decoded_rows = Vec::with_capacity(rows.len());
     for row in rows {
-        decoded_rows.push(pg_row_values(&row, &columns)?);
+        decoded_rows.push(pg_row_values(&row, columns)?);
     }
     let column_names = columns
         .iter()
@@ -1794,11 +2311,12 @@ async fn execute_db_query_postgres(
         row_count: decoded_rows.len(),
         rows: decoded_rows,
     };
-    let encoded = encode_payload(&response, result_format.codec()).map_err(|err| ExecError {
-        status: "InternalError",
-        message: err,
-    })?;
-    Ok((result_format.codec().to_string(), encoded))
+    finalize_db_query_response(
+        response,
+        result_format,
+        alias.to_string(),
+        request.tag,
+    )
 }
 
 async fn acquire_pg_connection(
@@ -1841,7 +2359,7 @@ fn map_pg_acquire(
 }
 
 async fn execute_pg_query(
-    conn: &mut molt_db::AsyncPooled<molt_db::PgConn>,
+    conn: molt_db::AsyncPooled<molt_db::PgConn>,
     statement: &tokio_postgres::Statement,
     params: &[&(dyn ToSql + Sync)],
     cancel: &CancelToken,
@@ -2076,16 +2594,17 @@ fn handle_request(
         .min(u128::from(u64::MAX)) as u64;
     let queue_ms = queue_us / 1_000;
     let mut metrics = HashMap::new();
-    metrics.insert("decode_us".to_string(), request.decode_us);
-    metrics.insert("queue_ms".to_string(), queue_ms);
-    metrics.insert("queue_us".to_string(), queue_us);
-    metrics.insert("queue_depth".to_string(), queue_depth as u64);
-    metrics.insert("pool_in_flight".to_string(), ctx.pool.in_flight() as u64);
-    metrics.insert("pool_idle".to_string(), ctx.pool.idle_count() as u64);
+    metrics.insert("decode_us".to_string(), request.decode_us.into());
+    metrics.insert("queue_ms".to_string(), queue_ms.into());
+    metrics.insert("queue_us".to_string(), queue_us.into());
+    metrics.insert("queue_depth".to_string(), (queue_depth as u64).into());
     metrics.insert(
-        "payload_bytes".to_string(),
-        envelope.payload.as_ref().map(|p| p.len()).unwrap_or(0) as u64,
+        "pool_in_flight".to_string(),
+        (ctx.pool.in_flight() as u64).into(),
     );
+    metrics.insert("pool_idle".to_string(), (ctx.pool.idle_count() as u64).into());
+    let payload_bytes = envelope.payload.as_ref().map(|p| p.len()).unwrap_or(0) as u64;
+    metrics.insert("payload_bytes".to_string(), payload_bytes.into());
     if is_cancelled(&ctx.cancelled, request_id) {
         return (
             wire,
@@ -2136,16 +2655,40 @@ fn handle_request(
         default_max_rows: ctx.default_max_rows,
     };
     let handler_start = Instant::now();
-    let result = execute_entry(&envelope, &exec_ctx, &ctx.exports, &ctx.compiled_entries);
+    let result = if envelope.entry == "db_query" {
+        execute_db_query_sync_result(&envelope, &exec_ctx).map(ExecOutcome::DbQuery)
+    } else {
+        execute_entry(&envelope, &exec_ctx, &ctx.exports, &ctx.compiled_entries)
+            .map(|(codec, payload)| ExecOutcome::Standard { codec, payload })
+    };
     let handler_us = handler_start
         .elapsed()
         .as_micros()
         .min(u128::from(u64::MAX)) as u64;
     let exec_us = exec_start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
     let exec_ms = exec_us / 1_000;
-    metrics.insert("handler_us".to_string(), handler_us);
-    metrics.insert("exec_us".to_string(), exec_us);
-    metrics.insert("exec_ms".to_string(), exec_ms);
+    metrics.insert("handler_us".to_string(), handler_us.into());
+    metrics.insert("exec_us".to_string(), exec_us.into());
+    metrics.insert("exec_ms".to_string(), exec_ms.into());
+    if let Ok(ExecOutcome::DbQuery(db_result)) = &result {
+        metrics.insert("db_row_count".to_string(), db_result.row_count.into());
+        metrics.insert("db_bytes_in".to_string(), payload_bytes.into());
+        metrics.insert(
+            "db_bytes_out".to_string(),
+            (db_result.payload.len() as u64).into(),
+        );
+        metrics.insert(
+            "db_alias".to_string(),
+            MetricValue::from(db_result.db_alias.as_str()),
+        );
+        metrics.insert(
+            "db_result_format".to_string(),
+            MetricValue::from(db_result.result_format.codec()),
+        );
+        if let Some(tag) = db_result.tag.as_deref() {
+            metrics.insert("db_tag".to_string(), MetricValue::from(tag));
+        }
+    }
     if let Some(limit) = timeout {
         if exec_start.elapsed() > limit {
             return (
@@ -2165,13 +2708,26 @@ fn handle_request(
     }
 
     match result {
-        Ok((codec, payload)) => (
+        Ok(ExecOutcome::Standard { codec, payload }) => (
             wire,
             ResponseEnvelope {
                 request_id,
                 status: "Ok".to_string(),
                 codec,
                 payload: Some(ByteBuf::from(payload)),
+                metrics: Some(metrics),
+                error: None,
+                entry: Some(entry_name),
+                compiled: Some(compiled_flag),
+            },
+        ),
+        Ok(ExecOutcome::DbQuery(db_result)) => (
+            wire,
+            ResponseEnvelope {
+                request_id,
+                status: "Ok".to_string(),
+                codec: db_result.codec,
+                payload: Some(ByteBuf::from(db_result.payload)),
                 metrics: Some(metrics),
                 error: None,
                 entry: Some(entry_name),
@@ -2192,6 +2748,236 @@ fn handle_request(
             },
         ),
     }
+}
+
+async fn handle_request_async(
+    request: DecodedRequest,
+    queue_depth: usize,
+    ctx: &AsyncWorkerContext,
+) -> (WireCodec, ResponseEnvelope) {
+    let wire = request.wire;
+    let envelope = request.envelope;
+    let request_id = envelope.request_id;
+    let exec_start = Instant::now();
+    let queue_us = exec_start
+        .duration_since(request.queued_at)
+        .as_micros()
+        .min(u128::from(u64::MAX)) as u64;
+    let queue_ms = queue_us / 1_000;
+    let mut metrics = HashMap::new();
+    metrics.insert("decode_us".to_string(), request.decode_us.into());
+    metrics.insert("queue_ms".to_string(), queue_ms.into());
+    metrics.insert("queue_us".to_string(), queue_us.into());
+    metrics.insert("queue_depth".to_string(), (queue_depth as u64).into());
+    let (pool_in_flight, pool_idle) = match ctx.pg_pool.as_ref() {
+        Some(pool) => (pool.in_flight(), pool.idle_count()),
+        None => (ctx.pool.in_flight(), ctx.pool.idle_count()),
+    };
+    metrics.insert("pool_in_flight".to_string(), (pool_in_flight as u64).into());
+    metrics.insert("pool_idle".to_string(), (pool_idle as u64).into());
+    let payload_bytes = envelope.payload.as_ref().map(|p| p.len()).unwrap_or(0) as u64;
+    metrics.insert("payload_bytes".to_string(), payload_bytes.into());
+    if is_cancelled(&ctx.cancelled, request_id) {
+        ctx.cancel_registry.clear(request_id);
+        return (
+            wire,
+            ResponseEnvelope {
+                request_id,
+                status: "Cancelled".to_string(),
+                codec: "raw".to_string(),
+                payload: None,
+                metrics: Some(metrics),
+                error: Some("Request cancelled".to_string()),
+                entry: Some(envelope.entry.clone()),
+                compiled: Some(0),
+            },
+        );
+    }
+    if !envelope.entry.starts_with("__") && !ctx.exports.contains(&envelope.entry) {
+        ctx.cancel_registry.clear(request_id);
+        return (
+            wire,
+            ResponseEnvelope {
+                request_id,
+                status: "InvalidInput".to_string(),
+                codec: "raw".to_string(),
+                payload: None,
+                metrics: Some(metrics),
+                error: Some(format!("Unknown entry '{}'", envelope.entry)),
+                entry: Some(envelope.entry.clone()),
+                compiled: Some(0),
+            },
+        );
+    }
+
+    let timeout = if envelope.timeout_ms == 0 {
+        None
+    } else {
+        Some(Duration::from_millis(envelope.timeout_ms as u64))
+    };
+    let entry_name = envelope.entry.clone();
+    let compiled_flag = ctx.compiled_entries.contains_key(&entry_name) as u64;
+    let cancel_token = ctx.cancel_registry.register(request_id);
+    let exec_ctx = AsyncExecContext {
+        cancelled: &ctx.cancelled,
+        cancel_token,
+        request_id,
+        pool: &ctx.pool,
+        pg_pool: ctx.pg_pool.as_deref(),
+        timeout,
+        exec_start,
+        fake_delay: ctx.fake_delay,
+        fake_decode_us_per_row: ctx.fake_decode_us_per_row,
+        fake_cpu_iters: ctx.fake_cpu_iters,
+        default_max_rows: ctx.default_max_rows,
+    };
+    let handler_start = Instant::now();
+    let result = if entry_name == "db_query" {
+        execute_db_query_async_result(envelope, &exec_ctx)
+            .await
+            .map(ExecOutcome::DbQuery)
+    } else {
+        execute_entry_async(
+            envelope,
+            &exec_ctx,
+            ctx.exports.clone(),
+            ctx.compiled_entries.clone(),
+        )
+        .await
+        .map(|(codec, payload)| ExecOutcome::Standard { codec, payload })
+    };
+    ctx.cancel_registry.clear(request_id);
+    let handler_us = handler_start
+        .elapsed()
+        .as_micros()
+        .min(u128::from(u64::MAX)) as u64;
+    let exec_us = exec_start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+    let exec_ms = exec_us / 1_000;
+    metrics.insert("handler_us".to_string(), handler_us.into());
+    metrics.insert("exec_us".to_string(), exec_us.into());
+    metrics.insert("exec_ms".to_string(), exec_ms.into());
+    if let Ok(ExecOutcome::DbQuery(db_result)) = &result {
+        metrics.insert("db_row_count".to_string(), db_result.row_count.into());
+        metrics.insert("db_bytes_in".to_string(), payload_bytes.into());
+        metrics.insert(
+            "db_bytes_out".to_string(),
+            (db_result.payload.len() as u64).into(),
+        );
+        metrics.insert(
+            "db_alias".to_string(),
+            MetricValue::from(db_result.db_alias.as_str()),
+        );
+        metrics.insert(
+            "db_result_format".to_string(),
+            MetricValue::from(db_result.result_format.codec()),
+        );
+        if let Some(tag) = db_result.tag.as_deref() {
+            metrics.insert("db_tag".to_string(), MetricValue::from(tag));
+        }
+    }
+    if let Some(limit) = timeout {
+        if exec_start.elapsed() > limit {
+            return (
+                wire,
+                ResponseEnvelope {
+                    request_id,
+                    status: "Timeout".to_string(),
+                    codec: "raw".to_string(),
+                    payload: None,
+                    metrics: Some(metrics),
+                    error: Some("Request timed out".to_string()),
+                    entry: Some(entry_name),
+                    compiled: Some(compiled_flag),
+                },
+            );
+        }
+    }
+
+    match result {
+        Ok(ExecOutcome::Standard { codec, payload }) => (
+            wire,
+            ResponseEnvelope {
+                request_id,
+                status: "Ok".to_string(),
+                codec,
+                payload: Some(ByteBuf::from(payload)),
+                metrics: Some(metrics),
+                error: None,
+                entry: Some(entry_name),
+                compiled: Some(compiled_flag),
+            },
+        ),
+        Ok(ExecOutcome::DbQuery(db_result)) => (
+            wire,
+            ResponseEnvelope {
+                request_id,
+                status: "Ok".to_string(),
+                codec: db_result.codec,
+                payload: Some(ByteBuf::from(db_result.payload)),
+                metrics: Some(metrics),
+                error: None,
+                entry: Some(entry_name),
+                compiled: Some(compiled_flag),
+            },
+        ),
+        Err(err) => (
+            wire,
+            ResponseEnvelope {
+                request_id,
+                status: err.status.to_string(),
+                codec: "raw".to_string(),
+                payload: None,
+                metrics: Some(metrics),
+                error: Some(err.message),
+                entry: Some(entry_name),
+                compiled: Some(compiled_flag),
+            },
+        ),
+    }
+}
+
+async fn execute_entry_async(
+    envelope: RequestEnvelope,
+    ctx: &AsyncExecContext<'_>,
+    exports: Arc<HashSet<String>>,
+    compiled_entries: Arc<HashMap<String, CompiledEntry>>,
+) -> Result<(String, Vec<u8>), ExecError> {
+    if envelope.entry == "db_query" {
+        return execute_db_query_async(envelope, ctx).await;
+    }
+    let cancelled = ctx.cancelled.clone();
+    let pool = ctx.pool.clone();
+    let exec_start = ctx.exec_start;
+    let timeout = ctx.timeout;
+    let request_id = ctx.request_id;
+    let fake_delay = ctx.fake_delay;
+    let fake_decode_us_per_row = ctx.fake_decode_us_per_row;
+    let fake_cpu_iters = ctx.fake_cpu_iters;
+    let default_max_rows = ctx.default_max_rows;
+    spawn_blocking(move || {
+        let exec_ctx = ExecContext {
+            cancelled: &cancelled,
+            request_id,
+            pool: &pool,
+            timeout,
+            exec_start,
+            fake_delay,
+            fake_decode_us_per_row,
+            fake_cpu_iters,
+            default_max_rows,
+        };
+        execute_entry(
+            &envelope,
+            &exec_ctx,
+            exports.as_ref(),
+            compiled_entries.as_ref(),
+        )
+    })
+    .await
+    .map_err(|err| ExecError {
+        status: "InternalError",
+        message: format!("worker task join failed: {err}"),
+    })?
 }
 
 fn response_with_status(wire: WireCodec, request_id: u64, status: &'static str, error: &str) {
@@ -2233,137 +3019,14 @@ fn load_exports(path: &str) -> Result<HashSet<String>, String> {
     Ok(exports)
 }
 
-fn main() -> io::Result<()> {
-    let mut exports_path = None;
-    let mut compiled_exports = None;
-    let mut max_queue = env::var("MOLT_WORKER_MAX_QUEUE")
-        .ok()
-        .and_then(|val| val.parse::<usize>().ok())
-        .filter(|val| *val > 0)
-        .unwrap_or(64);
-    let mut threads = env::var("MOLT_WORKER_THREADS")
-        .ok()
-        .and_then(|val| val.parse::<usize>().ok())
-        .filter(|val| *val > 0);
-    let fake_delay_ms = env::var("MOLT_FAKE_DB_DELAY_MS")
-        .ok()
-        .and_then(|val| val.parse::<u64>().ok())
-        .unwrap_or(0);
-    let fake_cpu_iters = env::var("MOLT_FAKE_DB_CPU_ITERS")
-        .ok()
-        .and_then(|val| val.parse::<u32>().ok())
-        .unwrap_or(0);
-    let fake_decode_us_per_row = env::var("MOLT_FAKE_DB_DECODE_US_PER_ROW")
-        .ok()
-        .and_then(|val| val.parse::<u64>().ok())
-        .unwrap_or(0);
-    let sqlite_path = env::var("MOLT_DB_SQLITE_PATH").ok().and_then(|val| {
-        if val.trim().is_empty() {
-            None
-        } else {
-            Some(val)
-        }
-    });
-    let sqlite_readwrite = env::var("MOLT_DB_SQLITE_READWRITE")
-        .ok()
-        .map(|val| matches!(val.as_str(), "1" | "true" | "yes"))
-        .unwrap_or(false);
-    let sqlite_mode = if sqlite_readwrite {
-        SqliteOpenMode::ReadWrite
-    } else {
-        SqliteOpenMode::ReadOnly
-    };
-    let mut args = env::args().skip(1);
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--exports" => exports_path = args.next(),
-            "--compiled-exports" => compiled_exports = args.next().map(PathBuf::from),
-            "--max-queue" => {
-                if let Some(val) = args.next() {
-                    max_queue = val.parse().unwrap_or(64)
-                }
-            }
-            "--threads" => {
-                if let Some(val) = args.next() {
-                    threads = val.parse().ok();
-                }
-            }
-            "--stdio" => {}
-            _ => {}
-        }
-    }
-
-    let exports = if let Some(path) = exports_path.as_deref() {
-        match load_exports(path) {
-            Ok(exports) => exports,
-            Err(err) => {
-                eprintln!("Failed to load exports: {err}");
-                HashSet::new()
-            }
-        }
-    } else {
-        HashSet::new()
-    };
-    let exports = Arc::new(exports);
-    let compiled_entries =
-        load_compiled_entries(compiled_exports).unwrap_or_else(|_| HashMap::new());
-    let compiled_entries = Arc::new(compiled_entries);
-    let cancelled = Arc::new(Mutex::new(HashSet::new()));
-
+fn run_sync(ctx: WorkerContext, max_queue: usize, thread_count: usize) -> io::Result<()> {
     let (request_tx, request_rx) = bounded::<DecodedRequest>(max_queue);
     let (response_tx, response_rx) = bounded::<(WireCodec, ResponseEnvelope)>(max_queue);
-
-    let thread_count = threads.unwrap_or_else(|| {
-        std::thread::available_parallelism()
-            .map(|count| count.get())
-            .unwrap_or(4)
-    });
-
-    let pool_size = env::var("MOLT_DB_POOL")
-        .ok()
-        .and_then(|val| val.parse::<usize>().ok())
-        .unwrap_or(thread_count.max(1));
-    let conn_counter = Arc::new(AtomicUsize::new(0));
-    let pool = if let Some(path) = sqlite_path {
-        let path = PathBuf::from(path);
-        if let Err(err) = SqliteConn::open(&path, sqlite_mode) {
-            return Err(io::Error::other(format!(
-                "Failed to open SQLite DB {}: {err}",
-                path.display()
-            )));
-        }
-        Pool::new(pool_size, {
-            let counter = conn_counter.clone();
-            let path = path.clone();
-            move || {
-                counter.fetch_add(1, Ordering::SeqCst);
-                DbConn::Sqlite(SqliteConn::open(&path, sqlite_mode).expect("sqlite open failed"))
-            }
-        })
-    } else {
-        Pool::new(pool_size, {
-            let counter = conn_counter.clone();
-            move || {
-                counter.fetch_add(1, Ordering::SeqCst);
-                DbConn::Fake(FakeDbConn)
-            }
-        })
-    };
-    let fake_delay = Duration::from_millis(fake_delay_ms);
-    let worker_ctx = WorkerContext {
-        exports: exports.clone(),
-        cancelled: cancelled.clone(),
-        pool: pool.clone(),
-        compiled_entries: compiled_entries.clone(),
-        fake_delay,
-        fake_decode_us_per_row,
-        fake_cpu_iters,
-    };
 
     for _ in 0..thread_count {
         let request_rx = request_rx.clone();
         let response_tx = response_tx.clone();
-        let ctx = worker_ctx.clone();
+        let ctx = ctx.clone();
         thread::spawn(move || worker_loop(request_rx, response_tx, ctx));
     }
 
@@ -2388,7 +3051,7 @@ fn main() -> io::Result<()> {
             }
         };
         if decoded.envelope.entry == "__cancel__" {
-            let response = match handle_cancel_request(&decoded.envelope, &cancelled, None) {
+            let response = match handle_cancel_request(&decoded.envelope, &ctx.cancelled, None) {
                 Ok(()) => ResponseEnvelope {
                     request_id: decoded.envelope.request_id,
                     status: "Ok".to_string(),
@@ -2433,6 +3096,260 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
+fn main() -> io::Result<()> {
+    let mut exports_path = None;
+    let mut compiled_exports = None;
+    let mut max_queue = env::var("MOLT_WORKER_MAX_QUEUE")
+        .ok()
+        .and_then(|val| val.parse::<usize>().ok())
+        .filter(|val| *val > 0)
+        .unwrap_or(64);
+    let mut threads = env::var("MOLT_WORKER_THREADS")
+        .ok()
+        .and_then(|val| val.parse::<usize>().ok())
+        .filter(|val| *val > 0);
+    let mut runtime = env::var("MOLT_WORKER_RUNTIME").unwrap_or_else(|_| "sync".to_string());
+    let fake_delay_ms = env::var("MOLT_FAKE_DB_DELAY_MS")
+        .ok()
+        .and_then(|val| val.parse::<u64>().ok())
+        .unwrap_or(0);
+    let fake_cpu_iters = env::var("MOLT_FAKE_DB_CPU_ITERS")
+        .ok()
+        .and_then(|val| val.parse::<u32>().ok())
+        .unwrap_or(0);
+    let fake_decode_us_per_row = env::var("MOLT_FAKE_DB_DECODE_US_PER_ROW")
+        .ok()
+        .and_then(|val| val.parse::<u64>().ok())
+        .unwrap_or(0);
+    let sqlite_path = env::var("MOLT_DB_SQLITE_PATH").ok().and_then(|val| {
+        if val.trim().is_empty() {
+            None
+        } else {
+            Some(val)
+        }
+    });
+    let sqlite_readwrite = env::var("MOLT_DB_SQLITE_READWRITE")
+        .ok()
+        .map(|val| matches!(val.as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+    let sqlite_mode = if sqlite_readwrite {
+        SqliteOpenMode::ReadWrite
+    } else {
+        SqliteOpenMode::ReadOnly
+    };
+    let default_max_rows = env::var("MOLT_DB_MAX_ROWS")
+        .ok()
+        .and_then(|val| val.parse::<u32>().ok())
+        .filter(|val| *val > 0)
+        .unwrap_or(1000);
+    let pg_config = env::var("MOLT_DB_POSTGRES_DSN")
+        .ok()
+        .and_then(|val| {
+            if val.trim().is_empty() {
+                None
+            } else {
+                Some(val)
+            }
+        })
+        .map(|dsn| {
+            let mut config = PgPoolConfig::new(dsn);
+            if let Some(val) = env::var("MOLT_DB_POSTGRES_MIN_CONNS")
+                .ok()
+                .and_then(|val| val.parse::<usize>().ok())
+            {
+                config.min_conns = val;
+            }
+            if let Some(val) = env::var("MOLT_DB_POSTGRES_MAX_CONNS")
+                .ok()
+                .and_then(|val| val.parse::<usize>().ok())
+            {
+                config.max_conns = val.max(1);
+            }
+            if let Some(val) = env::var("MOLT_DB_POSTGRES_MAX_IDLE_MS")
+                .ok()
+                .and_then(|val| val.parse::<u64>().ok())
+            {
+                config.max_idle = Some(Duration::from_millis(val));
+            }
+            if let Some(val) = env::var("MOLT_DB_POSTGRES_CONNECT_TIMEOUT_MS")
+                .ok()
+                .and_then(|val| val.parse::<u64>().ok())
+            {
+                config.connect_timeout = Duration::from_millis(val);
+            }
+            if let Some(val) = env::var("MOLT_DB_POSTGRES_QUERY_TIMEOUT_MS")
+                .ok()
+                .and_then(|val| val.parse::<u64>().ok())
+            {
+                config.query_timeout = Duration::from_millis(val);
+            }
+            if let Some(val) = env::var("MOLT_DB_POSTGRES_MAX_WAIT_MS")
+                .ok()
+                .and_then(|val| val.parse::<u64>().ok())
+            {
+                config.max_wait = Duration::from_millis(val);
+            }
+            if let Some(val) = env::var("MOLT_DB_POSTGRES_HEALTH_CHECK_MS")
+                .ok()
+                .and_then(|val| val.parse::<u64>().ok())
+            {
+                config.health_check_interval = Some(Duration::from_millis(val));
+            }
+            if let Some(val) = env::var("MOLT_DB_POSTGRES_STATEMENT_CACHE_SIZE")
+                .ok()
+                .and_then(|val| val.parse::<usize>().ok())
+            {
+                config.statement_cache_size = val;
+            }
+            if let Some(val) = env::var("MOLT_DB_POSTGRES_SSL_ROOT_CERT")
+                .ok()
+                .filter(|val| !val.trim().is_empty())
+            {
+                config.ssl_root_cert = Some(PathBuf::from(val));
+            }
+            config
+        });
+    let mut args = env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--exports" => exports_path = args.next(),
+            "--compiled-exports" => compiled_exports = args.next().map(PathBuf::from),
+            "--max-queue" => {
+                if let Some(val) = args.next() {
+                    max_queue = val.parse().unwrap_or(64)
+                }
+            }
+            "--threads" => {
+                if let Some(val) = args.next() {
+                    threads = val.parse().ok();
+                }
+            }
+            "--runtime" => {
+                if let Some(val) = args.next() {
+                    runtime = val;
+                }
+            }
+            "--stdio" => {}
+            _ => {}
+        }
+    }
+
+    let runtime = match runtime.trim().to_lowercase().as_str() {
+        "sync" => WorkerRuntime::Sync,
+        "async" => WorkerRuntime::Async,
+        other => {
+            eprintln!("Unknown worker runtime '{other}', defaulting to sync");
+            WorkerRuntime::Sync
+        }
+    };
+
+    if matches!(runtime, WorkerRuntime::Sync) && pg_config.is_some() {
+        return Err(io::Error::other(
+            "Postgres requires async runtime; set MOLT_WORKER_RUNTIME=async or --runtime async",
+        ));
+    }
+
+    let exports = if let Some(path) = exports_path.as_deref() {
+        match load_exports(path) {
+            Ok(exports) => exports,
+            Err(err) => {
+                eprintln!("Failed to load exports: {err}");
+                HashSet::new()
+            }
+        }
+    } else {
+        HashSet::new()
+    };
+    let exports = Arc::new(exports);
+    let compiled_entries =
+        load_compiled_entries(compiled_exports).unwrap_or_else(|_| HashMap::new());
+    let compiled_entries = Arc::new(compiled_entries);
+    let cancelled = Arc::new(Mutex::new(HashSet::new()));
+
+    let thread_count = threads.unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(4)
+    });
+
+    let pool_size = env::var("MOLT_DB_POOL")
+        .ok()
+        .and_then(|val| val.parse::<usize>().ok())
+        .unwrap_or(thread_count.max(1));
+    let conn_counter = Arc::new(AtomicUsize::new(0));
+    let pool = if let Some(path) = sqlite_path {
+        let path = PathBuf::from(path);
+        if let Err(err) = SqliteConn::open(&path, sqlite_mode) {
+            return Err(io::Error::other(format!(
+                "Failed to open SQLite DB {}: {err}",
+                path.display()
+            )));
+        }
+        Pool::new(pool_size, {
+            let counter = conn_counter.clone();
+            let path = path.clone();
+            move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+                DbConn::Sqlite(SqliteConn::open(&path, sqlite_mode).expect("sqlite open failed"))
+            }
+        })
+    } else {
+        Pool::new(pool_size, {
+            let counter = conn_counter.clone();
+            move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+                DbConn::Fake(FakeDbConn)
+            }
+        })
+    };
+    let fake_delay = Duration::from_millis(fake_delay_ms);
+
+    match runtime {
+        WorkerRuntime::Sync => {
+            let worker_ctx = WorkerContext {
+                exports: exports.clone(),
+                cancelled: cancelled.clone(),
+                pool: pool.clone(),
+                compiled_entries: compiled_entries.clone(),
+                fake_delay,
+                fake_decode_us_per_row,
+                fake_cpu_iters,
+                default_max_rows,
+            };
+            run_sync(worker_ctx, max_queue, thread_count)
+        }
+        WorkerRuntime::Async => {
+            let runtime = TokioRuntimeBuilder::new_multi_thread()
+                .worker_threads(thread_count)
+                .enable_all()
+                .build()
+                .map_err(|err| io::Error::other(format!("Failed to build tokio runtime: {err}")))?;
+            runtime.block_on(async move {
+                let pg_pool = if let Some(config) = pg_config {
+                    Some(
+                        PgPool::new(config).await.map_err(io::Error::other)?,
+                    )
+                } else {
+                    None
+                };
+                let worker_ctx = AsyncWorkerContext {
+                    exports,
+                    cancelled,
+                    cancel_registry: Arc::new(CancelRegistry::new()),
+                    pool,
+                    pg_pool: pg_pool.map(Arc::new),
+                    compiled_entries,
+                    fake_delay,
+                    fake_decode_us_per_row,
+                    fake_cpu_iters,
+                    default_max_rows,
+                };
+                run_async(worker_ctx, thread_count, max_queue).await
+            })
+        }
+    }
+}
+
 fn worker_loop(
     request_rx: Receiver<DecodedRequest>,
     response_tx: Sender<(WireCodec, ResponseEnvelope)>,
@@ -2464,14 +3381,203 @@ fn write_loop(response_rx: Receiver<(WireCodec, ResponseEnvelope)>) {
     }
 }
 
+async fn read_loop_async(
+    request_tx: mpsc::Sender<DecodedRequest>,
+    response_tx: mpsc::Sender<(WireCodec, ResponseEnvelope)>,
+    cancelled: CancelSet,
+    cancel_registry: AsyncCancelRegistry,
+    queue_depth: Arc<AtomicUsize>,
+) -> io::Result<()> {
+    let mut reader = tokio::io::stdin();
+    loop {
+        let frame = match read_frame_async(&mut reader).await {
+            Ok(Some(frame)) => frame,
+            Ok(None) => break,
+            Err(err) => {
+                let response = ResponseEnvelope {
+                    request_id: 0,
+                    status: "InvalidInput".to_string(),
+                    codec: "raw".to_string(),
+                    payload: None,
+                    metrics: None,
+                    error: Some(err.to_string()),
+                    entry: None,
+                    compiled: None,
+                };
+                let _ = response_tx
+                    .send((WireCodec::Json, response))
+                    .await;
+                break;
+            }
+        };
+        let decoded = match decode_request(&frame) {
+            Ok(decoded) => decoded,
+            Err(err) => {
+                let response = ResponseEnvelope {
+                    request_id: 0,
+                    status: "InvalidInput".to_string(),
+                    codec: "raw".to_string(),
+                    payload: None,
+                    metrics: None,
+                    error: Some(err),
+                    entry: None,
+                    compiled: None,
+                };
+                let _ = response_tx
+                    .send((WireCodec::Json, response))
+                    .await;
+                continue;
+            }
+        };
+        if decoded.envelope.entry == "__cancel__" {
+            let response = match handle_cancel_request(
+                &decoded.envelope,
+                &cancelled,
+                Some(cancel_registry.as_ref()),
+            ) {
+                Ok(()) => ResponseEnvelope {
+                    request_id: decoded.envelope.request_id,
+                    status: "Ok".to_string(),
+                    codec: "raw".to_string(),
+                    payload: None,
+                    metrics: None,
+                    error: None,
+                    entry: Some("__cancel__".to_string()),
+                    compiled: Some(0),
+                },
+                Err(err) => ResponseEnvelope {
+                    request_id: decoded.envelope.request_id,
+                    status: err.status.to_string(),
+                    codec: "raw".to_string(),
+                    payload: None,
+                    metrics: None,
+                    error: Some(err.message),
+                    entry: Some("__cancel__".to_string()),
+                    compiled: Some(0),
+                },
+            };
+            let _ = response_tx.send((decoded.wire, response)).await;
+            continue;
+        }
+        match request_tx.try_send(decoded) {
+            Ok(()) => {
+                queue_depth.fetch_add(1, Ordering::SeqCst);
+            }
+            Err(mpsc::error::TrySendError::Full(request)) => {
+                let response = ResponseEnvelope {
+                    request_id: request.envelope.request_id,
+                    status: "Busy".to_string(),
+                    codec: "raw".to_string(),
+                    payload: None,
+                    metrics: None,
+                    error: Some("Worker queue full".to_string()),
+                    entry: Some(request.envelope.entry.clone()),
+                    compiled: Some(0),
+                };
+                let _ = response_tx.send((request.wire, response)).await;
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => break,
+        }
+    }
+    Ok(())
+}
+
+async fn write_loop_async(
+    mut response_rx: mpsc::Receiver<(WireCodec, ResponseEnvelope)>,
+) -> io::Result<()> {
+    let mut writer = tokio::io::stdout();
+    while let Some((wire, response)) = response_rx.recv().await {
+        let encoded = match encode_response(&response, wire) {
+            Ok(encoded) => encoded,
+            Err(err) => {
+                eprintln!("Failed to encode response: {err}");
+                continue;
+            }
+        };
+        if let Err(err) = write_frame_async(&mut writer, &encoded).await {
+            eprintln!("Failed to write response: {err}");
+            break;
+        }
+    }
+    Ok(())
+}
+
+async fn worker_loop_async(
+    request_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<DecodedRequest>>>,
+    response_tx: mpsc::Sender<(WireCodec, ResponseEnvelope)>,
+    ctx: AsyncWorkerContext,
+    queue_depth: Arc<AtomicUsize>,
+) {
+    loop {
+        let request = {
+            let mut guard = request_rx.lock().await;
+            guard.recv().await
+        };
+        let request = match request {
+            Some(request) => request,
+            None => break,
+        };
+        let prev = queue_depth.fetch_sub(1, Ordering::SeqCst);
+        let depth = prev.saturating_sub(1);
+        let response = handle_request_async(request, depth, &ctx).await;
+        let _ = response_tx.send(response).await;
+    }
+}
+
+async fn run_async(
+    ctx: AsyncWorkerContext,
+    thread_count: usize,
+    max_queue: usize,
+) -> io::Result<()> {
+    let (request_tx, request_rx) = mpsc::channel::<DecodedRequest>(max_queue);
+    let (response_tx, response_rx) = mpsc::channel::<(WireCodec, ResponseEnvelope)>(max_queue);
+    let queue_depth = Arc::new(AtomicUsize::new(0));
+    let request_rx = Arc::new(tokio::sync::Mutex::new(request_rx));
+
+    let mut workers = Vec::with_capacity(thread_count);
+    for _ in 0..thread_count {
+        let request_rx = request_rx.clone();
+        let response_tx = response_tx.clone();
+        let ctx = ctx.clone();
+        let queue_depth = queue_depth.clone();
+        workers.push(tokio::spawn(worker_loop_async(
+            request_rx,
+            response_tx,
+            ctx,
+            queue_depth,
+        )));
+    }
+
+    let writer = tokio::spawn(write_loop_async(response_rx));
+    read_loop_async(
+        request_tx,
+        response_tx.clone(),
+        ctx.cancelled.clone(),
+        ctx.cancel_registry.clone(),
+        queue_depth,
+    )
+    .await?;
+    drop(response_tx);
+    for worker in workers {
+        let _ = worker.await;
+    }
+    let _ = writer.await;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        dispatch_compiled, load_compiled_entries, load_exports, mark_cancelled, CancelSet,
-        CompiledEntry, DbConn, DbPool, ExecContext, ListItemsRequest, ListItemsResponse, Pool,
+        dispatch_compiled, execute_db_query_sync, load_compiled_entries, load_exports,
+        mark_cancelled, CancelSet, CompiledEntry, DbConn, DbNamedParam, DbParam, DbParamValue,
+        DbParams, DbPool, DbQueryRequest, DbQueryResponse, ExecContext, ListItemsRequest,
+        ListItemsResponse, Pool, RequestEnvelope, SqliteConn, SqliteOpenMode,
     };
+    use arrow::ipc::reader::StreamReader;
     use rusqlite::Connection;
+    use serde_bytes::ByteBuf;
     use std::fs;
+    use std::io::Cursor;
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
@@ -2555,6 +3661,7 @@ mod tests {
             fake_delay: Duration::from_millis(0),
             fake_decode_us_per_row: 0,
             fake_cpu_iters: 0,
+            default_max_rows: 1000,
         }
     }
 
@@ -2623,6 +3730,136 @@ mod tests {
         let result = dispatch_compiled(&entry, &payload, &ctx);
         assert!(result.is_err());
         assert_eq!(result.err().unwrap().status, "Cancelled");
+    }
+
+    #[test]
+    fn db_query_sqlite_roundtrip() {
+        let path = temp_db_path();
+        seed_sqlite_db(&path);
+        let pool_path = path.clone();
+        let pool = Pool::new(1, move || {
+            DbConn::Sqlite(
+                SqliteConn::open(&pool_path, SqliteOpenMode::ReadWrite).expect("sqlite"),
+            )
+        });
+        let cancel = CancelSet::default();
+        let ctx = exec_ctx(&cancel, &pool, 99);
+        let request = DbQueryRequest {
+            db_alias: None,
+            sql: "select id, status from items where status = :status order by id".to_string(),
+            params: DbParams::Named {
+                values: vec![DbNamedParam {
+                    name: "status".to_string(),
+                    param: DbParam::Typed {
+                        value: DbParamValue::String("open".to_string()),
+                        r#type: None,
+                    },
+                }],
+            },
+            max_rows: Some(10),
+            result_format: Some("json".to_string()),
+            allow_write: None,
+            tag: None,
+        };
+        let payload = rmp_serde::to_vec_named(&request).expect("encode");
+        let envelope = RequestEnvelope {
+            request_id: 99,
+            entry: "db_query".to_string(),
+            timeout_ms: 0,
+            codec: "msgpack".to_string(),
+            payload: Some(ByteBuf::from(payload)),
+            payload_b64: None,
+        };
+        let (codec, payload) = execute_db_query_sync(&envelope, &ctx).expect("db_query");
+        assert_eq!(codec, "json");
+        let response: DbQueryResponse =
+            super::decode_payload(&payload, "json").expect("decode");
+        assert_eq!(response.columns, vec!["id".to_string(), "status".to_string()]);
+        assert!(response.row_count > 0);
+    }
+
+    #[test]
+    fn db_query_sqlite_arrow_ipc_roundtrip() {
+        let path = temp_db_path();
+        seed_sqlite_db(&path);
+        let pool_path = path.clone();
+        let pool = Pool::new(1, move || {
+            DbConn::Sqlite(
+                SqliteConn::open(&pool_path, SqliteOpenMode::ReadWrite).expect("sqlite"),
+            )
+        });
+        let cancel = CancelSet::default();
+        let ctx = exec_ctx(&cancel, &pool, 88);
+        let request = DbQueryRequest {
+            db_alias: None,
+            sql: "select id, status from items where status = :status order by id".to_string(),
+            params: DbParams::Named {
+                values: vec![DbNamedParam {
+                    name: "status".to_string(),
+                    param: DbParam::Typed {
+                        value: DbParamValue::String("open".to_string()),
+                        r#type: None,
+                    },
+                }],
+            },
+            max_rows: Some(10),
+            result_format: Some("arrow_ipc".to_string()),
+            allow_write: None,
+            tag: None,
+        };
+        let payload = rmp_serde::to_vec_named(&request).expect("encode");
+        let envelope = RequestEnvelope {
+            request_id: 88,
+            entry: "db_query".to_string(),
+            timeout_ms: 0,
+            codec: "msgpack".to_string(),
+            payload: Some(ByteBuf::from(payload)),
+            payload_b64: None,
+        };
+        let (codec, payload) = execute_db_query_sync(&envelope, &ctx).expect("db_query");
+        assert_eq!(codec, "arrow_ipc");
+        let cursor = Cursor::new(payload);
+        let mut reader = StreamReader::try_new(cursor, None).expect("arrow reader");
+        let batch = reader.next().expect("batch").expect("read batch");
+        assert_eq!(batch.num_columns(), 2);
+        assert_eq!(batch.schema().field(0).name(), "id");
+        assert_eq!(batch.schema().field(1).name(), "status");
+        assert_eq!(batch.num_rows(), 2);
+    }
+
+    #[test]
+    fn db_query_null_requires_type() {
+        let path = temp_db_path();
+        let pool_path = path.clone();
+        let pool = Pool::new(1, move || {
+            DbConn::Sqlite(
+                SqliteConn::open(&pool_path, SqliteOpenMode::ReadWrite).expect("sqlite"),
+            )
+        });
+        let cancel = CancelSet::default();
+        let ctx = exec_ctx(&cancel, &pool, 1);
+        let request = DbQueryRequest {
+            db_alias: None,
+            sql: "select ?".to_string(),
+            params: DbParams::Positional {
+                values: vec![DbParam::Raw(DbParamValue::Null)],
+            },
+            max_rows: Some(1),
+            result_format: Some("json".to_string()),
+            allow_write: None,
+            tag: None,
+        };
+        let payload = rmp_serde::to_vec_named(&request).expect("encode");
+        let envelope = RequestEnvelope {
+            request_id: 1,
+            entry: "db_query".to_string(),
+            timeout_ms: 0,
+            codec: "msgpack".to_string(),
+            payload: Some(ByteBuf::from(payload)),
+            payload_b64: None,
+        };
+        let err = execute_db_query_sync(&envelope, &ctx).expect_err("null should fail");
+        assert_eq!(err.status, "InvalidInput");
     }
 
     #[test]

@@ -15,11 +15,11 @@
 | complex | arithmetic, comparisons, repr | Planned | P1 | TC2 | runtime |
 | str | len, slice, iter, find/split/replace/startswith/endswith/count/join/lower/upper, concat, repr | Partial | P0 | TC1 | runtime/frontend |
 | bytes | len, slice, iter, find/split/replace, concat | Partial | P0 | TC1 | runtime |
-| bytearray | mutability, iter, find/split/replace, concat | Partial | P0 | TC1 | runtime |
-| list | literals, index/slice, append/extend/insert/remove/pop/count/index/clear/copy/reverse, iter | Partial | P0 | TC1 | runtime/frontend |
+| bytearray | mutability, iter, find/split/replace, concat, in-place concat/repeat | Partial | P0 | TC1 | runtime |
+| list | literals, index/slice, append/extend/insert/remove/pop/count/index/clear/copy/reverse, iter, in-place add/mul | Partial | P0 | TC1 | runtime/frontend |
 | tuple | literals, index/slice, hash, iter | Partial | P0 | TC1 | runtime/frontend |
 | dict | literals, index/set, views, iter, basic methods (keys/values/items/get/pop/clear/copy/popitem/setdefault/update) | Partial | P0 | TC1 | runtime/frontend |
-| set | literals, constructor, add/remove/contains/iter/len, algebra (`|`, `&`, `-`, `^`) | Partial | P1 | TC2 | runtime/frontend |
+| set | literals, constructor, add/remove/contains/iter/len, algebra (`|`, `&`, `-`, `^`) + in-place updates | Partial | P1 | TC2 | runtime/frontend |
 | frozenset | constructor, hash, contains/iter/len, algebra (`|`, `&`, `-`, `^`) | Partial | P1 | TC2 | runtime/frontend |
 | range | len/index/iter; step==0 error | Partial | P0 | TC1 | runtime/frontend |
 | slice | slice objects + normalization + step | Partial | P1 | TC2 | runtime/frontend |
@@ -166,6 +166,7 @@
 - Lower set literals/constructors + set algebra + frozenset; complex and exceptions remain.
 - Add IR ops for raise, try/except, unpacking, and dunder dispatch.
 - Implemented: `list.extend` consumes generic iterables via the iter protocol (range/generator/etc.).
+- Implemented: augmented assignment lowers to in-place list/bytearray/set ops (`+=`, `*=`, `|=`, `&=`, `^=`, `-=`) with attribute/subscript targets.
 - TODO(type-coverage, owner:frontend, milestone:TC2): iterable unpacking + starred targets.
 
 ## 5. Backend + WIT/ABI

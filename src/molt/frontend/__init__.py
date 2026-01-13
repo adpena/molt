@@ -584,7 +584,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _should_fast_int(self, op: MoltOp) -> bool:
         if not self._fast_int_enabled():
             return False
-        if op.kind not in {"ADD", "SUB", "MUL", "LT", "EQ"}:
+        if op.kind not in {
+            "ADD",
+            "SUB",
+            "MUL",
+            "INPLACE_ADD",
+            "INPLACE_SUB",
+            "INPLACE_MUL",
+            "LT",
+            "EQ",
+        }:
             return False
         return all(
             isinstance(arg, MoltValue) and arg.type_hint == "int" for arg in op.args
@@ -9770,15 +9779,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return res
         return None
 
-    def visit_Attribute(self, node: ast.Attribute) -> Any:
-        obj = self.visit(node.value)
-        if obj is None:
-            obj = MoltValue("unknown_obj", type_hint="Unknown")
-        obj_name = None
-        exact_class = None
-        if isinstance(node.value, ast.Name):
-            obj_name = node.value.id
-            exact_class = self.exact_locals.get(obj_name)
+    def _emit_attribute_load(
+        self,
+        node: ast.Attribute,
+        obj: MoltValue,
+        obj_name: str | None,
+        exact_class: str | None,
+    ) -> MoltValue:
         if obj.type_hint.startswith("super"):
             super_class = None
             if obj.type_hint == "super":
@@ -9863,7 +9870,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     type_hint=f"BoundMethod:{class_name}:{node.attr}",
                 )
                 self.emit(
-                    MoltOp(kind="BOUND_METHOD_NEW", args=[func_val, obj], result=res)
+                    MoltOp(
+                        kind="BOUND_METHOD_NEW",
+                        args=[func_val, obj],
+                        result=res,
+                    )
                 )
                 return res
         if (
@@ -9968,6 +9979,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if hint is not None:
             res.type_hint = hint
         return res
+
+    def visit_Attribute(self, node: ast.Attribute) -> Any:
+        obj = self.visit(node.value)
+        if obj is None:
+            obj = MoltValue("unknown_obj", type_hint="Unknown")
+        obj_name = None
+        exact_class = None
+        if isinstance(node.value, ast.Name):
+            obj_name = node.value.id
+            exact_class = self.exact_locals.get(obj_name)
+        return self._emit_attribute_load(node, obj, obj_name, exact_class)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if not isinstance(node.target, (ast.Name, ast.Attribute)):
@@ -10131,6 +10153,111 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="INDEX", args=[value_node, idx_val], result=item_val))
             self._emit_assign_target(elt, item_val, None)
 
+    def _emit_attribute_store(
+        self,
+        obj: MoltValue | None,
+        obj_expr: ast.AST | None,
+        obj_name: str | None,
+        exact_class: str | None,
+        attr: str,
+        value_node: MoltValue,
+    ) -> None:
+        if obj_expr is not None and isinstance(obj_expr, ast.Name):
+            class_name = obj_expr.id
+            if class_name in self.classes:
+                self._invalidate_loop_guards_for_class(class_name)
+        class_info = None
+        if obj is not None:
+            class_info = self.classes.get(obj.type_hint)
+        if exact_class is not None:
+            self._record_instance_attr_mutation(exact_class, attr)
+        elif obj is not None and obj.type_hint in self.classes:
+            self._record_instance_attr_mutation(obj.type_hint, attr)
+        if exact_class is not None and obj is not None:
+            exact_info = self.classes.get(exact_class)
+            if (
+                exact_info
+                and not exact_info.get("dynamic")
+                and not exact_info.get("dataclass")
+            ):
+                field_map = exact_info.get("fields", {})
+                if attr in field_map and not self._class_attr_is_data_descriptor(
+                    exact_class, attr
+                ):
+                    self._emit_guarded_setattr(
+                        obj,
+                        attr,
+                        value_node,
+                        exact_class,
+                        obj_name=obj_name,
+                        assume_exact=True,
+                    )
+                    return
+        if class_info and class_info.get("dataclass"):
+            field_map = class_info["fields"]
+            if attr not in field_map:
+                self.emit(
+                    MoltOp(
+                        kind="SETATTR_GENERIC_OBJ",
+                        args=[obj, attr, value_node],
+                        result=MoltValue("none"),
+                    )
+                )
+                return
+            idx_val = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[field_map[attr]], result=idx_val))
+            self.emit(
+                MoltOp(
+                    kind="DATACLASS_SET",
+                    args=[obj, idx_val, value_node],
+                    result=MoltValue("none"),
+                )
+            )
+            return
+        field_map = class_info.get("fields", {}) if class_info else {}
+        if obj is not None and obj.type_hint in self.classes:
+            if class_info and class_info.get("dynamic"):
+                self.emit(
+                    MoltOp(
+                        kind="SETATTR_GENERIC_PTR",
+                        args=[obj, attr, value_node],
+                        result=MoltValue("none"),
+                    )
+                )
+            elif attr in field_map:
+                if self._class_attr_is_data_descriptor(obj.type_hint, attr):
+                    self.emit(
+                        MoltOp(
+                            kind="SETATTR_GENERIC_PTR",
+                            args=[obj, attr, value_node],
+                            result=MoltValue("none"),
+                        )
+                    )
+                else:
+                    self._emit_guarded_setattr(
+                        obj,
+                        attr,
+                        value_node,
+                        obj.type_hint,
+                        obj_name=obj_name,
+                    )
+            else:
+                self.emit(
+                    MoltOp(
+                        kind="SETATTR_GENERIC_PTR",
+                        args=[obj, attr, value_node],
+                        result=MoltValue("none"),
+                    )
+                )
+        else:
+            self.emit(
+                MoltOp(
+                    kind="SETATTR_GENERIC_OBJ",
+                    args=[obj, attr, value_node],
+                    result=MoltValue("none"),
+                )
+            )
+
     def _emit_assign_target(
         self,
         target: ast.AST,
@@ -10145,112 +10272,18 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if isinstance(target, ast.Attribute):
             obj = self.visit(target.value)
             obj_name = None
-            if isinstance(target.value, ast.Name):
-                class_name = target.value.id
-                obj_name = class_name
-                if class_name in self.classes:
-                    self._invalidate_loop_guards_for_class(class_name)
             exact_class = None
             if isinstance(target.value, ast.Name):
-                exact_class = self.exact_locals.get(target.value.id)
-            class_info = None
-            if obj is not None:
-                class_info = self.classes.get(obj.type_hint)
-            if exact_class is not None:
-                self._record_instance_attr_mutation(exact_class, target.attr)
-            elif obj is not None and obj.type_hint in self.classes:
-                self._record_instance_attr_mutation(obj.type_hint, target.attr)
-            if exact_class is not None and obj is not None:
-                exact_info = self.classes.get(exact_class)
-                if (
-                    exact_info
-                    and not exact_info.get("dynamic")
-                    and not exact_info.get("dataclass")
-                ):
-                    field_map = exact_info.get("fields", {})
-                    if (
-                        target.attr in field_map
-                        and not self._class_attr_is_data_descriptor(
-                            exact_class, target.attr
-                        )
-                    ):
-                        self._emit_guarded_setattr(
-                            obj,
-                            target.attr,
-                            value_node,
-                            exact_class,
-                            obj_name=obj_name,
-                            assume_exact=True,
-                        )
-                        return
-            if class_info and class_info.get("dataclass"):
-                field_map = class_info["fields"]
-                if target.attr not in field_map:
-                    self.emit(
-                        MoltOp(
-                            kind="SETATTR_GENERIC_OBJ",
-                            args=[obj, target.attr, value_node],
-                            result=MoltValue("none"),
-                        )
-                    )
-                    return
-                idx_val = MoltValue(self.next_var(), type_hint="int")
-                self.emit(
-                    MoltOp(kind="CONST", args=[field_map[target.attr]], result=idx_val)
-                )
-                self.emit(
-                    MoltOp(
-                        kind="DATACLASS_SET",
-                        args=[obj, idx_val, value_node],
-                        result=MoltValue("none"),
-                    )
-                )
-            else:
-                field_map = class_info.get("fields", {}) if class_info else {}
-                if obj is not None and obj.type_hint in self.classes:
-                    if class_info and class_info.get("dynamic"):
-                        self.emit(
-                            MoltOp(
-                                kind="SETATTR_GENERIC_PTR",
-                                args=[obj, target.attr, value_node],
-                                result=MoltValue("none"),
-                            )
-                        )
-                    elif target.attr in field_map:
-                        if self._class_attr_is_data_descriptor(
-                            obj.type_hint, target.attr
-                        ):
-                            self.emit(
-                                MoltOp(
-                                    kind="SETATTR_GENERIC_PTR",
-                                    args=[obj, target.attr, value_node],
-                                    result=MoltValue("none"),
-                                )
-                            )
-                        else:
-                            self._emit_guarded_setattr(
-                                obj,
-                                target.attr,
-                                value_node,
-                                obj.type_hint,
-                                obj_name=obj_name,
-                            )
-                    else:
-                        self.emit(
-                            MoltOp(
-                                kind="SETATTR_GENERIC_PTR",
-                                args=[obj, target.attr, value_node],
-                                result=MoltValue("none"),
-                            )
-                        )
-                else:
-                    self.emit(
-                        MoltOp(
-                            kind="SETATTR_GENERIC_OBJ",
-                            args=[obj, target.attr, value_node],
-                            result=MoltValue("none"),
-                        )
-                    )
+                obj_name = target.value.id
+                exact_class = self.exact_locals.get(obj_name)
+            self._emit_attribute_store(
+                obj,
+                target.value,
+                obj_name,
+                exact_class,
+                target.attr,
+                value_node,
+            )
             return
         if isinstance(target, ast.Name):
             if (
@@ -10356,11 +10389,41 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
         return None
 
+    def _augassign_op_kind(self, op: ast.operator) -> str:
+        if isinstance(op, ast.Add):
+            return "INPLACE_ADD"
+        if isinstance(op, ast.Sub):
+            return "INPLACE_SUB"
+        if isinstance(op, ast.Mult):
+            return "INPLACE_MUL"
+        if isinstance(op, ast.Div):
+            return "DIV"
+        if isinstance(op, ast.FloorDiv):
+            return "FLOORDIV"
+        if isinstance(op, ast.Mod):
+            return "MOD"
+        if isinstance(op, ast.Pow):
+            return "POW"
+        if isinstance(op, ast.BitOr):
+            return "INPLACE_BIT_OR"
+        if isinstance(op, ast.BitAnd):
+            return "INPLACE_BIT_AND"
+        if isinstance(op, ast.BitXor):
+            return "INPLACE_BIT_XOR"
+        if isinstance(op, ast.LShift):
+            return "LSHIFT"
+        if isinstance(op, ast.RShift):
+            return "RSHIFT"
+        if isinstance(op, ast.MatMult):
+            return "MATMUL"
+        raise NotImplementedError("Unsupported augmented assignment operator")
+
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        op_kind = self._augassign_op_kind(node.op)
+        may_yield = self._expr_may_yield(node.value)
         if isinstance(node.target, ast.Name):
             self.exact_locals.pop(node.target.id, None)
             load_node = ast.Name(id=node.target.id, ctx=ast.Load())
-            may_yield = self._expr_may_yield(node.value)
             if may_yield and self.is_async() and node.target.id in self.async_locals:
                 value_node = self.visit(node.value)
                 current = self._load_local_value(node.target.id)
@@ -10369,14 +10432,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 value_node = self.visit(node.value)
             if current is None:
                 raise NotImplementedError("Unsupported augmented assignment target")
-            if isinstance(node.op, ast.Add):
-                op_kind = "ADD"
-            elif isinstance(node.op, ast.Sub):
-                op_kind = "SUB"
-            elif isinstance(node.op, ast.Mult):
-                op_kind = "MUL"
-            else:
-                raise NotImplementedError("Unsupported augmented assignment operator")
+            if value_node is None:
+                raise NotImplementedError("Unsupported augmented assignment value")
             res = MoltValue(self.next_var(), type_hint=current.type_hint)
             self.emit(MoltOp(kind=op_kind, args=[current, value_node], result=res))
             if (
@@ -10397,128 +10454,86 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     self.globals[node.target.id] = res
             return None
         if isinstance(node.target, ast.Attribute):
-            current = self.visit(node.target)
-            if current is None:
-                raise NotImplementedError("Unsupported augmented assignment target")
-            value_node = self.visit(node.value)
-            if isinstance(node.op, ast.Add):
-                op_kind = "ADD"
-            elif isinstance(node.op, ast.Sub):
-                op_kind = "SUB"
-            elif isinstance(node.op, ast.Mult):
-                op_kind = "MUL"
-            else:
-                raise NotImplementedError("Unsupported augmented assignment operator")
-            res = MoltValue(self.next_var(), type_hint=current.type_hint)
-            self.emit(MoltOp(kind=op_kind, args=[current, value_node], result=res))
             obj = self.visit(node.target.value)
+            if obj is None:
+                raise NotImplementedError("Unsupported augmented assignment target")
             obj_name = None
             exact_class = None
             if isinstance(node.target.value, ast.Name):
                 obj_name = node.target.value.id
                 exact_class = self.exact_locals.get(obj_name)
-            class_info = None
-            if obj is not None:
-                class_info = self.classes.get(obj.type_hint)
-            if exact_class is not None:
-                self._record_instance_attr_mutation(exact_class, node.target.attr)
-            elif obj is not None and obj.type_hint in self.classes:
-                self._record_instance_attr_mutation(obj.type_hint, node.target.attr)
-            if exact_class is not None and obj is not None:
-                exact_info = self.classes.get(exact_class)
-                if (
-                    exact_info
-                    and not exact_info.get("dynamic")
-                    and not exact_info.get("dataclass")
-                ):
-                    field_map = exact_info.get("fields", {})
-                    if (
-                        node.target.attr in field_map
-                        and not self._class_attr_is_data_descriptor(
-                            exact_class, node.target.attr
-                        )
-                    ):
-                        self._emit_guarded_setattr(
-                            obj,
-                            node.target.attr,
-                            res,
-                            exact_class,
-                            obj_name=obj_name,
-                            assume_exact=True,
-                        )
-                        return None
-            if class_info and class_info.get("dataclass"):
-                field_map = class_info["fields"]
-                if node.target.attr not in field_map:
-                    self.emit(
-                        MoltOp(
-                            kind="SETATTR_GENERIC_OBJ",
-                            args=[obj, node.target.attr, res],
-                            result=MoltValue("none"),
-                        )
-                    )
-                    return None
-                idx_val = MoltValue(self.next_var(), type_hint="int")
-                self.emit(
-                    MoltOp(
-                        kind="CONST",
-                        args=[field_map[node.target.attr]],
-                        result=idx_val,
-                    )
+            current = self._emit_attribute_load(node.target, obj, obj_name, exact_class)
+            if self.is_async() and may_yield:
+                obj_slot = self._spill_async_value(
+                    obj, f"__augattr_obj_{len(self.async_locals)}"
                 )
-                self.emit(
-                    MoltOp(
-                        kind="DATACLASS_SET",
-                        args=[obj, idx_val, res],
-                        result=MoltValue("none"),
-                    )
+                current_slot = self._spill_async_value(
+                    current, f"__augattr_cur_{len(self.async_locals)}"
                 )
-                return None
-            field_map = class_info.get("fields", {}) if class_info else {}
-            if obj is not None and obj.type_hint in self.classes:
-                if class_info and class_info.get("dynamic"):
-                    self.emit(
-                        MoltOp(
-                            kind="SETATTR_GENERIC_PTR",
-                            args=[obj, node.target.attr, res],
-                            result=MoltValue("none"),
-                        )
-                    )
-                elif node.target.attr in field_map:
-                    if self._class_attr_is_data_descriptor(
-                        obj.type_hint, node.target.attr
-                    ):
-                        self.emit(
-                            MoltOp(
-                                kind="SETATTR_GENERIC_PTR",
-                                args=[obj, node.target.attr, res],
-                                result=MoltValue("none"),
-                            )
-                        )
-                    else:
-                        self._emit_guarded_setattr(
-                            obj,
-                            node.target.attr,
-                            res,
-                            obj.type_hint,
-                            obj_name=obj_name,
-                        )
-                else:
-                    self.emit(
-                        MoltOp(
-                            kind="SETATTR_GENERIC_PTR",
-                            args=[obj, node.target.attr, res],
-                            result=MoltValue("none"),
-                        )
-                    )
+                value_node = self.visit(node.value)
+                obj = self._reload_async_value(obj_slot, obj.type_hint)
+                current = self._reload_async_value(current_slot, current.type_hint)
             else:
-                self.emit(
-                    MoltOp(
-                        kind="SETATTR_GENERIC_OBJ",
-                        args=[obj, node.target.attr, res],
-                        result=MoltValue("none"),
-                    )
+                value_node = self.visit(node.value)
+            if value_node is None:
+                raise NotImplementedError("Unsupported augmented assignment value")
+            if current is None:
+                raise NotImplementedError("Unsupported augmented assignment target")
+            res = MoltValue(self.next_var(), type_hint=current.type_hint)
+            self.emit(MoltOp(kind=op_kind, args=[current, value_node], result=res))
+            self._emit_attribute_store(
+                obj,
+                node.target.value,
+                obj_name,
+                exact_class,
+                node.target.attr,
+                res,
+            )
+            return None
+        if isinstance(node.target, ast.Subscript):
+            target_obj = self.visit(node.target.value)
+            if target_obj is None:
+                raise NotImplementedError("Unsupported augmented assignment target")
+            if isinstance(node.target.slice, ast.Slice):
+                raise NotImplementedError("Slice augmented assignment is not supported")
+            index_val = self.visit(node.target.slice)
+            if index_val is None:
+                raise NotImplementedError("Unsupported augmented assignment target")
+            current = MoltValue(self.next_var(), type_hint="Any")
+            self.emit(
+                MoltOp(
+                    kind="INDEX",
+                    args=[target_obj, index_val],
+                    result=current,
                 )
+            )
+            if self.is_async() and may_yield:
+                obj_slot = self._spill_async_value(
+                    target_obj, f"__augsub_obj_{len(self.async_locals)}"
+                )
+                idx_slot = self._spill_async_value(
+                    index_val, f"__augsub_idx_{len(self.async_locals)}"
+                )
+                cur_slot = self._spill_async_value(
+                    current, f"__augsub_cur_{len(self.async_locals)}"
+                )
+                value_node = self.visit(node.value)
+                target_obj = self._reload_async_value(obj_slot, target_obj.type_hint)
+                index_val = self._reload_async_value(idx_slot, index_val.type_hint)
+                current = self._reload_async_value(cur_slot, current.type_hint)
+            else:
+                value_node = self.visit(node.value)
+            if value_node is None:
+                raise NotImplementedError("Unsupported augmented assignment value")
+            res = MoltValue(self.next_var(), type_hint=current.type_hint)
+            self.emit(MoltOp(kind=op_kind, args=[current, value_node], result=res))
+            self.emit(
+                MoltOp(
+                    kind="STORE_INDEX",
+                    args=[target_obj, index_val, res],
+                    result=MoltValue("none"),
+                )
+            )
             return None
         raise NotImplementedError("Unsupported augmented assignment target")
 
@@ -13544,6 +13559,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if self._should_fast_int(op):
                     add_entry["fast_int"] = True
                 json_ops.append(add_entry)
+            elif op.kind == "INPLACE_ADD":
+                add_entry = {
+                    "kind": "inplace_add",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                if self._should_fast_int(op):
+                    add_entry["fast_int"] = True
+                json_ops.append(add_entry)
             elif op.kind == "SUB":
                 sub_entry: dict[str, Any] = {
                     "kind": "sub",
@@ -13553,9 +13577,27 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if self._should_fast_int(op):
                     sub_entry["fast_int"] = True
                 json_ops.append(sub_entry)
+            elif op.kind == "INPLACE_SUB":
+                sub_entry = {
+                    "kind": "inplace_sub",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                if self._should_fast_int(op):
+                    sub_entry["fast_int"] = True
+                json_ops.append(sub_entry)
             elif op.kind == "MUL":
                 mul_entry: dict[str, Any] = {
                     "kind": "mul",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                if self._should_fast_int(op):
+                    mul_entry["fast_int"] = True
+                json_ops.append(mul_entry)
+            elif op.kind == "INPLACE_MUL":
+                mul_entry = {
+                    "kind": "inplace_mul",
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
@@ -13602,6 +13644,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "out": op.result.name,
                     }
                 )
+            elif op.kind == "INPLACE_BIT_OR":
+                json_ops.append(
+                    {
+                        "kind": "inplace_bit_or",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "BIT_AND":
                 json_ops.append(
                     {
@@ -13610,10 +13660,26 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "out": op.result.name,
                     }
                 )
+            elif op.kind == "INPLACE_BIT_AND":
+                json_ops.append(
+                    {
+                        "kind": "inplace_bit_and",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "BIT_XOR":
                 json_ops.append(
                     {
                         "kind": "bit_xor",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "INPLACE_BIT_XOR":
+                json_ops.append(
+                    {
+                        "kind": "inplace_bit_xor",
                         "args": [arg.name for arg in op.args],
                         "out": op.result.name,
                     }

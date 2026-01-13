@@ -30,6 +30,7 @@ README/ROADMAP in sync.
 - `str.lower`/`str.upper`, `list.clear`/`list.copy`/`list.reverse`/`list.sort`, and
   `dict.clear`/`dict.copy`/`dict.popitem`/`dict.setdefault`/`dict.update`.
 - `list.extend` accepts iterable inputs (range/generator/etc.) via the iter protocol.
+- Augmented assignment (`+=`, `*=`, `|=`, `&=`, `^=`, `-=`) uses in-place list/bytearray/set semantics for name/attribute/subscript targets.
 - `dict()` supports positional mapping/iterable inputs (keys/`__getitem__` mapping fallback) plus keyword/`**` expansion
   (string key enforcement for `**`); `dict.update` mirrors the mapping fallback.
 - `bytes`/`bytearray` constructors accept int counts, iterable-of-ints, and str+encoding (`utf-8`/`latin-1`/`ascii`/`utf-16`/`utf-32`) with basic error handlers (`strict`/`ignore`/`replace`) and parity errors for negative counts/range checks.
@@ -48,9 +49,9 @@ README/ROADMAP in sync.
 - Indexing honors user-defined `__getitem__`/`__setitem__` when builtin paths do not apply.
 - CPython shim: minimal ASGI adapter for http/lifespan via `molt.asgi.asgi_adapter`.
 - `molt_accel` client/decorator expose before/after hooks, metrics callbacks, cancel-checks, concurrent in-flight requests in the shared client, optional worker pooling via `MOLT_ACCEL_POOL_SIZE`, and raw-response pass-through; timeouts schedule a worker restart after in-flight requests drain; wire selection honors `MOLT_WORKER_WIRE`/`MOLT_WIRE`.
-- `molt_worker` enforces cancellation/timeout checks in the fake DB path, compiled dispatch loops, and pool waits; validates export manifests; reports queue/pool metrics per request (queue_us/handler_us/exec_us/decode_us plus ms rollups); fake DB decode cost can be simulated via `MOLT_FAKE_DB_DECODE_US_PER_ROW` and CPU work via `MOLT_FAKE_DB_CPU_ITERS`. Thread and queue tuning are available via `MOLT_WORKER_THREADS` and `MOLT_WORKER_MAX_QUEUE` (CLI overrides).
-- `molt-db` provides a bounded pool, a feature-gated async pool primitive, and a native-only SQLite connector (feature-gated in `molt-worker`) for real DB reads; async drivers and Postgres protocol remain pending.
-- `molt_db_adapter` exposes a framework-agnostic DB IPC payload builder aligned with `docs/spec/0915_MOLT_DB_IPC_CONTRACT.md` (no worker-side `db_query` yet).
+- `molt_worker` supports sync/async runtimes (`MOLT_WORKER_RUNTIME` / `--runtime`), enforces cancellation/timeout checks in the fake DB path, compiled dispatch loops, pool waits, and Postgres queries; validates export manifests; reports queue/pool metrics per request (queue_us/handler_us/exec_us/decode_us plus ms rollups); fake DB decode cost can be simulated via `MOLT_FAKE_DB_DECODE_US_PER_ROW` and CPU work via `MOLT_FAKE_DB_CPU_ITERS`. Thread and queue tuning are available via `MOLT_WORKER_THREADS` and `MOLT_WORKER_MAX_QUEUE` (CLI overrides).
+- `molt-db` provides a bounded pool, a feature-gated async pool primitive, a native-only SQLite connector (feature-gated in `molt-worker`), and an async Postgres connector (tokio-postgres + rustls) with per-connection statement caching.
+- `molt_db_adapter` exposes a framework-agnostic DB IPC payload builder aligned with `docs/spec/0915_MOLT_DB_IPC_CONTRACT.md`; worker-side `db_query` supports SQLite (sync) and Postgres (async) with json/msgpack/arrow_ipc results plus db-specific metrics.
 - WASM harness runs via `run_wasm.js` with shared memory/table and direct runtime imports (legacy wrapper fallback via `MOLT_WASM_LEGACY=1`), including async/channel benches on WASI.
 - Instance `__getattr__`/`__setattr__` hooks for user-defined classes.
 - Instance `__getattribute__` hooks for user-defined classes.
@@ -76,6 +77,7 @@ README/ROADMAP in sync.
   remain blocked unless the bridge policy is enabled.
 - Generator decorators are still pending.
 - Comprehensions: list/set/dict comprehensions and generator expressions are supported; async comprehensions are still pending.
+- Augmented assignment: slice targets (`seq[a:b] += ...`) are not supported yet.
 - Exceptions: `try/except/else/finally` + `raise`/reraise; `__traceback__` lacks full
   traceback objects/line info and exception args remain message-only (see type coverage matrix).
 - Imports: static module graph only; no dynamic import hooks or full package
@@ -94,6 +96,7 @@ README/ROADMAP in sync.
   buffer exports).
 - Cancellation: cooperative checks only; automatic cancellation injection into
   awaits and I/O still pending.
+- `db_query` Arrow IPC is supported, but Postgres decoding still stringifies complex types (arrays/intervals/ranges) and wasm parity is pending.
 - collections: shim `Counter`/`defaultdict` are wrapper implementations (not dict subclasses); `defaultdict`
   default_factory is only fast-pathed for `list`.
 
@@ -120,9 +123,9 @@ README/ROADMAP in sync.
 ## Django Demo Blockers (Current)
 - Missing `functools`/`itertools`/`operator`/`collections` parity needed for common Django internals.
 - Async loop/task APIs + `contextvars` are incomplete; cancellation injection and long-running workload hardening are pending.
-- Top priority: async Postgres pool + cancellation-aware query execution (see `docs/spec/0701_ASYNC_PG_POOL_AND_PROTOCOL.md`), required before full DB adapter expansion.
+- Top priority: finish wasm parity and remaining Postgres type decoding (arrays/intervals/ranges) before full DB adapter expansion (see `docs/spec/0701_ASYNC_PG_POOL_AND_PROTOCOL.md`).
 - Capability-gated I/O/runtime modules (`os`, `sys`, `pathlib`, `logging`, `time`, `selectors`) need deterministic parity.
-- HTTP/ASGI runtime surface and DB driver/pool integration are not implemented (shim adapter exists).
+- HTTP/ASGI runtime surface is not implemented (shim adapter exists); DB driver/pool integration is partial (`db_query` only, array/interval/range decoding and wasm parity pending).
 - Descriptor hooks still lack metaclass behaviors, limiting idiomatic Django patterns.
 
 ## Tooling + Verification

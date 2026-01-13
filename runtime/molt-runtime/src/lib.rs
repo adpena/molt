@@ -756,6 +756,21 @@ fn type_name(obj: MoltObject) -> &'static str {
     "object"
 }
 
+fn raise_not_iterable<T: ExceptionSentinel>(bits: u64) -> T {
+    let msg = format!("'{}' object is not iterable", type_name(obj_from_bits(bits)));
+    raise_exception::<T>("TypeError", &msg)
+}
+
+fn raise_unsupported_inplace<T: ExceptionSentinel>(op: &str, lhs_bits: u64, rhs_bits: u64) -> T {
+    let lhs = type_name(obj_from_bits(lhs_bits));
+    let rhs = type_name(obj_from_bits(rhs_bits));
+    let msg = format!(
+        "unsupported operand type(s) for {}: '{}' and '{}'",
+        op, lhs, rhs
+    );
+    raise_exception::<T>("TypeError", &msg)
+}
+
 fn obj_eq(lhs: MoltObject, rhs: MoltObject) -> bool {
     if let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
         return li == ri;
@@ -1135,6 +1150,9 @@ unsafe fn string_bytes(ptr: *mut u8) -> *const u8 {
 }
 
 unsafe fn bytes_len(ptr: *mut u8) -> usize {
+    if object_type_id(ptr) == TYPE_ID_BYTEARRAY {
+        return bytearray_len(ptr);
+    }
     string_len(ptr)
 }
 
@@ -1151,6 +1169,9 @@ unsafe fn intarray_slice(ptr: *mut u8) -> &'static [i64] {
 }
 
 unsafe fn bytes_data(ptr: *mut u8) -> *const u8 {
+    if object_type_id(ptr) == TYPE_ID_BYTEARRAY {
+        return bytearray_data(ptr);
+    }
     string_bytes(ptr)
 }
 
@@ -1310,6 +1331,28 @@ unsafe fn seq_vec(ptr: *mut u8) -> &'static mut Vec<u64> {
 unsafe fn seq_vec_ref(ptr: *mut u8) -> &'static Vec<u64> {
     let vec_ptr = seq_vec_ptr(ptr);
     &*vec_ptr
+}
+
+unsafe fn bytearray_vec_ptr(ptr: *mut u8) -> *mut Vec<u8> {
+    *(ptr as *mut *mut Vec<u8>)
+}
+
+unsafe fn bytearray_vec(ptr: *mut u8) -> &'static mut Vec<u8> {
+    let vec_ptr = bytearray_vec_ptr(ptr);
+    &mut *vec_ptr
+}
+
+unsafe fn bytearray_vec_ref(ptr: *mut u8) -> &'static Vec<u8> {
+    let vec_ptr = bytearray_vec_ptr(ptr);
+    &*vec_ptr
+}
+
+unsafe fn bytearray_len(ptr: *mut u8) -> usize {
+    bytearray_vec_ref(ptr).len()
+}
+
+unsafe fn bytearray_data(ptr: *mut u8) -> *const u8 {
+    bytearray_vec_ref(ptr).as_ptr()
 }
 
 unsafe fn list_len(ptr: *mut u8) -> usize {
@@ -1993,6 +2036,16 @@ fn alloc_bytes_like(bytes: &[u8], type_id: u32) -> *mut u8 {
 
 fn concat_bytes_like(left: &[u8], right: &[u8], type_id: u32) -> Option<u64> {
     let total = left.len().checked_add(right.len())?;
+    if type_id == TYPE_ID_BYTEARRAY {
+        let mut out = Vec::with_capacity(total);
+        out.extend_from_slice(left);
+        out.extend_from_slice(right);
+        let ptr = alloc_bytearray(&out);
+        if ptr.is_null() {
+            return None;
+        }
+        return Some(MoltObject::from_ptr(ptr).bits());
+    }
     let ptr = alloc_bytes_like_with_len(total, type_id);
     if ptr.is_null() {
         return None;
@@ -2010,7 +2063,46 @@ fn alloc_bytes(bytes: &[u8]) -> *mut u8 {
 }
 
 fn alloc_bytearray(bytes: &[u8]) -> *mut u8 {
-    alloc_bytes_like(bytes, TYPE_ID_BYTEARRAY)
+    let cap = if bytes.len() <= MAX_SMALL_LIST {
+        MAX_SMALL_LIST
+    } else {
+        bytes.len()
+    };
+    alloc_bytearray_with_capacity(bytes, cap)
+}
+
+fn alloc_bytearray_with_capacity(bytes: &[u8], capacity: usize) -> *mut u8 {
+    let cap = capacity.max(bytes.len());
+    let total = std::mem::size_of::<MoltHeader>()
+        + std::mem::size_of::<*mut Vec<u8>>()
+        + std::mem::size_of::<u64>();
+    let ptr = alloc_object(total, TYPE_ID_BYTEARRAY);
+    if ptr.is_null() {
+        return ptr;
+    }
+    unsafe {
+        let mut vec = Vec::with_capacity(cap);
+        vec.extend_from_slice(bytes);
+        let vec_ptr = Box::into_raw(Box::new(vec));
+        *(ptr as *mut *mut Vec<u8>) = vec_ptr;
+    }
+    ptr
+}
+
+fn alloc_bytearray_with_len(len: usize) -> *mut u8 {
+    let total = std::mem::size_of::<MoltHeader>()
+        + std::mem::size_of::<*mut Vec<u8>>()
+        + std::mem::size_of::<u64>();
+    let ptr = alloc_object(total, TYPE_ID_BYTEARRAY);
+    if ptr.is_null() {
+        return ptr;
+    }
+    unsafe {
+        let vec = vec![0u8; len];
+        let vec_ptr = Box::into_raw(Box::new(vec));
+        *(ptr as *mut *mut Vec<u8>) = vec_ptr;
+    }
+    ptr
 }
 
 fn alloc_intarray(values: &[i64]) -> *mut u8 {
@@ -3830,7 +3922,7 @@ pub unsafe extern "C" fn molt_callargs_expand_star(builder_bits: u64, iterable_b
     }
     let iter_bits = molt_iter(iterable_bits);
     if obj_from_bits(iter_bits).is_none() {
-        raise!("TypeError", "object is not iterable");
+        return raise_not_iterable(iterable_bits);
     }
     loop {
         let pair_bits = molt_iter_next(iter_bits);
@@ -8042,6 +8134,30 @@ pub extern "C" fn molt_add(a: u64, b: u64) -> u64 {
 }
 
 #[no_mangle]
+pub extern "C" fn molt_inplace_add(a: u64, b: u64) -> u64 {
+    let lhs = obj_from_bits(a);
+    if let Some(ptr) = lhs.as_ptr() {
+        unsafe {
+            let ltype = object_type_id(ptr);
+            if ltype == TYPE_ID_LIST {
+                let _ = molt_list_extend(a, b);
+                if exception_pending() {
+                    return MoltObject::none().bits();
+                }
+                return a;
+            }
+            if ltype == TYPE_ID_BYTEARRAY {
+                if bytearray_concat_in_place(ptr, b) {
+                    return a;
+                }
+                return MoltObject::none().bits();
+            }
+        }
+    }
+    molt_add(a, b)
+}
+
+#[no_mangle]
 pub extern "C" fn molt_sub(a: u64, b: u64) -> u64 {
     let lhs = obj_from_bits(a);
     let rhs = obj_from_bits(b);
@@ -8069,6 +8185,30 @@ pub extern "C" fn molt_sub(a: u64, b: u64) -> u64 {
         }
     }
     MoltObject::none().bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_inplace_sub(a: u64, b: u64) -> u64 {
+    let lhs = obj_from_bits(a);
+    if let Some(ptr) = lhs.as_ptr() {
+        unsafe {
+            if object_type_id(ptr) == TYPE_ID_SET {
+                let rhs = obj_from_bits(b);
+                let ok = rhs
+                    .as_ptr()
+                    .is_some_and(|rhs_ptr| is_set_like_type(object_type_id(rhs_ptr)));
+                if !ok {
+                    return raise_unsupported_inplace("-=", a, b);
+                }
+                let _ = molt_set_difference_update(a, b);
+                if exception_pending() {
+                    return MoltObject::none().bits();
+                }
+                return a;
+            }
+        }
+    }
+    molt_sub(a, b)
 }
 
 fn repeat_sequence(ptr: *mut u8, count: i64) -> Option<u64> {
@@ -8147,18 +8287,160 @@ fn repeat_sequence(ptr: *mut u8, count: i64) -> Option<u64> {
                 let len = bytes_len(ptr);
                 let bytes = std::slice::from_raw_parts(bytes_data(ptr), len);
                 let total = len.checked_mul(times)?;
-                let out_ptr = alloc_bytes_like_with_len(total, TYPE_ID_BYTEARRAY);
+                let mut out = Vec::with_capacity(total);
+                for _ in 0..times {
+                    out.extend_from_slice(bytes);
+                }
+                let out_ptr = alloc_bytearray(&out);
                 if out_ptr.is_null() {
                     return None;
                 }
-                let data_ptr = out_ptr.add(std::mem::size_of::<usize>());
-                let out_slice = std::slice::from_raw_parts_mut(data_ptr, total);
-                fill_repeated_bytes(out_slice, bytes);
                 Some(MoltObject::from_ptr(out_ptr).bits())
             }
             _ => None,
         }
     }
+}
+
+unsafe fn list_repeat_in_place(ptr: *mut u8, count: i64) -> bool {
+    let elems = seq_vec(ptr);
+    if count <= 0 {
+        for &item in elems.iter() {
+            dec_ref_bits(item);
+        }
+        elems.clear();
+        return true;
+    }
+    let count = match usize::try_from(count) {
+        Ok(val) => val,
+        Err(_) => {
+            raise!(
+                "OverflowError",
+                "cannot fit 'int' into an index-sized integer"
+            );
+        }
+    };
+    if count == 1 {
+        return true;
+    }
+    let snapshot = elems.clone();
+    if snapshot.is_empty() {
+        return true;
+    }
+    let total = match snapshot.len().checked_mul(count) {
+        Some(total) => total,
+        None => {
+            raise!(
+                "OverflowError",
+                "cannot fit 'int' into an index-sized integer"
+            );
+        }
+    };
+    elems.reserve(total.saturating_sub(snapshot.len()));
+    for _ in 1..count {
+        for &item in snapshot.iter() {
+            elems.push(item);
+            inc_ref_bits(item);
+        }
+    }
+    true
+}
+
+unsafe fn bytearray_repeat_in_place(ptr: *mut u8, count: i64) -> bool {
+    let elems = bytearray_vec(ptr);
+    if count <= 0 {
+        elems.clear();
+        return true;
+    }
+    let count = match usize::try_from(count) {
+        Ok(val) => val,
+        Err(_) => {
+            raise!(
+                "OverflowError",
+                "cannot fit 'int' into an index-sized integer"
+            );
+        }
+    };
+    if count == 1 {
+        return true;
+    }
+    let snapshot = elems.clone();
+    if snapshot.is_empty() {
+        return true;
+    }
+    let total = match snapshot.len().checked_mul(count) {
+        Some(total) => total,
+        None => {
+            raise!(
+                "OverflowError",
+                "cannot fit 'int' into an index-sized integer"
+            );
+        }
+    };
+    elems.reserve(total.saturating_sub(snapshot.len()));
+    for _ in 1..count {
+        elems.extend_from_slice(&snapshot);
+    }
+    true
+}
+
+unsafe fn bytearray_concat_in_place(ptr: *mut u8, other_bits: u64) -> bool {
+    let other = obj_from_bits(other_bits);
+    let Some(other_ptr) = other.as_ptr() else {
+        let msg = format!("can't concat {} to bytearray", type_name(other));
+        raise!("TypeError", &msg);
+    };
+    let other_type = object_type_id(other_ptr);
+    let payload = if other_type == TYPE_ID_MEMORYVIEW {
+        if let Some(slice) = memoryview_bytes_slice(other_ptr) {
+            slice.to_vec()
+        } else if let Some(buf) = memoryview_collect_bytes(other_ptr) {
+            buf
+        } else {
+            let msg = format!("can't concat {} to bytearray", type_name(other));
+            raise!("TypeError", &msg);
+        }
+    } else if other_type == TYPE_ID_BYTES || other_type == TYPE_ID_BYTEARRAY {
+        if other_ptr == ptr {
+            bytearray_vec_ref(ptr).clone()
+        } else {
+            bytes_like_slice_raw(other_ptr).unwrap_or(&[]).to_vec()
+        }
+    } else {
+        let msg = format!("can't concat {} to bytearray", type_name(other));
+        raise!("TypeError", &msg);
+    };
+    bytearray_vec(ptr).extend_from_slice(&payload);
+    true
+}
+
+#[no_mangle]
+pub extern "C" fn molt_inplace_mul(a: u64, b: u64) -> u64 {
+    let lhs = obj_from_bits(a);
+    if let Some(ptr) = lhs.as_ptr() {
+        unsafe {
+            let ltype = object_type_id(ptr);
+            if ltype == TYPE_ID_LIST || ltype == TYPE_ID_BYTEARRAY {
+                let rhs_type = type_name(obj_from_bits(b));
+                let msg =
+                    format!("can't multiply sequence by non-int of type '{rhs_type}'");
+                let count = index_i64_from_obj(b, &msg);
+                if exception_pending() {
+                    return MoltObject::none().bits();
+                }
+                let ok = if ltype == TYPE_ID_LIST {
+                    list_repeat_in_place(ptr, count)
+                } else {
+                    bytearray_repeat_in_place(ptr, count)
+                };
+                if !ok || exception_pending() {
+                    return MoltObject::none().bits();
+                }
+                return a;
+            }
+        }
+    }
+    molt_mul(a, b)
 }
 
 #[no_mangle]
@@ -8895,6 +9177,30 @@ pub extern "C" fn molt_bit_or(a: u64, b: u64) -> u64 {
 }
 
 #[no_mangle]
+pub extern "C" fn molt_inplace_bit_or(a: u64, b: u64) -> u64 {
+    let lhs = obj_from_bits(a);
+    if let Some(ptr) = lhs.as_ptr() {
+        unsafe {
+            if object_type_id(ptr) == TYPE_ID_SET {
+                let rhs = obj_from_bits(b);
+                let ok = rhs
+                    .as_ptr()
+                    .is_some_and(|rhs_ptr| is_set_like_type(object_type_id(rhs_ptr)));
+                if !ok {
+                    return raise_unsupported_inplace("|=", a, b);
+                }
+                let _ = molt_set_update(a, b);
+                if exception_pending() {
+                    return MoltObject::none().bits();
+                }
+                return a;
+            }
+        }
+    }
+    molt_bit_or(a, b)
+}
+
+#[no_mangle]
 pub extern "C" fn molt_bit_and(a: u64, b: u64) -> u64 {
     let lhs = obj_from_bits(a);
     let rhs = obj_from_bits(b);
@@ -8928,6 +9234,30 @@ pub extern "C" fn molt_bit_and(a: u64, b: u64) -> u64 {
 }
 
 #[no_mangle]
+pub extern "C" fn molt_inplace_bit_and(a: u64, b: u64) -> u64 {
+    let lhs = obj_from_bits(a);
+    if let Some(ptr) = lhs.as_ptr() {
+        unsafe {
+            if object_type_id(ptr) == TYPE_ID_SET {
+                let rhs = obj_from_bits(b);
+                let ok = rhs
+                    .as_ptr()
+                    .is_some_and(|rhs_ptr| is_set_like_type(object_type_id(rhs_ptr)));
+                if !ok {
+                    return raise_unsupported_inplace("&=", a, b);
+                }
+                let _ = molt_set_intersection_update(a, b);
+                if exception_pending() {
+                    return MoltObject::none().bits();
+                }
+                return a;
+            }
+        }
+    }
+    molt_bit_and(a, b)
+}
+
+#[no_mangle]
 pub extern "C" fn molt_bit_xor(a: u64, b: u64) -> u64 {
     let lhs = obj_from_bits(a);
     let rhs = obj_from_bits(b);
@@ -8958,6 +9288,30 @@ pub extern "C" fn molt_bit_xor(a: u64, b: u64) -> u64 {
         }
     }
     binary_type_error(lhs, rhs, "^")
+}
+
+#[no_mangle]
+pub extern "C" fn molt_inplace_bit_xor(a: u64, b: u64) -> u64 {
+    let lhs = obj_from_bits(a);
+    if let Some(ptr) = lhs.as_ptr() {
+        unsafe {
+            if object_type_id(ptr) == TYPE_ID_SET {
+                let rhs = obj_from_bits(b);
+                let ok = rhs
+                    .as_ptr()
+                    .is_some_and(|rhs_ptr| is_set_like_type(object_type_id(rhs_ptr)));
+                if !ok {
+                    return raise_unsupported_inplace("^=", a, b);
+                }
+                let _ = molt_set_symdiff_update(a, b);
+                if exception_pending() {
+                    return MoltObject::none().bits();
+                }
+                return a;
+            }
+        }
+    }
+    molt_bit_xor(a, b)
 }
 
 #[no_mangle]
@@ -11730,7 +12084,7 @@ pub extern "C" fn molt_next_builtin(iter_bits: u64, default_bits: u64) -> u64 {
 pub extern "C" fn molt_any_builtin(iter_bits: u64) -> u64 {
     let iter_obj = molt_iter(iter_bits);
     if obj_from_bits(iter_obj).is_none() {
-        raise!("TypeError", "object is not iterable");
+        return raise_not_iterable(iter_bits);
     }
     loop {
         let pair_bits = molt_iter_next(iter_obj);
@@ -11762,7 +12116,7 @@ pub extern "C" fn molt_any_builtin(iter_bits: u64) -> u64 {
 pub extern "C" fn molt_all_builtin(iter_bits: u64) -> u64 {
     let iter_obj = molt_iter(iter_bits);
     if obj_from_bits(iter_obj).is_none() {
-        raise!("TypeError", "object is not iterable");
+        return raise_not_iterable(iter_bits);
     }
     loop {
         let pair_bits = molt_iter_next(iter_obj);
@@ -11932,7 +12286,7 @@ fn molt_minmax_builtin(
         if args.len() == 1 {
             let iter_bits = molt_iter(args[0]);
             if obj_from_bits(iter_bits).is_none() {
-                raise!("TypeError", "object is not iterable");
+                return raise_not_iterable(args[0]);
             }
             let pair_bits = molt_iter_next(iter_bits);
             let pair_obj = obj_from_bits(pair_bits);
@@ -12128,7 +12482,7 @@ pub extern "C" fn molt_map_builtin(func_bits: u64, iterables_bits: u64) -> u64 {
         for &iterable_bits in iterables.iter() {
             let iter_bits = molt_iter(iterable_bits);
             if obj_from_bits(iter_bits).is_none() {
-                raise!("TypeError", "object is not iterable");
+                return raise_not_iterable(iterable_bits);
             }
             iters.push(iter_bits);
         }
@@ -12154,7 +12508,7 @@ pub extern "C" fn molt_map_builtin(func_bits: u64, iterables_bits: u64) -> u64 {
 pub extern "C" fn molt_filter_builtin(func_bits: u64, iterable_bits: u64) -> u64 {
     let iter_bits = molt_iter(iterable_bits);
     if obj_from_bits(iter_bits).is_none() {
-        raise!("TypeError", "object is not iterable");
+        return raise_not_iterable(iterable_bits);
     }
     let total = std::mem::size_of::<MoltHeader>() + 2 * std::mem::size_of::<u64>();
     let filter_ptr = alloc_object(total, TYPE_ID_FILTER);
@@ -12185,7 +12539,7 @@ pub extern "C" fn molt_zip_builtin(iterables_bits: u64) -> u64 {
         for &iterable_bits in iterables.iter() {
             let iter_bits = molt_iter(iterable_bits);
             if obj_from_bits(iter_bits).is_none() {
-                raise!("TypeError", "object is not iterable");
+                return raise_not_iterable(iterable_bits);
             }
             iters.push(iter_bits);
         }
@@ -12279,7 +12633,7 @@ enum SortError {
 pub extern "C" fn molt_sorted_builtin(iter_bits: u64, key_bits: u64, reverse_bits: u64) -> u64 {
     let iter_obj = molt_iter(iter_bits);
     if obj_from_bits(iter_obj).is_none() {
-        raise!("TypeError", "object is not iterable");
+        return raise_not_iterable(iter_bits);
     }
     let use_key = !obj_from_bits(key_bits).is_none();
     let reverse = is_truthy(obj_from_bits(reverse_bits));
@@ -12425,7 +12779,7 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
     }
     let iter_obj = molt_iter(iter_bits);
     if obj_from_bits(iter_obj).is_none() {
-        raise!("TypeError", "object is not iterable");
+        return raise_not_iterable(iter_bits);
     }
     let mut total_bits = start_bits;
     let mut total_owned = false;
@@ -14683,6 +15037,13 @@ fn encode_string_with_errors(
 }
 
 fn bytes_from_count(len: usize, type_id: u32) -> u64 {
+    if type_id == TYPE_ID_BYTEARRAY {
+        let ptr = alloc_bytearray_with_len(len);
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        return MoltObject::from_ptr(ptr).bits();
+    }
     let ptr = alloc_bytes_like_with_len(len, type_id);
     if ptr.is_null() {
         return MoltObject::none().bits();
@@ -15574,6 +15935,26 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                 return MoltObject::none().bits();
             }
             if type_id == TYPE_ID_TUPLE {
+                return MoltObject::none().bits();
+            }
+            if type_id == TYPE_ID_BYTEARRAY {
+                if let Some(idx) = key.as_int() {
+                    let len = bytes_len(ptr) as i64;
+                    let mut i = idx;
+                    if i < 0 {
+                        i += len;
+                    }
+                    if i < 0 || i >= len {
+                        return MoltObject::none().bits();
+                    }
+                    let Some(byte) = bytes_item_to_u8(val_bits, BytesCtorKind::Bytearray)
+                    else {
+                        return MoltObject::none().bits();
+                    };
+                    let elems = bytearray_vec(ptr);
+                    elems[i as usize] = byte;
+                    return obj_bits;
+                }
                 return MoltObject::none().bits();
             }
             if type_id == TYPE_ID_MEMORYVIEW {
@@ -16537,6 +16918,38 @@ pub extern "C" fn molt_set_pop(set_bits: u64) -> u64 {
     MoltObject::none().bits()
 }
 
+unsafe fn set_from_iter_bits(other_bits: u64) -> Option<u64> {
+    let iter_bits = molt_iter(other_bits);
+    if obj_from_bits(iter_bits).is_none() {
+        return raise_not_iterable(other_bits);
+    }
+    let set_bits = molt_set_new(0);
+    let set_ptr = obj_from_bits(set_bits).as_ptr()?;
+    loop {
+        let pair_bits = molt_iter_next(iter_bits);
+        let pair_obj = obj_from_bits(pair_bits);
+        let pair_ptr = pair_obj.as_ptr()?;
+        if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+            return None;
+        }
+        let pair_elems = seq_vec_ref(pair_ptr);
+        if pair_elems.len() < 2 {
+            return None;
+        }
+        let done_bits = pair_elems[1];
+        if is_truthy(obj_from_bits(done_bits)) {
+            break;
+        }
+        let val_bits = pair_elems[0];
+        set_add_in_place(set_ptr, val_bits);
+        if exception_pending() {
+            dec_ref_bits(set_bits);
+            return None;
+        }
+    }
+    Some(set_bits)
+}
+
 #[no_mangle]
 pub extern "C" fn molt_set_update(set_bits: u64, other_bits: u64) -> u64 {
     let obj = obj_from_bits(set_bits);
@@ -16552,6 +16965,34 @@ pub extern "C" fn molt_set_update(set_bits: u64, other_bits: u64) -> u64 {
                     }
                     return MoltObject::none().bits();
                 }
+                let iter_bits = molt_iter(other_bits);
+                if obj_from_bits(iter_bits).is_none() {
+                    return raise_not_iterable(other_bits);
+                }
+                loop {
+                    let pair_bits = molt_iter_next(iter_bits);
+                    let pair_obj = obj_from_bits(pair_bits);
+                    let Some(pair_ptr) = pair_obj.as_ptr() else {
+                        return MoltObject::none().bits();
+                    };
+                    if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                        return MoltObject::none().bits();
+                    }
+                    let pair_elems = seq_vec_ref(pair_ptr);
+                    if pair_elems.len() < 2 {
+                        return MoltObject::none().bits();
+                    }
+                    let done_bits = pair_elems[1];
+                    if is_truthy(obj_from_bits(done_bits)) {
+                        break;
+                    }
+                    let val_bits = pair_elems[0];
+                    set_add_in_place(set_ptr, val_bits);
+                    if exception_pending() {
+                        return MoltObject::none().bits();
+                    }
+                }
+                return MoltObject::none().bits();
             }
         }
     }
@@ -16579,6 +17020,27 @@ pub extern "C" fn molt_set_intersection_update(set_bits: u64, other_bits: u64) -
                     set_replace_entries(set_ptr, &new_entries);
                     return MoltObject::none().bits();
                 }
+                let other_set_bits = set_from_iter_bits(other_bits);
+                let Some(other_set_bits) = other_set_bits else {
+                    return MoltObject::none().bits();
+                };
+                let other_set = obj_from_bits(other_set_bits);
+                let Some(other_ptr) = other_set.as_ptr() else {
+                    dec_ref_bits(other_set_bits);
+                    return MoltObject::none().bits();
+                };
+                let other_order = set_order(other_ptr);
+                let other_table = set_table(other_ptr);
+                let set_entries = set_order(set_ptr).clone();
+                let mut new_entries = Vec::with_capacity(set_entries.len());
+                for entry in set_entries {
+                    if set_find_entry(other_order, other_table, entry).is_some() {
+                        new_entries.push(entry);
+                    }
+                }
+                set_replace_entries(set_ptr, &new_entries);
+                dec_ref_bits(other_set_bits);
+                return MoltObject::none().bits();
             }
         }
     }
@@ -16606,6 +17068,34 @@ pub extern "C" fn molt_set_difference_update(set_bits: u64, other_bits: u64) -> 
                     set_replace_entries(set_ptr, &new_entries);
                     return MoltObject::none().bits();
                 }
+                let iter_bits = molt_iter(other_bits);
+                if obj_from_bits(iter_bits).is_none() {
+                    return raise_not_iterable(other_bits);
+                }
+                loop {
+                    let pair_bits = molt_iter_next(iter_bits);
+                    let pair_obj = obj_from_bits(pair_bits);
+                    let Some(pair_ptr) = pair_obj.as_ptr() else {
+                        return MoltObject::none().bits();
+                    };
+                    if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                        return MoltObject::none().bits();
+                    }
+                    let pair_elems = seq_vec_ref(pair_ptr);
+                    if pair_elems.len() < 2 {
+                        return MoltObject::none().bits();
+                    }
+                    let done_bits = pair_elems[1];
+                    if is_truthy(obj_from_bits(done_bits)) {
+                        break;
+                    }
+                    let val_bits = pair_elems[0];
+                    set_del_in_place(set_ptr, val_bits);
+                    if exception_pending() {
+                        return MoltObject::none().bits();
+                    }
+                }
+                return MoltObject::none().bits();
             }
         }
     }
@@ -16639,6 +17129,33 @@ pub extern "C" fn molt_set_symdiff_update(set_bits: u64, other_bits: u64) -> u64
                     set_replace_entries(set_ptr, &new_entries);
                     return MoltObject::none().bits();
                 }
+                let other_set_bits = set_from_iter_bits(other_bits);
+                let Some(other_set_bits) = other_set_bits else {
+                    return MoltObject::none().bits();
+                };
+                let other_set = obj_from_bits(other_set_bits);
+                let Some(other_ptr) = other_set.as_ptr() else {
+                    dec_ref_bits(other_set_bits);
+                    return MoltObject::none().bits();
+                };
+                let other_order = set_order(other_ptr);
+                let other_table = set_table(other_ptr);
+                let set_entries = set_order(set_ptr).clone();
+                let set_table_ptr = set_table(set_ptr);
+                let mut new_entries = Vec::with_capacity(set_entries.len() + other_order.len());
+                for entry in &set_entries {
+                    if set_find_entry(other_order, other_table, *entry).is_none() {
+                        new_entries.push(*entry);
+                    }
+                }
+                for entry in other_order.iter().copied() {
+                    if set_find_entry(set_entries.as_slice(), set_table_ptr, entry).is_none() {
+                        new_entries.push(entry);
+                    }
+                }
+                set_replace_entries(set_ptr, &new_entries);
+                dec_ref_bits(other_set_bits);
+                return MoltObject::none().bits();
             }
         }
     }
@@ -16650,7 +17167,7 @@ pub extern "C" fn molt_enumerate(iterable_bits: u64, start_bits: u64, has_start_
     let has_start = is_truthy(obj_from_bits(has_start_bits));
     let iter_bits = molt_iter(iterable_bits);
     if obj_from_bits(iter_bits).is_none() {
-        raise!("TypeError", "object is not iterable");
+        return raise_not_iterable(iterable_bits);
     }
     let index_bits = if has_start {
         let start_obj = obj_from_bits(start_bits);
@@ -17521,10 +18038,18 @@ pub extern "C" fn molt_list_extend(list_bits: u64, other_bits: u64) -> u64 {
             if let Some(other_ptr) = other_obj.as_ptr() {
                 let other_type = object_type_id(other_ptr);
                 if other_type == TYPE_ID_LIST || other_type == TYPE_ID_TUPLE {
-                    let src = seq_vec_ref(other_ptr);
-                    for &item in src.iter() {
-                        list_elems.push(item);
-                        inc_ref_bits(item);
+                    if other_ptr == list_ptr {
+                        let snapshot = seq_vec_ref(other_ptr).clone();
+                        for item in snapshot {
+                            list_elems.push(item);
+                            inc_ref_bits(item);
+                        }
+                    } else {
+                        let src = seq_vec_ref(other_ptr);
+                        for &item in src.iter() {
+                            list_elems.push(item);
+                            inc_ref_bits(item);
+                        }
                     }
                     return MoltObject::none().bits();
                 }
@@ -17566,7 +18091,7 @@ pub extern "C" fn molt_list_extend(list_bits: u64, other_bits: u64) -> u64 {
             }
             let iter_bits = molt_iter(other_bits);
             if obj_from_bits(iter_bits).is_none() {
-                raise!("TypeError", "object is not iterable");
+                return raise_not_iterable(other_bits);
             }
             loop {
                 let pair_bits = molt_iter_next(iter_bits);
@@ -19025,6 +19550,12 @@ pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
                     for bits in vec.iter() {
                         dec_ref_bits(*bits);
                     }
+                }
+            }
+            TYPE_ID_BYTEARRAY => {
+                let vec_ptr = bytearray_vec_ptr(ptr);
+                if !vec_ptr.is_null() {
+                    drop(Box::from_raw(vec_ptr));
                 }
             }
             TYPE_ID_TUPLE => {

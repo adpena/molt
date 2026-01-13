@@ -1901,6 +1901,32 @@ BASE_IMPORTS = """\
     }
     return boxNone();
   },
+  inplace_add: (a, b) => {
+    const list = getList(a);
+    if (list) {
+      baseImports.list_extend(a, b);
+      return a;
+    }
+    const bytearray = getBytearray(a);
+    if (bytearray) {
+      const bytes = getBytes(b);
+      const other = getBytearray(b);
+      if (!bytes && !other) {
+        throw new Error(`TypeError: can't concat ${typeName(b)} to bytearray`);
+      }
+      const leftData = bytearray.data;
+      let rightData = bytes ? bytes.data : other.data;
+      if (other && other === bytearray) {
+        rightData = Uint8Array.from(bytearray.data);
+      }
+      const out = new Uint8Array(leftData.length + rightData.length);
+      out.set(leftData, 0);
+      out.set(rightData, leftData.length);
+      bytearray.data = out;
+      return a;
+    }
+    return baseImports.add(a, b);
+  },
   vec_sum_int: () => boxNone(),
   vec_sum_int_trusted: () => boxNone(),
   vec_sum_int_range: () => boxNone(),
@@ -1938,6 +1964,22 @@ BASE_IMPORTS = """\
       return boxPtr({ type: lset.type, items: outItems });
     }
     return boxNone();
+  },
+  inplace_sub: (a, b) => {
+    const set = getSet(a);
+    if (set) {
+      const other = getSetLike(b);
+      if (!other) {
+        throw new Error(
+          `TypeError: unsupported operand type(s) for -=: '${typeName(a)}' and '${typeName(
+            b,
+          )}'`,
+        );
+      }
+      baseImports.set_difference_update(a, b);
+      return a;
+    }
+    return baseImports.sub(a, b);
   },
   bit_or: (a, b) => {
     if (isIntLike(a) && isIntLike(b)) {
@@ -2008,6 +2050,54 @@ BASE_IMPORTS = """\
     }
     return boxNone();
   },
+  inplace_bit_or: (a, b) => {
+    const set = getSet(a);
+    if (set) {
+      const other = getSetLike(b);
+      if (!other) {
+        throw new Error(
+          `TypeError: unsupported operand type(s) for |=: '${typeName(a)}' and '${typeName(
+            b,
+          )}'`,
+        );
+      }
+      baseImports.set_update(a, b);
+      return a;
+    }
+    return baseImports.bit_or(a, b);
+  },
+  inplace_bit_and: (a, b) => {
+    const set = getSet(a);
+    if (set) {
+      const other = getSetLike(b);
+      if (!other) {
+        throw new Error(
+          `TypeError: unsupported operand type(s) for &=: '${typeName(a)}' and '${typeName(
+            b,
+          )}'`,
+        );
+      }
+      baseImports.set_intersection_update(a, b);
+      return a;
+    }
+    return baseImports.bit_and(a, b);
+  },
+  inplace_bit_xor: (a, b) => {
+    const set = getSet(a);
+    if (set) {
+      const other = getSetLike(b);
+      if (!other) {
+        throw new Error(
+          `TypeError: unsupported operand type(s) for ^=: '${typeName(a)}' and '${typeName(
+            b,
+          )}'`,
+        );
+      }
+      baseImports.set_symdiff_update(a, b);
+      return a;
+    }
+    return baseImports.bit_xor(a, b);
+  },
   lshift: (a, b) => {
     if (!isIntLike(a) || !isIntLike(b)) {
       throw new Error(
@@ -2064,6 +2154,54 @@ BASE_IMPORTS = """\
       return boxFloat(lf * rf);
     }
     return boxNone();
+  },
+  inplace_mul: (a, b) => {
+    const list = getList(a);
+    if (list) {
+      if (!isIntLike(b)) {
+        throw new Error(
+          `TypeError: can't multiply sequence by non-int of type '${typeName(b)}'`,
+        );
+      }
+      const count = Number(unboxIntLike(b));
+      if (count <= 0) {
+        list.items.length = 0;
+        return a;
+      }
+      if (count === 1) {
+        return a;
+      }
+      const snapshot = [...list.items];
+      list.items.length = 0;
+      for (let i = 0; i < count; i += 1) {
+        list.items.push(...snapshot);
+      }
+      return a;
+    }
+    const bytearray = getBytearray(a);
+    if (bytearray) {
+      if (!isIntLike(b)) {
+        throw new Error(
+          `TypeError: can't multiply sequence by non-int of type '${typeName(b)}'`,
+        );
+      }
+      const count = Number(unboxIntLike(b));
+      if (count <= 0) {
+        bytearray.data = new Uint8Array(0);
+        return a;
+      }
+      if (count === 1) {
+        return a;
+      }
+      const snapshot = Uint8Array.from(bytearray.data);
+      const out = new Uint8Array(snapshot.length * count);
+      for (let i = 0; i < count; i += 1) {
+        out.set(snapshot, i * snapshot.length);
+      }
+      bytearray.data = out;
+      return a;
+    }
+    return baseImports.mul(a, b);
   },
   div: (a, b) => {
     const lf = numberFromVal(a);
@@ -3077,12 +3215,29 @@ BASE_IMPORTS = """\
     const otherList = getList(otherBits);
     const otherTuple = getTuple(otherBits);
     if (otherList) {
-      list.items.push(...otherList.items);
+      const snapshot = otherList === list ? [...list.items] : otherList.items;
+      list.items.push(...snapshot);
       return boxNone();
     }
     if (otherTuple) {
       list.items.push(...otherTuple.items);
       return boxNone();
+    }
+    const iterBits = baseImports.iter(otherBits);
+    if (isNone(iterBits)) {
+      throw new Error(`TypeError: '${typeName(otherBits)}' object is not iterable`);
+    }
+    while (true) {
+      const pairBits = baseImports.iter_next(iterBits);
+      const tuple = getTuple(pairBits);
+      if (!tuple || tuple.items.length < 2) {
+        throw new Error(`TypeError: '${typeName(otherBits)}' object is not iterable`);
+      }
+      const doneBits = tuple.items[1];
+      if (isTruthyBits(doneBits)) {
+        break;
+      }
+      list.items.push(tuple.items[0]);
     }
     return boxNone();
   },
@@ -3341,6 +3496,24 @@ BASE_IMPORTS = """\
       for (const item of other.items) {
         set.items.add(item);
       }
+      return boxNone();
+    }
+    if (!set) return boxNone();
+    const iterBits = baseImports.iter(otherBits);
+    if (isNone(iterBits)) {
+      throw new Error(`TypeError: '${typeName(otherBits)}' object is not iterable`);
+    }
+    while (true) {
+      const pairBits = baseImports.iter_next(iterBits);
+      const tuple = getTuple(pairBits);
+      if (!tuple || tuple.items.length < 2) {
+        throw new Error(`TypeError: '${typeName(otherBits)}' object is not iterable`);
+      }
+      const doneBits = tuple.items[1];
+      if (isTruthyBits(doneBits)) {
+        break;
+      }
+      set.items.add(tuple.items[0]);
     }
     return boxNone();
   },
@@ -3353,6 +3526,30 @@ BASE_IMPORTS = """\
           set.items.delete(item);
         }
       }
+      return boxNone();
+    }
+    if (!set) return boxNone();
+    const iterBits = baseImports.iter(otherBits);
+    if (isNone(iterBits)) {
+      throw new Error(`TypeError: '${typeName(otherBits)}' object is not iterable`);
+    }
+    const otherItems = new Set();
+    while (true) {
+      const pairBits = baseImports.iter_next(iterBits);
+      const tuple = getTuple(pairBits);
+      if (!tuple || tuple.items.length < 2) {
+        throw new Error(`TypeError: '${typeName(otherBits)}' object is not iterable`);
+      }
+      const doneBits = tuple.items[1];
+      if (isTruthyBits(doneBits)) {
+        break;
+      }
+      otherItems.add(tuple.items[0]);
+    }
+    for (const item of [...set.items]) {
+      if (!otherItems.has(item)) {
+        set.items.delete(item);
+      }
     }
     return boxNone();
   },
@@ -3363,6 +3560,24 @@ BASE_IMPORTS = """\
       for (const item of other.items) {
         set.items.delete(item);
       }
+      return boxNone();
+    }
+    if (!set) return boxNone();
+    const iterBits = baseImports.iter(otherBits);
+    if (isNone(iterBits)) {
+      throw new Error(`TypeError: '${typeName(otherBits)}' object is not iterable`);
+    }
+    while (true) {
+      const pairBits = baseImports.iter_next(iterBits);
+      const tuple = getTuple(pairBits);
+      if (!tuple || tuple.items.length < 2) {
+        throw new Error(`TypeError: '${typeName(otherBits)}' object is not iterable`);
+      }
+      const doneBits = tuple.items[1];
+      if (isTruthyBits(doneBits)) {
+        break;
+      }
+      set.items.delete(tuple.items[0]);
     }
     return boxNone();
   },
@@ -3385,7 +3600,40 @@ BASE_IMPORTS = """\
         }
       }
       set.items = newItems;
+      return boxNone();
     }
+    if (!set) return boxNone();
+    const iterBits = baseImports.iter(otherBits);
+    if (isNone(iterBits)) {
+      throw new Error(`TypeError: '${typeName(otherBits)}' object is not iterable`);
+    }
+    const otherItems = new Set();
+    while (true) {
+      const pairBits = baseImports.iter_next(iterBits);
+      const tuple = getTuple(pairBits);
+      if (!tuple || tuple.items.length < 2) {
+        throw new Error(`TypeError: '${typeName(otherBits)}' object is not iterable`);
+      }
+      const doneBits = tuple.items[1];
+      if (isTruthyBits(doneBits)) {
+        break;
+      }
+      otherItems.add(tuple.items[0]);
+    }
+    const leftItems = [...set.items];
+    const leftLookup = new Set(leftItems);
+    const newItems = new Set();
+    for (const item of leftItems) {
+      if (!otherItems.has(item)) {
+        newItems.add(item);
+      }
+    }
+    for (const item of otherItems) {
+      if (!leftLookup.has(item)) {
+        newItems.add(item);
+      }
+    }
+    set.items = newItems;
     return boxNone();
   },
   tuple_count: () => boxNone(),
@@ -3462,9 +3710,10 @@ BASE_IMPORTS = """\
         }
       }
     }
-    const iterBits = isGenerator(iterable)
-      ? iterable
-      : boxPtr({ type: 'iter', target: iterable, idx: 0 });
+    const iterBits = baseImports.iter(iterable);
+    if (isTag(iterBits, TAG_NONE)) {
+      throw new Error(`TypeError: '${typeName(iterable)}' object is not iterable`);
+    }
     return boxPtr({ type: 'enumerate', iterBits, index: start });
   },
   aiter: (val) => {
@@ -3567,7 +3816,7 @@ BASE_IMPORTS = """\
     if (!args) return boxNone();
     const iterBits = baseImports.iter(iterable);
     if (isTag(iterBits, TAG_NONE)) {
-      throw new Error('TypeError: object is not iterable');
+      throw new Error(`TypeError: '${typeName(iterable)}' object is not iterable`);
     }
     while (true) {
       const pair = iterNextInternal(iterBits);
@@ -3775,12 +4024,23 @@ BASE_IMPORTS = """\
     const idx = Number(unboxInt(idxBits));
     const list = getList(seq);
     const tup = getTuple(seq);
+    const bytes = getBytes(seq);
+    const bytearray = getBytearray(seq);
     const items = list ? list.items : tup ? tup.items : null;
-    if (!items) return boxNone();
-    let pos = idx;
-    if (pos < 0) pos += items.length;
-    if (pos < 0 || pos >= items.length) return boxNone();
-    return items[pos];
+    if (items) {
+      let pos = idx;
+      if (pos < 0) pos += items.length;
+      if (pos < 0 || pos >= items.length) return boxNone();
+      return items[pos];
+    }
+    if (bytes || bytearray) {
+      const data = bytes ? bytes.data : bytearray.data;
+      let pos = idx;
+      if (pos < 0) pos += data.length;
+      if (pos < 0 || pos >= data.length) return boxNone();
+      return boxInt(data[pos]);
+    }
+    return boxNone();
   },
   store_index: (seq, idxBits, val) => {
     const idx = Number(unboxInt(idxBits));
@@ -3790,6 +4050,36 @@ BASE_IMPORTS = """\
       if (i < 0) i += list.items.length;
       if (i < 0 || i >= list.items.length) return boxNone();
       list.items[i] = val;
+      return seq;
+    }
+    const bytearray = getBytearray(seq);
+    if (bytearray) {
+      let i = idx;
+      if (i < 0) i += bytearray.data.length;
+      if (i < 0 || i >= bytearray.data.length) return boxNone();
+      let value = getBigIntValue(val);
+      if (value === null) {
+        const indexAttr = lookupAttr(val, '__index__');
+        if (indexAttr !== undefined) {
+          const res = callCallable0(indexAttr);
+          if (exceptionPending() !== 0n) return boxNone();
+          value = getBigIntValue(res);
+          if (value === null) {
+            throw new Error(
+              `TypeError: __index__ returned non-int (type ${typeName(res)})`,
+            );
+          }
+        }
+      }
+      if (value === null) {
+        throw new Error(
+          `TypeError: '${typeName(val)}' object cannot be interpreted as an integer`,
+        );
+      }
+      if (value < 0n || value > 255n) {
+        throw new Error('ValueError: byte must be in range(0, 256)');
+      }
+      bytearray.data[i] = Number(value);
       return seq;
     }
     return boxNone();
@@ -4361,7 +4651,7 @@ BASE_IMPORTS = """\
   sum_builtin: (iterableBits, startBits) => {
     const iterBits = baseImports.iter(iterableBits);
     if (isTag(iterBits, TAG_NONE)) {
-      throw new Error('TypeError: object is not iterable');
+      throw new Error(`TypeError: '${typeName(iterableBits)}' object is not iterable`);
     }
     let total = startBits;
     while (true) {
@@ -4393,7 +4683,7 @@ BASE_IMPORTS = """\
     if (args.items.length === 1) {
       const iterBits = baseImports.iter(args.items[0]);
       if (isTag(iterBits, TAG_NONE)) {
-        throw new Error('TypeError: object is not iterable');
+        throw new Error(`TypeError: '${typeName(args.items[0])}' object is not iterable`);
       }
       let best = null;
       let bestKey = null;
@@ -4461,7 +4751,7 @@ BASE_IMPORTS = """\
     if (args.items.length === 1) {
       const iterBits = baseImports.iter(args.items[0]);
       if (isTag(iterBits, TAG_NONE)) {
-        throw new Error('TypeError: object is not iterable');
+        throw new Error(`TypeError: '${typeName(args.items[0])}' object is not iterable`);
       }
       let best = null;
       let bestKey = null;
@@ -4516,7 +4806,7 @@ BASE_IMPORTS = """\
   sorted_builtin: (iterBits, keyBits, reverseBits) => {
     const iterObj = baseImports.iter(iterBits);
     if (isTag(iterObj, TAG_NONE)) {
-      throw new Error('TypeError: object is not iterable');
+      throw new Error(`TypeError: '${typeName(iterBits)}' object is not iterable`);
     }
     const useKey = !isTag(keyBits, TAG_NONE);
     const reverse = isTruthyBits(reverseBits);
@@ -4571,7 +4861,7 @@ BASE_IMPORTS = """\
     for (const iterable of iterables.items) {
       const iterBits = baseImports.iter(iterable);
       if (isTag(iterBits, TAG_NONE)) {
-        throw new Error('TypeError: object is not iterable');
+        throw new Error(`TypeError: '${typeName(iterable)}' object is not iterable`);
       }
       iters.push(iterBits);
     }
@@ -4580,7 +4870,7 @@ BASE_IMPORTS = """\
   filter_builtin: (funcBits, iterableBits) => {
     const iterBits = baseImports.iter(iterableBits);
     if (isTag(iterBits, TAG_NONE)) {
-      throw new Error('TypeError: object is not iterable');
+      throw new Error(`TypeError: '${typeName(iterableBits)}' object is not iterable`);
     }
     return boxPtr({ type: 'filter', func: funcBits, iterBits });
   },
@@ -4593,7 +4883,7 @@ BASE_IMPORTS = """\
     for (const iterable of iterables.items) {
       const iterBits = baseImports.iter(iterable);
       if (isTag(iterBits, TAG_NONE)) {
-        throw new Error('TypeError: object is not iterable');
+        throw new Error(`TypeError: '${typeName(iterable)}' object is not iterable`);
       }
       iters.push(iterBits);
     }
@@ -4706,7 +4996,7 @@ BASE_IMPORTS = """\
   any_builtin: (iterable) => {
     const iterBits = baseImports.iter(iterable);
     if (isTag(iterBits, TAG_NONE)) {
-      throw new Error('TypeError: object is not iterable');
+      throw new Error(`TypeError: '${typeName(iterable)}' object is not iterable`);
     }
     while (true) {
       const pairBits = baseImports.iter_next(iterBits);
@@ -4727,7 +5017,7 @@ BASE_IMPORTS = """\
   all_builtin: (iterable) => {
     const iterBits = baseImports.iter(iterable);
     if (isTag(iterBits, TAG_NONE)) {
-      throw new Error('TypeError: object is not iterable');
+      throw new Error(`TypeError: '${typeName(iterable)}' object is not iterable`);
     }
     while (true) {
       const pairBits = baseImports.iter_next(iterBits);

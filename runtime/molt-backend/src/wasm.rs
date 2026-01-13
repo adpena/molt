@@ -248,6 +248,7 @@ impl WasmBackend {
         add_import("chan_send", 3, &mut self.import_ids);
         add_import("chan_recv", 2, &mut self.import_ids);
         add_import("add", 3, &mut self.import_ids);
+        add_import("inplace_add", 3, &mut self.import_ids);
         add_import("vec_sum_int", 3, &mut self.import_ids);
         add_import("vec_sum_int_trusted", 3, &mut self.import_ids);
         add_import("vec_sum_int_range", 5, &mut self.import_ids);
@@ -266,9 +267,14 @@ impl WasmBackend {
         add_import("vec_max_int_range_trusted", 5, &mut self.import_ids);
         add_import("sub", 3, &mut self.import_ids);
         add_import("mul", 3, &mut self.import_ids);
+        add_import("inplace_sub", 3, &mut self.import_ids);
+        add_import("inplace_mul", 3, &mut self.import_ids);
         add_import("bit_or", 3, &mut self.import_ids);
         add_import("bit_and", 3, &mut self.import_ids);
         add_import("bit_xor", 3, &mut self.import_ids);
+        add_import("inplace_bit_or", 3, &mut self.import_ids);
+        add_import("inplace_bit_and", 3, &mut self.import_ids);
+        add_import("inplace_bit_xor", 3, &mut self.import_ids);
         add_import("lshift", 3, &mut self.import_ids);
         add_import("rshift", 3, &mut self.import_ids);
         add_import("matmul", 3, &mut self.import_ids);
@@ -1064,6 +1070,16 @@ impl WasmBackend {
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
+                    "inplace_add" => {
+                        let args = op.args.as_ref().unwrap();
+                        let lhs = locals[&args[0]];
+                        let rhs = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(lhs));
+                        func.instruction(&Instruction::LocalGet(rhs));
+                        emit_call(func, reloc_enabled, import_ids["inplace_add"]);
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
                     "vec_sum_int" => {
                         let args = op.args.as_ref().unwrap();
                         let seq = locals[&args[0]];
@@ -1264,6 +1280,26 @@ impl WasmBackend {
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
+                    "inplace_sub" => {
+                        let args = op.args.as_ref().unwrap();
+                        let lhs = locals[&args[0]];
+                        let rhs = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(lhs));
+                        func.instruction(&Instruction::LocalGet(rhs));
+                        emit_call(func, reloc_enabled, import_ids["inplace_sub"]);
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "inplace_mul" => {
+                        let args = op.args.as_ref().unwrap();
+                        let lhs = locals[&args[0]];
+                        let rhs = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(lhs));
+                        func.instruction(&Instruction::LocalGet(rhs));
+                        emit_call(func, reloc_enabled, import_ids["inplace_mul"]);
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
                     "bit_or" => {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
@@ -1291,6 +1327,36 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(lhs));
                         func.instruction(&Instruction::LocalGet(rhs));
                         emit_call(func, reloc_enabled, import_ids["bit_xor"]);
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "inplace_bit_or" => {
+                        let args = op.args.as_ref().unwrap();
+                        let lhs = locals[&args[0]];
+                        let rhs = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(lhs));
+                        func.instruction(&Instruction::LocalGet(rhs));
+                        emit_call(func, reloc_enabled, import_ids["inplace_bit_or"]);
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "inplace_bit_and" => {
+                        let args = op.args.as_ref().unwrap();
+                        let lhs = locals[&args[0]];
+                        let rhs = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(lhs));
+                        func.instruction(&Instruction::LocalGet(rhs));
+                        emit_call(func, reloc_enabled, import_ids["inplace_bit_and"]);
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "inplace_bit_xor" => {
+                        let args = op.args.as_ref().unwrap();
+                        let lhs = locals[&args[0]];
+                        let rhs = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(lhs));
+                        func.instruction(&Instruction::LocalGet(rhs));
+                        emit_call(func, reloc_enabled, import_ids["inplace_bit_xor"]);
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
