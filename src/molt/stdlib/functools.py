@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, cast
 
 __all__ = [
+    "cmp_to_key",
     "lru_cache",
     "partial",
     "reduce",
+    "total_ordering",
     "update_wrapper",
     "wraps",
 ]
 
 # TODO(stdlib-compat, owner:stdlib, milestone:SL1): add full functools surface
-# (namedtuple cache_info, singledispatch, total_ordering, cmp_to_key).
+# (namedtuple cache_info, singledispatch).
 
 WRAPPER_ASSIGNMENTS = (
     "__module__",
@@ -31,27 +33,57 @@ def update_wrapper(
     assigned: Iterable[str] = WRAPPER_ASSIGNMENTS,
     updated: Iterable[str] = WRAPPER_UPDATES,
 ) -> Callable[..., Any]:
-    for attr in assigned:
+    wrapper_obj = cast(Any, wrapper)
+    wrapped_obj = cast(Any, wrapped)
+    if assigned is WRAPPER_ASSIGNMENTS:
         try:
-            value = getattr(wrapped, attr)
+            wrapper_obj.__module__ = wrapped_obj.__module__
         except Exception:
-            continue
+            pass
         try:
-            setattr(wrapper, attr, value)
+            wrapper_obj.__name__ = wrapped_obj.__name__
         except Exception:
-            continue
-    for attr in updated:
+            pass
         try:
-            target = getattr(wrapper, attr)
-            source = getattr(wrapped, attr)
+            wrapper_obj.__qualname__ = wrapped_obj.__qualname__
         except Exception:
-            continue
+            pass
         try:
-            target.update(source)
+            wrapper_obj.__doc__ = wrapped_obj.__doc__
         except Exception:
-            continue
+            pass
+        try:
+            wrapper_obj.__annotations__ = wrapped_obj.__annotations__
+        except Exception:
+            pass
+    else:
+        for attr in assigned:
+            try:
+                value = getattr(wrapped, attr)
+            except Exception:
+                continue
+            try:
+                setattr(wrapper, attr, value)
+            except Exception:
+                continue
+    if updated is WRAPPER_UPDATES:
+        try:
+            wrapper_obj.__dict__.update(wrapped_obj.__dict__)
+        except Exception:
+            pass
+    else:
+        for attr in updated:
+            try:
+                target = getattr(wrapper, attr)
+                source = getattr(wrapped, attr)
+            except Exception:
+                continue
+            try:
+                target.update(source)
+            except Exception:
+                continue
     try:
-        setattr(wrapper, "__wrapped__", wrapped)
+        wrapper_obj.__wrapped__ = wrapped_obj
     except Exception:
         pass
     return wrapper
@@ -83,6 +115,97 @@ def wraps(
     updated: Iterable[str] = WRAPPER_UPDATES,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     return _Wraps(wrapped, assigned, updated)
+
+
+def cmp_to_key(mycmp):
+    def key(obj: Any) -> _CmpKey:
+        return _CmpKey(obj, mycmp)
+
+    return key
+
+
+class _CmpKey:
+    __slots__ = ("obj", "_cmp")
+
+    def __init__(self, obj: Any, cmp: Callable[[Any, Any], int]) -> None:
+        self.obj = obj
+        self._cmp = cmp
+
+    def __lt__(self, other: object) -> bool:
+        if type(other) is not type(self):
+            return NotImplemented
+        other_key = cast(_CmpKey, other)
+        return self._cmp(self.obj, other_key.obj) < 0
+
+    def __le__(self, other: object) -> bool:
+        if type(other) is not type(self):
+            return NotImplemented
+        other_key = cast(_CmpKey, other)
+        return self._cmp(self.obj, other_key.obj) <= 0
+
+    def __gt__(self, other: object) -> bool:
+        if type(other) is not type(self):
+            return NotImplemented
+        other_key = cast(_CmpKey, other)
+        return self._cmp(self.obj, other_key.obj) > 0
+
+    def __ge__(self, other: object) -> bool:
+        if type(other) is not type(self):
+            return NotImplemented
+        other_key = cast(_CmpKey, other)
+        return self._cmp(self.obj, other_key.obj) >= 0
+
+    def __eq__(self, other: object) -> bool:
+        if type(other) is not type(self):
+            return False
+        other_key = cast(_CmpKey, other)
+        return self._cmp(self.obj, other_key.obj) == 0
+
+    def __ne__(self, other: object) -> bool:
+        if type(other) is not type(self):
+            return True
+        other_key = cast(_CmpKey, other)
+        return self._cmp(self.obj, other_key.obj) != 0
+
+    __hash__ = None
+
+
+def total_ordering(cls):
+    convert = {
+        "__lt__": [
+            ("__gt__", lambda self, other: other < self),
+            ("__le__", lambda self, other: not other < self),
+            ("__ge__", lambda self, other: not self < other),
+        ],
+        "__le__": [
+            ("__ge__", lambda self, other: other <= self),
+            ("__lt__", lambda self, other: not other <= self),
+            ("__gt__", lambda self, other: not self <= other),
+        ],
+        "__gt__": [
+            ("__lt__", lambda self, other: other > self),
+            ("__ge__", lambda self, other: not other > self),
+            ("__le__", lambda self, other: not self > other),
+        ],
+        "__ge__": [
+            ("__le__", lambda self, other: other >= self),
+            ("__gt__", lambda self, other: not other >= self),
+            ("__lt__", lambda self, other: not self >= other),
+        ],
+    }
+    root = None
+    for op_name in ("__lt__", "__le__", "__gt__", "__ge__"):
+        if op_name in cls.__dict__:
+            root = op_name
+            break
+    if root is None:
+        raise ValueError(
+            "total_ordering requires at least one ordering operation: < <= > >="
+        )
+    for opname, opfunc in convert[root]:
+        if opname not in cls.__dict__:
+            setattr(cls, opname, opfunc)
+    return cls
 
 
 class _Partial:
@@ -230,16 +353,14 @@ class _LruCacheFactory:
 
     def __call__(self, func: Callable[..., Any]) -> Callable[..., Any]:
         wrapper = _LruCacheWrapper(func, self._maxsize, self._typed)
-        # TODO(stdlib-compat, owner:stdlib, milestone:SL1): restore update_wrapper.
-        return wrapper
+        return update_wrapper(wrapper, func)
 
 
 def lru_cache(maxsize: int | None = 128, typed: bool = False):
     if callable(maxsize) and typed is False:
         func = maxsize
         wrapper = _LruCacheWrapper(func, 128, False)
-        # TODO(stdlib-compat, owner:stdlib, milestone:SL1): restore update_wrapper.
-        return wrapper
+        return update_wrapper(wrapper, func)
     return _LruCacheFactory(maxsize, typed)
 
 

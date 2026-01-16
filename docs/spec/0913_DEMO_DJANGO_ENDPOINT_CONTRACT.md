@@ -10,6 +10,7 @@
 ## 0. Endpoint
 - Demo endpoints: `GET /baseline/` and `GET /offload/` (same contract)
 - Reserved contract alias: `GET /api/items` (future adapter/DB path)
+  (TODO(offload, owner:runtime, milestone:SL1, priority:P2, status:planned): adapter/DB contract path).
 - Query params:
   - `user_id` (int)
   - `q` (string, optional)
@@ -43,7 +44,8 @@ This allows:
 - consistent results
 - earlier validation of cancellation/backpressure
 
-Then later swap in real Postgres with the same contract.
+Then later swap in real Postgres with the same contract
+(TODO(db, owner:runtime, milestone:DB2, priority:P2, status:planned): real Postgres swap).
 
 **Implementation status:** `molt_worker` returns a deterministic fake response for `list_items` and supports `MOLT_FAKE_DB_DELAY_MS` (base latency), `MOLT_FAKE_DB_DECODE_US_PER_ROW` (per-row decode cost), and `MOLT_FAKE_DB_CPU_ITERS` (per-row CPU work).
 When `MOLT_DEMO_DB_PATH` (Django) and `MOLT_DB_SQLITE_PATH` (worker) are set,

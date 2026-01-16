@@ -32,9 +32,12 @@
 - For Rust changes that affect runtime semantics, add or update `cargo test` coverage.
 - Avoid excessive lint/test loops while implementing; validate once after a cohesive set of changes is complete unless debugging a failure.
 - If tests fail due to missing functionality, stop and call out the missing feature; ask for priority/plan before changing tests, then implement the correct behavior instead.
+- **NEVER change Python semantics just to make a differential test pass.** This is a hard-stop rule; fix behavior to match CPython or document the genuine incompatibility in specs/tests.
 - Treat benchmark regressions as failures; run `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json`, `tools/dev.py lint`, and `tools/dev.py test` after the fix is in, then iterate on optimization until the regression is removed without introducing new regressions.
 - Run `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json` for every commit and commit the updated `bench/results/bench.json` (document blockers in `CHECKPOINT.md`). On Apple Silicon, prefer an arm64 interpreter (e.g., `--python /opt/homebrew/bin/python3.14`) so Codon baselines link.
-- Run `uv run --python 3.14 python3 tools/bench_wasm.py --json-out bench/results/bench_wasm.json` for every commit and commit the updated `bench/results/bench_wasm.json` (document blockers in `CHECKPOINT.md`).
+- Run `uv run --python 3.14 python3 tools/bench_wasm.py --json-out bench/results/bench_wasm.json` for every commit and commit the updated `bench/results/bench_wasm.json` (document blockers in `CHECKPOINT.md`); also run the native bench and summarize WASM vs CPython ratios in `README.md`.
+- After native + WASM benches, run `uv run --python 3.14 python3 tools/bench_report.py --update-readme` and commit the updated `docs/benchmarks/bench_summary.md` plus the refreshed `README.md` summary block.
+- Super bench runs (`tools/bench.py --super`, `tools/bench_wasm.py --super`) execute 10 samples and emit mean/median/variance/range stats; run only on explicit request or release tagging, and summarize the stats in `README.md`.
 - Sound the alarm immediately on performance regressions and trigger an optimization-first feedback loop (bench → lint → test → optimize) until green, but avoid repeated cycles before the implementation is complete.
 - Prefer performance wins even if they increase compile time or binary size; document tradeoffs explicitly.
 - Always run tests via `uv run --python 3.12/3.13/3.14`; never use the raw `.venv` interpreter directly.
@@ -42,6 +45,7 @@
 ## Commit & Pull Request Guidelines
 - The current branch has no commit history, so no established convention exists yet. Use concise, imperative subjects and add a scope when helpful (e.g., `runtime: tighten object layout guards`).
 - PRs should include a short summary, tests run, and any determinism or security impacts. Link issues when applicable.
+- Release tags start at `v0.0.001` and increment at the thousandth place (e.g., `v0.0.002`, `v0.0.003`).
 
 ## Determinism & Reproducibility Notes
 - Treat `uv.lock` and Rust lockfiles as part of the build contract; update them only when dependency changes are intentional.
@@ -55,7 +59,7 @@
 - Prefer production-first implementations over quick hacks; prototype work must be clearly marked and scoped.
 - Use stubs only if absolutely necessary; prefer implementing lower-level primitives first and document any remaining gaps.
 - Keep native and wasm feature sets in lockstep; treat wasm parity gaps as blockers and call them out immediately.
-- Do not "fix" tests by weakening coverage when functionality is missing; surface the missing capability and implement it properly.
+- ABSOLUTE RULE: Do not "fix" tests by weakening or contorting coverage to hide missing, partial, or hacky behavior; surface the gap, ask for priority/plan if needed, and implement the correct behavior.
 - Proactively read and update `ROADMAP.md` and relevant files under `docs/spec/` when behavior or scope changes.
 - Treat `docs/spec/STATUS.md` as the canonical source of truth for current capabilities/limits; sync README/ROADMAP after changes.
 - Update docs/spec and tests each turn as appropriate to reflect new behavior; if no updates are needed, note that in `CHECKPOINT.md`.
@@ -63,13 +67,31 @@
 - Treat the long-term vision as full Python compatibility: all types, syntax, and dependencies.
 - Prioritize extending features; update existing implementations when needed to hit roadmap/spec goals, even if it requires refactors.
 - For major changes, ensure tight integration and compatibility across compiler, runtime, tooling, and tests.
-- Document partial or interim implementations with grepable `TODO(type-coverage, ...)` or `TODO(stdlib-compat, ...)` markers and mirror them in `ROADMAP.md`.
+- NON-NEGOTIABLE: Document partial or interim implementations with grepable `TODO(area, owner:..., milestone:..., priority:..., status:...)` markers and mirror them in `ROADMAP.md` in the same change.
+- NON-NEGOTIABLE: For any partial, hacky, or missing functionality (or any stub/workaround), add explicit inline TODO markers (e.g., `TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): ...`) so follow-ups are discoverable and never deferred.
 - Whenever a stub/partial feature or optimization candidate is added, update `README.md`, the relevant `docs/spec/` file(s), and `ROADMAP.md` in the same change.
 - When major features or optimizations land, run benchmarks with JSON output (`python3 tools/bench.py --json`) and update the Performance & Comparisons section in `README.md` with the summarized results.
 - Follow `docs/spec/0015_STDLIB_COMPATIBILITY_MATRIX.md` for stdlib scope, tiers (core vs import vs gated), and promotion rules.
 - Keep stdlib modules import-only by default; only promote to core after updating the stdlib matrix and `ROADMAP.md`.
 - Treat I/O, OS, network, and process modules as capability-gated and document the required permissions in specs.
 - Always update `CHECKPOINT.md` after each assistant turn and when nearing context compaction; include an ISO-8601 timestamp and `git rev-parse HEAD` (note if dirty) for freshness checks.
+
+## TODO Taxonomy (Required)
+Use a single, explicit TODO format everywhere (code + docs + tests). This is how we track gaps safely and keep LLMs aligned.
+
+**Format**
+- `TODO(area, owner:<team>, milestone:<tag>, priority:<P0-3>, status:<missing|partial|planned|divergent>): <action>`
+
+**Required fields**
+- `area`: short, stable domain (`type-coverage`, `stdlib-compat`, `frontend`, `compiler`, `runtime`, `opcode-matrix`, `semantics`, `syntax`, `async-runtime`, `introspection`, `import-system`, `runtime-provenance`, `tooling`, `perf`, `wasm-parity`, `wasm-db-parity`, `wasm-link`, `wasm-host`, `db`, `offload`, `http-runtime`, `observability`, `dataframe`, `tests`, `docs`, `security`, `packaging`, `c-api`).
+- `owner`: `runtime`, `frontend`, `compiler`, `stdlib`, `tooling`, `release`, `docs`, or `security`.
+- `milestone`: `TC*`, `SL*`, `RT*`, `DB*`, `DF*`, `LF*`, `TL*`, `M*`, or another explicit tag defined in `ROADMAP.md`.
+- `priority`: `P0` (blocker) to `P3` (low).
+- `status`: `missing`, `partial`, `planned`, or `divergent`.
+
+**Rules**
+- Any incomplete/partial/hacky/stubbed behavior must include a TODO in-line **and** be mirrored in `docs/spec/STATUS.md` + `ROADMAP.md`.
+- If you introduce a new `area` or `milestone`, add it to this list or the ROADMAP legend in the same change.
 
 ## Optimization Planning
 - When focusing on optimization tasks, closely measure allocations and apply rigorous profiling when it can clarify behavior; this has unlocked major speedups in synchronous functions.
@@ -84,6 +106,8 @@
 - Before touching non-doc code or tests, write a narrow lock entry for your scope in `docs/AGENT_LOCKS.md`. Update locks whenever you switch files/clusters, and remove them as soon as you finish with a file or scope (be aggressive—re-lock later if needed).
 - Use a unique lock name: `codex-{process_id[:50]}` where `process_id` is the Codex CLI parent PID from `echo $PPID` or `python3 - <<'PY'\nimport os\nprint(os.getppid())\nPY`; never reuse the generic `codex` label.
 - Documentation is generally safe to share across agents; still read locks, but doc-only edits can be co-owned unless a lock explicitly reserves them.
+- Do not implement workarounds, partial implementations, or degraded behavior because a needed file is locked; wait until the lock clears instead.
+- Do not implement frontend-only workarounds or cheap hacks for runtime/compiler/backend semantics; fix the core layers so compiled binaries match CPython behavior.
 - If working on a lower-level layer (runtime/backend) with implications for higher-level code, lock and coordinate across both layers; avoid overlapping clusters at the same level without explicit coordination.
 - Use `docs/AGENT_MEMORY.md` as an append-only coordination log during parallel work: record intended scope before starting and summarize changes/tests/benchmarks after finishing.
 - When multiple agents are active, read both `docs/AGENT_LOCKS.md` and `docs/AGENT_MEMORY.md` first to avoid overlapping scopes, then update the memory log as you progress.

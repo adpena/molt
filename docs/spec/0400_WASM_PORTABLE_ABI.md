@@ -53,7 +53,7 @@ This spec defines the minimal stable ABI and host surface needed for:
 
 ### 2.2 Server targets
 - Native: `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`, etc.
-- Optional WASI for plugins: `wasm32-wasip1` (or future component model)
+- Optional WASI for plugins: `wasm32-wasip1` (or future component model) (TODO(wasm-host, owner:runtime, milestone:RT3, priority:P3, status:planned): component model target support).
 
 ### 2.3 “Portable Module” definition
 A module is “portable” if it:

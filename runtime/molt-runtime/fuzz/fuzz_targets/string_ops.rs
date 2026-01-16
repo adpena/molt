@@ -3,7 +3,7 @@
 use libfuzzer_sys::fuzz_target;
 use molt_runtime::{
     molt_string_count, molt_string_endswith, molt_string_find, molt_string_from_bytes,
-    molt_string_replace, molt_string_startswith,
+    molt_string_replace, molt_string_startswith, MoltObject,
 };
 
 fuzz_target!(|data: &[u8]| {
@@ -34,6 +34,7 @@ fuzz_target!(|data: &[u8]| {
         let _ = molt_string_startswith(hay_bits, needle_bits);
         let _ = molt_string_endswith(hay_bits, needle_bits);
         let _ = molt_string_count(hay_bits, needle_bits);
-        let _ = molt_string_replace(hay_bits, needle_bits, repl_bits);
+        let count_bits = MoltObject::from_int(-1).bits();
+        let _ = molt_string_replace(hay_bits, needle_bits, repl_bits, count_bits);
     }
 });

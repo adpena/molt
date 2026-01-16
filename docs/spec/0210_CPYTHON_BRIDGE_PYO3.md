@@ -119,6 +119,6 @@ values and enforce capability checks before invocation.
 3. **Worker-process bridge** (production default)
 4. **Migration to native packages** (Tier B) for hot paths
 
-TODO(stdlib-compat, owner:runtime, milestone:SL3): CPython bridge phase 1 (dev-only embedded CPython; no production).
-TODO(stdlib-compat, owner:runtime, milestone:SL3): CPython bridge phase 2 (capability-gated embedded bridge + effect contracts).
-TODO(stdlib-compat, owner:runtime, milestone:SL3): CPython bridge phase 3 (worker-process default + Arrow/MsgPack/CBOR batching).
+TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P2, status:planned): CPython bridge phase 1 (dev-only embedded CPython; no production).
+TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P2, status:planned): CPython bridge phase 2 (capability-gated embedded bridge + effect contracts).
+TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P2, status:planned): CPython bridge phase 3 (worker-process default + Arrow/MsgPack/CBOR batching).

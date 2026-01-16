@@ -45,6 +45,27 @@ try:
 except StopIteration:
     print("done")
 
+header("throw_unstarted")
+
+
+def gen_throw_start():
+    try:
+        yield 1
+    except ValueError:
+        print("caught")
+        yield 2
+
+
+g2b = gen_throw_start()
+try:
+    g2b.throw(ValueError("boom"))
+except ValueError as exc:
+    print(type(exc).__name__, exc)
+try:
+    next(g2b)
+except StopIteration:
+    print("closed")
+
 
 header("yield_from_send")
 
@@ -87,6 +108,30 @@ try:
 except StopIteration:
     print("done")
 
+header("yield_from_nested")
+
+
+def sub_inner():
+    yield 1
+    return 5
+
+
+def sub_mid():
+    val = yield from sub_inner()
+    return val + 1
+
+
+def gen_nested_ret():
+    return (yield from sub_mid())
+
+
+g4b = gen_nested_ret()
+print(g4b.send(None))
+try:
+    g4b.send(None)
+except StopIteration as exc:
+    print("nested_ret", exc.value)
+
 
 header("close")
 
@@ -111,6 +156,22 @@ def gen_close():
 g5 = gen_close()
 print(g5.send(None))
 g5.close()
+print(events)
+
+header("close_unstarted")
+
+events = []
+
+
+def gen_close_unstarted():
+    try:
+        yield 1
+    finally:
+        events.append("final")
+
+
+g5b = gen_close_unstarted()
+g5b.close()
 print(events)
 
 header("close_raise")
@@ -225,6 +286,7 @@ g11 = gen_ret_val()
 try:
     g11.send(None)
 except StopIteration as exc:
+    print(exc.value)
     print(str(exc))
 
 
@@ -237,4 +299,31 @@ g12 = gen_ret_none()
 try:
     g12.send(None)
 except StopIteration as exc:
+    print(exc.value is None)
     print(str(exc) == "")
+
+
+class IterStop:
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        raise StopIteration(11)
+
+
+try:
+    next(IterStop())
+except StopIteration as exc:
+    print(exc.value)
+
+
+def gen_from_iter():
+    res = yield from IterStop()
+    print("iter_ret", res)
+
+
+g14 = gen_from_iter()
+try:
+    g14.send(None)
+except StopIteration:
+    print("done")

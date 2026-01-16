@@ -30,9 +30,6 @@ Contributors are expected to have:
 - SSH access to their development machine
 - A way to reconnect safely (mosh recommended)
 
-See:
-- `docs/REMOTE_ACCESS.md`
-
 If you are using AI agents or Codex, this setup is **mandatory**.
 
 ---
@@ -148,12 +145,14 @@ Performance claims without benchmarks will be rejected.
 - Explicit error handling
 - Tests for non-trivial logic
 - Comments where invariants matter
+- NON-NEGOTIABLE: Add grepable inline `TODO(area, owner:..., milestone:..., priority:..., status:...)` markers for any partial, hacky, or missing functionality (including stubs/workarounds) and mirror the follow-up in `ROADMAP.md` in the same change.
 
 ### Prohibited
 - Hidden global state
 - Silent fallbacks
 - Performance claims without data
 - “Temporary” hacks without tracking
+- ABSOLUTE RULE: Do not weaken or contort tests to hide incomplete, partial, or hacky behavior; fix the behavior or document genuine incompatibility. This is a hard-stop rule.
 
 ---
 
@@ -188,7 +187,7 @@ We are willing to break:
 - legacy compatibility without justification
 
 See:
-- `docs/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md`
+- `docs/spec/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md`
 
 ---
 

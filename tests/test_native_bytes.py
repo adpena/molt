@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+import tempfile
 
 import pytest
 
@@ -30,8 +31,9 @@ def test_native_bytes_build_and_run(tmp_path: Path) -> None:
     src = tmp_path / "bytes_demo.py"
     src.write_text("print(b'hi' + b'!')\nprint(len(b'hi!'))\nprint(b'hello'[1:4])\n")
 
-    output_binary = root / "hello_molt"
-    artifacts = [root / "output.o", root / "main_stub.c", output_binary]
+    output_root = Path(tempfile.gettempdir())
+    output_binary = output_root / f"{src.stem}_molt"
+    artifacts = [output_root / "output.o", output_root / "main_stub.c", output_binary]
     existed = {path: path.exists() for path in artifacts}
 
     env = os.environ.copy()

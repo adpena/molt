@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+import tempfile
 
 import pytest
 
@@ -142,7 +143,7 @@ def test_wasm_generator_protocol_parity(tmp_path: Path) -> None:
         "    print(exc.__suppress_context__)\n"
     )
 
-    output_wasm = root / "output.wasm"
+    output_wasm = Path(tempfile.gettempdir()) / "output.wasm"
     existed = output_wasm.exists()
 
     runner = write_wasm_runner(tmp_path, "run_wasm_generator_protocol.js")

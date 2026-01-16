@@ -2,6 +2,20 @@ import subprocess
 import sys
 import os
 from pathlib import Path
+import tempfile
+
+
+def _resolve_python_exe(python_exe: str) -> str:
+    if not python_exe:
+        return sys.executable
+    if os.sep in python_exe or Path(python_exe).is_absolute():
+        candidate = Path(python_exe)
+        if candidate.exists():
+            return python_exe
+        base_exe = getattr(sys, "_base_executable", "")
+        if base_exe and Path(base_exe).exists():
+            return base_exe
+    return python_exe
 
 
 def _collect_env_overrides(file_path: str) -> dict[str, str]:
@@ -24,9 +38,11 @@ def _collect_env_overrides(file_path: str) -> dict[str, str]:
 
 
 def run_cpython(file_path, python_exe=sys.executable):
+    python_exe = _resolve_python_exe(python_exe)
     env = os.environ.copy()
     paths = [env.get("PYTHONPATH", ""), ".", "src"]
     env["PYTHONPATH"] = os.pathsep.join(p for p in paths if p)
+    env["PYTHONHASHSEED"] = "0"
     env.update(_collect_env_overrides(file_path))
     bootstrap = (
         "import runpy, sys; "
@@ -45,13 +61,16 @@ def run_cpython(file_path, python_exe=sys.executable):
 
 def run_molt(file_path):
     # Clean up stale binary
-    if os.path.exists("./hello_molt"):
-        os.remove("./hello_molt")
+    output_root = Path(tempfile.gettempdir())
+    output_binary = output_root / f"{Path(file_path).stem}_molt"
+    if output_binary.exists():
+        output_binary.unlink()
 
     # Build
     env = os.environ.copy()
     env["PYTHONPATH"] = "src"
     env.setdefault("MOLT_DEBUG_AWAITABLE", "1")
+    env["PYTHONHASHSEED"] = "0"
     env.update(_collect_env_overrides(file_path))
     build_res = subprocess.run(
         [sys.executable, "-m", "molt.cli", "build", file_path],
@@ -63,7 +82,9 @@ def run_molt(file_path):
         return None, build_res.stderr, build_res.returncode
 
     # Run
-    run_res = subprocess.run(["./hello_molt"], capture_output=True, text=True, env=env)
+    run_res = subprocess.run(
+        [str(output_binary)], capture_output=True, text=True, env=env
+    )
     return run_res.stdout, run_res.stderr, run_res.returncode
 
 

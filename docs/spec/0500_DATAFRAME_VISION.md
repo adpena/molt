@@ -41,9 +41,9 @@ A “core pandas” compatibility target includes, at minimum:
 - `groupby(...).agg(...)` for common aggregates
 - `merge/join` for common join types
 - `sort_values`, `sort_index` (with a constrained index model early)
-- missing data handling for standard nullable dtypes
+- missing data handling for standard nullable dtypes (TODO(dataframe, owner:runtime, milestone:DF1, priority:P1, status:planned): nullable dtype missing-data semantics)
 - `to/from` for: CSV, Parquet, Arrow, and common DB flows (via connectors)
-- time series support for modern datetime types (phased; timezones later)
+- time series support for modern datetime types (phased; timezones later) (TODO(dataframe, owner:runtime, milestone:DF2, priority:P2, status:planned): timezone-aware datetime support)
 
 It explicitly treats:
 - `object` dtype as a restricted/slow tier
@@ -73,7 +73,7 @@ Molt owns:
 - execution engines:
   - Polars engine
   - DuckDB engine
-  - Molt-native kernels engine (later)
+  - Molt-native kernels engine (later) (TODO(dataframe, owner:runtime, milestone:DF2, priority:P2, status:planned): Molt-native kernel library)
 
 This ensures Molt can:
 - ship quickly using mature engines

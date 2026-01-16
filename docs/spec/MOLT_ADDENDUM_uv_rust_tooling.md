@@ -41,7 +41,7 @@ management and **Rust** (Cargo + rustup) for the runtime, WASM interop, and “M
 ### Spec requirement
 Molt should define **reproducible dev and CI environments** with a “frozen” mode:
 - If lockfile exists: installs must be exact (`--frozen` behavior)
-- If lockfile missing: the build should fail in CI (policy decision), or generate lock as a separate PR step
+- If lockfile missing: the build should fail in CI (policy decision), or generate lock as a separate PR step (TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): lockfile-missing policy decision).
 
 ### Bootstrap script requirement
 Enhance `bootstrap_molt.sh` to:

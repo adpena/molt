@@ -1,9 +1,16 @@
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 const { WASI } = require('wasi');
 
-const wasmBuffer = fs.readFileSync('output.wasm');
+const wasmArg = process.argv[2];
+const wasmEnvPath = process.env.MOLT_WASM_PATH;
+const localWasm = path.join(__dirname, 'output.wasm');
+const tempWasm = path.join(os.tmpdir(), 'output.wasm');
+const wasmPath =
+  wasmArg || wasmEnvPath || (fs.existsSync(localWasm) ? localWasm : tempWasm);
+const wasmBuffer = fs.readFileSync(wasmPath);
 const linkedPath =
   process.env.MOLT_WASM_LINKED_PATH || path.join(__dirname, 'output_linked.wasm');
 const linkedBuffer = fs.existsSync(linkedPath) ? fs.readFileSync(linkedPath) : null;
@@ -13,9 +20,51 @@ const runtimeBuffer = fs.readFileSync(runtimePath);
 const witPath = path.join(__dirname, 'wit', 'molt-runtime.wit');
 const witSource = fs.readFileSync(witPath, 'utf8');
 
+const wasmEnv = { ...process.env };
+
+const ensureWasmLocaleEnv = () => {
+  if (
+    wasmEnv.MOLT_WASM_LOCALE_DECIMAL ||
+    wasmEnv.MOLT_WASM_LOCALE_THOUSANDS ||
+    wasmEnv.MOLT_WASM_LOCALE_GROUPING
+  ) {
+    return;
+  }
+  let formatter = null;
+  try {
+    const locale =
+      process.env.LC_ALL || process.env.LC_NUMERIC || process.env.LANG || undefined;
+    formatter = new Intl.NumberFormat(locale);
+  } catch (err) {
+    return;
+  }
+  let decimal = '.';
+  let group = '';
+  let lastInteger = '';
+  const parts = formatter.formatToParts(1234567.89);
+  for (const part of parts) {
+    if (part.type === 'decimal') {
+      decimal = part.value;
+    } else if (part.type === 'group') {
+      group = part.value;
+    } else if (part.type === 'integer') {
+      lastInteger = part.value;
+    }
+  }
+  wasmEnv.MOLT_WASM_LOCALE_DECIMAL = decimal;
+  if (group) {
+    wasmEnv.MOLT_WASM_LOCALE_THOUSANDS = group;
+    if (lastInteger) {
+      wasmEnv.MOLT_WASM_LOCALE_GROUPING = String(lastInteger.length);
+    }
+  }
+};
+
+ensureWasmLocaleEnv();
+
 const wasi = new WASI({
   version: 'preview1',
-  env: process.env,
+  env: wasmEnv,
   preopens: {
     '.': '.',
   },
@@ -887,10 +936,10 @@ const runLegacy = async () => {
   const table = sharedTable || molt_table;
 
   if (!memory || !table) {
-    throw new Error('output.wasm missing molt_memory or molt_table export');
+    throw new Error(`${wasmPath} missing molt_memory or molt_table export`);
   }
   if (!molt_call_indirect1) {
-    throw new Error('output.wasm missing molt_call_indirect1 export');
+    throw new Error(`${wasmPath} missing molt_call_indirect1 export`);
   }
   setWasmMemory(memory);
 
@@ -955,7 +1004,7 @@ const runDirectLink = async () => {
     outputModule.instance.exports;
   callIndirect = molt_call_indirect1;
   if (!molt_memory || !molt_table) {
-    throw new Error('output.wasm missing molt_memory or molt_table export');
+    throw new Error(`${wasmPath} missing molt_memory or molt_table export`);
   }
   wasi.initialize({ exports: { memory } });
   molt_main();

@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+import tempfile
 
 import pytest
 
@@ -19,7 +20,7 @@ def test_wasm_control_flow_parity(tmp_path: Path) -> None:
     src = tmp_path / "if_else.py"
     src.write_text("x = 1\nif x < 2:\n    print(1)\nelse:\n    print(2)\n")
 
-    output_wasm = root / "output.wasm"
+    output_wasm = Path(tempfile.gettempdir()) / "output.wasm"
     existed = output_wasm.exists()
 
     runner = write_wasm_runner(tmp_path, "run_wasm_if.js")

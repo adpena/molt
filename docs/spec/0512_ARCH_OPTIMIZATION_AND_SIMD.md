@@ -31,18 +31,18 @@ Dispatch order (example):
 ### x86_64
 - AVX2 vector reductions for 64-bit ints where supported.
 - SSE2/SSE4.1 fallback paths.
-- AVX2 lacks native 64-bit integer multiply and boxed list storage limits vectorization; `prod` stays scalar for general cases. We added an AVX2 "trivial scan" for unboxed int arrays that detects all-ones or zero early, and still fall back to scalar multiplication otherwise. SIMD reductions would re-associate multiplies, which changes wrap semantics once 64-bit overflow occurs, so any SIMD path must be guarded by overflow-safe bounds (or be documented as a semantics change). Evaluate 32-bit partials + overflow guards before any wider SIMD multiply.
+- AVX2 lacks native 64-bit integer multiply and boxed list storage limits vectorization; `prod` stays scalar for general cases. We added an AVX2 "trivial scan" for unboxed int arrays that detects all-ones or zero early, and still fall back to scalar multiplication otherwise. SIMD reductions would re-associate multiplies, which changes wrap semantics once 64-bit overflow occurs, so any SIMD path must be guarded by overflow-safe bounds (or be documented as a semantics change). Evaluate 32-bit partials + overflow guards before any wider SIMD multiply (TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): 32-bit partials + overflow guards for `prod`).
 - Prototype unboxed int arrays (`intarray_from_seq`) are permitted in fast paths to reduce pointer chasing ahead of wider SIMD support.
-- Explore AVX-512 for wide reductions where stable/available.
+- Explore AVX-512 for wide reductions where stable/available (TODO(perf, owner:runtime, milestone:RT3, priority:P3, status:planned): AVX-512 reductions).
 
 ### aarch64
 - NEON reductions; use compare+blend for min/max where direct intrinsics are limited.
-- Keep scalar fallbacks for unsupported operations (notably `prod`); NEON adds only trivial zero/all-ones scans until a safe multiply strategy is available.
+- Keep scalar fallbacks for unsupported operations (notably `prod`); NEON adds only trivial zero/all-ones scans until a safe multiply strategy is available (TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): safe NEON multiply strategy).
 
 ### wasm32
 - Use `simd128` for byte search and reductions.
 - Provide non-SIMD fallback for runtime environments without SIMD.
-- Short-needle search kernels should use `simd128` byte masks to accelerate `find`/`count`.
+- Short-needle search kernels should use `simd128` byte masks to accelerate `find`/`count` (TODO(perf, owner:backend, milestone:RT2, priority:P2, status:planned): simd128 short-needle kernels).
 
 ## 5. SIMD-Friendly String Strategy
 - Use `memchr`/`memmem` for fast byte scanning on ASCII.
@@ -62,6 +62,6 @@ Dispatch order (example):
 - Ensure differential tests cover Unicode index semantics and buffer writes.
 
 ## 8. TODOs
-- TODO(optimizations, owner:runtime): consider AVX-512 or 32-bit specialization for vectorized `prod` reductions.
-- TODO(optimizations, owner:runtime): consider cached UTF-8 index tables for repeated non-ASCII `find`/`count`.
-- TODO(optimizations, owner:backend): add wasm `simd128` kernels for string scans.
+- TODO(perf, owner:runtime, milestone:RT3, priority:P3, status:planned): AVX-512 or 32-bit specialization for vectorized `prod` reductions.
+- TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): cached UTF-8 index tables for repeated non-ASCII `find`/`count`.
+- TODO(perf, owner:backend, milestone:RT2, priority:P1, status:planned): wasm `simd128` kernels for string scans.

@@ -10,6 +10,7 @@
 - Deterministic by default.
 - Commands must fail on missing lockfiles in deterministic mode.
 - All commands support `--verbose` and `--json` output where practical.
+- JSON output is schema-first: `schema_version`, `command`, `status`, `data`, `warnings`, `errors`.
 
 ---
 
@@ -20,16 +21,31 @@
 Purpose: Compile Python source to native or WASM artifacts.
 
 Key flags:
-- `--target {native,wasm}`
+- `--target {native,wasm,<triple>}`
 - `--codec {msgpack,cbor,json}` (default: `msgpack`)
 - `--type-hints {ignore,trust,check}` (default: `ignore`)
 - `--type-facts <path>` (optional Type Facts Artifact from `molt check`)
-- `--profile <molt_profile.json>` (planned)
-- `--release` (planned)
+- `--output <path>` (optional output path for the native binary, wasm artifact, or object file when `--emit obj`)
+- `--out-dir <dir>` (optional output directory for artifacts and binaries; default: system temp dir)
+- `--emit {bin,obj,wasm}` (select which artifact to emit)
+- `--emit-ir <path>` (dump lowered IR JSON)
+- `--profile {dev,release}` (default: `release`)
+- `--deterministic/--no-deterministic` (lockfile enforcement)
+- `--cache/--no-cache` (use `.molt/cache` for IR artifacts)
+- `--cache-dir <dir>` (override the cache directory)
+- `--cache-report` (print cache hit/miss details)
+- `--rebuild` (alias for `--no-cache`)
+- `--capabilities <file|profile|list>` (capability manifest or profiles/tokens)
+- `--pgo-profile <molt_profile.json>` (planned)
+  (TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): enable PGO profile ingestion.)
 
 Outputs:
-- `output.o` + linked binary (native)
+- `output.o` + linked binary (native, unless `--emit obj`)
 - `output.wasm` (WASM)
+- Artifacts are placed under `--out-dir` when provided; otherwise they default to the system temp dir (including `main_stub.c`).
+- Native binary defaults to `<tempdir>/<entry>_molt` when `--output` is not provided.
+- `--emit obj` skips linking and returns only the object artifact.
+- Cache reuse skips the backend compile step only; linking still runs. Use `--no-cache` for a full recompile.
 
 ### 2.2 `molt check`
 **Status:** Implemented.
@@ -45,31 +61,35 @@ Outputs:
 - `type_facts.json`
 
 ### 2.3 `molt run`
-**Status:** Planned.
+**Status:** Implemented (initial).
 
-Purpose: Run Python code via the slow-path interpreter or via a debug build for parity testing.
+Purpose: Run Python code via CPython with Molt shims for parity testing.
 
 Key flags:
-- `--profile` (planned)
-- `--trace` (planned)
+- `--python <exe|version>`
+- `--no-shims`
+- `--compiled` + `--build-arg <arg>`
+- `--rebuild` (disable cache for `--compiled`)
+- `--compiled-args` (pass argv through; runtime support pending)
+  (TODO(runtime, owner:runtime, milestone:RT1, priority:P2, status:missing): compiled argv passthrough support.)
 
 ### 2.4 `molt test`
-**Status:** Planned.
+**Status:** Implemented (initial).
 
-Purpose: Run Molt-aware test suites (e.g., `molt-diff` parity + native tests).
+Purpose: Run Molt-aware test suites (`tools/dev.py test` by default, or diff/pytest suites).
 
 ### 2.5 `molt diff`
-**Status:** Planned (currently `tests/molt_diff.py`).
+**Status:** Implemented (initial; wraps `tests/molt_diff.py`).
 
 Purpose: Differential testing against CPython using the Molt compiler.
 
 ### 2.6 `molt profile`
-**Status:** Planned.
+**Status:** Implemented (initial; wraps `tools/profile.py`).
 
 Purpose: Capture runtime traces into `molt_profile.json` for PGO and guard synthesis.
 
 ### 2.7 `molt bench`
-**Status:** Planned.
+**Status:** Implemented (initial; wraps `tools/bench.py` or `tools/bench_wasm.py`).
 
 Purpose: Run curated benchmarks with regression tracking.
 
@@ -77,34 +97,87 @@ Purpose: Run curated benchmarks with regression tracking.
 
 ## 3. Packaging and Distribution
 ### 3.1 `molt package`
-**Status:** Planned.
+**Status:** Implemented (initial; local packaging).
 
-Purpose: Build Molt Packages (Rust/WASM) with metadata and capability manifests.
+Purpose: Bundle a manifest + artifact into a `.moltpkg` archive with checksum.
+
+Key flags:
+- `--deterministic/--no-deterministic`
+- `--capabilities <file>`
 
 ### 3.2 `molt publish`
-**Status:** Planned.
+**Status:** Implemented (initial; local registry path).
 
-Purpose: Publish a Molt Package to a registry with signing and SBOM metadata.
+Purpose: Copy a `.moltpkg` archive into a local registry path (signing/SBOM pending).
+  (TODO(tooling, owner:release, milestone:TL2, priority:P2, status:planned): signing + SBOM support for publish.)
+
+Key flags:
+- `--deterministic/--no-deterministic`
+- `--capabilities <file>`
 
 ---
 
 ## 4. Tooling and Diagnostics
 ### 4.1 `molt lint`
-**Status:** Planned.
+**Status:** Implemented (initial; wraps `tools/dev.py lint`).
 
 Purpose: Run repo linting and formatting checks.
 
 ### 4.2 `molt doctor`
-**Status:** Planned.
+**Status:** Implemented (initial toolchain checks).
 
 Purpose: Validate toolchain, lockfiles, and target compatibility.
+
+### 4.3 `molt deps`
+**Status:** Implemented (initial).
+
+Purpose: Show dependency compatibility tiers based on `uv.lock`.
+
+### 4.4 `molt vendor`
+**Status:** Implemented (initial).
+
+Purpose: Vendor Tier A dependencies into `vendor/` with a manifest.
+
+Key flags:
+- `--include-dev`
+- `--extras <name>` (include optional-dependency groups)
+- `--allow-non-tier-a` (proceed with blockers)
+
+### 4.5 `molt clean`
+**Status:** Implemented (initial).
+
+Purpose: Remove `.molt/` caches and transient build artifacts.
+
+### 4.6 `molt config`
+**Status:** Implemented (initial).
+
+Purpose: Show merged Molt config defaults and resolved build settings.
+
+### 4.7 `molt completion`
+**Status:** Implemented (initial).
+
+Purpose: Emit shell completion scripts for bash/zsh/fish.
+
+---
+
+### 4.8 `molt verify`
+**Status:** Implemented (initial).
+
+Purpose: Validate package manifests and checksums (`.moltpkg` or manifest+artifact).
+
+Key flags:
+- `--require-checksum`
+- `--require-deterministic`
+- `--capabilities <file|profile|list>`
 
 ---
 
 ## 5. Determinism and Security Flags
 All commands that produce artifacts must support:
-- `--deterministic` (default on in CI)
-- `--capabilities <file>` (explicit capability grants)
+- `--deterministic` (default on in CI; planned)
+  (TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:planned): enforce deterministic flag across artifact commands.)
+- `--capabilities <file|profile|list>` (explicit capability grants; planned)
+  (TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:planned): capability manifest enforcement across CLI.)
 
 ---
 

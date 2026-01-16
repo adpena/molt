@@ -31,7 +31,7 @@ For architecture-specific dispatch and SIMD policy, see `docs/spec/0512_ARCH_OPT
 Initial kernels target:
 - Integer reductions (`sum`, `prod`, `min`, `max`) over list/tuple of ints.
 - Byte/string scans (`find`, `count`) using optimized search routines.
-- Elementwise arithmetic on homogeneous containers (future: float + int mix).
+- Elementwise arithmetic on homogeneous containers (TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): float + int mix kernels).
 - Trusted integer reductions (`VecSumIntTrusted`, `VecProdIntTrusted`, `VecMinIntTrusted`, `VecMaxIntTrusted`) that skip per-element checks when type facts are trusted.
 - Range-aware reductions (`Vec*IntRange`, `Vec*IntRangeTrusted`) for reductions that skip the first `k` elements.
 
@@ -40,7 +40,7 @@ Each kernel returns a `(result, ok)` tuple. `ok == false` triggers fallback.
 ## Guard & Deopt Strategy
 - Guards validate container type, element type, and loop invariants.
 - Fallback executes the canonical scalar loop.
-- Profiling hooks (future) should promote hot loops into vectorizable forms.
+- Profiling hooks should promote hot loops into vectorizable forms (TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): profiling-driven vectorization).
 
 ## Benchmarks & Targets
 - Tight loops: >300x over CPython for integer reductions.

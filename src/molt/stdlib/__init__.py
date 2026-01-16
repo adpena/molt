@@ -4,6 +4,7 @@ from __future__ import annotations
 
 __all__ = [
     "asyncio",
+    "bisect",
     "collections",
     "contextlib",
     "contextvars",
@@ -15,6 +16,7 @@ __all__ = [
     "inspect",
     "io",
     "itertools",
+    "heapq",
     "os",
     "operator",
     "pathlib",

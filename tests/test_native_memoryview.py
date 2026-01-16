@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+import tempfile
 
 import pytest
 
@@ -36,10 +37,26 @@ def test_native_memoryview_build_and_run(tmp_path: Path) -> None:
         "print(mv2.tobytes())\n"
         "print(mv2[1:3].tobytes())\n"
         "print(mv2[::2].tobytes())\n"
+        "ba2 = bytearray([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])\n"
+        "mv3 = memoryview(ba2).cast('B', shape=[3, 4])\n"
+        "print(mv3.shape[0])\n"
+        "print(mv3.shape[1])\n"
+        "print(mv3.strides[0])\n"
+        "print(mv3.strides[1])\n"
+        "print(mv3[1, 2])\n"
+        "print(mv3[-1, -1])\n"
+        "mvh = memoryview(bytearray([0, 0, 0, 0])).cast('H')\n"
+        "mvh[0] = 500\n"
+        "print(mvh[0])\n"
+        "mvc = memoryview(bytearray(b'abc')).cast('c')\n"
+        "print(mvc[0])\n"
+        "mvc[0] = b'z'\n"
+        "print(mvc[0])\n"
     )
 
-    output_binary = root / "hello_molt"
-    artifacts = [root / "output.o", root / "main_stub.c", output_binary]
+    output_root = Path(tempfile.gettempdir())
+    output_binary = output_root / f"{src.stem}_molt"
+    artifacts = [output_root / "output.o", output_root / "main_stub.c", output_binary]
     existed = {path: path.exists() for path in artifacts}
 
     env = os.environ.copy()
@@ -68,6 +85,15 @@ def test_native_memoryview_build_and_run(tmp_path: Path) -> None:
             "b'abcd'",
             "b'bc'",
             "b'ac'",
+            "3",
+            "4",
+            "4",
+            "1",
+            "6",
+            "11",
+            "500",
+            "b'a'",
+            "b'z'",
         ]
     finally:
         for path in artifacts:

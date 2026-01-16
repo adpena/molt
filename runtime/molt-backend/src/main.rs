@@ -8,6 +8,11 @@ use std::io::{self, Read};
 fn main() -> io::Result<()> {
     let args: Vec<String> = env::args().collect();
     let is_wasm = args.contains(&"--target".to_string()) && args.contains(&"wasm".to_string());
+    let target_triple = args
+        .iter()
+        .position(|arg| arg == "--target-triple")
+        .and_then(|idx| args.get(idx + 1))
+        .map(|value| value.as_str());
 
     let mut buffer = String::new();
     io::stdin().read_to_string(&mut buffer)?;
@@ -23,7 +28,7 @@ fn main() -> io::Result<()> {
         file.write_all(&wasm_bytes)?;
         println!("Successfully compiled to output.wasm");
     } else {
-        let backend = SimpleBackend::new();
+        let backend = SimpleBackend::new_with_target(target_triple);
         let obj_bytes = backend.compile(ir);
         file.write_all(&obj_bytes)?;
         println!("Successfully compiled to output.o");

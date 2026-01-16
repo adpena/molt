@@ -58,6 +58,6 @@ All non-native features must emit a warning (or error) with:
 ---
 
 ## 6. Roadmap Hooks
-- TODO(language-roadmap, owner:frontend, milestone:LF1): full `with`/contextlib lowering with exception flow.
-- TODO(type-coverage, owner:frontend, milestone:TC3): full import/module fallback classification.
-- TODO(stdlib-compat, owner:runtime, milestone:SL3): CPython bridge contract and enforcement hooks.
+- TODO(syntax, owner:frontend, milestone:M2, priority:P2, status:missing): full `with`/contextlib lowering with exception flow.
+- TODO(type-coverage, owner:frontend, milestone:TC3, priority:P2, status:missing): full import/module fallback classification.
+- TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P2, status:planned): CPython bridge contract and enforcement hooks.

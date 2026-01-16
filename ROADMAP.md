@@ -2,18 +2,23 @@
 
 Canonical current status: `docs/spec/STATUS.md`. This roadmap is forward-looking.
 
+## Legend
+- **Status:** Implemented (done), Partial (some semantics missing), Planned (scoped but not started), Missing (no implementation), Divergent (intentional difference from CPython).
+- **Priority:** P0 (blocker), P1 (high), P2 (medium), P3 (lower).
+- **Tier/Milestone:** `TC*` (type coverage), `SL*` (stdlib), `DB*` (database), `DF*` (dataframe/pandas), `LF*` (language features), `RT*` (runtime), `TL*` (tooling), `M*` (syntax milestones).
+
 ## Performance
-- Vector reduction kernels now cover `sum`/`prod`/`min`/`max` with trusted fast paths; next up: float reductions and typed-buffer kernels.
-- String kernel SIMD paths cover find/split/replace with Unicode-safe index translation; next: Unicode index caches and wider SIMD.
+- Vector reduction kernels now cover `sum`/`prod`/`min`/`max` with trusted fast paths; next up: float reductions and typed-buffer kernels (TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): float reductions + typed-buffer kernels).
+- String kernel SIMD paths cover find/split/replace with Unicode-safe index translation; next: Unicode index caches and wider SIMD (TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): Unicode index caches + wider SIMD).
 
 ## Type Coverage
-- memoryview (Partial): 1D `format`/`shape`/`strides`/`nbytes` for bytes/bytearray views.
-- TODO(type-coverage, owner:runtime, milestone:TC3): memoryview multidimensional shapes + advanced buffer exports.
+- memoryview (Partial): multi-dimensional `format`/`shape`/`strides`/`nbytes` + `cast`, tuple scalar indexing, 1D slicing/assignment for bytes/bytearray-backed views.
+- TODO(type-coverage, owner:runtime, milestone:TC3, priority:P2, status:missing): memoryview multi-dimensional slicing + sub-views (C-order parity).
 - Implemented: BigInt heap fallback + arithmetic parity beyond 47-bit inline ints.
 - Implemented: class objects + basic descriptors (`classmethod`, `staticmethod`, `property`) + `__set_name__` hook.
 - Implemented: C3 MRO + multiple inheritance for attribute lookup + `super()` resolution + data descriptor precedence.
 - Implemented: reflection builtins (`type`, `isinstance`, `issubclass`, `object`) for base chains (no metaclasses).
-- Implemented: BaseException root + exception chaining (`__cause__`, `__context__`, `__suppress_context__`) + `__traceback__` name tuples.
+- Implemented: BaseException root + exception chaining (`__cause__`, `__context__`, `__suppress_context__`) + `__traceback__` name tuples + StopIteration.value propagation.
 - Implemented: descriptor deleter semantics (`__delete__`, property deleter) + attribute deletion wiring.
 - Implemented: set literals/constructor with add/contains/iter/len + algebra (`|`, `&`, `-`, `^`); `frozenset` constructor + algebra.
 - Implemented: format mini-language for ints/floats + f-string conversion flags (`!r`, `!s`, `!a`).
@@ -22,32 +27,56 @@ Canonical current status: `docs/spec/STATUS.md`. This roadmap is forward-looking
 - Implemented: `sorted()` builtin with stable ordering + key/reverse (core ordering types).
 - Implemented: `list.sort` with key/reverse and rich-compare fallback for user-defined types.
 - Implemented: `str.lower`/`str.upper`, `list.clear`/`list.copy`/`list.reverse`, and `dict.setdefault`/`dict.update`.
-- TODO(type-coverage, owner:frontend, milestone:TC2): async comprehensions (async for/await in comprehensions).
-- TODO(type-coverage, owner:runtime, milestone:TC2): full format protocol (`__format__`, named fields, locale-aware grouping).
-- TODO(type-coverage, owner:runtime, milestone:TC2): matmul dunder hooks (`__matmul__`/`__rmatmul__`) with buffer2d fast path.
-- Partial: wasm generator state machines + closure slot intrinsics + channel send/recv intrinsics + async pending/block_on parity landed; remaining generator state object and scheduler semantics.
+- Implemented: container dunder/membership fallbacks (`__contains__`/`__iter__`/`__getitem__`) and builtin class method access for list/dict/str/bytes/bytearray.
+- Implemented: dynamic call binding for bound methods/descriptors with builtin defaults + expanded class decorator parity coverage.
+- TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:missing): async comprehensions (async for/await in comprehensions).
+- TODO(type-coverage, owner:runtime, milestone:TC2, priority:P2, status:partial): matmul dunder hooks (`__matmul__`/`__rmatmul__`) with buffer2d fast path.
+- Partial: wasm generator state machines + closure slot intrinsics + channel send/recv intrinsics + async pending/block_on parity landed; remaining scheduler semantics (TODO(async-runtime, owner:runtime, milestone:RT2, priority:P1, status:partial): wasm scheduler semantics).
 - Implemented: wasm async state dispatch uses encoded resume targets to avoid state-id collisions and keeps state/poll locals distinct (prevents pending-state corruption on resume).
 - Implemented: async iterator protocol (`__aiter__`/`__anext__`) with `aiter`/`anext` lowering and `async for` support; sync-iter fallback remains for now.
 - Implemented: `anext(..., default)` awaitable creation outside `await`.
 - Implemented: `async with` lowering for `__aenter__`/`__aexit__` (single manager, simple name binding).
-- Implemented: cancellation token plumbing with request-default inheritance and task override; automatic cancellation injection into awaits still pending.
+- Implemented: cancellation token plumbing with request-default inheritance and task override; automatic cancellation injection into awaits still pending (TODO(async-runtime, owner:runtime, milestone:RT2, priority:P1, status:partial): cancellation injection on await).
+- TODO(async-runtime, owner:runtime, milestone:RT2, priority:P2, status:planned): native-only tokio host adapter for compiled async tasks with determinism guard + capability gating (no WASM impact).
+- TODO(syntax, owner:frontend, milestone:M3, priority:P2, status:missing): structural pattern matching (`match`/`case`) lowering and semantics (see `docs/spec/0021_SYNTACTIC_FEATURES_MATRIX.md`).
+- TODO(opcode-matrix, owner:frontend, milestone:M3, priority:P2, status:missing): `MATCH_*` opcode coverage for pattern matching (see `docs/spec/0019_BYTECODE_LOWERING_MATRIX.md`).
+- TODO(syntax, owner:frontend, milestone:M2, priority:P2, status:partial): f-string format specifiers and debug spec (`f"{x:.2f}"`, `f"{x=}"`) parity (see `docs/spec/0021_SYNTACTIC_FEATURES_MATRIX.md`).
+- TODO(syntax, owner:frontend, milestone:M3, priority:P3, status:missing): type alias statement (`type X = ...`) and generic class syntax (`class C[T]: ...`) coverage (see `docs/spec/0021_SYNTACTIC_FEATURES_MATRIX.md`).
+- TODO(opcode-matrix, owner:frontend, milestone:TC2, priority:P2, status:partial): async generator opcode coverage and lowering gaps (see `docs/spec/0019_BYTECODE_LOWERING_MATRIX.md`).
+- TODO(semantics, owner:runtime, milestone:TC3, priority:P2, status:missing): cycle collector implementation (see `docs/spec/0023_SEMANTIC_BEHAVIOR_MATRIX.md`).
+- TODO(semantics, owner:runtime, milestone:TC2, priority:P3, status:divergent): formalize lazy-task divergence policy (see `docs/spec/0023_SEMANTIC_BEHAVIOR_MATRIX.md`).
+- TODO(c-api, owner:runtime, milestone:SL3, priority:P2, status:missing): define and implement `libmolt` C API shim + `Py_LIMITED_API` target (see `docs/spec/0212_C_API_SYMBOL_MATRIX.md`).
 
 ## Stdlib
 - Partial: importable `builtins` module binding supported builtins (attribute gaps tracked in the matrix).
-- Partial: asyncio shim (`run`/`sleep` lowered to runtime with delay/result semantics; `set_event_loop`/`new_event_loop` stubs); loop/task APIs still pending.
-- Partial: shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pprint`, `string`, `typing`, `sys`, `os`, `asyncio`, and `threading` (capability-gated env access).
-- Import-only allowlist expanded for `base64`, `binascii`, `pickle`, `unittest`, `site`, `sysconfig`, `collections.abc`, `importlib`, and `importlib.util` (API parity pending).
+  (TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): fill `builtins` module attribute coverage.)
+- Partial: asyncio shim (`run`/`sleep` lowered to runtime with delay/result semantics; `set_event_loop`/`new_event_loop` stubs); loop/task APIs still pending (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): asyncio loop/task API parity).
+- Partial: shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pprint`, `string`, `typing`, `sys`, `os`, `asyncio`, `threading`, `bisect`, `heapq`, `functools`, `itertools`, and `collections` (capability-gated env access).
+  (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): advance partial shims to parity per matrix.)
+- Import-only allowlist expanded for `base64`, `binascii`, `pickle`, `unittest`, `site`, `sysconfig`, `collections.abc`, `importlib`, and `importlib.util`; planned additions: `importlib.metadata`, `html`, `html.parser`, `http.cookies`, `http.client`, `http.server`, `ipaddress`, `mimetypes`, `socketserver`, `wsgiref`, `xml`, `email.policy`, `email.message`, `email.parser`, `email.utils`, `email.header`, `urllib.parse`, `urllib.request`, `urllib.error`, `urllib.robotparser`, `logging.config`, `logging.handlers`, `cgi`, and `zlib` (API parity pending; TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): add import-only stubs + tests).
+
+## Compatibility Matrix Execution Plan (Next 8 Steps)
+1) Done: TC2 iterable unpacking + starred targets in assignment/for targets (tests + spec/status updates).
+2) TC2: remaining StopIteration semantics (sync/async) with differential coverage (StopIteration.value propagation done).
+3) TC2: builtin conversions (`bool`, `str`, `complex`) with hook/error parity.
+   TODO(stdlib-compat, owner:runtime, milestone:TC2, priority:P2, status:missing): `str(bytes, encoding, errors)` decoding parity for bytes-like inputs.
+4) TC2: async comprehensions lowering + runtime support with parity tests.
+5) TC2/TC3: object-level `__getattr__`/`__getattribute__`/`__setattr__`, reflection builtins, CPython `hash` parity (`PYTHONHASHSEED`) + `format`/rounding; update tests + docs.
+6) SL1: `functools` (`lru_cache`, `partial`, `reduce`) with compile-time lowering and deterministic cache keys; `cmp_to_key`/`total_ordering` landed.
+7) SL1: `itertools` + `operator` intrinsics plus `heapq` fast paths; `bisect`/`heapq` shims landed (fast paths now wired).
+8) SL1: `math` intrinsics + deterministic `array`/`struct` layouts with wasm/native parity tests.
 
 ## Offload / IPC
 - Partial: `molt_accel` v0 scaffolding (stdio framing + client + decorator) with auto cancel-check detection, payload/response byte metrics, and shared demo payload builders; `molt_worker` stdio shell with demo handlers and compiled dispatch (`list_items`/`compute`/`offload_table`/`health`), plus optional worker pooling via `MOLT_ACCEL_POOL_SIZE`.
+  (TODO(offload, owner:runtime, milestone:SL1, priority:P1, status:partial): finalize accel retry/backoff + non-demo handler coverage.)
 - Implemented: compiled export loader + manifest validation (schema, reserved-name filtering, error mapping) with queue/timeout metrics.
 - Implemented: worker tuning via `MOLT_WORKER_THREADS` and `MOLT_WORKER_MAX_QUEUE` (CLI overrides).
-- TODO(offload, owner:runtime, milestone:SL1): propagate cancellation into real DB tasks; extend compiled handlers beyond demo coverage.
+- TODO(offload, owner:runtime, milestone:SL1, priority:P1, status:partial): propagate cancellation into real DB tasks; extend compiled handlers beyond demo coverage.
 
 ## DB
-- Partial: `molt-db` pool skeleton (bounded, sync), feature-gated async pool primitive, SQLite connector (native-only; wasm parity pending), and async Postgres connector with statement cache; `molt_worker` exposes `db_query`/`db_exec` for SQLite + Postgres.
+- Partial: `molt-db` pool skeleton (bounded, sync), feature-gated async pool primitive, SQLite connector (native-only; wasm parity pending), and async Postgres connector with statement cache; `molt_worker` exposes `db_query`/`db_exec` for SQLite + Postgres (TODO(wasm-db-parity, owner:runtime, milestone:DB2, priority:P1, status:partial): wasm DB parity).
 - Top priority: wasm parity for DB connectors before expanding DB adapters or query-builder ergonomics.
-- TODO(wasm-db-parity, owner:runtime, milestone:DB2): ship wasm DB client shims + parity tests; Node/WASI host adapter now forwards `db_query`/`db_exec` to `molt-worker` via `run_wasm.js`.
+- TODO(wasm-db-parity, owner:runtime, milestone:DB2, priority:P1, status:missing): ship wasm DB client shims + parity tests; Node/WASI host adapter now forwards `db_query`/`db_exec` to `molt-worker` via `run_wasm.js`.
 
 ## Parity Cluster Plan (Next)
 - 1) Async runtime core: Task/Future APIs, scheduler, contextvars, and cancellation injection into awaits/I/O. Key files: `runtime/molt-runtime/src/lib.rs`, `src/molt/stdlib/asyncio.py`, `src/molt/stdlib/contextvars.py`, `docs/spec/STATUS.md`. Outcome: asyncio loop/task parity for core patterns. Validation: new unit + differential tests; `tools/dev.py test`.
@@ -59,8 +88,20 @@ Canonical current status: `docs/spec/STATUS.md`. This roadmap is forward-looking
 
 ## Tooling
 - Keep type facts + `ty` validation wired into build/lint flows and surface regressions early.
+- Implemented: CLI wrappers for `run`/`test`/`diff`/`bench`/`profile`/`lint`/`doctor`/`package`/`publish`/`verify`,
+  plus determinism/capability checks and vendoring materialization; next: registry auth, SBOM/signing, and remote publish flows.
+  (TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): registry auth + SBOM/signing + remote publish flows.)
+- Implemented: initial cross-target native builds (Cranelift target + zig link); next: cross-linker configuration,
+  target capability manifests, and runtime cross-build caching (TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:partial): cross-target ergonomics).
+- CLI Roadmap (plan):
+  - Build cache clarity: `--cache-report` by default in `--json`, `molt clean --cache`, and cache hit/miss summaries with input fingerprints.
+  - Build UX polish: stable `--out-dir` defaults (`.molt/build/<module>`), explicit `--emit` artifacts, and `--emit-ir` + `--emit-json` dumps.
+  - Profiles + metadata: `--profile {dev,release}` consistency across backend/runtime, and JSON metadata with toolchain hashes.
+  - Config introspection: `molt config` shows merged `molt.toml`/`pyproject.toml` plus resolved build settings.
+  - Cross-target ergonomics: cache-aware runtime builds, target flag presets, and capability manifest helpers.
 - Track complex performance work in `OPTIMIZATIONS_PLAN.md` before large refactors.
-- TODO(runtime-provenance, owner:runtime, milestone:RT1): replace handle-table locks with sharded or lock-free lookups once handle migration lands.
+- TODO(runtime-provenance, owner:runtime, milestone:RT1, priority:P2, status:planned): replace handle-table locks with sharded or lock-free lookups once handle migration lands.
+- TODO(tooling, owner:release, milestone:TL2, priority:P2, status:planned): formalize release tagging (start at `v0.0.001`, increment thousandth) and require super-bench stats for README performance summaries.
 
 ## Django Demo Path (Draft, 5-Step)
 - Step 1 (Core semantics): close TC1/TC2 gaps in `docs/spec/0014_TYPE_COVERAGE_MATRIX.md` for Django-heavy types (dict/list/tuple/set/str, iter/len, mapping protocol, kwargs/varargs ordering per docs/spec/0016_ARGS_KWARGS.md, descriptor hooks, class `__getattr__`/`__setattr__`).

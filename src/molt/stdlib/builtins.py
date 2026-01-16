@@ -32,6 +32,7 @@ __all__ = [
     "abs",
     "divmod",
     "repr",
+    "format",
     "callable",
     "any",
     "all",
@@ -90,6 +91,7 @@ hex = hex
 abs = abs
 divmod = divmod
 repr = repr
+format = format
 callable = callable
 any = any
 all = all

@@ -8,6 +8,21 @@ def _op_kinds(ir: dict, func_name: str = "molt_main") -> list[str]:
     raise AssertionError(f"Missing function {func_name}")
 
 
+def _const_values(ir: dict, func_name: str = "molt_main") -> list[int]:
+    for func in ir["functions"]:
+        if func["name"] == func_name:
+            values: list[int] = []
+            for op in func["ops"]:
+                if op["kind"] != "const":
+                    continue
+                if "value" in op:
+                    values.append(op["value"])
+                elif "args" in op:
+                    values.append(op["args"][0])
+            return values
+    raise AssertionError(f"Missing function {func_name}")
+
+
 def test_default_codec_is_msgpack():
     src = """
 import molt_json
@@ -168,11 +183,29 @@ for x in [1, 2]:
     assert "loop_end" in kinds
 
 
+def test_nested_constant_while_strength_reduction():
+    src = """
+total = 7
+i = 0
+while i < 3:
+    j = 0
+    while j < 5:
+        total += 2
+        j = j + 1
+    i = i + 1
+"""
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "loop_index_start" not in kinds
+    assert "loop_start" not in kinds
+    assert 37 in _const_values(ir)
+
+
 def test_fstring_lowering():
     src = 'x = f"hi {1}"'
     ir = compile_to_tir(src)
     kinds = _op_kinds(ir)
-    assert "str_from_obj" in kinds
+    assert "string_format" in kinds
     assert "string_join" in kinds
 
 
@@ -237,4 +270,5 @@ def test_range_lowering():
     ir = compile_to_tir(src)
     kinds = _op_kinds(ir)
     assert "range_new" in kinds
-    assert "iter" in kinds
+    assert "loop_index_start" in kinds
+    assert "list_append" in kinds

@@ -46,6 +46,9 @@ Molt aims to bridge the gap between Python's developer productivity and C/Rust's
 - **Environment:** MacBook Pro M2, 16GB RAM.
 - **Tooling:** Automated via `tools/bench.py`.
 
+## 🔁 Refreshing This Doc
+- Generate combined native+WASM summaries with `tools/bench_report.py` and update this table to reflect the latest numbers in `bench/results/bench.json` and `bench/results/bench_wasm.json`.
+
 ---
 
 *Last Updated: Friday, January 2, 2026 - 04:15 UTC*

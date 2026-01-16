@@ -37,8 +37,8 @@ DF0:
 - parameterized queries only
 
 DF1:
-- window functions (via DuckDB or SQL pushdown)
-- richer expressions
+- window functions (via DuckDB or SQL pushdown) (TODO(db, owner:runtime, milestone:DB2, priority:P2, status:planned): window function support).
+- richer expressions (TODO(db, owner:runtime, milestone:DB2, priority:P2, status:planned): expression expansion).
 
 ---
 
@@ -62,6 +62,7 @@ DF1:
 - batch jobs and exports
 - expensive joins/aggregations
  - Phase 0: SQLite-backed list endpoint for the demo (real DB path before Postgres)
+   (TODO(db, owner:runtime, milestone:DB1, priority:P1, status:planned): SQLite demo path before Postgres).
 
 ### 2.3 What stays in Django
 - admin
@@ -74,6 +75,7 @@ DF1:
 ## 3. Django “future” integration options
 Later, if justified:
 - provide an async ORM-like facade that matches common QuerySet patterns
+  (TODO(db, owner:runtime, milestone:DB3, priority:P3, status:planned): ORM-like facade).
 - but still compile/execute queries in Molt-native layer
 
 The key is compatibility-by-adapter, not reimplementation of internals.

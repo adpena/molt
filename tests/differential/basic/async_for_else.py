@@ -22,7 +22,14 @@ async def main() -> list[int | str]:
         out.append(value)
     else:
         out.append("done")
-    return out
+    out2: list[int | str] = []
+    async for value in AsyncIter():
+        if value == 1:
+            break
+        out2.append(value)
+    else:
+        out2.append("done")
+    return [out, out2]
 
 
 print(asyncio.run(main()))

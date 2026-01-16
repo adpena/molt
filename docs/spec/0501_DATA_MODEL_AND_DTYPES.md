@@ -2,7 +2,7 @@
 **Spec ID:** 0501
 **Status:** Draft (implementation-targeting)
 **Audience:** runtime engineers, kernel authors, AI coding agents
-**Goal:** Define a columnar data model suitable for Polars/DuckDB integration now and Molt-native kernels later.
+**Goal:** Define a columnar data model suitable for Polars/DuckDB integration now and Molt-native kernels later (TODO(dataframe, owner:runtime, milestone:DF2, priority:P2, status:planned): Molt-native kernel data model).
 
 ## 0. Guiding Decisions
 - **Arrow-compatible columnar arrays** are the canonical in-memory representation.
@@ -29,7 +29,7 @@ Nullability is a property of the array:
 - List
 - Struct
 - Categorical/Dictionary encoding
-- Decimal (phase-in; requires careful semantics)
+- Decimal (phase-in; requires careful semantics) (TODO(dataframe, owner:runtime, milestone:DF2, priority:P2, status:planned): decimal dtype semantics)
 
 ## 3. Index Model (staged)
 ### 3.1 DF0
@@ -42,7 +42,7 @@ Nullability is a property of the array:
 - Explicit opt-in alignment operations.
 
 ### 3.3 DF2
-- Modern core pandas-style index behaviors (phased; requires extensive oracle tests).
+- Modern core pandas-style index behaviors (phased; requires extensive oracle tests) (TODO(dataframe, owner:runtime, milestone:DF2, priority:P2, status:planned): pandas-style index semantics + oracle tests).
 
 ## 4. Object dtype policy
 Object dtype is the trapdoor into slow Python semantics.
@@ -57,7 +57,7 @@ Define explicit, deterministic promotion rules for DF0:
 - int + float -> float
 - bool + int -> int
 - string concatenation rules explicit
-- missing data promotion explicit
+- missing data promotion explicit (TODO(dataframe, owner:runtime, milestone:DF1, priority:P1, status:planned): missing-data promotion rules).
 
 DF1+ expands toward pandas-like coercion rules. All expansions must be backed by differential tests vs pandas.
 
@@ -65,7 +65,7 @@ DF1+ expands toward pandas-like coercion rules. All expansions must be backed by
 - Favor contiguous buffers
 - Use chunked arrays for streaming/large data
 - Avoid per-row allocations
-- Prefer dictionary encoding for repetitive strings (phase-in)
+- Prefer dictionary encoding for repetitive strings (phase-in) (TODO(dataframe, owner:runtime, milestone:DF1, priority:P2, status:planned): dictionary encoding for strings).
 
 ## 7. Interop requirements
 ### 7.1 Polars

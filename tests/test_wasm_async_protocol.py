@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+import tempfile
 
 import pytest
 
@@ -51,7 +52,7 @@ def test_wasm_async_protocol_parity(tmp_path: Path) -> None:
         "asyncio.run(main())\n"
     )
 
-    output_wasm = root / "output.wasm"
+    output_wasm = Path(tempfile.gettempdir()) / "output.wasm"
     existed = output_wasm.exists()
 
     runner = write_wasm_runner(tmp_path, "run_wasm_async_protocol.js")

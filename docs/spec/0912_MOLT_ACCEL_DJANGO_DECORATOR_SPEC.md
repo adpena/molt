@@ -4,7 +4,7 @@
 **Priority:** P0
 **Audience:** Python integrators, AI coding agents
 **Goal:** Provide a minimal, reliable client library that makes offloading one endpoint trivial.
-**Implementation status:** Initial stdio client + decorator scaffolding exists in `src/molt_accel` (framing + JSON/MsgPack payloads) with concurrent in-flight support in the shared client plus optional worker pooling via `MOLT_ACCEL_POOL_SIZE`. Timeouts send a best-effort cancel and mark the worker for restart after in-flight requests drain; metrics hooks/cancel checks are wired, but Django test-client coverage and richer retry policy remain pending. `molt_accel` ships as an optional dependency group (`pip install .[accel]`) with a packaged default exports manifest so the decorator can fall back to `molt-worker` in PATH when `MOLT_WORKER_CMD` is unset. A demo app scaffold lives in `demo/`.
+**Implementation status:** Initial stdio client + decorator scaffolding exists in `src/molt_accel` (framing + JSON/MsgPack payloads) with concurrent in-flight support in the shared client plus optional worker pooling via `MOLT_ACCEL_POOL_SIZE`. Timeouts send a best-effort cancel and mark the worker for restart after in-flight requests drain; metrics hooks/cancel checks are wired, but Django test-client coverage and richer retry policy remain pending (TODO(offload, owner:runtime, milestone:SL1, priority:P1, status:partial): Django test-client coverage + retry policy). `molt_accel` ships as an optional dependency group (`pip install .[accel]`) with a packaged default exports manifest so the decorator can fall back to `molt-worker` in PATH when `MOLT_WORKER_CMD` is unset. A demo app scaffold lives in `demo/`.
 
 ---
 
@@ -96,7 +96,7 @@ polls them when available.
 Expose hooks:
 - before_send / after_recv
 - latency measurements
-- optional Prometheus integration later
+- optional Prometheus integration later (TODO(observability, owner:tooling, milestone:TL2, priority:P3, status:planned): Prometheus integration).
 Metrics hooks include `client_ms` plus payload sizes (`payload_bytes`,
 `response_bytes`) in addition to any worker-provided metrics.
 

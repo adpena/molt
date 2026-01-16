@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-__all__ = ["SimpleNamespace", "MappingProxyType"]
+__all__ = ["SimpleNamespace", "MappingProxyType", "NotImplementedType"]
 
 # TODO(stdlib-compat, owner:stdlib, milestone:SL3): add full types helpers.
+
+NotImplementedType = type(NotImplemented)
 
 
 class SimpleNamespace:

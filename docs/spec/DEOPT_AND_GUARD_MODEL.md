@@ -37,7 +37,7 @@ This doc defines the *only allowed* way to do that: guards + deopt.
 ### 2.2 Shape guards
 - list length stable
 - tuple length fixed
-- dict version tag unchanged (future)
+- dict version tag unchanged (future) (TODO(compiler, owner:compiler, milestone:RT2, priority:P2, status:planned): dict version tag guards).
 
 ### 2.3 Function identity guards
 - `f` refers to known function `fn_id`

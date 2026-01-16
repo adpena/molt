@@ -31,16 +31,17 @@ Define explicit mappings:
 - bytea → binary
 - bool → bool
 - timestamp/date → i64/i32 with unit metadata
-- json/jsonb → bytes or parsed (policy)
+- json/jsonb → bytes or parsed (policy) (TODO(db, owner:runtime, milestone:DB1, priority:P2, status:planned): json/jsonb decode policy).
 
 Unsupported types:
-- require explicit casting in SQL or return as bytes in DF1
+- require explicit casting in SQL or return as bytes in DF1 (TODO(db, owner:runtime, milestone:DB1, priority:P2, status:planned): unsupported type fallback policy).
 
 ---
 
 ## 2. Null handling
 - null bitmap per column
 - service structs may use Option<T> or sentinel representation depending on policy
+  (TODO(db, owner:runtime, milestone:DB1, priority:P2, status:planned): option vs sentinel policy).
 
 ---
 

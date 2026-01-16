@@ -4,6 +4,7 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
+import tempfile
 
 import pytest
 
@@ -56,8 +57,68 @@ BYTES_HELPERS = textwrap.dedent(
       parts.push(hay.slice(start));
       return parts;
     };
-    const replaceBytes = (hay, needle, repl) => {
+    const replaceBytes = (hay, needle, repl, count) => {
+      if (count === 0) return hay.slice();
+      const unlimited = count < 0;
+      if (needle.length === 0) {
+        const limit = unlimited ? hay.length + 1 : Math.min(count, hay.length + 1);
+        if (limit === 0) return hay.slice();
+        const out = [];
+        let inserted = 0;
+        if (inserted < limit) {
+          for (const b of repl) out.push(b);
+          inserted += 1;
+        }
+        for (const byte of hay) {
+          out.push(byte);
+          if (inserted < limit) {
+            for (const b of repl) out.push(b);
+            inserted += 1;
+          }
+        }
+        return Uint8Array.from(out);
+      }
       const out = [];
+      let i = 0;
+      let replaced = 0;
+      while (i + needle.length <= hay.length) {
+        let match = true;
+        for (let j = 0; j < needle.length; j += 1) {
+          if (hay[i + j] !== needle[j]) {
+            match = false;
+            break;
+          }
+        }
+        if (match && (unlimited || replaced < count)) {
+          for (const b of repl) out.push(b);
+          i += needle.length;
+          replaced += 1;
+        } else {
+          out.push(hay[i]);
+          i += 1;
+        }
+      }
+      for (; i < hay.length; i += 1) out.push(hay[i]);
+      return Uint8Array.from(out);
+    };
+    const bytesStartsWith = (hay, needle) => {
+      if (needle.length > hay.length) return false;
+      for (let i = 0; i < needle.length; i += 1) {
+        if (hay[i] !== needle[i]) return false;
+      }
+      return true;
+    };
+    const bytesEndsWith = (hay, needle) => {
+      if (needle.length > hay.length) return false;
+      const offset = hay.length - needle.length;
+      for (let i = 0; i < needle.length; i += 1) {
+        if (hay[offset + i] !== needle[i]) return false;
+      }
+      return true;
+    };
+    const bytesCount = (hay, needle) => {
+      if (needle.length === 0) return hay.length + 1;
+      let count = 0;
       let i = 0;
       while (i + needle.length <= hay.length) {
         let match = true;
@@ -68,15 +129,13 @@ BYTES_HELPERS = textwrap.dedent(
           }
         }
         if (match) {
-          for (const b of repl) out.push(b);
+          count += 1;
           i += needle.length;
         } else {
-          out.push(hay[i]);
           i += 1;
         }
       }
-      for (; i < hay.length; i += 1) out.push(hay[i]);
-      return Uint8Array.from(out);
+      return count;
     };
     """
 )
@@ -208,6 +267,132 @@ BYTES_IMPORT_OVERRIDES = textwrap.dedent(
       view.setBigInt64(Number(out), boxed, true);
       return 0;
     },
+    index: (seq, idxBits) => {
+      const bytes = getBytes(seq);
+      const bytearray = getBytearray(seq);
+      if (bytes || bytearray) {
+        let value = getBigIntValue(idxBits);
+        if (value === null) {
+          const indexAttr = lookupAttr(idxBits, '__index__');
+          if (indexAttr !== undefined) {
+            const res = callCallable0(indexAttr);
+            if (exceptionPending() !== 0n) return boxNone();
+            value = getBigIntValue(res);
+            if (value === null) {
+              throw new Error(`TypeError: __index__ returned non-int (type ${typeName(res)})`);
+            }
+          }
+        }
+        if (value === null) {
+          const errMsg = bytes
+            ? `byte indices must be integers or slices, not ${typeName(idxBits)}`
+            : `bytearray indices must be integers or slices, not ${typeName(idxBits)}`;
+          throw new Error(`TypeError: ${errMsg}`);
+        }
+        const limit = BigInt(Number.MAX_SAFE_INTEGER);
+        if (value > limit || value < -limit) {
+          throw new Error(
+            `IndexError: cannot fit '${typeName(idxBits)}' into an index-sized integer`,
+          );
+        }
+        const data = bytes ? bytes.data : bytearray.data;
+        let pos = Number(value);
+        if (pos < 0) pos += data.length;
+        if (pos < 0 || pos >= data.length) {
+          throw new Error(
+            `IndexError: ${bytearray ? 'bytearray index out of range' : 'index out of range'}`,
+          );
+        }
+        return boxInt(data[pos]);
+      }
+      return baseImports.index(seq, idxBits);
+    },
+    bytes_startswith: (hayBits, needleBits) => {
+      const hay = getBytes(hayBits);
+      if (!hay) return boxNone();
+      const needle = getBytes(needleBits) || getBytearray(needleBits);
+      if (!needle) return boxNone();
+      return boxBool(bytesStartsWith(hay.data, needle.data));
+    },
+    bytearray_startswith: (hayBits, needleBits) => {
+      const hay = getBytearray(hayBits);
+      if (!hay) return boxNone();
+      const needle = getBytes(needleBits) || getBytearray(needleBits);
+      if (!needle) return boxNone();
+      return boxBool(bytesStartsWith(hay.data, needle.data));
+    },
+    bytes_endswith: (hayBits, needleBits) => {
+      const hay = getBytes(hayBits);
+      if (!hay) return boxNone();
+      const needle = getBytes(needleBits) || getBytearray(needleBits);
+      if (!needle) return boxNone();
+      return boxBool(bytesEndsWith(hay.data, needle.data));
+    },
+    bytearray_endswith: (hayBits, needleBits) => {
+      const hay = getBytearray(hayBits);
+      if (!hay) return boxNone();
+      const needle = getBytes(needleBits) || getBytearray(needleBits);
+      if (!needle) return boxNone();
+      return boxBool(bytesEndsWith(hay.data, needle.data));
+    },
+    bytes_count: (hayBits, needleBits) => {
+      const hay = getBytes(hayBits);
+      if (!hay) return boxNone();
+      const needle = getBytes(needleBits) || getBytearray(needleBits);
+      if (!needle) return boxNone();
+      return boxInt(bytesCount(hay.data, needle.data));
+    },
+    bytearray_count: (hayBits, needleBits) => {
+      const hay = getBytearray(hayBits);
+      if (!hay) return boxNone();
+      const needle = getBytes(needleBits) || getBytearray(needleBits);
+      if (!needle) return boxNone();
+      return boxInt(bytesCount(hay.data, needle.data));
+    },
+    bytes_count_slice: (hayBits, needleBits, startBits, endBits, hasStartBits, hasEndBits) => {
+      const hay = getBytes(hayBits);
+      if (!hay) return boxNone();
+      const needle = getBytes(needleBits) || getBytearray(needleBits);
+      if (!needle) return boxNone();
+      const total = hay.data.length;
+      const bounds = sliceBoundsFromArgs(
+        startBits,
+        endBits,
+        hasStartBits,
+        hasEndBits,
+        total,
+      );
+      if (!bounds) return boxNone();
+      const { start, end, startGtLen } = bounds;
+      if (end < start) return boxInt(0);
+      if (needle.data.length === 0) {
+        if (startGtLen) return boxInt(0);
+        return boxInt(end - start + 1);
+      }
+      return boxInt(bytesCount(hay.data.slice(start, end), needle.data));
+    },
+    bytearray_count_slice: (hayBits, needleBits, startBits, endBits, hasStartBits, hasEndBits) => {
+      const hay = getBytearray(hayBits);
+      if (!hay) return boxNone();
+      const needle = getBytes(needleBits) || getBytearray(needleBits);
+      if (!needle) return boxNone();
+      const total = hay.data.length;
+      const bounds = sliceBoundsFromArgs(
+        startBits,
+        endBits,
+        hasStartBits,
+        hasEndBits,
+        total,
+      );
+      if (!bounds) return boxNone();
+      const { start, end, startGtLen } = bounds;
+      if (end < start) return boxInt(0);
+      if (needle.data.length === 0) {
+        if (startGtLen) return boxInt(0);
+        return boxInt(end - start + 1);
+      }
+      return boxInt(bytesCount(hay.data.slice(start, end), needle.data));
+    },
     memoryview_new: () => boxNone(),
     memoryview_tobytes: () => boxNone(),
     str_from_obj: () => boxNone(),
@@ -254,14 +439,6 @@ BYTES_IMPORT_OVERRIDES = textwrap.dedent(
     tuple_index: () => boxNone(),
     iter: () => boxNone(),
     iter_next: () => boxNone(),
-    index: (obj, key) => {
-      const list = getList(obj);
-      if (!list) return boxNone();
-      let idx = Number(unboxInt(key));
-      if (idx < 0) idx += list.items.length;
-      if (idx < 0 || idx >= list.items.length) return boxNone();
-      return list.items[idx];
-    },
     store_index: () => boxNone(),
     bytes_find: (hay, needle) => {
       const h = getBytes(hay);
@@ -300,20 +477,28 @@ BYTES_IMPORT_OVERRIDES = textwrap.dedent(
       );
       return boxPtr({ type: 'list', items: parts });
     },
-    string_replace: () => boxNone(),
-    bytes_replace: (hay, needle, repl) => {
+    string_replace: (_hay, _needle, _repl, _count) => boxNone(),
+    bytes_replace: (hay, needle, repl, countBits) => {
       const h = getBytes(hay);
       const n = getBytes(needle) || getBytearray(needle);
       const r = getBytes(repl) || getBytearray(repl);
       if (!h || !n || !r) return boxNone();
-      return boxPtr({ type: 'bytes', data: replaceBytes(h.data, n.data, r.data) });
+      const count = Number(unboxIntLike(countBits));
+      return boxPtr({
+        type: 'bytes',
+        data: replaceBytes(h.data, n.data, r.data, count),
+      });
     },
-    bytearray_replace: (hay, needle, repl) => {
+    bytearray_replace: (hay, needle, repl, countBits) => {
       const h = getBytearray(hay);
       const n = getBytes(needle) || getBytearray(needle);
       const r = getBytes(repl) || getBytearray(repl);
       if (!h || !n || !r) return boxNone();
-      return boxPtr({ type: 'bytearray', data: replaceBytes(h.data, n.data, r.data) });
+      const count = Number(unboxIntLike(countBits));
+      return boxPtr({
+        type: 'bytearray',
+        data: replaceBytes(h.data, n.data, r.data, count),
+      });
     },
     bytearray_from_obj: (src) => {
       const bytes = getBytes(src);
@@ -382,23 +567,41 @@ def test_wasm_bytes_ops_parity(tmp_path: Path) -> None:
         "b = b'one,two'\n"
         "print(len(b))\n"
         "print((b + b'!').find(b'two'))\n"
+        "print((b + b'!').find(b'two', 2))\n"
         "parts = b.split(b',')\n"
         "print(len(parts))\n"
         "print(len(parts[0]))\n"
         "print(len(parts[1]))\n"
         "print(b.replace(b'one', b'uno').find(b'uno'))\n"
+        "print(b.startswith(b'one'))\n"
+        "print(b.startswith(b'one', 0, 3))\n"
+        "print(b.endswith(b'two'))\n"
+        "print(b.endswith(b'two', 0, len(b)))\n"
+        "print(b.count(b'o'))\n"
+        "print(b[1])\n"
+        "print(b.find(b'ne'))\n"
+        "print(44 in b)\n"
         "ba = bytearray(b'one,two')\n"
         "print(len(ba))\n"
         "print(ba.find(b'two'))\n"
+        "print(ba.find(b'two', 2))\n"
         "parts2 = ba.split(b',')\n"
         "print(len(parts2))\n"
         "print(len(parts2[0]))\n"
         "print(len(parts2[1]))\n"
         "print(ba.replace(b'two', b'dos').find(b'dos'))\n"
         "print((ba + bytearray(b'!')).find(b'!'))\n"
+        "print(ba.startswith(b'one'))\n"
+        "print(ba.startswith(b'one', 0, 3))\n"
+        "print(ba.endswith(b'two'))\n"
+        "print(ba.endswith(b'two', 0, len(ba)))\n"
+        "print(ba.count(b'o'))\n"
+        "print(ba[1])\n"
+        "print(ba.find(b'ne'))\n"
+        "print(44 in ba)\n"
     )
 
-    output_wasm = root / "output.wasm"
+    output_wasm = Path(tempfile.gettempdir()) / "output.wasm"
     existed = output_wasm.exists()
 
     runner = write_wasm_runner(
@@ -427,7 +630,10 @@ def test_wasm_bytes_ops_parity(tmp_path: Path) -> None:
             text=True,
         )
         assert run.returncode == 0, run.stderr
-        assert run.stdout.strip() == "7\n4\n2\n3\n3\n0\n7\n4\n2\n3\n3\n4\n7"
+        assert run.stdout.strip() == (
+            "7\n4\n4\n2\n3\n3\n0\nTrue\nTrue\nTrue\nTrue\n2\n110\n1\nTrue\n7\n4\n"
+            "4\n2\n3\n3\n4\n7\nTrue\nTrue\nTrue\nTrue\n2\n110\n1\nTrue"
+        )
     finally:
         if not existed and output_wasm.exists():
             output_wasm.unlink()

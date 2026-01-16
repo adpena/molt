@@ -2,8 +2,15 @@ def main() -> None:
     fs = frozenset([1, 2, 2, 3])
     print(len(fs))
     print(1 in fs, 4 in fs)
+    print(fs.__len__())
+    print(fs.__contains__(1), fs.__contains__(4))
+    print(frozenset.__len__(fs))
     total = 0
     for x in fs:
+        total += x
+    print(total)
+    total = 0
+    for x in fs.__iter__():
         total += x
     print(total)
     s = {3, 4}

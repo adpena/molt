@@ -18,6 +18,9 @@ target/
 *.rlib
 *.d
 hello_molt
+*_molt
+*_molt.exe
+logs/
 bench/results/*
 !bench/results/bench.json
 !bench/results/bench_wasm.json

@@ -21,7 +21,8 @@ Molt is designed for:
 - **No C-Extensions**: Eliminating the largest source of memory unsafety in the Python ecosystem.
 
 ## 5. Operational security checks (implementation)
-- Enforce lockfiles (`uv sync --frozen`) in build pipelines.
+- Enforce lockfiles (`uv sync --frozen`) in build pipelines; `molt build` fails
+  when `pyproject.toml` is present but `uv.lock` is missing.
 - Verify package checksums for all Molt Packages.
 - Require explicit capability manifests (`molt.toml` or `pyproject.toml`) for I/O, time, and randomness.
 - Deny ambient FS/network access by default for WASM modules and FFI boundaries.

@@ -40,6 +40,7 @@
 - Automated generation of Markdown tables and graphs in `docs/benchmarks/`.
 - Regression alerts in CI.
 - `tools/bench.py` writes JSON results under `bench/results/` and supports baseline comparisons via `bench/baseline.json`.
+- `tools/bench_report.py` combines `bench/results/bench.json` and `bench/results/bench_wasm.json` into `docs/benchmarks/bench_summary.md`.
 - Install optional benchmark deps with `uv sync --group bench --python 3.12` to enable Cython/Numba.
 - Capture CPython version baselines by running the harness under each interpreter:
   `uv run --python 3.12 python3 tools/bench.py --json-out bench/results/bench_py312.json`,

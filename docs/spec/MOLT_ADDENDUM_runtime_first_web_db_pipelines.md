@@ -216,7 +216,7 @@ To be fast for services, Molt needs clear tier policies.
 - `molt build` produces a native binary
 - `molt test` runs differential tests against CPython for supported subset
 - `molt bench` runs standardized service/pipeline benchmarks
-- `molt doctor` checks toolchains and warns about missing optimizations
+- `molt doctor` checks toolchains and warns about missing optimizations (TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:partial): toolchain checks + optimization warnings in `molt doctor`).
 
 ---
 

@@ -10,8 +10,11 @@ import subprocess
 import sys
 import textwrap
 import time
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+
+SUPER_SAMPLES = 10
 
 BENCHMARKS = [
     "tests/benchmarks/bench_fib.py",
@@ -37,6 +40,8 @@ BENCHMARKS = [
     "tests/benchmarks/bench_async_await.py",
     "tests/benchmarks/bench_channel_throughput.py",
     "tests/benchmarks/bench_deeply_nested_loop.py",
+    "tests/benchmarks/bench_csv_parse.py",
+    "tests/benchmarks/bench_csv_parse_wide.py",
     "tests/benchmarks/bench_matrix_math.py",
     "tests/benchmarks/bench_bytes_find.py",
     "tests/benchmarks/bench_bytes_find_only.py",
@@ -112,43 +117,80 @@ def measure_runtime(cmd_args, script=None, env=None):
 
 
 def measure_molt(script, extra_args=None):
-    if os.path.exists("./hello_molt"):
-        os.remove("./hello_molt")
-
     env = os.environ.copy()
     env["PYTHONPATH"] = "src"
-    args = [sys.executable, "-m", "molt.cli", "build"]
-    if extra_args:
-        args.extend(extra_args)
-    args.append(script)
-    res = subprocess.run(
-        args,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
+    with tempfile.TemporaryDirectory(prefix="molt-bench-") as temp_dir:
+        out_dir = Path(temp_dir)
+        args = [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            "--json",
+            "--out-dir",
+            str(out_dir),
+        ]
+        if extra_args:
+            args.extend(extra_args)
+        args.append(script)
+        res = subprocess.run(
+            args,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
 
-    if res.returncode != 0:
-        return None, 0
+        if res.returncode != 0:
+            return None, 0
 
-    binary_size = os.path.getsize("./hello_molt") / 1024
+        try:
+            payload = json.loads(res.stdout.strip() or "{}")
+        except json.JSONDecodeError:
+            return None, 0
 
-    start = time.perf_counter()
-    res = subprocess.run(["./hello_molt"], capture_output=True, text=True)
-    end = time.perf_counter()
+        output_str = payload.get("data", {}).get("output") or payload.get("output")
+        if not output_str:
+            return None, 0
+        output_path = Path(output_str)
+        if not output_path.exists():
+            fallback = output_path.with_suffix(".exe")
+            if fallback.exists():
+                output_path = fallback
+            else:
+                return None, 0
 
-    if res.returncode != 0:
-        return None, binary_size
+        binary_size = output_path.stat().st_size / 1024
 
-    return end - start, binary_size
+        start = time.perf_counter()
+        res = subprocess.run([str(output_path)], capture_output=True, text=True)
+        end = time.perf_counter()
+
+        if res.returncode != 0:
+            return None, binary_size
+
+        return end - start, binary_size
 
 
 def collect_samples(measure_fn, samples):
     times = [measure_fn() for _ in range(samples)]
     valid_times = [t for t in times if t is not None]
-    if not valid_times:
-        return 0.0, False
-    return statistics.mean(valid_times), True
+    return valid_times, bool(valid_times)
+
+
+def summarize_samples(samples: list[float]) -> dict[str, float]:
+    mean = statistics.mean(samples)
+    median = statistics.median(samples)
+    variance = statistics.pvariance(samples) if len(samples) > 1 else 0.0
+    min_s = min(samples)
+    max_s = max(samples)
+    return {
+        "mean_s": mean,
+        "median_s": median,
+        "variance_s": variance,
+        "range_s": max_s - min_s,
+        "min_s": min_s,
+        "max_s": max_s,
+    }
 
 
 def _split_imports(source: str) -> tuple[list[str], list[str]]:
@@ -329,7 +371,9 @@ def _pypy_command() -> list[str] | None:
     return ["uv", "run", "--no-project", "--python", "pypy@3.11", "python"]
 
 
-def bench_results(benchmarks, samples, use_pypy, use_cython, use_numba, use_codon):
+def bench_results(
+    benchmarks, samples, use_pypy, use_cython, use_numba, use_codon, super_run
+):
     runtimes = {"CPython": [sys.executable]}
     if use_pypy:
         pypy_cmd = _pypy_command()
@@ -365,22 +409,29 @@ def bench_results(benchmarks, samples, use_pypy, use_cython, use_numba, use_codo
         name = os.path.basename(script)
         results = {}
         runtime_ok = {}
+        stats = {}
         for rt_name, cmd in runtimes.items():
-            result, ok = collect_samples(
+            samples_list, ok = collect_samples(
                 lambda: measure_runtime(cmd, script, env=base_env), samples
             )
-            results[rt_name] = result
+            results[rt_name] = statistics.mean(samples_list) if ok else 0.0
             runtime_ok[rt_name] = ok
+            if super_run and ok:
+                stats[rt_name.lower()] = summarize_samples(samples_list)
 
         cython_time = 0.0
         cython_ok = False
         if use_cython:
             runner = _prepare_cython_runner(Path(script), cython_root, base_env)
             if runner is not None:
-                cython_time, cython_ok = collect_samples(
+                cython_samples, cython_ok = collect_samples(
                     lambda: measure_runtime(runner.cmd, runner.script, env=runner.env),
                     samples,
                 )
+                if cython_ok:
+                    cython_time = statistics.mean(cython_samples)
+                    if super_run:
+                        stats["cython"] = summarize_samples(cython_samples)
             else:
                 print(f"Skipping Cython for {name}.", file=sys.stderr)
 
@@ -389,10 +440,14 @@ def bench_results(benchmarks, samples, use_pypy, use_cython, use_numba, use_codo
         if use_numba:
             runner = _prepare_numba_runner(Path(script), numba_root, base_env)
             if runner is not None:
-                numba_time, numba_ok = collect_samples(
+                numba_samples, numba_ok = collect_samples(
                     lambda: measure_runtime(runner.cmd, runner.script, env=runner.env),
                     samples,
                 )
+                if numba_ok:
+                    numba_time = statistics.mean(numba_samples)
+                    if super_run:
+                        stats["numba"] = summarize_samples(numba_samples)
             else:
                 print(f"Skipping Numba for {name}.", file=sys.stderr)
 
@@ -401,10 +456,14 @@ def bench_results(benchmarks, samples, use_pypy, use_cython, use_numba, use_codo
         if use_codon:
             runner = _prepare_codon_runner(Path(script), codon_root, base_env)
             if runner is not None:
-                codon_time, codon_ok = collect_samples(
+                codon_samples, codon_ok = collect_samples(
                     lambda: measure_runtime(runner.cmd, runner.script, env=runner.env),
                     samples,
                 )
+                if codon_ok:
+                    codon_time = statistics.mean(codon_samples)
+                    if super_run:
+                        stats["codon"] = summarize_samples(codon_samples)
             else:
                 print(f"Skipping Codon for {name}.", file=sys.stderr)
 
@@ -416,6 +475,8 @@ def bench_results(benchmarks, samples, use_pypy, use_cython, use_numba, use_codo
         if valid_molt:
             molt_time = statistics.mean(valid_molt)
             molt_size = molt_runs[0][1]
+            if super_run:
+                stats["molt"] = summarize_samples(valid_molt)
         else:
             print(f"Molt build/run failed for {name}.", file=sys.stderr)
 
@@ -472,6 +533,8 @@ def bench_results(benchmarks, samples, use_pypy, use_cython, use_numba, use_codo
             "numba_ok": numba_ok,
             "codon_ok": codon_ok,
         }
+        if super_run:
+            data[name]["super_stats"] = stats
 
     return data
 
@@ -512,23 +575,39 @@ def main():
     parser.add_argument("--no-cython", action="store_true")
     parser.add_argument("--no-numba", action="store_true")
     parser.add_argument("--no-codon", action="store_true")
+    parser.add_argument(
+        "--super",
+        action="store_true",
+        help="Run all benchmarks 10x and emit mean/median/variance/range stats.",
+    )
     args = parser.parse_args()
 
+    if args.super and args.smoke:
+        parser.error("--super cannot be combined with --smoke")
+    if args.super and args.samples is not None:
+        parser.error("--super cannot be combined with --samples")
+
     benchmarks = SMOKE_BENCHMARKS if args.smoke else BENCHMARKS
-    samples = args.samples if args.samples is not None else (1 if args.smoke else 3)
+    samples = (
+        SUPER_SAMPLES
+        if args.super
+        else (args.samples if args.samples is not None else (1 if args.smoke else 3))
+    )
     use_pypy = not args.no_pypy
     use_cython = not args.no_cython
     use_numba = not args.no_numba
     use_codon = not args.no_codon
 
     results = bench_results(
-        benchmarks, samples, use_pypy, use_cython, use_numba, use_codon
+        benchmarks, samples, use_pypy, use_cython, use_numba, use_codon, args.super
     )
 
     payload = {
         "schema_version": 1,
         "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "git_rev": _git_rev(),
+        "super_run": args.super,
+        "samples": samples,
         "system": {
             "platform": platform.platform(),
             "python": platform.python_version(),

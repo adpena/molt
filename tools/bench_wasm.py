@@ -7,8 +7,11 @@ import shutil
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
+
+SUPER_SAMPLES = 10
 
 BENCHMARKS = [
     "tests/benchmarks/bench_fib.py",
@@ -34,6 +37,8 @@ BENCHMARKS = [
     "tests/benchmarks/bench_async_await.py",
     "tests/benchmarks/bench_channel_throughput.py",
     "tests/benchmarks/bench_deeply_nested_loop.py",
+    "tests/benchmarks/bench_csv_parse.py",
+    "tests/benchmarks/bench_csv_parse_wide.py",
     "tests/benchmarks/bench_matrix_math.py",
     "tests/benchmarks/bench_bytes_find.py",
     "tests/benchmarks/bench_bytes_find_only.py",
@@ -93,6 +98,16 @@ def _base_env() -> dict[str, str]:
     return env
 
 
+def _python_executable() -> str:
+    exe = Path(sys.executable)
+    if exe.exists():
+        return sys.executable
+    base = getattr(sys, "_base_executable", None)
+    if base and Path(base).exists():
+        return base
+    return sys.executable
+
+
 def _append_rustflags(env: dict[str, str], flags: str) -> None:
     existing = env.get("RUSTFLAGS", "")
     joined = f"{existing} {flags}".strip()
@@ -140,7 +155,7 @@ def _want_linked() -> bool:
     return os.environ.get("MOLT_WASM_LINK") == "1"
 
 
-def _link_wasm(env: dict[str, str]) -> Path | None:
+def _link_wasm(env: dict[str, str], input_path: Path) -> Path | None:
     if not _want_linked():
         return None
     if WASM_LD is None:
@@ -165,7 +180,7 @@ def _link_wasm(env: dict[str, str]) -> Path | None:
             "--runtime",
             str(runtime_path),
             "--input",
-            "output.wasm",
+            str(input_path),
             "--output",
             str(LINKED_WASM),
         ],
@@ -196,19 +211,24 @@ def _link_wasm(env: dict[str, str]) -> Path | None:
 
 
 def measure_wasm(script: str) -> tuple[float | None, float, bool]:
-    if os.path.exists("./output.wasm"):
-        os.remove("./output.wasm")
+    output_path = Path(tempfile.gettempdir()) / "output.wasm"
+    if output_path.exists():
+        output_path.unlink()
 
     env = _base_env()
+    env["MOLT_WASM_PATH"] = str(output_path)
     extra_args = MOLT_ARGS_BY_BENCH.get(script, [])
+    python_exe = _python_executable()
     build_res = subprocess.run(
         [
-            sys.executable,
+            python_exe,
             "-m",
             "molt.cli",
             "build",
             "--target",
             "wasm",
+            "--out-dir",
+            str(output_path.parent),
             *extra_args,
             script,
         ],
@@ -222,12 +242,11 @@ def measure_wasm(script: str) -> tuple[float | None, float, bool]:
             print(f"WASM build failed for {script}: {err}", file=sys.stderr)
         return None, 0.0, False
 
-    output_path = Path("output.wasm")
     if not output_path.exists():
         print(f"WASM build produced no output.wasm for {script}", file=sys.stderr)
         return None, 0.0, False
 
-    linked = _link_wasm(env)
+    linked = _link_wasm(env, output_path)
     linked_used = linked is not None
     wasm_path = linked if linked_used else output_path
     wasm_size = wasm_path.stat().st_size / 1024
@@ -251,24 +270,42 @@ def measure_wasm(script: str) -> tuple[float | None, float, bool]:
     return end - start, wasm_size, linked_used
 
 
-def collect_samples(script: str, samples: int) -> tuple[float, float, bool, bool]:
+def collect_samples(script: str, samples: int) -> tuple[list[float], float, bool, bool]:
     runs = [measure_wasm(script) for _ in range(samples)]
     valid = [t for t, _, _ in runs if t is not None]
-    if not valid:
-        return 0.0, runs[0][1] if runs else 0.0, False, False
-    avg = statistics.mean(valid)
+    if not runs:
+        return [], 0.0, False, False
     size = runs[0][1]
     linked_used = any(r[2] for r in runs)
-    return avg, size, True, linked_used
+    return valid, size, bool(valid), linked_used
 
 
-def bench_results(benchmarks: list[str], samples: int) -> dict[str, dict]:
+def summarize_samples(samples: list[float]) -> dict[str, float]:
+    mean = statistics.mean(samples)
+    median = statistics.median(samples)
+    variance = statistics.pvariance(samples) if len(samples) > 1 else 0.0
+    min_s = min(samples)
+    max_s = max(samples)
+    return {
+        "mean_s": mean,
+        "median_s": median,
+        "variance_s": variance,
+        "range_s": max_s - min_s,
+        "min_s": min_s,
+        "max_s": max_s,
+    }
+
+
+def bench_results(
+    benchmarks: list[str], samples: int, super_run: bool
+) -> dict[str, dict]:
     data: dict[str, dict] = {}
     print(f"{'Benchmark':<30} | {'WASM (s)':<12} | {'WASM size':<10}")
     print("-" * 60)
     for script in benchmarks:
         name = Path(script).stem
-        wasm_time, wasm_size, ok, linked_used = collect_samples(script, samples)
+        wasm_samples, wasm_size, ok, linked_used = collect_samples(script, samples)
+        wasm_time = statistics.mean(wasm_samples) if ok else 0.0
         time_cell = f"{wasm_time:<12.4f}" if ok else f"{'n/a':<12}"
         print(f"{name:<30} | {time_cell} | {wasm_size:>8.1f} KB")
         data[name] = {
@@ -277,6 +314,8 @@ def bench_results(benchmarks: list[str], samples: int) -> dict[str, dict]:
             "molt_wasm_ok": ok,
             "molt_wasm_linked": linked_used,
         }
+        if super_run and ok:
+            data[name]["molt_wasm_stats"] = summarize_samples(wasm_samples)
     return data
 
 
@@ -295,10 +334,19 @@ def main() -> None:
         action="store_true",
         help="Attempt single-module wasm linking with wasm-ld when available.",
     )
+    parser.add_argument(
+        "--super",
+        action="store_true",
+        help="Run all benchmarks 10x and emit mean/median/variance/range stats.",
+    )
     args = parser.parse_args()
 
     if args.linked:
         os.environ["MOLT_WASM_LINK"] = "1"
+    if args.super and args.smoke:
+        parser.error("--super cannot be combined with --smoke")
+    if args.super and args.samples is not None:
+        parser.error("--super cannot be combined with --samples")
 
     if not build_runtime_wasm(reloc=False, output=RUNTIME_WASM):
         sys.exit(1)
@@ -309,13 +357,19 @@ def main() -> None:
         )
 
     benchmarks = SMOKE_BENCHMARKS if args.smoke else BENCHMARKS
-    samples = args.samples if args.samples is not None else (1 if args.smoke else 3)
-    results = bench_results(benchmarks, samples)
+    samples = (
+        SUPER_SAMPLES
+        if args.super
+        else (args.samples if args.samples is not None else (1 if args.smoke else 3))
+    )
+    results = bench_results(benchmarks, samples, args.super)
 
     payload = {
         "schema_version": 1,
         "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "git_rev": _git_rev(),
+        "super_run": args.super,
+        "samples": samples,
         "system": {
             "platform": platform.platform(),
             "python": platform.python_version(),

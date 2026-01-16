@@ -24,7 +24,7 @@
 - `health_check_interval_ms`
 - `statement_cache_size`
 
-**Implementation status:** `molt-db` now provides a feature-gated async pool plus an async Postgres connector (tokio-postgres + rustls) with per-connection statement caching; `molt-worker` uses it for `db_query`/`db_exec` with cancellation. Type decoding now covers uuid/json/date/time (stringified) plus arrays/ranges/intervals/multiranges (structured), with explicit lower-bound metadata when needed; Arrow IPC now supports complex type encodings and wasm parity remains pending.
+**Implementation status:** `molt-db` now provides a feature-gated async pool plus an async Postgres connector (tokio-postgres + rustls) with per-connection statement caching; `molt-worker` uses it for `db_query`/`db_exec` with cancellation. Type decoding now covers uuid/json/date/time (stringified) plus arrays/ranges/intervals/multiranges (structured), with explicit lower-bound metadata when needed; Arrow IPC now supports complex type encodings and wasm parity remains pending (TODO(wasm-db-parity, owner:runtime, milestone:DB2, priority:P1, status:missing): wasm parity for DB client shims/tests).
 
 ### 1.2 Acquire semantics
 Acquire must be:
@@ -92,6 +92,6 @@ Export:
 
 ## 7. WASM parity plan (required)
 - Implemented: WIT host interface for `db_query`/`db_exec` with stream handles + Arrow IPC streaming headers; `db.read`/`db.write` capability gating enforced in `molt-runtime`.
-- TODO(wasm-db-parity, owner:runtime, milestone:DB2): implement wasm-side `molt-db` shims that consume the response stream and surface results as bytes/Arrow IPC.
+- TODO(wasm-db-parity, owner:runtime, milestone:DB2, priority:P1, status:missing): implement wasm-side `molt-db` shims that consume the response stream and surface results as bytes/Arrow IPC.
 - Implemented: Node/WASI host adapter in `run_wasm.js` that forwards `db_query`/`db_exec` to `molt-worker` and streams responses via the DB host interface.
-- TODO(wasm-db-parity, owner:runtime, milestone:DB2): ship additional production host adapters (CF Workers, browser) and wasm parity tests that exercise real DB backends with cancellation.
+- TODO(wasm-db-parity, owner:runtime, milestone:DB2, priority:P2, status:planned): ship additional production host adapters (CF Workers, browser) and wasm parity tests that exercise real DB backends with cancellation.

@@ -42,7 +42,7 @@ def _is_cancelled_exc(exc: BaseException) -> bool:
     return type(exc).__name__ == "CancelledError"
 
 
-class CancelledError(Exception):
+class CancelledError(BaseException):
     pass
 
 

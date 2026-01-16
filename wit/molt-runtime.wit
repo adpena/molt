@@ -54,6 +54,7 @@ interface intrinsics {
     bit_or: func(a: molt-object, b: molt-object) -> molt-object;
     bit_and: func(a: molt-object, b: molt-object) -> molt-object;
     bit_xor: func(a: molt-object, b: molt-object) -> molt-object;
+    invert: func(a: molt-object) -> molt-object;
     inplace_bit_or: func(a: molt-object, b: molt-object) -> molt-object;
     inplace_bit_and: func(a: molt-object, b: molt-object) -> molt-object;
     inplace_bit_xor: func(a: molt-object, b: molt-object) -> molt-object;
@@ -72,6 +73,7 @@ interface intrinsics {
     gt: func(a: molt-object, b: molt-object) -> molt-object;
     ge: func(a: molt-object, b: molt-object) -> molt-object;
     eq: func(a: molt-object, b: molt-object) -> molt-object;
+    string_eq: func(a: molt-object, b: molt-object) -> molt-object;
     is: func(a: molt-object, b: molt-object) -> molt-object;
     closure_load: func(ptr: molt-ptr, offset: u64) -> molt-object;
     closure_store: func(ptr: molt-ptr, offset: u64, val: molt-object) -> molt-object;
@@ -129,6 +131,7 @@ interface intrinsics {
     module_cache_get: func(name: molt-object) -> molt-object;
     module_cache_set: func(name: molt-object, module: molt-object) -> molt-object;
     module_get_attr: func(module: molt-object, attr: molt-object) -> molt-object;
+    module_get_name: func(module: molt-object, attr: molt-object) -> molt-object;
     module_set_attr: func(module: molt-object, attr: molt-object, val: molt-object) -> molt-object;
     get_attr_name: func(obj: molt-object, name: molt-object) -> molt-object;
     get_attr_name_default: func(obj: molt-object, name: molt-object, default: molt-object) -> molt-object;
@@ -179,6 +182,17 @@ interface intrinsics {
     list_sort: func(list: molt-object, key: molt-object, reverse: molt-object) -> molt-object;
     list_count: func(list: molt-object, val: molt-object) -> molt-object;
     list_index: func(list: molt-object, val: molt-object) -> molt-object;
+    list_index_range: func(
+        list: molt-object,
+        val: molt-object,
+        start: molt-object,
+        stop: molt-object
+    ) -> molt-object;
+    heapq_heapify: func(list: molt-object) -> molt-object;
+    heapq_heappush: func(list: molt-object, item: molt-object) -> molt-object;
+    heapq_heappop: func(list: molt-object) -> molt-object;
+    heapq_heapreplace: func(list: molt-object, item: molt-object) -> molt-object;
+    heapq_heappushpop: func(list: molt-object, item: molt-object) -> molt-object;
     tuple_from_list: func(obj: molt-object) -> molt-object;
     dict_new: func(capacity: u64) -> molt-object;
     dict_from_obj: func(obj: molt-object) -> molt-object;
@@ -226,23 +240,43 @@ interface intrinsics {
     bytes_find: func(haystack: molt-object, needle: molt-object) -> molt-object;
     bytearray_find: func(haystack: molt-object, needle: molt-object) -> molt-object;
     string_find: func(haystack: molt-object, needle: molt-object) -> molt-object;
+    bytes_find_slice: func(haystack: molt-object, needle: molt-object, start: molt-object, end: molt-object, has_start: molt-object, has_end: molt-object) -> molt-object;
+    bytearray_find_slice: func(haystack: molt-object, needle: molt-object, start: molt-object, end: molt-object, has_start: molt-object, has_end: molt-object) -> molt-object;
+    string_find_slice: func(haystack: molt-object, needle: molt-object, start: molt-object, end: molt-object, has_start: molt-object, has_end: molt-object) -> molt-object;
     string_format: func(val: molt-object, spec: molt-object) -> molt-object;
     string_startswith: func(haystack: molt-object, needle: molt-object) -> molt-object;
+    bytes_startswith: func(haystack: molt-object, needle: molt-object) -> molt-object;
+    bytearray_startswith: func(haystack: molt-object, needle: molt-object) -> molt-object;
+    string_startswith_slice: func(haystack: molt-object, needle: molt-object, start: molt-object, end: molt-object, has_start: molt-object, has_end: molt-object) -> molt-object;
+    bytes_startswith_slice: func(haystack: molt-object, needle: molt-object, start: molt-object, end: molt-object, has_start: molt-object, has_end: molt-object) -> molt-object;
+    bytearray_startswith_slice: func(haystack: molt-object, needle: molt-object, start: molt-object, end: molt-object, has_start: molt-object, has_end: molt-object) -> molt-object;
     string_endswith: func(haystack: molt-object, needle: molt-object) -> molt-object;
+    bytes_endswith: func(haystack: molt-object, needle: molt-object) -> molt-object;
+    bytearray_endswith: func(haystack: molt-object, needle: molt-object) -> molt-object;
+    string_endswith_slice: func(haystack: molt-object, needle: molt-object, start: molt-object, end: molt-object, has_start: molt-object, has_end: molt-object) -> molt-object;
+    bytes_endswith_slice: func(haystack: molt-object, needle: molt-object, start: molt-object, end: molt-object, has_start: molt-object, has_end: molt-object) -> molt-object;
+    bytearray_endswith_slice: func(haystack: molt-object, needle: molt-object, start: molt-object, end: molt-object, has_start: molt-object, has_end: molt-object) -> molt-object;
     string_count: func(haystack: molt-object, needle: molt-object) -> molt-object;
+    bytes_count: func(haystack: molt-object, needle: molt-object) -> molt-object;
+    bytearray_count: func(haystack: molt-object, needle: molt-object) -> molt-object;
     string_count_slice: func(haystack: molt-object, needle: molt-object, start: molt-object, end: molt-object, has_start: molt-object, has_end: molt-object) -> molt-object;
+    bytes_count_slice: func(haystack: molt-object, needle: molt-object, start: molt-object, end: molt-object, has_start: molt-object, has_end: molt-object) -> molt-object;
+    bytearray_count_slice: func(haystack: molt-object, needle: molt-object, start: molt-object, end: molt-object, has_start: molt-object, has_end: molt-object) -> molt-object;
     env_get: func(key: molt-object, default: molt-object) -> molt-object;
     string_join: func(sep: molt-object, items: molt-object) -> molt-object;
     string_split: func(haystack: molt-object, needle: molt-object) -> molt-object;
+    string_split_max: func(haystack: molt-object, needle: molt-object, maxsplit: molt-object) -> molt-object;
     string_lower: func(haystack: molt-object) -> molt-object;
     string_upper: func(haystack: molt-object) -> molt-object;
     string_capitalize: func(haystack: molt-object) -> molt-object;
-    string_strip: func(haystack: molt-object) -> molt-object;
+    string_strip: func(haystack: molt-object, chars: molt-object) -> molt-object;
     bytes_split: func(haystack: molt-object, needle: molt-object) -> molt-object;
+    bytes_split_max: func(haystack: molt-object, needle: molt-object, maxsplit: molt-object) -> molt-object;
     bytearray_split: func(haystack: molt-object, needle: molt-object) -> molt-object;
-    string_replace: func(haystack: molt-object, needle: molt-object, replacement: molt-object) -> molt-object;
-    bytes_replace: func(haystack: molt-object, needle: molt-object, replacement: molt-object) -> molt-object;
-    bytearray_replace: func(haystack: molt-object, needle: molt-object, replacement: molt-object) -> molt-object;
+    bytearray_split_max: func(haystack: molt-object, needle: molt-object, maxsplit: molt-object) -> molt-object;
+    string_replace: func(haystack: molt-object, needle: molt-object, replacement: molt-object, count: molt-object) -> molt-object;
+    bytes_replace: func(haystack: molt-object, needle: molt-object, replacement: molt-object, count: molt-object) -> molt-object;
+    bytearray_replace: func(haystack: molt-object, needle: molt-object, replacement: molt-object, count: molt-object) -> molt-object;
     bytes_from_obj: func(obj: molt-object) -> molt-object;
     bytearray_from_obj: func(obj: molt-object) -> molt-object;
     bytes_from_str: func(obj: molt-object, encoding: molt-object, errors: molt-object) -> molt-object;
@@ -251,6 +285,7 @@ interface intrinsics {
     intarray_from_seq: func(obj: molt-object) -> molt-object;
     memoryview_new: func(obj: molt-object) -> molt-object;
     memoryview_tobytes: func(obj: molt-object) -> molt-object;
+    memoryview_cast: func(obj: molt-object, format: molt-object, shape: molt-object, has_shape: molt-object) -> molt-object;
     buffer2d_new: func(rows: molt-object, cols: molt-object, init: molt-object) -> molt-object;
     buffer2d_get: func(buf: molt-object, row: molt-object, col: molt-object) -> molt-object;
     buffer2d_set: func(buf: molt-object, row: molt-object, col: molt-object, val: molt-object) -> molt-object;
@@ -293,6 +328,7 @@ interface intrinsics {
     exception_kind: func(exc: molt-object) -> molt-object;
     exception_message: func(exc: molt-object) -> molt-object;
     exception_set_cause: func(exc: molt-object, cause: molt-object) -> molt-object;
+    exception_set_value: func(exc: molt-object, value: molt-object) -> molt-object;
     exception_context_set: func(exc: molt-object) -> molt-object;
     raise: func(exc: molt-object) -> molt-object;
     file_open: func(path: molt-object, mode: molt-object) -> molt-object;

@@ -17,6 +17,7 @@ calls = [0]
 
 @functools.lru_cache(maxsize=None)
 def f(a, b=0, **kw):
+    """cache doc"""
     calls[0] = calls[0] + 1
     return (a, b, kw.get("x", None))
 
@@ -24,3 +25,7 @@ def f(a, b=0, **kw):
 print(f(1, b=2, x=3))
 print(f(1, b=2, x=3))
 print(calls[0])
+print(f"lru_name:{f.__name__}")
+print(f"lru_doc:{f.__doc__}")
+print(f"lru_wrapped_name:{f.__wrapped__.__name__}")
+print(f"lru_wrapped_is_self:{f.__wrapped__ is f}")

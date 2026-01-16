@@ -1,30 +1,34 @@
-Checkpoint: 2026-01-13T18:52:08Z
-Git: 0e079e6d2c617dcfee4afe59b798cbaf60debe03 (dirty)
+Checkpoint: 2026-01-16T07:46:51Z
+Git: 7d31c358d57c5e95197f04e793c200d06e47adb5 (dirty)
 
 Summary
-- Added `tools/profile.py` to run repeatable CPU/alloc profiling (plus optional compiler cProfile).
-- Documented the profiling harness in `LOGGING_AND_BENCHMARK_CONVENTIONS.md`.
-- Scoped the wasm async fix but blocked by the `src/molt/stdlib/asyncio.py` lock.
+- Removed root `*_molt` artifacts and `logs/` directory to reduce repo clutter; kept caches intact.
 
 Files touched (uncommitted)
-- tools/profile.py
-- LOGGING_AND_BENCHMARK_CONVENTIONS.md
-- docs/AGENT_LOCKS.md
+- .gitignore
+- AGENTS.md
+- GEMINI.md
+- README.md
+- docs/benchmarks/bench_summary.md
+- tools/bench_report.py
 - docs/AGENT_MEMORY.md
 - CHECKPOINT.md
-- Other pre-existing local modifications not listed here (see git status).
+- /Users/adpena/.codex/skills/formalize/SKILL.md
 
 Docs/spec updates needed?
 - None.
 
-Tests run
-- None.
+Tests
+- None (cleanup only).
 
 Benchmarks
+- Not run (cleanup only).
+
+Profiling
 - None.
 
 Known gaps
-- WASM async benchmarks are blocked by a compat error in `src/molt/stdlib/asyncio.py:48` (lock held by codex-98895).
+- `str(bytes, encoding, errors)` decoding not implemented (NotImplementedError).
 
 CI
 - Not run (local changes only).

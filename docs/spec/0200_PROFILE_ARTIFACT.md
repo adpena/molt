@@ -58,4 +58,4 @@ Top-level:
 ## Minimal workflow
 1) `molt profile -- python -m app ...` → `molt_profile.json`
 2) `molt build --profile molt_profile.json` → native binary
-3) runtime optionally emits `molt_runtime_feedback.json` to refine future profiles
+3) runtime optionally emits `molt_runtime_feedback.json` to refine future profiles (TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): runtime feedback emission).

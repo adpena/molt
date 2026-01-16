@@ -73,7 +73,13 @@ Molt does not have a Global Interpreter Lock.
 - **Thread Safety**:
     - Primitives and immutable objects (Strings, Tuples) are safe to share.
     - Mutable objects (Lists, Dicts) use fine-grained locking or are restricted to a single thread by default (requiring explicit `MoltThread` boundaries).
-- **Async**: Built on top of Rust's `Future` and `tokio`. Python `async/await` is lowered to Rust futures.
+- **Async (core runtime)**: Built on a custom poll/scheduler loop in `molt-runtime` (no tokio dependency). Python `async/await` lowers to Molt futures with explicit poll state.
+- **Async (host services)**: `molt-worker` and `molt-db` use tokio/tokio-postgres where OS-level I/O is required.
+
+### Decision: Core Async Scheduler vs Host Executor
+- **Why**: Deterministic scheduling, capability gating, and WASM/WASI parity are core requirements for compiled binaries.
+- **Tradeoff**: We re-implement scheduler + timer plumbing in `molt-runtime`, while leveraging tokio for service crates that need OS I/O.
+- **Outcome**: Runtime stays small and portable; host adapters can integrate with tokio without changing core semantics.
 
 ## 6. Exception Handling
 - **Fast Path**: Most Molt functions return a `MoltResult<T>` which is a specialized `Result` type optimized for register passing.

@@ -78,6 +78,11 @@ const getBigIntValue = (val) => {
   if (obj && obj.type === 'bigint') return obj.value;
   return null;
 };
+const INLINE_INT_MIN = -(1n << (INT_WIDTH - 1n));
+const INLINE_INT_MAX = (1n << (INT_WIDTH - 1n)) - 1n;
+const fitsInlineInt = (value) => value >= INLINE_INT_MIN && value <= INLINE_INT_MAX;
+const boxIntOrBigint = (value) =>
+  fitsInlineInt(value) ? boxInt(value) : boxPtr({ type: 'bigint', value });
 const indexBigIntFromBits = (bits, errMsg) => {
   let value = getBigIntValue(bits);
   if (value === null) {
@@ -156,13 +161,33 @@ const getBuiltinType = (tag) => {
   setClassBases(clsBits, baseBits);
   return clsBits;
 };
+let generatorTypeBits = null;
+const getGeneratorType = () => {
+  if (generatorTypeBits !== null) return generatorTypeBits;
+  const clsBits = boxPtr({
+    type: 'class',
+    name: 'generator',
+    attrs: new Map(),
+    baseBits: boxNone(),
+    basesBits: null,
+    mroBits: null,
+  });
+  classLayoutVersions.set(clsBits, 0n);
+  setClassBases(clsBits, getBuiltinType(100));
+  generatorTypeBits = clsBits;
+  return clsBits;
+};
 const heap = new Map();
 const instanceClasses = new Map();
 const classLayoutVersions = new Map();
+const classFieldOffsets = new Map();
 const instanceAttrs = new Map();
 let nextPtr = 1n << 40n;
 let memory = null;
 let table = null;
+const HOST_TABLE_FLAG = 0x80000000;
+const HOST_TABLE_MASK = 0x7fffffff;
+const hostTable = [];
 const chanQueues = new Map();
 const chanCaps = new Map();
 const moduleCache = new Map();
@@ -179,7 +204,16 @@ let recursionDepth = 0;
 const HEADER_SIZE = 40;
 const HEADER_POLL_FN_OFFSET = HEADER_SIZE - 8;
 const HEADER_STATE_OFFSET = HEADER_SIZE - 16;
-const GEN_CONTROL_SIZE = 32;
+const HEADER_FLAGS_OFFSET = HEADER_SIZE - 32;
+const GEN_SEND_OFFSET = 0;
+const GEN_THROW_OFFSET = 8;
+const GEN_CLOSED_OFFSET = 16;
+const GEN_EXC_DEPTH_OFFSET = 24;
+const GEN_FRAME_OFFSET = 32;
+const GEN_YIELD_FROM_OFFSET = 40;
+const GEN_CONTROL_SIZE = 48;
+const GEN_FLAG_STARTED = 1n << 2n;
+const GEN_FLAG_RUNNING = 1n << 3n;
 const align = (size, align) => (size + (align - 1)) & ~(align - 1);
 const allocRaw = (payload) => {
   if (!memory) return 0;
@@ -198,6 +232,7 @@ const allocRaw = (payload) => {
 const isNone = (val) => isTag(val, TAG_NONE);
 const SLICE_INDEX_ERR =
   'slice indices must be integers or None or have an __index__ method';
+const LIST_INDEX_ERR = 'slice indices must be integers or have an __index__ method';
 const MAX_SLICE_STEP = BigInt(Number.MAX_SAFE_INTEGER);
 const decodeSliceBound = (bits, len, defaultVal) => {
   if (isNone(bits)) return defaultVal;
@@ -209,6 +244,34 @@ const decodeSliceBound = (bits, len, defaultVal) => {
   if (value < 0n) return 0;
   if (value > lenBig) return len;
   return Number(value);
+};
+const sliceBoundsFromArgs = (startBits, endBits, hasStartBits, hasEndBits, len) => {
+  let start = 0;
+  let end = len;
+  let startGtLen = false;
+  const lenBig = BigInt(len);
+  if (isTruthyBits(hasStartBits)) {
+    if (!isNone(startBits)) {
+      let value = indexBigIntFromBits(startBits, SLICE_INDEX_ERR);
+      if (value === null) return null;
+      if (value < 0n) value += lenBig;
+      startGtLen = value > lenBig;
+      if (value < 0n) value = 0n;
+      if (value > lenBig) value = lenBig;
+      start = Number(value);
+    }
+  }
+  if (isTruthyBits(hasEndBits)) {
+    if (!isNone(endBits)) {
+      let value = indexBigIntFromBits(endBits, SLICE_INDEX_ERR);
+      if (value === null) return null;
+      if (value < 0n) value += lenBig;
+      if (value < 0n) value = 0n;
+      if (value > lenBig) value = lenBig;
+      end = Number(value);
+    }
+  }
+  return { start, end, startGtLen };
 };
 const decodeSliceBoundNeg = (bits, len, defaultVal) => {
   if (isNone(bits)) return defaultVal;
@@ -231,6 +294,111 @@ const decodeSliceStep = (bits) => {
   if (step > MAX_SLICE_STEP) return Number(MAX_SLICE_STEP);
   if (step < -MAX_SLICE_STEP) return Number(-MAX_SLICE_STEP);
   return Number(step);
+};
+const normalizeBytesRange = (
+  total,
+  startBits,
+  endBits,
+  hasStartBits,
+  hasEndBits,
+  startErr,
+  endErr,
+) => {
+  let start = 0;
+  let end = total;
+  if (isTruthyBits(hasStartBits)) {
+    const idx = indexFromBitsWithOverflow(startBits, startErr, null);
+    if (idx === null) return null;
+    start = idx;
+  }
+  if (isTruthyBits(hasEndBits)) {
+    const idx = indexFromBitsWithOverflow(endBits, endErr, null);
+    if (idx === null) return null;
+    end = idx;
+  }
+  if (start < 0) start += total;
+  if (end < 0) end += total;
+  if (start < 0) start = 0;
+  if (end < 0) end = 0;
+  if (start > total) start = total;
+  if (end > total) end = total;
+  if (end < start) end = start;
+  return { start, end };
+};
+const bytesFindInRange = (hay, needle, start, end) => {
+  if (needle.length === 0) return start;
+  const limit = end - needle.length;
+  for (let i = start; i <= limit; i += 1) {
+    let ok = true;
+    for (let j = 0; j < needle.length; j += 1) {
+      if (hay[i + j] !== needle[j]) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) return i;
+  }
+  return -1;
+};
+const bytesStartsWithInRange = (hay, needle, start, end) => {
+  const len = end - start;
+  if (needle.length > len) return false;
+  for (let i = 0; i < needle.length; i += 1) {
+    if (hay[start + i] !== needle[i]) return false;
+  }
+  return true;
+};
+const bytesEndsWithInRange = (hay, needle, start, end) => {
+  const len = end - start;
+  if (needle.length > len) return false;
+  const offset = end - needle.length;
+  for (let i = 0; i < needle.length; i += 1) {
+    if (hay[offset + i] !== needle[i]) return false;
+  }
+  return true;
+};
+const bytesReplaceLimited = (hay, needle, repl, count) => {
+  if (count === 0) return hay.slice();
+  if (needle.length === 0) {
+    const out = [];
+    let remaining = count;
+    if (remaining < 0) remaining = hay.length + 1;
+    if (remaining > 0) {
+      for (const b of repl) out.push(b);
+      remaining -= 1;
+    }
+    for (const b of hay) {
+      out.push(b);
+      if (remaining > 0) {
+        for (const rb of repl) out.push(rb);
+        remaining -= 1;
+      }
+    }
+    return Uint8Array.from(out);
+  }
+  let remaining = count;
+  if (remaining < 0) remaining = Number.MAX_SAFE_INTEGER;
+  const out = [];
+  let i = 0;
+  while (i + needle.length <= hay.length) {
+    let match = true;
+    for (let j = 0; j < needle.length; j += 1) {
+      if (hay[i + j] !== needle[j]) {
+        match = false;
+        break;
+      }
+    }
+    if (match && remaining > 0) {
+      for (const b of repl) out.push(b);
+      remaining -= 1;
+      i += needle.length;
+    } else {
+      out.push(hay[i]);
+      i += 1;
+    }
+  }
+  for (; i < hay.length; i += 1) out.push(hay[i]);
+  return Uint8Array.from(out);
 };
 const normalizeSliceIndices = (len, startBits, stopBits, stepBits) => {
   const step = decodeSliceStep(stepBits);
@@ -285,6 +453,13 @@ const notImplementedSentinel = () => {
   return notImplementedBits;
 };
 let anextDefaultPollIdx = null;
+let generatorSendMethodIdx = null;
+let generatorThrowMethodIdx = null;
+let generatorCloseMethodIdx = null;
+let generatorIterMethodIdx = null;
+let generatorNextMethodIdx = null;
+const generatorMethodBits = new Map();
+const tableFuncCache = new Map();
 const normalizePtrBits = (val) => {
   if (val === 0n) return val;
   if (isPtr(val)) return val;
@@ -427,16 +602,49 @@ const getInstanceAttrMap = (objBits) => {
   }
   return attrs;
 };
+const callAsyncFunction = (funcBits, func, args) => {
+  const payload = [];
+  if (func.closure && func.closure !== 0n && isPtr(func.closure)) {
+    payload.push(func.closure);
+  }
+  payload.push(...args);
+  let payloadBytes = payload.length * 8;
+  const sizeBits = lookupAttr(funcBits, '__molt_closure_size__');
+  if (sizeBits !== undefined && isIntLike(sizeBits)) {
+    const size = Number(unboxIntLike(sizeBits));
+    if (size > payloadBytes) {
+      payloadBytes = size;
+    }
+  }
+  const res = baseImports.alloc(payloadBytes);
+  if (isNone(res)) return res;
+  if (!memory) return boxNone();
+  const addr = ptrAddr(res);
+  const view = new DataView(memory.buffer);
+  for (let i = 0; i < payload.length; i += 1) {
+    view.setBigInt64(addr + i * 8, payload[i], true);
+  }
+  view.setUint32(addr - HEADER_POLL_FN_OFFSET, func.idx, true);
+  view.setBigInt64(addr - HEADER_STATE_OFFSET, 0n, true);
+  return res;
+};
+const getTableFunc = (idx) => {
+  if ((idx >>> 31) === 1) {
+    return hostTable[idx & HOST_TABLE_MASK] ?? null;
+  }
+  if (!table) return null;
+  return table.get(idx);
+};
 const callFunctionBits = (funcBits, args) => {
   const func = getFunction(funcBits);
-  if (!func || !table) {
+  if (!func) {
     throw new Error('TypeError: call expects function object');
   }
-  const fn = table.get(func.idx);
+  const fn = getTableFunc(func.idx);
   if (!fn) {
     throw new Error('TypeError: call expects function object');
   }
-  if (func.closure && func.closure !== 0n) {
+  if (func.closure && func.closure !== 0n && isPtr(func.closure)) {
     return fn(func.closure, ...args);
   }
   return fn(...args);
@@ -505,14 +713,14 @@ const callableArity = (callableBits) => {
   const bound = getBoundMethod(callableBits);
   if (bound) {
     const func = getFunction(bound.func);
-    if (func && table) {
-      const fn = table.get(func.idx);
+    if (func) {
+      const fn = getTableFunc(func.idx);
       if (fn) return fn.length;
     }
   }
   const func = getFunction(callableBits);
-  if (func && table) {
-    const fn = table.get(func.idx);
+  if (func) {
+    const fn = getTableFunc(func.idx);
     if (fn) return fn.length;
   }
   return 0;
@@ -601,19 +809,435 @@ const collectIterableValues = (bits, errMsg) => {
   }
   return out;
 };
-const memoryviewBytes = (view) => {
+const MEMORYVIEW_LONG_SIZE = 4;
+const MEMORYVIEW_SIZE_T_SIZE = 4;
+const MEMORYVIEW_PTR_SIZE = 4;
+const memoryviewFormatFromStr = (formatStr) => {
+  if (!formatStr) return null;
+  let code = null;
+  if (formatStr.length === 1) {
+    code = formatStr[0];
+  } else if (formatStr.length === 2 && formatStr[0] === '@') {
+    code = formatStr[1];
+  } else {
+    return null;
+  }
+  switch (code) {
+    case 'b':
+      return { code, itemsize: 1, kind: 'signed' };
+    case 'B':
+      return { code, itemsize: 1, kind: 'unsigned' };
+    case 'h':
+      return { code, itemsize: 2, kind: 'signed' };
+    case 'H':
+      return { code, itemsize: 2, kind: 'unsigned' };
+    case 'i':
+      return { code, itemsize: 4, kind: 'signed' };
+    case 'I':
+      return { code, itemsize: 4, kind: 'unsigned' };
+    case 'l':
+      return { code, itemsize: MEMORYVIEW_LONG_SIZE, kind: 'signed' };
+    case 'L':
+      return { code, itemsize: MEMORYVIEW_LONG_SIZE, kind: 'unsigned' };
+    case 'q':
+      return { code, itemsize: 8, kind: 'signed' };
+    case 'Q':
+      return { code, itemsize: 8, kind: 'unsigned' };
+    case 'n':
+      return { code, itemsize: MEMORYVIEW_SIZE_T_SIZE, kind: 'signed' };
+    case 'N':
+      return { code, itemsize: MEMORYVIEW_SIZE_T_SIZE, kind: 'unsigned' };
+    case 'P':
+      return { code, itemsize: MEMORYVIEW_PTR_SIZE, kind: 'unsigned' };
+    case 'f':
+      return { code, itemsize: 4, kind: 'float' };
+    case 'd':
+      return { code, itemsize: 8, kind: 'float' };
+    case '?':
+      return { code, itemsize: 1, kind: 'bool' };
+    case 'c':
+      return { code, itemsize: 1, kind: 'char' };
+    default:
+      return null;
+  }
+};
+const memoryviewFormatFromBits = (bits) => {
+  const format = getStrObj(bits);
+  if (format === null) return null;
+  return memoryviewFormatFromStr(format);
+};
+const memoryviewShape = (view) => {
+  if (Array.isArray(view.shape)) return view.shape;
+  const ndim = view.ndim ?? 1;
+  if (ndim === 0) return [];
+  return [view.len ?? 0];
+};
+const memoryviewStrides = (view) => {
+  if (Array.isArray(view.strides)) return view.strides;
+  const ndim = view.ndim ?? 1;
+  if (ndim === 0) return [];
+  return [view.stride ?? view.itemsize];
+};
+const memoryviewShapeProduct = (shape) => {
+  let total = 1n;
+  for (const dim of shape) {
+    if (dim < 0) return null;
+    total *= BigInt(dim);
+  }
+  return total;
+};
+const stringCountFromChars = (hayChars, needleChars) => {
+  if (needleChars.length === 0) return hayChars.length + 1;
+  let count = 0;
+  let idx = 0;
+  while (idx + needleChars.length <= hayChars.length) {
+    let match = true;
+    for (let j = 0; j < needleChars.length; j += 1) {
+      if (hayChars[idx + j] !== needleChars[j]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) {
+      count += 1;
+      idx += needleChars.length;
+    } else {
+      idx += 1;
+    }
+  }
+  return count;
+};
+const stringStripChars = (hay, chars) => {
+  if (chars === '') return hay;
+  const hayChars = Array.from(hay);
+  const stripSet = new Set(Array.from(chars));
+  let start = 0;
+  while (start < hayChars.length && stripSet.has(hayChars[start])) {
+    start += 1;
+  }
+  let end = hayChars.length;
+  while (end > start && stripSet.has(hayChars[end - 1])) {
+    end -= 1;
+  }
+  return hayChars.slice(start, end).join('');
+};
+const splitMaxsplitFromBits = (bits) => {
+  const errMsg = `'${typeName(bits)}' object cannot be interpreted as an integer`;
+  const value = indexBigIntFromBits(bits, errMsg);
+  if (value === null) return null;
+  if (value < 0n) return -1;
+  const maxSafe = BigInt(Number.MAX_SAFE_INTEGER);
+  if (value > maxSafe) return Number.MAX_SAFE_INTEGER;
+  return Number(value);
+};
+const isWhitespaceChar = (ch) => /\s/u.test(ch);
+const stringSplitWhitespaceMax = (hay, maxsplit) => {
+  const chars = Array.from(hay);
+  const out = [];
+  let idx = 0;
+  while (idx < chars.length && isWhitespaceChar(chars[idx])) {
+    idx += 1;
+  }
+  if (idx >= chars.length) return out;
+  if (maxsplit === 0) {
+    out.push(chars.slice(idx).join(''));
+    return out;
+  }
+  const limit = maxsplit < 0 ? Number.MAX_SAFE_INTEGER : maxsplit;
+  let splits = 0;
+  while (idx < chars.length && splits < limit) {
+    const start = idx;
+    while (idx < chars.length && !isWhitespaceChar(chars[idx])) {
+      idx += 1;
+    }
+    out.push(chars.slice(start, idx).join(''));
+    while (idx < chars.length && isWhitespaceChar(chars[idx])) {
+      idx += 1;
+    }
+    splits += 1;
+  }
+  if (idx < chars.length) {
+    out.push(chars.slice(idx).join(''));
+  }
+  return out;
+};
+const stringSplitSepMax = (hay, needle, maxsplit) => {
+  const hayChars = Array.from(hay);
+  const needleChars = Array.from(needle);
+  if (needleChars.length === 0) {
+    throw new Error('ValueError: empty separator');
+  }
+  if (maxsplit === 0) return [hay];
+  const limit = maxsplit < 0 ? Number.MAX_SAFE_INTEGER : maxsplit;
+  const out = [];
+  let start = 0;
+  let idx = 0;
+  let splits = 0;
+  while (idx + needleChars.length <= hayChars.length && splits < limit) {
+    let match = true;
+    for (let j = 0; j < needleChars.length; j += 1) {
+      if (hayChars[idx + j] !== needleChars[j]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) {
+      out.push(hayChars.slice(start, idx).join(''));
+      idx += needleChars.length;
+      start = idx;
+      splits += 1;
+    } else {
+      idx += 1;
+    }
+  }
+  out.push(hayChars.slice(start).join(''));
+  return out;
+};
+const isAsciiWhitespace = (byte) =>
+  byte === 9 || byte === 10 || byte === 11 || byte === 12 || byte === 13 || byte === 32;
+const bytesSplitWhitespaceMax = (hay, maxsplit) => {
+  const out = [];
+  let idx = 0;
+  while (idx < hay.length && isAsciiWhitespace(hay[idx])) {
+    idx += 1;
+  }
+  if (idx >= hay.length) return out;
+  if (maxsplit === 0) {
+    out.push(hay.slice(idx));
+    return out;
+  }
+  const limit = maxsplit < 0 ? Number.MAX_SAFE_INTEGER : maxsplit;
+  let splits = 0;
+  while (idx < hay.length && splits < limit) {
+    const start = idx;
+    while (idx < hay.length && !isAsciiWhitespace(hay[idx])) {
+      idx += 1;
+    }
+    out.push(hay.slice(start, idx));
+    while (idx < hay.length && isAsciiWhitespace(hay[idx])) {
+      idx += 1;
+    }
+    splits += 1;
+  }
+  if (idx < hay.length) {
+    out.push(hay.slice(idx));
+  }
+  return out;
+};
+const bytesSplitSepMax = (hay, needle, maxsplit) => {
+  if (needle.length === 0) {
+    throw new Error('ValueError: empty separator');
+  }
+  if (maxsplit === 0) return [hay.slice()];
+  const limit = maxsplit < 0 ? Number.MAX_SAFE_INTEGER : maxsplit;
+  const out = [];
+  let start = 0;
+  let idx = 0;
+  let splits = 0;
+  while (idx + needle.length <= hay.length && splits < limit) {
+    let match = true;
+    for (let j = 0; j < needle.length; j += 1) {
+      if (hay[idx + j] !== needle[j]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) {
+      out.push(hay.slice(start, idx));
+      idx += needle.length;
+      start = idx;
+      splits += 1;
+    } else {
+      idx += 1;
+    }
+  }
+  out.push(hay.slice(start));
+  return out;
+};
+const memoryviewNbytesBig = (view) => {
+  const shape = memoryviewShape(view);
+  const product = memoryviewShapeProduct(shape);
+  if (product === null) return null;
+  return product * BigInt(view.itemsize);
+};
+const memoryviewNbytes = (view) => {
+  const total = memoryviewNbytesBig(view);
+  if (total === null) return null;
+  if (total > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+  return Number(total);
+};
+const memoryviewIsCContiguous = (shape, strides, itemsize) => {
+  if (shape.length !== strides.length) return false;
+  let expected = itemsize;
+  for (let idx = shape.length - 1; idx >= 0; idx -= 1) {
+    const dim = shape[idx];
+    const stride = strides[idx];
+    if (dim > 1 && stride !== expected) return false;
+    expected *= Math.max(1, dim);
+  }
+  return true;
+};
+const memoryviewIsCContiguousView = (view) =>
+  memoryviewIsCContiguous(memoryviewShape(view), memoryviewStrides(view), view.itemsize);
+const memoryviewCollectBytes = (view) => {
   const owner = getBytes(view.ownerBits) || getBytearray(view.ownerBits);
   if (!owner) return null;
   const data = owner.data;
+  const shape = memoryviewShape(view);
+  const strides = memoryviewStrides(view);
+  if (shape.length !== strides.length) return null;
+  const nbytes = memoryviewNbytes(view);
+  if (nbytes === null) return null;
+  const offset = view.offset;
   const out = [];
-  let pos = view.offset;
-  const stride = view.stride;
-  for (let i = 0; i < view.len; i++) {
-    if (pos < 0 || pos >= data.length) return null;
-    out.push(data[pos]);
-    pos += stride;
+  if (memoryviewIsCContiguous(shape, strides, view.itemsize)) {
+    const start = offset;
+    const end = offset + nbytes;
+    if (start < 0 || end < 0 || end > data.length) return null;
+    for (let i = start; i < end; i += 1) {
+      out.push(data[i]);
+    }
+    return out;
+  }
+  const total = memoryviewShapeProduct(shape);
+  if (total === null) return null;
+  const totalCount = Number(total);
+  const indices = new Array(shape.length).fill(0);
+  for (let count = 0; count < totalCount; count += 1) {
+    let pos = offset;
+    for (let axis = 0; axis < shape.length; axis += 1) {
+      pos += indices[axis] * strides[axis];
+    }
+    if (pos < 0 || pos + view.itemsize > data.length) return null;
+    for (let i = 0; i < view.itemsize; i += 1) {
+      out.push(data[pos + i]);
+    }
+    for (let axis = shape.length - 1; axis >= 0; axis -= 1) {
+      indices[axis] += 1;
+      if (indices[axis] < shape[axis]) break;
+      indices[axis] = 0;
+    }
   }
   return out;
+};
+const memoryviewBytes = (view) => memoryviewCollectBytes(view);
+const memoryviewReadScalar = (data, offset, fmt) => {
+  if (offset < 0 || offset + fmt.itemsize > data.length) return null;
+  if (fmt.kind === 'char') {
+    return boxPtr({ type: 'bytes', data: Uint8Array.from([data[offset]]) });
+  }
+  if (fmt.kind === 'bool') {
+    return boxBool(data[offset] !== 0);
+  }
+  const buf = new ArrayBuffer(fmt.itemsize);
+  const view = new DataView(buf);
+  for (let i = 0; i < fmt.itemsize; i += 1) {
+    view.setUint8(i, data[offset + i]);
+  }
+  if (fmt.kind === 'float') {
+    const num = fmt.itemsize === 4 ? view.getFloat32(0, true) : view.getFloat64(0, true);
+    return boxFloat(num);
+  }
+  if (fmt.kind === 'signed') {
+    let value = 0n;
+    if (fmt.itemsize === 1) value = BigInt(view.getInt8(0));
+    else if (fmt.itemsize === 2) value = BigInt(view.getInt16(0, true));
+    else if (fmt.itemsize === 4) value = BigInt(view.getInt32(0, true));
+    else if (fmt.itemsize === 8) value = view.getBigInt64(0, true);
+    else return null;
+    return boxIntOrBigint(value);
+  }
+  if (fmt.kind === 'unsigned') {
+    let value = 0n;
+    if (fmt.itemsize === 1) value = BigInt(view.getUint8(0));
+    else if (fmt.itemsize === 2) value = BigInt(view.getUint16(0, true));
+    else if (fmt.itemsize === 4) value = BigInt(view.getUint32(0, true));
+    else if (fmt.itemsize === 8) value = view.getBigUint64(0, true);
+    else return null;
+    return boxIntOrBigint(value);
+  }
+  return null;
+};
+const memoryviewWriteScalar = (data, offset, fmt, valBits) => {
+  if (offset < 0 || offset + fmt.itemsize > data.length) return null;
+  if (fmt.kind === 'char') {
+    const bytes = getBytes(valBits);
+    if (!bytes) {
+      throw new Error(`TypeError: memoryview: invalid type for format '${fmt.code}'`);
+    }
+    if (bytes.data.length !== 1) {
+      throw new Error(`ValueError: memoryview: invalid value for format '${fmt.code}'`);
+    }
+    data[offset] = bytes.data[0];
+    return true;
+  }
+  if (fmt.kind === 'bool') {
+    data[offset] = isTruthyBits(valBits) ? 1 : 0;
+    return true;
+  }
+  if (fmt.kind === 'float') {
+    let num = numberFromVal(valBits);
+    if (num === null) {
+      const obj = getObj(valBits);
+      if (obj && obj.type === 'bigint') {
+        num = Number(obj.value);
+      }
+    }
+    if (num === null) {
+      throw new Error(`TypeError: memoryview: invalid type for format '${fmt.code}'`);
+    }
+    const buf = new ArrayBuffer(fmt.itemsize);
+    const view = new DataView(buf);
+    if (fmt.itemsize === 4) view.setFloat32(0, num, true);
+    else if (fmt.itemsize === 8) view.setFloat64(0, num, true);
+    else return null;
+    for (let i = 0; i < fmt.itemsize; i += 1) {
+      data[offset + i] = view.getUint8(i);
+    }
+    return true;
+  }
+  const errMsg = `memoryview: invalid type for format '${fmt.code}'`;
+  const value = indexBigIntFromBits(valBits, errMsg);
+  if (value === null) return null;
+  const bits = BigInt(fmt.itemsize * 8);
+  let min = 0n;
+  let max = 0n;
+  if (fmt.kind === 'signed') {
+    const limit = 1n << (bits - 1n);
+    min = -limit;
+    max = limit - 1n;
+  } else if (fmt.kind === 'unsigned') {
+    min = 0n;
+    max = (1n << bits) - 1n;
+  } else {
+    return null;
+  }
+  if (value < min || value > max) {
+    throw new Error(`ValueError: memoryview: invalid value for format '${fmt.code}'`);
+  }
+  const buf = new ArrayBuffer(fmt.itemsize);
+  const view = new DataView(buf);
+  if (fmt.kind === 'signed') {
+    if (fmt.itemsize === 1) view.setInt8(0, Number(value));
+    else if (fmt.itemsize === 2) view.setInt16(0, Number(value), true);
+    else if (fmt.itemsize === 4) view.setInt32(0, Number(value), true);
+    else if (fmt.itemsize === 8) view.setBigInt64(0, value, true);
+    else return null;
+  } else if (fmt.itemsize === 1) {
+    view.setUint8(0, Number(value));
+  } else if (fmt.itemsize === 2) {
+    view.setUint16(0, Number(value), true);
+  } else if (fmt.itemsize === 4) {
+    view.setUint32(0, Number(value), true);
+  } else if (fmt.itemsize === 8) {
+    view.setBigUint64(0, value, true);
+  } else {
+    return null;
+  }
+  for (let i = 0; i < fmt.itemsize; i += 1) {
+    data[offset + i] = view.getUint8(i);
+  }
+  return true;
 };
 const collectBytearrayAssignBytes = (bits) => {
   const bytes = getBytes(bits);
@@ -656,13 +1280,6 @@ const collectMemoryviewAssignBytes = (bits) => {
   const view = getMemoryview(bits);
   if (view) return memoryviewBytes(view);
   throw new Error(`TypeError: a bytes-like object is required, not '${typeName(bits)}'`);
-};
-const memoryviewItemByte = (valBits) => {
-  if (isIntLike(valBits)) {
-    const value = Number(unboxIntLike(valBits));
-    if (value >= 0 && value <= 255) return value;
-  }
-  throw new Error('TypeError: memoryview item must be int 0-255');
 };
 const compareTypeError = (op, left, right) => {
   throw new Error(
@@ -824,6 +1441,49 @@ const compareKeys = (left, right, op) => {
   if (outcome.kind === 'error') return null;
   compareTypeError(op, left, right);
   return 0;
+};
+const heapLt = (left, right) => {
+  const ordering = compareKeys(left, right, '<');
+  if (ordering === null) return null;
+  return ordering < 0;
+};
+const heapSiftDown = (heap, startpos, pos) => {
+  const newitem = heap[pos];
+  while (pos > startpos) {
+    const parentpos = (pos - 1) >> 1;
+    const parent = heap[parentpos];
+    const lt = heapLt(newitem, parent);
+    if (lt === null) return null;
+    if (lt) {
+      heap[pos] = parent;
+      pos = parentpos;
+      continue;
+    }
+    break;
+  }
+  heap[pos] = newitem;
+  return true;
+};
+const heapSiftUp = (heap, pos) => {
+  const endpos = heap.length;
+  const startpos = pos;
+  const newitem = heap[pos];
+  let childpos = 2 * pos + 1;
+  while (childpos < endpos) {
+    const rightpos = childpos + 1;
+    if (rightpos < endpos) {
+      const lt = heapLt(heap[childpos], heap[rightpos]);
+      if (lt === null) return null;
+      if (!lt) {
+        childpos = rightpos;
+      }
+    }
+    heap[pos] = heap[childpos];
+    pos = childpos;
+    childpos = 2 * pos + 1;
+  }
+  heap[pos] = newitem;
+  return heapSiftDown(heap, startpos, pos);
 };
 const formatFloat = (val) => {
   if (Number.isNaN(val)) return 'nan';
@@ -1404,6 +2064,13 @@ const lookupExceptionAttr = (exc, name) => {
       return exc.contextBits;
     case '__suppress_context__':
       return exc.suppressBits;
+    case '__traceback__':
+      return exc.traceBits ?? boxNone();
+    case 'value':
+      if (getStr(exc.kindBits) === 'StopIteration') {
+        return exc.valueBits ?? boxNone();
+      }
+      return undefined;
     default:
       return undefined;
   }
@@ -1441,6 +2108,13 @@ const lookupClassAttr = (classBits, name, instanceBits = null, startAfter = null
       }
       return attrVal;
     }
+    const builtinBits = getBuiltinMethodBits(currentBits, name);
+    if (!isNone(builtinBits)) {
+      if (instanceBits && getFunction(builtinBits)) {
+        return makeBoundMethod(builtinBits, instanceBits);
+      }
+      return builtinBits;
+    }
   }
   return undefined;
 };
@@ -1469,6 +2143,68 @@ const lookupAttr = (objBits, name) => {
   if (func && func.attrs && func.attrs.has(name)) {
     return func.attrs.get(name);
   }
+  const obj = getObj(objBits);
+  if (obj && obj.type === 'memoryview') {
+    if (name === 'format') return obj.formatBits ?? boxNone();
+    if (name === 'itemsize') return boxInt(obj.itemsize);
+    if (name === 'ndim') return boxInt(obj.ndim ?? memoryviewShape(obj).length);
+    if (name === 'readonly') return boxBool(!!obj.readonly);
+    if (name === 'shape') {
+      const shape = memoryviewShape(obj);
+      return tupleFromArray(shape.map((dim) => boxIntOrBigint(BigInt(dim))));
+    }
+    if (name === 'strides') {
+      const strides = memoryviewStrides(obj);
+      return tupleFromArray(strides.map((stride) => boxIntOrBigint(BigInt(stride))));
+    }
+    if (name === 'nbytes') {
+      const nbytes = memoryviewNbytesBig(obj);
+      if (nbytes === null) return boxNone();
+      return boxIntOrBigint(nbytes);
+    }
+  }
+  if (isGenerator(objBits) && memory) {
+    const addr = ptrAddr(objBits);
+    const view = new DataView(memory.buffer);
+    const closedBits = view.getBigInt64(addr + GEN_CLOSED_OFFSET, true);
+    const closed = isTag(closedBits, TAG_BOOL) && (closedBits & 1n) === 1n;
+    if (name === 'gi_running') {
+      return boxBool(generatorIsRunning(view, addr));
+    }
+    if (name === 'gi_frame') {
+      if (closed) return boxNone();
+      const frameBits = generatorFrameBits(view, addr);
+      return isNone(frameBits) ? boxNone() : frameBits;
+    }
+    if (name === 'gi_yieldfrom') {
+      if (closed) return boxNone();
+      const yieldBits = generatorYieldFromBits(view, addr);
+      return isNone(yieldBits) ? boxNone() : yieldBits;
+    }
+    if (name === 'gi_code') {
+      return boxNone();
+    }
+    const funcBits = getGeneratorMethodBits(name);
+    if (!isNone(funcBits)) {
+      return makeBoundMethod(funcBits, objBits);
+    }
+  }
+  if (
+    obj &&
+    (obj.type === 'list' ||
+      obj.type === 'tuple' ||
+      obj.type === 'dict' ||
+      obj.type === 'str' ||
+      obj.type === 'bytes' ||
+      obj.type === 'bytearray' ||
+      obj.type === 'memoryview' ||
+      obj.type === 'set' ||
+      obj.type === 'frozenset')
+  ) {
+    const typeBits = typeOfBits(objBits);
+    const val = lookupClassAttr(typeBits, name, objBits);
+    if (val !== undefined) return val;
+  }
   if (isPtr(objBits) && !heap.has(objBits & POINTER_MASK)) {
     const key = ptrAddr(objBits);
     const attrs = instanceAttrs.get(key);
@@ -1477,6 +2213,17 @@ const lookupAttr = (objBits, name) => {
     }
     const clsBits = instanceClasses.get(key);
     if (clsBits !== undefined) {
+      const offsetsBits = lookupClassAttr(clsBits, '__molt_field_offsets__');
+      const offsets = offsetsBits !== undefined ? getDict(offsetsBits) : null;
+      if (offsets && memory) {
+        const nameBits = boxPtr({ type: 'str', value: name });
+        const offsetBits = dictGetValue(offsets, nameBits);
+        if (offsetBits !== null && isIntLike(offsetBits)) {
+          const addr = ptrAddr(objBits) + Number(unboxIntLike(offsetBits));
+          const view = new DataView(memory.buffer);
+          return view.getBigInt64(addr, true);
+        }
+      }
       const val = lookupClassAttr(clsBits, name, objBits);
       if (val !== undefined) return val;
     }
@@ -1537,6 +2284,7 @@ const typeOfBits = (objBits) => {
     if (obj.type === 'frozenset') return getBuiltinType(18);
     if (obj.type === 'memoryview') return getBuiltinType(15);
   }
+  if (isGenerator(objBits)) return getGeneratorType();
   if (isPtr(objBits) && !heap.has(objBits & POINTER_MASK)) {
     const clsBits = instanceClasses.get(ptrAddr(objBits));
     if (clsBits !== undefined) return clsBits;
@@ -1574,6 +2322,14 @@ const setExceptionAttr = (exc, name, valBits) => {
     exc.suppressBits = boxBool(isTruthyBits(valBits));
     return true;
   }
+  if (name === '__traceback__') {
+    exc.traceBits = valBits;
+    return true;
+  }
+  if (name === 'value' && getStr(exc.kindBits) === 'StopIteration') {
+    exc.valueBits = valBits;
+    return true;
+  }
   return false;
 };
 const setAttrValue = (objBits, name, valBits) => {
@@ -1584,6 +2340,18 @@ const setAttrValue = (objBits, name, valBits) => {
   const cls = getClass(objBits);
   if (cls) {
     cls.attrs.set(name, valBits);
+    if (name === '__molt_field_offsets__') {
+      const offsets = getDict(valBits);
+      if (offsets) {
+        const map = new Map();
+        for (const [keyBits, offsetBits] of offsets.entries) {
+          const key = getStrObj(keyBits);
+          if (key === null || !isIntLike(offsetBits)) continue;
+          map.set(key, Number(unboxIntLike(offsetBits)));
+        }
+        classFieldOffsets.set(objBits, map);
+      }
+    }
     bumpClassLayoutVersion(objBits);
     return boxNone();
   }
@@ -1597,6 +2365,20 @@ const setAttrValue = (objBits, name, valBits) => {
   }
   const instanceAttrsMap = getInstanceAttrMap(objBits);
   if (instanceAttrsMap) {
+    const clsBits = instanceClasses.get(ptrAddr(objBits));
+    if (clsBits !== undefined) {
+      const offsetsBits = lookupClassAttr(clsBits, '__molt_field_offsets__');
+      const offsets = offsetsBits !== undefined ? getDict(offsetsBits) : null;
+      if (offsets && memory) {
+        const nameBits = boxPtr({ type: 'str', value: name });
+        const offsetBits = dictGetValue(offsets, nameBits);
+        if (offsetBits !== null && isIntLike(offsetBits)) {
+          const addr = ptrAddr(objBits) + Number(unboxIntLike(offsetBits));
+          const view = new DataView(memory.buffer);
+          view.setBigInt64(addr, valBits, true);
+        }
+      }
+    }
     instanceAttrsMap.set(name, valBits);
     return boxNone();
   }
@@ -1616,6 +2398,14 @@ const delAttrValue = (objBits, name) => {
     }
     if (name === '__suppress_context__') {
       exc.suppressBits = boxBool(false);
+      return boxNone();
+    }
+    if (name === '__traceback__') {
+      exc.traceBits = boxNone();
+      return boxNone();
+    }
+    if (name === 'value' && getStr(exc.kindBits) === 'StopIteration') {
+      exc.valueBits = boxNone();
       return boxNone();
     }
   }
@@ -1648,6 +2438,7 @@ const activeExceptionStack = [];
 const activeExceptionFallback = [];
 const generatorExceptionStacks = new Map();
 let generatorRaise = false;
+let asyncRaise = false;
 const lastNonNone = (stack) => {
   for (let i = stack.length - 1; i >= 0; i -= 1) {
     const bits = stack[i];
@@ -1678,9 +2469,11 @@ const exceptionNew = (kindBits, msgBits) => {
     type: 'exception',
     kindBits,
     msgBits,
+    valueBits: boxNone(),
     causeBits: boxNone(),
     contextBits: boxNone(),
     suppressBits: boxBool(false),
+    traceBits: boxNone(),
   });
 };
 const exceptionSetCause = (excBits, causeBits) => {
@@ -1691,6 +2484,12 @@ const exceptionSetCause = (excBits, causeBits) => {
   }
   exc.causeBits = causeBits;
   exc.suppressBits = boxBool(true);
+  return boxNone();
+};
+const exceptionSetValue = (excBits, valueBits) => {
+  const exc = getException(excBits);
+  if (!exc) return boxNone();
+  exc.valueBits = valueBits;
   return boxNone();
 };
 const exceptionContextSet = (excBits) => {
@@ -1746,12 +2545,59 @@ const raiseException = (excBits) => {
     exc.contextBits = candidate;
   }
   lastException = excBits;
-  if (!exceptionStack.length && !generatorRaise) {
+  if (!exceptionStack.length && !generatorRaise && !asyncRaise) {
     const kind = exc ? getStr(exc.kindBits) : 'Exception';
     const msg = exc ? getStr(exc.msgBits) : '';
     throw new Error(`${kind}: ${msg}`);
   }
   return boxNone();
+};
+const generatorFlags = (view, addr) =>
+  view.getBigInt64(addr - HEADER_FLAGS_OFFSET, true);
+const generatorSetFlag = (view, addr, flag, enabled) => {
+  let flags = generatorFlags(view, addr);
+  if (enabled) {
+    flags |= flag;
+  } else {
+    flags &= ~flag;
+  }
+  view.setBigInt64(addr - HEADER_FLAGS_OFFSET, flags, true);
+};
+const generatorIsRunning = (view, addr) =>
+  (generatorFlags(view, addr) & GEN_FLAG_RUNNING) !== 0n;
+const generatorMarkStarted = (view, addr) =>
+  generatorSetFlag(view, addr, GEN_FLAG_STARTED, true);
+const generatorSetRunning = (view, addr, running) =>
+  generatorSetFlag(view, addr, GEN_FLAG_RUNNING, running);
+const generatorFrameBits = (view, addr) =>
+  view.getBigInt64(addr + GEN_FRAME_OFFSET, true);
+const generatorSetFrameBits = (view, addr, bits) =>
+  view.setBigInt64(addr + GEN_FRAME_OFFSET, bits, true);
+const generatorYieldFromBits = (view, addr) =>
+  view.getBigInt64(addr + GEN_YIELD_FROM_OFFSET, true);
+const generatorSetYieldFromBits = (view, addr, bits) =>
+  view.setBigInt64(addr + GEN_YIELD_FROM_OFFSET, bits, true);
+const generatorClearIntrospection = (view, addr) => {
+  generatorSetYieldFromBits(view, addr, boxNone());
+  generatorSetFrameBits(view, addr, boxNone());
+  generatorSetRunning(view, addr, false);
+};
+const frameNew = (lasti) => {
+  const addr = allocRaw(8);
+  if (!addr) return boxNone();
+  const bits = boxPtrAddr(addr);
+  const attrs = getInstanceAttrMap(bits);
+  if (attrs) {
+    attrs.set('f_lasti', boxInt(BigInt(lasti)));
+  }
+  return bits;
+};
+const frameSetLasti = (frameBits, lasti) => {
+  if (!isPtr(frameBits)) return;
+  const attrs = getInstanceAttrMap(frameBits);
+  if (attrs) {
+    attrs.set('f_lasti', boxInt(BigInt(lasti)));
+  }
 };
 const generatorSend = (gen, sendVal) => {
   if (!isGenerator(gen) || !memory || !table) {
@@ -1759,10 +2605,23 @@ const generatorSend = (gen, sendVal) => {
   }
   const addr = ptrAddr(gen);
   const view = new DataView(memory.buffer);
-  const closedBits = view.getBigInt64(addr + 16, true);
+  const closedBits = view.getBigInt64(addr + GEN_CLOSED_OFFSET, true);
   const closed = isTag(closedBits, TAG_BOOL) && (closedBits & 1n) === 1n;
   if (closed) {
     return tupleFromArray([boxNone(), boxBool(true)]);
+  }
+  if (generatorIsRunning(view, addr)) {
+    throw new Error('ValueError: generator already executing');
+  }
+  const started = (generatorFlags(view, addr) & GEN_FLAG_STARTED) !== 0n;
+  if (!started && !isNone(sendVal)) {
+    throw new Error(
+      "TypeError: can't send non-None value to a just-started generator",
+    );
+  }
+  if (!started) {
+    generatorMarkStarted(view, addr);
+    frameSetLasti(generatorFrameBits(view, addr), 0);
   }
   const callerDepth = exceptionDepth();
   const callerStack = activeExceptionStack.slice();
@@ -1774,24 +2633,28 @@ const generatorSend = (gen, sendVal) => {
   const genStack = generatorExceptionStacks.get(key) || [];
   activeExceptionStack.length = 0;
   activeExceptionStack.push(...genStack);
-  const depthBits = view.getBigInt64(addr + 24, true);
+  const depthBits = view.getBigInt64(addr + GEN_EXC_DEPTH_OFFSET, true);
   const genDepth = isTag(depthBits, TAG_INT) ? Number(unboxInt(depthBits)) : 0;
   exceptionSetDepth(genDepth);
-  view.setBigInt64(addr + 0, sendVal, true);
-  view.setBigInt64(addr + 8, boxNone(), true);
+  view.setBigInt64(addr + GEN_SEND_OFFSET, sendVal, true);
+  view.setBigInt64(addr + GEN_THROW_OFFSET, boxNone(), true);
   const pollIdx = view.getUint32(addr - HEADER_POLL_FN_OFFSET, true);
-  const poll = table.get(pollIdx);
+  const poll = getTableFunc(pollIdx);
   const prevRaise = generatorRaise;
   generatorRaise = true;
-  const res = poll
-    ? poll(gen)
-    : tupleFromArray([boxNone(), boxBool(true)]);
-  generatorRaise = prevRaise;
+  generatorSetRunning(view, addr, true);
+  let res;
+  try {
+    res = poll ? poll(gen) : tupleFromArray([boxNone(), boxBool(true)]);
+  } finally {
+    generatorRaise = prevRaise;
+    generatorSetRunning(view, addr, false);
+  }
   const pending = exceptionPending() !== 0n;
   const excBits = pending ? exceptionLast() : boxNone();
   if (pending) exceptionClear();
   const newDepth = exceptionDepth();
-  view.setBigInt64(addr + 24, boxInt(newDepth), true);
+  view.setBigInt64(addr + GEN_EXC_DEPTH_OFFSET, boxInt(newDepth), true);
   exceptionSetDepth(newDepth);
   generatorExceptionStacks.set(key, activeExceptionStack.slice());
   activeExceptionStack.length = 0;
@@ -1799,7 +2662,19 @@ const generatorSend = (gen, sendVal) => {
   exceptionSetDepth(callerDepth);
   activeExceptionFallback.pop();
   if (pending) {
+    view.setBigInt64(addr + GEN_CLOSED_OFFSET, boxBool(true), true);
+    generatorClearIntrospection(view, addr);
     return raiseException(excBits);
+  }
+  if (res) {
+    const pair = getTuple(res);
+    if (pair && pair.items.length >= 2) {
+      const doneBits = pair.items[1];
+      if (isTag(doneBits, TAG_BOOL) && (doneBits & 1n) === 1n) {
+        view.setBigInt64(addr + GEN_CLOSED_OFFSET, boxBool(true), true);
+        generatorClearIntrospection(view, addr);
+      }
+    }
   }
   return res;
 };
@@ -1809,10 +2684,17 @@ const generatorThrow = (gen, exc) => {
   }
   const addr = ptrAddr(gen);
   const view = new DataView(memory.buffer);
-  const closedBits = view.getBigInt64(addr + 16, true);
+  const closedBits = view.getBigInt64(addr + GEN_CLOSED_OFFSET, true);
   const closed = isTag(closedBits, TAG_BOOL) && (closedBits & 1n) === 1n;
   if (closed) {
-    return tupleFromArray([boxNone(), boxBool(true)]);
+    return raiseException(exc);
+  }
+  if (generatorIsRunning(view, addr)) {
+    throw new Error('ValueError: generator already executing');
+  }
+  if ((generatorFlags(view, addr) & GEN_FLAG_STARTED) === 0n) {
+    generatorMarkStarted(view, addr);
+    frameSetLasti(generatorFrameBits(view, addr), 0);
   }
   const callerDepth = exceptionDepth();
   const callerStack = activeExceptionStack.slice();
@@ -1824,24 +2706,32 @@ const generatorThrow = (gen, exc) => {
   const genStack = generatorExceptionStacks.get(key) || [];
   activeExceptionStack.length = 0;
   activeExceptionStack.push(...genStack);
-  const depthBits = view.getBigInt64(addr + 24, true);
+  const depthBits = view.getBigInt64(addr + GEN_EXC_DEPTH_OFFSET, true);
   const genDepth = isTag(depthBits, TAG_INT) ? Number(unboxInt(depthBits)) : 0;
   exceptionSetDepth(genDepth);
-  view.setBigInt64(addr + 8, exc, true);
-  view.setBigInt64(addr + 0, boxNone(), true);
+  view.setBigInt64(addr + GEN_THROW_OFFSET, exc, true);
+  view.setBigInt64(addr + GEN_SEND_OFFSET, boxNone(), true);
   const pollIdx = view.getUint32(addr - HEADER_POLL_FN_OFFSET, true);
-  const poll = table.get(pollIdx);
+  const poll = getTableFunc(pollIdx);
+  if (!poll) {
+    activeExceptionFallback.pop();
+    return raiseException(exc);
+  }
   const prevRaise = generatorRaise;
   generatorRaise = true;
-  const res = poll
-    ? poll(gen)
-    : tupleFromArray([boxNone(), boxBool(true)]);
-  generatorRaise = prevRaise;
+  generatorSetRunning(view, addr, true);
+  let res;
+  try {
+    res = poll(gen);
+  } finally {
+    generatorRaise = prevRaise;
+    generatorSetRunning(view, addr, false);
+  }
   const pending = exceptionPending() !== 0n;
   const excBits = pending ? exceptionLast() : boxNone();
   if (pending) exceptionClear();
   const newDepth = exceptionDepth();
-  view.setBigInt64(addr + 24, boxInt(newDepth), true);
+  view.setBigInt64(addr + GEN_EXC_DEPTH_OFFSET, boxInt(newDepth), true);
   exceptionSetDepth(newDepth);
   generatorExceptionStacks.set(key, activeExceptionStack.slice());
   activeExceptionStack.length = 0;
@@ -1849,7 +2739,19 @@ const generatorThrow = (gen, exc) => {
   exceptionSetDepth(callerDepth);
   activeExceptionFallback.pop();
   if (pending) {
+    view.setBigInt64(addr + GEN_CLOSED_OFFSET, boxBool(true), true);
+    generatorClearIntrospection(view, addr);
     return raiseException(excBits);
+  }
+  if (res) {
+    const pair = getTuple(res);
+    if (pair && pair.items.length >= 2) {
+      const doneBits = pair.items[1];
+      if (isTag(doneBits, TAG_BOOL) && (doneBits & 1n) === 1n) {
+        view.setBigInt64(addr + GEN_CLOSED_OFFSET, boxBool(true), true);
+        generatorClearIntrospection(view, addr);
+      }
+    }
   }
   return res;
 };
@@ -1859,9 +2761,12 @@ const generatorClose = (gen) => {
   }
   const addr = ptrAddr(gen);
   const view = new DataView(memory.buffer);
-  const closedBits = view.getBigInt64(addr + 16, true);
+  const closedBits = view.getBigInt64(addr + GEN_CLOSED_OFFSET, true);
   const closed = isTag(closedBits, TAG_BOOL) && (closedBits & 1n) === 1n;
   if (closed) return boxNone();
+  if (generatorIsRunning(view, addr)) {
+    throw new Error('ValueError: generator already executing');
+  }
   const callerDepth = exceptionDepth();
   const callerStack = activeExceptionStack.slice();
   const callerContext = callerStack.length
@@ -1872,26 +2777,37 @@ const generatorClose = (gen) => {
   const genStack = generatorExceptionStacks.get(key) || [];
   activeExceptionStack.length = 0;
   activeExceptionStack.push(...genStack);
-  const depthBits = view.getBigInt64(addr + 24, true);
+  const depthBits = view.getBigInt64(addr + GEN_EXC_DEPTH_OFFSET, true);
   const genDepth = isTag(depthBits, TAG_INT) ? Number(unboxInt(depthBits)) : 0;
   exceptionSetDepth(genDepth);
   const exc = exceptionNew(
     boxPtr({ type: 'str', value: 'GeneratorExit' }),
     boxPtr({ type: 'str', value: '' }),
   );
-  view.setBigInt64(addr + 8, exc, true);
-  view.setBigInt64(addr + 0, boxNone(), true);
+  view.setBigInt64(addr + GEN_THROW_OFFSET, exc, true);
+  view.setBigInt64(addr + GEN_SEND_OFFSET, boxNone(), true);
   const pollIdx = view.getUint32(addr - HEADER_POLL_FN_OFFSET, true);
-  const poll = table.get(pollIdx);
+  const poll = getTableFunc(pollIdx);
+  if (!poll) {
+    view.setBigInt64(addr + GEN_CLOSED_OFFSET, boxBool(true), true);
+    generatorClearIntrospection(view, addr);
+    return boxNone();
+  }
   const prevRaise = generatorRaise;
   generatorRaise = true;
-  const res = poll ? poll(gen) : null;
-  generatorRaise = prevRaise;
+  generatorSetRunning(view, addr, true);
+  let res;
+  try {
+    res = poll(gen);
+  } finally {
+    generatorRaise = prevRaise;
+    generatorSetRunning(view, addr, false);
+  }
   const pending = exceptionPending() !== 0n;
   const excBits = pending ? exceptionLast() : boxNone();
   if (pending) exceptionClear();
   const newDepth = exceptionDepth();
-  view.setBigInt64(addr + 24, boxInt(newDepth), true);
+  view.setBigInt64(addr + GEN_EXC_DEPTH_OFFSET, boxInt(newDepth), true);
   exceptionSetDepth(newDepth);
   generatorExceptionStacks.set(key, activeExceptionStack.slice());
   activeExceptionStack.length = 0;
@@ -1902,9 +2818,12 @@ const generatorClose = (gen) => {
     const excObj = getException(excBits);
     const isExit = excObj && getStr(excObj.kindBits) === 'GeneratorExit';
     if (isExit) {
-      view.setBigInt64(addr + 16, boxBool(true), true);
+      view.setBigInt64(addr + GEN_CLOSED_OFFSET, boxBool(true), true);
+      generatorClearIntrospection(view, addr);
       return boxNone();
     }
+    view.setBigInt64(addr + GEN_CLOSED_OFFSET, boxBool(true), true);
+    generatorClearIntrospection(view, addr);
     return raiseException(excBits);
   }
   if (res) {
@@ -1921,8 +2840,651 @@ const generatorClose = (gen) => {
       }
     }
   }
-  view.setBigInt64(addr + 16, boxBool(true), true);
+  view.setBigInt64(addr + GEN_CLOSED_OFFSET, boxBool(true), true);
+  generatorClearIntrospection(view, addr);
   return boxNone();
+};
+const generatorPairToValue = (pairBits) => {
+  const pair = getTuple(pairBits);
+  if (!pair || pair.items.length < 2) {
+    throw new Error('TypeError: object is not an iterator');
+  }
+  const valBits = pair.items[0];
+  const doneBits = pair.items[1];
+  if (isTag(doneBits, TAG_BOOL) && (doneBits & 1n) === 1n) {
+    const msgBits = isNone(valBits)
+      ? boxPtr({ type: 'str', value: '' })
+      : baseImports.str_from_obj(valBits);
+    const exc = exceptionNew(
+      boxPtr({ type: 'str', value: 'StopIteration' }),
+      msgBits,
+    );
+    exceptionSetValue(exc, valBits);
+    return raiseException(exc);
+  }
+  return valBits;
+};
+const generatorPairToValueSafe = (pairBits) => {
+  const prevRaise = generatorRaise;
+  generatorRaise = true;
+  try {
+    return generatorPairToValue(pairBits);
+  } finally {
+    generatorRaise = prevRaise;
+  }
+};
+const generatorIterMethod = (selfBits) => selfBits;
+const generatorNextMethod = (selfBits) => {
+  const pairBits = generatorSend(selfBits, boxNone());
+  if (exceptionPending() !== 0n) return boxNone();
+  return generatorPairToValueSafe(pairBits);
+};
+const generatorSendMethod = (selfBits, sendVal) => {
+  const pairBits = generatorSend(selfBits, sendVal);
+  if (exceptionPending() !== 0n) return boxNone();
+  return generatorPairToValueSafe(pairBits);
+};
+const generatorThrowMethod = (selfBits, excBits) => {
+  const pairBits = generatorThrow(selfBits, excBits);
+  if (exceptionPending() !== 0n) return boxNone();
+  return generatorPairToValueSafe(pairBits);
+};
+const generatorCloseMethod = (selfBits) => generatorClose(selfBits);
+const wrapTableFunc = (fn, arity) => {
+  if (typeof WebAssembly.Function !== 'function') return fn;
+  const params = new Array(arity).fill('i64');
+  return new WebAssembly.Function({ parameters: params, results: ['i64'] }, fn);
+};
+const getOrAddTableFunc = (fn, arity) => {
+  const cached = tableFuncCache.get(fn);
+  if (cached !== undefined) return cached;
+  let idx;
+  if (typeof WebAssembly.Function === 'function') {
+    if (!table) return null;
+    idx = table.length;
+    table.grow(1);
+    table.set(idx, wrapTableFunc(fn, arity));
+  } else {
+    idx = hostTable.length + HOST_TABLE_FLAG;
+    hostTable.push(fn);
+  }
+  tableFuncCache.set(fn, idx);
+  return idx;
+};
+const getGeneratorMethodBits = (name) => {
+  const cached = generatorMethodBits.get(name);
+  if (cached !== undefined) return cached;
+  let idx = null;
+  let arity = 0;
+  if (name === 'send') {
+    if (generatorSendMethodIdx === null) {
+      generatorSendMethodIdx = getOrAddTableFunc(generatorSendMethod, 2);
+    }
+    idx = generatorSendMethodIdx;
+    arity = 2;
+  } else if (name === 'throw') {
+    if (generatorThrowMethodIdx === null) {
+      generatorThrowMethodIdx = getOrAddTableFunc(generatorThrowMethod, 2);
+    }
+    idx = generatorThrowMethodIdx;
+    arity = 2;
+  } else if (name === 'close') {
+    if (generatorCloseMethodIdx === null) {
+      generatorCloseMethodIdx = getOrAddTableFunc(generatorCloseMethod, 1);
+    }
+    idx = generatorCloseMethodIdx;
+    arity = 1;
+  } else if (name === '__iter__') {
+    if (generatorIterMethodIdx === null) {
+      generatorIterMethodIdx = getOrAddTableFunc(generatorIterMethod, 1);
+    }
+    idx = generatorIterMethodIdx;
+    arity = 1;
+  } else if (name === '__next__') {
+    if (generatorNextMethodIdx === null) {
+      generatorNextMethodIdx = getOrAddTableFunc(generatorNextMethod, 1);
+    }
+    idx = generatorNextMethodIdx;
+    arity = 1;
+  }
+  if (idx === null) return boxNone();
+  const bits = baseImports.func_new(BigInt(idx), BigInt(arity));
+  generatorMethodBits.set(name, bits);
+  return bits;
+};
+const builtinMethodBits = new Map();
+const FUNC_DEFAULT_NONE = 1;
+const FUNC_DEFAULT_DICT_POP = 2;
+const FUNC_DEFAULT_DICT_UPDATE = 3;
+const getBuiltinMethodBits = (classBits, name) => {
+  const cls = getClass(classBits);
+  if (!cls) return boxNone();
+  const className = cls.name;
+  const key = `${className}.${name}`;
+  const cached = builtinMethodBits.get(key);
+  if (cached !== undefined) return cached;
+  let fn = null;
+  let arity = 0;
+  let defaultKind = 0;
+  if (className === 'list') {
+    if (name === 'append') {
+      fn = (selfBits, valBits) => baseImports.list_append(selfBits, valBits);
+      arity = 2;
+    } else if (name === 'extend') {
+      fn = (selfBits, otherBits) => baseImports.list_extend(selfBits, otherBits);
+      arity = 2;
+    } else if (name === 'insert') {
+      fn = (selfBits, idxBits, valBits) =>
+        baseImports.list_insert(selfBits, idxBits, valBits);
+      arity = 3;
+    } else if (name === 'remove') {
+      fn = (selfBits, valBits) => baseImports.list_remove(selfBits, valBits);
+      arity = 2;
+    } else if (name === 'pop') {
+      fn = (selfBits, idxBits) => baseImports.list_pop(selfBits, idxBits);
+      arity = 2;
+    } else if (name === 'clear') {
+      fn = (selfBits) => baseImports.list_clear(selfBits);
+      arity = 1;
+    } else if (name === 'copy') {
+      fn = (selfBits) => baseImports.list_copy(selfBits);
+      arity = 1;
+    } else if (name === 'reverse') {
+      fn = (selfBits) => baseImports.list_reverse(selfBits);
+      arity = 1;
+    } else if (name === 'count') {
+      fn = (selfBits, valBits) => baseImports.list_count(selfBits, valBits);
+      arity = 2;
+    } else if (name === 'index') {
+      fn = (selfBits, valBits, startBits, stopBits) =>
+        baseImports.list_index_range(selfBits, valBits, startBits, stopBits);
+      arity = 4;
+    } else if (name === 'sort') {
+      fn = (selfBits, keyBits, reverseBits) =>
+        baseImports.list_sort(selfBits, keyBits, reverseBits);
+      arity = 3;
+    } else if (name === '__iter__') {
+      fn = (selfBits) => baseImports.iter(selfBits);
+      arity = 1;
+    } else if (name === '__len__') {
+      fn = (selfBits) => baseImports.len(selfBits);
+      arity = 1;
+    } else if (name === '__contains__') {
+      fn = (selfBits, itemBits) => baseImports.contains(selfBits, itemBits);
+      arity = 2;
+    } else if (name === '__reversed__') {
+      fn = (selfBits) => baseImports.reversed_builtin(selfBits);
+      arity = 1;
+    }
+  } else if (className === 'dict') {
+    if (name === 'keys') {
+      fn = (selfBits) => baseImports.dict_keys(selfBits);
+      arity = 1;
+    } else if (name === 'values') {
+      fn = (selfBits) => baseImports.dict_values(selfBits);
+      arity = 1;
+    } else if (name === 'items') {
+      fn = (selfBits) => baseImports.dict_items(selfBits);
+      arity = 1;
+    } else if (name === 'get') {
+      fn = (selfBits, keyBits, defaultBits) =>
+        baseImports.dict_get(selfBits, keyBits, defaultBits);
+      arity = 3;
+      defaultKind = FUNC_DEFAULT_NONE;
+    } else if (name === 'setdefault') {
+      fn = (selfBits, keyBits, defaultBits) =>
+        baseImports.dict_setdefault(selfBits, keyBits, defaultBits);
+      arity = 3;
+      defaultKind = FUNC_DEFAULT_NONE;
+    } else if (name === 'pop') {
+      fn = (selfBits, keyBits, defaultBits, hasDefaultBits) =>
+        baseImports.dict_pop(selfBits, keyBits, defaultBits, hasDefaultBits);
+      arity = 4;
+      defaultKind = FUNC_DEFAULT_DICT_POP;
+    } else if (name === 'update') {
+      fn = (selfBits, otherBits) => baseImports.dict_update(selfBits, otherBits);
+      arity = 2;
+      defaultKind = FUNC_DEFAULT_DICT_UPDATE;
+    } else if (name === 'clear') {
+      fn = (selfBits) => baseImports.dict_clear(selfBits);
+      arity = 1;
+    } else if (name === 'copy') {
+      fn = (selfBits) => baseImports.dict_copy(selfBits);
+      arity = 1;
+    } else if (name === 'popitem') {
+      fn = (selfBits) => baseImports.dict_popitem(selfBits);
+      arity = 1;
+    } else if (name === '__iter__') {
+      fn = (selfBits) => baseImports.iter(selfBits);
+      arity = 1;
+    } else if (name === '__len__') {
+      fn = (selfBits) => baseImports.len(selfBits);
+      arity = 1;
+    } else if (name === '__contains__') {
+      fn = (selfBits, itemBits) => baseImports.contains(selfBits, itemBits);
+      arity = 2;
+    } else if (name === '__reversed__') {
+      fn = (selfBits) => baseImports.reversed_builtin(selfBits);
+      arity = 1;
+    }
+  } else if (className === 'tuple') {
+    if (name === 'count') {
+      fn = (selfBits, valBits) => baseImports.tuple_count(selfBits, valBits);
+      arity = 2;
+    } else if (name === 'index') {
+      fn = (selfBits, valBits) => baseImports.tuple_index(selfBits, valBits);
+      arity = 2;
+    }
+  } else if (className === 'str') {
+    if (name === 'upper') {
+      fn = (selfBits) => baseImports.string_upper(selfBits);
+      arity = 1;
+    } else if (name === 'lower') {
+      fn = (selfBits) => baseImports.string_lower(selfBits);
+      arity = 1;
+    } else if (name === 'strip') {
+      fn = (selfBits, charsBits) => baseImports.string_strip(selfBits, charsBits);
+      arity = 2;
+      defaultKind = FUNC_DEFAULT_NONE;
+    } else if (name === '__iter__') {
+      fn = (selfBits) => baseImports.iter(selfBits);
+      arity = 1;
+    } else if (name === '__len__') {
+      fn = (selfBits) => baseImports.len(selfBits);
+      arity = 1;
+    } else if (name === '__contains__') {
+      fn = (selfBits, itemBits) => baseImports.contains(selfBits, itemBits);
+      arity = 2;
+    }
+  } else if (className === 'bytes') {
+    if (name === '__iter__') {
+      fn = (selfBits) => baseImports.iter(selfBits);
+      arity = 1;
+    } else if (name === '__len__') {
+      fn = (selfBits) => baseImports.len(selfBits);
+      arity = 1;
+    } else if (name === '__contains__') {
+      fn = (selfBits, itemBits) => baseImports.contains(selfBits, itemBits);
+      arity = 2;
+    } else if (name === '__reversed__') {
+      fn = (selfBits) => baseImports.reversed_builtin(selfBits);
+      arity = 1;
+    } else if (name === 'find') {
+      fn = (selfBits, needleBits, startBits, endBits, hasStartBits, hasEndBits) => {
+        const hay = getBytes(selfBits);
+        if (!hay) return boxNone();
+        const needle = getBytes(needleBits) || getBytearray(needleBits);
+        if (!needle) return boxNone();
+        const range = normalizeBytesRange(
+          hay.data.length,
+          startBits,
+          endBits,
+          hasStartBits,
+          hasEndBits,
+          'find() start must be int',
+          'find() end must be int',
+        );
+        if (!range) return boxNone();
+        return boxInt(bytesFindInRange(hay.data, needle.data, range.start, range.end));
+      };
+      arity = 6;
+    } else if (name === 'split') {
+      fn = (selfBits, sepBits) => baseImports.bytes_split(selfBits, sepBits);
+      arity = 2;
+    } else if (name === 'replace') {
+      fn = (selfBits, oldBits, newBits, countBits) => {
+        const hay = getBytes(selfBits);
+        if (!hay) return boxNone();
+        const oldObj = getBytes(oldBits) || getBytearray(oldBits);
+        const newObj = getBytes(newBits) || getBytearray(newBits);
+        if (!oldObj || !newObj) return boxNone();
+        let count = null;
+        if (isIntLike(countBits)) {
+          count = Number(unboxIntLike(countBits));
+        } else {
+          const idx = indexFromBitsWithOverflow(countBits, 'replace() count must be int', null);
+          if (idx === null) return boxNone();
+          count = idx;
+        }
+        const replaced = bytesReplaceLimited(hay.data, oldObj.data, newObj.data, count);
+        return boxPtr({ type: 'bytes', data: replaced });
+      };
+      arity = 4;
+    } else if (name === 'startswith') {
+      fn = (selfBits, needleBits, startBits, endBits, hasStartBits, hasEndBits) => {
+        const hay = getBytes(selfBits);
+        if (!hay) return boxNone();
+        const needle = getBytes(needleBits) || getBytearray(needleBits);
+        if (!needle) return boxNone();
+        const range = normalizeBytesRange(
+          hay.data.length,
+          startBits,
+          endBits,
+          hasStartBits,
+          hasEndBits,
+          'startswith() start must be int',
+          'startswith() end must be int',
+        );
+        if (!range) return boxNone();
+        return boxBool(
+          bytesStartsWithInRange(hay.data, needle.data, range.start, range.end),
+        );
+      };
+      arity = 6;
+    } else if (name === 'endswith') {
+      fn = (selfBits, needleBits, startBits, endBits, hasStartBits, hasEndBits) => {
+        const hay = getBytes(selfBits);
+        if (!hay) return boxNone();
+        const needle = getBytes(needleBits) || getBytearray(needleBits);
+        if (!needle) return boxNone();
+        const range = normalizeBytesRange(
+          hay.data.length,
+          startBits,
+          endBits,
+          hasStartBits,
+          hasEndBits,
+          'endswith() start must be int',
+          'endswith() end must be int',
+        );
+        if (!range) return boxNone();
+        return boxBool(
+          bytesEndsWithInRange(hay.data, needle.data, range.start, range.end),
+        );
+      };
+      arity = 6;
+    } else if (name === 'count') {
+      fn = (selfBits, needleBits, startBits, endBits, hasStartBits, hasEndBits) =>
+        baseImports.bytes_count_slice(
+          selfBits,
+          needleBits,
+          startBits,
+          endBits,
+          hasStartBits,
+          hasEndBits,
+        );
+      arity = 6;
+    }
+  } else if (className === 'bytearray') {
+    if (name === '__iter__') {
+      fn = (selfBits) => baseImports.iter(selfBits);
+      arity = 1;
+    } else if (name === '__len__') {
+      fn = (selfBits) => baseImports.len(selfBits);
+      arity = 1;
+    } else if (name === '__contains__') {
+      fn = (selfBits, itemBits) => baseImports.contains(selfBits, itemBits);
+      arity = 2;
+    } else if (name === '__reversed__') {
+      fn = (selfBits) => baseImports.reversed_builtin(selfBits);
+      arity = 1;
+    } else if (name === 'find') {
+      fn = (selfBits, needleBits, startBits, endBits, hasStartBits, hasEndBits) => {
+        const hay = getBytearray(selfBits);
+        if (!hay) return boxNone();
+        const needle = getBytes(needleBits) || getBytearray(needleBits);
+        if (!needle) return boxNone();
+        const range = normalizeBytesRange(
+          hay.data.length,
+          startBits,
+          endBits,
+          hasStartBits,
+          hasEndBits,
+          'find() start must be int',
+          'find() end must be int',
+        );
+        if (!range) return boxNone();
+        return boxInt(bytesFindInRange(hay.data, needle.data, range.start, range.end));
+      };
+      arity = 6;
+    } else if (name === 'split') {
+      fn = (selfBits, sepBits) => baseImports.bytearray_split(selfBits, sepBits);
+      arity = 2;
+    } else if (name === 'replace') {
+      fn = (selfBits, oldBits, newBits, countBits) => {
+        const hay = getBytearray(selfBits);
+        if (!hay) return boxNone();
+        const oldObj = getBytes(oldBits) || getBytearray(oldBits);
+        const newObj = getBytes(newBits) || getBytearray(newBits);
+        if (!oldObj || !newObj) return boxNone();
+        let count = null;
+        if (isIntLike(countBits)) {
+          count = Number(unboxIntLike(countBits));
+        } else {
+          const idx = indexFromBitsWithOverflow(countBits, 'replace() count must be int', null);
+          if (idx === null) return boxNone();
+          count = idx;
+        }
+        const replaced = bytesReplaceLimited(hay.data, oldObj.data, newObj.data, count);
+        return boxPtr({ type: 'bytearray', data: replaced });
+      };
+      arity = 4;
+    } else if (name === 'startswith') {
+      fn = (selfBits, needleBits, startBits, endBits, hasStartBits, hasEndBits) => {
+        const hay = getBytearray(selfBits);
+        if (!hay) return boxNone();
+        const needle = getBytes(needleBits) || getBytearray(needleBits);
+        if (!needle) return boxNone();
+        const range = normalizeBytesRange(
+          hay.data.length,
+          startBits,
+          endBits,
+          hasStartBits,
+          hasEndBits,
+          'startswith() start must be int',
+          'startswith() end must be int',
+        );
+        if (!range) return boxNone();
+        return boxBool(
+          bytesStartsWithInRange(hay.data, needle.data, range.start, range.end),
+        );
+      };
+      arity = 6;
+    } else if (name === 'endswith') {
+      fn = (selfBits, needleBits, startBits, endBits, hasStartBits, hasEndBits) => {
+        const hay = getBytearray(selfBits);
+        if (!hay) return boxNone();
+        const needle = getBytes(needleBits) || getBytearray(needleBits);
+        if (!needle) return boxNone();
+        const range = normalizeBytesRange(
+          hay.data.length,
+          startBits,
+          endBits,
+          hasStartBits,
+          hasEndBits,
+          'endswith() start must be int',
+          'endswith() end must be int',
+        );
+        if (!range) return boxNone();
+        return boxBool(
+          bytesEndsWithInRange(hay.data, needle.data, range.start, range.end),
+        );
+      };
+      arity = 6;
+    } else if (name === 'count') {
+      fn = (selfBits, needleBits, startBits, endBits, hasStartBits, hasEndBits) =>
+        baseImports.bytearray_count_slice(
+          selfBits,
+          needleBits,
+          startBits,
+          endBits,
+          hasStartBits,
+          hasEndBits,
+        );
+      arity = 6;
+    }
+  } else if (className === 'memoryview') {
+    if (name === 'tobytes') {
+      fn = (selfBits) => baseImports.memoryview_tobytes(selfBits);
+      arity = 1;
+    } else if (name === 'cast') {
+      fn = (selfBits, formatBits, shapeBits, hasShapeBits) =>
+        baseImports.memoryview_cast(selfBits, formatBits, shapeBits, hasShapeBits);
+      arity = 4;
+    }
+  }
+  if (!fn) return boxNone();
+  const idx = getOrAddTableFunc(fn, arity);
+  if (idx === null) return boxNone();
+  const bits = baseImports.func_new(BigInt(idx), BigInt(arity));
+  const func = getFunction(bits);
+  if (func) {
+    func.builtinName = key;
+    if (defaultKind) {
+      func.defaultKind = defaultKind;
+    }
+  }
+  builtinMethodBits.set(key, bits);
+  return bits;
+};
+const bindBuiltinCall = (funcBits, func, args) => {
+  const out = [...args.pos];
+  const name = func && typeof func.builtinName === 'string' ? func.builtinName : null;
+  if (args.kwNames.length) {
+    if (name === 'memoryview.cast') {
+      if (args.kwNames.length !== 1) {
+        throw new Error('TypeError: cast() takes at most 2 arguments');
+      }
+      if (out.length !== 2) {
+        baseImports.call_arity_error(BigInt(2), BigInt(out.length));
+      }
+      const kwName = getStrObj(args.kwNames[0]);
+      if (kwName !== 'shape') {
+        throw new Error(`TypeError: cast() got an unexpected keyword argument '${kwName}'`);
+      }
+      out.push(args.kwValues[0]);
+    } else {
+      throw new Error('TypeError: keywords are not supported for this builtin');
+    }
+  }
+  const arity = func ? func.arity : out.length;
+  if (name === 'list.pop') {
+    if (out.length === 1) {
+      out.push(missingSentinel());
+    } else if (out.length !== 2) {
+      baseImports.call_arity_error(BigInt(2), BigInt(out.length));
+    }
+    return callFunctionBits(funcBits, out);
+  }
+  if (name === 'list.index') {
+    while (out.length < 4) {
+      out.push(missingSentinel());
+    }
+    if (out.length !== 4) {
+      baseImports.call_arity_error(BigInt(4), BigInt(out.length));
+    }
+    return callFunctionBits(funcBits, out);
+  }
+  if (name === 'list.sort') {
+    if (out.length === 1) {
+      out.push(missingSentinel());
+      out.push(boxBool(false));
+    } else if (out.length === 2) {
+      out.push(boxBool(false));
+    } else if (out.length !== 3) {
+      baseImports.call_arity_error(BigInt(3), BigInt(out.length));
+    }
+    return callFunctionBits(funcBits, out);
+  }
+  if (name === 'dict.get' || name === 'dict.setdefault') {
+    if (out.length === 2) {
+      out.push(boxNone());
+    } else if (out.length !== 3) {
+      baseImports.call_arity_error(BigInt(3), BigInt(out.length));
+    }
+    return callFunctionBits(funcBits, out);
+  }
+  if (name === 'dict.pop') {
+    if (out.length === 2) {
+      out.push(boxNone());
+      out.push(boxInt(0));
+    } else if (out.length === 3) {
+      out.push(boxInt(1));
+    } else if (out.length !== 4) {
+      baseImports.call_arity_error(BigInt(4), BigInt(out.length));
+    }
+    return callFunctionBits(funcBits, out);
+  }
+  if (name === 'dict.update') {
+    if (out.length === 1) {
+      out.push(missingSentinel());
+    } else if (out.length !== 2) {
+      baseImports.call_arity_error(BigInt(2), BigInt(out.length));
+    }
+    return callFunctionBits(funcBits, out);
+  }
+  if (
+    name === 'bytes.find' ||
+    name === 'bytearray.find' ||
+    name === 'bytes.startswith' ||
+    name === 'bytearray.startswith' ||
+    name === 'bytes.endswith' ||
+    name === 'bytearray.endswith' ||
+    name === 'bytes.count' ||
+    name === 'bytearray.count'
+  ) {
+    if (out.length === 2) {
+      out.push(boxNone());
+      out.push(boxNone());
+      out.push(boxInt(0));
+      out.push(boxInt(0));
+    } else if (out.length === 3) {
+      out.push(boxNone());
+      out.push(boxInt(1));
+      out.push(boxInt(0));
+    } else if (out.length === 4) {
+      out.push(boxInt(1));
+      out.push(boxInt(1));
+    } else if (out.length !== 6) {
+      baseImports.call_arity_error(BigInt(4), BigInt(out.length));
+    }
+    return callFunctionBits(funcBits, out);
+  }
+  if (name === 'bytes.replace' || name === 'bytearray.replace') {
+    if (out.length === 3) {
+      out.push(boxInt(-1));
+    } else if (out.length !== 4) {
+      baseImports.call_arity_error(BigInt(4), BigInt(out.length));
+    }
+    return callFunctionBits(funcBits, out);
+  }
+  if (name === 'memoryview.cast') {
+    if (out.length === 2) {
+      out.push(boxNone());
+      out.push(boxInt(0));
+    } else if (out.length === 3) {
+      out.push(boxInt(1));
+    } else if (out.length !== 4) {
+      baseImports.call_arity_error(BigInt(3), BigInt(out.length));
+    }
+    return callFunctionBits(funcBits, out);
+  }
+  const missing = arity - out.length;
+  if (missing < 0) {
+    baseImports.call_arity_error(BigInt(arity), BigInt(out.length));
+  }
+  if (missing === 0) {
+    return callFunctionBits(funcBits, out);
+  }
+  if (func && func.defaultKind === FUNC_DEFAULT_NONE && missing === 1) {
+    out.push(boxNone());
+    return callFunctionBits(funcBits, out);
+  }
+  if (func && func.defaultKind === FUNC_DEFAULT_DICT_POP) {
+    if (missing === 1) {
+      out.push(boxInt(1));
+      return callFunctionBits(funcBits, out);
+    }
+    if (missing === 2) {
+      out.push(boxNone());
+      out.push(boxInt(0));
+      return callFunctionBits(funcBits, out);
+    }
+  }
+  if (func && func.defaultKind === FUNC_DEFAULT_DICT_UPDATE && missing === 1) {
+    out.push(missingSentinel());
+    return callFunctionBits(funcBits, out);
+  }
+  baseImports.call_arity_error(BigInt(arity), BigInt(out.length));
 };
 """
 
@@ -2006,9 +3568,13 @@ BASE_IMPORTS = """\
     const iterBits = view.getBigInt64(addr + 0, true);
     const defaultBits = view.getBigInt64(addr + 8, true);
     if (state === 0) {
-    const attr = lookupAttr(normalizePtrBits(iterBits), '__anext__');
+      const iterObj = normalizePtrBits(iterBits);
+      let attr = lookupAttr(iterObj, '__anext__');
       if (attr === undefined) {
         throw new Error('TypeError: object is not an async iterator');
+      }
+      if (getFunction(attr)) {
+        attr = makeBoundMethod(attr, iterObj);
       }
       const awaitBits = callCallable0(attr);
       view.setBigInt64(addr + 16, awaitBits, true);
@@ -2019,9 +3585,16 @@ BASE_IMPORTS = """\
     if (!isPtr(awaitPtrBits) || heap.has(awaitPtrBits & POINTER_MASK)) return boxNone();
     const awaitAddr = ptrAddr(awaitPtrBits);
     const pollIdx = view.getUint32(awaitAddr - HEADER_POLL_FN_OFFSET, true);
-    const poll = table.get(pollIdx);
+    const poll = getTableFunc(pollIdx);
     if (!poll) return boxNone();
-    const res = poll(awaitBits);
+    const prevAsync = asyncRaise;
+    asyncRaise = true;
+    let res;
+    try {
+      res = poll(awaitBits);
+    } finally {
+      asyncRaise = prevAsync;
+    }
     if (isPending(res)) return res;
     if (exceptionPending() !== 0n) {
       const excBits = exceptionLast();
@@ -2054,7 +3627,7 @@ BASE_IMPORTS = """\
     const addr = ptrAddr(ptrBits);
     const view = new DataView(memory.buffer);
     const pollIdx = view.getUint32(addr - HEADER_POLL_FN_OFFSET, true);
-    const poll = table.get(pollIdx);
+    const poll = getTableFunc(pollIdx);
     if (!poll) {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'TypeError' }),
@@ -2063,7 +3636,15 @@ BASE_IMPORTS = """\
       raiseException(exc);
       return boxNone();
     }
-    return poll(ptrBits);
+    const prevAsync = asyncRaise;
+    asyncRaise = true;
+    let res;
+    try {
+      res = poll(ptrBits);
+    } finally {
+      asyncRaise = prevAsync;
+    }
+    return res;
   },
   future_poll_fn: (futureBits) => {
     const ptrBits = normalizePtrBits(futureBits);
@@ -2078,7 +3659,7 @@ BASE_IMPORTS = """\
     const addr = ptrAddr(ptrBits);
     const view = new DataView(memory.buffer);
     const pollIdx = view.getUint32(addr - HEADER_POLL_FN_OFFSET, true);
-    const poll = table.get(pollIdx);
+    const poll = getTableFunc(pollIdx);
     if (!poll) {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'TypeError' }),
@@ -2097,7 +3678,7 @@ BASE_IMPORTS = """\
     const addr = ptrAddr(taskPtr);
     const view = new DataView(memory.buffer);
     const pollIdx = view.getUint32(addr - HEADER_POLL_FN_OFFSET, true);
-    const poll = table.get(pollIdx);
+    const poll = getTableFunc(pollIdx);
     if (!poll) return 0n;
     const prevTask = currentTaskPtr;
     const prevToken = currentTokenId;
@@ -2105,7 +3686,14 @@ BASE_IMPORTS = """\
     const token = ensureTaskToken(taskPtr);
     setCurrentTokenId(token);
     while (true) {
-      const res = poll(taskPtr);
+      const prevAsync = asyncRaise;
+      asyncRaise = true;
+      let res;
+      try {
+        res = poll(taskPtr);
+      } finally {
+        asyncRaise = prevAsync;
+      }
       if (isPending(res)) continue;
       setCurrentTokenId(prevToken);
       currentTaskPtr = prevTask;
@@ -2213,6 +3801,11 @@ BASE_IMPORTS = """\
     const rlist = getList(b);
     if (llist && rlist) {
       return listFromArray([...llist.items, ...rlist.items]);
+    }
+    const ltuple = getTuple(a);
+    const rtuple = getTuple(b);
+    if (ltuple && rtuple) {
+      return tupleFromArray([...ltuple.items, ...rtuple.items]);
     }
     return boxNone();
   },
@@ -2366,6 +3959,12 @@ BASE_IMPORTS = """\
       }
       const outType = lset.isView || rset.isView ? 'set' : lset.type;
       return boxPtr({ type: outType, items: outItems });
+    }
+    return boxNone();
+  },
+  invert: (a) => {
+    if (isIntLike(a)) {
+      return boxInt(~unboxIntLike(a));
     }
     return boxNone();
   },
@@ -2863,6 +4462,12 @@ BASE_IMPORTS = """\
     }
     return boxBool(a === b);
   },
+  string_eq: (a, b) => {
+    const left = getStrObj(a);
+    const right = getStrObj(b);
+    if (left === null || right === null) return boxBool(false);
+    return boxBool(left === right);
+  },
   is: (a, b) => boxBool(a === b),
   closure_load: (ptr, offset) => {
     if (!memory) return boxNone();
@@ -2912,18 +4517,35 @@ BASE_IMPORTS = """\
     }
     return boxBool(version === expectedVersion);
   },
+  class_field_offset_name: (classBits, name) => {
+    if (!getClass(classBits)) return null;
+    const cached = classFieldOffsets.get(classBits);
+    if (cached) {
+      const offset = cached.get(name);
+      if (offset !== undefined) return offset;
+    }
+    const offsetsBits = lookupClassAttr(classBits, '__molt_field_offsets__');
+    const offsets = offsetsBits !== undefined ? getDict(offsetsBits) : null;
+    if (!offsets) return null;
+    const nameBits = boxPtr({ type: 'str', value: name });
+    const offsetBits = dictGetValue(offsets, nameBits);
+    if (offsetBits === null || !isIntLike(offsetBits)) return null;
+    const offset = Number(unboxIntLike(offsetBits));
+    return offset >= 0 ? offset : null;
+  },
   guarded_field_get_ptr: (obj, classBits, expected, offset, namePtr, nameLen) => {
+    const name = readUtf8(namePtr, nameLen);
     if (obj === 0n || !getClass(classBits)) {
-      return getAttrValue(normalizePtrBits(obj), readUtf8(namePtr, nameLen));
+      return getAttrValue(normalizePtrBits(obj), name);
     }
     const ptrBits = normalizePtrBits(obj);
     const clsBits = instanceClasses.get(ptrAddr(ptrBits));
     if (clsBits === undefined || clsBits !== classBits) {
-      return getAttrValue(ptrBits, readUtf8(namePtr, nameLen));
+      return getAttrValue(ptrBits, name);
     }
     const version = classLayoutVersion(classBits);
     if (version === null) {
-      return getAttrValue(ptrBits, readUtf8(namePtr, nameLen));
+      return getAttrValue(ptrBits, name);
     }
     let expectedVersion = expected;
     if (isTag(expected, TAG_INT)) {
@@ -2932,10 +4554,17 @@ BASE_IMPORTS = """\
       expectedVersion = unboxIntLike(expected);
     }
     if (version !== expectedVersion) {
-      return getAttrValue(ptrBits, readUtf8(namePtr, nameLen));
+      const actualOffset = baseImports.class_field_offset_name(classBits, name);
+      if (actualOffset !== null && memory) {
+        const addr = ptrAddr(ptrBits) + actualOffset;
+        const view = new DataView(memory.buffer);
+        return view.getBigInt64(addr, true);
+      }
+      return getAttrValue(ptrBits, name);
     }
     if (!memory) return boxNone();
-    const addr = ptrAddr(ptrBits) + Number(offset);
+    const actualOffset = baseImports.class_field_offset_name(classBits, name);
+    const addr = ptrAddr(ptrBits) + Number(actualOffset === null ? offset : actualOffset);
     const view = new DataView(memory.buffer);
     return view.getBigInt64(addr, true);
   },
@@ -2948,17 +4577,18 @@ BASE_IMPORTS = """\
     namePtr,
     nameLen,
   ) => {
+    const name = readUtf8(namePtr, nameLen);
     if (obj === 0n || !getClass(classBits)) {
-      return setAttrValue(normalizePtrBits(obj), readUtf8(namePtr, nameLen), val);
+      return setAttrValue(normalizePtrBits(obj), name, val);
     }
     const ptrBits = normalizePtrBits(obj);
     const clsBits = instanceClasses.get(ptrAddr(ptrBits));
     if (clsBits === undefined || clsBits !== classBits) {
-      return setAttrValue(ptrBits, readUtf8(namePtr, nameLen), val);
+      return setAttrValue(ptrBits, name, val);
     }
     const version = classLayoutVersion(classBits);
     if (version === null) {
-      return setAttrValue(ptrBits, readUtf8(namePtr, nameLen), val);
+      return setAttrValue(ptrBits, name, val);
     }
     let expectedVersion = expected;
     if (isTag(expected, TAG_INT)) {
@@ -2967,10 +4597,11 @@ BASE_IMPORTS = """\
       expectedVersion = unboxIntLike(expected);
     }
     if (version !== expectedVersion) {
-      return setAttrValue(ptrBits, readUtf8(namePtr, nameLen), val);
+      return setAttrValue(ptrBits, name, val);
     }
     if (!memory) return boxNone();
-    const addr = ptrAddr(ptrBits) + Number(offset);
+    const actualOffset = baseImports.class_field_offset_name(classBits, name);
+    const addr = ptrAddr(ptrBits) + Number(actualOffset === null ? offset : actualOffset);
     const view = new DataView(memory.buffer);
     view.setBigInt64(addr, val, true);
     return boxNone();
@@ -2984,17 +4615,18 @@ BASE_IMPORTS = """\
     namePtr,
     nameLen,
   ) => {
+    const name = readUtf8(namePtr, nameLen);
     if (obj === 0n || !getClass(classBits)) {
-      return setAttrValue(normalizePtrBits(obj), readUtf8(namePtr, nameLen), val);
+      return setAttrValue(normalizePtrBits(obj), name, val);
     }
     const ptrBits = normalizePtrBits(obj);
     const clsBits = instanceClasses.get(ptrAddr(ptrBits));
     if (clsBits === undefined || clsBits !== classBits) {
-      return setAttrValue(ptrBits, readUtf8(namePtr, nameLen), val);
+      return setAttrValue(ptrBits, name, val);
     }
     const version = classLayoutVersion(classBits);
     if (version === null) {
-      return setAttrValue(ptrBits, readUtf8(namePtr, nameLen), val);
+      return setAttrValue(ptrBits, name, val);
     }
     let expectedVersion = expected;
     if (isTag(expected, TAG_INT)) {
@@ -3003,10 +4635,11 @@ BASE_IMPORTS = """\
       expectedVersion = unboxIntLike(expected);
     }
     if (version !== expectedVersion) {
-      return setAttrValue(ptrBits, readUtf8(namePtr, nameLen), val);
+      return setAttrValue(ptrBits, name, val);
     }
     if (!memory) return boxNone();
-    const addr = ptrAddr(ptrBits) + Number(offset);
+    const actualOffset = baseImports.class_field_offset_name(classBits, name);
+    const addr = ptrAddr(ptrBits) + Number(actualOffset === null ? offset : actualOffset);
     const view = new DataView(memory.buffer);
     view.setBigInt64(addr, val, true);
     return boxNone();
@@ -3062,7 +4695,8 @@ BASE_IMPORTS = """\
   },
   object_field_get_ptr: (obj, offset) => {
     if (!memory) return boxNone();
-    const addr = ptrAddr(normalizePtrBits(obj)) + Number(offset);
+    const ptrBits = normalizePtrBits(obj);
+    const addr = ptrAddr(ptrBits) + Number(offset);
     const view = new DataView(memory.buffer);
     return view.getBigInt64(addr, true);
   },
@@ -3106,6 +4740,18 @@ BASE_IMPORTS = """\
     if (!moduleObj || name === null) return boxNone();
     const val = moduleObj.attrs.get(name);
     return val === undefined ? boxNone() : val;
+  },
+  module_get_name: (moduleBits, nameBits) => {
+    const name = getStrObj(nameBits);
+    const moduleObj = getModule(moduleBits);
+    if (!moduleObj || name === null) return boxNone();
+    const val = moduleObj.attrs.get(name);
+    if (val !== undefined) return val;
+    const exc = exceptionNew(
+      boxPtr({ type: 'str', value: 'NameError' }),
+      boxPtr({ type: 'str', value: `name '${name}' is not defined` }),
+    );
+    return raiseException(exc);
   },
   module_set_attr: (moduleBits, nameBits, val) => {
     const name = getStrObj(nameBits);
@@ -3218,15 +4864,20 @@ BASE_IMPORTS = """\
   memoryview_new: (bits) => {
     const view = getMemoryview(bits);
     if (view) {
+      const shape = memoryviewShape(view);
+      const strides = memoryviewStrides(view);
       return boxPtr({
         type: 'memoryview',
         ownerBits: view.ownerBits,
         offset: view.offset,
-        len: view.len,
+        len: shape.length ? shape[0] : 0,
         itemsize: view.itemsize,
-        stride: view.stride,
+        stride: strides.length ? strides[0] : 0,
         readonly: view.readonly,
         formatBits: view.formatBits,
+        ndim: shape.length,
+        shape: shape.slice(),
+        strides: strides.slice(),
       });
     }
     const bytes = getBytes(bits);
@@ -3243,18 +4894,96 @@ BASE_IMPORTS = """\
         stride: 1,
         readonly: bytes !== null,
         formatBits,
+        ndim: 1,
+        shape: [data.length],
+        strides: [1],
       });
     }
     throw new Error('TypeError: memoryview expects a bytes-like object');
+  },
+  memoryview_cast: (viewBits, formatBits, shapeBits, hasShapeBits) => {
+    const view = getMemoryview(viewBits);
+    if (!view) {
+      throw new Error("TypeError: cast() argument 'view' must be a memoryview");
+    }
+    const formatStr = getStrObj(formatBits);
+    if (formatStr === null) {
+      throw new Error(
+        `TypeError: cast() argument 'format' must be str, not ${typeName(formatBits)}`,
+      );
+    }
+    const fmt = memoryviewFormatFromStr(formatStr);
+    if (!fmt) {
+      throw new Error(
+        "ValueError: memoryview: destination format must be a native single character format prefixed with an optional '@'",
+      );
+    }
+    if (!memoryviewIsCContiguousView(view)) {
+      throw new Error('TypeError: memoryview: casts are restricted to C-contiguous views');
+    }
+    const nbytes = memoryviewNbytes(view);
+    if (nbytes === null) return boxNone();
+    const hasShape = isTruthyBits(hasShapeBits);
+    let shape = [];
+    if (hasShape) {
+      const list = getList(shapeBits);
+      const tuple = getTuple(shapeBits);
+      if (!list && !tuple) {
+        throw new Error('TypeError: shape must be a list or a tuple');
+      }
+      const items = list ? list.items : tuple.items;
+      for (const elem of items) {
+        if (!isTag(elem, TAG_INT)) {
+          throw new Error('TypeError: memoryview.cast(): elements of shape must be integers');
+        }
+        const value = Number(unboxInt(elem));
+        if (value <= 0) {
+          throw new Error(
+            'ValueError: memoryview.cast(): elements of shape must be integers > 0',
+          );
+        }
+        shape.push(value);
+      }
+    } else {
+      if (fmt.itemsize === 0 || nbytes % fmt.itemsize !== 0) {
+        throw new Error('TypeError: memoryview: length is not a multiple of itemsize');
+      }
+      shape = [nbytes / fmt.itemsize];
+    }
+    const product = memoryviewShapeProduct(shape);
+    if (product === null) return boxNone();
+    if (Number(product) * fmt.itemsize !== nbytes) {
+      throw new Error('TypeError: memoryview: product(shape) * itemsize != buffer size');
+    }
+    const strides = new Array(shape.length).fill(0);
+    let stride = fmt.itemsize;
+    for (let idx = shape.length - 1; idx >= 0; idx -= 1) {
+      strides[idx] = stride;
+      stride *= Math.max(1, shape[idx]);
+    }
+    const outFormatBits = boxPtr({ type: 'str', value: formatStr });
+    return boxPtr({
+      type: 'memoryview',
+      ownerBits: view.ownerBits,
+      offset: view.offset,
+      len: shape.length ? shape[0] : 0,
+      itemsize: fmt.itemsize,
+      stride: strides.length ? strides[0] : 0,
+      readonly: view.readonly,
+      formatBits: outFormatBits,
+      ndim: shape.length,
+      shape,
+      strides,
+    });
   },
   memoryview_tobytes: (bits) => {
     const view = getMemoryview(bits);
     if (!view) {
       throw new Error('TypeError: tobytes expects a memoryview');
     }
-    const data = memoryviewBytes(view);
+    const data = memoryviewCollectBytes(view);
     if (data === null) return boxNone();
-    return boxPtr({ type: 'bytes', data });
+    return boxPtr({ type: 'bytes', data: Uint8Array.from(data) });
   },
   str_from_obj: (val) => {
     if (isTag(val, TAG_INT)) {
@@ -3530,7 +5259,13 @@ BASE_IMPORTS = """\
     const bytearray = getBytearray(val);
     if (bytearray) return boxInt(bytearray.data.length);
     const view = getMemoryview(val);
-    if (view) return boxInt(view.len);
+    if (view) {
+      const shape = memoryviewShape(view);
+      if (shape.length === 0) {
+        throw new Error('TypeError: 0-dim memory has no length');
+      }
+      return boxInt(shape[0]);
+    }
     const strVal = getStrObj(val);
     if (strVal !== null) return boxInt(Array.from(strVal).length);
     return boxInt(0);
@@ -3569,17 +5304,21 @@ BASE_IMPORTS = """\
   list_pop: (listBits, indexBits) => {
     const list = getList(listBits);
     if (!list) return boxNone();
-    let idx;
-    if (isNone(indexBits)) {
-      idx = list.items.length - 1;
-    } else if (isIntLike(indexBits)) {
-      idx = Number(unboxIntLike(indexBits));
+    const missing = missingSentinel();
+    const len = list.items.length;
+    const lenBig = BigInt(len);
+    let idxBig;
+    if (indexBits === missing || isNone(indexBits)) {
+      idxBig = lenBig - 1n;
     } else {
-      return boxNone();
+      idxBig = indexBigIntFromBits(indexBits, LIST_INDEX_ERR);
+      if (idxBig === null) return boxNone();
     }
-    if (idx < 0) idx += list.items.length;
-    if (idx < 0 || idx >= list.items.length) return boxNone();
-    return list.items.splice(idx, 1)[0] ?? boxNone();
+    if (idxBig < 0n) idxBig += lenBig;
+    if (idxBig < 0n || idxBig >= lenBig) {
+      throw new Error('IndexError: pop index out of range');
+    }
+    return list.items.splice(Number(idxBig), 1)[0] ?? boxNone();
   },
   list_extend: (listBits, otherBits) => {
     const list = getList(listBits);
@@ -3693,11 +5432,110 @@ BASE_IMPORTS = """\
     return boxInt(count);
   },
   list_index: (listBits, valBits) => {
+    const missing = missingSentinel();
+    return baseImports.list_index_range(listBits, valBits, missing, missing);
+  },
+  list_index_range: (listBits, valBits, startBits, stopBits) => {
     const list = getList(listBits);
     if (!list) return boxNone();
-    const idx = list.items.findIndex((item) => item === valBits);
-    if (idx < 0) return boxNone();
-    return boxInt(idx);
+    const len = list.items.length;
+    const missing = missingSentinel();
+    const listIndexBound = (bits) => {
+      if (isNone(bits)) {
+        throw new Error(`TypeError: ${LIST_INDEX_ERR}`);
+      }
+      const idx = indexBigIntFromBits(bits, LIST_INDEX_ERR);
+      if (idx === null) return null;
+      let value = idx;
+      const lenBig = BigInt(len);
+      if (value < 0n) value += lenBig;
+      if (value < 0n) return 0;
+      if (value > lenBig) return len;
+      return Number(value);
+    };
+    const start = startBits === missing ? 0 : listIndexBound(startBits);
+    if (start === null) return boxNone();
+    const stop = stopBits === missing ? len : listIndexBound(stopBits);
+    if (stop === null) return boxNone();
+    const startIdx = Math.min(Math.max(start, 0), len);
+    const stopIdx = Math.min(Math.max(stop, 0), len);
+    if (startIdx < stopIdx) {
+      for (let idx = startIdx; idx < stopIdx; idx += 1) {
+        if (list.items[idx] === valBits) {
+          return boxInt(idx);
+        }
+      }
+    }
+    throw new Error('ValueError: list.index(x): x not in list');
+  },
+  heapq_heapify: (listBits) => {
+    const list = getList(listBits);
+    if (!list) return boxNone();
+    const heap = list.items;
+    const len = heap.length;
+    if (len < 2) return boxNone();
+    for (let idx = Math.floor(len / 2) - 1; idx >= 0; idx -= 1) {
+      const ok = heapSiftUp(heap, idx);
+      if (ok === null) return boxNone();
+    }
+    return boxNone();
+  },
+  heapq_heappush: (listBits, itemBits) => {
+    const list = getList(listBits);
+    if (!list) return boxNone();
+    const heap = list.items;
+    heap.push(itemBits);
+    const ok = heapSiftDown(heap, 0, heap.length - 1);
+    if (ok === null) return boxNone();
+    return boxNone();
+  },
+  heapq_heappop: (listBits) => {
+    const list = getList(listBits);
+    if (!list) return boxNone();
+    const heap = list.items;
+    if (heap.length === 0) {
+      throw new Error('IndexError: index out of range');
+    }
+    const last = heap.pop();
+    if (heap.length === 0) {
+      return last;
+    }
+    const returnBits = heap[0];
+    heap[0] = last;
+    const ok = heapSiftUp(heap, 0);
+    if (ok === null) return boxNone();
+    return returnBits;
+  },
+  heapq_heapreplace: (listBits, itemBits) => {
+    const list = getList(listBits);
+    if (!list) return boxNone();
+    const heap = list.items;
+    if (heap.length === 0) {
+      throw new Error('IndexError: index out of range');
+    }
+    const returnBits = heap[0];
+    heap[0] = itemBits;
+    const ok = heapSiftUp(heap, 0);
+    if (ok === null) return boxNone();
+    return returnBits;
+  },
+  heapq_heappushpop: (listBits, itemBits) => {
+    const list = getList(listBits);
+    if (!list) return boxNone();
+    const heap = list.items;
+    if (heap.length !== 0) {
+      const lt = heapLt(heap[0], itemBits);
+      if (lt === null) return boxNone();
+      if (lt) {
+        const returnBits = heap[0];
+        heap[0] = itemBits;
+        const ok = heapSiftUp(heap, 0);
+        if (ok === null) return boxNone();
+        return returnBits;
+      }
+      return itemBits;
+    }
+    return itemBits;
   },
   tuple_from_list: (val) => {
     const list = getList(val);
@@ -4005,8 +5843,25 @@ BASE_IMPORTS = """\
     set.items = newItems;
     return boxNone();
   },
-  tuple_count: () => boxNone(),
-  tuple_index: () => boxNone(),
+  tuple_count: (tupleBits, valBits) => {
+    const tuple = getTuple(tupleBits);
+    if (!tuple) return boxNone();
+    let count = 0;
+    for (const item of tuple.items) {
+      if (item === valBits) count += 1;
+    }
+    return boxInt(count);
+  },
+  tuple_index: (tupleBits, valBits) => {
+    const tuple = getTuple(tupleBits);
+    if (!tuple) return boxNone();
+    for (let i = 0; i < tuple.items.length; i += 1) {
+      if (tuple.items[i] === valBits) {
+        return boxInt(i);
+      }
+    }
+    throw new Error('ValueError: tuple.index(x): x not in tuple');
+  },
   iter: (val) => {
     if (isGenerator(val)) {
       return val;
@@ -4089,9 +5944,13 @@ BASE_IMPORTS = """\
     return boxPtr({ type: 'enumerate', iterBits, index: start });
   },
   aiter: (val) => {
-    const attr = lookupAttr(normalizePtrBits(val), '__aiter__');
+    const iterObj = normalizePtrBits(val);
+    let attr = lookupAttr(iterObj, '__aiter__');
     if (attr === undefined) {
       throw new Error('TypeError: object is not async iterable');
+    }
+    if (getFunction(attr)) {
+      attr = makeBoundMethod(attr, iterObj);
     }
     return callCallable0(attr);
   },
@@ -4113,15 +5972,18 @@ BASE_IMPORTS = """\
     return iterNextInternal(val);
   },
   anext: (val) => {
-    const attr = lookupAttr(normalizePtrBits(val), '__anext__');
+    const iterObj = normalizePtrBits(val);
+    let attr = lookupAttr(iterObj, '__anext__');
     if (attr === undefined) {
-      const norm = normalizePtrBits(val);
-      const addr = isPtr(norm) ? ptrAddr(norm) : -1;
-      const hasClass = isPtr(norm) && instanceClasses.has(addr);
+      const addr = isPtr(iterObj) ? ptrAddr(iterObj) : -1;
+      const hasClass = isPtr(iterObj) && instanceClasses.has(addr);
       throw new Error(
         `TypeError: object is not an async iterator (got ${typeName(val)}, ` +
           `addr=${addr}, hasClass=${hasClass})`,
       );
+    }
+    if (getFunction(attr)) {
+      attr = makeBoundMethod(attr, iterObj);
     }
     return callCallable0(attr);
   },
@@ -4132,11 +5994,17 @@ BASE_IMPORTS = """\
     const view = new DataView(memory.buffer);
     view.setBigInt64(addr - HEADER_POLL_FN_OFFSET, pollFn, true);
     view.setBigInt64(addr - HEADER_STATE_OFFSET, 0n, true);
+    const slots = Math.floor(size / 8);
+    for (let i = 0; i < slots; i += 1) {
+      view.setBigInt64(addr + i * 8, boxNone(), true);
+    }
     if (size >= GEN_CONTROL_SIZE) {
-      view.setBigInt64(addr + 0, boxNone(), true);
-      view.setBigInt64(addr + 8, boxNone(), true);
-      view.setBigInt64(addr + 16, boxBool(false), true);
-      view.setBigInt64(addr + 24, boxInt(1), true);
+      view.setBigInt64(addr + GEN_SEND_OFFSET, boxNone(), true);
+      view.setBigInt64(addr + GEN_THROW_OFFSET, boxNone(), true);
+      view.setBigInt64(addr + GEN_CLOSED_OFFSET, boxBool(false), true);
+      view.setBigInt64(addr + GEN_EXC_DEPTH_OFFSET, boxInt(1), true);
+      view.setBigInt64(addr + GEN_FRAME_OFFSET, frameNew(-1), true);
+      view.setBigInt64(addr + GEN_YIELD_FROM_OFFSET, boxNone(), true);
     }
     return boxPtrAddr(addr);
   },
@@ -4145,6 +6013,16 @@ BASE_IMPORTS = """\
   generator_close: (gen) => generatorClose(gen),
   is_generator: (val) => boxBool(isGenerator(val)),
   is_bound_method: (val) => boxBool(isBoundMethod(val)),
+  function_is_generator: (val) => {
+    const attr = lookupAttr(val, '__molt_is_generator__');
+    if (attr === undefined) return boxBool(false);
+    return boxBool(isTruthyBits(attr));
+  },
+  function_is_coroutine: (val) => {
+    const attr = lookupAttr(val, '__molt_is_coroutine__');
+    if (attr === undefined) return boxBool(false);
+    return boxBool(isTruthyBits(attr));
+  },
   function_default_kind: (val) => {
     const func = getFunction(val);
     return func && typeof func.defaultKind === 'number'
@@ -4252,11 +6130,17 @@ BASE_IMPORTS = """\
     if (!func) {
       throw new Error('TypeError: call expects function object');
     }
+    if (selfBits !== null) {
+      args.pos.unshift(selfBits);
+    }
     const attrs = func.attrs || new Map();
     const argNamesBits = attrs.get('__molt_arg_names__');
+    if (argNamesBits === undefined) {
+      return bindBuiltinCall(funcBits, func, args);
+    }
     const argNamesTuple = getTuple(argNamesBits);
     if (!argNamesTuple) {
-      throw new Error('TypeError: call expects function object');
+      return bindBuiltinCall(funcBits, func, args);
     }
     const argNameBits = [...argNamesTuple.items];
     const argNames = argNameBits.map((bit) => {
@@ -4293,9 +6177,6 @@ BASE_IMPORTS = """\
     const slots = new Array(totalParams).fill(undefined);
     const extraPos = [];
     const posArgs = [...args.pos];
-    if (selfBits !== null) {
-      posArgs.unshift(selfBits);
-    }
     for (let i = 0; i < posArgs.length; i++) {
       if (i < totalPos) {
         slots[i] = posArgs[i];
@@ -4384,6 +6265,37 @@ BASE_IMPORTS = """\
         `TypeError: call arity mismatch (expected ${func.arity}, got ${finalArgs.length})`,
       );
     }
+    const isGenBits = attrs.get('__molt_is_generator__');
+    if (isGenBits !== undefined && isTruthyBits(isGenBits)) {
+      const payload = [];
+      if (func.closure && func.closure !== 0n && isPtr(func.closure)) {
+        payload.push(func.closure);
+      }
+      payload.push(...finalArgs);
+      let payloadBytes = payload.length * 8;
+      const sizeBits = attrs.get('__molt_closure_size__');
+      if (sizeBits !== undefined && isIntLike(sizeBits)) {
+        const size = Number(unboxIntLike(sizeBits));
+        if (size > payloadBytes) {
+          payloadBytes = size;
+        }
+      }
+      const genBits = baseImports.generator_new(
+        BigInt(func.idx),
+        BigInt(payloadBytes),
+      );
+      if (isNone(genBits) || !memory) return genBits;
+      const addr = ptrAddr(genBits);
+      const view = new DataView(memory.buffer);
+      for (let i = 0; i < payload.length; i += 1) {
+        view.setBigInt64(
+          addr + GEN_CONTROL_SIZE + i * 8,
+          payload[i],
+          true,
+        );
+      }
+      return genBits;
+    }
     return callFunctionBits(funcBits, finalArgs);
   },
   is_callable: (val) => {
@@ -4437,6 +6349,132 @@ BASE_IMPORTS = """\
         );
       }
       return boxInt(data[pos]);
+    }
+    const view = getMemoryview(seq);
+    if (view) {
+      const fmt = memoryviewFormatFromBits(view.formatBits);
+      if (!fmt) return boxNone();
+      const owner = getBytes(view.ownerBits) || getBytearray(view.ownerBits);
+      if (!owner) return boxNone();
+      const data = owner.data;
+      const shape = memoryviewShape(view);
+      const strides = memoryviewStrides(view);
+      const ndim = shape.length;
+      if (ndim === 0) {
+        const tup = getTuple(idxBits);
+        if (tup && tup.items.length === 0) {
+          const val = memoryviewReadScalar(data, view.offset, fmt);
+          return val === null ? boxNone() : val;
+        }
+        throw new Error('TypeError: invalid indexing of 0-dim memory');
+      }
+      const tup = getTuple(idxBits);
+      if (tup) {
+        let hasSlice = false;
+        let allSlice = true;
+        for (const elem of tup.items) {
+          const slice = getSlice(elem);
+          if (slice) {
+            hasSlice = true;
+          } else {
+            allSlice = false;
+          }
+        }
+        if (hasSlice) {
+          if (allSlice) {
+            throw new Error('NotImplementedError: multi-dimensional slicing is not implemented');
+          }
+          throw new Error('TypeError: memoryview: invalid slice key');
+        }
+        const indices = [];
+        for (const elem of tup.items) {
+          const idx = indexFromBitsWithOverflow(elem, 'memoryview: invalid slice key', null);
+          if (idx === null) return boxNone();
+          indices.push(idx);
+        }
+        if (indices.length < ndim) {
+          throw new Error('NotImplementedError: sub-views are not implemented');
+        }
+        if (indices.length > ndim) {
+          throw new Error(
+            `TypeError: cannot index ${ndim}-dimension view with ${indices.length}-element tuple`,
+          );
+        }
+        if (shape.length !== strides.length) return boxNone();
+        let pos = view.offset;
+        for (let dim = 0; dim < indices.length; dim += 1) {
+          let i = indices[dim];
+          const dimLen = shape[dim];
+          if (i < 0) i += dimLen;
+          if (i < 0 || i >= dimLen) {
+            throw new Error(`IndexError: index out of bounds on dimension ${dim + 1}`);
+          }
+          pos += i * strides[dim];
+        }
+        if (pos < 0 || pos + fmt.itemsize > data.length) {
+          throw new Error('IndexError: index out of bounds on dimension 1');
+        }
+        const val = memoryviewReadScalar(data, pos, fmt);
+        return val === null ? boxNone() : val;
+      }
+      const sliceObj = getSlice(idxBits);
+      if (sliceObj) {
+        if (shape.length === 0) {
+          throw new Error('TypeError: invalid indexing of 0-dim memory');
+        }
+        const indices = normalizeSliceIndices(
+          shape[0],
+          sliceObj.start,
+          sliceObj.stop,
+          sliceObj.step,
+        );
+        if (indices === null) return boxNone();
+        const newOffset = view.offset + indices.start * strides[0];
+        const newStride = strides[0] * indices.step;
+        const sliceIndices = collectSliceIndices(indices.start, indices.stop, indices.step);
+        const newLen = sliceIndices.length;
+        const newShape = shape.slice();
+        const newStrides = strides.slice();
+        newShape[0] = newLen;
+        newStrides[0] = newStride;
+        return boxPtr({
+          type: 'memoryview',
+          ownerBits: view.ownerBits,
+          offset: newOffset,
+          len: newLen,
+          itemsize: view.itemsize,
+          stride: newStride,
+          readonly: view.readonly,
+          formatBits: view.formatBits,
+          ndim,
+          shape: newShape,
+          strides: newStrides,
+        });
+      }
+      const idx = indexFromBitsWithOverflow(
+        idxBits,
+        'memoryview: invalid slice key',
+        null,
+      );
+      if (idx === null) return boxNone();
+      if (ndim > 1) {
+        throw new Error('NotImplementedError: multi-dimensional sub-views are not implemented');
+      }
+      if (shape.length === 0) {
+        throw new Error('TypeError: invalid indexing of 0-dim memory');
+      }
+      let i = idx;
+      const len = shape[0];
+      if (i < 0) i += len;
+      if (i < 0 || i >= len) {
+        throw new Error('IndexError: index out of bounds on dimension 1');
+      }
+      const pos = view.offset + i * strides[0];
+      if (pos < 0 || pos + fmt.itemsize > data.length) {
+        throw new Error('IndexError: index out of bounds on dimension 1');
+      }
+      const val = memoryviewReadScalar(data, pos, fmt);
+      return val === null ? boxNone() : val;
     }
     if (strVal !== null) {
       const errMsg = `string indices must be integers, not '${typeName(idxBits)}'`;
@@ -4591,35 +6629,135 @@ BASE_IMPORTS = """\
       if (!owner) {
         throw new Error('TypeError: memoryview is not writable');
       }
-      if (view.itemsize !== 1) {
-        throw new Error('TypeError: memoryview itemsize not supported');
+      const fmt = memoryviewFormatFromBits(view.formatBits);
+      if (!fmt) return boxNone();
+      const data = owner.data;
+      const shape = memoryviewShape(view);
+      const strides = memoryviewStrides(view);
+      const ndim = shape.length;
+      if (ndim === 0) {
+        const tup = getTuple(idxBits);
+        if (tup && tup.items.length === 0) {
+          const ok = memoryviewWriteScalar(data, view.offset, fmt, val);
+          return ok ? seq : boxNone();
+        }
+        throw new Error('TypeError: invalid indexing of 0-dim memory');
+      }
+      const tup = getTuple(idxBits);
+      if (tup) {
+        let hasSlice = false;
+        let allSlice = true;
+        for (const elem of tup.items) {
+          const slice = getSlice(elem);
+          if (slice) {
+            hasSlice = true;
+          } else {
+            allSlice = false;
+          }
+        }
+        if (hasSlice) {
+          if (allSlice) {
+            throw new Error(
+              'NotImplementedError: memoryview slice assignments are currently restricted to ndim = 1',
+            );
+          }
+          throw new Error('TypeError: memoryview: invalid slice key');
+        }
+        const indices = [];
+        for (const elem of tup.items) {
+          const idx = indexFromBitsWithOverflow(elem, 'memoryview: invalid slice key', null);
+          if (idx === null) return boxNone();
+          indices.push(idx);
+        }
+        if (indices.length < ndim) {
+          throw new Error('NotImplementedError: sub-views are not implemented');
+        }
+        if (indices.length > ndim) {
+          throw new Error(
+            `TypeError: cannot index ${ndim}-dimension view with ${indices.length}-element tuple`,
+          );
+        }
+        if (shape.length !== strides.length) return boxNone();
+        let pos = view.offset;
+        for (let dim = 0; dim < indices.length; dim += 1) {
+          let i = indices[dim];
+          const dimLen = shape[dim];
+          if (i < 0) i += dimLen;
+          if (i < 0 || i >= dimLen) {
+            throw new Error(`IndexError: index out of bounds on dimension ${dim + 1}`);
+          }
+          pos += i * strides[dim];
+        }
+        if (pos < 0 || pos + fmt.itemsize > data.length) {
+          throw new Error('IndexError: index out of bounds on dimension 1');
+        }
+        const ok = memoryviewWriteScalar(data, pos, fmt, val);
+        return ok ? seq : boxNone();
       }
       const sliceObj = getSlice(idxBits);
       if (sliceObj) {
+        if (ndim !== 1) {
+          throw new Error(
+            'NotImplementedError: memoryview slice assignments are currently restricted to ndim = 1',
+          );
+        }
+        if (shape.length === 0) {
+          throw new Error('TypeError: invalid indexing of 0-dim memory');
+        }
         const indices = normalizeSliceIndices(
-          view.len,
+          shape[0],
           sliceObj.start,
           sliceObj.stop,
           sliceObj.step,
         );
         if (indices === null) return boxNone();
-        const srcBytes = collectMemoryviewAssignBytes(val);
-        if (srcBytes === null) return boxNone();
         const sliceIndices = collectSliceIndices(
           indices.start,
           indices.stop,
           indices.step,
         );
-        if (sliceIndices.length !== srcBytes.length) {
+        const elemCount = sliceIndices.length;
+        let srcBytes = null;
+        const bytes = getBytes(val);
+        const bytearray = getBytearray(val);
+        const srcView = getMemoryview(val);
+        if (bytes || bytearray) {
+          if (fmt.code !== 'B') {
+            throw new Error(
+              'ValueError: memoryview assignment: lvalue and rvalue have different structures',
+            );
+          }
+          srcBytes = Array.from(bytes ? bytes.data : bytearray.data);
+        } else if (srcView) {
+          const srcFmt = memoryviewFormatFromBits(srcView.formatBits);
+          if (!srcFmt) return boxNone();
+          const srcShape = memoryviewShape(srcView);
+          if (srcFmt.code !== fmt.code || srcShape.length !== 1 || srcShape[0] !== elemCount) {
+            throw new Error(
+              'ValueError: memoryview assignment: lvalue and rvalue have different structures',
+            );
+          }
+          const buf = memoryviewCollectBytes(srcView);
+          if (buf === null) return boxNone();
+          srcBytes = buf;
+        } else {
+          throw new Error(
+            `TypeError: a bytes-like object is required, not '${typeName(val)}'`,
+          );
+        }
+        const expected = elemCount * fmt.itemsize;
+        if (srcBytes.length !== expected) {
           throw new Error(
             'ValueError: memoryview assignment: lvalue and rvalue have different structures',
           );
         }
-        let pos = view.offset + indices.start * view.stride;
-        const stepStride = view.stride * indices.step;
-        for (const byte of srcBytes) {
-          if (pos < 0 || pos >= owner.data.length) return boxNone();
-          owner.data[pos] = byte;
+        let pos = view.offset + indices.start * strides[0];
+        const stepStride = strides[0] * indices.step;
+        for (let i = 0; i < srcBytes.length; i += fmt.itemsize) {
+          if (pos < 0 || pos + fmt.itemsize > data.length) return boxNone();
+          for (let j = 0; j < fmt.itemsize; j += 1) {
+            data[pos + j] = srcBytes[i + j];
+          }
           pos += stepStride;
         }
         return seq;
@@ -4630,18 +6768,24 @@ BASE_IMPORTS = """\
         null,
       );
       if (idx === null) return boxNone();
+      if (ndim !== 1) {
+        throw new Error('NotImplementedError: sub-views are not implemented');
+      }
+      if (shape.length === 0) {
+        throw new Error('TypeError: invalid indexing of 0-dim memory');
+      }
       let i = idx;
-      if (i < 0) i += view.len;
-      if (i < 0 || i >= view.len) {
+      const len = shape[0];
+      if (i < 0) i += len;
+      if (i < 0 || i >= len) {
         throw new Error('IndexError: index out of bounds on dimension 1');
       }
-      const pos = view.offset + i * view.stride;
-      if (pos < 0 || pos >= owner.data.length) {
+      const pos = view.offset + i * strides[0];
+      if (pos < 0 || pos + fmt.itemsize > data.length) {
         throw new Error('IndexError: index out of bounds on dimension 1');
       }
-      const byte = memoryviewItemByte(val);
-      owner.data[pos] = byte;
-      return seq;
+      const ok = memoryviewWriteScalar(data, pos, fmt, val);
+      return ok ? seq : boxNone();
     }
     return boxNone();
   },
@@ -4750,16 +6894,633 @@ BASE_IMPORTS = """\
     }
     return boxNone();
   },
-  bytes_find: () => boxNone(),
-  bytearray_find: () => boxNone(),
+  bytes_find: (hayBits, needleBits) => {
+    const hay = getBytes(hayBits);
+    if (!hay) return boxNone();
+    const needle = getBytes(needleBits) || getBytearray(needleBits);
+    if (!needle) return boxNone();
+    return boxInt(bytesFindInRange(hay.data, needle.data, 0, hay.data.length));
+  },
+  bytes_find_slice: (hayBits, needleBits, startBits, endBits, hasStartBits, hasEndBits) => {
+    const hay = getBytes(hayBits);
+    if (!hay) return boxNone();
+    const total = hay.data.length;
+    const bounds = sliceBoundsFromArgs(
+      startBits,
+      endBits,
+      hasStartBits,
+      hasEndBits,
+      total,
+    );
+    if (!bounds) return boxNone();
+    const { start, end, startGtLen } = bounds;
+    if (end < start) return boxInt(-1);
+    const needle = getBytes(needleBits) || getBytearray(needleBits);
+    if (needle) {
+      const n = needle.data;
+      if (n.length === 0) {
+        if (startGtLen) return boxInt(-1);
+        return boxInt(start);
+      }
+      return boxInt(bytesFindInRange(hay.data, n, start, end));
+    }
+    const needleInt = getBigIntValue(needleBits);
+    if (needleInt !== null) {
+      if (needleInt < 0n || needleInt > 255n) {
+        throw new Error('ValueError: byte must be in range(0, 256)');
+      }
+      const byte = Number(needleInt);
+      for (let i = start; i < end; i += 1) {
+        if (hay.data[i] === byte) return boxInt(i);
+      }
+      return boxInt(-1);
+    }
+    return boxNone();
+  },
+  bytearray_find: (hayBits, needleBits) => {
+    const hay = getBytearray(hayBits);
+    if (!hay) return boxNone();
+    const needle = getBytes(needleBits) || getBytearray(needleBits);
+    if (!needle) return boxNone();
+    return boxInt(bytesFindInRange(hay.data, needle.data, 0, hay.data.length));
+  },
+  bytearray_find_slice: (hayBits, needleBits, startBits, endBits, hasStartBits, hasEndBits) => {
+    const hay = getBytearray(hayBits);
+    if (!hay) return boxNone();
+    const total = hay.data.length;
+    const bounds = sliceBoundsFromArgs(
+      startBits,
+      endBits,
+      hasStartBits,
+      hasEndBits,
+      total,
+    );
+    if (!bounds) return boxNone();
+    const { start, end, startGtLen } = bounds;
+    if (end < start) return boxInt(-1);
+    const needle = getBytes(needleBits) || getBytearray(needleBits);
+    if (needle) {
+      const n = needle.data;
+      if (n.length === 0) {
+        if (startGtLen) return boxInt(-1);
+        return boxInt(start);
+      }
+      return boxInt(bytesFindInRange(hay.data, n, start, end));
+    }
+    const needleInt = getBigIntValue(needleBits);
+    if (needleInt !== null) {
+      if (needleInt < 0n || needleInt > 255n) {
+        throw new Error('ValueError: byte must be in range(0, 256)');
+      }
+      const byte = Number(needleInt);
+      for (let i = start; i < end; i += 1) {
+        if (hay.data[i] === byte) return boxInt(i);
+      }
+      return boxInt(-1);
+    }
+    return boxNone();
+  },
+  bytes_startswith: (hayBits, needleBits) => {
+    const hay = getBytes(hayBits);
+    if (!hay) return boxNone();
+    const needle = getBytes(needleBits) || getBytearray(needleBits);
+    if (!needle) return boxNone();
+    const h = hay.data;
+    const n = needle.data;
+    if (n.length > h.length) return boxBool(false);
+    for (let i = 0; i < n.length; i += 1) {
+      if (h[i] !== n[i]) return boxBool(false);
+    }
+    return boxBool(true);
+  },
+  bytes_startswith_slice: (
+    hayBits,
+    needleBits,
+    startBits,
+    endBits,
+    hasStartBits,
+    hasEndBits,
+  ) => {
+    const hay = getBytes(hayBits);
+    if (!hay) return boxNone();
+    const total = hay.data.length;
+    const bounds = sliceBoundsFromArgs(
+      startBits,
+      endBits,
+      hasStartBits,
+      hasEndBits,
+      total,
+    );
+    if (!bounds) return boxNone();
+    const { start, end, startGtLen } = bounds;
+    if (end < start) return boxBool(false);
+    const tuple = getTuple(needleBits);
+    if (tuple) {
+      if (!tuple.items.length) return boxBool(false);
+      for (const item of tuple.items) {
+        const itemBytes = getBytes(item) || getBytearray(item);
+        if (!itemBytes) return boxNone();
+        const n = itemBytes.data;
+        if (n.length === 0 && startGtLen) continue;
+        if (bytesStartsWithInRange(hay.data, n, start, end)) return boxBool(true);
+      }
+      return boxBool(false);
+    }
+    const needle = getBytes(needleBits) || getBytearray(needleBits);
+    if (!needle) return boxNone();
+    const n = needle.data;
+    if (n.length === 0 && startGtLen) return boxBool(false);
+    return boxBool(bytesStartsWithInRange(hay.data, n, start, end));
+  },
+  bytearray_startswith: (hayBits, needleBits) => {
+    const hay = getBytearray(hayBits);
+    if (!hay) return boxNone();
+    const needle = getBytes(needleBits) || getBytearray(needleBits);
+    if (!needle) return boxNone();
+    const h = hay.data;
+    const n = needle.data;
+    if (n.length > h.length) return boxBool(false);
+    for (let i = 0; i < n.length; i += 1) {
+      if (h[i] !== n[i]) return boxBool(false);
+    }
+    return boxBool(true);
+  },
+  bytearray_startswith_slice: (
+    hayBits,
+    needleBits,
+    startBits,
+    endBits,
+    hasStartBits,
+    hasEndBits,
+  ) => {
+    const hay = getBytearray(hayBits);
+    if (!hay) return boxNone();
+    const total = hay.data.length;
+    const bounds = sliceBoundsFromArgs(
+      startBits,
+      endBits,
+      hasStartBits,
+      hasEndBits,
+      total,
+    );
+    if (!bounds) return boxNone();
+    const { start, end, startGtLen } = bounds;
+    if (end < start) return boxBool(false);
+    const tuple = getTuple(needleBits);
+    if (tuple) {
+      if (!tuple.items.length) return boxBool(false);
+      for (const item of tuple.items) {
+        const itemBytes = getBytes(item) || getBytearray(item);
+        if (!itemBytes) return boxNone();
+        const n = itemBytes.data;
+        if (n.length === 0 && startGtLen) continue;
+        if (bytesStartsWithInRange(hay.data, n, start, end)) return boxBool(true);
+      }
+      return boxBool(false);
+    }
+    const needle = getBytes(needleBits) || getBytearray(needleBits);
+    if (!needle) return boxNone();
+    const n = needle.data;
+    if (n.length === 0 && startGtLen) return boxBool(false);
+    return boxBool(bytesStartsWithInRange(hay.data, n, start, end));
+  },
+  bytes_endswith: (hayBits, needleBits) => {
+    const hay = getBytes(hayBits);
+    if (!hay) return boxNone();
+    const needle = getBytes(needleBits) || getBytearray(needleBits);
+    if (!needle) return boxNone();
+    const h = hay.data;
+    const n = needle.data;
+    if (n.length > h.length) return boxBool(false);
+    const offset = h.length - n.length;
+    for (let i = 0; i < n.length; i += 1) {
+      if (h[offset + i] !== n[i]) return boxBool(false);
+    }
+    return boxBool(true);
+  },
+  bytes_endswith_slice: (
+    hayBits,
+    needleBits,
+    startBits,
+    endBits,
+    hasStartBits,
+    hasEndBits,
+  ) => {
+    const hay = getBytes(hayBits);
+    if (!hay) return boxNone();
+    const total = hay.data.length;
+    const bounds = sliceBoundsFromArgs(
+      startBits,
+      endBits,
+      hasStartBits,
+      hasEndBits,
+      total,
+    );
+    if (!bounds) return boxNone();
+    const { start, end, startGtLen } = bounds;
+    if (end < start) return boxBool(false);
+    const tuple = getTuple(needleBits);
+    if (tuple) {
+      if (!tuple.items.length) return boxBool(false);
+      for (const item of tuple.items) {
+        const itemBytes = getBytes(item) || getBytearray(item);
+        if (!itemBytes) return boxNone();
+        const n = itemBytes.data;
+        if (n.length === 0 && startGtLen) continue;
+        if (bytesEndsWithInRange(hay.data, n, start, end)) return boxBool(true);
+      }
+      return boxBool(false);
+    }
+    const needle = getBytes(needleBits) || getBytearray(needleBits);
+    if (!needle) return boxNone();
+    const n = needle.data;
+    if (n.length === 0 && startGtLen) return boxBool(false);
+    return boxBool(bytesEndsWithInRange(hay.data, n, start, end));
+  },
+  bytearray_endswith: (hayBits, needleBits) => {
+    const hay = getBytearray(hayBits);
+    if (!hay) return boxNone();
+    const needle = getBytes(needleBits) || getBytearray(needleBits);
+    if (!needle) return boxNone();
+    const h = hay.data;
+    const n = needle.data;
+    if (n.length > h.length) return boxBool(false);
+    const offset = h.length - n.length;
+    for (let i = 0; i < n.length; i += 1) {
+      if (h[offset + i] !== n[i]) return boxBool(false);
+    }
+    return boxBool(true);
+  },
+  bytearray_endswith_slice: (
+    hayBits,
+    needleBits,
+    startBits,
+    endBits,
+    hasStartBits,
+    hasEndBits,
+  ) => {
+    const hay = getBytearray(hayBits);
+    if (!hay) return boxNone();
+    const total = hay.data.length;
+    const bounds = sliceBoundsFromArgs(
+      startBits,
+      endBits,
+      hasStartBits,
+      hasEndBits,
+      total,
+    );
+    if (!bounds) return boxNone();
+    const { start, end, startGtLen } = bounds;
+    if (end < start) return boxBool(false);
+    const tuple = getTuple(needleBits);
+    if (tuple) {
+      if (!tuple.items.length) return boxBool(false);
+      for (const item of tuple.items) {
+        const itemBytes = getBytes(item) || getBytearray(item);
+        if (!itemBytes) return boxNone();
+        const n = itemBytes.data;
+        if (n.length === 0 && startGtLen) continue;
+        if (bytesEndsWithInRange(hay.data, n, start, end)) return boxBool(true);
+      }
+      return boxBool(false);
+    }
+    const needle = getBytes(needleBits) || getBytearray(needleBits);
+    if (!needle) return boxNone();
+    const n = needle.data;
+    if (n.length === 0 && startGtLen) return boxBool(false);
+    return boxBool(bytesEndsWithInRange(hay.data, n, start, end));
+  },
+  bytes_count: (hayBits, needleBits) => {
+    const hay = getBytes(hayBits);
+    if (!hay) return boxNone();
+    const needle = getBytes(needleBits) || getBytearray(needleBits);
+    if (!needle) return boxNone();
+    const h = hay.data;
+    const n = needle.data;
+    if (n.length === 0) return boxInt(h.length + 1);
+    let count = 0;
+    let i = 0;
+    while (i + n.length <= h.length) {
+      let match = true;
+      for (let j = 0; j < n.length; j += 1) {
+        if (h[i + j] !== n[j]) {
+          match = false;
+          break;
+        }
+      }
+      if (match) {
+        count += 1;
+        i += n.length;
+      } else {
+        i += 1;
+      }
+    }
+    return boxInt(count);
+  },
+  bytearray_count: (hayBits, needleBits) => {
+    const hay = getBytearray(hayBits);
+    if (!hay) return boxNone();
+    const needle = getBytes(needleBits) || getBytearray(needleBits);
+    if (!needle) return boxNone();
+    const h = hay.data;
+    const n = needle.data;
+    if (n.length === 0) return boxInt(h.length + 1);
+    let count = 0;
+    let i = 0;
+    while (i + n.length <= h.length) {
+      let match = true;
+      for (let j = 0; j < n.length; j += 1) {
+        if (h[i + j] !== n[j]) {
+          match = false;
+          break;
+        }
+      }
+      if (match) {
+        count += 1;
+        i += n.length;
+      } else {
+        i += 1;
+      }
+    }
+    return boxInt(count);
+  },
+  bytes_count_slice: (hayBits, needleBits, startBits, endBits, hasStartBits, hasEndBits) => {
+    const hay = getBytes(hayBits);
+    if (!hay) return boxNone();
+    const needle = getBytes(needleBits) || getBytearray(needleBits);
+    if (!needle) return boxNone();
+    const total = hay.data.length;
+    const bounds = sliceBoundsFromArgs(
+      startBits,
+      endBits,
+      hasStartBits,
+      hasEndBits,
+      total,
+    );
+    if (!bounds) return boxNone();
+    const { start, end, startGtLen } = bounds;
+    if (end < start) return boxInt(0);
+    const slice = hay.data.slice(start, end);
+    const n = needle.data;
+    if (n.length === 0) {
+      if (startGtLen) return boxInt(0);
+      return boxInt(end - start + 1);
+    }
+    let count = 0;
+    let i = 0;
+    while (i + n.length <= slice.length) {
+      let match = true;
+      for (let j = 0; j < n.length; j += 1) {
+        if (slice[i + j] !== n[j]) {
+          match = false;
+          break;
+        }
+      }
+      if (match) {
+        count += 1;
+        i += n.length;
+      } else {
+        i += 1;
+      }
+    }
+    return boxInt(count);
+  },
+  bytearray_count_slice: (hayBits, needleBits, startBits, endBits, hasStartBits, hasEndBits) => {
+    const hay = getBytearray(hayBits);
+    if (!hay) return boxNone();
+    const needle = getBytes(needleBits) || getBytearray(needleBits);
+    if (!needle) return boxNone();
+    const total = hay.data.length;
+    const bounds = sliceBoundsFromArgs(
+      startBits,
+      endBits,
+      hasStartBits,
+      hasEndBits,
+      total,
+    );
+    if (!bounds) return boxNone();
+    const { start, end, startGtLen } = bounds;
+    if (end < start) return boxInt(0);
+    const slice = hay.data.slice(start, end);
+    const n = needle.data;
+    if (n.length === 0) {
+      if (startGtLen) return boxInt(0);
+      return boxInt(end - start + 1);
+    }
+    let count = 0;
+    let i = 0;
+    while (i + n.length <= slice.length) {
+      let match = true;
+      for (let j = 0; j < n.length; j += 1) {
+        if (slice[i + j] !== n[j]) {
+          match = false;
+          break;
+        }
+      }
+      if (match) {
+        count += 1;
+        i += n.length;
+      } else {
+        i += 1;
+      }
+    }
+    return boxInt(count);
+  },
   string_find: () => boxNone(),
+  string_find_slice: (
+    hayBits,
+    needleBits,
+    startBits,
+    endBits,
+    hasStartBits,
+    hasEndBits,
+  ) => {
+    const hay = getStrObj(hayBits);
+    const needle = getStrObj(needleBits);
+    if (hay === null || needle === null) return boxNone();
+    const hayChars = Array.from(hay);
+    const needleChars = Array.from(needle);
+    const total = hayChars.length;
+    const bounds = sliceBoundsFromArgs(
+      startBits,
+      endBits,
+      hasStartBits,
+      hasEndBits,
+      total,
+    );
+    if (!bounds) return boxNone();
+    const { start, end, startGtLen } = bounds;
+    if (end < start) return boxInt(-1);
+    if (needleChars.length === 0) {
+      if (startGtLen) return boxInt(-1);
+      return boxInt(start);
+    }
+    const limit = end - needleChars.length;
+    for (let i = start; i <= limit; i += 1) {
+      let match = true;
+      for (let j = 0; j < needleChars.length; j += 1) {
+        if (hayChars[i + j] !== needleChars[j]) {
+          match = false;
+          break;
+        }
+      }
+      if (match) return boxInt(i);
+    }
+    return boxInt(-1);
+  },
   string_format: () => boxNone(),
   string_startswith: () => boxBool(false),
+  string_startswith_slice: (
+    hayBits,
+    needleBits,
+    startBits,
+    endBits,
+    hasStartBits,
+    hasEndBits,
+  ) => {
+    const hay = getStrObj(hayBits);
+    if (hay === null) return boxNone();
+    const hayChars = Array.from(hay);
+    const total = hayChars.length;
+    const bounds = sliceBoundsFromArgs(
+      startBits,
+      endBits,
+      hasStartBits,
+      hasEndBits,
+      total,
+    );
+    if (!bounds) return boxNone();
+    const { start, end, startGtLen } = bounds;
+    if (end < start) return boxBool(false);
+    const matchPrefix = (needleChars) => {
+      if (needleChars.length === 0) return !startGtLen;
+      const sliceLen = end - start;
+      if (needleChars.length > sliceLen) return false;
+      for (let i = 0; i < needleChars.length; i += 1) {
+        if (hayChars[start + i] !== needleChars[i]) return false;
+      }
+      return true;
+    };
+    const tuple = getTuple(needleBits);
+    if (tuple) {
+      if (!tuple.items.length) return boxBool(false);
+      for (const item of tuple.items) {
+        const itemStr = getStrObj(item);
+        if (itemStr === null) return boxNone();
+        if (matchPrefix(Array.from(itemStr))) return boxBool(true);
+      }
+      return boxBool(false);
+    }
+    const needle = getStrObj(needleBits);
+    if (needle === null) return boxNone();
+    return boxBool(matchPrefix(Array.from(needle)));
+  },
   string_endswith: () => boxBool(false),
-  string_count: () => boxInt(0),
-  string_count_slice: () => boxInt(0),
+  string_endswith_slice: (
+    hayBits,
+    needleBits,
+    startBits,
+    endBits,
+    hasStartBits,
+    hasEndBits,
+  ) => {
+    const hay = getStrObj(hayBits);
+    if (hay === null) return boxNone();
+    const hayChars = Array.from(hay);
+    const total = hayChars.length;
+    const bounds = sliceBoundsFromArgs(
+      startBits,
+      endBits,
+      hasStartBits,
+      hasEndBits,
+      total,
+    );
+    if (!bounds) return boxNone();
+    const { start, end, startGtLen } = bounds;
+    if (end < start) return boxBool(false);
+    const matchSuffix = (needleChars) => {
+      if (needleChars.length === 0) return !startGtLen;
+      const sliceLen = end - start;
+      if (needleChars.length > sliceLen) return false;
+      const offset = end - needleChars.length;
+      for (let i = 0; i < needleChars.length; i += 1) {
+        if (hayChars[offset + i] !== needleChars[i]) return false;
+      }
+      return true;
+    };
+    const tuple = getTuple(needleBits);
+    if (tuple) {
+      if (!tuple.items.length) return boxBool(false);
+      for (const item of tuple.items) {
+        const itemStr = getStrObj(item);
+        if (itemStr === null) return boxNone();
+        if (matchSuffix(Array.from(itemStr))) return boxBool(true);
+      }
+      return boxBool(false);
+    }
+    const needle = getStrObj(needleBits);
+    if (needle === null) return boxNone();
+    return boxBool(matchSuffix(Array.from(needle)));
+  },
+  string_count: (hayBits, needleBits) => {
+    const hay = getStrObj(hayBits);
+    const needle = getStrObj(needleBits);
+    if (hay === null || needle === null) return boxNone();
+    const hayChars = Array.from(hay);
+    const needleChars = Array.from(needle);
+    return boxInt(stringCountFromChars(hayChars, needleChars));
+  },
+  string_count_slice: (hayBits, needleBits, startBits, endBits, hasStartBits, hasEndBits) => {
+    const hay = getStrObj(hayBits);
+    const needle = getStrObj(needleBits);
+    if (hay === null || needle === null) return boxNone();
+    const hayChars = Array.from(hay);
+    const needleChars = Array.from(needle);
+    const total = hayChars.length;
+    const bounds = sliceBoundsFromArgs(
+      startBits,
+      endBits,
+      hasStartBits,
+      hasEndBits,
+      total,
+    );
+    if (!bounds) return boxNone();
+    const { start, end, startGtLen } = bounds;
+    if (end < start) return boxInt(0);
+    const slice = hayChars.slice(start, end);
+    if (needleChars.length === 0) {
+      if (startGtLen) return boxInt(0);
+      return boxInt(end - start + 1);
+    }
+    return boxInt(stringCountFromChars(slice, needleChars));
+  },
   string_join: () => boxNone(),
-  string_split: () => boxNone(),
+  string_split: (hayBits, needleBits) => {
+    const hay = getStrObj(hayBits);
+    if (hay === null) return boxNone();
+    if (isNone(needleBits)) {
+      const parts = stringSplitWhitespaceMax(hay, -1);
+      return boxPtr({ type: 'list', items: parts.map((item) => boxPtr({ type: 'str', value: item })) });
+    }
+    const needle = getStrObj(needleBits);
+    if (needle === null) return boxNone();
+    const parts = stringSplitSepMax(hay, needle, -1);
+    return boxPtr({ type: 'list', items: parts.map((item) => boxPtr({ type: 'str', value: item })) });
+  },
+  string_split_max: (hayBits, needleBits, maxsplitBits) => {
+    const hay = getStrObj(hayBits);
+    if (hay === null) return boxNone();
+    const maxsplit = splitMaxsplitFromBits(maxsplitBits);
+    if (maxsplit === null) return boxNone();
+    if (isNone(needleBits)) {
+      const parts = stringSplitWhitespaceMax(hay, maxsplit);
+      return boxPtr({ type: 'list', items: parts.map((item) => boxPtr({ type: 'str', value: item })) });
+    }
+    const needle = getStrObj(needleBits);
+    if (needle === null) return boxNone();
+    const parts = stringSplitSepMax(hay, needle, maxsplit);
+    return boxPtr({ type: 'list', items: parts.map((item) => boxPtr({ type: 'str', value: item })) });
+  },
   string_lower: (haystack) => {
     const str = getStrObj(haystack);
     if (str === null) return boxNone();
@@ -4779,16 +7540,97 @@ BASE_IMPORTS = """\
     const rest = chars.slice(1).join('').toLowerCase();
     return boxPtr({ type: 'str', value: first + rest });
   },
-  string_strip: (haystack) => {
+  string_strip: (haystack, charsBits) => {
     const str = getStrObj(haystack);
     if (str === null) return boxNone();
-    return boxPtr({ type: 'str', value: str.trim() });
+    if (isNone(charsBits)) {
+      return boxPtr({ type: 'str', value: str.trim() });
+    }
+    const chars = getStrObj(charsBits);
+    if (chars === null) {
+      throw new Error('TypeError: strip arg must be None or str');
+    }
+    return boxPtr({ type: 'str', value: stringStripChars(str, chars) });
   },
-  bytes_split: () => boxNone(),
-  bytearray_split: () => boxNone(),
-  string_replace: () => boxNone(),
-  bytes_replace: () => boxNone(),
-  bytearray_replace: () => boxNone(),
+  bytes_split: (hayBits, needleBits) => {
+    const hay = getBytes(hayBits);
+    if (!hay) return boxNone();
+    if (isNone(needleBits)) {
+      const parts = bytesSplitWhitespaceMax(hay.data, -1);
+      return boxPtr({
+        type: 'list',
+        items: parts.map((part) => boxPtr({ type: 'bytes', data: part })),
+      });
+    }
+    const needle = getBytes(needleBits) || getBytearray(needleBits);
+    if (!needle) return boxNone();
+    const parts = bytesSplitSepMax(hay.data, needle.data, -1);
+    return boxPtr({
+      type: 'list',
+      items: parts.map((part) => boxPtr({ type: 'bytes', data: part })),
+    });
+  },
+  bytes_split_max: (hayBits, needleBits, maxsplitBits) => {
+    const hay = getBytes(hayBits);
+    if (!hay) return boxNone();
+    const maxsplit = splitMaxsplitFromBits(maxsplitBits);
+    if (maxsplit === null) return boxNone();
+    if (isNone(needleBits)) {
+      const parts = bytesSplitWhitespaceMax(hay.data, maxsplit);
+      return boxPtr({
+        type: 'list',
+        items: parts.map((part) => boxPtr({ type: 'bytes', data: part })),
+      });
+    }
+    const needle = getBytes(needleBits) || getBytearray(needleBits);
+    if (!needle) return boxNone();
+    const parts = bytesSplitSepMax(hay.data, needle.data, maxsplit);
+    return boxPtr({
+      type: 'list',
+      items: parts.map((part) => boxPtr({ type: 'bytes', data: part })),
+    });
+  },
+  bytearray_split: (hayBits, needleBits) => {
+    const hay = getBytearray(hayBits);
+    if (!hay) return boxNone();
+    if (isNone(needleBits)) {
+      const parts = bytesSplitWhitespaceMax(hay.data, -1);
+      return boxPtr({
+        type: 'list',
+        items: parts.map((part) => boxPtr({ type: 'bytearray', data: part })),
+      });
+    }
+    const needle = getBytes(needleBits) || getBytearray(needleBits);
+    if (!needle) return boxNone();
+    const parts = bytesSplitSepMax(hay.data, needle.data, -1);
+    return boxPtr({
+      type: 'list',
+      items: parts.map((part) => boxPtr({ type: 'bytearray', data: part })),
+    });
+  },
+  bytearray_split_max: (hayBits, needleBits, maxsplitBits) => {
+    const hay = getBytearray(hayBits);
+    if (!hay) return boxNone();
+    const maxsplit = splitMaxsplitFromBits(maxsplitBits);
+    if (maxsplit === null) return boxNone();
+    if (isNone(needleBits)) {
+      const parts = bytesSplitWhitespaceMax(hay.data, maxsplit);
+      return boxPtr({
+        type: 'list',
+        items: parts.map((part) => boxPtr({ type: 'bytearray', data: part })),
+      });
+    }
+    const needle = getBytes(needleBits) || getBytearray(needleBits);
+    if (!needle) return boxNone();
+    const parts = bytesSplitSepMax(hay.data, needle.data, maxsplit);
+    return boxPtr({
+      type: 'list',
+      items: parts.map((part) => boxPtr({ type: 'bytearray', data: part })),
+    });
+  },
+  string_replace: (_hay, _needle, _repl, _count) => boxNone(),
+  bytes_replace: (_hay, _needle, _repl, _count) => boxNone(),
+  bytearray_replace: (_hay, _needle, _repl, _count) => boxNone(),
   bytes_from_obj: (val) => {
     const bytes = getBytes(val);
     if (bytes) return val;
@@ -5601,6 +8443,7 @@ BASE_IMPORTS = """\
   exception_kind: (exc) => exceptionKind(exc),
   exception_message: (exc) => exceptionMessage(exc),
   exception_set_cause: (exc, cause) => exceptionSetCause(exc, cause),
+  exception_set_value: (exc, value) => exceptionSetValue(exc, value),
   exception_context_set: (exc) => exceptionContextSet(exc),
   raise: (exc) => raiseException(exc),
   context_closing: (val) => val,
@@ -5671,6 +8514,7 @@ BASE_IMPORTS = """\
         boxPtr({ type: 'str', value: 'StopIteration' }),
         boxPtr({ type: 'str', value: msg }),
       );
+      exceptionSetValue(exc, valBits);
       return raiseException(exc);
     }
     return valBits;
@@ -5733,17 +8577,8 @@ BASE_IMPORTS = """\
     const pollFn = baseImports.anext_default_poll;
     let pollIdx = anextDefaultPollIdx;
     if (pollIdx === null) {
-      for (let i = 0; i < table.length; i += 1) {
-        if (table.get(i) === pollFn) {
-          pollIdx = i;
-          break;
-        }
-      }
-      if (pollIdx === null) {
-        pollIdx = table.length;
-        table.grow(1);
-        table.set(pollIdx, pollFn);
-      }
+      pollIdx = getOrAddTableFunc(pollFn, 1);
+      if (pollIdx === null) return boxNone();
       anextDefaultPollIdx = pollIdx;
     }
     const addr = allocRaw(24);

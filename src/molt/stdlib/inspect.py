@@ -5,10 +5,15 @@ from __future__ import annotations
 from typing import Any
 
 __all__ = [
+    "GEN_CLOSED",
+    "GEN_CREATED",
+    "GEN_RUNNING",
+    "GEN_SUSPENDED",
     "Parameter",
     "Signature",
     "cleandoc",
     "getdoc",
+    "getgeneratorstate",
     "isclass",
     "isfunction",
     "ismodule",
@@ -19,6 +24,11 @@ __all__ = [
 
 # TODO(stdlib-compat, owner:stdlib, milestone:SL3): add full signature/introspection parity.
 
+GEN_CREATED = "GEN_CREATED"
+GEN_RUNNING = "GEN_RUNNING"
+GEN_SUSPENDED = "GEN_SUSPENDED"
+GEN_CLOSED = "GEN_CLOSED"
+
 
 class _Empty:
     pass
@@ -26,13 +36,19 @@ class _Empty:
 
 _empty = _Empty()
 
+POSITIONAL_ONLY = 0
+POSITIONAL_OR_KEYWORD = 1
+VAR_POSITIONAL = 2
+KEYWORD_ONLY = 3
+VAR_KEYWORD = 4
+
 
 class Parameter:
-    POSITIONAL_ONLY = 0
-    POSITIONAL_OR_KEYWORD = 1
-    VAR_POSITIONAL = 2
-    KEYWORD_ONLY = 3
-    VAR_KEYWORD = 4
+    POSITIONAL_ONLY = POSITIONAL_ONLY
+    POSITIONAL_OR_KEYWORD = POSITIONAL_OR_KEYWORD
+    VAR_POSITIONAL = VAR_POSITIONAL
+    KEYWORD_ONLY = KEYWORD_ONLY
+    VAR_KEYWORD = VAR_KEYWORD
 
     def __init__(
         self,
@@ -160,6 +176,18 @@ def isgeneratorfunction(obj: Any) -> bool:
         return True
     flags = getattr(getattr(obj, "__code__", None), "co_flags", 0)
     return bool(flags & 0x20)
+
+
+def getgeneratorstate(gen: Any) -> str:
+    if getattr(gen, "gi_running", False):
+        return GEN_RUNNING
+    frame = getattr(gen, "gi_frame", None)
+    if frame is None:
+        return GEN_CLOSED
+    lasti = getattr(frame, "f_lasti", -1)
+    if lasti == -1:
+        return GEN_CREATED
+    return GEN_SUSPENDED
 
 
 def _signature_from_molt(obj: Any) -> Signature | None:

@@ -16,8 +16,69 @@ print(lst.pop())
 print(lst)
 print(lst.pop(0))
 print(lst)
+print(lst.pop(-1))
+print(lst)
 print(lst.count(5))
 print(lst.index(5))
+print(lst.index(5, 0, 2))
+try:
+    print(lst.index(5, 1, 2))
+except ValueError:
+    print("list-index-miss")
+
+idxer = getattr(lst, "index")
+print(idxer(5, 0, 2))
+try:
+    idxer(5, 1, 2)
+except ValueError:
+    print("list-index-miss-dyn")
+
+lst2 = [9, 8, 7]
+popper = getattr(lst2, "pop")
+print(popper())
+print(lst2)
+print(popper(0))
+print(lst2)
+try:
+    [].pop()
+except IndexError:
+    print("list-pop-empty")
+
+lst3 = [3, 1, 2]
+lst3.sort()
+print(lst3)
+
+
+def key_first(item):
+    return item[0]
+
+
+lst4 = [("b", 2), ("a", 1), ("c", 0)]
+lst4.sort(key=key_first)
+print(lst4)
+lst4.sort(key=key_first, reverse=True)
+print(lst4)
+
+lst5 = [1, 2, 3]
+lst5.extend(range(4, 6))
+print(lst5)
+lst5.insert(-1, 9)
+print(lst5)
+lst5.insert(100, 7)
+print(lst5)
+lst5.insert(-100, 6)
+print(lst5)
+lst5.remove(9)
+print(lst5)
+try:
+    lst5.remove(42)
+except ValueError:
+    print("list-remove-miss")
+lst6 = lst5.copy()
+lst5.clear()
+print(lst5, lst6)
+lst6.reverse()
+print(lst6)
 
 print(d.get("b"))
 print(d.get("missing"))
@@ -56,6 +117,12 @@ d2.update(Mapping())
 print(d2["a"], d2["b"])
 
 d3 = {"x": 1, "y": 2}
+print(d3.setdefault("x", 9))
+print(d3.setdefault("z", 9))
+print(d3)
+print(d3.pop("x"))
+print(d3.pop("missing", 5))
+print(dict.fromkeys(["a", "b"], 3))
 print(d3.copy())
 print(d3.popitem())
 print(d3)

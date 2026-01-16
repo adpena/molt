@@ -23,7 +23,7 @@ The TFA is the machine-readable contract that enables this.
 - `.pyi` stubs
 - typeshed
 - project configuration (strict vs permissive)
-- optional runtime profiling hints (future)
+- optional runtime profiling hints (future) (TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): runtime profiling hints in TFA).
 
 ## Output: Type Facts Artifact
 A deterministic artifact emitted by `molt check`:

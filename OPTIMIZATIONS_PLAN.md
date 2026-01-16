@@ -318,6 +318,51 @@ and regression control.
 
 **Success Criteria**
 - Handle lookup overhead <=1% on hot-path benchmarks.
+
+### OPT-0005: SIMD Coverage Expansion (Reductions + String/Bytes Kernels)
+
+**Problem**
+- SIMD utilization is limited to integer reductions (sum/min/max) and simdutf UTF-8 counts; string/bytes kernels and prod reductions are largely scalar, and deeply nested loop benches show no vectorized execution.
+
+**Hypotheses**
+- H1: Vectorized byte/substring search/count (memchr/memmem fast paths) will cut string/bytes kernels by 15-30% on large inputs.
+- H2: Expanding reduction lowering to typed buffers (intarray/typed views) will allow wider SIMD kernels (prod, sum/min/max) to run without per-element boxing.
+- H3: Loop pattern lowering for constant-bound counter loops (like deeply nested loops) will eliminate interpreter overhead and deliver >3x speedups without affecting semantics.
+
+**Alternatives**
+1) Add SIMD coverage only in runtime kernels (fastest to ship, medium gain, no compiler changes).
+2) Compiler-driven typed buffer materialization + SIMD kernels (higher complexity, best long-term).
+3) Pattern-based loop strength reduction for constant loops (bench win, limited generality).
+
+**Research References**
+- Highway/SIMD Everywhere (portable SIMD design): https://github.com/google/highway
+- simdutf (UTF-8 counting/validation): https://github.com/simdutf/simdutf
+- CPython specializing interpreter (PEP 659): https://peps.python.org/pep-0659/
+
+**Plan**
+- Phase 0: Add SIMD usage counters + CPU feature reporting (already landed).
+- Phase 1: Extend memchr/memmem instrumentation and add byte/substring SIMD fast paths where safe.
+- Phase 2: Add typed-buffer lowering for integer list reductions (opt-in via trusted hints).
+- Phase 3: Pattern-based loop strength reduction for constant-bound counter loops.
+
+**Benchmark Matrix**
+- bench_str_find.py / bench_bytes_find.py: expected +15-30%
+- bench_str_count.py / bench_str_count_unicode.py: expected +10-20%
+- bench_prod_list.py: expected +1.2-1.5x (typed buffer + SIMD)
+- bench_deeply_nested_loop.py: expected +3-5x (loop strength reduction)
+
+**Correctness Plan**
+- New unit tests for typed buffer reductions and loop strength reduction cases.
+- Differential patterns: nested loops and string/bytes find/count parity.
+- Guard/fallback behavior: SIMD paths only for safe preconditions; fallback to scalar on mismatch.
+
+**Risk + Rollback**
+- Risk: type/overflow edge cases or incorrect loop folding.
+- Rollback: keep SIMD/strength-reduction behind feature flags and fall back to scalar paths.
+
+**Success Criteria**
+- SIMD counters show non-zero usage for string/bytes kernels on representative inputs.
+- ≥15% speedup on string/bytes kernels and ≥3x on deeply nested loop bench, with no regressions >5%.
 - Miri clean under strict provenance; fuzz targets green.
 - Documented tradeoffs in `docs/spec/0020_RUNTIME_SAFETY_INVARIANTS.md`.
 
@@ -527,22 +572,22 @@ and regression control.
   by allocation + raw-object tracking costs (mutex/HashSet) rather than slot ops.
 - Update (2026-01-11): added a non-pointer fast path for `store` (skip refcount
   adjustments when old/new values are immediate) and simplified ref adjust tag
-  checks; re-bench pending.
+  checks; re-bench pending (TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): re-bench OPT-0007 store fast path).
 - Update (2026-01-11): MOLT_PROFILE shows `bench_struct.py` alloc_count ~7.0M and
   layout_guard ~2.0M; `bench_attr_access.py` alloc_count ~2.5M and
   layout_guard ~1.0M (≈2x loop iterations). Allocation + guard costs still
   dominate.
 - Update (2026-01-12): added a TLS object pool for `TYPE_ID_OBJECT` to reduce
-  mutex/HashMap contention in hot allocation loops; re-bench pending.
+  mutex/HashMap contention in hot allocation loops; re-bench pending (TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): re-bench OPT-0007 TLS pool).
 - Update (2026-01-12): set Cranelift `opt_level=speed` for the native backend;
-  re-bench pending.
+  re-bench pending (TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): re-bench OPT-0007 Cranelift opt_level).
 - Update (2026-01-12): replaced pool HashMap lookups with fixed 8-byte size
-  buckets (TLS + global) for O(1) size-class reuse; re-bench pending.
+  buckets (TLS + global) for O(1) size-class reuse; re-bench pending (TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): re-bench OPT-0007 size-class buckets).
 - Update (2026-01-12): added header flags to skip payload scans for objects that
   never stored pointers, plus a static-class allocation path that elides per-
-  instance class refcounts; re-bench pending.
+  instance class refcounts; re-bench pending (TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): re-bench OPT-0007 header flags).
 - Update (2026-01-12): added a minimal dead-struct allocation elision pass in the
-  backend (alloc only used by slot stores/object_set_class); re-bench pending.
+  backend (alloc only used by slot stores/object_set_class); re-bench pending (TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): re-bench OPT-0007 alloc elision).
 
 **Benchmark Matrix**
 - bench_struct.py: expected >=2x improvement
@@ -589,7 +634,8 @@ and regression control.
  - Update (2026-01-08): bench still regresses (`bench_descriptor_property.py` 0.12x);
    need direct-call lowering and IC that avoids repeated generic lookups.
  - Update (2026-01-09): added a guarded property-get fast path (layout guard +
-   direct getter call) to bypass descriptor lookup in hot loops; re-bench pending.
+   direct getter call) to bypass descriptor lookup in hot loops; re-bench pending
+   (TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): re-bench OPT-0008 property-get fast path).
  - Update (2026-01-09): re-bench shows `bench_descriptor_property.py` ~0.10x;
    guarded property get is not enough without call overhead reduction.
  - Update (2026-01-09): loop guard caching + trivial property inline
@@ -656,7 +702,8 @@ and regression control.
    still 0.27x after keeping the single-byte separator on the count+split path.
  - Update (2026-01-09): added split token reuse cache for short repeated pieces
    and a join fast path for repeated identical elements using a doubling copy
-   fill strategy; re-bench pending.
+   fill strategy; re-bench pending
+   (TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): re-bench OPT-0010 join fast path).
  - Update (2026-01-09): re-bench shows `bench_str_split.py` ~2.04x and
    `bench_str_join.py` ~0.95x; split success, join near parity but still <1.0x.
  - Update (2026-01-09): re-bench shows `bench_str_split.py` ~2.03x and

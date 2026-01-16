@@ -47,9 +47,15 @@ Each dependency should declare:
 ---
 
 ## 4. Tooling Requirements
-- `molt deps`: print the tier classification and blockers (planned).
-- `molt vendor`: vendor pure Python sources into a deterministic build graph (planned).
-- `molt verify`: confirm hashes and capability declarations (planned).
+- `molt deps`: print tier classification and blockers (initial implementation available;
+  supports `--json` and `--verbose` summaries).
+- `molt vendor`: materialize Tier A sources into `vendor/` (default) with a
+  `manifest.json` and hashed artifacts; supports `--dry-run`, `--output`,
+  `--allow-non-tier-a`, `--extras`, `--json`, and `--verbose` (markers/extras
+  are evaluated against the host environment).
+- `molt verify`: confirm hashes and capability declarations (initial; manifest + checksum
+  validation implemented, capability gating enforcement still pending).
+  (TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): capability gating enforcement in `molt verify`.)
 
 ---
 

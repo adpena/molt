@@ -4,6 +4,7 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
+import tempfile
 
 import pytest
 
@@ -224,18 +225,22 @@ LIST_DICT_IMPORT_OVERRIDES = textwrap.dedent(
     },
     list_pop: (listBits, idxBits) => {
       const list = getList(listBits);
-      if (!list || list.items.length === 0) return boxNone();
-      let idx;
-      if (isTag(idxBits, TAG_NONE)) {
-        idx = list.items.length - 1;
-      } else if (isTag(idxBits, TAG_INT)) {
-        idx = Number(unboxInt(idxBits));
+      if (!list) return boxNone();
+      const missing = missingSentinel();
+      const len = list.items.length;
+      const lenBig = BigInt(len);
+      let idxBig;
+      if (idxBits === missing || isTag(idxBits, TAG_NONE)) {
+        idxBig = lenBig - 1n;
       } else {
-        return boxNone();
+        idxBig = indexBigIntFromBits(idxBits, LIST_INDEX_ERR);
+        if (idxBig === null) return boxNone();
       }
-      if (idx < 0) idx += list.items.length;
-      if (idx < 0 || idx >= list.items.length) return boxNone();
-      return list.items.splice(idx, 1)[0];
+      if (idxBig < 0n) idxBig += lenBig;
+      if (idxBig < 0n || idxBig >= lenBig) {
+        throw new Error('IndexError: pop index out of range');
+      }
+      return list.items.splice(Number(idxBig), 1)[0] ?? boxNone();
     },
     list_extend: (listBits, otherBits) => {
       const list = getList(listBits);
@@ -434,9 +439,9 @@ LIST_DICT_IMPORT_OVERRIDES = textwrap.dedent(
     string_split: () => boxNone(),
     bytes_split: () => boxNone(),
     bytearray_split: () => boxNone(),
-    string_replace: () => boxNone(),
-    bytes_replace: () => boxNone(),
-    bytearray_replace: () => boxNone(),
+    string_replace: (_hay, _needle, _repl, _count) => boxNone(),
+    bytes_replace: (_hay, _needle, _repl, _count) => boxNone(),
+    bytearray_replace: (_hay, _needle, _repl, _count) => boxNone(),
     bytearray_from_obj: () => boxNone(),
     intarray_from_seq: () => boxNone(),
     buffer2d_new: () => boxNone(),
@@ -553,7 +558,7 @@ def test_wasm_list_dict_ops_parity(tmp_path: Path) -> None:
         "print(sumv)\n"
     )
 
-    output_wasm = root / "output.wasm"
+    output_wasm = Path(tempfile.gettempdir()) / "output.wasm"
     existed = output_wasm.exists()
 
     runner = write_wasm_runner(
