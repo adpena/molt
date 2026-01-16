@@ -27195,35 +27195,35 @@ unsafe fn attr_lookup_ptr(obj_ptr: *mut u8, attr_bits: u64) -> Option<u64> {
                                     let kind_bits = molt_exception_kind(exc_bits);
                                     let kind = string_obj_to_owned(obj_from_bits(kind_bits));
                                     dec_ref_bits(kind_bits);
-                                        if kind.as_deref() == Some("AttributeError") {
-                                            let getattr_bits = intern_static_name(
-                                                &INTERN_GETATTR_NAME,
-                                                b"__getattr__",
-                                            );
-                                            if !obj_eq(
-                                                obj_from_bits(attr_bits),
-                                                obj_from_bits(getattr_bits),
-                                            ) && class_attr_lookup_raw_mro(class_ptr, getattr_bits)
-                                                .is_some()
-                                            {
-                                                molt_exception_clear();
-                                                dec_ref_bits(exc_bits);
-                                                exception_stack_pop();
-                                                if let Some(getattr_call_bits) = class_attr_lookup(
-                                                    class_ptr,
-                                                    class_ptr,
-                                                    Some(obj_ptr),
-                                                    getattr_bits,
-                                                ) {
-                                                    let getattr_res =
-                                                        call_callable1(getattr_call_bits, attr_bits);
-                                                    if exception_pending() {
-                                                        return None;
-                                                    }
-                                                    return Some(getattr_res);
+                                    if kind.as_deref() == Some("AttributeError") {
+                                        let getattr_bits = intern_static_name(
+                                            &INTERN_GETATTR_NAME,
+                                            b"__getattr__",
+                                        );
+                                        if !obj_eq(
+                                            obj_from_bits(attr_bits),
+                                            obj_from_bits(getattr_bits),
+                                        ) && class_attr_lookup_raw_mro(class_ptr, getattr_bits)
+                                            .is_some()
+                                        {
+                                            molt_exception_clear();
+                                            dec_ref_bits(exc_bits);
+                                            exception_stack_pop();
+                                            if let Some(getattr_call_bits) = class_attr_lookup(
+                                                class_ptr,
+                                                class_ptr,
+                                                Some(obj_ptr),
+                                                getattr_bits,
+                                            ) {
+                                                let getattr_res =
+                                                    call_callable1(getattr_call_bits, attr_bits);
+                                                if exception_pending() {
+                                                    return None;
                                                 }
+                                                return Some(getattr_res);
                                             }
                                         }
+                                    }
                                     dec_ref_bits(exc_bits);
                                     exception_stack_pop();
                                     return None;
