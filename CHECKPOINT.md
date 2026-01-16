@@ -1,8 +1,8 @@
-Checkpoint: 2026-01-16T07:46:51Z
+Checkpoint: 2026-01-16T07:53:26Z
 Git: 7d31c358d57c5e95197f04e793c200d06e47adb5 (dirty)
 
 Summary
-- Removed root `*_molt` artifacts and `logs/` directory to reduce repo clutter; kept caches intact.
+- Removed `target/` and `.molt/cache` directories to reclaim disk; CI run 21059507157 in progress with Cargo clippy failing.
 
 Files touched (uncommitted)
 - .gitignore
@@ -31,4 +31,4 @@ Known gaps
 - `str(bytes, encoding, errors)` decoding not implemented (NotImplementedError).
 
 CI
-- Not run (local changes only).
+- Monitoring `https://github.com/adpena/molt/actions/runs/21059507157` (test-rust failing in Cargo clippy; others running).
