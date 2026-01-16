@@ -1734,7 +1734,6 @@ unsafe fn memoryview_collect_bytes(ptr: *mut u8) -> Option<Vec<u8>> {
     if offset < 0 {
         return None;
     }
-    let offset = offset as isize;
     let mut out = Vec::with_capacity(nbytes);
     if memoryview_is_c_contiguous(shape, strides, memoryview_itemsize(ptr)) {
         let end = offset.checked_add(nbytes as isize)?;
@@ -1929,9 +1928,7 @@ unsafe fn memoryview_write_scalar(
         }
         MemoryViewFormatKind::Signed | MemoryViewFormatKind::Unsigned => {
             let err_msg = format!("memoryview: invalid type for format '{}'", fmt.code as char);
-            let Some(value) = index_bigint_from_obj(val_bits, &err_msg) else {
-                return None;
-            };
+            let value = index_bigint_from_obj(val_bits, &err_msg)?;
             let bits = (fmt.itemsize * 8) as u32;
             let (min, max) = if fmt.kind == MemoryViewFormatKind::Signed {
                 let limit = BigInt::from(1u64) << (bits - 1);
@@ -1955,7 +1952,7 @@ unsafe fn memoryview_write_scalar(
                     1 => (val_i64 as i8).to_ne_bytes().to_vec(),
                     2 => (val_i64 as i16).to_ne_bytes().to_vec(),
                     4 => (val_i64 as i32).to_ne_bytes().to_vec(),
-                    8 => (val_i64 as i64).to_ne_bytes().to_vec(),
+                    8 => val_i64.to_ne_bytes().to_vec(),
                     _ => return None,
                 };
                 data[offset..offset + fmt.itemsize].copy_from_slice(&bytes);
@@ -1966,7 +1963,7 @@ unsafe fn memoryview_write_scalar(
                 1 => (val_u64 as u8).to_ne_bytes().to_vec(),
                 2 => (val_u64 as u16).to_ne_bytes().to_vec(),
                 4 => (val_u64 as u32).to_ne_bytes().to_vec(),
-                8 => (val_u64 as u64).to_ne_bytes().to_vec(),
+                8 => val_u64.to_ne_bytes().to_vec(),
                 _ => return None,
             };
             data[offset..offset + fmt.itemsize].copy_from_slice(&bytes);
@@ -2806,7 +2803,7 @@ fn hash_tuple(ptr: *mut u8) -> i64 {
     let mut mult = PY_HASH_MULTIPLIER;
     let len = elems.len() as u64;
     for &elem in elems.iter() {
-        hash = hash ^ hash_bits(elem);
+        hash ^= hash_bits(elem);
         hash = hash.wrapping_mul(mult);
         mult = mult.wrapping_add(82520 + len * 2);
     }
@@ -17342,15 +17339,13 @@ fn replace_bytes_impl_limit(
     let mut out = Vec::with_capacity(hay.len());
     let finder = memmem::Finder::new(needle);
     let mut start = 0usize;
-    let mut replaced = 0usize;
-    for idx in finder.find_iter(hay) {
+    for (replaced, idx) in finder.find_iter(hay).enumerate() {
         if replaced >= limit {
             break;
         }
         out.extend_from_slice(&hay[start..idx]);
         out.extend_from_slice(replacement);
         start = idx + needle.len();
-        replaced += 1;
     }
     out.extend_from_slice(&hay[start..]);
     out
@@ -17960,7 +17955,7 @@ fn split_string_whitespace_to_list_maxsplit(hay: &str, maxsplit: i64) -> Option<
             splits += 1;
             if splits >= maxsplit {
                 let mut rest_start = None;
-                while let Some((j, ch2)) = iter.next() {
+                for (j, ch2) in iter.by_ref() {
                     if !ch2.is_whitespace() {
                         rest_start = Some(j);
                         break;
@@ -17979,7 +17974,7 @@ fn split_string_whitespace_to_list_maxsplit(hay: &str, maxsplit: i64) -> Option<
                 return Some(list_bits);
             }
             let mut next_start = None;
-            while let Some((j, ch2)) = iter.next() {
+            for (j, ch2) in iter.by_ref() {
                 if !ch2.is_whitespace() {
                     next_start = Some(j);
                     break;
@@ -20122,9 +20117,8 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                             };
                         let indices = collect_slice_indices(start, stop, step);
                         let elem_count = indices.len();
-                        let mut src_bytes: Vec<u8> = Vec::new();
                         let val_obj = obj_from_bits(val_bits);
-                        if let Some(src_ptr) = val_obj.as_ptr() {
+                        let src_bytes = if let Some(src_ptr) = val_obj.as_ptr() {
                             let src_type = object_type_id(src_ptr);
                             if src_type == TYPE_ID_BYTES || src_type == TYPE_ID_BYTEARRAY {
                                 if fmt.code != b'B' {
@@ -20133,7 +20127,7 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                                         "memoryview assignment: lvalue and rvalue have different structures",
                                     );
                                 }
-                                src_bytes = bytes_like_slice_raw(src_ptr).unwrap_or(&[]).to_vec();
+                                bytes_like_slice_raw(src_ptr).unwrap_or(&[]).to_vec()
                             } else if src_type == TYPE_ID_MEMORYVIEW {
                                 let src_fmt = match memoryview_format_from_bits(
                                     memoryview_format_bits(src_ptr),
@@ -20151,10 +20145,10 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                                         "memoryview assignment: lvalue and rvalue have different structures",
                                     );
                                 }
-                                src_bytes = match memoryview_collect_bytes(src_ptr) {
+                                match memoryview_collect_bytes(src_ptr) {
                                     Some(buf) => buf,
                                     None => return MoltObject::none().bits(),
-                                };
+                                }
                             } else {
                                 raise!(
                                     "TypeError",
@@ -20172,7 +20166,7 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                                     type_name(val_obj)
                                 ),
                             );
-                        }
+                        };
                         let expected = elem_count * fmt.itemsize;
                         if src_bytes.len() != expected {
                             raise!(
@@ -22798,7 +22792,7 @@ fn heapq_lt(a_bits: u64, b_bits: u64) -> Option<bool> {
     obj_from_bits(res_bits).as_bool()
 }
 
-unsafe fn heapq_siftdown(heap: &mut Vec<u64>, startpos: usize, mut pos: usize) -> bool {
+unsafe fn heapq_siftdown(heap: &mut [u64], startpos: usize, mut pos: usize) -> bool {
     let newitem = heap[pos];
     while pos > startpos {
         let parentpos = (pos - 1) / 2;
@@ -22818,7 +22812,7 @@ unsafe fn heapq_siftdown(heap: &mut Vec<u64>, startpos: usize, mut pos: usize) -
     true
 }
 
-unsafe fn heapq_siftup(heap: &mut Vec<u64>, mut pos: usize) -> bool {
+unsafe fn heapq_siftup(heap: &mut [u64], mut pos: usize) -> bool {
     let endpos = heap.len();
     let startpos = pos;
     let newitem = heap[pos];
@@ -22914,7 +22908,7 @@ pub extern "C" fn molt_heapq_heappop(list_bits: u64) -> u64 {
         }
         inc_ref_bits(return_bits);
         dec_ref_bits(return_bits);
-        return return_bits;
+        return_bits
     }
 }
 
@@ -22940,7 +22934,7 @@ pub extern "C" fn molt_heapq_heapreplace(list_bits: u64, item_bits: u64) -> u64 
         }
         inc_ref_bits(return_bits);
         dec_ref_bits(return_bits);
-        return return_bits;
+        return_bits
     }
 }
 
@@ -27201,16 +27195,15 @@ unsafe fn attr_lookup_ptr(obj_ptr: *mut u8, attr_bits: u64) -> Option<u64> {
                                     let kind_bits = molt_exception_kind(exc_bits);
                                     let kind = string_obj_to_owned(obj_from_bits(kind_bits));
                                     dec_ref_bits(kind_bits);
-                                    if kind.as_deref() == Some("AttributeError") {
-                                        let getattr_bits = intern_static_name(
-                                            &INTERN_GETATTR_NAME,
-                                            b"__getattr__",
-                                        );
-                                        if !obj_eq(
-                                            obj_from_bits(attr_bits),
-                                            obj_from_bits(getattr_bits),
-                                        ) {
-                                            if class_attr_lookup_raw_mro(class_ptr, getattr_bits)
+                                        if kind.as_deref() == Some("AttributeError") {
+                                            let getattr_bits = intern_static_name(
+                                                &INTERN_GETATTR_NAME,
+                                                b"__getattr__",
+                                            );
+                                            if !obj_eq(
+                                                obj_from_bits(attr_bits),
+                                                obj_from_bits(getattr_bits),
+                                            ) && class_attr_lookup_raw_mro(class_ptr, getattr_bits)
                                                 .is_some()
                                             {
                                                 molt_exception_clear();
@@ -27222,10 +27215,8 @@ unsafe fn attr_lookup_ptr(obj_ptr: *mut u8, attr_bits: u64) -> Option<u64> {
                                                     Some(obj_ptr),
                                                     getattr_bits,
                                                 ) {
-                                                    let getattr_res = call_callable1(
-                                                        getattr_call_bits,
-                                                        attr_bits,
-                                                    );
+                                                    let getattr_res =
+                                                        call_callable1(getattr_call_bits, attr_bits);
                                                     if exception_pending() {
                                                         return None;
                                                     }
@@ -27233,7 +27224,6 @@ unsafe fn attr_lookup_ptr(obj_ptr: *mut u8, attr_bits: u64) -> Option<u64> {
                                                 }
                                             }
                                         }
-                                    }
                                     dec_ref_bits(exc_bits);
                                     exception_stack_pop();
                                     return None;
@@ -27343,26 +27333,24 @@ unsafe fn attr_lookup_ptr(obj_ptr: *mut u8, attr_bits: u64) -> Option<u64> {
                                     if !obj_eq(
                                         obj_from_bits(attr_bits),
                                         obj_from_bits(getattr_bits),
-                                    ) {
-                                        if class_attr_lookup_raw_mro(class_ptr, getattr_bits)
-                                            .is_some()
-                                        {
-                                            molt_exception_clear();
-                                            dec_ref_bits(exc_bits);
-                                            exception_stack_pop();
-                                            if let Some(getattr_call_bits) = class_attr_lookup(
-                                                class_ptr,
-                                                class_ptr,
-                                                Some(obj_ptr),
-                                                getattr_bits,
-                                            ) {
-                                                let getattr_res =
-                                                    call_callable1(getattr_call_bits, attr_bits);
-                                                if exception_pending() {
-                                                    return None;
-                                                }
-                                                return Some(getattr_res);
+                                    ) && class_attr_lookup_raw_mro(class_ptr, getattr_bits)
+                                        .is_some()
+                                    {
+                                        molt_exception_clear();
+                                        dec_ref_bits(exc_bits);
+                                        exception_stack_pop();
+                                        if let Some(getattr_call_bits) = class_attr_lookup(
+                                            class_ptr,
+                                            class_ptr,
+                                            Some(obj_ptr),
+                                            getattr_bits,
+                                        ) {
+                                            let getattr_res =
+                                                call_callable1(getattr_call_bits, attr_bits);
+                                            if exception_pending() {
+                                                return None;
                                             }
+                                            return Some(getattr_res);
                                         }
                                     }
                                 }

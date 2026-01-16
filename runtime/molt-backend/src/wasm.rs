@@ -21,9 +21,6 @@ const POINTER_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
 const QNAN_TAG_MASK_I64: i64 = (QNAN | TAG_MASK) as i64;
 const QNAN_TAG_PTR_I64: i64 = (QNAN | TAG_PTR) as i64;
 const INT_MASK: u64 = (1 << 47) - 1;
-const FUNC_DEFAULT_NONE: i64 = 1;
-const FUNC_DEFAULT_DICT_POP: i64 = 2;
-const FUNC_DEFAULT_DICT_UPDATE: i64 = 3;
 const HEADER_SIZE_BYTES: i32 = 40;
 const HEADER_POLL_FN_OFFSET: i32 = -(HEADER_SIZE_BYTES - 8);
 const HEADER_STATE_OFFSET: i32 = -(HEADER_SIZE_BYTES - 16);
@@ -59,7 +56,6 @@ struct CompileFuncContext<'a> {
     table_func_indices: &'a [u32],
     table_base: u32,
     import_ids: &'a HashMap<String, u32>,
-    user_type_map: &'a HashMap<usize, u32>,
     reloc_enabled: bool,
 }
 
@@ -754,7 +750,6 @@ impl WasmBackend {
             func_indices: &func_to_index,
             table_func_indices: &table_func_indices,
             import_ids: &import_ids,
-            user_type_map: &user_type_map,
             reloc_enabled,
             table_base,
         };
@@ -835,7 +830,6 @@ impl WasmBackend {
         let table_func_indices = ctx.table_func_indices;
         let table_base = ctx.table_base;
         let import_ids = ctx.import_ids;
-        let user_type_map = ctx.user_type_map;
         let reloc_enabled = ctx.reloc_enabled;
 
         let mut locals = HashMap::new();
