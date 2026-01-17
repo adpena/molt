@@ -33,9 +33,8 @@
 - Avoid excessive lint/test loops while implementing; validate once after a cohesive set of changes is complete unless debugging a failure.
 - If tests fail due to missing functionality, stop and call out the missing feature; ask for priority/plan before changing tests, then implement the correct behavior instead.
 - **NEVER change Python semantics just to make a differential test pass.** This is a hard-stop rule; fix behavior to match CPython or document the genuine incompatibility in specs/tests.
+- Parity-first workflow: execute the ROADMAP parity plan before large optimizations; require parity gates (matrix updates + differential coverage + native/WASM parity checks) for changes that touch runtime semantics.
 - Treat benchmark regressions as failures; run `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json`, `tools/dev.py lint`, and `tools/dev.py test` after the fix is in, then iterate on optimization until the regression is removed without introducing new regressions.
-- Run `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json` for every commit and commit the updated `bench/results/bench.json` (document blockers in `CHECKPOINT.md`). On Apple Silicon, prefer an arm64 interpreter (e.g., `--python /opt/homebrew/bin/python3.14`) so Codon baselines link.
-- Run `uv run --python 3.14 python3 tools/bench_wasm.py --json-out bench/results/bench_wasm.json` for every commit and commit the updated `bench/results/bench_wasm.json` (document blockers in `CHECKPOINT.md`); also run the native bench and summarize WASM vs CPython ratios in `README.md`.
 - After native + WASM benches, run `uv run --python 3.14 python3 tools/bench_report.py --update-readme` and commit the updated `docs/benchmarks/bench_summary.md` plus the refreshed `README.md` summary block.
 - Super bench runs (`tools/bench.py --super`, `tools/bench_wasm.py --super`) execute 10 samples and emit mean/median/variance/range stats; run only on explicit request or release tagging, and summarize the stats in `README.md`.
 - Sound the alarm immediately on performance regressions and trigger an optimization-first feedback loop (bench → lint → test → optimize) until green, but avoid repeated cycles before the implementation is complete.
@@ -62,7 +61,6 @@
 - ABSOLUTE RULE: Do not "fix" tests by weakening or contorting coverage to hide missing, partial, or hacky behavior; surface the gap, ask for priority/plan if needed, and implement the correct behavior.
 - Proactively read and update `ROADMAP.md` and relevant files under `docs/spec/` when behavior or scope changes.
 - Treat `docs/spec/STATUS.md` as the canonical source of truth for current capabilities/limits; sync README/ROADMAP after changes.
-- Update docs/spec and tests each turn as appropriate to reflect new behavior; if no updates are needed, note that in `CHECKPOINT.md`.
 - Proactively and aggressively plan for native support of popular and growing Python packages written in Rust, with a bias toward production-quality integrations.
 - Treat the long-term vision as full Python compatibility: all types, syntax, and dependencies.
 - Prioritize extending features; update existing implementations when needed to hit roadmap/spec goals, even if it requires refactors.
@@ -74,7 +72,6 @@
 - Follow `docs/spec/0015_STDLIB_COMPATIBILITY_MATRIX.md` for stdlib scope, tiers (core vs import vs gated), and promotion rules.
 - Keep stdlib modules import-only by default; only promote to core after updating the stdlib matrix and `ROADMAP.md`.
 - Treat I/O, OS, network, and process modules as capability-gated and document the required permissions in specs.
-- Always update `CHECKPOINT.md` after each assistant turn and when nearing context compaction; include an ISO-8601 timestamp and `git rev-parse HEAD` (note if dirty) for freshness checks.
 
 ## TODO Taxonomy (Required)
 Use a single, explicit TODO format everywhere (code + docs + tests). This is how we track gaps safely and keep LLMs aligned.
@@ -109,8 +106,6 @@ Use a single, explicit TODO format everywhere (code + docs + tests). This is how
 - Do not implement workarounds, partial implementations, or degraded behavior because a needed file is locked; wait until the lock clears instead.
 - Do not implement frontend-only workarounds or cheap hacks for runtime/compiler/backend semantics; fix the core layers so compiled binaries match CPython behavior.
 - If working on a lower-level layer (runtime/backend) with implications for higher-level code, lock and coordinate across both layers; avoid overlapping clusters at the same level without explicit coordination.
-- Use `docs/AGENT_MEMORY.md` as an append-only coordination log during parallel work: record intended scope before starting and summarize changes/tests/benchmarks after finishing.
-- When multiple agents are active, read both `docs/AGENT_LOCKS.md` and `docs/AGENT_MEMORY.md` first to avoid overlapping scopes, then update the memory log as you progress.
 - Agents may use `gh` (GitHub CLI) and git over SSH to open/merge PRs; commit frequently with clear messages.
 - Run linting/testing once after a cohesive change set is complete (`tools/dev.py lint`, `tools/dev.py test`, plus relevant `cargo` checks); avoid repetitive cycles mid-implementation.
 - Prioritize clear, explicit communication: scope, files touched, and tests run.

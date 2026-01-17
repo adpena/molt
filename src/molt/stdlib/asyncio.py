@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Callable
+import os as _os
 
 import contextvars as _contextvars
 
@@ -148,6 +149,16 @@ class Future:
 
 _TASKS: dict[int, "Task"] = {}
 _EVENT_WAITERS: dict[int, list[Future]] = {}
+
+
+def _debug_gather_enabled() -> bool:
+    try:
+        return _os.environ.get("MOLT_DEBUG_GATHER") == "1"
+    except Exception:
+        return False
+
+
+_DEBUG_GATHER = _debug_gather_enabled()
 
 
 def _register_event_waiter(token_id: int, fut: Future) -> None:
@@ -395,6 +406,7 @@ async def gather(*aws: Any, return_exceptions: bool = False) -> list[Any]:
     results: list[Any] = [None] * len(tasks)
     done = [False] * len(tasks)
     completed = 0
+    debug_loops = 0
     while completed < len(tasks):
         progress = False
         idx = 0
@@ -424,6 +436,16 @@ async def gather(*aws: Any, return_exceptions: bool = False) -> list[Any]:
                         results[idx] = task.result()
             idx += 1
         if not progress:
+            if _DEBUG_GATHER:
+                debug_loops += 1
+                if debug_loops % 1000 == 0:
+                    states = [
+                        (task.done(), task.cancelled(), getattr(task, "_done", None))
+                        for task in tasks
+                    ]
+                    print(
+                        f"gather_debug loops={debug_loops} completed={completed} states={states}"
+                    )
             await sleep(0.0)
     return results
 

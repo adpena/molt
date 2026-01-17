@@ -215,6 +215,95 @@ impl WasmBackend {
             std::iter::repeat_n(ValType::I64, 4),
             std::iter::once(ValType::I32),
         );
+        // Type 12: (i64, i64, i64, i64, i64) -> i64 (print_builtin)
+        self.types.function(
+            std::iter::repeat_n(ValType::I64, 5),
+            std::iter::once(ValType::I64),
+        );
+        // Type 13: (i64) -> i32 (chan_new, handle_resolve)
+        self.types
+            .function(std::iter::once(ValType::I64), std::iter::once(ValType::I32));
+        // Type 14: (i32) -> i64 (chan_recv)
+        self.types
+            .function(std::iter::once(ValType::I32), std::iter::once(ValType::I64));
+        // Type 15: (i32) -> () (chan_drop)
+        self.types
+            .function(std::iter::once(ValType::I32), std::iter::empty::<ValType>());
+        // Type 16: (i32, i64) -> i64 (chan_send, object_field_get_ptr, closure_load, object_set_class)
+        self.types.function(
+            [ValType::I32, ValType::I64],
+            std::iter::once(ValType::I64),
+        );
+        // Type 17: (i32, i64, i64) -> i64 (guard_layout_ptr, closure_store, object_field_set/init)
+        self.types.function(
+            [ValType::I32, ValType::I64, ValType::I64],
+            std::iter::once(ValType::I64),
+        );
+        // Type 18: (i64, i32, i64) -> i64 (stream_send, ws_send, get_attr_object)
+        self.types.function(
+            [ValType::I64, ValType::I32, ValType::I64],
+            std::iter::once(ValType::I64),
+        );
+        // Type 19: (i32, i64, i32) -> i32 (parse_scalar, ws_connect)
+        self.types.function(
+            [ValType::I32, ValType::I64, ValType::I32],
+            std::iter::once(ValType::I32),
+        );
+        // Type 20: (i64, i32, i32) -> i32 (ws_pair)
+        self.types.function(
+            [ValType::I64, ValType::I32, ValType::I32],
+            std::iter::once(ValType::I32),
+        );
+        // Type 21: (i32, i64, i64, i64, i32, i64) -> i64 (guarded_field_get_ptr)
+        self.types.function(
+            [
+                ValType::I32,
+                ValType::I64,
+                ValType::I64,
+                ValType::I64,
+                ValType::I32,
+                ValType::I64,
+            ],
+            std::iter::once(ValType::I64),
+        );
+        // Type 22: (i32, i64, i64, i64, i64, i32, i64) -> i64 (guarded_field_set/init)
+        self.types.function(
+            [
+                ValType::I32,
+                ValType::I64,
+                ValType::I64,
+                ValType::I64,
+                ValType::I64,
+                ValType::I32,
+                ValType::I64,
+            ],
+            std::iter::once(ValType::I64),
+        );
+        // Type 23: (i32, i32, i64) -> i64 (get/del_attr_generic/ptr)
+        self.types.function(
+            [ValType::I32, ValType::I32, ValType::I64],
+            std::iter::once(ValType::I64),
+        );
+        // Type 24: (i32, i32, i64, i64) -> i64 (set_attr_generic/ptr)
+        self.types.function(
+            [ValType::I32, ValType::I32, ValType::I64, ValType::I64],
+            std::iter::once(ValType::I64),
+        );
+        // Type 25: (i64, i32, i64, i64) -> i64 (set_attr_object)
+        self.types.function(
+            [ValType::I64, ValType::I32, ValType::I64, ValType::I64],
+            std::iter::once(ValType::I64),
+        );
+        // Type 26: (i32, i64, i32, i64) -> i32 (db_query/db_exec)
+        self.types.function(
+            [ValType::I32, ValType::I64, ValType::I32, ValType::I64],
+            std::iter::once(ValType::I32),
+        );
+        // Type 27: (i32, i32) -> i64 (sleep_register)
+        self.types.function(
+            [ValType::I32, ValType::I32],
+            std::iter::once(ValType::I64),
+        );
 
         let mut import_idx = 0;
         let mut add_import = |name: &str, ty: u32, ids: &mut HashMap<String, u32>| {
@@ -225,6 +314,8 @@ impl WasmBackend {
         };
 
         // Host Imports (aligned with wit/molt-runtime.wit)
+        add_import("runtime_init", 0, &mut self.import_ids);
+        add_import("runtime_shutdown", 0, &mut self.import_ids);
         add_import("print_obj", 1, &mut self.import_ids);
         add_import("print_newline", 8, &mut self.import_ids);
         add_import("alloc", 2, &mut self.import_ids);
@@ -234,7 +325,7 @@ impl WasmBackend {
         add_import("async_sleep", 2, &mut self.import_ids);
         add_import("anext_default_poll", 2, &mut self.import_ids);
         add_import("future_poll", 2, &mut self.import_ids);
-        add_import("sleep_register", 3, &mut self.import_ids);
+        add_import("sleep_register", 27, &mut self.import_ids);
         add_import("block_on", 2, &mut self.import_ids);
         add_import("cancel_token_new", 2, &mut self.import_ids);
         add_import("cancel_token_clone", 2, &mut self.import_ids);
@@ -245,9 +336,10 @@ impl WasmBackend {
         add_import("cancel_token_get_current", 0, &mut self.import_ids);
         add_import("cancelled", 0, &mut self.import_ids);
         add_import("cancel_current", 0, &mut self.import_ids);
-        add_import("chan_new", 2, &mut self.import_ids);
-        add_import("chan_send", 3, &mut self.import_ids);
-        add_import("chan_recv", 2, &mut self.import_ids);
+        add_import("chan_new", 13, &mut self.import_ids);
+        add_import("chan_send", 16, &mut self.import_ids);
+        add_import("chan_recv", 14, &mut self.import_ids);
+        add_import("chan_drop", 15, &mut self.import_ids);
         add_import("add", 3, &mut self.import_ids);
         add_import("inplace_add", 3, &mut self.import_ids);
         add_import("vec_sum_int", 3, &mut self.import_ids);
@@ -294,37 +386,38 @@ impl WasmBackend {
         add_import("eq", 3, &mut self.import_ids);
         add_import("string_eq", 3, &mut self.import_ids);
         add_import("is", 3, &mut self.import_ids);
-        add_import("closure_load", 3, &mut self.import_ids);
-        add_import("closure_store", 5, &mut self.import_ids);
+        add_import("closure_load", 16, &mut self.import_ids);
+        add_import("closure_store", 17, &mut self.import_ids);
         add_import("not", 2, &mut self.import_ids);
         add_import("contains", 3, &mut self.import_ids);
         add_import("guard_type", 3, &mut self.import_ids);
-        add_import("guard_layout_ptr", 5, &mut self.import_ids);
-        add_import("guarded_field_get_ptr", 9, &mut self.import_ids);
-        add_import("guarded_field_set_ptr", 10, &mut self.import_ids);
-        add_import("guarded_field_init_ptr", 10, &mut self.import_ids);
-        add_import("handle_resolve", 2, &mut self.import_ids);
+        add_import("guard_layout_ptr", 17, &mut self.import_ids);
+        add_import("guarded_field_get_ptr", 21, &mut self.import_ids);
+        add_import("guarded_field_set_ptr", 22, &mut self.import_ids);
+        add_import("guarded_field_init_ptr", 22, &mut self.import_ids);
+        add_import("handle_resolve", 13, &mut self.import_ids);
         add_import("inc_ref_obj", 1, &mut self.import_ids);
-        add_import("get_attr_generic", 5, &mut self.import_ids);
-        add_import("get_attr_ptr", 5, &mut self.import_ids);
-        add_import("get_attr_object", 5, &mut self.import_ids);
-        add_import("get_attr_special", 5, &mut self.import_ids);
-        add_import("set_attr_generic", 7, &mut self.import_ids);
-        add_import("set_attr_ptr", 7, &mut self.import_ids);
-        add_import("set_attr_object", 7, &mut self.import_ids);
-        add_import("del_attr_generic", 5, &mut self.import_ids);
-        add_import("del_attr_ptr", 5, &mut self.import_ids);
-        add_import("del_attr_object", 5, &mut self.import_ids);
+        add_import("get_attr_generic", 23, &mut self.import_ids);
+        add_import("get_attr_ptr", 23, &mut self.import_ids);
+        add_import("get_attr_object", 18, &mut self.import_ids);
+        add_import("get_attr_special", 18, &mut self.import_ids);
+        add_import("set_attr_generic", 24, &mut self.import_ids);
+        add_import("set_attr_ptr", 24, &mut self.import_ids);
+        add_import("set_attr_object", 25, &mut self.import_ids);
+        add_import("del_attr_generic", 23, &mut self.import_ids);
+        add_import("del_attr_ptr", 23, &mut self.import_ids);
+        add_import("del_attr_object", 18, &mut self.import_ids);
         add_import("object_field_get", 3, &mut self.import_ids);
-        add_import("object_field_get_ptr", 3, &mut self.import_ids);
+        add_import("object_field_get_ptr", 16, &mut self.import_ids);
         add_import("object_field_set", 5, &mut self.import_ids);
-        add_import("object_field_set_ptr", 5, &mut self.import_ids);
+        add_import("object_field_set_ptr", 17, &mut self.import_ids);
         add_import("object_field_init", 5, &mut self.import_ids);
-        add_import("object_field_init_ptr", 5, &mut self.import_ids);
+        add_import("object_field_init_ptr", 17, &mut self.import_ids);
         add_import("module_new", 2, &mut self.import_ids);
         add_import("module_cache_get", 2, &mut self.import_ids);
         add_import("module_cache_set", 3, &mut self.import_ids);
         add_import("module_get_attr", 3, &mut self.import_ids);
+        add_import("module_get_global", 3, &mut self.import_ids);
         add_import("module_get_name", 3, &mut self.import_ids);
         add_import("module_set_attr", 5, &mut self.import_ids);
         add_import("get_attr_name", 3, &mut self.import_ids);
@@ -342,15 +435,16 @@ impl WasmBackend {
         add_import("call_arity_error", 3, &mut self.import_ids);
         add_import("missing", 0, &mut self.import_ids);
         add_import("not_implemented", 0, &mut self.import_ids);
-        add_import("json_parse_scalar", 4, &mut self.import_ids);
-        add_import("msgpack_parse_scalar", 4, &mut self.import_ids);
-        add_import("cbor_parse_scalar", 4, &mut self.import_ids);
-        add_import("string_from_bytes", 4, &mut self.import_ids);
-        add_import("bytes_from_bytes", 4, &mut self.import_ids);
-        add_import("bigint_from_str", 3, &mut self.import_ids);
+        add_import("json_parse_scalar", 19, &mut self.import_ids);
+        add_import("msgpack_parse_scalar", 19, &mut self.import_ids);
+        add_import("cbor_parse_scalar", 19, &mut self.import_ids);
+        add_import("string_from_bytes", 19, &mut self.import_ids);
+        add_import("bytes_from_bytes", 19, &mut self.import_ids);
+        add_import("bigint_from_str", 16, &mut self.import_ids);
         add_import("str_from_obj", 2, &mut self.import_ids);
         add_import("repr_from_obj", 2, &mut self.import_ids);
         add_import("repr_builtin", 2, &mut self.import_ids);
+        add_import("format_builtin", 3, &mut self.import_ids);
         add_import("ascii_from_obj", 2, &mut self.import_ids);
         add_import("bin_builtin", 2, &mut self.import_ids);
         add_import("oct_builtin", 2, &mut self.import_ids);
@@ -368,10 +462,17 @@ impl WasmBackend {
         add_import("chr", 2, &mut self.import_ids);
         add_import("abs_builtin", 2, &mut self.import_ids);
         add_import("divmod_builtin", 3, &mut self.import_ids);
+        add_import("getargv", 0, &mut self.import_ids);
         add_import("getrecursionlimit", 0, &mut self.import_ids);
         add_import("setrecursionlimit", 2, &mut self.import_ids);
         add_import("recursion_guard_enter", 0, &mut self.import_ids);
         add_import("recursion_guard_exit", 8, &mut self.import_ids);
+        add_import("trace_enter_slot", 2, &mut self.import_ids);
+        add_import("trace_set_line", 2, &mut self.import_ids);
+        add_import("trace_exit", 0, &mut self.import_ids);
+        add_import("code_slots_init", 2, &mut self.import_ids);
+        add_import("code_slot_set", 3, &mut self.import_ids);
+        add_import("code_new", 7, &mut self.import_ids);
         add_import("round_builtin", 3, &mut self.import_ids);
         add_import("enumerate_builtin", 3, &mut self.import_ids);
         add_import("iter_sentinel", 3, &mut self.import_ids);
@@ -388,7 +489,7 @@ impl WasmBackend {
         add_import("reversed_builtin", 2, &mut self.import_ids);
         add_import("getattr_builtin", 5, &mut self.import_ids);
         add_import("anext_builtin", 3, &mut self.import_ids);
-        add_import("print_builtin", 2, &mut self.import_ids);
+        add_import("print_builtin", 12, &mut self.import_ids);
         add_import("super_builtin", 3, &mut self.import_ids);
         add_import("callargs_new", 3, &mut self.import_ids);
         add_import("callargs_push_pos", 3, &mut self.import_ids);
@@ -488,6 +589,9 @@ impl WasmBackend {
         add_import("bytes_count_slice", 9, &mut self.import_ids);
         add_import("bytearray_count_slice", 9, &mut self.import_ids);
         add_import("env_get", 3, &mut self.import_ids);
+        add_import("getpid", 0, &mut self.import_ids);
+        add_import("path_exists", 2, &mut self.import_ids);
+        add_import("path_unlink", 2, &mut self.import_ids);
         add_import("string_join", 3, &mut self.import_ids);
         add_import("string_split", 3, &mut self.import_ids);
         add_import("string_split_max", 5, &mut self.import_ids);
@@ -531,16 +635,18 @@ impl WasmBackend {
         add_import("classmethod_new", 2, &mut self.import_ids);
         add_import("staticmethod_new", 2, &mut self.import_ids);
         add_import("property_new", 5, &mut self.import_ids);
-        add_import("object_set_class", 3, &mut self.import_ids);
+        add_import("object_set_class", 16, &mut self.import_ids);
         add_import("stream_new", 2, &mut self.import_ids);
-        add_import("stream_send", 5, &mut self.import_ids);
+        add_import("stream_send", 18, &mut self.import_ids);
         add_import("stream_recv", 2, &mut self.import_ids);
         add_import("stream_close", 1, &mut self.import_ids);
-        add_import("ws_connect", 4, &mut self.import_ids);
-        add_import("ws_pair", 4, &mut self.import_ids);
-        add_import("ws_send", 5, &mut self.import_ids);
+        add_import("stream_drop", 1, &mut self.import_ids);
+        add_import("ws_connect", 19, &mut self.import_ids);
+        add_import("ws_pair", 20, &mut self.import_ids);
+        add_import("ws_send", 18, &mut self.import_ids);
         add_import("ws_recv", 2, &mut self.import_ids);
         add_import("ws_close", 1, &mut self.import_ids);
+        add_import("ws_drop", 1, &mut self.import_ids);
         add_import("context_null", 2, &mut self.import_ids);
         add_import("context_enter", 2, &mut self.import_ids);
         add_import("context_exit", 3, &mut self.import_ids);
@@ -551,6 +657,7 @@ impl WasmBackend {
         add_import("exception_push", 0, &mut self.import_ids);
         add_import("exception_pop", 0, &mut self.import_ids);
         add_import("exception_last", 0, &mut self.import_ids);
+        add_import("exception_active", 0, &mut self.import_ids);
         add_import("exception_new", 3, &mut self.import_ids);
         add_import("exception_clear", 0, &mut self.import_ids);
         add_import("exception_pending", 0, &mut self.import_ids);
@@ -561,12 +668,15 @@ impl WasmBackend {
         add_import("exception_context_set", 2, &mut self.import_ids);
         add_import("raise", 2, &mut self.import_ids);
         add_import("bridge_unavailable", 2, &mut self.import_ids);
-        add_import("db_query", 11, &mut self.import_ids);
-        add_import("db_exec", 11, &mut self.import_ids);
+        add_import("db_query", 26, &mut self.import_ids);
+        add_import("db_exec", 26, &mut self.import_ids);
         add_import("file_open", 3, &mut self.import_ids);
         add_import("file_read", 3, &mut self.import_ids);
         add_import("file_write", 3, &mut self.import_ids);
         add_import("file_close", 2, &mut self.import_ids);
+        // TODO(wasm-parity, owner:wasm, milestone:SL1): extend wasm host imports
+        // to cover full open() + file method parity (readline(s), seek/tell,
+        // flush, truncate, attrs) beyond basic read/write/close.
 
         self.func_count = import_idx;
         let reloc_enabled = should_emit_relocs();
@@ -656,9 +766,10 @@ impl WasmBackend {
             .import("env", "memory", EntityType::Memory(memory_ty));
         self.exports.export("molt_memory", ExportKind::Memory, 0);
 
-        let builtin_table_funcs: [(&str, &str); 45] = [
+        let builtin_table_funcs: [(&str, &str); 53] = [
             ("molt_missing", "missing"),
             ("molt_repr_builtin", "repr_builtin"),
+            ("molt_format_builtin", "format_builtin"),
             ("molt_callable_builtin", "callable_builtin"),
             ("molt_round_builtin", "round_builtin"),
             ("molt_enumerate_builtin", "enumerate_builtin"),
@@ -693,8 +804,15 @@ impl WasmBackend {
             ("molt_hex_builtin", "hex_builtin"),
             ("molt_abs_builtin", "abs_builtin"),
             ("molt_divmod_builtin", "divmod_builtin"),
+            ("molt_getargv", "getargv"),
+            ("molt_env_get", "env_get"),
+            ("molt_getpid", "getpid"),
+            ("molt_path_exists", "path_exists"),
+            ("molt_path_unlink", "path_unlink"),
             ("molt_getrecursionlimit", "getrecursionlimit"),
             ("molt_setrecursionlimit", "setrecursionlimit"),
+            ("molt_exception_last", "exception_last"),
+            ("molt_exception_active", "exception_active"),
             ("molt_iter", "iter"),
             ("molt_aiter", "aiter"),
             ("molt_heapq_heapify", "heapq_heapify"),
@@ -726,6 +844,14 @@ impl WasmBackend {
         ];
         let mut func_to_table_idx = HashMap::new();
         let mut func_to_index = HashMap::new();
+        func_to_index.insert(
+            "molt_runtime_init".to_string(),
+            self.import_ids["runtime_init"],
+        );
+        func_to_index.insert(
+            "molt_runtime_shutdown".to_string(),
+            self.import_ids["runtime_shutdown"],
+        );
         func_to_table_idx.insert("molt_async_sleep".to_string(), 1);
         func_to_table_idx.insert("molt_anext_default_poll".to_string(), 2);
 
@@ -892,6 +1018,8 @@ impl WasmBackend {
                 || op.kind == "guarded_field_init"
         });
         if needs_field_fast {
+            // TODO(optimization, owner:backend, milestone:WASM1, priority:P2): use i32
+            // locals for wasm pointer temporaries to reduce wrap/extend churn.
             for name in ["__wasm_tmp0", "__wasm_tmp1"] {
                 if let std::collections::hash_map::Entry::Vacant(entry) =
                     locals.entry(name.to_string())
@@ -922,6 +1050,11 @@ impl WasmBackend {
                     | "chan_recv_yield"
             )
         });
+        let jumpful = !stateful
+            && func_ir
+                .ops
+                .iter()
+                .any(|op| matches!(op.kind.as_str(), "jump" | "label"));
         if stateful && !locals.contains_key("self_param") {
             let self_param_idx = locals
                 .get("self")
@@ -950,7 +1083,7 @@ impl WasmBackend {
         } else {
             None
         };
-        let state_local = if stateful {
+        let state_local = if stateful || jumpful {
             let idx = local_count;
             local_types.push(ValType::I64);
             local_count += 1;
@@ -1027,6 +1160,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalSet(out_local));
 
                         func.instruction(&Instruction::LocalGet(ptr_local));
+                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::LocalGet(len_local));
                         func.instruction(&Instruction::LocalGet(out_local));
                         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
@@ -1035,7 +1169,6 @@ impl WasmBackend {
 
                         func.instruction(&Instruction::LocalGet(out_local));
                         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
                             align: 3,
                             offset: 0,
@@ -1057,6 +1190,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalSet(len_local));
 
                         func.instruction(&Instruction::LocalGet(ptr_local));
+                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::LocalGet(len_local));
                         emit_call(func, reloc_enabled, import_ids["bigint_from_str"]);
                         let out_local = locals[out_name];
@@ -1080,6 +1214,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalSet(out_local));
 
                         func.instruction(&Instruction::LocalGet(ptr_local));
+                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::LocalGet(len_local));
                         func.instruction(&Instruction::LocalGet(out_local));
                         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
@@ -1088,7 +1223,6 @@ impl WasmBackend {
 
                         func.instruction(&Instruction::LocalGet(out_local));
                         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
                             align: 3,
                             offset: 0,
@@ -1707,6 +1841,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalSet(out_ptr));
 
                         func.instruction(&Instruction::LocalGet(ptr));
+                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::LocalGet(len));
                         func.instruction(&Instruction::LocalGet(out_ptr));
                         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
@@ -1715,7 +1850,6 @@ impl WasmBackend {
 
                         func.instruction(&Instruction::LocalGet(out_ptr));
                         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
                             align: 3,
                             offset: 0,
@@ -1738,6 +1872,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalSet(out_ptr));
 
                         func.instruction(&Instruction::LocalGet(ptr));
+                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::LocalGet(len));
                         func.instruction(&Instruction::LocalGet(out_ptr));
                         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
@@ -1746,7 +1881,6 @@ impl WasmBackend {
 
                         func.instruction(&Instruction::LocalGet(out_ptr));
                         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
                             align: 3,
                             offset: 0,
@@ -1769,6 +1903,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalSet(out_ptr));
 
                         func.instruction(&Instruction::LocalGet(ptr));
+                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::LocalGet(len));
                         func.instruction(&Instruction::LocalGet(out_ptr));
                         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
@@ -1777,7 +1912,6 @@ impl WasmBackend {
 
                         func.instruction(&Instruction::LocalGet(out_ptr));
                         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
                             align: 3,
                             offset: 0,
@@ -3329,6 +3463,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(obj));
                         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
                         self.emit_data_ptr(reloc_enabled, func_index, func, data);
+                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
                         emit_call(func, reloc_enabled, import_ids["get_attr_ptr"]);
                         let res = locals[op.out.as_ref().unwrap()];
@@ -3342,6 +3477,7 @@ impl WasmBackend {
                         let data = self.add_data_segment(reloc_enabled, bytes);
                         func.instruction(&Instruction::LocalGet(obj));
                         self.emit_data_ptr(reloc_enabled, func_index, func, data);
+                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
                         emit_call(func, reloc_enabled, import_ids["get_attr_object"]);
                         let res = locals[op.out.as_ref().unwrap()];
@@ -3355,6 +3491,7 @@ impl WasmBackend {
                         let data = self.add_data_segment(reloc_enabled, bytes);
                         func.instruction(&Instruction::LocalGet(obj));
                         self.emit_data_ptr(reloc_enabled, func_index, func, data);
+                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
                         emit_call(func, reloc_enabled, import_ids["get_attr_special"]);
                         let res = locals[op.out.as_ref().unwrap()];
@@ -3370,6 +3507,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(obj));
                         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
                         self.emit_data_ptr(reloc_enabled, func_index, func, data);
+                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids["set_attr_ptr"]);
@@ -3385,6 +3523,7 @@ impl WasmBackend {
                         let data = self.add_data_segment(reloc_enabled, bytes);
                         func.instruction(&Instruction::LocalGet(obj));
                         self.emit_data_ptr(reloc_enabled, func_index, func, data);
+                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids["set_attr_object"]);
@@ -3400,6 +3539,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(obj));
                         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
                         self.emit_data_ptr(reloc_enabled, func_index, func, data);
+                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
                         emit_call(func, reloc_enabled, import_ids["del_attr_ptr"]);
                         let res = locals[op.out.as_ref().unwrap()];
@@ -3413,6 +3553,7 @@ impl WasmBackend {
                         let data = self.add_data_segment(reloc_enabled, bytes);
                         func.instruction(&Instruction::LocalGet(obj));
                         self.emit_data_ptr(reloc_enabled, func_index, func, data);
+                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
                         emit_call(func, reloc_enabled, import_ids["del_attr_object"]);
                         let res = locals[op.out.as_ref().unwrap()];
@@ -3696,14 +3837,28 @@ impl WasmBackend {
                     }
                     "closure_load" => {
                         let args = op.args.as_ref().unwrap();
-                        func.instruction(&Instruction::LocalGet(locals[&args[0]]));
+                        let obj = locals[&args[0]];
+                        let tmp_ptr = locals["__molt_tmp0"];
+                        func.instruction(&Instruction::LocalGet(obj));
+                        emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+                        func.instruction(&Instruction::I64ExtendI32U);
+                        func.instruction(&Instruction::LocalSet(tmp_ptr));
+                        func.instruction(&Instruction::LocalGet(tmp_ptr));
+                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Const(op.value.unwrap()));
                         emit_call(func, reloc_enabled, import_ids["closure_load"]);
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                     }
                     "closure_store" => {
                         let args = op.args.as_ref().unwrap();
-                        func.instruction(&Instruction::LocalGet(locals[&args[0]]));
+                        let obj = locals[&args[0]];
+                        let tmp_ptr = locals["__molt_tmp0"];
+                        func.instruction(&Instruction::LocalGet(obj));
+                        emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+                        func.instruction(&Instruction::I64ExtendI32U);
+                        func.instruction(&Instruction::LocalSet(tmp_ptr));
+                        func.instruction(&Instruction::LocalGet(tmp_ptr));
+                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Const(op.value.unwrap()));
                         func.instruction(&Instruction::LocalGet(locals[&args[1]]));
                         emit_call(func, reloc_enabled, import_ids["closure_store"]);
@@ -3781,9 +3936,11 @@ impl WasmBackend {
                         let data = self.add_data_segment(reloc_enabled, bytes);
                         func.instruction(&Instruction::LocalGet(obj));
                         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+                        func.instruction(&Instruction::I64ExtendI32U);
                         func.instruction(&Instruction::LocalSet(tmp_ptr));
 
                         func.instruction(&Instruction::LocalGet(tmp_ptr));
+                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::LocalGet(class_bits));
                         func.instruction(&Instruction::LocalGet(expected));
                         emit_call(func, reloc_enabled, import_ids["guard_layout_ptr"]);
@@ -3824,10 +3981,12 @@ impl WasmBackend {
 
                         func.instruction(&Instruction::Else);
                         func.instruction(&Instruction::LocalGet(tmp_ptr));
+                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::LocalGet(class_bits));
                         func.instruction(&Instruction::LocalGet(expected));
                         func.instruction(&Instruction::I64Const(op.value.unwrap()));
                         self.emit_data_ptr(reloc_enabled, func_index, func, data);
+                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
                         emit_call(func, reloc_enabled, import_ids["guarded_field_get_ptr"]);
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
@@ -3848,9 +4007,11 @@ impl WasmBackend {
                         let data = self.add_data_segment(reloc_enabled, bytes);
                         func.instruction(&Instruction::LocalGet(obj));
                         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+                        func.instruction(&Instruction::I64ExtendI32U);
                         func.instruction(&Instruction::LocalSet(tmp_ptr));
 
                         func.instruction(&Instruction::LocalGet(tmp_ptr));
+                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::LocalGet(class_bits));
                         func.instruction(&Instruction::LocalGet(expected));
                         emit_call(func, reloc_enabled, import_ids["guard_layout_ptr"]);
@@ -3890,6 +4051,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::If(BlockType::Empty));
 
                         func.instruction(&Instruction::LocalGet(tmp_ptr));
+                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Const(op.value.unwrap()));
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids["object_field_set_ptr"]);
@@ -3922,11 +4084,13 @@ impl WasmBackend {
 
                         func.instruction(&Instruction::Else);
                         func.instruction(&Instruction::LocalGet(tmp_ptr));
+                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::LocalGet(class_bits));
                         func.instruction(&Instruction::LocalGet(expected));
                         func.instruction(&Instruction::I64Const(op.value.unwrap()));
                         func.instruction(&Instruction::LocalGet(val));
                         self.emit_data_ptr(reloc_enabled, func_index, func, data);
+                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
                         emit_call(func, reloc_enabled, import_ids["guarded_field_set_ptr"]);
                         if let Some(out) = op.out.as_ref() {
@@ -3953,9 +4117,11 @@ impl WasmBackend {
                         let data = self.add_data_segment(reloc_enabled, bytes);
                         func.instruction(&Instruction::LocalGet(obj));
                         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+                        func.instruction(&Instruction::I64ExtendI32U);
                         func.instruction(&Instruction::LocalSet(tmp_ptr));
 
                         func.instruction(&Instruction::LocalGet(tmp_ptr));
+                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::LocalGet(class_bits));
                         func.instruction(&Instruction::LocalGet(expected));
                         emit_call(func, reloc_enabled, import_ids["guard_layout_ptr"]);
@@ -3974,6 +4140,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::If(BlockType::Empty));
 
                         func.instruction(&Instruction::LocalGet(tmp_ptr));
+                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Const(op.value.unwrap()));
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids["object_field_init_ptr"]);
@@ -4008,11 +4175,13 @@ impl WasmBackend {
 
                         func.instruction(&Instruction::Else);
                         func.instruction(&Instruction::LocalGet(tmp_ptr));
+                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::LocalGet(class_bits));
                         func.instruction(&Instruction::LocalGet(expected));
                         func.instruction(&Instruction::I64Const(op.value.unwrap()));
                         func.instruction(&Instruction::LocalGet(val));
                         self.emit_data_ptr(reloc_enabled, func_index, func, data);
+                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
                         emit_call(func, reloc_enabled, import_ids["guarded_field_init_ptr"]);
                         if let Some(out) = op.out.as_ref() {
@@ -4032,7 +4201,12 @@ impl WasmBackend {
                         let future = locals[&args[0]];
                         let slot_bits = args.get(1).map(|name| locals[name]);
                         let out = locals[op.out.as_ref().unwrap()];
+                        let self_ptr = locals["__molt_tmp0"];
                         func.instruction(&Instruction::LocalGet(0));
+                        emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+                        func.instruction(&Instruction::I64ExtendI32U);
+                        func.instruction(&Instruction::LocalSet(self_ptr));
+                        func.instruction(&Instruction::LocalGet(self_ptr));
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
                         func.instruction(&Instruction::I32Add);
@@ -4046,7 +4220,8 @@ impl WasmBackend {
                         emit_call(func, reloc_enabled, import_ids["future_poll"]);
                         func.instruction(&Instruction::LocalSet(out));
                         if let Some(slot) = slot_bits {
-                            func.instruction(&Instruction::LocalGet(0));
+                            func.instruction(&Instruction::LocalGet(self_ptr));
+                            func.instruction(&Instruction::I32WrapI64);
                             func.instruction(&Instruction::LocalGet(slot));
                             func.instruction(&Instruction::I64Const(INT_MASK as i64));
                             func.instruction(&Instruction::I64And);
@@ -4058,7 +4233,8 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(box_pending()));
                         func.instruction(&Instruction::I64Eq);
                         func.instruction(&Instruction::If(BlockType::Empty));
-                        func.instruction(&Instruction::LocalGet(0));
+                        func.instruction(&Instruction::LocalGet(self_ptr));
+                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::LocalGet(future));
                         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
                         emit_call(func, reloc_enabled, import_ids["sleep_register"]);
@@ -4078,7 +4254,6 @@ impl WasmBackend {
                                 let arg_val = locals[arg];
                                 func.instruction(&Instruction::LocalGet(res));
                                 emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-                                func.instruction(&Instruction::I32WrapI64);
                                 func.instruction(&Instruction::I32Const((idx * 8) as i32));
                                 func.instruction(&Instruction::I32Add);
                                 func.instruction(&Instruction::LocalGet(arg_val));
@@ -4091,7 +4266,6 @@ impl WasmBackend {
                         }
                         func.instruction(&Instruction::LocalGet(res));
                         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(HEADER_POLL_FN_OFFSET));
                         func.instruction(&Instruction::I32Add);
                         let table_slot = func_map[op.s_value.as_ref().unwrap()];
@@ -4112,7 +4286,6 @@ impl WasmBackend {
                         }));
                         func.instruction(&Instruction::LocalGet(res));
                         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
                         func.instruction(&Instruction::I32Add);
                         func.instruction(&Instruction::I64Const(0));
@@ -4133,12 +4306,18 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(0));
                         func.instruction(&Instruction::I64Ne);
                         func.instruction(&Instruction::If(BlockType::Empty));
+                        let code_id = op.value.unwrap_or(0);
+                        func.instruction(&Instruction::I64Const(code_id));
+                        emit_call(func, reloc_enabled, import_ids["trace_enter_slot"]);
+                        func.instruction(&Instruction::Drop);
                         for arg_name in args_names {
                             let arg = locals[arg_name];
                             func.instruction(&Instruction::LocalGet(arg));
                         }
                         emit_call(func, reloc_enabled, func_idx);
                         func.instruction(&Instruction::LocalSet(out));
+                        emit_call(func, reloc_enabled, import_ids["trace_exit"]);
+                        func.instruction(&Instruction::Drop);
                         emit_call(func, reloc_enabled, import_ids["recursion_guard_exit"]);
                         func.instruction(&Instruction::Else);
                         func.instruction(&Instruction::I64Const(box_none()));
@@ -4190,6 +4369,41 @@ impl WasmBackend {
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
+                    "code_new" => {
+                        let args = op.args.as_ref().unwrap();
+                        let filename_bits = locals[&args[0]];
+                        let name_bits = locals[&args[1]];
+                        let firstlineno_bits = locals[&args[2]];
+                        let linetable_bits = locals[&args[3]];
+                        func.instruction(&Instruction::LocalGet(filename_bits));
+                        func.instruction(&Instruction::LocalGet(name_bits));
+                        func.instruction(&Instruction::LocalGet(firstlineno_bits));
+                        func.instruction(&Instruction::LocalGet(linetable_bits));
+                        emit_call(func, reloc_enabled, import_ids["code_new"]);
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "code_slot_set" => {
+                        let args = op.args.as_ref().unwrap();
+                        let code_bits = locals[&args[0]];
+                        let code_id = op.value.unwrap_or(0);
+                        func.instruction(&Instruction::I64Const(code_id));
+                        func.instruction(&Instruction::LocalGet(code_bits));
+                        emit_call(func, reloc_enabled, import_ids["code_slot_set"]);
+                        func.instruction(&Instruction::Drop);
+                    }
+                    "code_slots_init" => {
+                        let count = op.value.unwrap_or(0);
+                        func.instruction(&Instruction::I64Const(count));
+                        emit_call(func, reloc_enabled, import_ids["code_slots_init"]);
+                        func.instruction(&Instruction::Drop);
+                    }
+                    "line" => {
+                        let line = op.value.unwrap_or(0);
+                        func.instruction(&Instruction::I64Const(line));
+                        emit_call(func, reloc_enabled, import_ids["trace_set_line"]);
+                        func.instruction(&Instruction::Drop);
+                    }
                     "builtin_func" => {
                         let func_name = op.s_value.as_ref().unwrap();
                         let arity = op.value.unwrap_or(0);
@@ -4221,6 +4435,8 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(func_bits));
                         emit_call(func, reloc_enabled, import_ids["function_closure_bits"]);
                         func.instruction(&Instruction::LocalSet(out));
+                        func.instruction(&Instruction::LocalGet(out));
+                        emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
                     }
                     "bound_method_new" => {
                         let args = op.args.as_ref().unwrap();
@@ -4291,7 +4507,15 @@ impl WasmBackend {
                         let cap = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(cap));
                         emit_call(func, reloc_enabled, import_ids["chan_new"]);
+                        func.instruction(&Instruction::I64ExtendI32U);
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                    }
+                    "chan_drop" => {
+                        let args = op.args.as_ref().unwrap();
+                        let chan = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(chan));
+                        func.instruction(&Instruction::I32WrapI64);
+                        emit_call(func, reloc_enabled, import_ids["chan_drop"]);
                     }
                     "module_new" => {
                         let args = op.args.as_ref().unwrap();
@@ -4329,6 +4553,16 @@ impl WasmBackend {
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
+                    "module_get_global" => {
+                        let args = op.args.as_ref().unwrap();
+                        let module = locals[&args[0]];
+                        let name = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(module));
+                        func.instruction(&Instruction::LocalGet(name));
+                        emit_call(func, reloc_enabled, import_ids["module_get_global"]);
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
                     "module_get_name" => {
                         let args = op.args.as_ref().unwrap();
                         let module = locals[&args[0]];
@@ -4359,7 +4593,6 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalSet(res));
                         func.instruction(&Instruction::LocalGet(res));
                         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(HEADER_POLL_FN_OFFSET));
                         func.instruction(&Instruction::I32Add);
                         let table_slot = func_map[op.s_value.as_ref().unwrap()];
@@ -4380,7 +4613,6 @@ impl WasmBackend {
                         }));
                         func.instruction(&Instruction::LocalGet(res));
                         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
                         func.instruction(&Instruction::I32Add);
                         func.instruction(&Instruction::I64Const(0));
@@ -4394,7 +4626,6 @@ impl WasmBackend {
                                 let arg_local = locals[name];
                                 func.instruction(&Instruction::LocalGet(res));
                                 emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-                                func.instruction(&Instruction::I32WrapI64);
                                 func.instruction(&Instruction::I32Const((i as i32) * 8));
                                 func.instruction(&Instruction::I32Add);
                                 func.instruction(&Instruction::LocalGet(arg_local));
@@ -4430,7 +4661,6 @@ impl WasmBackend {
                                 let arg_local = locals[name];
                                 func.instruction(&Instruction::LocalGet(res));
                                 emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-                                func.instruction(&Instruction::I32WrapI64);
                                 func.instruction(&Instruction::I32Const(48 + (i as i32) * 8));
                                 func.instruction(&Instruction::I32Add);
                                 func.instruction(&Instruction::LocalGet(arg_local));
@@ -4917,18 +5147,15 @@ impl WasmBackend {
                 .map(|idx| (op_count - 1 - idx) as u32)
                 .collect();
 
-            if self_local != self_param {
-                func.instruction(&Instruction::LocalGet(self_param));
-                func.instruction(&Instruction::I64Const(POINTER_MASK as i64));
-                func.instruction(&Instruction::I64And);
-                func.instruction(&Instruction::I64Const(QNAN_TAG_PTR_I64));
-                func.instruction(&Instruction::I64Or);
-                func.instruction(&Instruction::LocalSet(self_local));
-            }
+            func.instruction(&Instruction::LocalGet(self_param));
+            func.instruction(&Instruction::LocalSet(self_ptr_local));
 
             func.instruction(&Instruction::LocalGet(self_param));
-            emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-            func.instruction(&Instruction::LocalSet(self_ptr_local));
+            func.instruction(&Instruction::I64Const(POINTER_MASK as i64));
+            func.instruction(&Instruction::I64And);
+            func.instruction(&Instruction::I64Const(QNAN_TAG_PTR_I64));
+            func.instruction(&Instruction::I64Or);
+            func.instruction(&Instruction::LocalSet(self_local));
 
             func.instruction(&Instruction::LocalGet(self_ptr_local));
             func.instruction(&Instruction::I32WrapI64);
@@ -5036,6 +5263,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Eq);
                         func.instruction(&Instruction::If(BlockType::Empty));
                         func.instruction(&Instruction::LocalGet(self_ptr_local));
+                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::LocalGet(future));
                         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
                         emit_call(func, reloc_enabled, import_ids["sleep_register"]);
@@ -5045,6 +5273,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::End);
                         if let Some(slot) = slot_bits {
                             func.instruction(&Instruction::LocalGet(self_ptr_local));
+                            func.instruction(&Instruction::I32WrapI64);
                             func.instruction(&Instruction::LocalGet(slot));
                             func.instruction(&Instruction::I64Const(INT_MASK as i64));
                             func.instruction(&Instruction::I64And);
@@ -5121,6 +5350,7 @@ impl WasmBackend {
                             memory_index: 0,
                         }));
                         func.instruction(&Instruction::LocalGet(chan));
+                        func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids["chan_send"]);
                         let out = locals[op.out.as_ref().unwrap()];
@@ -5173,6 +5403,7 @@ impl WasmBackend {
                             memory_index: 0,
                         }));
                         func.instruction(&Instruction::LocalGet(chan));
+                        func.instruction(&Instruction::I32WrapI64);
                         emit_call(func, reloc_enabled, import_ids["chan_recv"]);
                         let out = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(out));
@@ -5324,6 +5555,301 @@ impl WasmBackend {
                         func.instruction(&Instruction::Br(depth));
                     }
                     "try_start" | "try_end" | "label" | "state_label" => {
+                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
+                        func.instruction(&Instruction::LocalSet(state_local));
+                        func.instruction(&Instruction::Br(depth));
+                    }
+                    "check_exception" => {
+                        let target_label = op.value.expect("check_exception missing label");
+                        let target_idx = label_to_index
+                            .get(&target_label)
+                            .copied()
+                            .expect("unknown check_exception label");
+                        emit_call(func, reloc_enabled, import_ids["exception_pending"]);
+                        func.instruction(&Instruction::I64Const(0));
+                        func.instruction(&Instruction::I64Ne);
+                        func.instruction(&Instruction::If(BlockType::Empty));
+                        func.instruction(&Instruction::I64Const(target_idx as i64));
+                        func.instruction(&Instruction::LocalSet(state_local));
+                        func.instruction(&Instruction::Br(depth + 1));
+                        func.instruction(&Instruction::Else);
+                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
+                        func.instruction(&Instruction::LocalSet(state_local));
+                        func.instruction(&Instruction::Br(depth + 1));
+                        func.instruction(&Instruction::End);
+                    }
+                    "ret" => {
+                        func.instruction(&Instruction::LocalGet(locals[op.var.as_ref().unwrap()]));
+                        func.instruction(&Instruction::Return);
+                    }
+                    "ret_void" => {
+                        if type_idx == 0 || type_idx == 2 {
+                            func.instruction(&Instruction::I64Const(0));
+                        }
+                        func.instruction(&Instruction::Return);
+                    }
+                    _ => {
+                        emit_ops(
+                            func,
+                            std::slice::from_ref(op),
+                            &mut scratch_control,
+                            &mut scratch_try,
+                            &mut label_stack,
+                            &mut label_depths,
+                        );
+                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
+                        func.instruction(&Instruction::LocalSet(state_local));
+                        func.instruction(&Instruction::Br(depth));
+                    }
+                }
+                if idx + 1 < op_count {
+                    func.instruction(&Instruction::End);
+                }
+            }
+
+            func.instruction(&Instruction::End);
+            func.instruction(&Instruction::I64Const(box_none()));
+            func.instruction(&Instruction::Return);
+            func.instruction(&Instruction::End);
+        } else if jumpful {
+            let func = &mut func;
+            let state_local = state_local.expect("state local missing for jumpful wasm");
+            let op_count = func_ir.ops.len();
+            let mut label_to_index: HashMap<i64, usize> = HashMap::new();
+            for (idx, op) in func_ir.ops.iter().enumerate() {
+                if op.kind == "label" {
+                    if let Some(label_id) = op.value {
+                        label_to_index.insert(label_id, idx);
+                    }
+                }
+            }
+
+            let mut else_for_if: HashMap<usize, usize> = HashMap::new();
+            let mut end_for_if: HashMap<usize, usize> = HashMap::new();
+            let mut end_for_else: HashMap<usize, usize> = HashMap::new();
+            let mut if_stack: Vec<usize> = Vec::new();
+            for (idx, op) in func_ir.ops.iter().enumerate() {
+                match op.kind.as_str() {
+                    "if" => if_stack.push(idx),
+                    "else" => {
+                        if let Some(if_idx) = if_stack.last().copied() {
+                            else_for_if.insert(if_idx, idx);
+                        }
+                    }
+                    "end_if" => {
+                        if let Some(if_idx) = if_stack.pop() {
+                            end_for_if.insert(if_idx, idx);
+                            if let Some(else_idx) = else_for_if.get(&if_idx).copied() {
+                                end_for_else.insert(else_idx, idx);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            let mut loop_end_for_start: HashMap<usize, usize> = HashMap::new();
+            let mut loop_stack: Vec<usize> = Vec::new();
+            for (idx, op) in func_ir.ops.iter().enumerate() {
+                match op.kind.as_str() {
+                    "loop_start" | "loop_index_start" => loop_stack.push(idx),
+                    "loop_end" => {
+                        if let Some(start_idx) = loop_stack.pop() {
+                            loop_end_for_start.insert(start_idx, idx);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let mut loop_continue_target: HashMap<usize, usize> = HashMap::new();
+            let mut loop_break_target: HashMap<usize, usize> = HashMap::new();
+            let mut loop_scan: Vec<usize> = Vec::new();
+            for (idx, op) in func_ir.ops.iter().enumerate() {
+                match op.kind.as_str() {
+                    "loop_start" | "loop_index_start" => loop_scan.push(idx),
+                    "loop_end" => {
+                        loop_scan.pop();
+                    }
+                    "loop_continue" => {
+                        if let Some(start_idx) = loop_scan.last().copied() {
+                            loop_continue_target.insert(idx, start_idx);
+                        }
+                    }
+                    "loop_break_if_true" | "loop_break_if_false" | "loop_break" => {
+                        if let Some(start_idx) = loop_scan.last().copied() {
+                            if let Some(end_idx) = loop_end_for_start.get(&start_idx).copied() {
+                                loop_break_target.insert(idx, end_idx);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            let dispatch_depths: Vec<u32> = (0..op_count)
+                .map(|idx| (op_count - 1 - idx) as u32)
+                .collect();
+            let mut scratch_control: Vec<ControlKind> = Vec::new();
+            let mut scratch_try: Vec<usize> = Vec::new();
+            let mut label_stack: Vec<i64> = Vec::new();
+            let mut label_depths: HashMap<i64, usize> = HashMap::new();
+
+            func.instruction(&Instruction::I64Const(0));
+            func.instruction(&Instruction::LocalSet(state_local));
+
+            func.instruction(&Instruction::Loop(BlockType::Empty));
+            for _ in (0..op_count).rev() {
+                func.instruction(&Instruction::Block(BlockType::Empty));
+            }
+
+            func.instruction(&Instruction::LocalGet(state_local));
+            func.instruction(&Instruction::I32WrapI64);
+            let targets: Vec<u32> = (0..op_count).map(|idx| idx as u32).collect();
+            func.instruction(&Instruction::BrTable(targets.into(), op_count as u32));
+            func.instruction(&Instruction::End);
+
+            for (idx, op) in func_ir.ops.iter().enumerate() {
+                let depth = dispatch_depths[idx];
+                match op.kind.as_str() {
+                    "state_switch"
+                    | "state_transition"
+                    | "state_yield"
+                    | "chan_send_yield"
+                    | "chan_recv_yield" => {
+                        panic!(
+                            "jumpful wasm path hit stateful op {} in {}",
+                            op.kind, func_ir.name
+                        );
+                    }
+                    "if" => {
+                        let args = op.args.as_ref().unwrap();
+                        let cond = locals[&args[0]];
+                        let else_idx = else_for_if.get(&idx).copied();
+                        let end_idx = end_for_if.get(&idx).copied().expect("if without end_if");
+                        let false_target = if let Some(else_pos) = else_idx {
+                            else_pos + 1
+                        } else {
+                            end_idx + 1
+                        };
+                        func.instruction(&Instruction::LocalGet(cond));
+                        emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+                        func.instruction(&Instruction::I64Const(0));
+                        func.instruction(&Instruction::I64Ne);
+                        func.instruction(&Instruction::If(BlockType::Empty));
+                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
+                        func.instruction(&Instruction::LocalSet(state_local));
+                        func.instruction(&Instruction::Br(depth + 1));
+                        func.instruction(&Instruction::Else);
+                        func.instruction(&Instruction::I64Const(false_target as i64));
+                        func.instruction(&Instruction::LocalSet(state_local));
+                        func.instruction(&Instruction::Br(depth + 1));
+                        func.instruction(&Instruction::End);
+                    }
+                    "else" => {
+                        let end_idx = end_for_else
+                            .get(&idx)
+                            .copied()
+                            .expect("else without end_if");
+                        func.instruction(&Instruction::I64Const((end_idx + 1) as i64));
+                        func.instruction(&Instruction::LocalSet(state_local));
+                        func.instruction(&Instruction::Br(depth));
+                    }
+                    "end_if" => {
+                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
+                        func.instruction(&Instruction::LocalSet(state_local));
+                        func.instruction(&Instruction::Br(depth));
+                    }
+                    "loop_start" => {
+                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
+                        func.instruction(&Instruction::LocalSet(state_local));
+                        func.instruction(&Instruction::Br(depth));
+                    }
+                    "loop_index_start" => {
+                        let args = op.args.as_ref().unwrap();
+                        let start = locals[&args[0]];
+                        let out = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalGet(start));
+                        func.instruction(&Instruction::LocalSet(out));
+                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
+                        func.instruction(&Instruction::LocalSet(state_local));
+                        func.instruction(&Instruction::Br(depth));
+                    }
+                    "loop_break_if_true" => {
+                        let args = op.args.as_ref().unwrap();
+                        let cond = locals[&args[0]];
+                        let end_idx = loop_break_target
+                            .get(&idx)
+                            .copied()
+                            .expect("loop break without loop");
+                        func.instruction(&Instruction::LocalGet(cond));
+                        emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+                        func.instruction(&Instruction::I64Const(0));
+                        func.instruction(&Instruction::I64Ne);
+                        func.instruction(&Instruction::If(BlockType::Empty));
+                        func.instruction(&Instruction::I64Const((end_idx + 1) as i64));
+                        func.instruction(&Instruction::LocalSet(state_local));
+                        func.instruction(&Instruction::Br(depth + 1));
+                        func.instruction(&Instruction::Else);
+                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
+                        func.instruction(&Instruction::LocalSet(state_local));
+                        func.instruction(&Instruction::Br(depth + 1));
+                        func.instruction(&Instruction::End);
+                    }
+                    "loop_break_if_false" => {
+                        let args = op.args.as_ref().unwrap();
+                        let cond = locals[&args[0]];
+                        let end_idx = loop_break_target
+                            .get(&idx)
+                            .copied()
+                            .expect("loop break without loop");
+                        func.instruction(&Instruction::LocalGet(cond));
+                        emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+                        func.instruction(&Instruction::I64Const(0));
+                        func.instruction(&Instruction::I64Eq);
+                        func.instruction(&Instruction::If(BlockType::Empty));
+                        func.instruction(&Instruction::I64Const((end_idx + 1) as i64));
+                        func.instruction(&Instruction::LocalSet(state_local));
+                        func.instruction(&Instruction::Br(depth + 1));
+                        func.instruction(&Instruction::Else);
+                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
+                        func.instruction(&Instruction::LocalSet(state_local));
+                        func.instruction(&Instruction::Br(depth + 1));
+                        func.instruction(&Instruction::End);
+                    }
+                    "loop_break" => {
+                        let end_idx = loop_break_target
+                            .get(&idx)
+                            .copied()
+                            .expect("loop break without loop");
+                        func.instruction(&Instruction::I64Const((end_idx + 1) as i64));
+                        func.instruction(&Instruction::LocalSet(state_local));
+                        func.instruction(&Instruction::Br(depth));
+                    }
+                    "loop_continue" => {
+                        let start_idx = loop_continue_target
+                            .get(&idx)
+                            .copied()
+                            .expect("loop continue without loop");
+                        func.instruction(&Instruction::I64Const((start_idx + 1) as i64));
+                        func.instruction(&Instruction::LocalSet(state_local));
+                        func.instruction(&Instruction::Br(depth));
+                    }
+                    "loop_end" => {
+                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
+                        func.instruction(&Instruction::LocalSet(state_local));
+                        func.instruction(&Instruction::Br(depth));
+                    }
+                    "jump" => {
+                        let target_label = op.value.expect("jump missing label");
+                        let target_idx = label_to_index
+                            .get(&target_label)
+                            .copied()
+                            .expect("unknown jump label");
+                        func.instruction(&Instruction::I64Const(target_idx as i64));
+                        func.instruction(&Instruction::LocalSet(state_local));
+                        func.instruction(&Instruction::Br(depth));
+                    }
+                    "try_start" | "try_end" | "label" => {
                         func.instruction(&Instruction::I64Const((idx + 1) as i64));
                         func.instruction(&Instruction::LocalSet(state_local));
                         func.instruction(&Instruction::Br(depth));

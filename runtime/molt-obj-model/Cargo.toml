@@ -6,3 +6,10 @@ license = "Apache-2.0"
 
 [dependencies]
 # Future: smallvec, hashbrown
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "ptr_registry"
+harness = false

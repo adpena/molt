@@ -37,6 +37,7 @@ Hook = Callable[[dict[str, Any]], None]
 CancelCheck = Callable[[], bool]
 
 _POLL_INTERVAL = 0.01
+_STARTUP_GRACE_MS = 1000
 
 
 class _PendingResponse:
@@ -86,6 +87,7 @@ class MoltClient:
         self._reader_error: BaseException | None = None
         self._restart_after_drain = False
         self._next_id = 1
+        self._just_started = False
 
     def __enter__(self) -> "MoltClient":
         self._ensure_process()
@@ -138,6 +140,7 @@ class MoltClient:
                 raise MoltWorkerUnavailable("Worker pipes unavailable")
             self._stdin = self._proc.stdin
             self._stdout = self._proc.stdout
+            self._just_started = True
             self._ensure_reader()
 
     def _ensure_reader(self) -> None:
@@ -297,6 +300,10 @@ class MoltClient:
             raise MoltWorkerUnavailable("Worker pipes unavailable")
         if self._reader_error is not None:
             raise MoltWorkerUnavailable("Worker reader failed") from self._reader_error
+        if self._just_started:
+            if timeout_ms > 0:
+                timeout_ms = max(timeout_ms, _STARTUP_GRACE_MS)
+            self._just_started = False
 
         try:
             payload_bytes = encode_payload(payload, codec)

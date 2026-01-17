@@ -121,6 +121,13 @@ def molt_chan_recv(chan: Any) -> Any:
     raise TypeError("molt_chan_recv expected a Channel")
 
 
+def molt_chan_drop(chan: Any) -> None:
+    if hasattr(chan, "close"):
+        chan.close()
+        return None
+    return None
+
+
 def load_runtime() -> None:
     return None
 

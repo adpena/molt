@@ -79,7 +79,8 @@ For strings:
 
 ### 3.3 Ownership and lifetimes
 - The module allocates buffers in its own linear memory via `molt_alloc` and
-  unboxes the returned handle with `molt_handle_resolve` before use.
+  resolves the returned handle with `molt_handle_resolve` (pointer registry lookup)
+  before use.
 - The host never assumes buffer validity beyond the call boundary unless explicitly copied
 - Results returned to the host must be either:
   - copied out by the host, or
@@ -152,6 +153,7 @@ Example:
 - `molt_fetch(cap_id, req_ptr, req_len, resp_ptr_ptr, resp_len_ptr) -> i32`
 
 **v0.1 recommendation:** keep I/O out of portable modules; focus on shared logic and compute.
+TODO(wasm-parity, owner:wasm, milestone:SL1, priority:P1, status:missing): define host imports and ABI for full `open()` + file method parity (readline(s)/seek/tell/truncate/flush/attrs) so wasm builds stay in lockstep with native file I/O.
 
 ### 5.4 DB host interface (capability-gated)
 For wasm builds that need database access, the host must expose:

@@ -50,8 +50,10 @@ README/ROADMAP in sync.
 - Importable `builtins` module binds supported builtins (see stdlib matrix).
 - `enumerate` builtin returns an iterator over `(index, value)` with optional `start`.
 - `iter(callable, sentinel)`, `map`, `filter`, `zip`, and `reversed` return lazy iterator objects with CPython-style stop conditions.
+- `iter(obj)` enforces that `__iter__` returns an iterator, raising `TypeError` with CPython-style messages for non-iterators.
 - Builtin function objects for allowlisted builtins (`any`, `all`, `abs`, `ascii`, `bin`, `oct`, `hex`, `chr`, `ord`, `divmod`, `callable`, `repr`, `format`, `getattr`, `hasattr`, `round`, `iter`, `next`, `anext`, `print`, `super`, `sum`, `min`, `max`, `sorted`, `map`, `filter`, `zip`, `reversed`).
 - Builtin reductions: `sum`, `min`, `max` with key/default support across core ordering types.
+- `print` supports keyword arguments (`sep`, `end`, `file`, `flush`) with CPython-style type errors; `file=None` uses `sys.stdout` when initialized.
 - Lexicographic ordering for `str`/`bytes`/`bytearray`/`list`/`tuple` (cross-type ordering raises `TypeError`).
 - Ordering comparisons fall back to `__lt__`/`__le__`/`__gt__`/`__ge__` for user-defined objects
   (used by `sorted`/`list.sort`/`min`/`max`).
@@ -67,6 +69,7 @@ README/ROADMAP in sync.
 - WASM harness runs via `run_wasm.js` with shared memory/table and direct runtime imports (legacy wrapper fallback via `MOLT_WASM_LEGACY=1`), including async/channel benches on WASI.
 - WASM parity tests cover strings, bytes/bytearray, memoryview, list/dict ops, control flow, generators, and async protocols.
 - Instance `__getattr__`/`__getattribute__` fallback (AttributeError) plus `__setattr__`/`__delattr__` hooks for user-defined classes.
+- Object-level `__getattribute__`/`__setattr__`/`__delattr__` builtins follow CPython raw attribute semantics.
 - `__class__`/`__dict__` attribute access for instances, functions, modules, and classes (class `__dict__` returns a mutable dict).
 - `**kwargs` expansion accepts dicts and mapping-like objects with `keys()` + `__getitem__`.
 - `functools.partial`, `functools.reduce`, and `functools.lru_cache` accept `*args`/`**kwargs`, `functools.wraps`/`update_wrapper` honors assigned/updated, and `cmp_to_key`/`total_ordering` are available.
@@ -75,8 +78,10 @@ README/ROADMAP in sync.
 - `collections.deque` supports rotate/index/insert/remove; `Counter`/`defaultdict` are dict subclasses with arithmetic/default factories, `Counter` keys/values/items/total, repr/equality parity, and in-place arithmetic ops.
 - C3 MRO + multiple inheritance for attribute lookup, `super()` resolution, and descriptor precedence for
   `__get__`/`__set__`/`__delete__`.
+- Descriptor protocol supports callable non-function `__get__`/`__set__`/`__delete__` implementations (callable objects).
 - Exceptions: BaseException root, non-string messages lowered through `str()`, StopIteration.value propagated across
-  iter/next and `yield from`, and `__traceback__` captured as a tuple of function names.
+  iter/next and `yield from`, `__traceback__` captured as tuples of `(filename, line, name)` entries with line markers
+  backed by global code slots across the module graph, and `sys.exc_info()` reads the active exception context.
 - Generator introspection: `gi_running`, `gi_frame` (with `f_lasti`), `gi_yieldfrom`, and `inspect.getgeneratorstate`.
 - Recursion limits enforced via call dispatch guards with `sys.getrecursionlimit`/`sys.setrecursionlimit` wired to runtime limits.
 - `molt_accel` is packaged as an optional dependency group (`[project.optional-dependencies].accel`) with a packaged default exports manifest; the decorator falls back to `molt-worker` in PATH when `MOLT_WORKER_CMD` is unset. A demo Django app/worker scaffold lives under `demo/`.
@@ -88,10 +93,8 @@ README/ROADMAP in sync.
 - Classes/object model: no metaclasses or dynamic `type()` construction.
 - Attributes: fixed struct fields with dynamic instance-dict fallback; no
   user-defined `__slots__` beyond dataclass lowering; object-level
-  `__getattr__`/`__getattribute__`/`__setattr__`/`__delattr__` are not exposed as builtins;
   class `__dict__` uses a mutable dict (mappingproxy pending).
-  (TODO(type-coverage, owner:runtime, milestone:TC2, priority:P2, status:missing): expose object-level dunder builtins
-  + mappingproxy view for class `__dict__`.)
+  (TODO(type-coverage, owner:runtime, milestone:TC2, priority:P2, status:missing): mappingproxy view for class `__dict__`.)
 - Dataclasses: compile-time lowering for frozen/eq/repr/slots; no
   `default_factory`, `kw_only`, or `order`.
   (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:missing): implement dataclass defaults,
@@ -103,17 +106,39 @@ README/ROADMAP in sync.
   (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:missing): implement `contextmanager` lowering.)
 - `str()` decoding with `encoding`/`errors` arguments is not supported; only 0/1-arg `str(obj)` conversion is available.
   (TODO(stdlib-compat, owner:runtime, milestone:TC2, priority:P2, status:missing): implement `str(bytes, encoding, errors)` parity.)
+- `print(file=None)` falls back to the host stdout when the `sys` module is not initialized, rather than always using `sys.stdout`.
+  (TODO(stdlib-compat, owner:runtime, milestone:TC1, priority:P2, status:partial): ensure `sys.stdout` bootstrap for print.)
+- WASM `str_from_obj` does not invoke `__str__` for non-primitive objects, so `print()`/`str()` may show placeholders for custom types.
+  (TODO(wasm-parity, owner:wasm, milestone:TC1, priority:P2, status:partial): call `__str__` for non-primitive objects in wasm host bindings.)
+- WASM `string_format`/`format()` only handle empty format specs; non-empty specs raise `TypeError`.
+  (TODO(wasm-parity, owner:wasm, milestone:TC1, priority:P2, status:partial): implement full format spec parsing + rendering in the wasm host.)
+- File I/O parity is partial: `open()` supports the full signature (mode/buffering/encoding/errors/newline/closefd/opener), fd-based `open`, and file objects now expose read/write/seek/tell/fileno/readline(s)/truncate/iteration/flush/close + core attrs. Remaining gaps include non-UTF-8 encodings/error handlers, text-mode seek/tell cookie semantics, `readinto`/`writelines`/`detach`/`reconfigure`, and Windows fileno/isatty accuracy.
+  (TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P1, status:partial): finish file/open parity per ROADMAP checklist + tests, with native/wasm lockstep.)
+  (TODO(wasm-parity, owner:wasm, milestone:SL1, priority:P1, status:missing): add wasm host hooks for full `open()` + file method parity, not just basic read/write/close.)
+- WASM `os.getpid()` currently returns a 0 placeholder.
+  (TODO(wasm-parity, owner:runtime, milestone:SL2, priority:P2, status:partial): add a host-backed getpid or document the placeholder semantics.)
 - Generator introspection: `gi_code` is still stubbed and frame objects only expose `f_lasti`.
   (TODO(introspection, owner:runtime, milestone:TC3, priority:P2, status:missing): implement `gi_code` + full frame objects.)
 - Comprehensions: list/set/dict comprehensions and generator expressions are supported; async comprehensions are still pending.
   (TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:missing): async comprehensions parity.)
 - Control flow: `while`-`else` is still unsupported.
   (TODO(syntax, owner:frontend, milestone:TC2, priority:P2, status:missing): `while`-`else` lowering and tests.)
+- Iterators: classes defining `__next__` without `__iter__` currently trigger a backend compile error.
+  (TODO(compiler, owner:compiler, milestone:TC2, priority:P1, status:missing): lower `__next__`-only iterator classes without backend panics.)
 - Augmented assignment: slice targets (`seq[a:b] += ...`) are not supported yet.
   (TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:missing): augassign slice targets.)
-- Exceptions: `try/except/else/finally` + `raise`/reraise; `__traceback__` lacks full
-  traceback objects/line info and exception args remain message-only outside StopIteration.value (see `docs/spec/0014_TYPE_COVERAGE_MATRIX.md`).
+- Exceptions: `try/except/else/finally` + `raise`/reraise; `__traceback__` is still tuple-only
+  (filename/line/name) and exception args remain message-only outside StopIteration.value (see `docs/spec/0014_TYPE_COVERAGE_MATRIX.md`).
   (TODO(semantics, owner:runtime, milestone:TC2, priority:P2, status:partial): full traceback objects + exception args parity.)
+- Code objects: `__code__` exposes `co_filename`/`co_name`/`co_firstlineno`; `co_varnames`, arg counts, and
+  `co_linetable` remain minimal.
+  (TODO(introspection, owner:runtime, milestone:TC2, priority:P2, status:partial): fill out code object fields for parity.)
+- Runtime lifecycle: `molt_runtime_init()`/`molt_runtime_shutdown()` manage a `RuntimeState` that owns caches, pools, and async registries; TLS guard drains per-thread caches on thread exit, and scheduler/sleep workers join on shutdown.
+- Tooling: `molt clean --artifacts` does not remove Cargo `target/` directories yet.
+  (TODO(tooling, owner:tooling, milestone:TL2, priority:P3, status:planned): add a clean option for Cargo target/ artifacts.)
+- `sys.argv` is initialized from compiled argv (native + wasm harness); decoding currently uses lossy UTF-8/UTF-16 until surrogateescape/fs-encoding parity lands.
+  (TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P2, status:partial): decode argv via filesystem encoding + surrogateescape once Molt strings can represent surrogate escapes.)
+- Runtime safety: NaN-boxed pointer conversions resolve through a pointer registry to avoid int->ptr casts in Rust; host pointer args now use raw pointer ABI in native + wasm; strict-provenance Miri is green.
 - Hashing: SipHash13 + `PYTHONHASHSEED` parity (randomized by default; deterministic when seed=0); see `docs/spec/0023_SEMANTIC_BEHAVIOR_MATRIX.md`.
 - GC: reference counting only; cycle collector pending (see `docs/spec/0023_SEMANTIC_BEHAVIOR_MATRIX.md`).
   (TODO(semantics, owner:runtime, milestone:TC3, priority:P2, status:missing): implement cycle collector.)
@@ -180,9 +205,9 @@ README/ROADMAP in sync.
 ## Stdlib Coverage
 - Partial shims: `warnings`, `traceback`, `types`, `inspect`, `fnmatch` (`*`/`?`
   + bracket class/range matching; literal `[]`/`[[]`/`[]]` escapes (no backslash
-  quoting)), `copy`, `pprint`, `string`, `typing`, `sys`, `os`, `asyncio`,
-  `contextvars`, `contextlib`, `threading`, `functools`, `itertools`, `operator`,
-  `bisect`, `heapq`, `collections`.
+  quoting)), `copy`, `pprint`, `string`, `typing`, `sys`, `os`, `pathlib`,
+  `tempfile`, `asyncio`, `contextvars`, `contextlib`, `threading`, `functools`,
+  `itertools`, `operator`, `bisect`, `heapq`, `collections`.
   (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): advance partial shims to parity per matrix.)
 - Import-only stubs: `collections.abc`, `importlib`, `importlib.util`.
   (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): implement core importlib/collections.abc surfaces.)
@@ -221,6 +246,8 @@ README/ROADMAP in sync.
 - Use `tools/dev.py lint` and `tools/dev.py test` for local validation.
 - WIT interface contract lives at `wit/molt-runtime.wit` (WASM runtime intrinsics).
 - Experimental single-module wasm link attempt via `tools/wasm_link.py` (requires `wasm-ld`); run via `MOLT_WASM_LINKED=1`.
+- Legacy `.molt/` cleanup is still performed during the MOLT_HOME/MOLT_CACHE migration.
+  (TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): remove legacy `.molt/` cleanup after migration.)
 
 ## Known Gaps
 - uv-managed Python 3.14 hangs on arm64; system Python 3.14 used as workaround.
@@ -235,6 +262,6 @@ README/ROADMAP in sync.
   (TODO(wasm-db-parity, owner:runtime, milestone:DB2, priority:P1, status:missing): wasm DB adapters + client shims.)
 - True single-module WASM link (no JS boundary) is still pending; current direct-link harness still uses a JS stub for `molt_call_indirect1`.
   (TODO(wasm-link, owner:runtime, milestone:RT3, priority:P2, status:partial): single-module link without JS stub.)
-- TODO(runtime-provenance, owner:runtime, milestone:RT1, priority:P2, status:planned): remove handle-table lock overhead via sharded or lock-free lookups.
+- TODO(runtime-provenance, owner:runtime, milestone:RT1, priority:P2, status:partial): OPT-0003 phase 1 landed (sharded pointer registry); benchmark and evaluate lock-free alternatives next (see `OPTIMIZATIONS_PLAN.md`).
 - Single-module wasm linking remains experimental; wasm-ld now links relocatable output when `MOLT_WASM_LINK=1`, but broader coverage + table/element relocation validation and removal of the JS `molt_call_indirect1` stub are still pending.
   (TODO(wasm-link, owner:runtime, milestone:RT3, priority:P2, status:planned): relocation validation + JS stub removal.)

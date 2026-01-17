@@ -1,6 +1,7 @@
+import os
+import shutil
 import subprocess
 import sys
-import os
 from pathlib import Path
 import tempfile
 
@@ -60,32 +61,39 @@ def run_cpython(file_path, python_exe=sys.executable):
 
 
 def run_molt(file_path):
-    # Clean up stale binary
-    output_root = Path(tempfile.gettempdir())
+    output_root = Path(tempfile.mkdtemp(prefix="molt_diff_"))
     output_binary = output_root / f"{Path(file_path).stem}_molt"
-    if output_binary.exists():
-        output_binary.unlink()
 
     # Build
     env = os.environ.copy()
     env["PYTHONPATH"] = "src"
-    env.setdefault("MOLT_DEBUG_AWAITABLE", "1")
     env["PYTHONHASHSEED"] = "0"
     env.update(_collect_env_overrides(file_path))
-    build_res = subprocess.run(
-        [sys.executable, "-m", "molt.cli", "build", file_path],
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-    if build_res.returncode != 0:
-        return None, build_res.stderr, build_res.returncode
+    try:
+        build_res = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "molt.cli",
+                "build",
+                file_path,
+                "--out-dir",
+                str(output_root),
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        if build_res.returncode != 0:
+            return None, build_res.stderr, build_res.returncode
 
-    # Run
-    run_res = subprocess.run(
-        [str(output_binary)], capture_output=True, text=True, env=env
-    )
-    return run_res.stdout, run_res.stderr, run_res.returncode
+        # Run
+        run_res = subprocess.run(
+            [str(output_binary)], capture_output=True, text=True, env=env
+        )
+        return run_res.stdout, run_res.stderr, run_res.returncode
+    finally:
+        shutil.rmtree(output_root, ignore_errors=True)
 
 
 def diff_test(file_path, python_exe=sys.executable):

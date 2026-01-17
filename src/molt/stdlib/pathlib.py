@@ -2,76 +2,134 @@
 
 from __future__ import annotations
 
-import pathlib as _pathlib
 from collections.abc import Iterator
 
 from molt import capabilities
 from molt.stdlib import io as _io
+from molt.stdlib import os as _os
 
 
 class Path:
-    def __init__(self, path: str | _pathlib.Path | None = None) -> None:
+    def __init__(self, path: str | Path | None = None) -> None:
         if path is None:
-            self._path = _pathlib.Path()
+            self._path = "."
+        elif isinstance(path, Path):
+            self._path = path._path
+        elif isinstance(path, str):
+            self._path = path
         else:
-            self._path = _pathlib.Path(path)
+            name = type(path).__name__
+            raise TypeError(f"expected str, bytes or os.PathLike object, not {name}")
+        # TODO(stdlib-compat, pathlib-pathlike): support os.PathLike inputs via
+        # __fspath__ without triggering backend bind regressions.
 
     def __fspath__(self) -> str:
-        return self._path.__fspath__()
+        return self._path
 
     def __str__(self) -> str:
-        return str(self._path)
+        return self._path
 
     def __repr__(self) -> str:
-        return "Path(" + repr(self._path) + ")"
+        return f"Path({self._path!r})"
 
-    def _wrap(self, path: _pathlib.Path) -> Path:
+    def _wrap(self, path: str) -> Path:
         return Path(path)
 
-    def joinpath(self, other: str) -> Path:
-        return self._wrap(self._path.joinpath(other))
+    def joinpath(self, *others: str) -> Path:
+        path = self._path
+        for part in others:
+            if part.startswith(_os.sep):
+                path = part
+            else:
+                if path and not path.endswith(_os.sep):
+                    path += _os.sep
+                path += part
+        return self._wrap(path)
 
     def __truediv__(self, key: str) -> Path:
-        return self.joinpath(key)
+        path = self._path
+        if key.startswith(_os.sep):
+            path = key
+        else:
+            if path and not path.endswith(_os.sep):
+                path += _os.sep
+            path += key
+        return self._wrap(path)
 
-    def open(self, mode: str = "r"):
-        return _io.open(self._path, mode)
+    def open(
+        self,
+        mode: str = "r",
+        buffering: int = -1,
+        encoding: str | None = None,
+        errors: str | None = None,
+        newline: str | None = None,
+        closefd: bool = True,
+        opener: object | None = None,
+    ):
+        return _io.open(
+            self._path,
+            mode,
+            buffering,
+            encoding,
+            errors,
+            newline,
+            closefd,
+            opener,
+        )
 
-    def read_text(self) -> str:
+    def read_text(self, encoding: str | None = None, errors: str | None = None) -> str:
         capabilities.require("fs.read")
-        return self._path.read_text()
+        with _io.open(self._path, "r", encoding=encoding, errors=errors) as handle:
+            return handle.read()
 
     def read_bytes(self) -> bytes:
         capabilities.require("fs.read")
-        return self._path.read_bytes()
+        with _io.open(self._path, "rb") as handle:
+            return handle.read()
 
-    def write_text(self, data: str) -> int:
+    def write_text(
+        self,
+        data: str,
+        encoding: str | None = None,
+        errors: str | None = None,
+        newline: str | None = None,
+    ) -> int:
         capabilities.require("fs.write")
-        return self._path.write_text(data)
+        with _io.open(
+            self._path,
+            "w",
+            encoding=encoding,
+            errors=errors,
+            newline=newline,
+        ) as handle:
+            return handle.write(data)
 
     def write_bytes(self, data: bytes) -> int:
         capabilities.require("fs.write")
-        return self._path.write_bytes(data)
+        with _io.open(self._path, "wb") as handle:
+            return handle.write(data)
 
     def exists(self) -> bool:
-        capabilities.require("fs.read")
-        return self._path.exists()
+        return _os.path.exists(self._path)
+
+    def unlink(self) -> None:
+        _os.path.unlink(self._path)
 
     def iterdir(self) -> Iterator[Path]:
         capabilities.require("fs.read")
-        items: list[Path] = []
-        for child in self._path.iterdir():
-            items.append(self._wrap(child))
-        return iter(items)
+        # TODO(stdlib-compat, pathlib-iterdir): implement listdir-backed iterdir
+        # in the stdlib shim so compiled Molt code can iterate directories.
+        raise NotImplementedError("pathlib.Path.iterdir is not supported yet")
 
     @property
     def name(self) -> str:
-        return self._path.name
+        return _os.path.basename(self._path)
 
     @property
     def suffix(self) -> str:
-        return self._path.suffix
+        return _os.path.splitext(self._path)[1]
 
     @property
     def parent(self) -> Path:
-        return self._wrap(self._path.parent)
+        parent = _os.path.dirname(self._path) or "."
+        return self._wrap(parent)

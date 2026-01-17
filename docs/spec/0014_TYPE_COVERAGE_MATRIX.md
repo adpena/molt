@@ -28,6 +28,7 @@
 | generator/coroutine | send/throw/close, await | Partial | P0 | TC2 | runtime/frontend |
 | exceptions | BaseException hierarchy, raise/try, chaining, `__traceback__` (names) | Partial | P0 | TC1 | frontend/runtime |
 | function/method | callables, closures, descriptors | Partial | P1 | TC2 | frontend/runtime |
+| code | `__code__` objects (`co_filename`, `co_name`, `co_firstlineno`) | Partial | P2 | TC2 | frontend/runtime |
 | type/object | isinstance/issubclass, MRO | Partial | P2 | TC3 | runtime |
 | module | imports, attributes, globals | Partial | P2 | TC3 | stdlib/frontend |
 | descriptor protocol | @property, @classmethod | Partial | P1 | TC2 | runtime/frontend |
@@ -84,7 +85,7 @@
 | next | iterator next with default | Partial | P1 | TC2 | frontend/runtime |
 | object | base object constructor | Partial | P2 | TC3 | runtime |
 | oct | integer to octal string | Partial | P2 | TC3 | runtime |
-| open | file I/O (gated) | Planned | P2 | TC3 | stdlib |
+| open | file I/O (gated; buffering/text parity) | Partial | P2 | TC3 | stdlib |
 | ord | char to int | Supported | P2 | TC3 | runtime |
 | pow | power with mod | Partial | P1 | TC2 | frontend/runtime |
 | print | output formatting | Supported | P0 | TC0 | runtime |
@@ -144,7 +145,8 @@
   - TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:missing): import/module rules + module object model (`__import__`, package resolution, `sys.path` policy).
   - TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:partial): reflection builtins (`type`, `isinstance`, `issubclass`, `dir`, `vars`, `globals`, `locals`).
   - TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:missing): dynamic execution builtins (`eval`, `exec`, `compile`) with sandboxing rules.
-  - TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:missing): I/O builtins (`open`, `input`, `help`, `breakpoint`) with capability gating.
+- TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:missing): I/O builtins (`open`, `input`, `help`, `breakpoint`) with capability gating.
+- TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P1, status:partial): finish `open`/file object parity (non-UTF-8 encodings, readinto/writelines/reconfigure, text-mode seek/tell cookies, Windows fileno/isatty) with differential + wasm coverage.
   - Implemented: descriptor deleter support (`__delete__`, property deleter) + attribute deletion wiring.
 
 ## 3. Runtime Object Model Expansion
@@ -159,8 +161,8 @@
 - Implemented: frozenset hashing (order-insensitive) + set/frozenset algebra intrinsics with CPython mixing parity.
 - Implemented: exception objects with cause/context/suppress fields.
   - Implemented: exception class objects derived from `BaseException` for typed `type(exc)`.
-  - Implemented: `__traceback__` capture as a tuple of function names.
-- TODO(type-coverage, owner:runtime, milestone:TC2, priority:P2, status:missing): object-level `__setattr__`/`__delattr__`/`__getattr__`/`__getattribute__` builtins.
+- Implemented: `__traceback__` capture as a tuple of (filename, line, name) entries with line markers from the last executed statement in each frame and global code slots across the module graph.
+- Implemented: object-level `__getattribute__`/`__setattr__`/`__delattr__` builtins with CPython-style raw semantics.
 - TODO(type-coverage, owner:runtime, milestone:TC2, priority:P2, status:partial): rounding intrinsics (`floor`, `ceil`) + full deterministic semantics for edge cases.
 - Implemented: BigInt heap fallback + arithmetic parity beyond 47-bit inline ints.
 - Implemented: recursion limits + `RecursionError` guard semantics.
@@ -191,3 +193,17 @@
 - Perf gates for container hot paths + memory churn.
 - Partial: exception coverage in `molt_diff` (add traceback/args/line info cases as runtime grows).
 - TODO(tests, owner:runtime, milestone:TC2, priority:P2, status:planned): expand exception differential coverage.
+
+## 8. Matrix Audit (2026-01-16)
+Coverage evidence (selected):
+- `tests/differential/basic/container_dunders.py` (list/dict/str dunder container ops + type-level calls).
+- `tests/differential/basic/object_dunder_builtins.py` (object-level `__getattribute__`/`__setattr__`/`__delattr__` raw semantics).
+- `tests/differential/basic/list_dict.py` (list/dict core methods, dict views, `dict.fromkeys`).
+- `tests/differential/basic/str_methods.py`, `tests/differential/basic/bytes_ranges.py` (string/bytes/bytearray methods + slicing).
+- `tests/differential/basic/augassign_inplace.py`, `tests/differential/basic/set_view_ops.py`, `tests/differential/basic/frozenset_basic.py` (set/frozenset algebra + views).
+- `tests/differential/basic/builtin_iterators.py`, `tests/differential/basic/iter_non_iterator.py` (iter/next protocol + non-iterator TypeError parity).
+- `tests/differential/basic/generator_protocol.py`, `tests/differential/basic/generator_state.py`, `tests/test_native_async_protocol.py`, `tests/test_wasm_async_protocol.py` (generator/coroutine/async protocol parity).
+
+Gaps or missing coverage (audit findings):
+- Implemented: print keyword-argument parity coverage (`sep`, `end`, `file`, `flush`) in `tests/differential/basic/print_keywords.py` + `tests/test_wasm_print_keywords.py`.
+- TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:missing): lower classes defining `__next__` without `__iter__` without backend panics.

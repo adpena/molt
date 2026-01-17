@@ -121,3 +121,13 @@ Molt may fuse ops.
 - TODO(opcode-matrix, owner:frontend, milestone:M3, priority:P2, status:missing): Complete `MATCH_*` lowering (Milestone 3).
 - TODO(opcode-matrix, owner:frontend, milestone:M2, priority:P3, status:planned): Optimize `SETUP_WITH` to inline `__enter__` (Milestone 2).
 - TODO(opcode-matrix, owner:frontend, milestone:TC2, priority:P2, status:partial): Add async generator op coverage (e.g., `ASYNC_GEN_WRAP`) and confirm lowering gaps.
+
+## 5. Matrix Audit (2026-01-16)
+Coverage evidence (selected):
+- `tests/differential/basic/args_kwargs.py`, `tests/differential/basic/kwargs_mapping.py`, `tests/differential/basic/args_kwargs_eval_order.py` (CALL/KW_NAMES argument packing + order).
+- `tests/differential/basic/getattr_calls.py` (attribute call lowering + method binding path).
+- `tests/differential/basic/for_else.py`, `tests/differential/basic/iter_non_iterator.py` (GET_ITER/FOR_ITER + iterator protocol).
+- `tests/differential/basic/async_for_else.py`, `tests/test_native_async_protocol.py` (async lowering + SEND path).
+
+Gaps or missing coverage (audit findings):
+- TODO(opcode-matrix, owner:frontend, milestone:TC2, priority:P2, status:planned): expand KW_NAMES error-path coverage (duplicate keywords, positional-only violations) in differential tests.

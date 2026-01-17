@@ -41,6 +41,7 @@ __all__ = [
     "molt_chan_new",
     "molt_chan_send",
     "molt_chan_recv",
+    "molt_chan_drop",
 ]
 
 if _IMPL is _runtime:
@@ -64,6 +65,7 @@ if _IMPL is _runtime:
     molt_chan_new = _runtime.molt_chan_new
     molt_chan_send = _runtime.molt_chan_send
     molt_chan_recv = _runtime.molt_chan_recv
+    molt_chan_drop = _runtime.molt_chan_drop
 else:
     install = _IMPL.install
     load_runtime = _IMPL.load_runtime
@@ -85,3 +87,4 @@ else:
     molt_chan_new = _IMPL.molt_chan_new
     molt_chan_send = _IMPL.molt_chan_send
     molt_chan_recv = _IMPL.molt_chan_recv
+    molt_chan_drop = _IMPL.molt_chan_drop

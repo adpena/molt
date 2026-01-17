@@ -17,7 +17,16 @@ impl TempArena {
     }
 
     pub fn reset(&mut self) {
-        self.chunks.truncate(1);
+        if self.chunks.is_empty() {
+            self.chunks.push(vec![0u8; self.chunk_size]);
+        } else {
+            self.chunks.truncate(1);
+        }
+        self.offset = 0;
+    }
+
+    pub fn clear(&mut self) {
+        self.chunks.clear();
         self.offset = 0;
     }
 

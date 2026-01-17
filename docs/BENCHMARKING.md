@@ -13,6 +13,9 @@ uv run python3 tools/bench.py
 # Record results to JSON (standard for PRs)
 uv run python3 tools/bench.py --json-out bench/results/my_change.json
 
+# Increase warmup runs (default: 1, or 0 for --smoke)
+uv run python3 tools/bench.py --warmup 2
+
 # Comparison vs CPython
 uv run python3 tools/bench.py --compare cpython
 ```
@@ -46,6 +49,8 @@ We enforce strict "Performance Gates" in CI. If a PR causes a regression beyond 
 - **Speedup (x.xx)**: Molt is X times faster than CPython. (e.g., 10.0x = Molt is 10x faster).
 - **Regression (< 1.0x)**: Molt is slower than CPython. This is generally unacceptable for Tier 0 constructs.
 - **Super Bench (`--super`)**: Runs 10 samples and calculates variance. Use this for final release validation or when results are noisy.
+- **Molt build vs run time**: `molt_build_s` captures compile time; `molt_time_s` is run time only for fair runtime comparisons.
+- **WASM build vs run time**: `molt_wasm_build_s` captures wasm compile time; `molt_wasm_time_s` is run time only.
 
 ## Profiles
 

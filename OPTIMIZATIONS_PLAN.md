@@ -1074,3 +1074,51 @@ and regression control.
 
 **Latest Results (2026-01-11)**
 - Phase 1: size-bucket pool implemented for TYPE_ID_OBJECT with zeroed reuse.
+
+### OPT-0003: Pointer Registry Contention Reduction
+
+**Problem**
+- Pointer registry lookups (strict-provenance handle resolution) currently take a global lock, which adds overhead on hot paths and scales poorly with multi-threaded workloads.
+
+**Hypotheses**
+- H1: Sharding the registry by hash reduces lock contention and drops lookup overhead in multi-threaded runs by >2x.
+- H2: A read-optimized or lock-free structure can approach near-zero overhead for pointer resolution in the steady state.
+
+**Alternatives**
+1) Sharded `HashMap` with N mutexes (simple, low-risk, moderate perf win).
+2) Copy-on-write table with atomic pointer swaps (RCU style) for lock-free reads and locked writes.
+3) Per-thread cache + global registry fallback (small fast path, moderate complexity, potential staleness handling).
+
+**Research References**
+- CLHT: Cache-Line Hash Tables (lock-free hash table design): https://github.com/LPD-EPFL/CLHT
+- Crossbeam epoch-based GC (RCU-style patterns): https://docs.rs/crossbeam-epoch
+- Folly AtomicHashMap (read-optimized, lock-free-ish map): https://github.com/facebook/folly
+
+**Plan**
+- Phase 0: Add microbench harness for pointer registry resolve/insert/remove under thread contention.
+- Phase 1: Implement sharded registry with configurable shard count; measure single-thread overhead.
+- Phase 2: Prototype copy-on-write registry for read-mostly workloads; compare with sharded map.
+- Phase 3: Integrate with runtime init/shutdown and pointer lifecycle tests; document tradeoffs.
+
+**Status**
+- Phase 0 microbench added (`tests/benchmarks/bench_ptr_registry.py`, `runtime/molt-obj-model/benches/ptr_registry.rs`); Phase 1 implemented with a 64-shard registry; benchmarking + alternative designs pending.
+
+**Benchmark Matrix**
+- bench_attr_lookup.py: expected +5-10% in multi-threaded runs.
+- bench_call_dispatch.py: expected +3-8% in multi-threaded runs.
+- bench_async_switch.py: expected +5% in scheduler-heavy scenarios.
+- bench_dict_ops.py: no regression (<=2%).
+
+**Correctness Plan**
+- New unit tests for registry invariants (insert/resolve/release under concurrency).
+- Miri (strict-provenance) stays green; fuzz target covers pointer churn.
+- Guarded fallbacks for failed resolves remain deterministic.
+
+**Risk + Rollback**
+- Risk: subtle races during teardown or handle reuse.
+- Rollback: revert to single-lock registry and keep provenance-safe conversions.
+
+**Success Criteria**
+- >=2x improvement in synthetic multi-thread resolve benchmarks.
+- <=2% overhead regression in single-threaded microbenchmarks.
+- No new Miri/TSAN warnings; spec + STATUS updates recorded.

@@ -46,3 +46,32 @@ q = WithProp()
 q.extra = "present"
 del q.extra
 print(hasattr(q, "extra"))
+
+
+class CallSet:
+    def __call__(self, obj, val) -> None:
+        obj.record = ("set", val)
+
+
+class CallDel:
+    def __call__(self, obj) -> None:
+        obj.record = ("del",)
+
+
+class CallDesc:
+    __set__ = CallSet()
+    __delete__ = CallDel()
+
+
+class WithCallDesc:
+    d = CallDesc()
+
+    def __init__(self) -> None:
+        self.record = None
+
+
+w2 = WithCallDesc()
+w2.d = 10
+print(w2.record)
+del w2.d
+print(w2.record)

@@ -840,8 +840,7 @@ const buildRuntimeImportWrappers = () => {
     funcSigs.set(name, { argTypes, retType });
   }
 
-  const expectsBigInt = (ty) =>
-    ty === 'molt-object' || ty === 'molt-ptr' || ty === 'u64' || ty === 's64';
+  const expectsBigInt = (ty) => ty === 'molt-object' || ty === 'u64' || ty === 's64';
   const toBigInt = (value, ty) => {
     if (typeof value === 'bigint') {
       return value;

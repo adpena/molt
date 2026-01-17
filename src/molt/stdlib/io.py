@@ -41,21 +41,37 @@ def _require_caps_for_mode(mode: str) -> None:
 def open(
     file: str | bytes | int | os.PathLike[str] | os.PathLike[bytes],
     mode: str = "r",
+    buffering: int = -1,
+    encoding: str | None = None,
+    errors: str | None = None,
+    newline: str | None = None,
+    closefd: bool = True,
+    opener: Any | None = None,
 ) -> IO[Any]:
     _require_caps_for_mode(mode)
     import builtins as _builtins
 
-    return _builtins.open(file, mode)
+    return _builtins.open(
+        file,
+        mode,
+        buffering,
+        encoding,
+        errors,
+        newline,
+        closefd,
+        opener,
+    )
 
 
 def stream(
     file: str | bytes | int | os.PathLike[str] | os.PathLike[bytes],
     mode: str = "rb",
     chunk_size: int = 65536,
+    **kwargs: Any,
 ) -> net.Stream:
     _require_caps_for_mode(mode)
     import builtins as _builtins
 
-    handle = _builtins.open(file, mode)
+    handle = _builtins.open(file, mode, **kwargs)
 
     return net.Stream(_StreamIter(handle, chunk_size))

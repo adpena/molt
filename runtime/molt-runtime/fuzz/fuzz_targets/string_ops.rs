@@ -1,16 +1,17 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
+use molt_obj_model::MoltObject;
 use molt_runtime::{
     molt_string_count, molt_string_endswith, molt_string_find, molt_string_from_bytes,
-    molt_string_replace, molt_string_startswith, MoltObject,
+    molt_string_replace, molt_string_startswith,
 };
 
 fuzz_target!(|data: &[u8]| {
     let mut hay_bits = 0u64;
     unsafe {
         let out_bits = (&mut hay_bits as *mut u64) as u64;
-        if molt_string_from_bytes(data.as_ptr() as u64, data.len() as u64, out_bits) != 0 {
+        if molt_string_from_bytes(data.as_ptr(), data.len() as u64, out_bits) != 0 {
             return;
         }
     }
@@ -22,11 +23,11 @@ fuzz_target!(|data: &[u8]| {
 
     unsafe {
         let needle_out = (&mut needle_bits as *mut u64) as u64;
-        if molt_string_from_bytes(left.as_ptr() as u64, left.len() as u64, needle_out) != 0 {
+        if molt_string_from_bytes(left.as_ptr(), left.len() as u64, needle_out) != 0 {
             return;
         }
         let repl_out = (&mut repl_bits as *mut u64) as u64;
-        if molt_string_from_bytes(right.as_ptr() as u64, right.len() as u64, repl_out) != 0 {
+        if molt_string_from_bytes(right.as_ptr(), right.len() as u64, repl_out) != 0 {
             return;
         }
 

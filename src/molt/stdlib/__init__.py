@@ -23,6 +23,7 @@ __all__ = [
     "pprint",
     "string",
     "sys",
+    "tempfile",
     "threading",
     "traceback",
     "types",

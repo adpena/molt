@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import ItemsView, KeysView, ValuesView
-from typing import Any, Iterator, MutableMapping
+from typing import TYPE_CHECKING, Any, Iterator, MutableMapping
 
 
 def _load_py_os() -> Any:
@@ -26,6 +26,7 @@ __all__ = [
     "pardir",
     "extsep",
     "altsep",
+    "getpid",
     "getenv",
     "environ",
     "path",
@@ -46,6 +47,10 @@ _ENV_STORE: dict[str, str] = {}
 
 
 def _molt_env_get(key: str, default: Any = None) -> Any:
+    try:
+        return _molt_env_get_raw(key, default)  # type: ignore[unresolved-reference]
+    except NameError:
+        pass
     if _py_os is not None:
         try:
             env = getattr(_py_os, "environ", None)
@@ -233,11 +238,61 @@ class _Path:
     def abspath(path: str) -> str:
         return _Path.normpath(path)
 
+    @staticmethod
+    def exists(path: Any) -> bool:
+        _require_cap("fs.read")
+        try:
+            return _molt_path_exists(path)  # type: ignore[unresolved-reference]
+        except NameError:
+            if _py_os is not None:
+                try:
+                    return _py_os.path.exists(path)
+                except Exception:
+                    return False
+        return False
+
+    @staticmethod
+    def unlink(path: Any) -> None:
+        _require_cap("fs.write")
+        try:
+            _molt_path_unlink(path)  # type: ignore[unresolved-reference]
+            return
+        except NameError:
+            if _py_os is not None:
+                _py_os.unlink(path)
+                return
+        raise FileNotFoundError(path)
+
 
 path = _Path()
 
 
 environ = _Environ()
+
+
+if TYPE_CHECKING:
+
+    def _molt_getpid() -> int:
+        return 0
+
+    def _molt_env_get_raw(key: str, default: Any = None) -> Any:
+        return default
+
+    def _molt_path_exists(path: Any) -> bool:
+        return False
+
+
+def _molt_path_unlink(path: Any) -> None:
+    return None
+
+
+def getpid() -> int:
+    try:
+        return _molt_getpid()  # type: ignore[unresolved-reference]
+    except NameError:
+        if _py_os is not None:
+            return _py_os.getpid()
+    return 0
 
 
 def getenv(key: str, default: Any = None) -> Any:

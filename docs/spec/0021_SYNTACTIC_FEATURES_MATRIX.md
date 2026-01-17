@@ -57,6 +57,7 @@
 - [x] Function decorators (`@d`)
 - [x] Class decorators (`@d`)
 - [x] Stacked decorators (multiple `@` lines)
+- [x] Decorator expressions (callables/attribute access/factory calls)
 
 ### 1.7 Assignment Expressions (Walrus)
 **Status:** Supported (Milestone 1)
@@ -79,3 +80,13 @@ The gap is primarily in **Lowering** (AST -> HIR), not Parsing.
 - TODO(syntax, owner:frontend, milestone:M3, priority:P2, status:missing): Implement `match` lowering (start with simple literals).
 - TODO(syntax, owner:frontend, milestone:M2, priority:P2, status:partial): Implement `f-string` format specifiers + debug spec (needs `format()` protocol).
 - TODO(syntax, owner:frontend, milestone:TC2, priority:P2, status:missing): Implement async comprehensions (`await` in comprehensions + async iter lowering).
+
+## 4. Matrix Audit (2026-01-16)
+Coverage evidence (selected):
+- `tests/differential/basic/class_decorators.py` (stacked decorators, factories, evaluation order).
+- `tests/differential/basic/comprehensions.py` (list/set/dict comprehensions).
+- `tests/differential/basic/generator_protocol.py` (generator expression lowering).
+- `tests/differential/basic/async_for_else.py`, `tests/differential/basic/async_with_instance_callable.py` (async for/with lowering).
+
+Gaps or missing coverage (audit findings):
+- TODO(tests, owner:frontend, milestone:TC2, priority:P2, status:planned): add differential coverage for nested comprehensions and `await` in comprehension bodies once lowering lands.

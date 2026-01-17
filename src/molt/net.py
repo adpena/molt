@@ -60,6 +60,45 @@ def _get_shims() -> Any:
     return _SHIMS
 
 
+class _RuntimeHandle:
+    def __init__(self, handle: ctypes.c_void_p, lib: Any, drop_name: str) -> None:
+        self._handle = handle
+        self._lib = lib
+        self._drop_name = drop_name
+        self._refs = 0
+        self._dropped = False
+
+    def acquire(self) -> "_RuntimeHandle":
+        self._refs += 1
+        return self
+
+    def release(self) -> None:
+        if self._refs <= 0:
+            return
+        self._refs -= 1
+        if self._refs == 0:
+            self._drop()
+
+    def _drop(self) -> None:
+        if self._dropped:
+            return
+        self._dropped = True
+        drop_fn = getattr(self._lib, self._drop_name)
+        drop_fn(self._handle)
+
+    @property
+    def handle(self) -> ctypes.c_void_p:
+        return self._handle
+
+    @property
+    def lib(self) -> Any:
+        return self._lib
+
+    def __del__(self) -> None:
+        if not self._dropped:
+            self._drop()
+
+
 class _SyncAsyncIter:
     def __init__(self, source: Iterable[Payload]) -> None:
         self._iter = iter(source)
@@ -89,9 +128,18 @@ class _WebSocketIter:
 
 
 class _RuntimeStreamIter:
-    def __init__(self, handle: ctypes.c_void_p, lib: Any) -> None:
-        self._handle = handle
-        self._lib = lib
+    def __init__(self, handle: _RuntimeHandle) -> None:
+        self._handle = handle.acquire()
+        self._released = False
+
+    def _release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        self._handle.release()
+
+    def __del__(self) -> None:
+        self._release()
 
     def __aiter__(self) -> AsyncIterator[Payload]:
         return self
@@ -99,12 +147,13 @@ class _RuntimeStreamIter:
     async def __anext__(self) -> Payload:
         pending = _pending_bits()
         while True:
-            res = int(self._lib.molt_stream_recv(self._handle))
+            res = int(self._handle.lib.molt_stream_recv(self._handle.handle))
             if res == pending:
                 await asyncio.sleep(0)
             else:
                 obj = _decode_molt_payload(res)
                 if obj is None:
+                    self._release()
                     raise StopAsyncIteration
                 return obj
 
@@ -182,12 +231,21 @@ def stream(source: AsyncIterable[Payload] | Iterable[Payload]) -> Stream:
 
 
 class RuntimeStream(Stream):
-    def __init__(self, handle: ctypes.c_void_p, lib: Any) -> None:
-        self._handle = handle
-        self._lib = lib
+    def __init__(self, handle: _RuntimeHandle) -> None:
+        self._handle = handle.acquire()
+        self._released = False
 
     def __aiter__(self) -> AsyncIterator[Payload]:
-        return _RuntimeStreamIter(self._handle, self._lib)
+        return _RuntimeStreamIter(self._handle)
+
+    def _release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        self._handle.release()
+
+    def __del__(self) -> None:
+        self._release()
 
 
 class StreamSenderBase:
@@ -199,22 +257,37 @@ class StreamSenderBase:
 
 
 class RuntimeStreamSender(StreamSenderBase):
-    def __init__(self, handle: ctypes.c_void_p, lib: Any) -> None:
-        self._handle = handle
-        self._lib = lib
+    def __init__(self, handle: _RuntimeHandle) -> None:
+        self._handle = handle.acquire()
+        self._closed = False
+        self._released = False
+
+    def _release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        self._handle.release()
+
+    def __del__(self) -> None:
+        self._release()
 
     async def send(self, payload: Payload) -> None:
         pending = _pending_bits()
         data = _stream_payload_bytes(payload)
         while True:
-            res = int(self._lib.molt_stream_send(self._handle, data, len(data)))
+            res = int(
+                self._handle.lib.molt_stream_send(self._handle.handle, data, len(data))
+            )
             if res != pending:
                 return
             await asyncio.sleep(0)
 
     async def close(self) -> None:
-        if hasattr(self._lib, "molt_stream_close"):
-            self._lib.molt_stream_close(self._handle)
+        if self._closed:
+            return
+        self._closed = True
+        self._handle.lib.molt_stream_close(self._handle.handle)
+        self._release()
 
 
 class StreamSender(StreamSenderBase):
@@ -233,7 +306,8 @@ def stream_channel(maxsize: int = 1) -> tuple[Stream, StreamSenderBase]:
     lib = shims.load_runtime()
     handle = shims.stream_new_handle(lib, maxsize)
     if handle is not None:
-        return RuntimeStream(handle, lib), RuntimeStreamSender(handle, lib)
+        shared = _RuntimeHandle(handle, lib, "molt_stream_drop")
+        return RuntimeStream(shared), RuntimeStreamSender(shared)
 
     queue = _AsyncQueue(maxsize)
 
@@ -241,15 +315,27 @@ def stream_channel(maxsize: int = 1) -> tuple[Stream, StreamSenderBase]:
 
 
 class RuntimeWebSocket(WebSocket):
-    def __init__(self, handle: ctypes.c_void_p, lib: Any) -> None:
-        self._handle = handle
-        self._lib = lib
+    def __init__(self, handle: _RuntimeHandle) -> None:
+        self._handle = handle.acquire()
+        self._closed = False
+        self._released = False
+
+    def _release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        self._handle.release()
+
+    def __del__(self) -> None:
+        self._release()
 
     async def send(self, msg: Payload) -> None:
         pending = _pending_bits()
         data = _ws_payload_bytes(msg)
         while True:
-            res = int(self._lib.molt_ws_send(self._handle, data, len(data)))
+            res = int(
+                self._handle.lib.molt_ws_send(self._handle.handle, data, len(data))
+            )
             if res != pending:
                 return
             await asyncio.sleep(0)
@@ -257,20 +343,24 @@ class RuntimeWebSocket(WebSocket):
     async def recv(self) -> Payload:
         pending = _pending_bits()
         while True:
-            res = int(self._lib.molt_ws_recv(self._handle))
+            res = int(self._handle.lib.molt_ws_recv(self._handle.handle))
             if res == pending:
                 await asyncio.sleep(0)
                 continue
             obj = _decode_molt_payload(res)
             if obj is None:
+                self._closed = True
                 raise RuntimeError("WebSocket closed")
             if isinstance(obj, (bytes, str)):
                 return obj
             raise TypeError("WebSocket payload must be bytes or str")
 
     async def close(self) -> None:
-        if hasattr(self._lib, "molt_ws_close"):
-            self._lib.molt_ws_close(self._handle)
+        if self._closed:
+            return
+        self._closed = True
+        self._handle.lib.molt_ws_close(self._handle.handle)
+        self._release()
 
 
 def ws_pair(maxsize: int = 0) -> tuple[WebSocket, WebSocket]:
@@ -279,7 +369,9 @@ def ws_pair(maxsize: int = 0) -> tuple[WebSocket, WebSocket]:
     handles = shims.ws_pair_handles(lib, maxsize)
     if handles is not None:
         left_handle, right_handle = handles
-        return RuntimeWebSocket(left_handle, lib), RuntimeWebSocket(right_handle, lib)
+        left_shared = _RuntimeHandle(left_handle, lib, "molt_ws_drop")
+        right_shared = _RuntimeHandle(right_handle, lib, "molt_ws_drop")
+        return RuntimeWebSocket(left_shared), RuntimeWebSocket(right_shared)
     left = WebSocket(maxsize)
     right = WebSocket(maxsize)
     left._incoming = right._outgoing
@@ -291,12 +383,13 @@ def ws_connect(url: str, capability: str = "websocket:connect") -> WebSocket:
     capabilities.require(capability)
     shims = _get_shims()
     lib = shims.load_runtime()
-    if lib is None or not hasattr(lib, "molt_ws_connect"):
+    if lib is None:
         raise RuntimeError("WebSocket runtime not available")
     handle = shims.ws_connect_handle(lib, url)
     if handle is None:
         raise RuntimeError("WebSocket connect failed")
-    return RuntimeWebSocket(handle, lib)
+    shared = _RuntimeHandle(handle, lib, "molt_ws_drop")
+    return RuntimeWebSocket(shared)
 
 
 def _pending_bits() -> int:

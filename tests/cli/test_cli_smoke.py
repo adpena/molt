@@ -5,7 +5,6 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-import tempfile
 
 import pytest
 
@@ -140,27 +139,24 @@ def test_cli_build_cross_target_with_zig(tmp_path: Path) -> None:
     script.write_text("print('ok')\n")
     output = tmp_path / "hello_molt"
 
-    try:
-        res = _run_cli(
-            [
-                "build",
-                "--target",
-                target_triple,
-                "--output",
-                str(output),
-                "--json",
-                str(script),
-            ]
-        )
-        assert res.returncode == 0
-        payload = json.loads(res.stdout)
-        assert payload["status"] == "ok"
-        assert payload["data"]["target_triple"] == target_triple
-        assert Path(payload["data"]["output"]).exists()
-    finally:
-        output_root = Path(tempfile.gettempdir())
-        for artifact in ("output.o", "main_stub.c"):
-            (output_root / artifact).unlink(missing_ok=True)
+    res = _run_cli(
+        [
+            "build",
+            "--target",
+            target_triple,
+            "--out-dir",
+            str(tmp_path),
+            "--output",
+            str(output),
+            "--json",
+            str(script),
+        ]
+    )
+    assert res.returncode == 0
+    payload = json.loads(res.stdout)
+    assert payload["status"] == "ok"
+    assert payload["data"]["target_triple"] == target_triple
+    assert Path(payload["data"]["output"]).exists()
 
 
 def test_cli_completion_bash_json() -> None:

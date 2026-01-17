@@ -10,11 +10,13 @@ entrypoints used to validate them.
 ## 1. Object Representation Invariants
 - All values are NaN-boxed `u64` (`MoltObject`).
 - Heap pointers must fit in 48 bits and are stored directly with the pointer tag.
-- Pointer unboxing must sign-extend bit 47; non-canonical pointers are rejected
-  in debug builds.
-- `molt_handle_resolve` is a pure unbox of the pointer tag.
+- `MoltObject::from_ptr` registers canonical pointer addresses in the pointer
+  registry; `MoltObject::as_ptr` resolves through the registry (no int->ptr).
+- Pointer unboxing in the backend sign-extends bit 47; non-canonical pointers are
+  rejected in debug builds.
+- `molt_handle_resolve` resolves via the pointer registry (not a raw unbox).
 - `molt_alloc` returns boxed object bits; raw pointers are only used internally
-  for field access and must not escape into boxed storage.
+  for field access and must be registered when exposed as bits.
 
 ## 2. Header/Layout Invariants
 - `MoltHeader` is prepended to every heap object.
@@ -53,17 +55,30 @@ entrypoints used to validate them.
 - Raw pointers must be derived from boxed bits and must not be stored in
   collections or globals without boxing.
 
+### 7.1 Strict-Provenance Hardening Checklist
+- ✅ Pointer-typed host ABI (`molt-ptr`) is treated as raw addresses (no fallback
+  boxing or int->ptr casts in the runtime).
+- ✅ WASM harness enforces raw-pointer inputs for `molt-ptr` imports.
+- ✅ Pointer registry sharded to reduce lock contention (OPT-0003 phase 1).
+- TODO(runtime-safety, owner:runtime, milestone:RT2): audit remaining pointer
+  registries/handles for explicit release on shutdown and on error paths.
+- TODO(runtime-provenance, owner:runtime, milestone:RT1): benchmark sharded registry
+  and evaluate lock-free alternatives once correctness is locked in
+  (see OPT-0003 in `OPTIMIZATIONS_PLAN.md`).
+
 ## 8. Validation Entry Points
 Use `tools/runtime_safety.py` for standardized checks:
 - `python tools/runtime_safety.py asan`
 - `python tools/runtime_safety.py tsan`
 - `python tools/runtime_safety.py ubsan`
 - `python tools/runtime_safety.py miri`
-- `python tools/runtime_safety.py fuzz --target string_ops`
+- `python tools/runtime_safety.py fuzz --target string_ops --runs 10000`
+- `python tools/runtime_safety.py clippy`
 
 Notes:
 - The miri entrypoint sets `MIRIFLAGS=-Zmiri-disable-isolation` by default so
   runtime tests can access time/filesystem APIs. Override as needed.
+- `--log-dir` defaults to `logs/` and can be disabled by passing `--log-dir=`.
 
 ## 9. Tooling Prerequisites
 - `cargo +nightly miri setup` must be run once per toolchain install.

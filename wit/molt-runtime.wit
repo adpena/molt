@@ -2,8 +2,10 @@ package molt:runtime;
 
 interface intrinsics {
     type molt-object = u64;
-    type molt-ptr = u64;
+    type molt-ptr = u32;
 
+    runtime_init: func() -> u64;
+    runtime_shutdown: func() -> u64;
     print_obj: func(val: molt-object);
     print_newline: func();
     alloc: func(size: u64) -> u64;
@@ -28,6 +30,7 @@ interface intrinsics {
     chan_new: func(capacity: molt-object) -> molt-ptr;
     chan_send: func(chan: molt-ptr, val: molt-object) -> molt-object;
     chan_recv: func(chan: molt-ptr) -> molt-object;
+    chan_drop: func(chan: molt-ptr);
 
     add: func(a: molt-object, b: molt-object) -> molt-object;
     inplace_add: func(a: molt-object, b: molt-object) -> molt-object;
@@ -101,6 +104,7 @@ interface intrinsics {
     str_from_obj: func(val: molt-object) -> molt-object;
     repr_from_obj: func(val: molt-object) -> molt-object;
     repr_builtin: func(val: molt-object) -> molt-object;
+    format_builtin: func(val: molt-object, format_spec: molt-object) -> molt-object;
     ascii_from_obj: func(val: molt-object) -> molt-object;
     callable_builtin: func(val: molt-object) -> molt-object;
     int_from_obj: func(val: molt-object, base: molt-object, has_base: molt-object) -> molt-object;
@@ -121,16 +125,17 @@ interface intrinsics {
     del_attr_generic: func(obj: molt-ptr, attr_ptr: molt-ptr, attr_len: u64) -> molt-object;
     del_attr_ptr: func(obj: molt-ptr, attr_ptr: molt-ptr, attr_len: u64) -> molt-object;
     del_attr_object: func(obj: molt-object, attr_ptr: molt-ptr, attr_len: u64) -> molt-object;
-    object_field_get: func(obj: molt-ptr, offset: u64) -> molt-object;
+    object_field_get: func(obj: molt-object, offset: u64) -> molt-object;
     object_field_get_ptr: func(obj: molt-ptr, offset: u64) -> molt-object;
-    object_field_set: func(obj: molt-ptr, offset: u64, val: molt-object) -> molt-object;
+    object_field_set: func(obj: molt-object, offset: u64, val: molt-object) -> molt-object;
     object_field_set_ptr: func(obj: molt-ptr, offset: u64, val: molt-object) -> molt-object;
-    object_field_init: func(obj: molt-ptr, offset: u64, val: molt-object) -> molt-object;
+    object_field_init: func(obj: molt-object, offset: u64, val: molt-object) -> molt-object;
     object_field_init_ptr: func(obj: molt-ptr, offset: u64, val: molt-object) -> molt-object;
     module_new: func(name: molt-object) -> molt-object;
     module_cache_get: func(name: molt-object) -> molt-object;
     module_cache_set: func(name: molt-object, module: molt-object) -> molt-object;
     module_get_attr: func(module: molt-object, attr: molt-object) -> molt-object;
+    module_get_global: func(module: molt-object, attr: molt-object) -> molt-object;
     module_get_name: func(module: molt-object, attr: molt-object) -> molt-object;
     module_set_attr: func(module: molt-object, attr: molt-object, val: molt-object) -> molt-object;
     get_attr_name: func(obj: molt-object, name: molt-object) -> molt-object;
@@ -148,9 +153,21 @@ interface intrinsics {
     oct_builtin: func(val: molt-object) -> molt-object;
     hex_builtin: func(val: molt-object) -> molt-object;
     getrecursionlimit: func() -> molt-object;
+    getargv: func() -> molt-object;
     setrecursionlimit: func(limit: molt-object) -> molt-object;
     recursion_guard_enter: func() -> u64;
     recursion_guard_exit: func();
+    trace_enter_slot: func(code_id: u64) -> molt-object;
+    trace_set_line: func(line: molt-object) -> molt-object;
+    trace_exit: func() -> molt-object;
+    code_slots_init: func(count: u64) -> molt-object;
+    code_slot_set: func(code_id: u64, code: molt-object) -> molt-object;
+    code_new: func(
+        filename: molt-object,
+        name: molt-object,
+        firstlineno: molt-object,
+        linetable: molt-object,
+    ) -> molt-object;
     round_builtin: func(val: molt-object, ndigits: molt-object) -> molt-object;
     enumerate_builtin: func(iterable: molt-object, start: molt-object) -> molt-object;
     next_builtin: func(iter: molt-object, default: molt-object) -> molt-object;
@@ -162,7 +179,13 @@ interface intrinsics {
     sorted_builtin: func(iter: molt-object, key: molt-object, reverse: molt-object) -> molt-object;
     getattr_builtin: func(obj: molt-object, name: molt-object, default: molt-object) -> molt-object;
     anext_builtin: func(iter: molt-object, default: molt-object) -> molt-object;
-    print_builtin: func(args: molt-object) -> molt-object;
+    print_builtin: func(
+        args: molt-object,
+        sep: molt-object,
+        end: molt-object,
+        file: molt-object,
+        flush: molt-object,
+    ) -> molt-object;
     super_builtin: func(type: molt-object, obj: molt-object) -> molt-object;
     slice: func(obj: molt-object, start: molt-object, end: molt-object) -> molt-object;
     slice_new: func(start: molt-object, stop: molt-object, step: molt-object) -> molt-object;
@@ -263,6 +286,9 @@ interface intrinsics {
     bytes_count_slice: func(haystack: molt-object, needle: molt-object, start: molt-object, end: molt-object, has_start: molt-object, has_end: molt-object) -> molt-object;
     bytearray_count_slice: func(haystack: molt-object, needle: molt-object, start: molt-object, end: molt-object, has_start: molt-object, has_end: molt-object) -> molt-object;
     env_get: func(key: molt-object, default: molt-object) -> molt-object;
+    getpid: func() -> molt-object;
+    path_exists: func(path: molt-object) -> molt-object;
+    path_unlink: func(path: molt-object) -> molt-object;
     string_join: func(sep: molt-object, items: molt-object) -> molt-object;
     string_split: func(haystack: molt-object, needle: molt-object) -> molt-object;
     string_split_max: func(haystack: molt-object, needle: molt-object, maxsplit: molt-object) -> molt-object;
@@ -322,6 +348,7 @@ interface intrinsics {
     exception_push: func() -> molt-object;
     exception_pop: func() -> molt-object;
     exception_last: func() -> molt-object;
+    exception_active: func() -> molt-object;
     exception_new: func(kind: molt-object, msg: molt-object) -> molt-object;
     exception_clear: func() -> molt-object;
     exception_pending: func() -> u64;
@@ -335,6 +362,8 @@ interface intrinsics {
     file_read: func(handle: molt-object, size: molt-object) -> molt-object;
     file_write: func(handle: molt-object, data: molt-object) -> molt-object;
     file_close: func(handle: molt-object) -> molt-object;
+    // TODO(wasm-parity, owner:wasm, milestone:SL1): add imports for full file
+    // method parity (readline(s), seek/tell, flush, truncate, attrs).
     bridge_unavailable: func(msg: molt-object) -> molt-object;
     db_query: func(ptr: molt-ptr, len: u64, out: molt-ptr, cancel_token: molt-object) -> s32;
     db_exec: func(ptr: molt-ptr, len: u64, out: molt-ptr, cancel_token: molt-object) -> s32;
@@ -342,11 +371,13 @@ interface intrinsics {
     stream_send: func(handle: u64, ptr: molt-ptr, len: u64) -> u64;
     stream_recv: func(handle: u64) -> u64;
     stream_close: func(handle: u64);
+    stream_drop: func(handle: u64);
     ws_connect: func(ptr: molt-ptr, len: u64, out: molt-ptr) -> s32;
     ws_pair: func(capacity: u64, out_left: molt-ptr, out_right: molt-ptr) -> s32;
     ws_send: func(handle: u64, ptr: molt-ptr, len: u64) -> u64;
     ws_recv: func(handle: u64) -> u64;
     ws_close: func(handle: u64);
+    ws_drop: func(handle: u64);
 }
 
 world molt-runtime {

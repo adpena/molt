@@ -45,6 +45,7 @@ Canonical status lives in `docs/spec/STATUS.md` (README and ROADMAP are kept in 
 - **Numeric tower**: complex/decimal not implemented; missing int helpers (e.g., `bit_length`, `to_bytes`, `from_bytes`).
 - **Format protocol**: partial beyond ints/floats; locale-aware grouping still pending (WASM uses host locale for `n`).
 - **memoryview**: no multidimensional slicing/sub-views; advanced buffer exports pending.
+- **Runtime lifecycle**: explicit init/shutdown now clears caches, pools, and async registries, but per-thread TLS drain and worker thread joins are still pending (see `docs/spec/0024_RUNTIME_STATE_LIFECYCLE.md`).
 - **Offload demo**: `molt_accel` scaffolding exists (optional dep `pip install .[accel]`), with hooks/metrics (including payload/response byte sizes), auto cancel-check detection, and shared demo payload builders; a `molt_worker` stdio shell supports sync/async runtimes plus `db_query`/`db_exec` (SQLite sync + Postgres async). The decorator can fall back to `molt-worker` in PATH using a packaged default exports manifest when `MOLT_WORKER_CMD` is unset. A Django demo scaffold and k6 harness live in `demo/` and `bench/k6/`; compiled entrypoint dispatch is wired for `list_items`, `compute`, `offload_table`, and `health` while other exports still return a clear error until compiled handlers exist. `molt_db_adapter` adds a framework-agnostic DB IPC payload builder to share with Django/Flask/FastAPI adapters.
 - **DB layer**: `molt-db` includes the bounded pool, async pool primitive, SQLite connector (native-only), and an async Postgres connector with per-connection statement cache; Arrow IPC output supports arrays/ranges/intervals/multiranges via struct/list encodings and preserves array lower bounds. WASM builds now have a DB host interface with `db.read`/`db.write` gating, but host adapters/client shims remain pending.
 
@@ -61,6 +62,10 @@ cargo build --release --package molt-runtime
 # 4. Compile and run a Python script (from source)
 export PYTHONPATH=src
 uv run --python 3.12 python3 -m molt.cli build examples/hello.py
+~/.molt/bin/hello_molt
+
+# Optional: keep the binary local instead
+uv run --python 3.12 python3 -m molt.cli build --output ./hello_molt examples/hello.py
 ./hello_molt
 
 # Use JSON parsing only when explicitly requested
@@ -68,7 +73,7 @@ uv run --python 3.12 python3 -m molt.cli build --codec json examples/hello.py
 
 # Optional: install the CLI entrypoint instead of using PYTHONPATH
 uv pip install -e .
-molt build examples/hello.py
+molt build examples/hello.py  # binary defaults to ~/.molt/bin (override with --output or MOLT_BIN)
 
 # Optional: accel/decorator support
 pip install .[accel]  # brings in msgpack and packaged default exports for molt_accel
@@ -84,7 +89,7 @@ export MOLT_WORKER_CMD="molt-worker --stdio --exports demo/molt_worker_app/molt_
 - `molt bench` / `molt profile`: wrappers over `tools/bench.py` and `tools/profile.py`.
 - `molt doctor`: toolchain readiness checks (uv/cargo/clang/locks).
 - `molt vendor --extras <name>`: materialize Tier A sources into `vendor/` with a manifest.
-- `molt clean`: remove `.molt` caches and transient build artifacts.
+- `molt clean`: remove build caches (`MOLT_CACHE`) and transient artifacts (`MOLT_HOME/build`).
 - `molt completion --shell bash|zsh|fish`: emit shell completions.
 - `molt package` / `molt publish` / `molt verify`: bundle and verify `.moltpkg` archives (local registry only).
 
@@ -171,12 +176,12 @@ them for release tagging or explicit requests.
 real-world nested-loop behavior.
 
 <!-- BENCH_SUMMARY_START -->
-Latest run: 2026-01-16 (macOS x86_64, CPython 3.14.0).
-Top speedups: `bench_sum.py` 226.55x, `bench_channel_throughput.py` 43.49x, `bench_sum_list_hints.py` 12.59x, `bench_sum_list.py` 11.21x, `bench_parse_msgpack.py` 9.56x.
-Regressions: `bench_deeply_nested_loop.py` 0.37x, `bench_tuple_index.py` 0.58x, `bench_tuple_pack.py` 0.60x, `bench_csv_parse_wide.py` 0.61x, `bench_struct.py` 0.64x, `bench_csv_parse.py` 0.88x, `bench_attr_access.py` 0.90x.
-Slowest: `bench_deeply_nested_loop.py` 0.37x, `bench_tuple_index.py` 0.58x, `bench_tuple_pack.py` 0.60x.
-Build/run failures: Cython/Numba baselines unavailable; Codon skipped for `bench_async_await.py`, `bench_bytearray_find.py`, `bench_bytearray_replace.py`, `bench_channel_throughput.py`, `bench_matrix_math.py`, `bench_memoryview_tobytes.py`, `bench_parse_msgpack.py`, `bench_struct.py`, and 1 more.
-WASM run: 2026-01-16 (macOS x86_64, CPython 3.14.0). Slowest: `bench_struct.py` 2.94s, `bench_deeply_nested_loop.py` 2.52s, `bench_descriptor_property.py` 0.77s; largest sizes: `bench_channel_throughput.py` 286.0 KB, `bench_async_await.py` 228.1 KB, `bench_csv_parse_wide.py` 19.6 KB; WASM vs CPython slowest ratios: `bench_struct.py` 8.28x, `bench_descriptor_property.py` 5.80x, `bench_csv_parse_wide.py` 4.20x.
+Latest run: 2026-01-17 (macOS x86_64, CPython 3.14.0).
+Top speedups: `bench_sum.py` 217.18x, `bench_channel_throughput.py` 28.32x, `bench_ptr_registry.py` 12.16x, `bench_sum_list_hints.py` 6.78x, `bench_sum_list.py` 6.61x.
+Regressions: `bench_struct.py` 0.20x, `bench_csv_parse_wide.py` 0.26x, `bench_deeply_nested_loop.py` 0.28x, `bench_attr_access.py` 0.39x, `bench_tuple_pack.py` 0.41x, `bench_tuple_index.py` 0.43x, `bench_descriptor_property.py` 0.44x, `bench_fib.py` 0.46x, `bench_csv_parse.py` 0.50x, `bench_try_except.py` 0.88x, `bench_str_join.py` 0.95x.
+Slowest: `bench_struct.py` 0.20x, `bench_csv_parse_wide.py` 0.26x, `bench_deeply_nested_loop.py` 0.28x.
+Build/run failures: Cython/Numba baselines unavailable; Codon skipped for `bench_async_await.py`, `bench_bytearray_find.py`, `bench_bytearray_replace.py`, `bench_channel_throughput.py`, `bench_matrix_math.py`, `bench_memoryview_tobytes.py`, `bench_parse_msgpack.py`, `bench_ptr_registry.py`, and 2 more.
+WASM run: 2026-01-17 (macOS x86_64, CPython 3.14.0). Slowest: `bench_deeply_nested_loop.py` 4.80s, `bench_struct.py` 4.60s, `bench_descriptor_property.py` 1.13s; largest sizes: `bench_channel_throughput.py` 719.8 KB, `bench_async_await.py` 653.3 KB, `bench_ptr_registry.py` 161.5 KB; WASM vs CPython slowest ratios: `bench_struct.py` 13.04x, `bench_descriptor_property.py` 8.92x, `bench_csv_parse_wide.py` 7.71x.
 <!-- BENCH_SUMMARY_END -->
 
 ### Performance Gates

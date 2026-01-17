@@ -4,7 +4,6 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
-import tempfile
 
 import pytest
 
@@ -138,8 +137,7 @@ def test_wasm_string_ops_parity(tmp_path: Path) -> None:
         )
     )
 
-    output_wasm = Path(tempfile.gettempdir()) / "output.wasm"
-    existed = output_wasm.exists()
+    output_wasm = tmp_path / "output.wasm"
 
     runner = write_wasm_runner(
         tmp_path,
@@ -151,7 +149,17 @@ def test_wasm_string_ops_parity(tmp_path: Path) -> None:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(root / "src")
     build = subprocess.run(
-        [sys.executable, "-m", "molt.cli", "build", str(src), "--target", "wasm"],
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            str(src),
+            "--target",
+            "wasm",
+            "--out-dir",
+            str(tmp_path),
+        ],
         cwd=root,
         env=env,
         capture_output=True,
@@ -159,18 +167,14 @@ def test_wasm_string_ops_parity(tmp_path: Path) -> None:
     )
     assert build.returncode == 0, build.stderr
 
-    try:
-        run = subprocess.run(
-            ["node", str(runner), str(output_wasm)],
-            cwd=root,
-            capture_output=True,
-            text=True,
-        )
-        assert run.returncode == 0, run.stderr
-        assert (
-            run.stdout.strip()
-            == "6\n6\nTrue\nTrue\nTrue\nTrue\n3\nbeta\nalpha,beta,gamma\nho\n2\n1"
-        )
-    finally:
-        if not existed and output_wasm.exists():
-            output_wasm.unlink()
+    run = subprocess.run(
+        ["node", str(runner), str(output_wasm)],
+        cwd=root,
+        capture_output=True,
+        text=True,
+    )
+    assert run.returncode == 0, run.stderr
+    assert (
+        run.stdout.strip()
+        == "6\n6\nTrue\nTrue\nTrue\nTrue\n3\nbeta\nalpha,beta,gamma\nho\n2\n1"
+    )

@@ -5,6 +5,7 @@ from pathlib import Path
 BASE_PREAMBLE = """\
 const fs = require('fs');
 const wasmPath = process.argv[2];
+const runtimeArgv = [wasmPath, ...process.argv.slice(3)];
 const wasmBuffer = fs.readFileSync(wasmPath);
 const QNAN = 0x7ff8000000000000n;
 const TAG_INT = 0x0001000000000000n;
@@ -191,13 +192,15 @@ const hostTable = [];
 const chanQueues = new Map();
 const chanCaps = new Map();
 const moduleCache = new Map();
+let codeSlots = null;
+const frameStack = [];
 const sleepPending = new Set();
 const cancelTokens = new Map();
 const taskTokens = new Map();
 let nextCancelTokenId = 2n;
 let currentTokenId = 1n;
-let currentTaskPtr = 0n;
-let nextChanId = 1n;
+let currentTaskPtr = 0;
+let nextChanId = 1;
 let heapPtr = 1 << 20;
 let recursionLimit = 1000;
 let recursionDepth = 0;
@@ -432,7 +435,20 @@ const collectSliceIndices = (start, stop, step) => {
   return out;
 };
 const boxPtrAddr = (addr) => QNAN | TAG_PTR | (BigInt(addr) & POINTER_MASK);
-const ptrAddr = (val) => Number(val & POINTER_MASK);
+const ptrAddr = (val) => (typeof val === 'number' ? val : Number(val & POINTER_MASK));
+const expectPtrAddr = (val, context) => {
+  if (typeof val === 'number') {
+    if (!Number.isInteger(val) || val < 0) {
+      throw new TypeError(`TypeError: ${context} expected raw pointer address`);
+    }
+    return val;
+  }
+  if (val === 0n) return 0;
+  if ((val & QNAN) === QNAN) {
+    throw new TypeError(`TypeError: ${context} expected raw pointer address`);
+  }
+  return Number(val);
+};
 const boxPtr = (obj) => {
   const id = nextPtr++;
   heap.set(id, obj);
@@ -460,11 +476,6 @@ let generatorIterMethodIdx = null;
 let generatorNextMethodIdx = null;
 const generatorMethodBits = new Map();
 const tableFuncCache = new Map();
-const normalizePtrBits = (val) => {
-  if (val === 0n) return val;
-  if (isPtr(val)) return val;
-  return boxPtrAddr(val);
-};
 const getObj = (val) => heap.get(val & POINTER_MASK);
 const ensureRootToken = () => {
   if (!cancelTokens.has(1n)) {
@@ -545,6 +556,11 @@ const setCurrentTokenId = (id) => {
 const getFunction = (val) => {
   const obj = getObj(val);
   if (obj && obj.type === 'function') return obj;
+  return null;
+};
+const getCode = (val) => {
+  const obj = getObj(val);
+  if (obj && obj.type === 'code') return obj;
   return null;
 };
 const getBoundMethod = (val) => {
@@ -739,6 +755,7 @@ const typeName = (val) => {
   const obj = getObj(val);
   if (obj) {
     if (obj.type === 'class') return obj.name ?? 'type';
+    if (obj.type === 'exception') return getStr(obj.kindBits) || 'Exception';
     if (obj.type === 'str') return 'str';
     if (obj.type === 'bytes') return 'bytes';
     if (obj.type === 'bytearray') return 'bytearray';
@@ -930,7 +947,7 @@ const splitMaxsplitFromBits = (bits) => {
   if (value > maxSafe) return Number.MAX_SAFE_INTEGER;
   return Number(value);
 };
-const isWhitespaceChar = (ch) => /\s/u.test(ch);
+const isWhitespaceChar = (ch) => /\\s/u.test(ch);
 const stringSplitWhitespaceMax = (hay, maxsplit) => {
   const chars = Array.from(hay);
   const out = [];
@@ -1491,6 +1508,44 @@ const formatFloat = (val) => {
   if (Number.isInteger(val)) return val.toFixed(1);
   return val.toString();
 };
+const formatStringRepr = (text) => {
+  const useDouble = text.includes("'") && !text.includes('"');
+  const quote = useDouble ? '"' : "'";
+  let out = quote;
+  for (const ch of text) {
+    if (ch === '\\\\') {
+      out += '\\\\\\\\';
+      continue;
+    }
+    if (ch === '\\n') {
+      out += '\\\\n';
+      continue;
+    }
+    if (ch === '\\r') {
+      out += '\\\\r';
+      continue;
+    }
+    if (ch === '\\t') {
+      out += '\\\\t';
+      continue;
+    }
+    if (ch === quote) {
+      out += `\\\\${quote}`;
+      continue;
+    }
+    const code = ch.codePointAt(0);
+    if (code !== undefined && (code < 0x20 || code === 0x7f)) {
+      const bytes = Buffer.from(ch, 'utf8');
+      for (const b of bytes) {
+        out += `\\\\x${b.toString(16).padStart(2, '0')}`;
+      }
+      continue;
+    }
+    out += ch;
+  }
+  out += quote;
+  return out;
+};
 const isGenerator = (val) =>
   isPtr(val) &&
   !heap.has(val & POINTER_MASK) &&
@@ -2001,6 +2056,47 @@ const getSuperType = () => {
   setClassBases(superTypeBits, getBuiltinType(100));
   return superTypeBits;
 };
+let baseExceptionBits = null;
+let exceptionBits = null;
+const exceptionClasses = new Map();
+const makeExceptionClass = (name, baseBits) => {
+  const clsBits = boxPtr({
+    type: 'class',
+    name,
+    attrs: new Map(),
+    baseBits: boxNone(),
+    basesBits: null,
+    mroBits: null,
+  });
+  classLayoutVersions.set(clsBits, 0n);
+  setClassBases(clsBits, baseBits);
+  const nameBits = boxPtr({ type: 'str', value: name });
+  const cls = getClass(clsBits);
+  if (cls) {
+    cls.attrs.set('__name__', nameBits);
+    cls.attrs.set('__qualname__', nameBits);
+    cls.attrs.set('__module__', boxPtr({ type: 'str', value: 'builtins' }));
+  }
+  return clsBits;
+};
+const getBaseExceptionClass = () => {
+  if (baseExceptionBits) return baseExceptionBits;
+  baseExceptionBits = makeExceptionClass('BaseException', getBuiltinType(100));
+  return baseExceptionBits;
+};
+const getExceptionClass = () => {
+  if (exceptionBits) return exceptionBits;
+  exceptionBits = makeExceptionClass('Exception', getBaseExceptionClass());
+  return exceptionBits;
+};
+const getExceptionClassForName = (name) => {
+  if (name === 'BaseException') return getBaseExceptionClass();
+  if (name === 'Exception') return getExceptionClass();
+  if (exceptionClasses.has(name)) return exceptionClasses.get(name);
+  const clsBits = makeExceptionClass(name, getExceptionClass());
+  exceptionClasses.set(name, clsBits);
+  return clsBits;
+};
 const getStr = (val) => {
   const obj = getObj(val);
   if (obj && obj.type === 'str') return obj.value;
@@ -2274,6 +2370,10 @@ const typeOfBits = (objBits) => {
   if (obj) {
     if (obj.type === 'class') return getBuiltinType(101);
     if (obj.type === 'super') return getSuperType();
+    if (obj.type === 'exception') {
+      const name = getStr(obj.kindBits) || 'Exception';
+      return getExceptionClassForName(name);
+    }
     if (obj.type === 'str') return getBuiltinType(5);
     if (obj.type === 'bytes') return getBuiltinType(6);
     if (obj.type === 'bytearray') return getBuiltinType(7);
@@ -2512,6 +2612,11 @@ const exceptionMessage = (excBits) => {
   return exc.msgBits;
 };
 const exceptionLast = () => lastException;
+const exceptionActive = () => {
+  const active = lastNonNone(activeExceptionStack);
+  if (!isNone(active)) return active;
+  return lastNonNone(activeExceptionFallback);
+};
 const exceptionClear = () => {
   lastException = boxNone();
   return boxNone();
@@ -2530,8 +2635,51 @@ const exceptionPop = () => {
   activeExceptionStack.pop();
   return boxNone();
 };
+const frameStackPush = (codeBits) => {
+  let line = 0;
+  const codeObj = getCode(codeBits);
+  if (codeObj) {
+    const rawLine = Number(codeObj.firstlineno);
+    line = Number.isFinite(rawLine) ? Math.trunc(rawLine) : 0;
+  }
+  frameStack.push({ codeBits, line });
+};
+const frameStackSetLine = (line) => {
+  if (!frameStack.length) return;
+  frameStack[frameStack.length - 1].line = line;
+};
+const frameStackPop = () => {
+  if (frameStack.length) {
+    frameStack.pop();
+  }
+};
+const frameStackTraceBits = () => {
+  if (!frameStack.length) return null;
+  const frames = [];
+  for (const entry of frameStack) {
+    const codeObj = getCode(entry.codeBits);
+    if (!codeObj) continue;
+    const filenameBits = codeObj.filenameBits ?? boxNone();
+    const nameBits = codeObj.nameBits ?? boxNone();
+    let line = entry.line || 0;
+    if (!line) {
+      const rawLine = Number(codeObj.firstlineno);
+      line = Number.isFinite(rawLine) ? Math.trunc(rawLine) : 0;
+    }
+    if (!Number.isFinite(line)) {
+      line = 0;
+    }
+    frames.push(tupleFromArray([filenameBits, boxInt(BigInt(line)), nameBits]));
+  }
+  if (!frames.length) return null;
+  return tupleFromArray(frames);
+};
 const raiseException = (excBits) => {
   const exc = getException(excBits);
+  if (exc) {
+    const traceBits = frameStackTraceBits();
+    exc.traceBits = traceBits === null ? boxNone() : traceBits;
+  }
   const activeContext = lastNonNone(activeExceptionStack);
   const fallbackContext = lastNonNone(activeExceptionFallback);
   const context = !isNone(activeContext) ? activeContext : fallbackContext;
@@ -2645,7 +2793,7 @@ const generatorSend = (gen, sendVal) => {
   generatorSetRunning(view, addr, true);
   let res;
   try {
-    res = poll ? poll(gen) : tupleFromArray([boxNone(), boxBool(true)]);
+    res = poll ? poll(BigInt(addr)) : tupleFromArray([boxNone(), boxBool(true)]);
   } finally {
     generatorRaise = prevRaise;
     generatorSetRunning(view, addr, false);
@@ -2722,7 +2870,7 @@ const generatorThrow = (gen, exc) => {
   generatorSetRunning(view, addr, true);
   let res;
   try {
-    res = poll(gen);
+    res = poll(BigInt(addr));
   } finally {
     generatorRaise = prevRaise;
     generatorSetRunning(view, addr, false);
@@ -2798,7 +2946,7 @@ const generatorClose = (gen) => {
   generatorSetRunning(view, addr, true);
   let res;
   try {
-    res = poll(gen);
+    res = poll(BigInt(addr));
   } finally {
     generatorRaise = prevRaise;
     generatorSetRunning(view, addr, false);
@@ -3489,6 +3637,8 @@ const bindBuiltinCall = (funcBits, func, args) => {
 """
 
 BASE_IMPORTS = """\
+  runtime_init: () => 1n,
+  runtime_shutdown: () => 1n,
   print_obj: (val) => {
     if (isTag(val, TAG_INT)) {
       console.log(unboxInt(val).toString());
@@ -3552,8 +3702,9 @@ BASE_IMPORTS = """\
     return objBits;
   },
   async_sleep: (taskPtr) => {
-    if (taskPtr === 0n) return boxNone();
-    const key = taskPtr.toString();
+    const addr = expectPtrAddr(taskPtr, 'async_sleep');
+    if (addr === 0) return boxNone();
+    const key = addr.toString();
     if (!sleepPending.has(key)) {
       sleepPending.add(key);
       return boxPending();
@@ -3561,14 +3712,14 @@ BASE_IMPORTS = """\
     return boxNone();
   },
   anext_default_poll: (taskPtr) => {
-    if (taskPtr === 0n || !memory || !table) return boxNone();
-    const addr = ptrAddr(taskPtr);
+    const addr = expectPtrAddr(taskPtr, 'anext_default_poll');
+    if (addr === 0 || !memory || !table) return boxNone();
     const view = new DataView(memory.buffer);
     const state = Number(view.getBigInt64(addr - HEADER_STATE_OFFSET, true));
     const iterBits = view.getBigInt64(addr + 0, true);
     const defaultBits = view.getBigInt64(addr + 8, true);
     if (state === 0) {
-      const iterObj = normalizePtrBits(iterBits);
+      const iterObj = iterBits;
       let attr = lookupAttr(iterObj, '__anext__');
       if (attr === undefined) {
         throw new Error('TypeError: object is not an async iterator');
@@ -3581,7 +3732,7 @@ BASE_IMPORTS = """\
       view.setBigInt64(addr - HEADER_STATE_OFFSET, 1n, true);
     }
     const awaitBits = view.getBigInt64(addr + 16, true);
-    const awaitPtrBits = normalizePtrBits(awaitBits);
+    const awaitPtrBits = awaitBits;
     if (!isPtr(awaitPtrBits) || heap.has(awaitPtrBits & POINTER_MASK)) return boxNone();
     const awaitAddr = ptrAddr(awaitPtrBits);
     const pollIdx = view.getUint32(awaitAddr - HEADER_POLL_FN_OFFSET, true);
@@ -3591,7 +3742,7 @@ BASE_IMPORTS = """\
     asyncRaise = true;
     let res;
     try {
-      res = poll(awaitBits);
+      res = poll(BigInt(awaitAddr));
     } finally {
       asyncRaise = prevAsync;
     }
@@ -3607,7 +3758,7 @@ BASE_IMPORTS = """\
     return res;
   },
   future_poll: (futureBits) => {
-    const ptrBits = normalizePtrBits(futureBits);
+    const ptrBits = futureBits;
     if (!isPtr(ptrBits) || heap.has(ptrBits & POINTER_MASK) || !memory || !table) {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'TypeError' }),
@@ -3640,14 +3791,14 @@ BASE_IMPORTS = """\
     asyncRaise = true;
     let res;
     try {
-      res = poll(ptrBits);
+      res = poll(BigInt(addr));
     } finally {
       asyncRaise = prevAsync;
     }
     return res;
   },
   future_poll_fn: (futureBits) => {
-    const ptrBits = normalizePtrBits(futureBits);
+    const ptrBits = futureBits;
     if (!isPtr(ptrBits) || heap.has(ptrBits & POINTER_MASK) || !memory || !table) {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'TypeError' }),
@@ -3670,34 +3821,59 @@ BASE_IMPORTS = """\
     }
     return BigInt(pollIdx);
   },
-  sleep_register: (taskPtr, _futurePtr) => {
+  sleep_register: (taskPtr, futurePtr) => {
+    expectPtrAddr(taskPtr, 'sleep_register');
+    expectPtrAddr(futurePtr, 'sleep_register');
     return 0n;
   },
   block_on: (taskPtr) => {
     if (!memory || !table) return 0n;
-    const addr = ptrAddr(taskPtr);
+    let addr = 0;
+    if (typeof taskPtr === 'number') {
+      if (!Number.isInteger(taskPtr) || taskPtr < 0) {
+        const exc = exceptionNew(
+          boxPtr({ type: 'str', value: 'TypeError' }),
+          boxPtr({ type: 'str', value: 'object is not awaitable' }),
+        );
+        raiseException(exc);
+        return 0n;
+      }
+      addr = taskPtr;
+    } else if (taskPtr === 0n) {
+      addr = 0;
+    } else if (isPtr(taskPtr)) {
+      addr = ptrAddr(taskPtr);
+    } else {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        boxPtr({ type: 'str', value: 'object is not awaitable' }),
+      );
+      raiseException(exc);
+      return 0n;
+    }
+    if (addr === 0) return 0n;
     const view = new DataView(memory.buffer);
     const pollIdx = view.getUint32(addr - HEADER_POLL_FN_OFFSET, true);
     const poll = getTableFunc(pollIdx);
     if (!poll) return 0n;
     const prevTask = currentTaskPtr;
     const prevToken = currentTokenId;
-    currentTaskPtr = taskPtr;
-    const token = ensureTaskToken(taskPtr);
+    currentTaskPtr = addr;
+    const token = ensureTaskToken(addr);
     setCurrentTokenId(token);
     while (true) {
       const prevAsync = asyncRaise;
       asyncRaise = true;
       let res;
       try {
-        res = poll(taskPtr);
+        res = poll(BigInt(addr));
       } finally {
         asyncRaise = prevAsync;
       }
       if (isPending(res)) continue;
       setCurrentTokenId(prevToken);
       currentTaskPtr = prevTask;
-      clearTaskToken(taskPtr);
+      clearTaskToken(addr);
       return res;
     }
   },
@@ -3732,7 +3908,7 @@ BASE_IMPORTS = """\
   cancel_token_set_current: (tokenBits) => {
     const id = tokenIdFromBits(tokenBits);
     const prev = setCurrentTokenId(id);
-    if (currentTaskPtr !== 0n) {
+    if (currentTaskPtr !== 0) {
       registerTaskToken(currentTaskPtr, currentTokenId);
     }
     return boxInt(prev);
@@ -3766,6 +3942,10 @@ BASE_IMPORTS = """\
     const queue = chanQueues.get(chan);
     if (!queue || queue.length === 0) return boxPending();
     return queue.shift();
+  },
+  chan_drop: (chan) => {
+    chanQueues.delete(chan);
+    chanCaps.delete(chan);
   },
   add: (a, b) => {
     if (isIntLike(a) && isIntLike(b)) {
@@ -4471,13 +4651,17 @@ BASE_IMPORTS = """\
   is: (a, b) => boxBool(a === b),
   closure_load: (ptr, offset) => {
     if (!memory) return boxNone();
-    const addr = ptrAddr(ptr) + Number(offset);
+    const base = expectPtrAddr(ptr, 'closure_load');
+    if (!base) return boxNone();
+    const addr = base + Number(offset);
     const view = new DataView(memory.buffer);
     return view.getBigInt64(addr, true);
   },
   closure_store: (ptr, offset, val) => {
     if (!memory) return boxNone();
-    const addr = ptrAddr(ptr) + Number(offset);
+    const base = expectPtrAddr(ptr, 'closure_store');
+    if (!base) return boxNone();
+    const addr = base + Number(offset);
     const view = new DataView(memory.buffer);
     view.setBigInt64(addr, val, true);
     return boxNone();
@@ -4504,8 +4688,8 @@ BASE_IMPORTS = """\
   guard_layout_ptr: (obj, classBits, expected) => {
     if (obj === 0n) return boxBool(false);
     if (!getClass(classBits)) return boxBool(false);
-    const ptrBits = normalizePtrBits(obj);
-    const clsBits = instanceClasses.get(ptrAddr(ptrBits));
+    const addr = expectPtrAddr(obj, 'guard_layout_ptr');
+    const clsBits = instanceClasses.get(addr);
     if (clsBits === undefined || clsBits !== classBits) return boxBool(false);
     const version = classLayoutVersion(classBits);
     if (version === null) return boxBool(false);
@@ -4535,17 +4719,21 @@ BASE_IMPORTS = """\
   },
   guarded_field_get_ptr: (obj, classBits, expected, offset, namePtr, nameLen) => {
     const name = readUtf8(namePtr, nameLen);
-    if (obj === 0n || !getClass(classBits)) {
-      return getAttrValue(normalizePtrBits(obj), name);
+    if (obj === 0n) {
+      throw new Error('AttributeError: object has no attribute');
     }
-    const ptrBits = normalizePtrBits(obj);
-    const clsBits = instanceClasses.get(ptrAddr(ptrBits));
+    const base = expectPtrAddr(obj, 'guarded_field_get_ptr');
+    const objBits = boxPtrAddr(base);
+    if (!getClass(classBits)) {
+      return getAttrValue(objBits, name);
+    }
+    const clsBits = instanceClasses.get(base);
     if (clsBits === undefined || clsBits !== classBits) {
-      return getAttrValue(ptrBits, name);
+      return getAttrValue(objBits, name);
     }
     const version = classLayoutVersion(classBits);
     if (version === null) {
-      return getAttrValue(ptrBits, name);
+      return getAttrValue(objBits, name);
     }
     let expectedVersion = expected;
     if (isTag(expected, TAG_INT)) {
@@ -4556,15 +4744,15 @@ BASE_IMPORTS = """\
     if (version !== expectedVersion) {
       const actualOffset = baseImports.class_field_offset_name(classBits, name);
       if (actualOffset !== null && memory) {
-        const addr = ptrAddr(ptrBits) + actualOffset;
+        const addr = base + actualOffset;
         const view = new DataView(memory.buffer);
         return view.getBigInt64(addr, true);
       }
-      return getAttrValue(ptrBits, name);
+      return getAttrValue(objBits, name);
     }
     if (!memory) return boxNone();
     const actualOffset = baseImports.class_field_offset_name(classBits, name);
-    const addr = ptrAddr(ptrBits) + Number(actualOffset === null ? offset : actualOffset);
+    const addr = base + Number(actualOffset === null ? offset : actualOffset);
     const view = new DataView(memory.buffer);
     return view.getBigInt64(addr, true);
   },
@@ -4578,17 +4766,21 @@ BASE_IMPORTS = """\
     nameLen,
   ) => {
     const name = readUtf8(namePtr, nameLen);
-    if (obj === 0n || !getClass(classBits)) {
-      return setAttrValue(normalizePtrBits(obj), name, val);
+    if (obj === 0n) {
+      throw new Error('AttributeError: object has no attribute');
     }
-    const ptrBits = normalizePtrBits(obj);
-    const clsBits = instanceClasses.get(ptrAddr(ptrBits));
+    const base = expectPtrAddr(obj, 'guarded_field_set_ptr');
+    const objBits = boxPtrAddr(base);
+    if (!getClass(classBits)) {
+      return setAttrValue(objBits, name, val);
+    }
+    const clsBits = instanceClasses.get(base);
     if (clsBits === undefined || clsBits !== classBits) {
-      return setAttrValue(ptrBits, name, val);
+      return setAttrValue(objBits, name, val);
     }
     const version = classLayoutVersion(classBits);
     if (version === null) {
-      return setAttrValue(ptrBits, name, val);
+      return setAttrValue(objBits, name, val);
     }
     let expectedVersion = expected;
     if (isTag(expected, TAG_INT)) {
@@ -4597,11 +4789,11 @@ BASE_IMPORTS = """\
       expectedVersion = unboxIntLike(expected);
     }
     if (version !== expectedVersion) {
-      return setAttrValue(ptrBits, name, val);
+      return setAttrValue(objBits, name, val);
     }
     if (!memory) return boxNone();
     const actualOffset = baseImports.class_field_offset_name(classBits, name);
-    const addr = ptrAddr(ptrBits) + Number(actualOffset === null ? offset : actualOffset);
+    const addr = base + Number(actualOffset === null ? offset : actualOffset);
     const view = new DataView(memory.buffer);
     view.setBigInt64(addr, val, true);
     return boxNone();
@@ -4616,17 +4808,21 @@ BASE_IMPORTS = """\
     nameLen,
   ) => {
     const name = readUtf8(namePtr, nameLen);
-    if (obj === 0n || !getClass(classBits)) {
-      return setAttrValue(normalizePtrBits(obj), name, val);
+    if (obj === 0n) {
+      throw new Error('AttributeError: object has no attribute');
     }
-    const ptrBits = normalizePtrBits(obj);
-    const clsBits = instanceClasses.get(ptrAddr(ptrBits));
+    const base = expectPtrAddr(obj, 'guarded_field_init_ptr');
+    const objBits = boxPtrAddr(base);
+    if (!getClass(classBits)) {
+      return setAttrValue(objBits, name, val);
+    }
+    const clsBits = instanceClasses.get(base);
     if (clsBits === undefined || clsBits !== classBits) {
-      return setAttrValue(ptrBits, name, val);
+      return setAttrValue(objBits, name, val);
     }
     const version = classLayoutVersion(classBits);
     if (version === null) {
-      return setAttrValue(ptrBits, name, val);
+      return setAttrValue(objBits, name, val);
     }
     let expectedVersion = expected;
     if (isTag(expected, TAG_INT)) {
@@ -4635,52 +4831,88 @@ BASE_IMPORTS = """\
       expectedVersion = unboxIntLike(expected);
     }
     if (version !== expectedVersion) {
-      return setAttrValue(ptrBits, name, val);
+      return setAttrValue(objBits, name, val);
     }
     if (!memory) return boxNone();
     const actualOffset = baseImports.class_field_offset_name(classBits, name);
-    const addr = ptrAddr(ptrBits) + Number(actualOffset === null ? offset : actualOffset);
+    const addr = base + Number(actualOffset === null ? offset : actualOffset);
     const view = new DataView(memory.buffer);
     view.setBigInt64(addr, val, true);
     return boxNone();
   },
   handle_resolve: (bits) => {
-    if (!isPtr(bits)) return 0n;
+    if (!isPtr(bits)) return 0;
     const id = bits & POINTER_MASK;
     const obj = heap.get(id);
-    if (obj && obj.memAddr) return BigInt(obj.memAddr);
-    if (!obj) return BigInt(ptrAddr(bits));
-    return 0n;
+    if (obj && obj.memAddr) return obj.memAddr;
+    if (!obj) return ptrAddr(bits);
+    return 0;
   },
   inc_ref_obj: (_val) => {},
-  get_attr_ptr: (obj, namePtr, nameLen) =>
-    getAttrValue(normalizePtrBits(obj), readUtf8(namePtr, nameLen)),
-  get_attr_generic: (obj, namePtr, nameLen) =>
-    getAttrValue(normalizePtrBits(obj), readUtf8(namePtr, nameLen)),
+  get_attr_ptr: (obj, namePtr, nameLen) => {
+    const addr = expectPtrAddr(obj, 'get_attr_ptr');
+    if (!addr) {
+      throw new Error('AttributeError: object has no attribute');
+    }
+    return getAttrValue(boxPtrAddr(addr), readUtf8(namePtr, nameLen));
+  },
+  get_attr_generic: (obj, namePtr, nameLen) => {
+    const addr = expectPtrAddr(obj, 'get_attr_generic');
+    if (!addr) {
+      throw new Error('AttributeError: object has no attribute');
+    }
+    return getAttrValue(boxPtrAddr(addr), readUtf8(namePtr, nameLen));
+  },
   get_attr_object: (obj, namePtr, nameLen) =>
     getAttrValue(obj, readUtf8(namePtr, nameLen)),
   get_attr_special: (obj, namePtr, nameLen) =>
     getAttrSpecialValue(obj, readUtf8(namePtr, nameLen)),
-  set_attr_ptr: (obj, namePtr, nameLen, val) =>
-    setAttrValue(normalizePtrBits(obj), readUtf8(namePtr, nameLen), val),
-  set_attr_generic: (obj, namePtr, nameLen, val) =>
-    setAttrValue(normalizePtrBits(obj), readUtf8(namePtr, nameLen), val),
+  set_attr_ptr: (obj, namePtr, nameLen, val) => {
+    const addr = expectPtrAddr(obj, 'set_attr_ptr');
+    if (!addr) {
+      throw new Error('AttributeError: object has no attribute');
+    }
+    return setAttrValue(boxPtrAddr(addr), readUtf8(namePtr, nameLen), val);
+  },
+  set_attr_generic: (obj, namePtr, nameLen, val) => {
+    const addr = expectPtrAddr(obj, 'set_attr_generic');
+    if (!addr) {
+      throw new Error('AttributeError: object has no attribute');
+    }
+    return setAttrValue(boxPtrAddr(addr), readUtf8(namePtr, nameLen), val);
+  },
   set_attr_object: (obj, namePtr, nameLen, val) =>
     setAttrValue(obj, readUtf8(namePtr, nameLen), val),
-  del_attr_ptr: (obj, namePtr, nameLen) =>
-    delAttrValue(normalizePtrBits(obj), readUtf8(namePtr, nameLen)),
-  del_attr_generic: (obj, namePtr, nameLen) =>
-    delAttrValue(normalizePtrBits(obj), readUtf8(namePtr, nameLen)),
+  del_attr_ptr: (obj, namePtr, nameLen) => {
+    const addr = expectPtrAddr(obj, 'del_attr_ptr');
+    if (!addr) {
+      throw new Error('AttributeError: object has no attribute');
+    }
+    return delAttrValue(boxPtrAddr(addr), readUtf8(namePtr, nameLen));
+  },
+  del_attr_generic: (obj, namePtr, nameLen) => {
+    const addr = expectPtrAddr(obj, 'del_attr_generic');
+    if (!addr) {
+      throw new Error('AttributeError: object has no attribute');
+    }
+    return delAttrValue(boxPtrAddr(addr), readUtf8(namePtr, nameLen));
+  },
   del_attr_object: (obj, namePtr, nameLen) =>
     delAttrValue(obj, readUtf8(namePtr, nameLen)),
   object_field_get: (obj, offset) => {
     if (!memory) return boxNone();
+    if (!isPtr(obj)) {
+      throw new Error('TypeError: object field access on non-object');
+    }
     const addr = ptrAddr(obj) + Number(offset);
     const view = new DataView(memory.buffer);
     return view.getBigInt64(addr, true);
   },
   object_field_set: (obj, offset, val) => {
     if (!memory) return boxNone();
+    if (!isPtr(obj)) {
+      throw new Error('TypeError: object field access on non-object');
+    }
     const addr = ptrAddr(obj) + Number(offset);
     const view = new DataView(memory.buffer);
     view.setBigInt64(addr, val, true);
@@ -4688,6 +4920,9 @@ BASE_IMPORTS = """\
   },
   object_field_init: (obj, offset, val) => {
     if (!memory) return boxNone();
+    if (!isPtr(obj)) {
+      throw new Error('TypeError: object field access on non-object');
+    }
     const addr = ptrAddr(obj) + Number(offset);
     const view = new DataView(memory.buffer);
     view.setBigInt64(addr, val, true);
@@ -4695,21 +4930,26 @@ BASE_IMPORTS = """\
   },
   object_field_get_ptr: (obj, offset) => {
     if (!memory) return boxNone();
-    const ptrBits = normalizePtrBits(obj);
-    const addr = ptrAddr(ptrBits) + Number(offset);
+    const base = expectPtrAddr(obj, 'object_field_get_ptr');
+    if (!base) return boxNone();
+    const addr = base + Number(offset);
     const view = new DataView(memory.buffer);
     return view.getBigInt64(addr, true);
   },
   object_field_set_ptr: (obj, offset, val) => {
     if (!memory) return boxNone();
-    const addr = ptrAddr(normalizePtrBits(obj)) + Number(offset);
+    const base = expectPtrAddr(obj, 'object_field_set_ptr');
+    if (!base) return boxNone();
+    const addr = base + Number(offset);
     const view = new DataView(memory.buffer);
     view.setBigInt64(addr, val, true);
     return boxNone();
   },
   object_field_init_ptr: (obj, offset, val) => {
     if (!memory) return boxNone();
-    const addr = ptrAddr(normalizePtrBits(obj)) + Number(offset);
+    const base = expectPtrAddr(obj, 'object_field_init_ptr');
+    if (!base) return boxNone();
+    const addr = base + Number(offset);
     const view = new DataView(memory.buffer);
     view.setBigInt64(addr, val, true);
     return boxNone();
@@ -4740,6 +4980,18 @@ BASE_IMPORTS = """\
     if (!moduleObj || name === null) return boxNone();
     const val = moduleObj.attrs.get(name);
     return val === undefined ? boxNone() : val;
+  },
+  module_get_global: (moduleBits, nameBits) => {
+    const name = getStrObj(nameBits);
+    const moduleObj = getModule(moduleBits);
+    if (!moduleObj || name === null) return boxNone();
+    const val = moduleObj.attrs.get(name);
+    if (val !== undefined) return val;
+    const exc = exceptionNew(
+      boxPtr({ type: 'str', value: 'NameError' }),
+      boxPtr({ type: 'str', value: `name '${name}' is not defined` }),
+    );
+    return raiseException(exc);
   },
   module_get_name: (moduleBits, nameBits) => {
     const name = getStrObj(nameBits);
@@ -4823,35 +5075,50 @@ BASE_IMPORTS = """\
   }
     return 0n;
   },
-  json_parse_scalar: () => 0,
-  msgpack_parse_scalar: () => 0,
-  cbor_parse_scalar: () => 0,
+  json_parse_scalar: (ptr, _len, out) => {
+    expectPtrAddr(ptr, 'json_parse_scalar');
+    expectPtrAddr(out, 'json_parse_scalar');
+    return 0;
+  },
+  msgpack_parse_scalar: (ptr, _len, out) => {
+    expectPtrAddr(ptr, 'msgpack_parse_scalar');
+    expectPtrAddr(out, 'msgpack_parse_scalar');
+    return 0;
+  },
+  cbor_parse_scalar: (ptr, _len, out) => {
+    expectPtrAddr(ptr, 'cbor_parse_scalar');
+    expectPtrAddr(out, 'cbor_parse_scalar');
+    return 0;
+  },
   string_from_bytes: (ptr, len, out) => {
     if (!memory) return 0;
     const view = new DataView(memory.buffer);
-    const addr = Number(ptr);
+    const addr = expectPtrAddr(ptr, 'string_from_bytes');
+    const outAddr = expectPtrAddr(out, 'string_from_bytes');
+    if (!addr || !outAddr) return 0;
     const size = Number(len);
     const bytes = new Uint8Array(memory.buffer, addr, size);
     const value = Buffer.from(bytes).toString('utf8');
     const boxed = boxPtr({ type: 'str', value });
-    const outAddr = ptrAddr(out);
     view.setBigInt64(outAddr, boxed, true);
     return 0;
   },
   bytes_from_bytes: (ptr, len, out) => {
     if (!memory) return 0;
     const view = new DataView(memory.buffer);
-    const addr = Number(ptr);
+    const addr = expectPtrAddr(ptr, 'bytes_from_bytes');
+    const outAddr = expectPtrAddr(out, 'bytes_from_bytes');
+    if (!addr || !outAddr) return 0;
     const size = Number(len);
     const bytes = new Uint8Array(memory.buffer, addr, size);
     const boxed = boxPtr({ type: 'bytes', data: Uint8Array.from(bytes) });
-    const outAddr = ptrAddr(out);
     view.setBigInt64(outAddr, boxed, true);
     return 0;
   },
   bigint_from_str: (ptr, len) => {
     if (!memory) return boxNone();
-    const addr = Number(ptr);
+    const addr = expectPtrAddr(ptr, 'bigint_from_str');
+    if (!addr) return boxNone();
     const size = Number(len);
     const bytes = new Uint8Array(memory.buffer, addr, size);
     const text = Buffer.from(bytes).toString('utf8').trim();
@@ -4986,6 +5253,8 @@ BASE_IMPORTS = """\
     return boxPtr({ type: 'bytes', data: Uint8Array.from(data) });
   },
   str_from_obj: (val) => {
+    // TODO(stdlib-compat, owner:wasm, milestone:TC1): call __str__ for
+    // non-primitive objects to match CPython/Molt runtime behavior.
     if (isTag(val, TAG_INT)) {
       return boxPtr({ type: 'str', value: unboxInt(val).toString() });
     }
@@ -5001,6 +5270,10 @@ BASE_IMPORTS = """\
     const obj = getObj(val);
     if (obj && obj.type === 'str') {
       return val;
+    }
+    if (obj && obj.type === 'exception') {
+      const message = getStr(obj.msgBits);
+      return boxPtr({ type: 'str', value: message });
     }
     if (obj && obj.type === 'bigint') {
       return boxPtr({ type: 'str', value: obj.value.toString() });
@@ -5022,7 +5295,16 @@ BASE_IMPORTS = """\
     }
     const obj = getObj(val);
     if (obj && obj.type === 'str') {
-      return val;
+      return boxPtr({ type: 'str', value: formatStringRepr(obj.value) });
+    }
+    if (obj && obj.type === 'exception') {
+      const kind = getStr(obj.kindBits) || 'Exception';
+      const message = getStr(obj.msgBits);
+      if (!message) {
+        return boxPtr({ type: 'str', value: `${kind}()` });
+      }
+      const msgRepr = formatStringRepr(message);
+      return boxPtr({ type: 'str', value: `${kind}(${msgRepr})` });
     }
     if (obj && obj.type === 'bigint') {
       return boxPtr({ type: 'str', value: obj.value.toString() });
@@ -5944,7 +6226,7 @@ BASE_IMPORTS = """\
     return boxPtr({ type: 'enumerate', iterBits, index: start });
   },
   aiter: (val) => {
-    const iterObj = normalizePtrBits(val);
+    const iterObj = val;
     let attr = lookupAttr(iterObj, '__aiter__');
     if (attr === undefined) {
       throw new Error('TypeError: object is not async iterable');
@@ -5972,7 +6254,7 @@ BASE_IMPORTS = """\
     return iterNextInternal(val);
   },
   anext: (val) => {
-    const iterObj = normalizePtrBits(val);
+    const iterObj = val;
     let attr = lookupAttr(iterObj, '__anext__');
     if (attr === undefined) {
       const addr = isPtr(iterObj) ? ptrAddr(iterObj) : -1;
@@ -6124,7 +6406,14 @@ BASE_IMPORTS = """\
       funcBits = bound.func;
       selfBits = bound.self;
     } else if (!getFunction(callBits)) {
-      throw new Error('TypeError: object is not callable');
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        boxPtr({
+          type: 'str',
+          value: `'${typeName(callBits)}' object is not callable`,
+        }),
+      );
+      return raiseException(exc);
     }
     const func = getFunction(funcBits);
     if (!func) {
@@ -6300,7 +6589,7 @@ BASE_IMPORTS = """\
   },
   is_callable: (val) => {
     if (getFunction(val) || getBoundMethod(val)) return boxBool(true);
-    const attr = lookupAttr(normalizePtrBits(val), '__call__');
+    const attr = lookupAttr(val, '__call__');
     return boxBool(attr !== undefined);
   },
   is_function_obj: (val) => boxBool(getFunction(val) !== null),
@@ -7368,7 +7657,23 @@ BASE_IMPORTS = """\
     }
     return boxInt(-1);
   },
-  string_format: () => boxNone(),
+  string_format: (val, specBits) => {
+    const spec = getStrObj(specBits);
+    if (spec === null) {
+      throw new Error(
+        `TypeError: format spec must be a str, not ${typeName(specBits)}`,
+      );
+    }
+    if (spec.length === 0) {
+      return baseImports.str_from_obj(val);
+    }
+    // TODO(stdlib-compat, owner:wasm, milestone:TC1): implement full format
+    // spec parsing/formatting to match runtime/CPython behavior.
+    const typeLabel = typeName(val);
+    throw new Error(
+      `TypeError: unsupported format string passed to ${typeLabel}.__format__`,
+    );
+  },
   string_startswith: () => boxBool(false),
   string_startswith_slice: (
     hayBits,
@@ -7494,7 +7799,75 @@ BASE_IMPORTS = """\
     }
     return boxInt(stringCountFromChars(slice, needleChars));
   },
-  string_join: () => boxNone(),
+  string_join: (sepBits, itemsBits) => {
+    const sep = getStrObj(sepBits);
+    if (sep === null) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        boxPtr({ type: 'str', value: 'join expects a str separator' }),
+      );
+      return raiseException(exc);
+    }
+    const parts = [];
+    let firstBits = null;
+    const pushItem = (itemBits, idx) => {
+      const text = getStrObj(itemBits);
+      if (text === null) {
+        const exc = exceptionNew(
+          boxPtr({ type: 'str', value: 'TypeError' }),
+          boxPtr({
+            type: 'str',
+            value: `sequence item ${idx}: expected str instance, ${typeName(itemBits)} found`,
+          }),
+        );
+        raiseException(exc);
+        return false;
+      }
+      if (idx === 0) {
+        firstBits = itemBits;
+      }
+      parts.push(text);
+      return true;
+    };
+    const list = getList(itemsBits);
+    const tuple = getTuple(itemsBits);
+    if (list || tuple) {
+      const items = list ? list.items : tuple.items;
+      for (let idx = 0; idx < items.length; idx += 1) {
+        if (!pushItem(items[idx], idx)) return boxNone();
+      }
+      if (!items.length) {
+        return boxPtr({ type: 'str', value: '' });
+      }
+      if (items.length === 1 && firstBits !== null) {
+        return firstBits;
+      }
+      return boxPtr({ type: 'str', value: parts.join(sep) });
+    }
+    const iterBits = baseImports.iter(itemsBits);
+    if (isNone(iterBits)) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        boxPtr({ type: 'str', value: 'can only join an iterable' }),
+      );
+      return raiseException(exc);
+    }
+    let idx = 0;
+    while (true) {
+      const pairBits = iterNextInternal(iterBits);
+      if (exceptionPending() !== 0n) return boxNone();
+      const pair = getTuple(pairBits);
+      if (!pair || pair.items.length < 2) return boxNone();
+      const doneBits = pair.items[1];
+      if (isTruthyBits(doneBits)) break;
+      if (!pushItem(pair.items[0], idx)) return boxNone();
+      idx += 1;
+    }
+    if (!parts.length) {
+      return boxPtr({ type: 'str', value: '' });
+    }
+    return boxPtr({ type: 'str', value: parts.join(sep) });
+  },
   string_split: (hayBits, needleBits) => {
     const hay = getStrObj(hayBits);
     if (hay === null) return boxNone();
@@ -8009,7 +8382,10 @@ BASE_IMPORTS = """\
   staticmethod_new: () => boxNone(),
   property_new: () => boxNone(),
   object_set_class: (objBits, classBits) => {
-    instanceClasses.set(ptrAddr(objBits), classBits);
+    const addr = expectPtrAddr(objBits, 'object_set_class');
+    if (addr) {
+      instanceClasses.set(addr, classBits);
+    }
     return boxNone();
   },
   context_null: (val) => val,
@@ -8125,6 +8501,10 @@ BASE_IMPORTS = """\
       )}' and '${typeName(b)}'`,
     );
   },
+  getargv: () => {
+    const items = runtimeArgv.map((arg) => boxPtr({ type: 'str', value: arg }));
+    return listFromArray(items);
+  },
   getrecursionlimit: () => boxInt(BigInt(recursionLimit)),
   setrecursionlimit: (limitBits) => {
     if (!isIntLike(limitBits)) {
@@ -8155,6 +8535,101 @@ BASE_IMPORTS = """\
     if (recursionDepth > 0) {
       recursionDepth -= 1;
     }
+  },
+  trace_enter_slot: (codeId) => {
+    const idx = Number(codeId);
+    let codeBits = boxNone();
+    if (codeSlots && Number.isSafeInteger(idx) && idx >= 0 && idx < codeSlots.length) {
+      codeBits = codeSlots[idx];
+    }
+    frameStackPush(codeBits);
+    return codeBits;
+  },
+  trace_set_line: (lineBits) => {
+    const lineRaw = isIntLike(lineBits) ? Number(unboxIntLike(lineBits)) : 0;
+    const line = Number.isFinite(lineRaw) ? lineRaw : 0;
+    frameStackSetLine(line);
+    return boxNone();
+  },
+  trace_exit: () => {
+    frameStackPop();
+    return boxNone();
+  },
+  code_slots_init: (countBits) => {
+    if (codeSlots !== null) return boxNone();
+    const count = Number(countBits);
+    if (!Number.isSafeInteger(count) || count < 0) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'MemoryError' }),
+        boxPtr({ type: 'str', value: 'code slot count too large' }),
+      );
+      return raiseException(exc);
+    }
+    codeSlots = new Array(count).fill(boxNone());
+    return boxNone();
+  },
+  code_slot_set: (codeIdBits, codeBits) => {
+    if (codeSlots === null) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'RuntimeError' }),
+        boxPtr({ type: 'str', value: 'code slots not initialized' }),
+      );
+      return raiseException(exc);
+    }
+    const idx = Number(codeIdBits);
+    if (!Number.isSafeInteger(idx) || idx < 0 || idx >= codeSlots.length) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'IndexError' }),
+        boxPtr({ type: 'str', value: 'code slot out of range' }),
+      );
+      return raiseException(exc);
+    }
+    if (!isNone(codeBits) && !getCode(codeBits)) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        boxPtr({ type: 'str', value: 'code slot expects code object' }),
+      );
+      return raiseException(exc);
+    }
+    codeSlots[idx] = codeBits;
+    return boxNone();
+  },
+  code_new: (filenameBits, nameBits, firstlinenoBits, linetableBits) => {
+    const filename = getStrObj(filenameBits);
+    if (filename === null) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        boxPtr({ type: 'str', value: 'code filename must be str' }),
+      );
+      return raiseException(exc);
+    }
+    const name = getStrObj(nameBits);
+    if (name === null) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        boxPtr({ type: 'str', value: 'code name must be str' }),
+      );
+      return raiseException(exc);
+    }
+    if (!isNone(linetableBits) && !getTuple(linetableBits)) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        boxPtr({ type: 'str', value: 'code linetable must be tuple or None' }),
+      );
+      return raiseException(exc);
+    }
+    let firstlineno = 0;
+    if (isIntLike(firstlinenoBits)) {
+      const rawLine = Number(unboxIntLike(firstlinenoBits));
+      firstlineno = Number.isFinite(rawLine) ? Math.trunc(rawLine) : 0;
+    }
+    return boxPtr({
+      type: 'code',
+      filenameBits,
+      nameBits,
+      firstlineno,
+      linetableBits,
+    });
   },
   sum_builtin: (iterableBits, startBits) => {
     const iterBits = baseImports.iter(iterableBits);
@@ -8434,9 +8909,55 @@ BASE_IMPORTS = """\
   context_depth: () => boxInt(0),
   context_unwind_to: () => boxNone(),
   env_get: () => boxNone(),
+  getpid: () => {
+    const pid = typeof process !== 'undefined' ? process.pid : 0;
+    return boxInt(BigInt(pid ?? 0));
+  },
+  path_exists: (pathBits) => {
+    const path = getStrObj(pathBits);
+    if (path === null) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        boxPtr({ type: 'str', value: 'path must be str' }),
+      );
+      return raiseException(exc);
+    }
+    return boxBool(fs.existsSync(path));
+  },
+  path_unlink: (pathBits) => {
+    const path = getStrObj(pathBits);
+    if (path === null) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        boxPtr({ type: 'str', value: 'path must be str' }),
+      );
+      return raiseException(exc);
+    }
+    try {
+      fs.unlinkSync(path);
+      return boxNone();
+    } catch (err) {
+      const msg = err && err.message ? err.message : String(err);
+      const code = err && err.code ? err.code : null;
+      let kind = 'OSError';
+      if (code === 'ENOENT') {
+        kind = 'FileNotFoundError';
+      } else if (code === 'EACCES' || code === 'EPERM') {
+        kind = 'PermissionError';
+      } else if (code === 'EISDIR') {
+        kind = 'IsADirectoryError';
+      }
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: kind }),
+        boxPtr({ type: 'str', value: msg }),
+      );
+      return raiseException(exc);
+    }
+  },
   exception_push: () => exceptionPush(),
   exception_pop: () => exceptionPop(),
   exception_last: () => exceptionLast(),
+  exception_active: () => exceptionActive(),
   exception_new: (kind, msg) => exceptionNew(kind, msg),
   exception_clear: () => exceptionClear(),
   exception_pending: () => exceptionPending(),
@@ -8452,34 +8973,64 @@ BASE_IMPORTS = """\
   file_read: () => boxNone(),
   file_write: () => boxNone(),
   file_close: () => boxNone(),
-  db_query: (_ptr, _len, out, _token) => {
+  db_query: (ptr, _len, out, _token) => {
+    expectPtrAddr(ptr, 'db_query');
     if (!memory) return 7;
     const view = new DataView(memory.buffer);
-    const outAddr = ptrAddr(out);
+    const outAddr = expectPtrAddr(out, 'db_query');
     if (outAddr === 0) return 2;
     view.setBigInt64(outAddr, 0n, true);
     return 7;
   },
-  db_exec: (_ptr, _len, out, _token) => {
+  db_exec: (ptr, _len, out, _token) => {
+    expectPtrAddr(ptr, 'db_exec');
     if (!memory) return 7;
     const view = new DataView(memory.buffer);
-    const outAddr = ptrAddr(out);
+    const outAddr = expectPtrAddr(out, 'db_exec');
     if (outAddr === 0) return 2;
     view.setBigInt64(outAddr, 0n, true);
     return 7;
   },
   stream_new: () => 0n,
-  stream_send: () => 0n,
+  stream_send: (_handle, ptr, _len) => {
+    expectPtrAddr(ptr, 'stream_send');
+    return 0n;
+  },
   stream_recv: () => 0n,
   stream_close: () => {},
-  ws_connect: () => 0,
-  ws_pair: () => 0,
-  ws_send: () => 0n,
+  stream_drop: () => {},
+  ws_connect: (ptr, _len, out) => {
+    expectPtrAddr(ptr, 'ws_connect');
+    expectPtrAddr(out, 'ws_connect');
+    return 0;
+  },
+  ws_pair: (_capacity, outLeft, outRight) => {
+    expectPtrAddr(outLeft, 'ws_pair');
+    expectPtrAddr(outRight, 'ws_pair');
+    return 0;
+  },
+  ws_send: (_handle, ptr, _len) => {
+    expectPtrAddr(ptr, 'ws_send');
+    return 0n;
+  },
   ws_recv: () => 0n,
   ws_close: () => {},
+  ws_drop: () => {},
   missing: () => missingSentinel(),
   not_implemented: () => notImplementedSentinel(),
   repr_builtin: (val) => baseImports.repr_from_obj(val),
+  format_builtin: (val, specBits) => {
+    const spec = getStrObj(specBits);
+    if (spec === null) {
+      throw new Error(
+        `TypeError: format() argument 2 must be str, not ${typeName(specBits)}`,
+      );
+    }
+    if (spec.length === 0) {
+      return baseImports.str_from_obj(val);
+    }
+    return baseImports.string_format(val, specBits);
+  },
   callable_builtin: (val) => baseImports.is_callable(val),
   round_builtin: (val, ndigitsBits) => {
     const missing = missingSentinel();
@@ -8591,26 +9142,83 @@ BASE_IMPORTS = """\
     view.setBigInt64(addr + 16, boxNone(), true);
     return boxPtrAddr(addr);
   },
-  print_builtin: (argsBits) => {
+  print_builtin: (argsBits, sepBits, endBits, fileBits, flushBits) => {
     const args = getTuple(argsBits);
     if (!args) {
-      throw new Error('TypeError: print expects a tuple');
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        boxPtr({ type: 'str', value: 'print expects a tuple' }),
+      );
+      return raiseException(exc);
     }
-    if (args.items.length === 0) {
-      baseImports.print_newline();
-      return boxNone();
-    }
-    if (args.items.length === 1) {
-      baseImports.print_obj(args.items[0]);
-      return boxNone();
-    }
+    const stringArg = (bits, defaultVal, label) => {
+      if (isNone(bits)) return defaultVal;
+      const text = getStrObj(bits);
+      if (text === null) {
+        const exc = exceptionNew(
+          boxPtr({ type: 'str', value: 'TypeError' }),
+          boxPtr({
+            type: 'str',
+            value: `${label} must be None or a string, not ${typeName(bits)}`,
+          }),
+        );
+        raiseException(exc);
+        return null;
+      }
+      return text;
+    };
+    const sep = stringArg(sepBits, ' ', 'sep');
+    if (sep === null) return boxNone();
+    const end = stringArg(endBits, '\\n', 'end');
+    if (end === null) return boxNone();
     const parts = [];
     for (const val of args.items) {
       const strBits = baseImports.str_from_obj(val);
       const text = getStrObj(strBits);
       parts.push(text === null ? '<obj>' : text);
     }
-    baseImports.print_obj(boxPtr({ type: 'str', value: parts.join(' ') }));
+    const output = parts.join(sep) + end;
+    const doFlush = baseImports.is_truthy(flushBits) !== 0n;
+    if (isNone(fileBits)) {
+      if (typeof process !== 'undefined' && process.stdout && process.stdout.write) {
+        process.stdout.write(output);
+        if (doFlush && process.stdout.flush) {
+          process.stdout.flush();
+        }
+      } else if (output.endsWith('\\n')) {
+        console.log(output.slice(0, -1));
+      } else {
+        console.log(output);
+      }
+      return boxNone();
+    }
+    const writeBits = lookupAttr(fileBits, 'write');
+    if (writeBits === undefined) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'AttributeError' }),
+        boxPtr({
+          type: 'str',
+          value: `'${typeName(fileBits)}' object has no attribute 'write'`,
+        }),
+      );
+      return raiseException(exc);
+    }
+    const textBits = boxPtr({ type: 'str', value: output });
+    callCallable1(writeBits, textBits);
+    if (doFlush) {
+      const flushMethodBits = lookupAttr(fileBits, 'flush');
+      if (flushMethodBits === undefined) {
+        const exc = exceptionNew(
+          boxPtr({ type: 'str', value: 'AttributeError' }),
+          boxPtr({
+            type: 'str',
+            value: `'${typeName(fileBits)}' object has no attribute 'flush'`,
+          }),
+        );
+        return raiseException(exc);
+      }
+      callCallable0(flushMethodBits);
+    }
     return boxNone();
   },
   super_builtin: (typeBits, objBits) => baseImports.super_new(typeBits, objBits),

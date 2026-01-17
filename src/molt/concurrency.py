@@ -15,6 +15,7 @@ if TYPE_CHECKING:
         molt_cancel_token_new,
         molt_cancel_token_set_current,
         molt_chan_new,
+        molt_chan_drop,
         molt_chan_recv,
         molt_chan_send,
         molt_spawn,
@@ -28,20 +29,27 @@ class Channel:
     def __init__(self, handle: Any, maxsize: int = 0) -> None:
         self._handle = handle
         self._maxsize = maxsize
+        self._closed = False
 
     def send(self, value: T) -> int:
+        if self._closed:
+            raise RuntimeError("Channel is closed")
         while True:
             res = molt_chan_send(self._handle, value)
             if res != _PENDING:
                 return res
 
     def recv(self) -> T:
+        if self._closed:
+            raise RuntimeError("Channel is closed")
         while True:
             res = molt_chan_recv(self._handle)
             if res != _PENDING:
                 return cast(T, res)
 
     async def send_async(self, value: T) -> None:
+        if self._closed:
+            raise RuntimeError("Channel is closed")
         while True:
             res = molt_chan_send(self._handle, value)
             if res != _PENDING:
@@ -49,11 +57,25 @@ class Channel:
             await molt_async_sleep(0.0)
 
     async def recv_async(self) -> T:
+        if self._closed:
+            raise RuntimeError("Channel is closed")
         while True:
             res = molt_chan_recv(self._handle)
             if res != _PENDING:
                 return cast(T, res)
             await molt_async_sleep(0.0)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        molt_chan_drop(self._handle)
+        self._handle = None
+
+    def __del__(self) -> None:
+        if getattr(self, "_closed", True):
+            return
+        self.close()
 
 
 def channel(maxsize: int = 0) -> Channel[Any]:

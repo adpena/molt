@@ -10,10 +10,19 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
 
+    def _molt_getargv() -> list[str]:
+        return []
+
     def _molt_getrecursionlimit() -> int:
         return 0
 
     def _molt_setrecursionlimit(limit: int) -> None:
+        return None
+
+    def _molt_exception_last() -> BaseException | None:
+        return None
+
+    def _molt_exception_active() -> BaseException | None:
         return None
 
 
@@ -133,7 +142,10 @@ print = print
 NotImplemented = NotImplemented
 
 try:
+    _molt_getargv = _molt_getargv
     _molt_getrecursionlimit = _molt_getrecursionlimit
     _molt_setrecursionlimit = _molt_setrecursionlimit
+    _molt_exception_last = _molt_exception_last
+    _molt_exception_active = _molt_exception_active
 except NameError:
     pass

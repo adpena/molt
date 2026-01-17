@@ -7,6 +7,7 @@ edition = "2021"
 [dependencies]
 libfuzzer-sys = "0.4"
 molt-runtime = { path = ".." }
+molt-obj-model = { path = "../../molt-obj-model" }
 
 [package.metadata]
 cargo-fuzz = true

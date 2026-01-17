@@ -39,6 +39,7 @@ BENCHMARKS = [
     "tests/benchmarks/bench_generator_iter.py",
     "tests/benchmarks/bench_async_await.py",
     "tests/benchmarks/bench_channel_throughput.py",
+    "tests/benchmarks/bench_ptr_registry.py",
     "tests/benchmarks/bench_deeply_nested_loop.py",
     "tests/benchmarks/bench_csv_parse.py",
     "tests/benchmarks/bench_csv_parse_wide.py",
@@ -80,6 +81,14 @@ class BenchRunner:
     env: dict[str, str]
 
 
+@dataclass(frozen=True)
+class MoltBinary:
+    path: Path
+    temp_dir: tempfile.TemporaryDirectory
+    build_s: float
+    size_kb: float
+
+
 def _git_rev() -> str | None:
     try:
         res = subprocess.run(
@@ -103,6 +112,7 @@ def _prepend_pythonpath(env: dict[str, str], path: str) -> dict[str, str]:
 
 def _base_python_env() -> dict[str, str]:
     env = os.environ.copy()
+    env.setdefault("PYTHONHASHSEED", "0")
     return _prepend_pythonpath(env, "src")
 
 
@@ -116,62 +126,85 @@ def measure_runtime(cmd_args, script=None, env=None):
     return end - start
 
 
-def measure_molt(script, extra_args=None):
-    env = os.environ.copy()
+def _resolve_molt_output(payload: dict) -> Path | None:
+    output_str = payload.get("data", {}).get("output") or payload.get("output")
+    if not output_str:
+        return None
+    output_path = Path(output_str)
+    if output_path.exists():
+        return output_path
+    fallback = output_path.with_suffix(".exe")
+    if fallback.exists():
+        return fallback
+    return None
+
+
+def prepare_molt_binary(
+    script: str, extra_args: list[str] | None = None, env: dict[str, str] | None = None
+) -> MoltBinary | None:
+    env = (env or os.environ.copy()).copy()
     env["PYTHONPATH"] = "src"
-    with tempfile.TemporaryDirectory(prefix="molt-bench-") as temp_dir:
-        out_dir = Path(temp_dir)
-        args = [
-            sys.executable,
-            "-m",
-            "molt.cli",
-            "build",
-            "--json",
-            "--out-dir",
-            str(out_dir),
-        ]
-        if extra_args:
-            args.extend(extra_args)
-        args.append(script)
-        res = subprocess.run(
-            args,
-            env=env,
-            capture_output=True,
-            text=True,
-        )
+    temp_dir = tempfile.TemporaryDirectory(prefix="molt-bench-")
+    out_dir = Path(temp_dir.name)
+    args = [
+        sys.executable,
+        "-m",
+        "molt.cli",
+        "build",
+        "--json",
+        "--out-dir",
+        str(out_dir),
+    ]
+    if extra_args:
+        args.extend(extra_args)
+    args.append(script)
+    start = time.perf_counter()
+    res = subprocess.run(
+        args,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    build_s = time.perf_counter() - start
 
-        if res.returncode != 0:
-            return None, 0
+    if res.returncode != 0:
+        temp_dir.cleanup()
+        return None
 
-        try:
-            payload = json.loads(res.stdout.strip() or "{}")
-        except json.JSONDecodeError:
-            return None, 0
+    try:
+        payload = json.loads(res.stdout.strip() or "{}")
+    except json.JSONDecodeError:
+        temp_dir.cleanup()
+        return None
 
-        output_str = payload.get("data", {}).get("output") or payload.get("output")
-        if not output_str:
-            return None, 0
-        output_path = Path(output_str)
-        if not output_path.exists():
-            fallback = output_path.with_suffix(".exe")
-            if fallback.exists():
-                output_path = fallback
-            else:
-                return None, 0
+    output_path = _resolve_molt_output(payload)
+    if output_path is None:
+        temp_dir.cleanup()
+        return None
 
-        binary_size = output_path.stat().st_size / 1024
-
-        start = time.perf_counter()
-        res = subprocess.run([str(output_path)], capture_output=True, text=True)
-        end = time.perf_counter()
-
-        if res.returncode != 0:
-            return None, binary_size
-
-        return end - start, binary_size
+    binary_size = output_path.stat().st_size / 1024
+    return MoltBinary(output_path, temp_dir, build_s, binary_size)
 
 
-def collect_samples(measure_fn, samples):
+def measure_molt_run(
+    binary: Path, env: dict[str, str] | None = None, label: str | None = None
+) -> float | None:
+    start = time.perf_counter()
+    res = subprocess.run([str(binary)], capture_output=True, text=True, env=env)
+    end = time.perf_counter()
+    if res.returncode != 0:
+        err = (res.stderr or res.stdout).strip()
+        if err:
+            prefix = f"Molt run failed for {label}: " if label else "Molt run failed: "
+            print(f"{prefix}{err}", file=sys.stderr)
+        return None
+    return end - start
+
+
+def collect_samples(measure_fn, samples, warmup=0):
+    for _ in range(warmup):
+        if measure_fn() is None:
+            return [], False
     times = [measure_fn() for _ in range(samples)]
     valid_times = [t for t in times if t is not None]
     return valid_times, bool(valid_times)
@@ -372,7 +405,7 @@ def _pypy_command() -> list[str] | None:
 
 
 def bench_results(
-    benchmarks, samples, use_pypy, use_cython, use_numba, use_codon, super_run
+    benchmarks, samples, warmup, use_pypy, use_cython, use_numba, use_codon, super_run
 ):
     runtimes = {"CPython": [sys.executable]}
     if use_pypy:
@@ -412,7 +445,9 @@ def bench_results(
         stats = {}
         for rt_name, cmd in runtimes.items():
             samples_list, ok = collect_samples(
-                lambda: measure_runtime(cmd, script, env=base_env), samples
+                lambda: measure_runtime(cmd, script, env=base_env),
+                samples,
+                warmup=warmup,
             )
             results[rt_name] = statistics.mean(samples_list) if ok else 0.0
             runtime_ok[rt_name] = ok
@@ -427,6 +462,7 @@ def bench_results(
                 cython_samples, cython_ok = collect_samples(
                     lambda: measure_runtime(runner.cmd, runner.script, env=runner.env),
                     samples,
+                    warmup=warmup,
                 )
                 if cython_ok:
                     cython_time = statistics.mean(cython_samples)
@@ -443,6 +479,7 @@ def bench_results(
                 numba_samples, numba_ok = collect_samples(
                     lambda: measure_runtime(runner.cmd, runner.script, env=runner.env),
                     samples,
+                    warmup=warmup,
                 )
                 if numba_ok:
                     numba_time = statistics.mean(numba_samples)
@@ -459,6 +496,7 @@ def bench_results(
                 codon_samples, codon_ok = collect_samples(
                     lambda: measure_runtime(runner.cmd, runner.script, env=runner.env),
                     samples,
+                    warmup=warmup,
                 )
                 if codon_ok:
                     codon_time = statistics.mean(codon_samples)
@@ -467,16 +505,28 @@ def bench_results(
             else:
                 print(f"Skipping Codon for {name}.", file=sys.stderr)
 
-        molt_time, molt_size = 0.0, 0.0
+        molt_time, molt_size, molt_build = 0.0, 0.0, 0.0
         molt_args = MOLT_ARGS_BY_BENCH.get(script, [])
-        molt_runs = [measure_molt(script, molt_args) for _ in range(samples)]
-        valid_molt = [r[0] for r in molt_runs if r[0] is not None]
-        molt_ok = bool(valid_molt)
-        if valid_molt:
-            molt_time = statistics.mean(valid_molt)
-            molt_size = molt_runs[0][1]
-            if super_run:
-                stats["molt"] = summarize_samples(valid_molt)
+        molt_ok = False
+        molt_samples: list[float] = []
+        molt_runner = prepare_molt_binary(script, molt_args, env=base_env)
+        if molt_runner is not None:
+            try:
+                molt_samples, molt_ok = collect_samples(
+                    lambda: measure_molt_run(
+                        molt_runner.path, env=base_env, label=name
+                    ),
+                    samples,
+                    warmup=warmup,
+                )
+                if molt_ok:
+                    molt_time = statistics.mean(molt_samples)
+                    if super_run:
+                        stats["molt"] = summarize_samples(molt_samples)
+                molt_build = molt_runner.build_s
+                molt_size = molt_runner.size_kb
+            finally:
+                molt_runner.temp_dir.cleanup()
         else:
             print(f"Molt build/run failed for {name}.", file=sys.stderr)
 
@@ -523,6 +573,7 @@ def bench_results(
             "numba_time_s": numba_time,
             "codon_time_s": codon_time,
             "molt_time_s": molt_time,
+            "molt_build_s": molt_build,
             "molt_size_kb": molt_size,
             "molt_speedup": speedup,
             "molt_cpython_ratio": ratio,
@@ -570,6 +621,12 @@ def main():
     parser.add_argument("--update-baseline", action="store_true")
     parser.add_argument("--max-regression", type=float, default=0.15)
     parser.add_argument("--samples", type=int, default=None)
+    parser.add_argument(
+        "--warmup",
+        type=int,
+        default=None,
+        help="Warmup runs per benchmark before sampling (default: 1, or 0 for --smoke).",
+    )
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--no-pypy", action="store_true")
     parser.add_argument("--no-cython", action="store_true")
@@ -598,9 +655,23 @@ def main():
     use_numba = not args.no_numba
     use_codon = not args.no_codon
 
+    warmup = args.warmup if args.warmup is not None else (0 if args.smoke else 1)
     results = bench_results(
-        benchmarks, samples, use_pypy, use_cython, use_numba, use_codon, args.super
+        benchmarks,
+        samples,
+        warmup,
+        use_pypy,
+        use_cython,
+        use_numba,
+        use_codon,
+        args.super,
     )
+
+    load_avg = None
+    try:
+        load_avg = os.getloadavg()
+    except OSError:
+        load_avg = None
 
     payload = {
         "schema_version": 1,
@@ -608,10 +679,13 @@ def main():
         "git_rev": _git_rev(),
         "super_run": args.super,
         "samples": samples,
+        "warmup": warmup,
         "system": {
             "platform": platform.platform(),
             "python": platform.python_version(),
             "machine": platform.machine(),
+            "cpu_count": os.cpu_count(),
+            "load_avg": load_avg,
         },
         "benchmarks": results,
     }

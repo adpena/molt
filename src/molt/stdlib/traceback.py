@@ -14,7 +14,7 @@ __all__ = [
     "print_exc",
 ]
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL3): add full traceback extraction + chaining details.
+# TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): add full traceback extraction + chaining details.
 
 
 def _exc_name(exc_type: Any, value: Any) -> str:
@@ -32,26 +32,81 @@ def format_exception_only(exc_type: Any, value: Any) -> list[str]:
     return [f"{name}: {value}\n"]
 
 
+def _split_molt_symbol(name: str) -> tuple[str, str]:
+    if "__" in name:
+        module_hint, func = name.split("__", 1)
+        if module_hint:
+            return f"<molt:{module_hint}>", func or name
+    return "<molt>", name
+
+
+def _extract_tb_info(entry: Any) -> tuple[str, int, str] | None:
+    frame = getattr(entry, "tb_frame", None)
+    lineno = getattr(entry, "tb_lineno", None)
+    if frame is not None and lineno is not None:
+        code = getattr(frame, "f_code", None)
+        filename = getattr(code, "co_filename", "<unknown>") if code else "<unknown>"
+        name = getattr(code, "co_name", "<module>") if code else "<module>"
+        return str(filename), int(lineno), str(name)
+    filename = getattr(entry, "filename", None)
+    lineno = getattr(entry, "lineno", None)
+    if filename is not None and lineno is not None:
+        name = getattr(entry, "name", "<module>")
+        return str(filename), int(lineno), str(name)
+    if isinstance(entry, dict):
+        if "filename" in entry and "lineno" in entry:
+            name = entry.get("name", "<module>")
+            return str(entry["filename"]), int(entry["lineno"]), str(name)
+    if isinstance(entry, (tuple, list)):
+        if not entry:
+            return None
+        if len(entry) == 1:
+            return _extract_tb_info(entry[0])
+        if len(entry) == 2:
+            first, second = entry
+            if isinstance(first, str) and isinstance(second, int):
+                return first, int(second), "<module>"
+            if isinstance(second, str) and isinstance(first, int):
+                return second, int(first), "<module>"
+            if isinstance(first, str) and isinstance(second, str):
+                filename, name = _split_molt_symbol(first)
+                return filename, 0, name
+        if len(entry) >= 3:
+            first, second, third = entry[0], entry[1], entry[2]
+            if isinstance(second, int):
+                return str(first), int(second), str(third)
+            if isinstance(third, int):
+                return str(second), int(third), str(first)
+    if isinstance(entry, str):
+        filename, name = _split_molt_symbol(entry)
+        return filename, 0, name
+    return None
+
+
 def _format_tb_entry(tb: Any) -> str:
-    frame = getattr(tb, "tb_frame", None)
-    lineno = getattr(tb, "tb_lineno", None)
-    if frame is None or lineno is None:
+    info = _extract_tb_info(tb)
+    if info is None:
         return "<traceback>\n"
-    code = getattr(frame, "f_code", None)
-    filename = getattr(code, "co_filename", "<unknown>") if code else "<unknown>"
-    name = getattr(code, "co_name", "<module>") if code else "<module>"
+    filename, lineno, name = info
     return f'  File "{filename}", line {lineno}, in {name}\n'
 
 
 def format_tb(tb: Any, limit: int | None = None) -> list[str]:
     lines: list[str] = []
     count = 0
-    while tb is not None:
-        lines.append(_format_tb_entry(tb))
-        tb = getattr(tb, "tb_next", None)
-        count += 1
-        if limit is not None and count >= limit:
-            break
+    if isinstance(tb, (tuple, list)):
+        for entry in tb:
+            lines.append(_format_tb_entry(entry))
+            count += 1
+            if limit is not None and count >= limit:
+                break
+    else:
+        while tb is not None:
+            lines.append(_format_tb_entry(tb))
+            tb = getattr(tb, "tb_next", None)
+            count += 1
+            if limit is not None and count >= limit:
+                break
     return lines
 
 

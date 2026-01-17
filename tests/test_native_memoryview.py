@@ -4,7 +4,6 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-import tempfile
 
 import pytest
 
@@ -54,48 +53,49 @@ def test_native_memoryview_build_and_run(tmp_path: Path) -> None:
         "print(mvc[0])\n"
     )
 
-    output_root = Path(tempfile.gettempdir())
+    output_root = tmp_path
     output_binary = output_root / f"{src.stem}_molt"
-    artifacts = [output_root / "output.o", output_root / "main_stub.c", output_binary]
-    existed = {path: path.exists() for path in artifacts}
 
     env = os.environ.copy()
     env["PYTHONPATH"] = str(root / "src")
 
-    try:
-        build = subprocess.run(
-            [sys.executable, "-m", "molt.cli", "build", str(src)],
-            cwd=root,
-            env=env,
-            capture_output=True,
-            text=True,
-        )
-        assert build.returncode == 0, build.stderr
+    build = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            str(src),
+            "--out-dir",
+            str(output_root),
+        ],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert build.returncode == 0, build.stderr
 
-        run = subprocess.run(
-            [str(output_binary)],
-            cwd=root,
-            capture_output=True,
-            text=True,
-        )
-        assert run.returncode == 0, run.stderr
-        assert run.stdout.strip().splitlines() == [
-            "5",
-            "b'hello'",
-            "b'abcd'",
-            "b'bc'",
-            "b'ac'",
-            "3",
-            "4",
-            "4",
-            "1",
-            "6",
-            "11",
-            "500",
-            "b'a'",
-            "b'z'",
-        ]
-    finally:
-        for path in artifacts:
-            if not existed[path] and path.exists():
-                path.unlink()
+    run = subprocess.run(
+        [str(output_binary)],
+        cwd=root,
+        capture_output=True,
+        text=True,
+    )
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "5",
+        "b'hello'",
+        "b'abcd'",
+        "b'bc'",
+        "b'ac'",
+        "3",
+        "4",
+        "4",
+        "1",
+        "6",
+        "11",
+        "500",
+        "b'a'",
+        "b'z'",
+    ]

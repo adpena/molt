@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 SUPER_SAMPLES = 10
@@ -36,6 +37,7 @@ BENCHMARKS = [
     "tests/benchmarks/bench_generator_iter.py",
     "tests/benchmarks/bench_async_await.py",
     "tests/benchmarks/bench_channel_throughput.py",
+    "tests/benchmarks/bench_ptr_registry.py",
     "tests/benchmarks/bench_deeply_nested_loop.py",
     "tests/benchmarks/bench_csv_parse.py",
     "tests/benchmarks/bench_csv_parse_wide.py",
@@ -76,6 +78,15 @@ _LINK_WARNED = False
 _LINK_DISABLED = False
 
 
+@dataclass(frozen=True)
+class WasmBinary:
+    run_env: dict[str, str]
+    temp_dir: tempfile.TemporaryDirectory
+    build_s: float
+    size_kb: float
+    linked_used: bool
+
+
 def _git_rev() -> str | None:
     try:
         res = subprocess.run(
@@ -94,6 +105,7 @@ def _git_rev() -> str | None:
 def _base_env() -> dict[str, str]:
     env = os.environ.copy()
     env["PYTHONPATH"] = "src"
+    env.setdefault("PYTHONHASHSEED", "0")
     env.setdefault("MOLT_MACOSX_DEPLOYMENT_TARGET", "26.2")
     return env
 
@@ -210,21 +222,21 @@ def _link_wasm(env: dict[str, str], input_path: Path) -> Path | None:
     return LINKED_WASM
 
 
-def measure_wasm(script: str) -> tuple[float | None, float, bool]:
-    output_path = Path(tempfile.gettempdir()) / "output.wasm"
-    if output_path.exists():
-        output_path.unlink()
-
+def prepare_wasm_binary(script: str) -> WasmBinary | None:
+    temp_dir = tempfile.TemporaryDirectory(prefix="molt-wasm-bench-")
+    output_path = Path(temp_dir.name) / "output.wasm"
     env = _base_env()
     env["MOLT_WASM_PATH"] = str(output_path)
     extra_args = MOLT_ARGS_BY_BENCH.get(script, [])
     python_exe = _python_executable()
+    start = time.perf_counter()
     build_res = subprocess.run(
         [
             python_exe,
             "-m",
             "molt.cli",
             "build",
+            "--no-cache",
             "--target",
             "wasm",
             "--out-dir",
@@ -236,15 +248,18 @@ def measure_wasm(script: str) -> tuple[float | None, float, bool]:
         capture_output=True,
         text=True,
     )
+    build_s = time.perf_counter() - start
     if build_res.returncode != 0:
         err = build_res.stderr.strip() or build_res.stdout.strip()
         if err:
             print(f"WASM build failed for {script}: {err}", file=sys.stderr)
-        return None, 0.0, False
+        temp_dir.cleanup()
+        return None
 
     if not output_path.exists():
         print(f"WASM build produced no output.wasm for {script}", file=sys.stderr)
-        return None, 0.0, False
+        temp_dir.cleanup()
+        return None
 
     linked = _link_wasm(env, output_path)
     linked_used = linked is not None
@@ -254,6 +269,10 @@ def measure_wasm(script: str) -> tuple[float | None, float, bool]:
     if linked is not None:
         run_env["MOLT_WASM_LINKED"] = "1"
         run_env["MOLT_WASM_LINKED_PATH"] = str(linked)
+    return WasmBinary(run_env, temp_dir, build_s, wasm_size, linked_used)
+
+
+def measure_wasm_run(run_env: dict[str, str]) -> float | None:
     start = time.perf_counter()
     run_res = subprocess.run(
         ["node", "run_wasm.js"],
@@ -265,19 +284,20 @@ def measure_wasm(script: str) -> tuple[float | None, float, bool]:
     if run_res.returncode != 0:
         err = run_res.stderr.strip() or run_res.stdout.strip()
         if err:
-            print(f"WASM run failed for {script}: {err}", file=sys.stderr)
-        return None, wasm_size, linked_used
-    return end - start, wasm_size, linked_used
+            print(f"WASM run failed: {err}", file=sys.stderr)
+        return None
+    return end - start
 
 
-def collect_samples(script: str, samples: int) -> tuple[list[float], float, bool, bool]:
-    runs = [measure_wasm(script) for _ in range(samples)]
-    valid = [t for t, _, _ in runs if t is not None]
-    if not runs:
-        return [], 0.0, False, False
-    size = runs[0][1]
-    linked_used = any(r[2] for r in runs)
-    return valid, size, bool(valid), linked_used
+def collect_samples(
+    wasm: WasmBinary, samples: int, warmup: int
+) -> tuple[list[float], bool]:
+    for _ in range(warmup):
+        if measure_wasm_run(wasm.run_env) is None:
+            return [], False
+    runs = [measure_wasm_run(wasm.run_env) for _ in range(samples)]
+    valid = [t for t in runs if t is not None]
+    return valid, bool(valid)
 
 
 def summarize_samples(samples: list[float]) -> dict[str, float]:
@@ -297,19 +317,34 @@ def summarize_samples(samples: list[float]) -> dict[str, float]:
 
 
 def bench_results(
-    benchmarks: list[str], samples: int, super_run: bool
+    benchmarks: list[str], samples: int, warmup: int, super_run: bool
 ) -> dict[str, dict]:
     data: dict[str, dict] = {}
     print(f"{'Benchmark':<30} | {'WASM (s)':<12} | {'WASM size':<10}")
     print("-" * 60)
     for script in benchmarks:
         name = Path(script).stem
-        wasm_samples, wasm_size, ok, linked_used = collect_samples(script, samples)
-        wasm_time = statistics.mean(wasm_samples) if ok else 0.0
+        wasm_time = 0.0
+        wasm_size = 0.0
+        wasm_build = 0.0
+        linked_used = False
+        ok = False
+        wasm_samples: list[float] = []
+        wasm_binary = prepare_wasm_binary(script)
+        if wasm_binary is not None:
+            try:
+                wasm_samples, ok = collect_samples(wasm_binary, samples, warmup)
+                wasm_time = statistics.mean(wasm_samples) if ok else 0.0
+                wasm_size = wasm_binary.size_kb
+                wasm_build = wasm_binary.build_s
+                linked_used = wasm_binary.linked_used
+            finally:
+                wasm_binary.temp_dir.cleanup()
         time_cell = f"{wasm_time:<12.4f}" if ok else f"{'n/a':<12}"
         print(f"{name:<30} | {time_cell} | {wasm_size:>8.1f} KB")
         data[name] = {
             "molt_wasm_time_s": wasm_time,
+            "molt_wasm_build_s": wasm_build,
             "molt_wasm_size_kb": wasm_size,
             "molt_wasm_ok": ok,
             "molt_wasm_linked": linked_used,
@@ -328,6 +363,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run Molt WASM benchmark suite.")
     parser.add_argument("--json-out", type=Path, default=None)
     parser.add_argument("--samples", type=int, default=None)
+    parser.add_argument(
+        "--warmup",
+        type=int,
+        default=None,
+        help="Warmup runs per benchmark before sampling (default: 1, or 0 for --smoke).",
+    )
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument(
         "--linked",
@@ -362,7 +403,14 @@ def main() -> None:
         if args.super
         else (args.samples if args.samples is not None else (1 if args.smoke else 3))
     )
-    results = bench_results(benchmarks, samples, args.super)
+    warmup = args.warmup if args.warmup is not None else (0 if args.smoke else 1)
+    results = bench_results(benchmarks, samples, warmup, args.super)
+
+    load_avg = None
+    try:
+        load_avg = os.getloadavg()
+    except OSError:
+        load_avg = None
 
     payload = {
         "schema_version": 1,
@@ -370,10 +418,13 @@ def main() -> None:
         "git_rev": _git_rev(),
         "super_run": args.super,
         "samples": samples,
+        "warmup": warmup,
         "system": {
             "platform": platform.platform(),
             "python": platform.python_version(),
             "machine": platform.machine(),
+            "cpu_count": os.cpu_count(),
+            "load_avg": load_avg,
         },
         "benchmarks": results,
     }

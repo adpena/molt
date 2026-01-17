@@ -106,6 +106,7 @@ def _configure_runtime_lib(lib: ctypes.CDLL) -> None:
         lib, "molt_chan_send", [ctypes.c_void_p, ctypes.c_longlong], ctypes.c_longlong
     )
     _bind_required(lib, "molt_chan_recv", [ctypes.c_void_p], ctypes.c_longlong)
+    _bind_required(lib, "molt_chan_drop", [ctypes.c_void_p], None)
     _bind_required(lib, "molt_spawn", [ctypes.c_void_p], None)
     _bind_required(lib, "molt_cancel_token_new", [ctypes.c_longlong], ctypes.c_longlong)
     _bind_required(
@@ -157,16 +158,17 @@ def _configure_runtime_lib(lib: ctypes.CDLL) -> None:
         [ctypes.c_char_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_uint64)],
         ctypes.c_int,
     )
-    _bind_optional(lib, "molt_stream_new", [ctypes.c_size_t], ctypes.c_void_p)
-    _bind_optional(
+    _bind_required(lib, "molt_stream_new", [ctypes.c_size_t], ctypes.c_void_p)
+    _bind_required(
         lib,
         "molt_stream_send",
         [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t],
         ctypes.c_longlong,
     )
-    _bind_optional(lib, "molt_stream_recv", [ctypes.c_void_p], ctypes.c_longlong)
-    _bind_optional(lib, "molt_stream_close", [ctypes.c_void_p], None)
-    _bind_optional(
+    _bind_required(lib, "molt_stream_recv", [ctypes.c_void_p], ctypes.c_longlong)
+    _bind_required(lib, "molt_stream_close", [ctypes.c_void_p], None)
+    _bind_required(lib, "molt_stream_drop", [ctypes.c_void_p], None)
+    _bind_required(
         lib,
         "molt_ws_pair",
         [
@@ -176,27 +178,28 @@ def _configure_runtime_lib(lib: ctypes.CDLL) -> None:
         ],
         ctypes.c_int,
     )
-    _bind_optional(
+    _bind_required(
         lib,
         "molt_ws_connect",
         [ctypes.c_char_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_void_p)],
         ctypes.c_int,
     )
-    _bind_optional(lib, "molt_ws_set_connect_hook", [ctypes.c_size_t], None)
-    _bind_optional(
+    _bind_required(lib, "molt_ws_set_connect_hook", [ctypes.c_size_t], None)
+    _bind_required(
         lib,
         "molt_ws_new_with_hooks",
         [ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_void_p],
         ctypes.c_void_p,
     )
-    _bind_optional(
+    _bind_required(
         lib,
         "molt_ws_send",
         [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t],
         ctypes.c_longlong,
     )
-    _bind_optional(lib, "molt_ws_recv", [ctypes.c_void_p], ctypes.c_longlong)
-    _bind_optional(lib, "molt_ws_close", [ctypes.c_void_p], None)
+    _bind_required(lib, "molt_ws_recv", [ctypes.c_void_p], ctypes.c_longlong)
+    _bind_required(lib, "molt_ws_close", [ctypes.c_void_p], None)
+    _bind_required(lib, "molt_ws_drop", [ctypes.c_void_p], None)
 
 
 def _open_runtime_lib(lib_path: Path) -> ctypes.CDLL | None:
@@ -225,7 +228,7 @@ def load_runtime() -> ctypes.CDLL | None:
 
 
 def stream_new_handle(lib: ctypes.CDLL | None, maxsize: int) -> ctypes.c_void_p | None:
-    if lib is None or not hasattr(lib, "molt_stream_new"):
+    if lib is None:
         return None
     handle = lib.molt_stream_new(maxsize)
     if isinstance(handle, ctypes.c_void_p):
@@ -238,7 +241,7 @@ def stream_new_handle(lib: ctypes.CDLL | None, maxsize: int) -> ctypes.c_void_p 
 def ws_pair_handles(
     lib: ctypes.CDLL | None, maxsize: int
 ) -> tuple[ctypes.c_void_p, ctypes.c_void_p] | None:
-    if lib is None or not hasattr(lib, "molt_ws_pair"):
+    if lib is None:
         return None
     left_handle = ctypes.c_void_p()
     right_handle = ctypes.c_void_p()
@@ -253,7 +256,7 @@ def ws_pair_handles(
 
 
 def ws_connect_handle(lib: ctypes.CDLL | None, url: str) -> ctypes.c_void_p | None:
-    if lib is None or not hasattr(lib, "molt_ws_connect"):
+    if lib is None:
         return None
     buf = url.encode("utf-8")
     handle = ctypes.c_void_p()
@@ -467,6 +470,17 @@ def molt_chan_recv(chan: Any) -> Any:
     raise TypeError("molt_chan_recv expected a channel handle")
 
 
+def molt_chan_drop(chan: Any) -> None:
+    if _use_runtime_concurrency():
+        lib = load_runtime()
+        if lib is not None:
+            chan_ptr = _chan_ptr(chan)
+            if chan_ptr is not None:
+                lib.molt_chan_drop(chan_ptr)
+                return None
+    return None
+
+
 def install() -> None:
     import builtins
 
@@ -489,6 +503,7 @@ def install() -> None:
     setattr(builtins, "molt_chan_new", molt_chan_new)
     setattr(builtins, "molt_chan_send", molt_chan_send)
     setattr(builtins, "molt_chan_recv", molt_chan_recv)
+    setattr(builtins, "molt_chan_drop", molt_chan_drop)
     setattr(builtins, "molt_block_on", molt_block_on)
     setattr(builtins, "molt_async_sleep", molt_async_sleep)
     setattr(builtins, "molt_cancel_token_new", molt_cancel_token_new)

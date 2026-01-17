@@ -40,8 +40,15 @@ __all__ = [
     "getfilesystemencoding",
 ]
 
+try:
+    argv = _molt_getargv()  # type: ignore[unresolved-reference]
+except NameError:
+    if _py_sys is not None:
+        argv = list(getattr(_py_sys, "argv", []))
+    else:
+        argv = []
+
 if _py_sys is not None:
-    argv = list(getattr(_py_sys, "argv", []))
     platform = getattr(_py_sys, "platform", "molt")
     version = getattr(_py_sys, "version", "3.13.0 (molt)")
     version_info = getattr(_py_sys, "version_info", (3, 13, 0, "final", 0))
@@ -53,7 +60,6 @@ if _py_sys is not None:
     _default_encoding = getattr(_py_sys, "getdefaultencoding", lambda: "utf-8")()
     _fs_encoding = getattr(_py_sys, "getfilesystemencoding", lambda: "utf-8")()
 else:
-    argv = []
     platform = "molt"
     version = "3.13.0 (molt)"
     version_info = (3, 13, 0, "final", 0)
@@ -94,7 +100,18 @@ def setrecursionlimit(limit: int) -> None:
 def exc_info() -> tuple[Any, Any, Any]:
     if _py_sys is not None:
         return _py_sys.exc_info()
-    return None, None, None
+    try:
+        exc = _molt_exception_active()  # type: ignore[unresolved-reference]
+    except NameError:
+        exc = None
+    if exc is None:
+        try:
+            exc = _molt_exception_last()  # type: ignore[unresolved-reference]
+        except NameError:
+            exc = None
+    if exc is None:
+        return None, None, None
+    return type(exc), exc, getattr(exc, "__traceback__", None)
 
 
 def _getframe(depth: int = 0) -> Any | None:

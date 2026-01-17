@@ -1,6 +1,9 @@
 //! Core object representation for Molt.
 //! Uses NaN-boxing to represent primitives and heap pointers in 64 bits.
 
+use std::collections::HashMap;
+use std::sync::{OnceLock, RwLock};
+
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(transparent)]
 pub struct MoltObject(u64);
@@ -17,6 +20,91 @@ const INT_SIGN_BIT: u64 = 1 << 46;
 const INT_WIDTH: u64 = 47;
 const INT_MASK: u64 = (1u64 << INT_WIDTH) - 1;
 const CANONICAL_NAN_BITS: u64 = 0x7ff0_0000_0000_0001;
+
+const PTR_REGISTRY_SHARDS: usize = 64;
+
+struct PtrRegistry {
+    shards: Vec<RwLock<HashMap<u64, PtrSlot>>>,
+}
+
+impl PtrRegistry {
+    fn new() -> Self {
+        let mut shards = Vec::with_capacity(PTR_REGISTRY_SHARDS);
+        for _ in 0..PTR_REGISTRY_SHARDS {
+            shards.push(RwLock::new(HashMap::new()));
+        }
+        Self { shards }
+    }
+
+    fn shard(&self, addr: u64) -> &RwLock<HashMap<u64, PtrSlot>> {
+        let idx = (addr as usize) % PTR_REGISTRY_SHARDS;
+        &self.shards[idx]
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct PtrSlot(*mut u8);
+
+// Raw pointers are guarded by the registry lock; it is safe to share slots.
+unsafe impl Send for PtrSlot {}
+unsafe impl Sync for PtrSlot {}
+
+static PTR_REGISTRY: OnceLock<PtrRegistry> = OnceLock::new();
+
+fn ptr_registry() -> &'static PtrRegistry {
+    PTR_REGISTRY.get_or_init(PtrRegistry::new)
+}
+
+fn canonical_addr_from_masked(masked: u64) -> u64 {
+    let signed = ((masked << 16) as i64) >> 16;
+    signed as u64
+}
+
+pub fn register_ptr(ptr: *mut u8) -> u64 {
+    if ptr.is_null() {
+        return 0;
+    }
+    let slot = PtrSlot(ptr);
+    let addr = ptr.expose_provenance() as u64;
+    let shard = ptr_registry().shard(addr);
+    if let Ok(guard) = shard.read() {
+        if guard.get(&addr).copied() == Some(slot) {
+            return addr;
+        }
+    }
+    let mut guard = shard.write().expect("pointer registry lock poisoned");
+    guard.insert(addr, slot);
+    addr
+}
+
+pub fn resolve_ptr(addr: u64) -> Option<*mut u8> {
+    if addr == 0 {
+        return None;
+    }
+    let shard = ptr_registry().shard(addr);
+    let guard = shard.read().expect("pointer registry lock poisoned");
+    guard.get(&addr).map(|slot| slot.0)
+}
+
+pub fn release_ptr(ptr: *mut u8) -> Option<u64> {
+    if ptr.is_null() {
+        return None;
+    }
+    let addr = ptr.expose_provenance() as u64;
+    let shard = ptr_registry().shard(addr);
+    let mut guard = shard.write().expect("pointer registry lock poisoned");
+    guard.remove(&addr).map(|_| addr)
+}
+
+pub fn reset_ptr_registry() {
+    if let Some(registry) = PTR_REGISTRY.get() {
+        for shard in &registry.shards {
+            if let Ok(mut guard) = shard.write() {
+                guard.clear();
+            }
+        }
+    }
+}
 
 impl MoltObject {
     pub fn from_bits(bits: u64) -> Self {
@@ -55,7 +143,7 @@ impl MoltObject {
     }
 
     pub fn from_ptr(ptr: *mut u8) -> Self {
-        let addr = ptr as u64;
+        let addr = register_ptr(ptr);
         let high = addr >> 48;
         debug_assert!(
             high == 0 || high == 0xffff,
@@ -107,9 +195,9 @@ impl MoltObject {
 
     pub fn as_ptr(&self) -> Option<*mut u8> {
         if self.is_ptr() {
-            let handle = self.0 & POINTER_MASK;
-            let signed = ((handle << 16) as i64) >> 16;
-            Some(signed as usize as *mut u8)
+            let masked = self.0 & POINTER_MASK;
+            let addr = canonical_addr_from_masked(masked);
+            resolve_ptr(addr)
         } else {
             None
         }
@@ -161,5 +249,18 @@ mod tests {
         let obj = MoltObject::from_int(-1);
         assert!(obj.is_int());
         assert_eq!(obj.as_int(), Some(-1));
+    }
+
+    #[test]
+    fn test_ptr_roundtrip() {
+        let boxed = Box::new(123u8);
+        let ptr = Box::into_raw(boxed) as *mut u8;
+        let obj = MoltObject::from_ptr(ptr);
+        assert!(obj.is_ptr());
+        assert_eq!(obj.as_ptr(), Some(ptr));
+        release_ptr(ptr);
+        unsafe {
+            drop(Box::from_raw(ptr));
+        }
     }
 }

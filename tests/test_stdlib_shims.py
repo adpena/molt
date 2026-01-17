@@ -42,6 +42,11 @@ def test_traceback_format_exc() -> None:
     assert "ValueError: boom" in text
 
 
+def test_traceback_format_tb_symbol() -> None:
+    lines = molt_traceback.format_tb((("demo.py", 7, "main"),))
+    assert 'File "demo.py", line 7, in main' in lines[0]
+
+
 def test_inspect_signature() -> None:
     def foo(a, b=1):
         return a + b

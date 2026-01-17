@@ -25,14 +25,14 @@ Key flags:
 - `--codec {msgpack,cbor,json}` (default: `msgpack`)
 - `--type-hints {ignore,trust,check}` (default: `ignore`)
 - `--type-facts <path>` (optional Type Facts Artifact from `molt check`)
-- `--output <path>` (optional output path for the native binary, wasm artifact, or object file when `--emit obj`)
-- `--out-dir <dir>` (optional output directory for artifacts and binaries; default: system temp dir)
+- `--output <path>` (optional output path for the native binary, wasm artifact, or object file when `--emit obj`; relative paths resolve under `--out-dir` if set, otherwise the project root)
+- `--out-dir <dir>` (optional output directory for artifacts and binaries; default: `$MOLT_HOME/build/<entry>` for artifacts and `$MOLT_BIN` for native binaries)
 - `--emit {bin,obj,wasm}` (select which artifact to emit)
 - `--emit-ir <path>` (dump lowered IR JSON)
 - `--profile {dev,release}` (default: `release`)
 - `--deterministic/--no-deterministic` (lockfile enforcement)
-- `--cache/--no-cache` (use `.molt/cache` for IR artifacts)
-- `--cache-dir <dir>` (override the cache directory)
+- `--cache/--no-cache` (use `$MOLT_CACHE` for IR artifacts)
+- `--cache-dir <dir>` (override the cache directory; defaults to `$MOLT_CACHE`)
 - `--cache-report` (print cache hit/miss details)
 - `--rebuild` (alias for `--no-cache`)
 - `--capabilities <file|profile|list>` (capability manifest or profiles/tokens)
@@ -42,10 +42,14 @@ Key flags:
 Outputs:
 - `output.o` + linked binary (native, unless `--emit obj`)
 - `output.wasm` (WASM)
-- Artifacts are placed under `--out-dir` when provided; otherwise they default to the system temp dir (including `main_stub.c`).
-- Native binary defaults to `<tempdir>/<entry>_molt` when `--output` is not provided.
+- Artifacts are placed under `--out-dir` when provided; otherwise they default to `$MOLT_HOME/build/<entry>` (including `main_stub.c`).
+- Native binary defaults to `$MOLT_BIN/<entry>_molt` when `--output` is not provided.
 - `--emit obj` skips linking and returns only the object artifact.
 - Cache reuse skips the backend compile step only; linking still runs. Use `--no-cache` for a full recompile.
+Environment defaults:
+- `MOLT_HOME` (default `~/.molt`): base directory for Molt state, including build artifacts under `build/`.
+- `MOLT_BIN` (default `$MOLT_HOME/bin`): default directory for compiled native binaries.
+- `MOLT_CACHE` (default OS cache, e.g. `~/Library/Caches/molt` or `$XDG_CACHE_HOME/molt`): IR artifact cache.
 
 ### 2.2 `molt check`
 **Status:** Implemented.
@@ -70,8 +74,7 @@ Key flags:
 - `--no-shims`
 - `--compiled` + `--build-arg <arg>`
 - `--rebuild` (disable cache for `--compiled`)
-- `--compiled-args` (pass argv through; runtime support pending)
-  (TODO(runtime, owner:runtime, milestone:RT1, priority:P2, status:missing): compiled argv passthrough support.)
+- `--compiled-args` (pass argv through to compiled binary; initializes `sys.argv`).
 
 ### 2.4 `molt test`
 **Status:** Implemented (initial).
@@ -146,7 +149,7 @@ Key flags:
 ### 4.5 `molt clean`
 **Status:** Implemented (initial).
 
-Purpose: Remove `.molt/` caches and transient build artifacts.
+Purpose: Remove build caches (`$MOLT_CACHE`) and transient build artifacts (`$MOLT_HOME/build`).
 
 ### 4.6 `molt config`
 **Status:** Implemented (initial).

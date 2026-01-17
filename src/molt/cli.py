@@ -10,7 +10,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
 import tomllib
 import urllib.request
 import zipfile
@@ -34,7 +33,6 @@ EmitMode = Literal["bin", "obj", "wasm"]
 STUB_MODULES = {"molt_buffer", "molt_cbor", "molt_json", "molt_msgpack"}
 STUB_PARENT_MODULES = {"molt"}
 JSON_SCHEMA_VERSION = "1.0"
-DEFAULT_OUTPUT_DIR = Path(tempfile.gettempdir())
 CAPABILITY_PROFILES: dict[str, list[str]] = {
     "core": [],
     "net": [
@@ -51,6 +49,7 @@ CAPABILITY_PROFILES: dict[str, list[str]] = {
 # TODO(tooling, owner:cli, milestone:TL2): align capability profiles with
 # docs/spec (process/time/random/db and future host integrations).
 CAPABILITY_TOKEN_RE = re.compile(r"^[a-z0-9][a-z0-9:._-]*$")
+_OUTPUT_BASE_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 def _emit_json(payload: dict[str, Any], json_output: bool) -> None:
@@ -669,43 +668,128 @@ def _cargo_profile_dir(profile: BuildProfile) -> str:
     return "release" if profile == "release" else "debug"
 
 
-def _cache_root(project_root: Path) -> Path:
-    return project_root / ".molt" / "cache"
+def _resolve_env_path(var: str, default: Path) -> Path:
+    value = os.environ.get(var)
+    if not value:
+        return default
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = (Path.cwd() / path).absolute()
+    return path
+
+
+def _safe_output_base(name: str) -> str:
+    cleaned = _OUTPUT_BASE_SAFE_RE.sub("_", name)
+    return cleaned or "molt"
+
+
+def _default_molt_home() -> Path:
+    return _resolve_env_path("MOLT_HOME", Path.home() / ".molt")
+
+
+def _default_molt_bin() -> Path:
+    return _resolve_env_path("MOLT_BIN", _default_molt_home() / "bin")
+
+
+def _default_molt_cache() -> Path:
+    cache_override = os.environ.get("MOLT_CACHE")
+    if cache_override:
+        return _resolve_env_path("MOLT_CACHE", Path())
+    if sys.platform == "darwin":
+        base = Path.home() / "Library" / "Caches"
+    else:
+        xdg = os.environ.get("XDG_CACHE_HOME")
+        if xdg:
+            base = Path(xdg).expanduser()
+            if not base.is_absolute():
+                base = (Path.cwd() / base).absolute()
+        else:
+            base = Path.home() / ".cache"
+    return base / "molt"
+
+
+def _default_build_root(output_base: str) -> Path:
+    safe_base = _safe_output_base(output_base)
+    return _default_molt_home() / "build" / safe_base
 
 
 def _resolve_cache_root(project_root: Path, cache_dir: str | None) -> Path:
     if not cache_dir:
-        return _cache_root(project_root)
-    path = Path(cache_dir)
+        return _default_molt_cache()
+    path = Path(cache_dir).expanduser()
     if not path.is_absolute():
-        path = project_root / path
+        path = (project_root / path).absolute()
     return path
 
 
-def _resolve_output_dir(project_root: Path, out_dir: str | None) -> Path:
+def _resolve_out_dir(project_root: Path, out_dir: str | Path | None) -> Path | None:
     if not out_dir:
-        DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        return DEFAULT_OUTPUT_DIR
-    path = Path(out_dir)
+        return None
+    path = Path(out_dir).expanduser()
     if not path.is_absolute():
-        path = project_root / path
+        path = (project_root / path).absolute()
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
-def _resolve_output_path(output: str | None, default: Path, out_dir: Path) -> Path:
+def _resolve_output_roots(
+    project_root: Path, out_dir: Path | None, output_base: str
+) -> tuple[Path, Path]:
+    if out_dir is not None:
+        return out_dir, out_dir
+    artifacts_root = _default_build_root(output_base)
+    bin_root = _default_molt_bin()
+    artifacts_root.mkdir(parents=True, exist_ok=True)
+    bin_root.mkdir(parents=True, exist_ok=True)
+    return artifacts_root, bin_root
+
+
+def _resolve_output_path(
+    output: str | None,
+    default: Path,
+    *,
+    out_dir: Path | None,
+    project_root: Path,
+) -> Path:
     if not output:
         return default
-    path = Path(output)
-    if not path.is_absolute() and out_dir != Path("."):
-        path = out_dir / path
+    path = Path(output).expanduser()
+    if not path.is_absolute():
+        base = out_dir if out_dir is not None else project_root
+        path = base / path
     return path
+
+
+def _cache_fingerprint() -> str:
+    root = Path(__file__).resolve().parents[2]
+    paths = [
+        root / "runtime" / "molt-backend" / "src" / "lib.rs",
+        root / "runtime" / "molt-backend" / "src" / "wasm.rs",
+        root / "runtime" / "molt-backend" / "Cargo.toml",
+        root / "runtime" / "molt-runtime" / "src" / "lib.rs",
+        root / "runtime" / "molt-runtime" / "Cargo.toml",
+    ]
+    parts: list[str] = []
+    for path in paths:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        try:
+            rel = path.relative_to(root).as_posix()
+        except ValueError:
+            rel = path.as_posix()
+        parts.append(f"{rel}:{stat.st_mtime_ns}:{stat.st_size}")
+    return "|".join(parts)
 
 
 def _cache_key(ir: dict[str, Any], target: str, target_triple: str | None) -> str:
     payload = json.dumps(ir, sort_keys=True, separators=(",", ":")).encode("utf-8")
     suffix = target_triple or target
-    digest = hashlib.sha256(payload + b"|" + suffix.encode("utf-8")).hexdigest()
+    fingerprint = _cache_fingerprint().encode("utf-8")
+    digest = hashlib.sha256(
+        payload + b"|" + suffix.encode("utf-8") + b"|" + fingerprint
+    ).hexdigest()
     return digest
 
 
@@ -902,7 +986,10 @@ def build(
         print(f"Modules discovered: {len(module_graph)}")
     entry_module = _module_name_from_path(source_path, module_roots, stdlib_root)
     output_base = entry_module.rsplit(".", 1)[-1] or source_path.stem
-    output_root = _resolve_output_dir(project_root, out_dir)
+    out_dir_path = _resolve_out_dir(project_root, out_dir)
+    artifacts_root, bin_root = _resolve_output_roots(
+        project_root, out_dir_path, output_base
+    )
     is_wasm = target == "wasm"
     target_triple = None if target in {"native", "wasm"} else target
     emit_mode = emit or ("wasm" if is_wasm else "bin")
@@ -928,17 +1015,28 @@ def build(
     output_binary: Path | None = None
     if is_wasm:
         output_wasm = _resolve_output_path(
-            output, output_root / "output.wasm", output_root
+            output,
+            artifacts_root / "output.wasm",
+            out_dir=out_dir_path,
+            project_root=project_root,
         )
         output_artifact = output_wasm
     else:
-        output_obj = output_root / "output.o"
+        output_obj = artifacts_root / "output.o"
         if emit_mode == "obj":
-            output_obj = _resolve_output_path(output, output_obj, output_root)
+            output_obj = _resolve_output_path(
+                output,
+                output_obj,
+                out_dir=out_dir_path,
+                project_root=project_root,
+            )
         output_artifact = output_obj
         if emit_mode == "bin":
             output_binary = _resolve_output_path(
-                output, output_root / f"{output_base}_molt", output_root
+                output,
+                bin_root / f"{output_base}_molt",
+                out_dir=out_dir_path,
+                project_root=project_root,
             )
     for path in (output_artifact, output_binary):
         if path is not None and path.parent != Path("."):
@@ -946,8 +1044,8 @@ def build(
     emit_ir_path: Path | None = None
     if emit_ir:
         emit_ir_path = Path(emit_ir)
-        if not emit_ir_path.is_absolute() and output_root != Path("."):
-            emit_ir_path = output_root / emit_ir_path
+        if not emit_ir_path.is_absolute():
+            emit_ir_path = artifacts_root / emit_ir_path
         if emit_ir_path.parent != Path("."):
             emit_ir_path.parent.mkdir(parents=True, exist_ok=True)
     for stub in stub_parents:
@@ -1020,6 +1118,47 @@ def build(
             )
 
     functions: list[dict[str, Any]] = []
+    # Normalize code-slot IDs across modules to keep tracebacks consistent.
+    global_code_ids: dict[str, int] = {}
+    global_code_id_counter = 0
+
+    def _register_global_code_id(symbol: str) -> int:
+        nonlocal global_code_id_counter
+        code_id = global_code_ids.get(symbol)
+        if code_id is None:
+            code_id = global_code_id_counter
+            global_code_ids[symbol] = code_id
+            global_code_id_counter += 1
+        return code_id
+
+    def _remap_module_code_ops(
+        module_name: str,
+        funcs: list[dict[str, Any]],
+        local_id_to_symbol: dict[int, str],
+    ) -> None:
+        for func in funcs:
+            ops = func.get("ops", [])
+            remapped_ops: list[dict[str, Any]] = []
+            for op in ops:
+                kind = op.get("kind")
+                if kind == "code_slots_init":
+                    continue
+                if kind == "call":
+                    symbol = op.get("s_value")
+                    if symbol:
+                        op["value"] = _register_global_code_id(symbol)
+                elif kind == "code_slot_set":
+                    local_id = op.get("value")
+                    symbol = local_id_to_symbol.get(local_id)
+                    if symbol is None:
+                        raise ValueError(
+                            "Missing code symbol for id "
+                            f"{local_id} in module {module_name}"
+                        )
+                    op["value"] = _register_global_code_id(symbol)
+                remapped_ops.append(op)
+            func["ops"] = remapped_ops
+
     enable_phi = not is_wasm
     if target_triple:
         _ensure_rustup_target(target_triple, warnings)
@@ -1062,6 +1201,16 @@ def build(
             return _fail(str(exc), json_output, command="build")
         ir = gen.to_json()
         init_symbol = SimpleTIRGenerator.module_init_symbol(module_name)
+        local_code_ids = dict(gen.func_code_ids)
+        if "molt_main" in local_code_ids:
+            local_code_ids[init_symbol] = local_code_ids.pop("molt_main")
+        local_id_to_symbol = {
+            code_id: symbol for symbol, code_id in local_code_ids.items()
+        }
+        try:
+            _remap_module_code_ops(module_name, ir["functions"], local_id_to_symbol)
+        except ValueError as exc:
+            return _fail(str(exc), json_output, command="build")
         for func in ir["functions"]:
             if func["name"] == "molt_main":
                 func["name"] = init_symbol
@@ -1070,16 +1219,32 @@ def build(
             known_classes[class_name] = gen.classes[class_name]
 
     entry_init = SimpleTIRGenerator.module_init_symbol(entry_module)
-    functions.append(
+    entry_ops = [
         {
-            "name": "molt_main",
-            "params": [],
-            "ops": [
-                {"kind": "call", "s_value": entry_init, "args": [], "out": "v0"},
-                {"kind": "ret_void"},
-            ],
-        }
-    )
+            "kind": "call",
+            "s_value": "molt_runtime_init",
+            "args": [],
+            "out": "v0",
+            "value": _register_global_code_id("molt_runtime_init"),
+        },
+        {
+            "kind": "call",
+            "s_value": entry_init,
+            "args": [],
+            "out": "v1",
+            "value": _register_global_code_id(entry_init),
+        },
+        {
+            "kind": "call",
+            "s_value": "molt_runtime_shutdown",
+            "args": [],
+            "out": "v2",
+            "value": _register_global_code_id("molt_runtime_shutdown"),
+        },
+        {"kind": "ret_void"},
+    ]
+    entry_ops.insert(1, {"kind": "code_slots_init", "value": len(global_code_ids)})
+    functions.append({"name": "molt_main", "params": [], "ops": entry_ops})
     ir = {"functions": functions}
     if emit_ir_path is not None:
         try:
@@ -1242,6 +1407,15 @@ def build(
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <wchar.h>
+#endif
+extern unsigned long long molt_runtime_init();
+extern unsigned long long molt_runtime_shutdown();
+extern void molt_set_argv(int argc, const char** argv);
+#ifdef _WIN32
+extern void molt_set_argv_utf16(int argc, const wchar_t** argv);
+#endif
 extern void molt_main();
 extern int molt_json_parse_scalar(const char* ptr, long len, unsigned long long* out);
 extern int molt_msgpack_parse_scalar(const char* ptr, long len, unsigned long long* out);
@@ -1256,16 +1430,34 @@ extern long molt_chan_send(void* chan, long val);
 extern long molt_chan_recv(void* chan);
 extern void molt_print_obj(unsigned long long val);
 extern void molt_profile_dump();
-int main() {
-    molt_main();
+
+static void molt_finish() {
     const char* profile = getenv("MOLT_PROFILE");
     if (profile != NULL && profile[0] != '\\0' && strcmp(profile, "0") != 0) {
         molt_profile_dump();
     }
+    molt_runtime_shutdown();
+}
+
+#ifdef _WIN32
+int wmain(int argc, wchar_t** argv) {
+    molt_runtime_init();
+    molt_set_argv_utf16(argc, (const wchar_t**)argv);
+    molt_main();
+    molt_finish();
     return 0;
 }
+#else
+int main(int argc, char** argv) {
+    molt_runtime_init();
+    molt_set_argv(argc, (const char**)argv);
+    molt_main();
+    molt_finish();
+    return 0;
+}
+#endif
 """
-    stub_path = output_root / "main_stub.c"
+    stub_path = artifacts_root / "main_stub.c"
     stub_path.write_text(main_c_content)
 
     if output_binary is None:
@@ -1468,19 +1660,16 @@ def run_script(
             )
         output_binary = _extract_output_arg(build_args)
         out_dir = _extract_out_dir_arg(build_args)
-        if out_dir is not None and not out_dir.is_absolute():
-            out_dir = (root / out_dir).resolve()
-        resolved_out_dir = _resolve_output_dir(root, str(out_dir) if out_dir else None)
-        if output_binary is None:
-            output_binary = resolved_out_dir / f"{source_path.stem}_molt"
-        elif not output_binary.is_absolute():
-            output_binary = (out_dir or resolved_out_dir) / output_binary
-            if not output_binary.is_absolute():
-                output_binary = (root / output_binary).resolve()
-            else:
-                output_binary = output_binary.resolve()
-        else:
-            output_binary = output_binary.resolve()
+        out_dir_path = _resolve_out_dir(root, out_dir)
+        _artifacts_root, bin_root = _resolve_output_roots(
+            root, out_dir_path, source_path.stem
+        )
+        output_binary = _resolve_output_path(
+            str(output_binary) if output_binary is not None else None,
+            bin_root / f"{source_path.stem}_molt",
+            out_dir=out_dir_path,
+            project_root=root,
+        )
         # TODO(tooling, owner:cli, milestone:TL2): plumb argv support for compiled
         # binaries once the runtime exposes argument handling.
         ignored_warning = None
@@ -2267,13 +2456,28 @@ def clean(
     removed: list[str] = []
     missing: list[str] = []
     if cache:
-        cache_root = root / ".molt"
+        cache_root = _default_molt_cache()
         if cache_root.exists():
             shutil.rmtree(cache_root)
             removed.append(str(cache_root))
         else:
             missing.append(str(cache_root))
+        legacy_root = root / ".molt"
+        # TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): remove legacy .molt cleanup once one-time MOLT_HOME/MOLT_CACHE migration is complete.
+        if legacy_root.exists():
+            shutil.rmtree(legacy_root)
+            removed.append(str(legacy_root))
+        else:
+            missing.append(str(legacy_root))
     if artifacts:
+        build_root = _default_molt_home() / "build"
+        if build_root.exists():
+            shutil.rmtree(build_root)
+            removed.append(str(build_root))
+        else:
+            missing.append(str(build_root))
+        # TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): remove legacy output artifact cleanup after out-dir defaults land.
+        # TODO(tooling, owner:tooling, milestone:TL2, priority:P3, status:planned): add an explicit clean option for Cargo target/ artifacts.
         for name in ("output.o", "output.wasm", "main_stub.c"):
             path = root / name
             if path.exists():
@@ -2317,6 +2521,12 @@ def show_config(
         },
         "build": build_cfg,
         "capabilities": caps_cfg,
+        "paths": {
+            "molt_home": str(_default_molt_home()),
+            "molt_bin": str(_default_molt_bin()),
+            "molt_cache": str(_default_molt_cache()),
+            "build_root": str(_default_molt_home() / "build"),
+        },
     }
     if json_output:
         data["config"] = config
@@ -2330,6 +2540,9 @@ def show_config(
             print(f"- {data['sources']['molt_toml']}")
         if data["sources"]["pyproject"]:
             print(f"- {data['sources']['pyproject']}")
+    print("Paths:")
+    for key, value in data["paths"].items():
+        print(f"- {key}: {value}")
     if build_cfg:
         print("Build defaults:")
         for key in sorted(build_cfg):
@@ -2613,12 +2826,18 @@ def main() -> int:
     )
     build_parser.add_argument(
         "--output",
-        help="Output path for the native binary or wasm artifact.",
+        help=(
+            "Output path for the native binary or wasm artifact "
+            "(relative to --out-dir when set, otherwise project root)."
+        ),
     )
     build_parser.add_argument(
         "--out-dir",
-        help="Output directory for build artifacts (output.o/main_stub.c/binary). "
-        "Defaults to the system temp directory.",
+        help=(
+            "Output directory for build artifacts (output.o/main_stub.c/output.wasm). "
+            "When set, native binaries default here too. Defaults to "
+            "MOLT_HOME/build/<entry> for artifacts and MOLT_BIN for native binaries."
+        ),
     )
     build_parser.add_argument(
         "--emit",
@@ -2646,11 +2865,11 @@ def main() -> int:
         "--cache",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Enable build cache under .molt/cache.",
+        help="Enable build cache under MOLT_CACHE (defaults to the OS cache).",
     )
     build_parser.add_argument(
         "--cache-dir",
-        help="Override the build cache directory (default: .molt/cache).",
+        help="Override the build cache directory (default: MOLT_CACHE).",
     )
     build_parser.add_argument(
         "--cache-report",
@@ -2971,13 +3190,16 @@ def main() -> int:
         "--cache",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Remove .molt cache directories.",
+        help="Remove build caches under MOLT_CACHE (and legacy .molt caches).",
     )
     clean_parser.add_argument(
         "--artifacts",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Remove output.o/output.wasm/main_stub.c artifacts.",
+        help=(
+            "Remove build artifacts under MOLT_HOME/build "
+            "(and legacy output.o/output.wasm/main_stub.c)."
+        ),
     )
     clean_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."
