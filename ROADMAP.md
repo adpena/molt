@@ -168,7 +168,6 @@ Sign-off criteria:
 - Track complex performance work in `OPTIMIZATIONS_PLAN.md` before large refactors.
 - TODO(runtime-provenance, owner:runtime, milestone:RT1, priority:P2, status:planned): replace pointer-registry locks with sharded or lock-free lookups once registry load is characterized.
 - TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): remove legacy `.molt/` clean-up path after MOLT_HOME/MOLT_CACHE migration is complete.
-- TODO(tooling, owner:tooling, milestone:TL2, priority:P3, status:planned): add `molt clean` support for Cargo `target/` artifacts.
 - TODO(tooling, owner:release, milestone:TL2, priority:P2, status:planned): formalize release tagging (start at `v0.0.001`, increment thousandth) and require super-bench stats for README performance summaries.
 
 ## Django Demo Path (Draft, 5-Step)

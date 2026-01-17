@@ -2451,6 +2451,7 @@ def clean(
     verbose: bool = False,
     cache: bool = True,
     artifacts: bool = True,
+    cargo_target: bool = False,
 ) -> int:
     root = _find_project_root(Path.cwd())
     removed: list[str] = []
@@ -2477,7 +2478,6 @@ def clean(
         else:
             missing.append(str(build_root))
         # TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): remove legacy output artifact cleanup after out-dir defaults land.
-        # TODO(tooling, owner:tooling, milestone:TL2, priority:P3, status:planned): add an explicit clean option for Cargo target/ artifacts.
         for name in ("output.o", "output.wasm", "main_stub.c"):
             path = root / name
             if path.exists():
@@ -2485,6 +2485,13 @@ def clean(
                 removed.append(str(path))
             else:
                 missing.append(str(path))
+    if cargo_target:
+        cargo_root = root / "target"
+        if cargo_root.exists():
+            shutil.rmtree(cargo_root)
+            removed.append(str(cargo_root))
+        else:
+            missing.append(str(cargo_root))
     if json_output:
         data: dict[str, Any] = {"removed": removed}
         if verbose:
@@ -3202,6 +3209,12 @@ def main() -> int:
         ),
     )
     clean_parser.add_argument(
+        "--cargo-target",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Remove Cargo target/ build artifacts in the repo root.",
+    )
+    clean_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."
     )
     clean_parser.add_argument(
@@ -3408,7 +3421,9 @@ def main() -> int:
             args.extras,
         )
     if args.command == "clean":
-        return clean(args.json, args.verbose, args.cache, args.artifacts)
+        return clean(
+            args.json, args.verbose, args.cache, args.artifacts, args.cargo_target
+        )
     if args.command == "config":
         return show_config(config_root, config, args.json, args.verbose)
     if args.command == "completion":

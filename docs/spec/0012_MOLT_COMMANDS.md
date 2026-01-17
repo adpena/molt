@@ -149,7 +149,10 @@ Key flags:
 ### 4.5 `molt clean`
 **Status:** Implemented (initial).
 
-Purpose: Remove build caches (`$MOLT_CACHE`) and transient build artifacts (`$MOLT_HOME/build`).
+Purpose: Remove build caches (`$MOLT_CACHE`), transient build artifacts (`$MOLT_HOME/build`), and optional Cargo build artifacts.
+
+Key flags:
+- `--cargo-target` (remove Cargo `target/` artifacts in the repo root)
 
 ### 4.6 `molt config`
 **Status:** Implemented (initial).

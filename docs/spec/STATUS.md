@@ -134,8 +134,7 @@ README/ROADMAP in sync.
   `co_linetable` remain minimal.
   (TODO(introspection, owner:runtime, milestone:TC2, priority:P2, status:partial): fill out code object fields for parity.)
 - Runtime lifecycle: `molt_runtime_init()`/`molt_runtime_shutdown()` manage a `RuntimeState` that owns caches, pools, and async registries; TLS guard drains per-thread caches on thread exit, and scheduler/sleep workers join on shutdown.
-- Tooling: `molt clean --artifacts` does not remove Cargo `target/` directories yet.
-  (TODO(tooling, owner:tooling, milestone:TL2, priority:P3, status:planned): add a clean option for Cargo target/ artifacts.)
+- Tooling: `molt clean --cargo-target` removes Cargo `target/` build artifacts when requested.
 - `sys.argv` is initialized from compiled argv (native + wasm harness); decoding currently uses lossy UTF-8/UTF-16 until surrogateescape/fs-encoding parity lands.
   (TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P2, status:partial): decode argv via filesystem encoding + surrogateescape once Molt strings can represent surrogate escapes.)
 - Runtime safety: NaN-boxed pointer conversions resolve through a pointer registry to avoid int->ptr casts in Rust; host pointer args now use raw pointer ABI in native + wasm; strict-provenance Miri is green.
