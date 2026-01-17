@@ -51,5 +51,9 @@ fn bench_resolve_only(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(ptr_registry_benches, bench_register_resolve_release, bench_resolve_only);
+criterion_group!(
+    ptr_registry_benches,
+    bench_register_resolve_release,
+    bench_resolve_only
+);
 criterion_main!(ptr_registry_benches);

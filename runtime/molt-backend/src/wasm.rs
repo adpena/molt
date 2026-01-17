@@ -230,10 +230,8 @@ impl WasmBackend {
         self.types
             .function(std::iter::once(ValType::I32), std::iter::empty::<ValType>());
         // Type 16: (i32, i64) -> i64 (chan_send, object_field_get_ptr, closure_load, object_set_class)
-        self.types.function(
-            [ValType::I32, ValType::I64],
-            std::iter::once(ValType::I64),
-        );
+        self.types
+            .function([ValType::I32, ValType::I64], std::iter::once(ValType::I64));
         // Type 17: (i32, i64, i64) -> i64 (guard_layout_ptr, closure_store, object_field_set/init)
         self.types.function(
             [ValType::I32, ValType::I64, ValType::I64],
@@ -300,10 +298,8 @@ impl WasmBackend {
             std::iter::once(ValType::I32),
         );
         // Type 27: (i32, i32) -> i64 (sleep_register)
-        self.types.function(
-            [ValType::I32, ValType::I32],
-            std::iter::once(ValType::I64),
-        );
+        self.types
+            .function([ValType::I32, ValType::I32], std::iter::once(ValType::I64));
 
         let mut import_idx = 0;
         let mut add_import = |name: &str, ty: u32, ids: &mut HashMap<String, u32>| {
@@ -5711,10 +5707,7 @@ impl WasmBackend {
             for (idx, op) in func_ir.ops.iter().enumerate() {
                 let depth = dispatch_depths[idx];
                 match op.kind.as_str() {
-                    "state_switch"
-                    | "state_transition"
-                    | "state_yield"
-                    | "chan_send_yield"
+                    "state_switch" | "state_transition" | "state_yield" | "chan_send_yield"
                     | "chan_recv_yield" => {
                         panic!(
                             "jumpful wasm path hit stateful op {} in {}",

@@ -5163,7 +5163,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(
                         local_callee,
-                        &[*filename_bits, *name_bits, *firstlineno_bits, *linetable_bits],
+                        &[
+                            *filename_bits,
+                            *name_bits,
+                            *firstlineno_bits,
+                            *linetable_bits,
+                        ],
                     );
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
