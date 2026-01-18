@@ -123,8 +123,6 @@ README/ROADMAP in sync.
   (TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:missing): async comprehensions parity.)
 - Control flow: `while`-`else` is still unsupported.
   (TODO(syntax, owner:frontend, milestone:TC2, priority:P2, status:missing): `while`-`else` lowering and tests.)
-- Iterators: classes defining `__next__` without `__iter__` currently trigger a backend compile error.
-  (TODO(compiler, owner:compiler, milestone:TC2, priority:P1, status:missing): lower `__next__`-only iterator classes without backend panics.)
 - Augmented assignment: slice targets (`seq[a:b] += ...`) are not supported yet.
   (TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:missing): augassign slice targets.)
 - Exceptions: `try/except/else/finally` + `raise`/reraise; `__traceback__` is still tuple-only

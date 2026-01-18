@@ -92,7 +92,7 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
     "round": BuiltinFuncSpec(
         "molt_round_builtin", ("value", "ndigits"), (_MOLT_MISSING,)
     ),
-    "iter": BuiltinFuncSpec("molt_iter", ("obj",)),
+    "iter": BuiltinFuncSpec("molt_iter_checked", ("obj",)),
     "map": BuiltinFuncSpec("molt_map_builtin", ("func",), vararg="iterables"),
     "filter": BuiltinFuncSpec("molt_filter_builtin", ("func", "iterable")),
     "zip": BuiltinFuncSpec("molt_zip_builtin", (), vararg="iterables"),
@@ -4528,6 +4528,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _emit_iter_new(self, iterable: MoltValue) -> MoltValue:
         res = MoltValue(self.next_var(), type_hint="iter")
         self.emit(MoltOp(kind="ITER_NEW", args=[iterable], result=res))
+        if self.try_end_labels:
+            self._emit_raise_if_pending()
+        else:
+            self._emit_raise_if_pending(emit_exit=True)
         none_val = MoltValue(self.next_var(), type_hint="None")
         self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
         is_none = MoltValue(self.next_var(), type_hint="bool")

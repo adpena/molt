@@ -6191,7 +6191,11 @@ BASE_IMPORTS = """\
     if (getStrObj(val) !== null) {
       return boxPtr({ type: 'iter', target: val, idx: 0 });
     }
-    return boxNone();
+    const exc = exceptionNew(
+      boxPtr({ type: 'str', value: 'TypeError' }),
+      boxPtr({ type: 'str', value: `'${typeName(val)}' object is not iterable` }),
+    );
+    return raiseException(exc);
   },
   iter_sentinel: (callableBits, sentinelBits) => {
     if (!isTruthyBits(baseImports.is_callable(callableBits))) {

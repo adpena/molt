@@ -64,7 +64,6 @@ Plan (parity-first, comprehensive):
 - TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P2, status:missing): expose file handle `flush()` and wire wasm parity for file flushing.
 - TODO(tests, owner:frontend, milestone:TC2, priority:P2, status:planned): KW_NAMES error-path coverage (duplicate keywords, positional-only violations) in differential tests.
 - TODO(tests, owner:runtime, milestone:TC2, priority:P2, status:planned): security-focused attribute access tests (descriptor exceptions, `__getattr__` recursion traps).
-- TODO(compiler, owner:compiler, milestone:TC2, priority:P1, status:missing): lower classes defining `__next__` without `__iter__` (backend panic today).
 - TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:missing): async comprehensions (async for/await in comprehensions).
 - TODO(tests, owner:frontend, milestone:TC2, priority:P2, status:planned): nested comprehension and await-in-comprehension coverage once lowering lands.
 - TODO(type-coverage, owner:runtime, milestone:TC2, priority:P2, status:partial): matmul dunder hooks (`__matmul__`/`__rmatmul__`) with buffer2d fast path.

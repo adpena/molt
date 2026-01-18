@@ -2691,7 +2691,7 @@ impl SimpleBackend {
                     sig.returns.push(AbiParam::new(types::I64));
                     let callee = self
                         .module
-                        .declare_function("molt_iter", Linkage::Import, &sig)
+                        .declare_function("molt_iter_checked", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj]);

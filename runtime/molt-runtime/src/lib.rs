@@ -25378,6 +25378,18 @@ pub extern "C" fn molt_iter(iter_bits: u64) -> u64 {
 }
 
 #[no_mangle]
+pub extern "C" fn molt_iter_checked(iter_bits: u64) -> u64 {
+    let res = molt_iter(iter_bits);
+    if obj_from_bits(res).is_none() {
+        if exception_pending() {
+            return res;
+        }
+        return raise_not_iterable(iter_bits);
+    }
+    res
+}
+
+#[no_mangle]
 pub extern "C" fn molt_iter_sentinel(callable_bits: u64, sentinel_bits: u64) -> u64 {
     let callable_ok = is_truthy(obj_from_bits(molt_is_callable(callable_bits)));
     if !callable_ok {

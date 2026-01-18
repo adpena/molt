@@ -809,7 +809,7 @@ impl WasmBackend {
             ("molt_setrecursionlimit", "setrecursionlimit"),
             ("molt_exception_last", "exception_last"),
             ("molt_exception_active", "exception_active"),
-            ("molt_iter", "iter"),
+            ("molt_iter_checked", "iter"),
             ("molt_aiter", "aiter"),
             ("molt_heapq_heapify", "heapq_heapify"),
             ("molt_heapq_heappush", "heapq_heappush"),
