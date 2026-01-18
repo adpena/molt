@@ -28304,22 +28304,27 @@ pub extern "C" fn molt_dec_ref_obj(bits: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
 
     static EXIT_CALLED: AtomicBool = AtomicBool::new(false);
+    static RUNTIME_GUARD_COUNT: AtomicUsize = AtomicUsize::new(0);
 
     struct RuntimeTestGuard;
 
     impl RuntimeTestGuard {
         fn new() -> Self {
-            molt_runtime_init();
+            if RUNTIME_GUARD_COUNT.fetch_add(1, AtomicOrdering::SeqCst) == 0 {
+                molt_runtime_init();
+            }
             Self
         }
     }
 
     impl Drop for RuntimeTestGuard {
         fn drop(&mut self) {
-            molt_runtime_shutdown();
+            if RUNTIME_GUARD_COUNT.fetch_sub(1, AtomicOrdering::SeqCst) == 1 {
+                molt_runtime_shutdown();
+            }
         }
     }
 
