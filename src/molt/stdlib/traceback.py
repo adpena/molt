@@ -27,9 +27,12 @@ def _exc_name(exc_type: Any, value: Any) -> str:
 
 def format_exception_only(exc_type: Any, value: Any) -> list[str]:
     name = _exc_name(exc_type, value)
-    if value is None or value == "":
+    if value is None:
         return [f"{name}\n"]
-    return [f"{name}: {value}\n"]
+    text = str(value)
+    if text == "":
+        return [f"{name}\n"]
+    return [f"{name}: {text}\n"]
 
 
 def _split_molt_symbol(name: str) -> tuple[str, str]:

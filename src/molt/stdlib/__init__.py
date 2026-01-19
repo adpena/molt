@@ -17,6 +17,7 @@ __all__ = [
     "io",
     "itertools",
     "heapq",
+    "json",
     "os",
     "operator",
     "pathlib",

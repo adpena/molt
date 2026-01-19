@@ -73,6 +73,11 @@ def _capabilities() -> set[str]:
     return caps
 
 
+def _trusted() -> bool:
+    raw = str(_molt_env_get("MOLT_TRUSTED", ""))
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _require_cap(name: str) -> None:
     try:
         from molt import capabilities
@@ -80,11 +85,14 @@ def _require_cap(name: str) -> None:
         capabilities.require(name)
         return
     except Exception:
+        if _trusted():
+            return
         if name not in _capabilities():
             raise PermissionError("Missing capability")
 
 
 class _Environ:
+    # TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): os.environ parity (mapping methods + backend).
     def __init__(self) -> None:
         self._store = _ENV_STORE
 

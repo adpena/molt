@@ -6,6 +6,7 @@ compiled code without introducing dynamic indirection.
 
 from __future__ import annotations
 
+import builtins as _py_builtins
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -81,6 +82,76 @@ __all__ = [
     "super",
     "print",
     "NotImplemented",
+    "BaseException",
+    "BaseExceptionGroup",
+    "Exception",
+    "ExceptionGroup",
+    "ArithmeticError",
+    "AssertionError",
+    "AttributeError",
+    "BufferError",
+    "EOFError",
+    "FloatingPointError",
+    "GeneratorExit",
+    "ImportError",
+    "ModuleNotFoundError",
+    "IndexError",
+    "KeyError",
+    "KeyboardInterrupt",
+    "LookupError",
+    "MemoryError",
+    "NameError",
+    "NotImplementedError",
+    "OSError",
+    "EnvironmentError",
+    "IOError",
+    "WindowsError",
+    "BlockingIOError",
+    "ChildProcessError",
+    "ConnectionError",
+    "BrokenPipeError",
+    "ConnectionAbortedError",
+    "ConnectionRefusedError",
+    "ConnectionResetError",
+    "FileExistsError",
+    "OverflowError",
+    "PermissionError",
+    "FileNotFoundError",
+    "InterruptedError",
+    "IsADirectoryError",
+    "NotADirectoryError",
+    "RecursionError",
+    "ReferenceError",
+    "RuntimeError",
+    "StopIteration",
+    "StopAsyncIteration",
+    "SyntaxError",
+    "IndentationError",
+    "TabError",
+    "SystemError",
+    "SystemExit",
+    "TimeoutError",
+    "ProcessLookupError",
+    "TypeError",
+    "UnboundLocalError",
+    "UnicodeError",
+    "UnicodeDecodeError",
+    "UnicodeEncodeError",
+    "UnicodeTranslateError",
+    "ValueError",
+    "ZeroDivisionError",
+    "Warning",
+    "DeprecationWarning",
+    "PendingDeprecationWarning",
+    "RuntimeWarning",
+    "SyntaxWarning",
+    "UserWarning",
+    "FutureWarning",
+    "ImportWarning",
+    "UnicodeWarning",
+    "BytesWarning",
+    "ResourceWarning",
+    "EncodingWarning",
 ]
 
 object = object
@@ -140,6 +211,77 @@ hasattr = hasattr
 super = super
 print = print
 NotImplemented = NotImplemented
+BaseException = BaseException
+BaseExceptionGroup = BaseExceptionGroup
+Exception = Exception
+ExceptionGroup = ExceptionGroup
+ArithmeticError = ArithmeticError
+AssertionError = AssertionError
+AttributeError = AttributeError
+BufferError = BufferError
+EOFError = EOFError
+FloatingPointError = FloatingPointError
+GeneratorExit = GeneratorExit
+ImportError = ImportError
+ModuleNotFoundError = ModuleNotFoundError
+IndexError = IndexError
+KeyError = KeyError
+KeyboardInterrupt = KeyboardInterrupt
+LookupError = LookupError
+MemoryError = MemoryError
+NameError = NameError
+UnboundLocalError = UnboundLocalError
+NotImplementedError = NotImplementedError
+OSError = OSError
+EnvironmentError = EnvironmentError
+IOError = IOError
+BlockingIOError = BlockingIOError
+ChildProcessError = ChildProcessError
+ConnectionError = ConnectionError
+BrokenPipeError = BrokenPipeError
+ConnectionAbortedError = ConnectionAbortedError
+ConnectionRefusedError = ConnectionRefusedError
+ConnectionResetError = ConnectionResetError
+FileExistsError = FileExistsError
+OverflowError = OverflowError
+PermissionError = PermissionError
+FileNotFoundError = FileNotFoundError
+InterruptedError = InterruptedError
+IsADirectoryError = IsADirectoryError
+NotADirectoryError = NotADirectoryError
+RecursionError = RecursionError
+ReferenceError = ReferenceError
+RuntimeError = RuntimeError
+StopIteration = StopIteration
+StopAsyncIteration = StopAsyncIteration
+SyntaxError = SyntaxError
+IndentationError = IndentationError
+TabError = TabError
+SystemError = SystemError
+SystemExit = SystemExit
+TimeoutError = TimeoutError
+ProcessLookupError = ProcessLookupError
+TypeError = TypeError
+UnicodeError = UnicodeError
+UnicodeDecodeError = UnicodeDecodeError
+UnicodeEncodeError = UnicodeEncodeError
+UnicodeTranslateError = UnicodeTranslateError
+ValueError = ValueError
+ZeroDivisionError = ZeroDivisionError
+Warning = Warning
+DeprecationWarning = DeprecationWarning
+PendingDeprecationWarning = PendingDeprecationWarning
+RuntimeWarning = RuntimeWarning
+SyntaxWarning = SyntaxWarning
+UserWarning = UserWarning
+FutureWarning = FutureWarning
+ImportWarning = ImportWarning
+UnicodeWarning = UnicodeWarning
+BytesWarning = BytesWarning
+ResourceWarning = ResourceWarning
+EncodingWarning = EncodingWarning
+
+WindowsError = getattr(_py_builtins, "WindowsError", OSError)
 
 try:
     _molt_getargv = _molt_getargv

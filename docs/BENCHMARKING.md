@@ -5,6 +5,14 @@ Molt is performance-obsessed. Every major change must be validated against our b
 ## Running Benchmarks
 
 We use `tools/bench.py` for native and `tools/bench_wasm.py` for WASM.
+To exercise single-module linking, add `--linked` (requires `wasm-ld` and
+`wasm-tools`).
+For performance parity work, prefer linked WASM artifacts (`tools/bench_wasm.py --linked`)
+and use the linked runner path by default.
+If you build standalone WASM artifacts for perf validation, use
+`python3 -m molt.cli build --target wasm --require-linked` to ensure only linked
+output is produced.
+Use `tools/bench_wasm.py --require-linked` to fail fast when linking is unavailable.
 
 ```bash
 # Basic run
@@ -22,7 +30,8 @@ uv run python3 tools/bench.py --compare cpython
 
 ## Combined Native + WASM Report
 
-After writing `bench/results/bench.json` and `bench/results/bench_wasm.json`, generate the
+After writing `bench/results/bench.json` and `bench/results/bench_wasm.json` (or
+linked output when using `--linked`), generate the
 combined report:
 
 ```bash

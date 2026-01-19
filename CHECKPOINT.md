@@ -1,106 +1,46 @@
-Checkpoint: 2026-01-17T19:08:45Z
-Git: ac8ca9b528119e74fbe00e013a080c07912215c2 (dirty)
+Checkpoint: 2026-01-19T03:32:44Z
+Git: ddb9f5feaa72a0263742f336c24f28e1764ac788 (dirty)
 
 Summary
-- Replaced traceback registry/tb entries with code objects + line markers and slot-based tracing for direct calls.
-- Updated frontend IR, native/wasm backends, intrinsics, and WIT for new code/trace APIs.
-- Updated traceback differential test and spec/roadmap notes for call-site line info + code object gaps.
+- Added wasm harness `open_builtin` import guard that raises capability errors instead of failing instantiation.
+- Fixed `string_ops` fuzz target to pass the `molt_string_from_bytes` out pointer correctly after ABI change.
+- Ran full formalize pipeline (lint/tests/clippy, native+WASM benches, bench report update, fuzz, Miri).
 
 Files touched (uncommitted)
-- AGENTS.md
 - CHECKPOINT.md
-- Cargo.lock
-- GEMINI.md
-- OPTIMIZATIONS_PLAN.md
-- README.md
-- ROADMAP.md
-- bench/results/bench.json
-- bench/results/bench_wasm.json
 - docs/AGENT_LOCKS.md
 - docs/AGENT_MEMORY.md
-- docs/BENCHMARKING.md
 - docs/benchmarks/bench_summary.md
-- docs/spec/0012_MOLT_COMMANDS.md
-- docs/spec/0014_TYPE_COVERAGE_MATRIX.md
-- docs/spec/0015_STDLIB_COMPATIBILITY_MATRIX.md
-- docs/spec/0019_BYTECODE_LOWERING_MATRIX.md
-- docs/spec/0020_RUNTIME_SAFETY_INVARIANTS.md
-- docs/spec/0021_SYNTACTIC_FEATURES_MATRIX.md
-- docs/spec/0023_SEMANTIC_BEHAVIOR_MATRIX.md
-- docs/spec/0400_WASM_PORTABLE_ABI.md
-- docs/spec/STATUS.md
-- runtime/molt-backend/src/lib.rs
-- runtime/molt-backend/src/wasm.rs
-- runtime/molt-obj-model/Cargo.toml
-- runtime/molt-obj-model/benches/ptr_registry.rs
-- runtime/molt-obj-model/src/lib.rs
-- runtime/molt-runtime/fuzz/Cargo.lock
-- runtime/molt-runtime/fuzz/Cargo.toml
+- README.md
+- bench/results/bench.json
+- bench/results/bench_wasm.json
 - runtime/molt-runtime/fuzz/fuzz_targets/string_ops.rs
-- runtime/molt-runtime/src/arena.rs
-- runtime/molt-runtime/src/lib.rs
-- src/molt/_intrinsics.pyi
-- src/molt/cli.py
-- src/molt/concurrency.py
-- src/molt/frontend/__init__.py
-- src/molt/net.py
-- src/molt/shims.py
-- src/molt/shims_cpython.py
-- src/molt/shims_runtime.py
-- src/molt/stdlib/__init__.py
-- src/molt/stdlib/builtins.py
-- src/molt/stdlib/io.py
-- src/molt/stdlib/os.py
-- src/molt/stdlib/pathlib.py
-- src/molt/stdlib/sys.py
-- src/molt/stdlib/traceback.py
-- tests/differential/basic/descriptor_delete.py
-- tests/differential/basic/getattr_calls.py
-- tests/cli/test_cli_smoke.py
-- tests/molt_diff.py
-- tests/test_native_async_protocol.py
-- tests/test_native_bytes.py
-- tests/test_native_memoryview.py
-- tests/test_stdlib_shims.py
-- tests/test_wasm_async_protocol.py
-- tests/test_wasm_bytes_ops.py
-- tests/test_wasm_channel_async.py
-- tests/test_wasm_control_flow.py
-- tests/test_wasm_generator_protocol.py
-- tests/test_wasm_list_dict_ops.py
-- tests/test_wasm_memoryview_ops.py
-- tests/test_wasm_string_ops.py
 - tests/wasm_harness.py
-- tools/bench.py
-- tools/bench_wasm.py
-- tools/runtime_safety.py
-- wit/molt-runtime.wit
-- docs/spec/0024_RUNTIME_STATE_LIFECYCLE.md
-- src/molt/stdlib/tempfile.py
-- tests/benchmarks/bench_ptr_registry.py
-- tests/differential/basic/attr_security.py
-- tests/differential/basic/iter_non_iterator.py
-- tests/differential/basic/name_lookup.py
-- tests/differential/basic/object_dunder_builtins.py
-- tests/differential/basic/print_keywords.py
-- tests/differential/basic/traceback_entries.py
-- tests/differential/planned/
-- tests/test_wasm_print_keywords.py
-- tests/wasm_planned/
+- Large pre-existing dirty tree remains; see `git status -sb` for full list.
 
 Docs/spec updates needed?
-- None this turn (traceback spec/roadmap updated with line markers + code object gaps).
+- None this turn (STATUS/0014/ROADMAP updated).
 
 Tests
-- Not run this turn (pending).
+- `uv run --python 3.12 ./tools/dev.py lint`
+- `./tools/dev.py test`
+- `cargo clippy -- -D warnings`
+- `uv run --python 3.14 python3 tools/runtime_safety.py fuzz --target string_ops --runs 10000`
+- `uv run --python 3.14 python3 tools/runtime_safety.py miri`
 
 Benchmarks
-- Not run this turn (not requested).
+- `uv run --python 3.14 python3 tools/bench.py --smoke --json-out logs/bench_smoke_native.json`
+- `uv run --python 3.14 python3 tools/bench_wasm.py --smoke --require-linked --json-out logs/bench_smoke_wasm.json`
+- `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json`
+- `uv run --python 3.14 python3 tools/bench_wasm.py --require-linked --json-out bench/results/bench_wasm.json`
+- `uv run --python 3.14 python3 tools/bench_report.py --update-readme`
 
 Profiling
 - None.
 
 Known gaps
+- Exception hierarchy mapping still uses Exception/BaseException fallback (no full CPython hierarchy).
+- `__traceback__` remains tuple-only; full traceback objects pending.
 - `str(bytes, encoding, errors)` decoding not implemented (NotImplementedError).
 - `print(file=None)` uses host stdout if `sys` is not initialized.
 - File I/O gaps: non-UTF-8 encodings/errors, text-mode seek/tell cookie semantics, readinto/writelines/detach/reconfigure, Windows fileno/isatty parity.

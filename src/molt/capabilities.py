@@ -30,6 +30,8 @@ def _raw_getenv(key: str, default: str = "") -> str:
 
 _CAPS_CACHE: set[str] | None = None
 _CAPS_RAW: str | None = None
+_TRUSTED_CACHE: bool | None = None
+_TRUSTED_RAW: str | None = None
 
 
 def _caps_cache() -> set[str]:
@@ -41,11 +43,26 @@ def _caps_cache() -> set[str]:
     return _CAPS_CACHE
 
 
+def _trusted_cache() -> bool:
+    global _TRUSTED_CACHE, _TRUSTED_RAW
+    raw = _raw_getenv("MOLT_TRUSTED", "")
+    if _TRUSTED_CACHE is None or raw != _TRUSTED_RAW:
+        _TRUSTED_RAW = raw
+        _TRUSTED_CACHE = raw.strip().lower() in {"1", "true", "yes", "on"}
+    return _TRUSTED_CACHE
+
+
 def capabilities() -> set[str]:
     return set(_caps_cache())
 
 
+def trusted() -> bool:
+    return _trusted_cache()
+
+
 def has(capability: str) -> bool:
+    if _trusted_cache():
+        return True
     return capability in _caps_cache()
 
 

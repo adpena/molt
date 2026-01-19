@@ -6,6 +6,10 @@
 
 ---
 
+Note: The canonical version of this spec lives at
+`docs/spec/areas/compat/0016_VERIFIED_SUBSET_CONTRACT.md`. This copy exists to
+support tooling that expects the contract in `docs/spec/`.
+
 ## 1. Definition
 The verified subset is the set of language/runtime/stdlib behaviors for which
 Molt guarantees CPython 3.12 equivalence under deterministic inputs. Equivalence
@@ -39,8 +43,8 @@ true:
 
 ## 6. Relationship to Other Specs
 - `docs/spec/STATUS.md` remains the canonical capability summary.
-- `docs/spec/0007-testing.md` defines the differential testing harness.
-- `docs/spec/0211_COMPATIBILITY_AND_FALLBACK_CONTRACT.md` defines fallback tiers.
+- `docs/spec/areas/testing/0007-testing.md` defines the differential testing harness.
+- `docs/spec/areas/compat/0211_COMPATIBILITY_AND_FALLBACK_CONTRACT.md` defines fallback tiers.
 
 ## 7. Tooling + CI Enforcement
 - `tools/verified_subset.py check` validates the manifest and referenced paths.

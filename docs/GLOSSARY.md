@@ -19,7 +19,7 @@ This document defines key terms and concepts used within the Molt project.
 
 ## Optimization Techniques
 
-- **Invariant Mining**: The use of AI or static analysis to discover properties that hold true for the specific application (e.g., "this class is never modified after init"), enabling aggressive optimization.
+- **Invariant Mining**: The use of runtime trace analysis or static analysis to discover properties that hold true for the specific application (e.g., "this class is never modified after init"), enabling aggressive optimization.
 - **Guard Synthesis**: Automatically generating runtime checks (`if type(x) == int: ...`) to allow specialized code to run safely in a dynamic context.
 - **Monomorphization**: A compilation technique where a function is compiled multiple times ("cloned"), once for each specific combination of input types used in the program. This eliminates dynamic dispatch overhead.
 - **Structification**: The process of converting a dynamic Python class (which normally uses a dictionary for attributes) into a native C-style struct with fixed-offset field access.

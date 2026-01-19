@@ -33,7 +33,7 @@ Canonical status lives in `docs/spec/STATUS.md` (README and ROADMAP are kept in 
 - **Classes & object model**: C3 MRO + multiple inheritance + `super()` resolution for attribute lookup; no metaclasses or dynamic `type()` construction.
 - **Attributes**: instances use fixed struct fields with a dynamic instance-dict fallback; user-defined `__getattr__`/`__getattribute__`/`__setattr__`/`__delattr__` hooks work, but object-level builtins for these are not exposed; no user-defined `__slots__` beyond dataclass lowering.
 - **Dataclasses**: compile-time lowering for frozen/eq/repr/slots; no `default_factory`, `kw_only`, or `order`; runtime `dataclasses` module provides metadata only.
-- **Exceptions**: `try/except/else/finally` + `raise`/reraise support; still partial vs full BaseException semantics (see `docs/spec/0014_TYPE_COVERAGE_MATRIX.md`).
+- **Exceptions**: `try/except/else/finally` + `raise`/reraise support; still partial vs full BaseException semantics (see `docs/spec/areas/compat/0014_TYPE_COVERAGE_MATRIX.md`).
 - **Imports**: static module graph only; no dynamic import hooks or full package resolution.
 - **Stdlib**: partial shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pprint`, `string`, `typing`, `sys`, `os`, `asyncio`, `threading`, `bisect`, `heapq`, `functools`, `itertools`, `collections`; import-only stubs for `collections.abc`, `importlib`, `importlib.util` (dynamic import hooks pending).
 - **Reflection**: `type`, `isinstance`, `issubclass`, and `object` are supported with C3 MRO + multiple inheritance; no metaclasses or dynamic `type()` construction.
@@ -45,7 +45,7 @@ Canonical status lives in `docs/spec/STATUS.md` (README and ROADMAP are kept in 
 - **Numeric tower**: complex/decimal not implemented; missing int helpers (e.g., `bit_length`, `to_bytes`, `from_bytes`).
 - **Format protocol**: partial beyond ints/floats; locale-aware grouping still pending (WASM uses host locale for `n`).
 - **memoryview**: no multidimensional slicing/sub-views; advanced buffer exports pending.
-- **Runtime lifecycle**: explicit init/shutdown now clears caches, pools, and async registries, but per-thread TLS drain and worker thread joins are still pending (see `docs/spec/0024_RUNTIME_STATE_LIFECYCLE.md`).
+- **Runtime lifecycle**: explicit init/shutdown now clears caches, pools, and async registries, but per-thread TLS drain and worker thread joins are still pending (see `docs/spec/areas/runtime/0024_RUNTIME_STATE_LIFECYCLE.md`).
 - **Offload demo**: `molt_accel` scaffolding exists (optional dep `pip install .[accel]`), with hooks/metrics (including payload/response byte sizes), auto cancel-check detection, and shared demo payload builders; a `molt_worker` stdio shell supports sync/async runtimes plus `db_query`/`db_exec` (SQLite sync + Postgres async). The decorator can fall back to `molt-worker` in PATH using a packaged default exports manifest when `MOLT_WORKER_CMD` is unset. A Django demo scaffold and k6 harness live in `demo/` and `bench/k6/`; compiled entrypoint dispatch is wired for `list_items`, `compute`, `offload_table`, and `health` while other exports still return a clear error until compiled handlers exist. `molt_db_adapter` adds a framework-agnostic DB IPC payload builder to share with Django/Flask/FastAPI adapters.
 - **DB layer**: `molt-db` includes the bounded pool, async pool primitive, SQLite connector (native-only), and an async Postgres connector with per-connection statement cache; Arrow IPC output supports arrays/ranges/intervals/multiranges via struct/list encodings and preserves array lower bounds. WASM builds now have a DB host interface with `db.read`/`db.write` gating, but host adapters/client shims remain pending.
 
@@ -68,6 +68,11 @@ uv run --python 3.12 python3 -m molt.cli build examples/hello.py
 uv run --python 3.12 python3 -m molt.cli build --output ./hello_molt examples/hello.py
 ./hello_molt
 
+# Trusted host access (native only)
+MOLT_TRUSTED=1 ./hello_molt
+uv run --python 3.12 python3 -m molt.cli build --trusted examples/hello.py
+molt run --trusted examples/hello.py
+
 # Use JSON parsing only when explicitly requested
 uv run --python 3.12 python3 -m molt.cli build --codec json examples/hello.py
 
@@ -82,10 +87,10 @@ export MOLT_WORKER_CMD="molt-worker --stdio --exports demo/molt_worker_app/molt_
 
 ## CLI overview
 
-- `molt run <file.py>`: run CPython with Molt shims for parity checks.
-- `molt test`: run the dev test suite (`tools/dev.py test`); `--suite diff|pytest` available.
-- `molt diff <path>`: differential testing via `tests/molt_diff.py`.
-- `molt build --target <triple> --cache --deterministic --capabilities <file|profile>`: cross-target builds with lockfile + capability checks.
+- `molt run <file.py>`: run CPython with Molt shims for parity checks (`--trusted` disables capability checks).
+- `molt test`: run the dev test suite (`tools/dev.py test`); `--suite diff|pytest` available (`--trusted` disables capability checks).
+- `molt diff <path>`: differential testing via `tests/molt_diff.py` (`--trusted` disables capability checks).
+- `molt build --target <triple> --cache --deterministic --capabilities <file|profile>`: cross-target builds with lockfile + capability checks (`--trusted` for trusted native deployments).
 - `molt bench` / `molt profile`: wrappers over `tools/bench.py` and `tools/profile.py`.
 - `molt doctor`: toolchain readiness checks (uv/cargo/clang/locks).
 - `molt vendor --extras <name>`: materialize Tier A sources into `vendor/` with a manifest.
@@ -123,16 +128,16 @@ The adapter is capability-gated and calls `capabilities.require("net")` per requ
 ## Documentation & Architecture
 
 - **Developer Guide**: `docs/DEVELOPER_GUIDE.md` - Start here for codebase navigation and concepts.
-- **Contributing**: `docs/CONTRIBUTING.md` - Process and standards for contributors.
+- **Contributing**: `CONTRIBUTING.md` - Process and standards for contributors.
 
-See `docs/spec/` for detailed architectural decisions.
-- `0002-architecture.md`: IR Stack & Pipeline
-- `0003-runtime.md`: NaN-boxed Object Model & Memory Management
-- `0005-wasm-interop.md`: WASM & FFI Strategy
+See `docs/spec/areas/` for detailed architectural decisions.
+- `docs/spec/areas/core/0002-architecture.md`: IR Stack & Pipeline
+- `docs/spec/areas/runtime/0003-runtime.md`: NaN-boxed Object Model & Memory Management
+- `docs/spec/areas/wasm/0005-wasm-interop.md`: WASM & FFI Strategy
 - `wit/molt-runtime.wit`: WASM runtime intrinsics contract (WIT)
-- `0009_GC_DESIGN.md`: Hybrid RC + Generational GC
-- `0012_MOLT_COMMANDS.md`: CLI command specification
-- `0013_PYTHON_DEPENDENCIES.md`: Dependency compatibility strategy
+- `docs/spec/areas/runtime/0009_GC_DESIGN.md`: Hybrid RC + Generational GC
+- `docs/spec/areas/tooling/0012_MOLT_COMMANDS.md`: CLI command specification
+- `docs/spec/areas/tooling/0013_PYTHON_DEPENDENCIES.md`: Dependency compatibility strategy
 
 ## Testing
 
@@ -146,7 +151,12 @@ See `docs/spec/` for detailed architectural decisions.
 - Differential: `python tests/molt_diff.py <case.py>`
 - Bench setup (optional): `uv sync --group bench --python 3.12` (Numba requires <3.13)
 - Codon baseline (optional): install `codon` and run benches with an arm64 interpreter on Apple Silicon (e.g., `uv run --python /opt/homebrew/bin/python3.14 python3 tools/bench.py --json-out bench/results/bench.json`); see `bench/README.md` for current skips.
+- WASM build (linked): `python3 -m molt.cli build --target wasm --linked examples/hello.py` (emits `output.wasm` + `output_linked.wasm`; linked requires `wasm-ld` + `wasm-tools`).
+- WASM build (custom linked output): `python3 -m molt.cli build --target wasm --linked --linked-output dist/app_linked.wasm examples/hello.py`.
+- WASM build (require linked): `python3 -m molt.cli build --target wasm --require-linked examples/hello.py` (linked output is primary; unlinked artifact removed).
+- WASM run (Node/WASI): `node run_wasm.js /path/to/output.wasm` (prefers `*_linked.wasm` when present; disable with `MOLT_WASM_PREFER_LINKED=0`).
 - WASM bench: `uv run --python 3.14 python3 tools/bench_wasm.py --json-out bench/results/bench_wasm.json`, then compare against the native CPython baselines in `bench/results/bench.json`.
+- WASM linked bench: `uv run --python 3.14 python3 tools/bench_wasm.py --linked --json-out bench/results/bench_wasm_linked.json` (requires `wasm-ld` + `wasm-tools`; add `--require-linked` to fail fast when linking is unavailable).
 
 ## Performance & Comparisons
 
@@ -176,12 +186,12 @@ them for release tagging or explicit requests.
 real-world nested-loop behavior.
 
 <!-- BENCH_SUMMARY_START -->
-Latest run: 2026-01-17 (macOS x86_64, CPython 3.14.0).
-Top speedups: `bench_sum.py` 217.18x, `bench_channel_throughput.py` 28.32x, `bench_ptr_registry.py` 12.16x, `bench_sum_list_hints.py` 6.78x, `bench_sum_list.py` 6.61x.
-Regressions: `bench_struct.py` 0.20x, `bench_csv_parse_wide.py` 0.26x, `bench_deeply_nested_loop.py` 0.28x, `bench_attr_access.py` 0.39x, `bench_tuple_pack.py` 0.41x, `bench_tuple_index.py` 0.43x, `bench_descriptor_property.py` 0.44x, `bench_fib.py` 0.46x, `bench_csv_parse.py` 0.50x, `bench_try_except.py` 0.88x, `bench_str_join.py` 0.95x.
-Slowest: `bench_struct.py` 0.20x, `bench_csv_parse_wide.py` 0.26x, `bench_deeply_nested_loop.py` 0.28x.
+Latest run: 2026-01-19 (macOS x86_64, CPython 3.14.0).
+Top speedups: `bench_sum.py` 222.42x, `bench_channel_throughput.py` 26.41x, `bench_ptr_registry.py` 11.70x, `bench_sum_list_hints.py` 6.85x, `bench_sum_list.py` 6.35x.
+Regressions: `bench_struct.py` 0.20x, `bench_csv_parse_wide.py` 0.26x, `bench_deeply_nested_loop.py` 0.31x, `bench_attr_access.py` 0.40x, `bench_tuple_pack.py` 0.42x, `bench_tuple_index.py` 0.42x, `bench_descriptor_property.py` 0.44x, `bench_fib.py` 0.49x, `bench_csv_parse.py` 0.50x, `bench_try_except.py` 0.88x, `bench_str_join.py` 0.93x.
+Slowest: `bench_struct.py` 0.20x, `bench_csv_parse_wide.py` 0.26x, `bench_deeply_nested_loop.py` 0.31x.
 Build/run failures: Cython/Numba baselines unavailable; Codon skipped for `bench_async_await.py`, `bench_bytearray_find.py`, `bench_bytearray_replace.py`, `bench_channel_throughput.py`, `bench_matrix_math.py`, `bench_memoryview_tobytes.py`, `bench_parse_msgpack.py`, `bench_ptr_registry.py`, and 2 more.
-WASM run: 2026-01-17 (macOS x86_64, CPython 3.14.0). Slowest: `bench_deeply_nested_loop.py` 4.80s, `bench_struct.py` 4.60s, `bench_descriptor_property.py` 1.13s; largest sizes: `bench_channel_throughput.py` 719.8 KB, `bench_async_await.py` 653.3 KB, `bench_ptr_registry.py` 161.5 KB; WASM vs CPython slowest ratios: `bench_struct.py` 13.04x, `bench_descriptor_property.py` 8.92x, `bench_csv_parse_wide.py` 7.71x.
+WASM run: 2026-01-19 (macOS x86_64, CPython 3.14.0). Slowest: `bench_deeply_nested_loop.py` 4.25s, `bench_struct.py` 4.14s, `bench_descriptor_property.py` 1.09s; largest sizes: `bench_channel_throughput.py` 3012.3 KB, `bench_async_await.py` 2930.8 KB, `bench_ptr_registry.py` 2080.8 KB; WASM vs CPython slowest ratios: `bench_struct.py` 11.65x, `bench_descriptor_property.py` 8.74x, `bench_async_await.py` 7.90x.
 <!-- BENCH_SUMMARY_END -->
 
 ### Performance Gates

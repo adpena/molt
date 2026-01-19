@@ -67,13 +67,14 @@ def main():
 
     def report(label, exc):
         tb = exc.__traceback__
+        assert not isinstance(tb, (tuple, list))
         entries = _entries_from_traceback(tb)
         filename, lineno, name = _find_entry(entries, "boom")
         raise_line = def_line + 1 if def_line else 0
-        if isinstance(tb, (tuple, list)) and raise_line:
+        if raise_line:
             assert lineno == raise_line
         basename = _basename(filename)
-        print(f"{label}:{basename}:{raise_line}:{name.split('.')[-1]}")
+        print(f"{label}:{basename}:{lineno}:{name.split('.')[-1]}")
 
     try:
         direct()

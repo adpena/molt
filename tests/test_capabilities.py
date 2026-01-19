@@ -22,3 +22,11 @@ def test_capability_present(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_format_caps() -> None:
     formatted = capabilities.format_caps(["b", "a", "b"])
     assert formatted == "a,b"
+
+
+def test_capability_trusted(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MOLT_CAPABILITIES", "")
+    monkeypatch.setenv("MOLT_TRUSTED", "1")
+    assert capabilities.trusted()
+    assert capabilities.has("fs.read")
+    capabilities.require("fs.read")

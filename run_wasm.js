@@ -11,9 +11,20 @@ const tempWasm = path.join(os.tmpdir(), 'output.wasm');
 const wasmPath =
   wasmArg || wasmEnvPath || (fs.existsSync(localWasm) ? localWasm : tempWasm);
 const wasmBuffer = fs.readFileSync(wasmPath);
-const linkedPath =
-  process.env.MOLT_WASM_LINKED_PATH || path.join(__dirname, 'output_linked.wasm');
-const linkedBuffer = fs.existsSync(linkedPath) ? fs.readFileSync(linkedPath) : null;
+const linkedEnvPath = process.env.MOLT_WASM_LINKED_PATH;
+const defaultLinkedPath = path.join(__dirname, 'output_linked.wasm');
+const siblingLinkedPath = (() => {
+  if (!wasmPath) return null;
+  const parsed = path.parse(wasmPath);
+  const ext = parsed.ext || '.wasm';
+  const candidate = path.join(parsed.dir, `${parsed.name}_linked${ext}`);
+  return fs.existsSync(candidate) ? candidate : null;
+})();
+let linkedPath =
+  linkedEnvPath ||
+  siblingLinkedPath ||
+  (fs.existsSync(defaultLinkedPath) ? defaultLinkedPath : null);
+let linkedBuffer = linkedPath && fs.existsSync(linkedPath) ? fs.readFileSync(linkedPath) : null;
 const runtimePath =
   process.env.MOLT_RUNTIME_WASM || path.join(__dirname, 'wasm', 'molt_runtime.wasm');
 const runtimeBuffer = fs.readFileSync(runtimePath);
@@ -21,6 +32,7 @@ const witPath = path.join(__dirname, 'wit', 'molt-runtime.wit');
 const witSource = fs.readFileSync(witPath, 'utf8');
 
 const wasmEnv = { ...process.env };
+const callIndirectDebug = process.env.MOLT_WASM_CALL_INDIRECT_DEBUG === '1';
 
 const ensureWasmLocaleEnv = () => {
   if (
@@ -73,7 +85,6 @@ const wasi = new WASI({
 let runtimeInstance = null;
 let wasmMemory = null;
 const traceImports = process.env.MOLT_WASM_TRACE === '1';
-const forceLegacy = process.env.MOLT_WASM_LEGACY === '1';
 
 const setWasmMemory = (mem) => {
   if (mem) wasmMemory = mem;
@@ -777,6 +788,16 @@ const parseWasmImports = (buffer) => {
 
 const outputImports = parseWasmImports(wasmBuffer);
 const runtimeImportsDesc = parseWasmImports(runtimeBuffer);
+const inputHasRuntimeImports = outputImports.funcImports.some(
+  (entry) => entry.module === 'molt_runtime'
+);
+if (!inputHasRuntimeImports && !linkedBuffer) {
+  linkedPath = wasmPath;
+  linkedBuffer = wasmBuffer;
+}
+const runtimeCallIndirectNames = runtimeImportsDesc.funcImports
+  .filter((entry) => entry.module === 'env' && entry.name.startsWith('molt_call_indirect'))
+  .map((entry) => entry.name);
 
 const mergeLimits = (left, right, label) => {
   if (!left && !right) {
@@ -822,23 +843,46 @@ const makeTable = (limits) => {
 };
 
 const canDirectLink =
-  !forceLegacy && !traceImports && outputImports.memory && outputImports.table && runtimeImportsDesc.memory;
+  outputImports.memory && outputImports.table && runtimeImportsDesc.memory;
 
-const buildRuntimeImportWrappers = () => {
+const parseWitFunctions = (source) => {
   const funcSigs = new Map();
-  for (const line of witSource.split('\n')) {
-    const match = line.match(/^\s*([A-Za-z0-9_]+):\s*func\(([^)]*)\)\s*(?:->\s*([^;]+))?/);
-    if (!match) {
+  let buffer = '';
+  for (const rawLine of source.split('\n')) {
+    const line = rawLine.trim();
+    if (!buffer) {
+      if (!/^[A-Za-z0-9_]+:\s*func\(/.test(line)) {
+        continue;
+      }
+      buffer = line;
+    } else {
+      buffer = `${buffer} ${line}`;
+    }
+    if (!buffer.includes(';')) {
       continue;
     }
-    const name = match[1];
-    const rawArgs = match[2].trim();
-    const argTypes = rawArgs
-      ? rawArgs.split(',').map((part) => part.split(':')[1].trim())
-      : [];
-    const retType = match[3] ? match[3].trim() : null;
-    funcSigs.set(name, { argTypes, retType });
+    const match = buffer.match(
+      /^\s*([A-Za-z0-9_]+):\s*func\((.*)\)\s*(?:->\s*([^;]+))?;/
+    );
+    if (match) {
+      const name = match[1];
+      const rawArgs = match[2].trim();
+      const argTypes = rawArgs
+        ? rawArgs
+            .split(',')
+            .map((part) => part.split(':')[1]?.trim())
+            .filter(Boolean)
+        : [];
+      const retType = match[3] ? match[3].trim() : null;
+      funcSigs.set(name, { argTypes, retType });
+    }
+    buffer = '';
   }
+  return funcSigs;
+};
+
+const buildRuntimeImportWrappers = () => {
+  const funcSigs = parseWitFunctions(witSource);
 
   const expectsBigInt = (ty) => ty === 'molt-object' || ty === 'u64' || ty === 's64';
   const toBigInt = (value, ty) => {
@@ -876,6 +920,7 @@ const buildRuntimeImportWrappers = () => {
   };
 
   const runtimeImports = {};
+  const traceStrings = process.env.MOLT_WASM_TRACE_STRINGS === '1';
   for (const [name, sig] of funcSigs) {
     runtimeImports[name] = (...args) => {
       if (!runtimeInstance) {
@@ -891,6 +936,21 @@ const buildRuntimeImportWrappers = () => {
         console.error(`molt_runtime.${name}`, sig.argTypes, converted);
       }
       const result = fn(...converted);
+      if (traceStrings && name === 'string_from_bytes') {
+        const ptr = Number(converted[0] ?? 0);
+        const len = Number(converted[1] ?? 0);
+        const outPtr = Number(converted[2] ?? 0);
+        const raw = readBytes(ptr, Math.min(len, 64));
+        const preview = raw.length ? raw.toString('utf8') : '';
+        let outBits = null;
+        if (wasmMemory && outPtr) {
+          const view = new DataView(wasmMemory.buffer);
+          outBits = view.getBigUint64(outPtr, true);
+        }
+        console.error(
+          `[molt wasm] string_from_bytes ptr=${ptr} len=${len} out=${outPtr} ret=${result} bits=${outBits} preview=${preview}`
+        );
+      }
       return normalizeReturn(result, sig.retType);
     };
   }
@@ -913,57 +973,17 @@ const buildRuntimeImportDirect = (runtimeInst) => {
   return runtimeImports;
 };
 
-const runLegacy = async () => {
-  const runtimeImports = buildRuntimeImportWrappers();
-  const importObject = { molt_runtime: runtimeImports };
-  let sharedMemory = null;
-  let sharedTable = null;
-  if (outputImports.memory && outputImports.table) {
-    const memoryLimits = mergeLimits(outputImports.memory, runtimeImportsDesc.memory, 'memory');
-    const tableLimits = mergeLimits(outputImports.table, runtimeImportsDesc.table, 'table');
-    sharedMemory = makeMemory(memoryLimits);
-    sharedTable = makeTable(tableLimits);
-    importObject.env = {
-      memory: sharedMemory,
-      __indirect_function_table: sharedTable,
-    };
-  }
-
-  const outputModule = await WebAssembly.instantiate(wasmBuffer, importObject);
-  const { molt_main, molt_memory, molt_table, molt_call_indirect1 } = outputModule.instance.exports;
-  const memory = sharedMemory || molt_memory;
-  const table = sharedTable || molt_table;
-
-  if (!memory || !table) {
-    throw new Error(`${wasmPath} missing molt_memory or molt_table export`);
-  }
-  if (!molt_call_indirect1) {
-    throw new Error(`${wasmPath} missing molt_call_indirect1 export`);
-  }
-  setWasmMemory(memory);
-
-  const runtimeImportsObj = {
-    env: {
-      memory,
-      __indirect_function_table: table,
-      molt_call_indirect1,
-      molt_db_query_host: dbQueryHost,
-      molt_db_exec_host: dbExecHost,
-    },
-    wasi_snapshot_preview1: wasi.wasiImport,
-  };
-  const runtimeModule = await WebAssembly.instantiate(runtimeBuffer, runtimeImportsObj);
-  runtimeInstance = runtimeModule.instance;
-  wasi.initialize({ exports: { memory } });
-  molt_main();
-};
-
 const runDirectLink = async () => {
+  if (!canDirectLink) {
+    throw new Error(
+      'WASM output is missing shared memory/table imports; rebuild with the updated toolchain or use a linked artifact.'
+    );
+  }
   const memoryLimits = mergeLimits(outputImports.memory, runtimeImportsDesc.memory, 'memory');
   const tableLimits = mergeLimits(outputImports.table, runtimeImportsDesc.table, 'table');
   const memory = makeMemory(memoryLimits);
   const table = makeTable(tableLimits);
-  let callIndirect = null;
+  const callIndirectFns = {};
   setWasmMemory(memory);
 
   const env = {
@@ -972,15 +992,27 @@ const runDirectLink = async () => {
     molt_db_query_host: dbQueryHost,
     molt_db_exec_host: dbExecHost,
   };
-  const needsCallIndirect = runtimeImportsDesc.funcImports.some(
-    (entry) => entry.module === 'env' && entry.name === 'molt_call_indirect1'
-  );
-  if (needsCallIndirect) {
-    env.molt_call_indirect1 = (funcIdx, arg0) => {
-      if (!callIndirect) {
-        throw new Error('molt_call_indirect1 used before output instantiation');
+  for (const name of runtimeCallIndirectNames) {
+    env[name] = (...args) => {
+      if (callIndirectDebug) {
+        const rawIdx = args[0];
+        const idx = typeof rawIdx === 'bigint' ? Number(rawIdx) : Number(rawIdx);
+        const entry = table ? table.get(idx) : null;
+        const state = entry ? 'set' : 'null';
+        const entryName = entry && entry.name ? entry.name : 'unknown';
+        const entryLen = entry && typeof entry.length === 'number' ? entry.length : 'unknown';
+        const envGet =
+          runtimeInstance && runtimeInstance.exports ? runtimeInstance.exports.molt_env_get : null;
+        const isEnvGet = entry && envGet ? entry === envGet : false;
+        console.error(
+          `[molt wasm] ${name} idx=${idx} entry=${state} name=${entryName} len=${entryLen} env_get=${isEnvGet}`
+        );
       }
-      return callIndirect(funcIdx, arg0);
+      const fn = callIndirectFns[name];
+      if (!fn) {
+        throw new Error(`${name} used before output instantiation`);
+      }
+      return fn(...args);
     };
   }
 
@@ -989,7 +1021,10 @@ const runDirectLink = async () => {
     wasi_snapshot_preview1: wasi.wasiImport,
   });
   const runtimeInst = runtimeModule.instance;
-  const outputImportsDirect = buildRuntimeImportDirect(runtimeInst);
+  runtimeInstance = runtimeInst;
+  const outputImportsDirect = traceImports
+    ? buildRuntimeImportWrappers()
+    : buildRuntimeImportDirect(runtimeInst);
   const outputModule = await WebAssembly.instantiate(wasmBuffer, {
     molt_runtime: outputImportsDirect,
     env: {
@@ -998,12 +1033,23 @@ const runDirectLink = async () => {
     },
   });
 
-  runtimeInstance = runtimeInst;
-  const { molt_main, molt_memory, molt_table, molt_call_indirect1 } =
-    outputModule.instance.exports;
-  callIndirect = molt_call_indirect1;
+  const { molt_main, molt_memory, molt_table } = outputModule.instance.exports;
+  for (const name of runtimeCallIndirectNames) {
+    const fn = outputModule.instance.exports[name];
+    if (typeof fn !== 'function') {
+      throw new Error(`${wasmPath} missing ${name} export`);
+    }
+    callIndirectFns[name] = fn;
+  }
   if (!molt_memory || !molt_table) {
     throw new Error(`${wasmPath} missing molt_memory or molt_table export`);
+  }
+  if (process.env.MOLT_WASM_CALL_INDIRECT_SMOKE === '1') {
+    if (typeof outputModule.instance.exports.molt_call_indirect2 !== 'function') {
+      throw new Error('molt_call_indirect2 export missing for smoke test');
+    }
+    const res = outputModule.instance.exports.molt_call_indirect2(298n, 0n, 0n);
+    console.error(`[molt wasm] call_indirect2 smoke result=${res}`);
   }
   wasi.initialize({ exports: { memory } });
   molt_main();
@@ -1020,9 +1066,9 @@ const runLinked = async () => {
   if (hasRuntimeImports) {
     throw new Error('Linked wasm still imports molt_runtime; link step incomplete');
   }
-  const needsCallIndirect = linkedImports.funcImports.some(
-    (entry) => entry.module === 'env' && entry.name === 'molt_call_indirect1'
-  );
+  const linkedCallIndirectNames = linkedImports.funcImports
+    .filter((entry) => entry.module === 'env' && entry.name.startsWith('molt_call_indirect'))
+    .map((entry) => entry.name);
 
   const importObject = {
     wasi_snapshot_preview1: wasi.wasiImport,
@@ -1043,20 +1089,36 @@ const runLinked = async () => {
   }
   importObject.env.molt_db_query_host = dbQueryHost;
   importObject.env.molt_db_exec_host = dbExecHost;
-  if (needsCallIndirect) {
+  const linkedCallIndirectFns = {};
+  if (linkedCallIndirectNames.length) {
     if (!importObject.env) {
       importObject.env = {};
     }
-    let callIndirect = null;
-    importObject.env.molt_call_indirect1 = (funcIdx, arg0) => {
-      if (!callIndirect) {
-        throw new Error('molt_call_indirect1 used before linked instantiation');
-      }
-      return callIndirect(funcIdx, arg0);
-    };
-    importObject.__molt_call_indirect1 = (fn) => {
-      callIndirect = fn;
-    };
+    for (const name of linkedCallIndirectNames) {
+      importObject.env[name] = (...args) => {
+        if (callIndirectDebug) {
+          const rawIdx = args[0];
+          const idx = typeof rawIdx === 'bigint' ? Number(rawIdx) : Number(rawIdx);
+          const entry = table ? table.get(idx) : null;
+          const state = entry ? 'set' : 'null';
+          const entryName = entry && entry.name ? entry.name : 'unknown';
+          const entryLen = entry && typeof entry.length === 'number' ? entry.length : 'unknown';
+          const envGet =
+            runtimeInstance && runtimeInstance.exports
+              ? runtimeInstance.exports.molt_env_get
+              : null;
+          const isEnvGet = entry && envGet ? entry === envGet : false;
+          console.error(
+            `[molt wasm] ${name} idx=${idx} entry=${state} name=${entryName} len=${entryLen} env_get=${isEnvGet}`
+          );
+        }
+        const fn = linkedCallIndirectFns[name];
+        if (!fn) {
+          throw new Error(`${name} used before linked instantiation`);
+        }
+        return fn(...args);
+      };
+    }
   }
 
   const linkedModule = await WebAssembly.instantiate(linkedBuffer, importObject);
@@ -1072,18 +1134,25 @@ const runLinked = async () => {
     wasi.initialize({ exports: { memory: linkedMemory } });
     setWasmMemory(linkedMemory);
   }
-  if (needsCallIndirect) {
-    const linkedIndirect = linkedModule.instance.exports.molt_call_indirect1;
-    if (typeof linkedIndirect !== 'function') {
-      throw new Error('linked wasm missing molt_call_indirect1 export');
+  if (linkedCallIndirectNames.length) {
+    for (const name of linkedCallIndirectNames) {
+      const fn = linkedModule.instance.exports[name];
+      if (typeof fn !== 'function') {
+        throw new Error(`linked wasm missing ${name} export`);
+      }
+      linkedCallIndirectFns[name] = fn;
     }
-    importObject.__molt_call_indirect1(linkedIndirect);
   }
   molt_main();
 };
 
-const useLinked = process.env.MOLT_WASM_LINKED === '1';
-const runner = useLinked ? runLinked : canDirectLink ? runDirectLink : runLegacy;
+const preferLinkedEnv = process.env.MOLT_WASM_PREFER_LINKED;
+const preferLinked =
+  preferLinkedEnv === undefined ||
+  !['0', 'false', 'no', 'off'].includes(preferLinkedEnv.toLowerCase());
+const useLinked =
+  process.env.MOLT_WASM_LINKED === '1' || (preferLinked && linkedBuffer);
+const runner = useLinked ? runLinked : runDirectLink;
 runner().catch((err) => {
   console.error(err);
   process.exit(1);

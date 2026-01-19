@@ -7,9 +7,20 @@ Welcome to the Molt codebase. This guide is designed to help you understand the 
 Molt is a research-grade project to compile a **verified per-application subset of Python** into **small, fast native binaries**. It is not just a compiler; it is a systems engineering platform that treats Python as a specification for high-performance native code.
 
 Key Differentiators:
-- **Verified Subset**: We don't support *everything* (see `docs/spec/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md`).
+- **Verified Subset**: We don't support *everything* (see `docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md`).
 - **Determinism**: Binaries are 100% deterministic.
-- **AI-Augmented**: We use AI as a development-time accelerator (see below).
+
+## Project Vision and Scope
+For the canonical vision and scope, read `docs/spec/areas/core/0000-vision.md` and
+`docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md`. At a high level:
+
+- **What Molt is**: a compiler + runtime for a verified, per-application subset
+  of Python with explicit contracts and reproducible outputs.
+- **What Molt is not**: a drop-in, full CPython replacement; a runtime with
+  hidden nondeterminism; a system that silently accepts unsupported semantics.
+- **What Molt will break**: dynamic behaviors that prevent static guarantees
+  (monkeypatching, uncontrolled `eval/exec`, unrestricted reflection) unless
+  explicitly guarded and documented in the specs.
 
 ## Key Concepts
 
@@ -47,19 +58,48 @@ graph TD
 2.  **Compiler (Rust)**: Optimizes the IR and generates machine code (AOT) using Cranelift.
 3.  **Runtime (Rust)**: Provides the execution environment, object model (NaN-boxed), and garbage collection.
 
+### Layer Map (Lowest -> Highest)
+Use this map when deciding where a change belongs and what else it touches.
+
+1. **Runtime primitives (Rust)**: memory layout, NaN-boxing, RC/GC, core intrinsics.
+   - Paths: `runtime/molt-obj-model/src/`, `runtime/molt-runtime/src/`
+   - Specs: `docs/spec/areas/runtime/0003-runtime.md`, `docs/spec/areas/core/0004-tiers.md`
+   - Examples: `runtime/molt-obj-model/src/lib.rs`, `runtime/molt-runtime/src/arena.rs`
+2. **Runtime services (Rust)**: scheduler, tasks/channels, IO, capability gates.
+   - Paths: `runtime/molt-runtime/src/`, `runtime/molt-backend/src/`
+   - Specs: `docs/spec/areas/runtime/0505_IO_ASYNC_AND_CONNECTORS.md`, `docs/spec/areas/wasm/0400_WASM_PORTABLE_ABI.md`
+   - Examples: `runtime/molt-backend/src/wasm.rs`, `runtime/molt-backend/src/main.rs`
+3. **Compiler core (Rust)**: IR definitions, lowering rules, optimizations, codegen.
+   - Paths: `compiler/molt/frontend/`, `compiler/molt/codegen/`
+   - Specs: `docs/spec/areas/core/0002-architecture.md`, `docs/spec/areas/compiler/0019_BYTECODE_LOWERING_MATRIX.md`
+   - Examples: `compiler/molt/frontend/`, `compiler/molt/codegen/`
+4. **Frontend + CLI (Python)**: parsing, CLI UX, packaging, stdlib shims.
+   - Paths: `src/molt/`, `src/molt/cli.py`, `src/molt/stdlib/`
+   - Specs: `docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md`
+   - Examples: `src/molt/cli.py`, `src/molt/type_facts.py`, `src/molt/stdlib/`
+5. **Tooling + Tests**: dev scripts, benchmarks, differential tests, fixtures.
+   - Paths: `tools/`, `tests/`, `bench/`, `examples/`
+   - Examples: `tools/dev.py`, `tools/bench.py`, `tools/bench_wasm.py`, `tools/wasm_link.py`, `tools/wasm_profile.py`, `tests/differential/`, `tests/test_wasm_*.py`
+6. **Specs + Roadmap**: contracts, parity status, scope limits, future work.
+   - Paths: `docs/spec/`, `docs/spec/STATUS.md`, `docs/ROADMAP.md`
+   - Examples: `docs/spec/areas/core/0000-vision.md`, `docs/spec/areas/compat/0014_TYPE_COVERAGE_MATRIX.md`
+
 ### Recommended Spec Reading Order
 
-The `docs/spec/` directory contains the detailed engineering specifications. We recommend reading them in this order:
+The `docs/spec/areas/` directory contains the detailed engineering specifications.
+We recommend reading them in this order:
 
-1.  **`0002-architecture.md`**: The high-level view of the pipeline and IR stack.
-2.  **`0003-runtime.md`**: Details on the object model and memory management.
-3.  **`0014_TYPE_COVERAGE_MATRIX.md`**: What types are currently supported.
-4.  **`STATUS.md`**: The current canonical status of the project.
+1.  **`docs/spec/areas/core/0002-architecture.md`**: The high-level view of the pipeline and IR stack.
+2.  **`docs/spec/areas/runtime/0003-runtime.md`**: Details on the object model and memory management.
+3.  **`docs/spec/areas/compat/0014_TYPE_COVERAGE_MATRIX.md`**: What types are currently supported.
+4.  **`docs/spec/STATUS.md`**: The current canonical status of the project.
 
 ### Directory Structure
 
 - **`compiler/`**: The heart of the compilation pipeline.
-    - `molt/`: Main compiler crate.
+    - `molt/`: Compiler crate root.
+    - `molt/frontend/`: Frontend and IR construction.
+    - `molt/codegen/`: Lowering and code generation.
 - **`runtime/`**: The runtime support system.
     - `molt-runtime/`: Core runtime (scheduler, intrinsics).
     - `molt-obj-model/`: The NaN-boxed object model and type system.
@@ -72,16 +112,28 @@ The `docs/spec/` directory contains the detailed engineering specifications. We 
 - **`tests/`**: Test suites (differential testing vs CPython).
 - **`docs/`**: Project documentation and specifications (`spec/`).
 
-## AI Strategy (Development-Time Only)
+## When Adding New Functionality
+Use this checklist to ensure you touch the right layers and docs.
 
-Molt leverages Artificial Intelligence as a **development-time accelerator** and **optimization strategist**. Crucially, the final compiled binaries are 100% deterministic machine code with **zero runtime AI dependency**.
-
-### How we use AI:
-1.  **Invariant Mining**: AI analyzes execution traces to find "stable class layouts" and "monomorphic call sites" that static analysis might miss.
-2.  **Guard Synthesis**: AI helps synthesize optimal runtime checks (guards) for dynamic types based on observed frequency.
-3.  **Automated Test Generation**: LLMs explore edge cases in Python semantics to improve our differential testing suite (`molt-diff`).
-
-**Security Guarantee**: There is no "probabilistic execution". All AI-suggested optimizations are validated by the compiler's **Soundness Model** before being committed to native code.
+1. **Decide the layer of truth**:
+   - Runtime semantics belong in `runtime/`.
+   - Lowering or IR changes belong in `compiler/`.
+   - CLI/user-facing behavior belongs in `src/molt/`.
+2. **Find the spec anchor**:
+   - Add or update a spec in `docs/spec/`.
+   - Sync capability/limits in `docs/spec/STATUS.md`.
+   - Update `docs/ROADMAP.md` for scope or milestones.
+3. **Wire through the stack**:
+   - If new IR or opcode: update lowering rules + runtime hooks.
+   - If new runtime behavior: update tests and the parity matrix if needed.
+   - If new capability: document gating in specs and ensure tests cover it.
+4. **Add tests at the right level**:
+   - Unit (Rust) for runtime/IR.
+   - Differential (Python) for semantic parity.
+   - WASM parity when behavior crosses targets.
+5. **Document the integration points**:
+   - Add notes to `docs/DEVELOPER_GUIDE.md` if a new module changes the map.
+   - Update `README.md` only when user-facing behavior changes.
 
 ## Getting Started for Developers
 
@@ -102,9 +154,27 @@ If you want to modify Molt, follow these steps:
     - Read `docs/spec/STATUS.md` for current feature parity.
     - Check `ROADMAP.md` for where we are going.
 
+## WASM Workflow
+
+- Build (linked): `PYTHONPATH=src python3 -m molt.cli build --target wasm --linked examples/hello.py`
+- Build (custom linked output): `PYTHONPATH=src python3 -m molt.cli build --target wasm --linked --linked-output dist/app_linked.wasm examples/hello.py`
+- Build (require linked): `PYTHONPATH=src python3 -m molt.cli build --target wasm --require-linked examples/hello.py`
+- Run (Node/WASI): `node run_wasm.js /path/to/output.wasm` (prefers `*_linked.wasm` when present; disable with `MOLT_WASM_PREFER_LINKED=0`)
+
+## Operational Assumptions
+
+Molt work is designed around long-running, resumable sessions:
+
+- Run multi-stage tasks in tmux and assume you will detach/reconnect.
+- Write logs and artifacts to disk so progress survives disconnects.
+- Include resume commands in progress reports and status updates.
+- Avoid one-shot assumptions or ephemeral terminals.
+
+See `docs/OPERATIONS.md` for the full operational workflow and logging rules.
+
 ## Contributing
 
-Ready to contribute code? Please read `docs/CONTRIBUTING.md`. Note that Molt has high standards for "long-running work" and "rigorous verification".
+Ready to contribute code? Please read `CONTRIBUTING.md`. Note that Molt has high standards for "long-running work" and "rigorous verification".
 
 ## Resources
 

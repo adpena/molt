@@ -33,15 +33,184 @@ macro_rules! fn_addr {
     };
 }
 
+// Keep in sync with MOLT_BIND_KIND_OPEN in src/molt/frontend/__init__.py.
+const BIND_KIND_OPEN: i64 = 1;
+
+#[cfg(target_arch = "wasm32")]
+const WASM_TABLE_BASE: u64 = 256;
+#[cfg(target_arch = "wasm32")]
+const WASM_TABLE_IDX_ASYNC_SLEEP: u64 = WASM_TABLE_BASE + 1;
+#[cfg(target_arch = "wasm32")]
+const WASM_TABLE_IDX_ANEXT_DEFAULT_POLL: u64 = WASM_TABLE_BASE + 2;
+
+#[inline]
+fn async_sleep_poll_fn_addr() -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        // Keep in sync with wasm table layout in runtime/molt-backend/src/wasm.rs.
+        WASM_TABLE_IDX_ASYNC_SLEEP
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        fn_addr!(molt_async_sleep)
+    }
+}
+
+#[inline]
+fn anext_default_poll_fn_addr() -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        // Keep in sync with wasm table layout in runtime/molt-backend/src/wasm.rs.
+        WASM_TABLE_IDX_ANEXT_DEFAULT_POLL
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        fn_addr!(molt_anext_default_poll)
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "env")]
 extern "C" {
+    #[link_name = "molt_call_indirect0"]
+    fn molt_call_indirect0(func_idx: u64) -> i64;
     #[link_name = "molt_call_indirect1"]
     fn molt_call_indirect1(func_idx: u64, arg0: u64) -> i64;
+    #[link_name = "molt_call_indirect2"]
+    fn molt_call_indirect2(func_idx: u64, arg0: u64, arg1: u64) -> i64;
+    #[link_name = "molt_call_indirect3"]
+    fn molt_call_indirect3(func_idx: u64, arg0: u64, arg1: u64, arg2: u64) -> i64;
+    #[link_name = "molt_call_indirect4"]
+    fn molt_call_indirect4(func_idx: u64, arg0: u64, arg1: u64, arg2: u64, arg3: u64)
+        -> i64;
+    #[link_name = "molt_call_indirect5"]
+    fn molt_call_indirect5(
+        func_idx: u64,
+        arg0: u64,
+        arg1: u64,
+        arg2: u64,
+        arg3: u64,
+        arg4: u64,
+    ) -> i64;
+    #[link_name = "molt_call_indirect6"]
+    fn molt_call_indirect6(
+        func_idx: u64,
+        arg0: u64,
+        arg1: u64,
+        arg2: u64,
+        arg3: u64,
+        arg4: u64,
+        arg5: u64,
+    ) -> i64;
+    #[link_name = "molt_call_indirect7"]
+    fn molt_call_indirect7(
+        func_idx: u64,
+        arg0: u64,
+        arg1: u64,
+        arg2: u64,
+        arg3: u64,
+        arg4: u64,
+        arg5: u64,
+        arg6: u64,
+    ) -> i64;
+    #[link_name = "molt_call_indirect8"]
+    fn molt_call_indirect8(
+        func_idx: u64,
+        arg0: u64,
+        arg1: u64,
+        arg2: u64,
+        arg3: u64,
+        arg4: u64,
+        arg5: u64,
+        arg6: u64,
+        arg7: u64,
+    ) -> i64;
+    #[link_name = "molt_call_indirect9"]
+    fn molt_call_indirect9(
+        func_idx: u64,
+        arg0: u64,
+        arg1: u64,
+        arg2: u64,
+        arg3: u64,
+        arg4: u64,
+        arg5: u64,
+        arg6: u64,
+        arg7: u64,
+        arg8: u64,
+    ) -> i64;
+    #[link_name = "molt_call_indirect10"]
+    fn molt_call_indirect10(
+        func_idx: u64,
+        arg0: u64,
+        arg1: u64,
+        arg2: u64,
+        arg3: u64,
+        arg4: u64,
+        arg5: u64,
+        arg6: u64,
+        arg7: u64,
+        arg8: u64,
+        arg9: u64,
+    ) -> i64;
+    #[link_name = "molt_call_indirect11"]
+    fn molt_call_indirect11(
+        func_idx: u64,
+        arg0: u64,
+        arg1: u64,
+        arg2: u64,
+        arg3: u64,
+        arg4: u64,
+        arg5: u64,
+        arg6: u64,
+        arg7: u64,
+        arg8: u64,
+        arg9: u64,
+        arg10: u64,
+    ) -> i64;
+    #[link_name = "molt_call_indirect12"]
+    fn molt_call_indirect12(
+        func_idx: u64,
+        arg0: u64,
+        arg1: u64,
+        arg2: u64,
+        arg3: u64,
+        arg4: u64,
+        arg5: u64,
+        arg6: u64,
+        arg7: u64,
+        arg8: u64,
+        arg9: u64,
+        arg10: u64,
+        arg11: u64,
+    ) -> i64;
+    #[link_name = "molt_call_indirect13"]
+    fn molt_call_indirect13(
+        func_idx: u64,
+        arg0: u64,
+        arg1: u64,
+        arg2: u64,
+        arg3: u64,
+        arg4: u64,
+        arg5: u64,
+        arg6: u64,
+        arg7: u64,
+        arg8: u64,
+        arg9: u64,
+        arg10: u64,
+        arg11: u64,
+        arg12: u64,
+    ) -> i64;
     #[link_name = "molt_db_query_host"]
     fn molt_db_query_host(req_bits: u64, len_bits: u64, out_bits: u64, token_id: u64) -> i32;
     #[link_name = "molt_db_exec_host"]
     fn molt_db_exec_host(req_bits: u64, len_bits: u64, out_bits: u64, token_id: u64) -> i32;
+}
+
+#[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "wasi_snapshot_preview1")]
+extern "C" {
+    fn environ_sizes_get(environ_count: *mut u32, environ_buf_size: *mut u32) -> u16;
+    fn environ_get(environ: *mut *mut u8, environ_buf: *mut u8) -> u16;
 }
 
 #[repr(C)]
@@ -208,6 +377,11 @@ struct InternedNames {
     qualname_name: AtomicU64,
     name_name: AtomicU64,
     f_lasti_name: AtomicU64,
+    f_code_name: AtomicU64,
+    f_lineno_name: AtomicU64,
+    tb_frame_name: AtomicU64,
+    tb_lineno_name: AtomicU64,
+    tb_next_name: AtomicU64,
     molt_arg_names: AtomicU64,
     molt_posonly: AtomicU64,
     molt_kwonly_names: AtomicU64,
@@ -216,6 +390,7 @@ struct InternedNames {
     molt_closure_size: AtomicU64,
     molt_is_coroutine: AtomicU64,
     molt_is_generator: AtomicU64,
+    molt_bind_kind: AtomicU64,
     defaults_name: AtomicU64,
     kwdefaults_name: AtomicU64,
     lt_name: AtomicU64,
@@ -280,6 +455,11 @@ impl InternedNames {
             qualname_name: AtomicU64::new(0),
             name_name: AtomicU64::new(0),
             f_lasti_name: AtomicU64::new(0),
+            f_code_name: AtomicU64::new(0),
+            f_lineno_name: AtomicU64::new(0),
+            tb_frame_name: AtomicU64::new(0),
+            tb_lineno_name: AtomicU64::new(0),
+            tb_next_name: AtomicU64::new(0),
             molt_arg_names: AtomicU64::new(0),
             molt_posonly: AtomicU64::new(0),
             molt_kwonly_names: AtomicU64::new(0),
@@ -288,6 +468,7 @@ impl InternedNames {
             molt_closure_size: AtomicU64::new(0),
             molt_is_coroutine: AtomicU64::new(0),
             molt_is_generator: AtomicU64::new(0),
+            molt_bind_kind: AtomicU64::new(0),
             defaults_name: AtomicU64::new(0),
             kwdefaults_name: AtomicU64::new(0),
             lt_name: AtomicU64::new(0),
@@ -1050,6 +1231,8 @@ const GEN_THROW_OFFSET: usize = 8;
 const GEN_CLOSED_OFFSET: usize = 16;
 const GEN_EXC_DEPTH_OFFSET: usize = 24;
 const GEN_CONTROL_SIZE: usize = 48;
+const TASK_KIND_FUTURE: u64 = 0;
+const TASK_KIND_GENERATOR: u64 = 1;
 const UTF8_CACHE_BLOCK: usize = 4096;
 const UTF8_CACHE_MIN_LEN: usize = 16 * 1024;
 const UTF8_COUNT_PREFIX_MIN_LEN: usize = UTF8_CACHE_BLOCK;
@@ -2157,6 +2340,12 @@ unsafe fn call_poll_fn(poll_fn_addr: u64, task_ptr: *mut u8) -> i64 {
     let addr = task_ptr.expose_provenance() as u64;
     #[cfg(target_arch = "wasm32")]
     {
+        if std::env::var("MOLT_WASM_POLL_DEBUG").as_deref() == Ok("1") {
+            eprintln!("molt wasm poll: fn=0x{poll_fn_addr:x}");
+        }
+        if poll_fn_addr < WASM_TABLE_BASE {
+            return raise_exception::<i64>("RuntimeError", "invalid wasm poll function");
+        }
         return molt_call_indirect1(poll_fn_addr, addr);
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -3157,6 +3346,18 @@ unsafe fn exception_value_bits(ptr: *mut u8) -> u64 {
     *(ptr.add(6 * std::mem::size_of::<u64>()) as *const u64)
 }
 
+unsafe fn exception_class_bits(ptr: *mut u8) -> u64 {
+    *(ptr.add(7 * std::mem::size_of::<u64>()) as *const u64)
+}
+
+unsafe fn exception_args_bits(ptr: *mut u8) -> u64 {
+    *(ptr.add(8 * std::mem::size_of::<u64>()) as *const u64)
+}
+
+unsafe fn exception_dict_bits(ptr: *mut u8) -> u64 {
+    *(ptr.add(9 * std::mem::size_of::<u64>()) as *const u64)
+}
+
 unsafe fn context_enter_fn(ptr: *mut u8) -> *const () {
     *(ptr as *const *const ())
 }
@@ -3224,6 +3425,11 @@ unsafe fn function_code_bits(ptr: *mut u8) -> u64 {
     *(ptr.add(4 * std::mem::size_of::<u64>()) as *const u64)
 }
 
+#[allow(dead_code)]
+unsafe fn function_trampoline_ptr(ptr: *mut u8) -> u64 {
+    *(ptr.add(5 * std::mem::size_of::<u64>()) as *const u64)
+}
+
 unsafe fn function_set_code_bits(ptr: *mut u8, bits: u64) {
     let slot = ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64;
     let old_bits = *slot;
@@ -3236,6 +3442,10 @@ unsafe fn function_set_code_bits(ptr: *mut u8, bits: u64) {
         }
         *slot = bits;
     }
+}
+
+unsafe fn function_set_trampoline_ptr(ptr: *mut u8, bits: u64) {
+    *(ptr.add(5 * std::mem::size_of::<u64>()) as *mut u64) = bits;
 }
 
 unsafe fn ensure_function_code_bits(func_ptr: *mut u8) -> u64 {
@@ -4468,30 +4678,43 @@ fn alloc_exception(kind: &str, message: &str) -> *mut u8 {
         unsafe { molt_dec_ref(kind_ptr) };
         return std::ptr::null_mut();
     }
-    let total = std::mem::size_of::<MoltHeader>() + 7 * std::mem::size_of::<u64>();
-    let ptr = alloc_object(total, TYPE_ID_EXCEPTION);
-    if ptr.is_null() {
+    let kind_bits = MoltObject::from_ptr(kind_ptr).bits();
+    let msg_bits = MoltObject::from_ptr(msg_ptr).bits();
+    let args_ptr = if message.is_empty() {
+        alloc_tuple(&[])
+    } else {
+        alloc_tuple(&[msg_bits])
+    };
+    if args_ptr.is_null() {
         unsafe {
             molt_dec_ref(kind_ptr);
             molt_dec_ref(msg_ptr);
         }
-        return ptr;
+        return std::ptr::null_mut();
     }
-    unsafe {
-        *(ptr as *mut u64) = MoltObject::from_ptr(kind_ptr).bits();
-        *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = MoltObject::from_ptr(msg_ptr).bits();
-        *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = MoltObject::none().bits();
-        *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64) = MoltObject::none().bits();
-        *(ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64) =
-            MoltObject::from_bool(false).bits();
-        *(ptr.add(5 * std::mem::size_of::<u64>()) as *mut u64) = MoltObject::none().bits();
-        *(ptr.add(6 * std::mem::size_of::<u64>()) as *mut u64) = MoltObject::none().bits();
+    let args_bits = MoltObject::from_ptr(args_ptr).bits();
+    let class_bits = exception_type_bits(kind_bits);
+    let none_bits = MoltObject::none().bits();
+    let ptr = alloc_exception_obj(kind_bits, msg_bits, class_bits, args_bits, none_bits);
+    if !ptr.is_null() {
+        unsafe {
+            exception_set_stop_iteration_value(ptr, args_bits);
+        }
     }
+    dec_ref_bits(kind_bits);
+    dec_ref_bits(msg_bits);
+    dec_ref_bits(args_bits);
     ptr
 }
 
-fn alloc_exception_obj(kind_bits: u64, msg_bits: u64) -> *mut u8 {
-    let total = std::mem::size_of::<MoltHeader>() + 7 * std::mem::size_of::<u64>();
+fn alloc_exception_obj(
+    kind_bits: u64,
+    msg_bits: u64,
+    class_bits: u64,
+    args_bits: u64,
+    dict_bits: u64,
+) -> *mut u8 {
+    let total = std::mem::size_of::<MoltHeader>() + 10 * std::mem::size_of::<u64>();
     let ptr = alloc_object(total, TYPE_ID_EXCEPTION);
     if ptr.is_null() {
         return ptr;
@@ -4505,6 +4728,9 @@ fn alloc_exception_obj(kind_bits: u64, msg_bits: u64) -> *mut u8 {
             MoltObject::from_bool(false).bits();
         *(ptr.add(5 * std::mem::size_of::<u64>()) as *mut u64) = MoltObject::none().bits();
         *(ptr.add(6 * std::mem::size_of::<u64>()) as *mut u64) = MoltObject::none().bits();
+        *(ptr.add(7 * std::mem::size_of::<u64>()) as *mut u64) = class_bits;
+        *(ptr.add(8 * std::mem::size_of::<u64>()) as *mut u64) = args_bits;
+        *(ptr.add(9 * std::mem::size_of::<u64>()) as *mut u64) = dict_bits;
         inc_ref_bits(kind_bits);
         inc_ref_bits(msg_bits);
         inc_ref_bits(MoltObject::none().bits());
@@ -4512,6 +4738,9 @@ fn alloc_exception_obj(kind_bits: u64, msg_bits: u64) -> *mut u8 {
         inc_ref_bits(MoltObject::from_bool(false).bits());
         inc_ref_bits(MoltObject::none().bits());
         inc_ref_bits(MoltObject::none().bits());
+        inc_ref_bits(class_bits);
+        inc_ref_bits(args_bits);
+        inc_ref_bits(dict_bits);
     }
     ptr
 }
@@ -4534,7 +4763,7 @@ fn alloc_context_manager(enter_fn: *const (), exit_fn: *const (), payload_bits: 
 }
 
 fn alloc_function_obj(fn_ptr: u64, arity: u64) -> *mut u8 {
-    let total = std::mem::size_of::<MoltHeader>() + 5 * std::mem::size_of::<u64>();
+    let total = std::mem::size_of::<MoltHeader>() + 6 * std::mem::size_of::<u64>();
     let ptr = alloc_object(total, TYPE_ID_FUNCTION);
     if ptr.is_null() {
         return ptr;
@@ -4545,6 +4774,7 @@ fn alloc_function_obj(fn_ptr: u64, arity: u64) -> *mut u8 {
         *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         *(ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64) = 0;
+        *(ptr.add(5 * std::mem::size_of::<u64>()) as *mut u64) = 0;
     }
     ptr
 }
@@ -5156,13 +5386,73 @@ fn frame_stack_pop() {
     });
 }
 
+unsafe fn alloc_frame_obj(code_bits: u64, line: i64) -> Option<u64> {
+    // TODO(introspection, owner:runtime, milestone:TC2, priority:P1, status:partial): add full frame fields (f_back, f_globals, f_locals) and keep f_lasti/f_lineno live-updated.
+    let builtins = builtin_classes();
+    let class_obj = obj_from_bits(builtins.frame);
+    let class_ptr = class_obj.as_ptr()?;
+    if object_type_id(class_ptr) != TYPE_ID_TYPE {
+        return None;
+    }
+    let frame_bits = alloc_instance_for_class(class_ptr);
+    let frame_ptr = obj_from_bits(frame_bits).as_ptr()?;
+    let f_code_bits = intern_static_name(&runtime_state().interned.f_code_name, b"f_code");
+    let f_lineno_bits = intern_static_name(&runtime_state().interned.f_lineno_name, b"f_lineno");
+    let f_lasti_bits = intern_static_name(&runtime_state().interned.f_lasti_name, b"f_lasti");
+    let line_bits = MoltObject::from_int(line).bits();
+    let lasti_bits = MoltObject::from_int(-1).bits();
+    let dict_ptr =
+        alloc_dict_with_pairs(&[f_code_bits, code_bits, f_lineno_bits, line_bits, f_lasti_bits, lasti_bits]);
+    if dict_ptr.is_null() {
+        dec_ref_bits(frame_bits);
+        return None;
+    }
+    let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
+    instance_set_dict_bits(frame_ptr, dict_bits);
+    object_mark_has_ptrs(frame_ptr);
+    Some(frame_bits)
+}
+
+unsafe fn alloc_traceback_obj(frame_bits: u64, line: i64, next_bits: u64) -> Option<u64> {
+    let builtins = builtin_classes();
+    let class_obj = obj_from_bits(builtins.traceback);
+    let class_ptr = class_obj.as_ptr()?;
+    if object_type_id(class_ptr) != TYPE_ID_TYPE {
+        return None;
+    }
+    let tb_bits = alloc_instance_for_class(class_ptr);
+    let tb_ptr = obj_from_bits(tb_bits).as_ptr()?;
+    let tb_frame_bits = intern_static_name(&runtime_state().interned.tb_frame_name, b"tb_frame");
+    let tb_lineno_bits =
+        intern_static_name(&runtime_state().interned.tb_lineno_name, b"tb_lineno");
+    let tb_next_bits = intern_static_name(&runtime_state().interned.tb_next_name, b"tb_next");
+    let line_bits = MoltObject::from_int(line).bits();
+    let dict_ptr = alloc_dict_with_pairs(&[
+        tb_frame_bits,
+        frame_bits,
+        tb_lineno_bits,
+        line_bits,
+        tb_next_bits,
+        next_bits,
+    ]);
+    if dict_ptr.is_null() {
+        dec_ref_bits(tb_bits);
+        return None;
+    }
+    let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
+    instance_set_dict_bits(tb_ptr, dict_bits);
+    object_mark_has_ptrs(tb_ptr);
+    Some(tb_bits)
+}
+
 fn frame_stack_trace_bits() -> Option<u64> {
     let entries = FRAME_STACK.with(|stack| stack.borrow().clone());
     if entries.is_empty() {
         return None;
     }
-    let mut frame_bits = Vec::with_capacity(entries.len());
-    for entry in entries {
+    let mut next_bits = MoltObject::none().bits();
+    let mut built_any = false;
+    for entry in entries.into_iter().rev() {
         if entry.code_bits == 0 {
             continue;
         }
@@ -5173,32 +5463,38 @@ fn frame_stack_trace_bits() -> Option<u64> {
             if object_type_id(code_ptr) != TYPE_ID_CODE {
                 continue;
             }
-            let filename_bits = code_filename_bits(code_ptr);
-            let name_bits = code_name_bits(code_ptr);
             let mut line = entry.line;
             if line <= 0 {
                 line = code_firstlineno(code_ptr);
             }
-            let line_bits = MoltObject::from_int(line).bits();
-            let tuple_ptr = alloc_tuple(&[filename_bits, line_bits, name_bits]);
-            dec_ref_bits(line_bits);
-            if tuple_ptr.is_null() {
-                continue;
+            let Some(frame_bits) = alloc_frame_obj(entry.code_bits, line) else {
+                if !obj_from_bits(next_bits).is_none() {
+                    dec_ref_bits(next_bits);
+                }
+                return None;
+            };
+            let Some(tb_bits) = alloc_traceback_obj(frame_bits, line, next_bits) else {
+                dec_ref_bits(frame_bits);
+                if !obj_from_bits(next_bits).is_none() {
+                    dec_ref_bits(next_bits);
+                }
+                return None;
+            };
+            dec_ref_bits(frame_bits);
+            if !obj_from_bits(next_bits).is_none() {
+                dec_ref_bits(next_bits);
             }
-            frame_bits.push(MoltObject::from_ptr(tuple_ptr).bits());
+            next_bits = tb_bits;
+            built_any = true;
         }
     }
-    if frame_bits.is_empty() {
+    if !built_any || obj_from_bits(next_bits).is_none() {
+        if !obj_from_bits(next_bits).is_none() {
+            dec_ref_bits(next_bits);
+        }
         return None;
     }
-    let tuple_ptr = alloc_tuple(&frame_bits);
-    for bits in frame_bits {
-        dec_ref_bits(bits);
-    }
-    if tuple_ptr.is_null() {
-        return None;
-    }
-    Some(MoltObject::from_ptr(tuple_ptr).bits())
+    Some(next_bits)
 }
 
 fn recursion_limit_get() -> usize {
@@ -5355,50 +5651,352 @@ fn exception_type_cache() -> &'static Mutex<HashMap<String, u64>> {
     &runtime_state().exception_type_cache
 }
 
-fn exception_type_bits(kind_bits: u64) -> u64 {
+enum ExceptionBaseSpec {
+    One(&'static str),
+    Two(&'static str, &'static str),
+}
+
+fn exception_alias_name(name: &str) -> Option<&'static str> {
+    match name {
+        "EnvironmentError" | "IOError" | "WindowsError" => Some("OSError"),
+        _ => None,
+    }
+}
+
+fn exception_base_spec(name: &str) -> Option<ExceptionBaseSpec> {
+    match name {
+        "BaseExceptionGroup" => Some(ExceptionBaseSpec::One("BaseException")),
+        "ExceptionGroup" => Some(ExceptionBaseSpec::Two("BaseExceptionGroup", "Exception")),
+        "GeneratorExit" | "KeyboardInterrupt" | "SystemExit" => {
+            Some(ExceptionBaseSpec::One("BaseException"))
+        }
+        "ArithmeticError"
+        | "AssertionError"
+        | "AttributeError"
+        | "BufferError"
+        | "EOFError"
+        | "ImportError"
+        | "LookupError"
+        | "MemoryError"
+        | "NameError"
+        | "OSError"
+        | "ReferenceError"
+        | "RuntimeError"
+        | "StopIteration"
+        | "StopAsyncIteration"
+        | "SyntaxError"
+        | "SystemError"
+        | "TypeError"
+        | "ValueError"
+        | "Warning" => Some(ExceptionBaseSpec::One("Exception")),
+        "FloatingPointError" | "OverflowError" | "ZeroDivisionError" => {
+            Some(ExceptionBaseSpec::One("ArithmeticError"))
+        }
+        "ModuleNotFoundError" => Some(ExceptionBaseSpec::One("ImportError")),
+        "IndexError" | "KeyError" => Some(ExceptionBaseSpec::One("LookupError")),
+        "UnboundLocalError" => Some(ExceptionBaseSpec::One("NameError")),
+        "ConnectionError" => Some(ExceptionBaseSpec::One("OSError")),
+        "BrokenPipeError"
+        | "ConnectionAbortedError"
+        | "ConnectionRefusedError"
+        | "ConnectionResetError" => Some(ExceptionBaseSpec::One("ConnectionError")),
+        "BlockingIOError"
+        | "ChildProcessError"
+        | "FileExistsError"
+        | "FileNotFoundError"
+        | "InterruptedError"
+        | "IsADirectoryError"
+        | "NotADirectoryError"
+        | "PermissionError"
+        | "ProcessLookupError"
+        | "TimeoutError" => Some(ExceptionBaseSpec::One("OSError")),
+        "NotImplementedError" | "RecursionError" => Some(ExceptionBaseSpec::One("RuntimeError")),
+        "IndentationError" => Some(ExceptionBaseSpec::One("SyntaxError")),
+        "TabError" => Some(ExceptionBaseSpec::One("IndentationError")),
+        "UnicodeError" => Some(ExceptionBaseSpec::One("ValueError")),
+        "UnicodeDecodeError" | "UnicodeEncodeError" | "UnicodeTranslateError" => {
+            Some(ExceptionBaseSpec::One("UnicodeError"))
+        }
+        "DeprecationWarning"
+        | "PendingDeprecationWarning"
+        | "RuntimeWarning"
+        | "SyntaxWarning"
+        | "UserWarning"
+        | "FutureWarning"
+        | "ImportWarning"
+        | "UnicodeWarning"
+        | "BytesWarning"
+        | "ResourceWarning"
+        | "EncodingWarning" => Some(ExceptionBaseSpec::One("Warning")),
+        _ => None,
+    }
+}
+
+fn exception_type_bits_from_name(name: &str) -> u64 {
     let builtins = builtin_classes();
-    let name =
-        string_obj_to_owned(obj_from_bits(kind_bits)).unwrap_or_else(|| "Exception".to_string());
-    if name == "Exception" {
-        return builtins.exception;
+    match name {
+        "Exception" => return builtins.exception,
+        "BaseException" => return builtins.base_exception,
+        _ => {}
     }
-    if name == "BaseException" {
-        return builtins.base_exception;
-    }
-    let fallback = if matches!(
-        name.as_str(),
-        "SystemExit" | "KeyboardInterrupt" | "GeneratorExit"
-    ) {
-        builtins.base_exception
-    } else {
-        builtins.exception
-    };
-    let cache = exception_type_cache();
-    if let Some(bits) = cache.lock().unwrap().get(&name).copied() {
+    if let Some(bits) = exception_type_cache().lock().unwrap().get(name).copied() {
         return bits;
     }
-
-    let name_ptr = alloc_string(name.as_bytes());
-    if name_ptr.is_null() {
-        return fallback;
+    if let Some(alias) = exception_alias_name(name) {
+        let bits = exception_type_bits_from_name(alias);
+        if bits != 0 {
+            exception_type_cache()
+                .lock()
+                .unwrap()
+                .insert(name.to_string(), bits);
+        }
+        return bits;
     }
-    let name_bits = MoltObject::from_ptr(name_ptr).bits();
-    let class_ptr = alloc_class_obj(name_bits);
-    dec_ref_bits(name_bits);
+    let fallback = builtins.exception;
+    let base_spec = exception_base_spec(name);
+    let base_bits = match base_spec {
+        Some(ExceptionBaseSpec::One(base)) => exception_type_bits_from_name(base),
+        Some(ExceptionBaseSpec::Two(left, right)) => {
+            let left_bits = exception_type_bits_from_name(left);
+            let right_bits = exception_type_bits_from_name(right);
+            let tuple_ptr = alloc_tuple(&[left_bits, right_bits]);
+            if tuple_ptr.is_null() {
+                fallback
+            } else {
+                let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
+                let class_ptr = alloc_class_obj_from_name(name);
+                if class_ptr.is_null() {
+                    dec_ref_bits(tuple_bits);
+                    return fallback;
+                }
+                let class_bits = MoltObject::from_ptr(class_ptr).bits();
+                let _ = molt_class_set_base(class_bits, tuple_bits);
+                dec_ref_bits(tuple_bits);
+                return cache_exception_type(name, class_bits);
+            }
+        }
+        None => fallback,
+    };
+    let class_ptr = alloc_class_obj_from_name(name);
     if class_ptr.is_null() {
         return fallback;
     }
     let class_bits = MoltObject::from_ptr(class_ptr).bits();
-    let _ = molt_class_set_base(class_bits, fallback);
+    let _ = molt_class_set_base(class_bits, base_bits);
+    cache_exception_type(name, class_bits)
+}
 
+fn alloc_class_obj_from_name(name: &str) -> *mut u8 {
+    let name_ptr = alloc_string(name.as_bytes());
+    if name_ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    let name_bits = MoltObject::from_ptr(name_ptr).bits();
+    let class_ptr = alloc_class_obj(name_bits);
+    dec_ref_bits(name_bits);
+    class_ptr
+}
+
+fn cache_exception_type(name: &str, class_bits: u64) -> u64 {
     let mut cache = exception_type_cache().lock().unwrap();
-    if let Some(bits) = cache.get(&name).copied() {
+    if let Some(bits) = cache.get(name).copied() {
         dec_ref_bits(class_bits);
         return bits;
     }
     inc_ref_bits(class_bits);
-    cache.insert(name, class_bits);
+    cache.insert(name.to_string(), class_bits);
     class_bits
+}
+
+fn exception_type_bits(kind_bits: u64) -> u64 {
+    let name =
+        string_obj_to_owned(obj_from_bits(kind_bits)).unwrap_or_else(|| "Exception".to_string());
+    exception_type_bits_from_name(&name)
+}
+
+fn exception_normalize_args(args_bits: u64) -> u64 {
+    let args_obj = obj_from_bits(args_bits);
+    if args_obj.is_none() || args_bits == 0 {
+        let ptr = alloc_tuple(&[]);
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        return MoltObject::from_ptr(ptr).bits();
+    }
+    if let Some(ptr) = args_obj.as_ptr() {
+        unsafe {
+            let type_id = object_type_id(ptr);
+            if type_id == TYPE_ID_TUPLE {
+                inc_ref_bits(args_bits);
+                return args_bits;
+            }
+            if type_id == TYPE_ID_LIST {
+                let elems = seq_vec_ref(ptr);
+                let out_ptr = alloc_tuple(elems);
+                if out_ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                return MoltObject::from_ptr(out_ptr).bits();
+            }
+        }
+    }
+    let ptr = alloc_tuple(&[args_bits]);
+    if ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(ptr).bits()
+    }
+}
+
+fn exception_message_from_args(args_bits: u64) -> u64 {
+    let args_obj = obj_from_bits(args_bits);
+    if let Some(ptr) = args_obj.as_ptr() {
+        unsafe {
+            let type_id = object_type_id(ptr);
+            if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
+                let elems = seq_vec_ref(ptr);
+                match elems.len() {
+                    0 => {
+                        let ptr = alloc_string(b"");
+                        if ptr.is_null() {
+                            return MoltObject::none().bits();
+                        }
+                        return MoltObject::from_ptr(ptr).bits();
+                    }
+                    1 => return molt_str_from_obj(elems[0]),
+                    _ => return molt_str_from_obj(args_bits),
+                }
+            }
+        }
+    }
+    molt_str_from_obj(args_bits)
+}
+
+fn exception_args_from_iterable(bits: u64) -> u64 {
+    let obj = obj_from_bits(bits);
+    if let Some(ptr) = obj.as_ptr() {
+        unsafe {
+            let type_id = object_type_id(ptr);
+            if type_id == TYPE_ID_TUPLE {
+                inc_ref_bits(bits);
+                return bits;
+            }
+            if type_id == TYPE_ID_LIST {
+                let elems = seq_vec_ref(ptr);
+                let out_ptr = alloc_tuple(elems);
+                if out_ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                return MoltObject::from_ptr(out_ptr).bits();
+            }
+        }
+    }
+    let iter_bits = molt_iter_checked(bits);
+    if obj_from_bits(iter_bits).is_none() {
+        return MoltObject::none().bits();
+    }
+    let mut elems: Vec<u64> = Vec::new();
+    loop {
+        let pair_bits = molt_iter_next(iter_bits);
+        let pair_obj = obj_from_bits(pair_bits);
+        let Some(pair_ptr) = pair_obj.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                return MoltObject::none().bits();
+            }
+            let pair = seq_vec_ref(pair_ptr);
+            if pair.len() < 2 {
+                return MoltObject::none().bits();
+            }
+            if is_truthy(obj_from_bits(pair[1])) {
+                break;
+            }
+            elems.push(pair[0]);
+        }
+    }
+    let out_ptr = alloc_tuple(&elems);
+    if out_ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(out_ptr).bits()
+    }
+}
+
+unsafe fn exception_store_args_and_message(ptr: *mut u8, args_bits: u64, msg_bits: u64) {
+    let args_slot = ptr.add(8 * std::mem::size_of::<u64>()) as *mut u64;
+    let old_args = *args_slot;
+    if old_args != args_bits {
+        dec_ref_bits(old_args);
+        *args_slot = args_bits;
+    }
+    let msg_slot = ptr.add(std::mem::size_of::<u64>()) as *mut u64;
+    let old_msg = *msg_slot;
+    if old_msg != msg_bits {
+        dec_ref_bits(old_msg);
+        *msg_slot = msg_bits;
+    }
+}
+
+unsafe fn exception_set_stop_iteration_value(ptr: *mut u8, args_bits: u64) {
+    let kind = string_obj_to_owned(obj_from_bits(exception_kind_bits(ptr))).unwrap_or_default();
+    if kind != "StopIteration" {
+        return;
+    }
+    let mut value_bits = MoltObject::none().bits();
+    let args_obj = obj_from_bits(args_bits);
+    if let Some(args_ptr) = args_obj.as_ptr() {
+        let type_id = object_type_id(args_ptr);
+        if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
+            let elems = seq_vec_ref(args_ptr);
+            if let Some(first) = elems.first() {
+                value_bits = *first;
+            }
+        } else if !args_obj.is_none() {
+            value_bits = args_bits;
+        }
+    } else if !args_obj.is_none() {
+        value_bits = args_bits;
+    }
+    let slot = ptr.add(6 * std::mem::size_of::<u64>()) as *mut u64;
+    let old_bits = *slot;
+    if old_bits != value_bits {
+        dec_ref_bits(old_bits);
+        inc_ref_bits(value_bits);
+        *slot = value_bits;
+    }
+}
+
+fn alloc_exception_from_class_bits(class_bits: u64, args_bits: u64) -> *mut u8 {
+    // TODO(type-coverage, owner:runtime, milestone:TC2, priority:P1, status:partial): parse subclass-specific args (OSError errno/filename, UnicodeError fields, ExceptionGroup tree) into dedicated attributes.
+    let class_obj = obj_from_bits(class_bits);
+    let Some(class_ptr) = class_obj.as_ptr() else {
+        return std::ptr::null_mut();
+    };
+    unsafe {
+        if object_type_id(class_ptr) != TYPE_ID_TYPE {
+            return std::ptr::null_mut();
+        }
+        let kind_bits = class_name_bits(class_ptr);
+        let args_bits = exception_normalize_args(args_bits);
+        if obj_from_bits(args_bits).is_none() {
+            return std::ptr::null_mut();
+        }
+        let msg_bits = exception_message_from_args(args_bits);
+        if obj_from_bits(msg_bits).is_none() {
+            dec_ref_bits(args_bits);
+            return std::ptr::null_mut();
+        }
+        let none_bits = MoltObject::none().bits();
+        let ptr = alloc_exception_obj(kind_bits, msg_bits, class_bits, args_bits, none_bits);
+        if !ptr.is_null() {
+            exception_set_stop_iteration_value(ptr, args_bits);
+        }
+        dec_ref_bits(args_bits);
+        dec_ref_bits(msg_bits);
+        ptr
+    }
 }
 
 fn intern_static_name(slot: &AtomicU64, name: &'static [u8]) -> u64 {
@@ -5735,10 +6333,11 @@ fn string_method_bits(name: &str) -> Option<u64> {
             fn_addr!(molt_string_lower),
             1,
         )),
-        "strip" => Some(builtin_func_bits(
+        "strip" => Some(builtin_func_bits_with_default(
             &runtime_state().method_cache.str_strip,
             fn_addr!(molt_string_strip),
-            1,
+            2,
+            FUNC_DEFAULT_NONE,
         )),
         "replace" => Some(builtin_func_bits_with_default(
             &runtime_state().method_cache.str_replace,
@@ -6014,6 +6613,8 @@ struct BuiltinClasses {
     file: u64,
     function: u64,
     code: u64,
+    frame: u64,
+    traceback: u64,
     module: u64,
     super_type: u64,
 }
@@ -6044,6 +6645,8 @@ impl BuiltinClasses {
             self.file,
             self.function,
             self.code,
+            self.frame,
+            self.traceback,
             self.module,
             self.super_type,
         ] {
@@ -6096,6 +6699,8 @@ fn build_builtin_classes() -> BuiltinClasses {
     let file = make_builtin_class("file");
     let function = make_builtin_class("function");
     let code = make_builtin_class("code");
+    let frame = make_builtin_class("frame");
+    let traceback = make_builtin_class("traceback");
     let module = make_builtin_class("module");
     let super_type = make_builtin_class("super");
 
@@ -6122,6 +6727,8 @@ fn build_builtin_classes() -> BuiltinClasses {
     let _ = molt_class_set_base(file, object);
     let _ = molt_class_set_base(function, object);
     let _ = molt_class_set_base(code, object);
+    let _ = molt_class_set_base(frame, object);
+    let _ = molt_class_set_base(traceback, object);
     let _ = molt_class_set_base(module, object);
     let _ = molt_class_set_base(super_type, object);
 
@@ -6149,6 +6756,8 @@ fn build_builtin_classes() -> BuiltinClasses {
         file,
         function,
         code,
+        frame,
+        traceback,
         module,
         super_type,
     }
@@ -6210,6 +6819,8 @@ fn builtin_classes_shutdown(state: &RuntimeState) {
             builtins.file,
             builtins.function,
             builtins.code,
+            builtins.frame,
+            builtins.traceback,
             builtins.module,
             builtins.super_type,
         ] {
@@ -6271,6 +6882,8 @@ fn is_builtin_class_bits(bits: u64) -> bool {
         || bits == builtins.memoryview
         || bits == builtins.function
         || bits == builtins.code
+        || bits == builtins.frame
+        || bits == builtins.traceback
         || bits == builtins.module
         || bits == builtins.super_type
 }
@@ -6370,7 +6983,14 @@ fn type_of_bits(val_bits: u64) -> u64 {
                 TYPE_ID_MEMORYVIEW => builtins.memoryview,
                 TYPE_ID_FILE_HANDLE => builtins.file,
                 TYPE_ID_NOT_IMPLEMENTED => builtins.not_implemented_type,
-                TYPE_ID_EXCEPTION => exception_type_bits(exception_kind_bits(ptr)),
+                TYPE_ID_EXCEPTION => {
+                    let class_bits = exception_class_bits(ptr);
+                    if !obj_from_bits(class_bits).is_none() && class_bits != 0 {
+                        class_bits
+                    } else {
+                        exception_type_bits(exception_kind_bits(ptr))
+                    }
+                }
                 TYPE_ID_FUNCTION => builtins.function,
                 TYPE_ID_CODE => builtins.code,
                 TYPE_ID_MODULE => builtins.module,
@@ -7139,23 +7759,32 @@ pub extern "C" fn molt_dataclass_set_class(obj_bits: u64, class_bits: u64) -> u6
 }
 
 #[no_mangle]
-pub extern "C" fn molt_func_new(fn_ptr: u64, arity: u64) -> u64 {
+pub extern "C" fn molt_func_new(fn_ptr: u64, trampoline_ptr: u64, arity: u64) -> u64 {
     let ptr = alloc_function_obj(fn_ptr, arity);
     if ptr.is_null() {
         MoltObject::none().bits()
     } else {
+        unsafe {
+            function_set_trampoline_ptr(ptr, trampoline_ptr);
+        }
         MoltObject::from_ptr(ptr).bits()
     }
 }
 
 #[no_mangle]
-pub extern "C" fn molt_func_new_closure(fn_ptr: u64, arity: u64, closure_bits: u64) -> u64 {
+pub extern "C" fn molt_func_new_closure(
+    fn_ptr: u64,
+    trampoline_ptr: u64,
+    arity: u64,
+    closure_bits: u64,
+) -> u64 {
     let ptr = alloc_function_obj(fn_ptr, arity);
     if ptr.is_null() {
         return MoltObject::none().bits();
     }
     unsafe {
         function_set_closure_bits(ptr, closure_bits);
+        function_set_trampoline_ptr(ptr, trampoline_ptr);
     }
     MoltObject::from_ptr(ptr).bits()
 }
@@ -8085,9 +8714,8 @@ pub extern "C" fn molt_module_set_attr(module_bits: u64, attr_bits: u64, val_bit
 }
 
 #[no_mangle]
-pub extern "C" fn molt_exception_new(kind_bits: u64, msg_bits: u64) -> u64 {
+pub extern "C" fn molt_exception_new(kind_bits: u64, args_bits: u64) -> u64 {
     let kind_obj = obj_from_bits(kind_bits);
-    let msg_obj = obj_from_bits(msg_bits);
     if let Some(ptr) = kind_obj.as_ptr() {
         unsafe {
             if object_type_id(ptr) != TYPE_ID_STRING {
@@ -8097,32 +8725,52 @@ pub extern "C" fn molt_exception_new(kind_bits: u64, msg_bits: u64) -> u64 {
     } else {
         raise!("TypeError", "exception kind must be a str");
     }
-    let mut msg_bits = msg_bits;
-    let mut converted = false;
-    if let Some(ptr) = msg_obj.as_ptr() {
-        unsafe {
-            if object_type_id(ptr) != TYPE_ID_STRING {
-                msg_bits = molt_str_from_obj(msg_bits);
-                converted = true;
-            }
-        }
-    } else {
-        msg_bits = molt_str_from_obj(msg_bits);
-        converted = true;
-    }
-    if obj_from_bits(msg_bits).is_none() {
+    let args_bits = exception_normalize_args(args_bits);
+    if obj_from_bits(args_bits).is_none() {
         return MoltObject::none().bits();
     }
-    let ptr = alloc_exception_obj(kind_bits, msg_bits);
+    let msg_bits = exception_message_from_args(args_bits);
+    if obj_from_bits(msg_bits).is_none() {
+        dec_ref_bits(args_bits);
+        return MoltObject::none().bits();
+    }
+    let class_bits = exception_type_bits(kind_bits);
+    let none_bits = MoltObject::none().bits();
+    let ptr = alloc_exception_obj(kind_bits, msg_bits, class_bits, args_bits, none_bits);
     let out = if ptr.is_null() {
         MoltObject::none().bits()
     } else {
+        unsafe {
+            exception_set_stop_iteration_value(ptr, args_bits);
+        }
         MoltObject::from_ptr(ptr).bits()
     };
-    if converted {
-        dec_ref_bits(msg_bits);
-    }
+    dec_ref_bits(args_bits);
+    dec_ref_bits(msg_bits);
     out
+}
+
+#[no_mangle]
+pub extern "C" fn molt_exception_new_from_class(class_bits: u64, args_bits: u64) -> u64 {
+    let class_obj = obj_from_bits(class_bits);
+    let Some(class_ptr) = class_obj.as_ptr() else {
+        raise!("TypeError", "exception class must be a type");
+    };
+    unsafe {
+        if object_type_id(class_ptr) != TYPE_ID_TYPE {
+            raise!("TypeError", "exception class must be a type");
+        }
+    }
+    let builtins = builtin_classes();
+    if !issubclass_bits(class_bits, builtins.base_exception) {
+        raise!("TypeError", "exceptions must derive from BaseException");
+    }
+    let ptr = alloc_exception_from_class_bits(class_bits, args_bits);
+    if ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(ptr).bits()
+    }
 }
 
 unsafe fn generator_slot_ptr(ptr: *mut u8, offset: usize) -> *mut u64 {
@@ -8228,9 +8876,19 @@ fn generator_unpack_pair(bits: u64) -> Option<(u64, bool)> {
 }
 
 #[no_mangle]
-pub extern "C" fn molt_generator_new(poll_fn_addr: u64, closure_size: u64) -> u64 {
+pub extern "C" fn molt_task_new(poll_fn_addr: u64, closure_size: u64, kind_bits: u64) -> u64 {
+    let type_id = match kind_bits {
+        TASK_KIND_FUTURE => TYPE_ID_OBJECT,
+        TASK_KIND_GENERATOR => TYPE_ID_GENERATOR,
+        _ => {
+            raise!("TypeError", "unknown task kind");
+        }
+    };
+    if type_id == TYPE_ID_GENERATOR && (closure_size as usize) < GEN_CONTROL_SIZE {
+        raise!("TypeError", "generator task closure too small");
+    }
     let total_size = std::mem::size_of::<MoltHeader>() + closure_size as usize;
-    let ptr = alloc_object(total_size, TYPE_ID_GENERATOR);
+    let ptr = alloc_object(total_size, type_id);
     if ptr.is_null() {
         return MoltObject::none().bits();
     }
@@ -8245,7 +8903,7 @@ pub extern "C" fn molt_generator_new(poll_fn_addr: u64, closure_size: u64) -> u6
         let header = header_from_obj_ptr(ptr);
         (*header).poll_fn = poll_fn_addr;
         (*header).state = 0;
-        if closure_size as usize >= GEN_CONTROL_SIZE {
+        if type_id == TYPE_ID_GENERATOR && closure_size as usize >= GEN_CONTROL_SIZE {
             *generator_slot_ptr(ptr, GEN_SEND_OFFSET) = MoltObject::none().bits();
             *generator_slot_ptr(ptr, GEN_THROW_OFFSET) = MoltObject::none().bits();
             *generator_slot_ptr(ptr, GEN_CLOSED_OFFSET) = MoltObject::from_bool(false).bits();
@@ -8253,6 +8911,11 @@ pub extern "C" fn molt_generator_new(poll_fn_addr: u64, closure_size: u64) -> u6
         }
     }
     MoltObject::from_ptr(ptr).bits()
+}
+
+#[no_mangle]
+pub extern "C" fn molt_generator_new(poll_fn_addr: u64, closure_size: u64) -> u64 {
+    molt_task_new(poll_fn_addr, closure_size, TASK_KIND_GENERATOR)
 }
 
 #[no_mangle]
@@ -8586,19 +9249,7 @@ pub extern "C" fn molt_generator_close(gen_bits: u64) -> u64 {
             generator_set_closed(ptr, true);
             return MoltObject::none().bits();
         }
-        let kind_ptr = alloc_string(b"GeneratorExit");
-        if kind_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let msg_ptr = alloc_string(b"");
-        if msg_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let kind_bits = MoltObject::from_ptr(kind_ptr).bits();
-        let msg_bits = MoltObject::from_ptr(msg_ptr).bits();
-        let exc_ptr = alloc_exception_obj(kind_bits, msg_bits);
-        dec_ref_bits(kind_bits);
-        dec_ref_bits(msg_bits);
+        let exc_ptr = alloc_exception("GeneratorExit", "");
         if exc_ptr.is_null() {
             return MoltObject::none().bits();
         }
@@ -8704,6 +9355,22 @@ pub extern "C" fn molt_exception_kind(exc_bits: u64) -> u64 {
         inc_ref_bits(bits);
         bits
     }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_exception_class(kind_bits: u64) -> u64 {
+    let kind_obj = obj_from_bits(kind_bits);
+    let Some(ptr) = kind_obj.as_ptr() else {
+        raise!("TypeError", "exception kind must be a str");
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_STRING {
+            raise!("TypeError", "exception kind must be a str");
+        }
+    }
+    let class_bits = exception_type_bits(kind_bits);
+    inc_ref_bits(class_bits);
+    class_bits
 }
 
 #[no_mangle]
@@ -8873,39 +9540,38 @@ pub extern "C" fn molt_exception_pop() -> u64 {
 pub extern "C" fn molt_raise(exc_bits: u64) -> u64 {
     let exc_obj = obj_from_bits(exc_bits);
     let Some(ptr) = exc_obj.as_ptr() else {
-        raise!("TypeError", "expected exception object");
+        raise!("TypeError", "exceptions must derive from BaseException");
     };
+    let mut exc_ptr = ptr;
     unsafe {
-        if object_type_id(ptr) != TYPE_ID_EXCEPTION {
-            let kind = match object_type_id(ptr) {
-                TYPE_ID_TYPE => class_name_for_error(exc_bits),
-                TYPE_ID_OBJECT => {
-                    let class_bits = object_class_bits(ptr);
-                    if class_bits != 0 {
-                        class_name_for_error(class_bits)
-                    } else {
-                        type_name(exc_obj).to_string()
-                    }
+        match object_type_id(ptr) {
+            TYPE_ID_EXCEPTION => {}
+            TYPE_ID_TYPE => {
+                let class_bits = MoltObject::from_ptr(ptr).bits();
+                if !issubclass_bits(class_bits, builtin_classes().base_exception) {
+                    raise!("TypeError", "exceptions must derive from BaseException");
                 }
-                _ => type_name(exc_obj).to_string(),
-            };
-            let exc_ptr = alloc_exception(&kind, "");
-            if exc_ptr.is_null() {
-                return MoltObject::none().bits();
+                let inst_bits = call_class_init_with_args(ptr, &[]);
+                if exception_pending() {
+                    return MoltObject::none().bits();
+                }
+                let Some(inst_ptr) = obj_from_bits(inst_bits).as_ptr() else {
+                    return MoltObject::none().bits();
+                };
+                if object_type_id(inst_ptr) != TYPE_ID_EXCEPTION {
+                    raise!("TypeError", "exceptions must derive from BaseException");
+                }
+                exc_ptr = inst_ptr;
             }
-            record_exception(exc_ptr);
-            if !exception_handler_active() && !generator_raise_active() && !task_raise_active() {
-                context_stack_unwind(MoltObject::from_ptr(exc_ptr).bits());
-                eprintln!("{}", format_exception(exc_ptr));
-                std::process::exit(1);
+            _ => {
+                raise!("TypeError", "exceptions must derive from BaseException");
             }
-            return MoltObject::none().bits();
         }
     }
-    record_exception(ptr);
+    record_exception(exc_ptr);
     if !exception_handler_active() && !generator_raise_active() && !task_raise_active() {
-        context_stack_unwind(MoltObject::from_ptr(ptr).bits());
-        eprintln!("{}", format_exception(ptr));
+        context_stack_unwind(MoltObject::from_ptr(exc_ptr).bits());
+        eprintln!("{}", format_exception_with_traceback(exc_ptr));
         std::process::exit(1);
     }
     MoltObject::none().bits()
@@ -12847,45 +13513,27 @@ pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
 
 #[no_mangle]
 pub extern "C" fn molt_future_new(poll_fn_addr: u64, closure_size: u64) -> u64 {
-    let total_size = std::mem::size_of::<MoltHeader>() + closure_size as usize;
-    let layout = std::alloc::Layout::from_size_align(total_size, 8).unwrap();
-    unsafe {
-        let ptr = std::alloc::alloc_zeroed(layout);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let header = ptr as *mut MoltHeader;
-        (*header).type_id = TYPE_ID_OBJECT;
-        (*header).ref_count.store(1, AtomicOrdering::Relaxed);
-        (*header).poll_fn = poll_fn_addr;
-        (*header).state = 0;
-        (*header).size = total_size;
-        (*header).flags = 0;
-        let obj_ptr = ptr.add(std::mem::size_of::<MoltHeader>());
-        let slots = closure_size as usize / std::mem::size_of::<u64>();
-        if slots > 0 {
-            let payload_ptr = obj_ptr as *mut u64;
-            for idx in 0..slots {
-                *payload_ptr.add(idx) = MoltObject::none().bits();
+    let obj_bits = molt_task_new(poll_fn_addr, closure_size, TASK_KIND_FUTURE);
+    if std::env::var("MOLT_DEBUG_AWAITABLE").is_ok() {
+        if let Some(obj_ptr) = resolve_obj_ptr(obj_bits) {
+            unsafe {
+                let header = header_from_obj_ptr(obj_ptr);
+                eprintln!(
+                    "Molt future init debug: bits=0x{:x} poll=0x{:x} size={}",
+                    obj_bits,
+                    poll_fn_addr,
+                    (*header).size
+                );
             }
         }
-        let obj_bits = MoltObject::from_ptr(obj_ptr).bits();
-        if std::env::var("MOLT_DEBUG_AWAITABLE").is_ok() {
-            eprintln!(
-                "Molt future init debug: bits=0x{:x} poll=0x{:x} size={}",
-                obj_bits,
-                poll_fn_addr,
-                (*header).size
-            );
-        }
-        obj_bits
     }
+    obj_bits
 }
 
 #[no_mangle]
 pub extern "C" fn molt_async_sleep_new(delay_bits: u64, result_bits: u64) -> u64 {
     let obj_bits = molt_future_new(
-        fn_addr!(molt_async_sleep),
+        async_sleep_poll_fn_addr(),
         (2 * std::mem::size_of::<u64>()) as u64,
     );
     let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
@@ -13021,7 +13669,7 @@ pub unsafe extern "C" fn molt_sleep_register(task_ptr: *mut u8, future_ptr: *mut
         return 0;
     }
     let header = header_from_obj_ptr(future_ptr);
-    if (*header).poll_fn != fn_addr!(molt_async_sleep) {
+    if (*header).poll_fn != async_sleep_poll_fn_addr() {
         return 0;
     }
     if (*header).state == 0 {
@@ -17612,7 +18260,12 @@ pub extern "C" fn molt_trace_exit() -> u64 {
 
 #[no_mangle]
 pub extern "C" fn molt_trace_set_line(line_bits: u64) -> u64 {
-    let line = to_i64(obj_from_bits(line_bits)).unwrap_or(0);
+    let line_obj = obj_from_bits(line_bits);
+    let line = if line_obj.is_int() || line_obj.is_bool() {
+        to_i64(line_obj).unwrap_or(0)
+    } else {
+        line_bits as i64
+    };
     frame_stack_set_line(line);
     MoltObject::none().bits()
 }
@@ -18654,7 +19307,7 @@ pub extern "C" fn molt_anext_builtin(iter_bits: u64, default_bits: u64) -> u64 {
     };
     unsafe {
         let header = header_from_obj_ptr(obj_ptr);
-        (*header).poll_fn = fn_addr!(molt_anext_default_poll);
+        (*header).poll_fn = anext_default_poll_fn_addr();
         (*header).state = 0;
         let payload_ptr = obj_ptr as *mut u64;
         *payload_ptr = iter_bits;
@@ -19095,6 +19748,7 @@ pub extern "C" fn molt_string_find_slice(
 }
 
 #[no_mangle]
+// TODO(type-coverage, owner:runtime, milestone:TC2, priority:P1, status:partial): expose str.startswith/endswith start/end args and implement str.isdigit parity.
 pub extern "C" fn molt_string_startswith(hay_bits: u64, needle_bits: u64) -> u64 {
     let none_bits = MoltObject::none().bits();
     let false_bits = MoltObject::from_bool(false).bits();
@@ -27077,23 +27731,172 @@ fn decode_value_list(obj: MoltObject) -> Option<Vec<u64>> {
     }
 }
 
-fn format_exception(ptr: *mut u8) -> String {
+fn exception_args_vec(ptr: *mut u8) -> Vec<u64> {
     unsafe {
-        let kind = string_obj_to_owned(obj_from_bits(exception_kind_bits(ptr)))
-            .unwrap_or_else(|| "Exception".to_string());
-        let message = string_obj_to_owned(obj_from_bits(exception_msg_bits(ptr)))
-            .unwrap_or_else(|| "<error>".to_string());
-        if message.is_empty() {
-            format!("{kind}()")
+        let args_bits = exception_args_bits(ptr);
+        let args_obj = obj_from_bits(args_bits);
+        if let Some(args_ptr) = args_obj.as_ptr() {
+            let type_id = object_type_id(args_ptr);
+            if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
+                return seq_vec_ref(args_ptr).clone();
+            }
+        }
+        if args_obj.is_none() {
+            Vec::new()
         } else {
-            let msg_repr = format_string_repr(&message);
-            format!("{kind}({msg_repr})")
+            vec![args_bits]
         }
     }
 }
 
+fn exception_class_name(ptr: *mut u8) -> String {
+    unsafe {
+        let class_bits = exception_class_bits(ptr);
+        if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
+            if object_type_id(class_ptr) == TYPE_ID_TYPE {
+                let name_bits = class_name_bits(class_ptr);
+                if let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) {
+                    return name;
+                }
+            }
+        }
+        string_obj_to_owned(obj_from_bits(exception_kind_bits(ptr)))
+            .unwrap_or_else(|| "Exception".to_string())
+    }
+}
+
+fn format_exception(ptr: *mut u8) -> String {
+    let kind = exception_class_name(ptr);
+    let args = exception_args_vec(ptr);
+    if args.is_empty() {
+        return format!("{kind}()");
+    }
+    if args.len() == 1 {
+        let arg_repr = format_obj(obj_from_bits(args[0]));
+        return format!("{kind}({arg_repr})");
+    }
+    let args_repr = format_obj(obj_from_bits(unsafe { exception_args_bits(ptr) }));
+    format!("{kind}{args_repr}")
+}
+
+fn format_exception_with_traceback(ptr: *mut u8) -> String {
+    let mut out = String::new();
+    if let Some(trace) = format_traceback(ptr) {
+        out.push_str(&trace);
+    }
+    let kind = exception_class_name(ptr);
+    let message = format_exception_message(ptr);
+    if message.is_empty() {
+        out.push_str(&kind);
+    } else {
+        out.push_str(&format!("{kind}: {message}"));
+    }
+    out
+}
+
 fn format_exception_message(ptr: *mut u8) -> String {
-    unsafe { string_obj_to_owned(obj_from_bits(exception_msg_bits(ptr))).unwrap_or_default() }
+    let args = exception_args_vec(ptr);
+    if args.is_empty() {
+        return String::new();
+    }
+    if args.len() == 1 {
+        return format_obj_str(obj_from_bits(args[0]));
+    }
+    format_obj_str(obj_from_bits(unsafe { exception_args_bits(ptr) }))
+}
+
+fn format_traceback(ptr: *mut u8) -> Option<String> {
+    let trace_bits = unsafe { exception_trace_bits(ptr) };
+    if obj_from_bits(trace_bits).is_none() {
+        return None;
+    }
+    let mut out = String::from("Traceback (most recent call last):\n");
+    let tb_frame_bits =
+        intern_static_name(&runtime_state().interned.tb_frame_name, b"tb_frame");
+    let tb_lineno_bits =
+        intern_static_name(&runtime_state().interned.tb_lineno_name, b"tb_lineno");
+    let tb_next_bits = intern_static_name(&runtime_state().interned.tb_next_name, b"tb_next");
+    let f_code_bits = intern_static_name(&runtime_state().interned.f_code_name, b"f_code");
+    let f_lineno_bits = intern_static_name(&runtime_state().interned.f_lineno_name, b"f_lineno");
+    let mut current_bits = trace_bits;
+    let mut depth = 0usize;
+    while !obj_from_bits(current_bits).is_none() {
+        if depth > 512 {
+            out.push_str("  <traceback truncated>\n");
+            break;
+        }
+        let tb_obj = obj_from_bits(current_bits);
+        let Some(tb_ptr) = tb_obj.as_ptr() else {
+            break;
+        };
+        let (frame_bits, line, next_bits) = unsafe {
+            let dict_bits = instance_dict_bits(tb_ptr);
+            let mut frame_bits = MoltObject::none().bits();
+            let mut line = 0i64;
+            let mut next_bits = MoltObject::none().bits();
+            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+                if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                    if let Some(bits) = dict_get_in_place(dict_ptr, tb_frame_bits) {
+                        frame_bits = bits;
+                    }
+                    if let Some(bits) = dict_get_in_place(dict_ptr, tb_lineno_bits) {
+                        if let Some(val) = to_i64(obj_from_bits(bits)) {
+                            line = val;
+                        }
+                    }
+                    if let Some(bits) = dict_get_in_place(dict_ptr, tb_next_bits) {
+                        next_bits = bits;
+                    }
+                }
+            }
+            (frame_bits, line, next_bits)
+        };
+        let (filename, func_name, frame_line) = unsafe {
+            let mut filename = "<unknown>".to_string();
+            let mut func_name = "<module>".to_string();
+            let mut frame_line = line;
+            if let Some(frame_ptr) = obj_from_bits(frame_bits).as_ptr() {
+                let dict_bits = instance_dict_bits(frame_ptr);
+                if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+                    if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                        if let Some(bits) = dict_get_in_place(dict_ptr, f_lineno_bits) {
+                            if let Some(val) = to_i64(obj_from_bits(bits)) {
+                                frame_line = val;
+                            }
+                        }
+                        if let Some(bits) = dict_get_in_place(dict_ptr, f_code_bits) {
+                            if let Some(code_ptr) = obj_from_bits(bits).as_ptr() {
+                                if object_type_id(code_ptr) == TYPE_ID_CODE {
+                                    let filename_bits = code_filename_bits(code_ptr);
+                                    if let Some(name) =
+                                        string_obj_to_owned(obj_from_bits(filename_bits))
+                                    {
+                                        filename = name;
+                                    }
+                                    let name_bits = code_name_bits(code_ptr);
+                                    if let Some(name) =
+                                        string_obj_to_owned(obj_from_bits(name_bits))
+                                    {
+                                        if !name.is_empty() {
+                                            func_name = name;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            (filename, func_name, frame_line)
+        };
+        let final_line = if line > 0 { line } else { frame_line };
+        out.push_str(&format!(
+            "  File \"{filename}\", line {final_line}, in {func_name}\n"
+        ));
+        current_bits = next_bits;
+        depth += 1;
+    }
+    Some(out)
 }
 
 fn format_dataclass(ptr: *mut u8) -> String {
@@ -28092,6 +28895,9 @@ pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
                 let suppress_bits = exception_suppress_bits(ptr);
                 let trace_bits = exception_trace_bits(ptr);
                 let value_bits = exception_value_bits(ptr);
+                let class_bits = exception_class_bits(ptr);
+                let args_bits = exception_args_bits(ptr);
+                let dict_bits = exception_dict_bits(ptr);
                 dec_ref_bits(kind_bits);
                 dec_ref_bits(msg_bits);
                 dec_ref_bits(cause_bits);
@@ -28099,6 +28905,9 @@ pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
                 dec_ref_bits(suppress_bits);
                 dec_ref_bits(trace_bits);
                 dec_ref_bits(value_bits);
+                dec_ref_bits(class_bits);
+                dec_ref_bits(args_bits);
+                dec_ref_bits(dict_bits);
             }
             TYPE_ID_GENERATOR => {
                 generator_exception_stack_drop(ptr);
@@ -28857,17 +29666,78 @@ pub extern "C" fn molt_env_get(key_bits: u64, default_bits: u64) -> u64 {
         Some(key) => key,
         None => return default_bits,
     };
-    match std::env::var(key) {
-        Ok(val) => {
-            let ptr = alloc_string(val.as_bytes());
-            if ptr.is_null() {
-                default_bits
-            } else {
-                MoltObject::from_ptr(ptr).bits()
-            }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let Some(bytes) = wasm_env_get_bytes(&key) else {
+            return default_bits;
+        };
+        let Ok(val) = std::str::from_utf8(&bytes) else {
+            return default_bits;
+        };
+        let ptr = alloc_string(val.as_bytes());
+        if ptr.is_null() {
+            default_bits
+        } else {
+            MoltObject::from_ptr(ptr).bits()
         }
-        Err(_) => default_bits,
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        match std::env::var(key) {
+            Ok(val) => {
+                let ptr = alloc_string(val.as_bytes());
+                if ptr.is_null() {
+                    default_bits
+                } else {
+                    MoltObject::from_ptr(ptr).bits()
+                }
+            }
+            Err(_) => default_bits,
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn wasm_env_get_bytes(key: &str) -> Option<Vec<u8>> {
+    let mut env_count = 0u32;
+    let mut buf_size = 0u32;
+    let rc = unsafe { environ_sizes_get(&mut env_count, &mut buf_size) };
+    if rc != 0 || env_count == 0 || buf_size == 0 {
+        return None;
+    }
+    let env_count = usize::try_from(env_count).ok()?;
+    let buf_size = usize::try_from(buf_size).ok()?;
+    let mut ptrs = vec![std::ptr::null_mut(); env_count];
+    let mut buf = vec![0u8; buf_size];
+    let rc = unsafe { environ_get(ptrs.as_mut_ptr(), buf.as_mut_ptr()) };
+    if rc != 0 {
+        return None;
+    }
+    let base = buf.as_ptr();
+    let key_bytes = key.as_bytes();
+    for ptr in ptrs {
+        if ptr.is_null() {
+            continue;
+        }
+        let offset = unsafe { ptr.offset_from(base) };
+        if offset < 0 {
+            continue;
+        }
+        let offset = offset as usize;
+        if offset >= buf.len() {
+            continue;
+        }
+        let slice = &buf[offset..];
+        let end = slice.iter().position(|b| *b == 0).unwrap_or(slice.len());
+        let entry = &slice[..end];
+        let Some(eq) = entry.iter().position(|b| *b == b'=') else {
+            continue;
+        };
+        if &entry[..eq] == key_bytes {
+            return Some(entry[eq + 1..].to_vec());
+        }
+    }
+    None
 }
 
 /// # Safety
@@ -28957,6 +29827,97 @@ pub unsafe extern "C" fn molt_cbor_parse_scalar(
     };
     *out = obj.bits();
     0
+}
+
+#[no_mangle]
+pub extern "C" fn molt_json_parse_scalar_obj(obj_bits: u64) -> u64 {
+    let obj = obj_from_bits(obj_bits);
+    let Some(ptr) = obj.as_ptr() else {
+        raise!("TypeError", "json.parse expects str");
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_STRING {
+            let msg = format!("json.parse expects str, got {}", type_name(obj));
+            raise!("TypeError", &msg);
+        }
+        let len = string_len(ptr);
+        let data = string_bytes(ptr);
+        let obj = PARSE_ARENA.with(|arena| {
+            let mut arena = arena.borrow_mut();
+            let result = parse_json_scalar(data, len, &mut arena);
+            arena.reset();
+            result
+        });
+        match obj {
+            Ok(val) => val.bits(),
+            Err(_) => raise!("ValueError", "invalid JSON payload"),
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_msgpack_parse_scalar_obj(obj_bits: u64) -> u64 {
+    let obj = obj_from_bits(obj_bits);
+    let Some(ptr) = obj.as_ptr() else {
+        raise!("TypeError", "msgpack.parse expects bytes");
+    };
+    unsafe {
+        let type_id = object_type_id(ptr);
+        if type_id != TYPE_ID_BYTES && type_id != TYPE_ID_BYTEARRAY {
+            let msg = format!("msgpack.parse expects bytes, got {}", type_name(obj));
+            raise!("TypeError", &msg);
+        }
+        let len = bytes_len(ptr);
+        let data = bytes_data(ptr);
+        let slice = std::slice::from_raw_parts(data, len);
+        let mut cursor = Cursor::new(slice);
+        let v = match rmpv::decode::read_value(&mut cursor) {
+            Ok(val) => val,
+            Err(_) => raise!("ValueError", "invalid msgpack payload"),
+        };
+        let obj = PARSE_ARENA.with(|arena| {
+            let mut arena = arena.borrow_mut();
+            let result = msgpack_value_to_object(v, &mut arena);
+            arena.reset();
+            result
+        });
+        match obj {
+            Ok(val) => val.bits(),
+            Err(_) => raise!("ValueError", "invalid msgpack payload"),
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_cbor_parse_scalar_obj(obj_bits: u64) -> u64 {
+    let obj = obj_from_bits(obj_bits);
+    let Some(ptr) = obj.as_ptr() else {
+        raise!("TypeError", "cbor.parse expects bytes");
+    };
+    unsafe {
+        let type_id = object_type_id(ptr);
+        if type_id != TYPE_ID_BYTES && type_id != TYPE_ID_BYTEARRAY {
+            let msg = format!("cbor.parse expects bytes, got {}", type_name(obj));
+            raise!("TypeError", &msg);
+        }
+        let len = bytes_len(ptr);
+        let data = bytes_data(ptr);
+        let slice = std::slice::from_raw_parts(data, len);
+        let v: serde_cbor::Value = match serde_cbor::from_slice(slice) {
+            Ok(val) => val,
+            Err(_) => raise!("ValueError", "invalid cbor payload"),
+        };
+        let obj = PARSE_ARENA.with(|arena| {
+            let mut arena = arena.borrow_mut();
+            let result = cbor_value_to_object(v, &mut arena);
+            arena.reset();
+            result
+        });
+        match obj {
+            Ok(val) => val.bits(),
+            Err(_) => raise!("ValueError", "invalid cbor payload"),
+        }
+    }
 }
 
 // --- Generic ---
@@ -29054,17 +30015,53 @@ unsafe fn call_function_obj1(func_bits: u64, arg0_bits: u64) -> u64 {
     }
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
+    #[cfg(target_arch = "wasm32")]
+    let tramp_ptr = function_trampoline_ptr(func_ptr);
     let code_bits = ensure_function_code_bits(func_ptr);
     if !recursion_guard_enter() {
         raise!("RecursionError", "maximum recursion depth exceeded");
     }
     frame_stack_push(code_bits);
     let res = if closure_bits != 0 {
-        let func: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
-        func(closure_bits, arg0_bits) as u64
+        #[cfg(target_arch = "wasm32")]
+        {
+            if tramp_ptr == 0
+                && std::env::var("MOLT_WASM_CALL_DEBUG").as_deref() == Ok("1")
+            {
+                eprintln!("molt wasm call1 direct: fn=0x{fn_ptr:x}");
+            }
+            if tramp_ptr != 0 {
+                molt_call_indirect2(fn_ptr, closure_bits, arg0_bits) as u64
+            } else {
+                let func: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
+                func(closure_bits, arg0_bits) as u64
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let func: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
+            func(closure_bits, arg0_bits) as u64
+        }
     } else {
-        let func: extern "C" fn(u64) -> i64 = std::mem::transmute(fn_ptr as usize);
-        func(arg0_bits) as u64
+        #[cfg(target_arch = "wasm32")]
+        {
+            if tramp_ptr == 0
+                && std::env::var("MOLT_WASM_CALL_DEBUG").as_deref() == Ok("1")
+            {
+                eprintln!("molt wasm call1 direct: fn=0x{fn_ptr:x}");
+            }
+            if tramp_ptr != 0 {
+                molt_call_indirect1(fn_ptr, arg0_bits) as u64
+            } else {
+                let func: extern "C" fn(u64) -> i64 = std::mem::transmute(fn_ptr as usize);
+                func(arg0_bits) as u64
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let func: extern "C" fn(u64) -> i64 = std::mem::transmute(fn_ptr as usize);
+            func(arg0_bits) as u64
+        }
     };
     frame_stack_pop();
     recursion_guard_exit();
@@ -29086,17 +30083,43 @@ unsafe fn call_function_obj0(func_bits: u64) -> u64 {
     }
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
+    #[cfg(target_arch = "wasm32")]
+    let tramp_ptr = function_trampoline_ptr(func_ptr);
     let code_bits = ensure_function_code_bits(func_ptr);
     if !recursion_guard_enter() {
         raise!("RecursionError", "maximum recursion depth exceeded");
     }
     frame_stack_push(code_bits);
     let res = if closure_bits != 0 {
-        let func: extern "C" fn(u64) -> i64 = std::mem::transmute(fn_ptr as usize);
-        func(closure_bits) as u64
+        #[cfg(target_arch = "wasm32")]
+        {
+            if tramp_ptr != 0 {
+                molt_call_indirect1(fn_ptr, closure_bits) as u64
+            } else {
+                let func: extern "C" fn(u64) -> i64 = std::mem::transmute(fn_ptr as usize);
+                func(closure_bits) as u64
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let func: extern "C" fn(u64) -> i64 = std::mem::transmute(fn_ptr as usize);
+            func(closure_bits) as u64
+        }
     } else {
-        let func: extern "C" fn() -> i64 = std::mem::transmute(fn_ptr as usize);
-        func() as u64
+        #[cfg(target_arch = "wasm32")]
+        {
+            if tramp_ptr != 0 {
+                molt_call_indirect0(fn_ptr) as u64
+            } else {
+                let func: extern "C" fn() -> i64 = std::mem::transmute(fn_ptr as usize);
+                func() as u64
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let func: extern "C" fn() -> i64 = std::mem::transmute(fn_ptr as usize);
+            func() as u64
+        }
     };
     frame_stack_pop();
     recursion_guard_exit();
@@ -29118,17 +30141,43 @@ unsafe fn call_function_obj2(func_bits: u64, arg0_bits: u64, arg1_bits: u64) -> 
     }
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
+    #[cfg(target_arch = "wasm32")]
+    let tramp_ptr = function_trampoline_ptr(func_ptr);
     let code_bits = ensure_function_code_bits(func_ptr);
     if !recursion_guard_enter() {
         raise!("RecursionError", "maximum recursion depth exceeded");
     }
     frame_stack_push(code_bits);
     let res = if closure_bits != 0 {
-        let func: extern "C" fn(u64, u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
-        func(closure_bits, arg0_bits, arg1_bits) as u64
+        #[cfg(target_arch = "wasm32")]
+        {
+            if tramp_ptr != 0 {
+                molt_call_indirect3(fn_ptr, closure_bits, arg0_bits, arg1_bits) as u64
+            } else {
+                let func: extern "C" fn(u64, u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
+                func(closure_bits, arg0_bits, arg1_bits) as u64
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let func: extern "C" fn(u64, u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
+            func(closure_bits, arg0_bits, arg1_bits) as u64
+        }
     } else {
-        let func: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
-        func(arg0_bits, arg1_bits) as u64
+        #[cfg(target_arch = "wasm32")]
+        {
+            if tramp_ptr != 0 {
+                molt_call_indirect2(fn_ptr, arg0_bits, arg1_bits) as u64
+            } else {
+                let func: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
+                func(arg0_bits, arg1_bits) as u64
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let func: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
+            func(arg0_bits, arg1_bits) as u64
+        }
     };
     frame_stack_pop();
     recursion_guard_exit();
@@ -29155,17 +30204,45 @@ unsafe fn call_function_obj3(
     }
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
+    #[cfg(target_arch = "wasm32")]
+    let tramp_ptr = function_trampoline_ptr(func_ptr);
     let code_bits = ensure_function_code_bits(func_ptr);
     if !recursion_guard_enter() {
         raise!("RecursionError", "maximum recursion depth exceeded");
     }
     frame_stack_push(code_bits);
     let res = if closure_bits != 0 {
-        let func: extern "C" fn(u64, u64, u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
-        func(closure_bits, arg0_bits, arg1_bits, arg2_bits) as u64
+        #[cfg(target_arch = "wasm32")]
+        {
+            if tramp_ptr != 0 {
+                molt_call_indirect4(fn_ptr, closure_bits, arg0_bits, arg1_bits, arg2_bits) as u64
+            } else {
+                let func: extern "C" fn(u64, u64, u64, u64) -> i64 =
+                    std::mem::transmute(fn_ptr as usize);
+                func(closure_bits, arg0_bits, arg1_bits, arg2_bits) as u64
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let func: extern "C" fn(u64, u64, u64, u64) -> i64 =
+                std::mem::transmute(fn_ptr as usize);
+            func(closure_bits, arg0_bits, arg1_bits, arg2_bits) as u64
+        }
     } else {
-        let func: extern "C" fn(u64, u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
-        func(arg0_bits, arg1_bits, arg2_bits) as u64
+        #[cfg(target_arch = "wasm32")]
+        {
+            if tramp_ptr != 0 {
+                molt_call_indirect3(fn_ptr, arg0_bits, arg1_bits, arg2_bits) as u64
+            } else {
+                let func: extern "C" fn(u64, u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
+                func(arg0_bits, arg1_bits, arg2_bits) as u64
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let func: extern "C" fn(u64, u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
+            func(arg0_bits, arg1_bits, arg2_bits) as u64
+        }
     };
     frame_stack_pop();
     recursion_guard_exit();
@@ -29193,18 +30270,54 @@ unsafe fn call_function_obj4(
     }
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
+    #[cfg(target_arch = "wasm32")]
+    let tramp_ptr = function_trampoline_ptr(func_ptr);
     let code_bits = ensure_function_code_bits(func_ptr);
     if !recursion_guard_enter() {
         raise!("RecursionError", "maximum recursion depth exceeded");
     }
     frame_stack_push(code_bits);
     let res = if closure_bits != 0 {
-        let func: extern "C" fn(u64, u64, u64, u64, u64) -> i64 =
-            std::mem::transmute(fn_ptr as usize);
-        func(closure_bits, arg0_bits, arg1_bits, arg2_bits, arg3_bits) as u64
+        #[cfg(target_arch = "wasm32")]
+        {
+            if tramp_ptr != 0 {
+                molt_call_indirect5(
+                    fn_ptr,
+                    closure_bits,
+                    arg0_bits,
+                    arg1_bits,
+                    arg2_bits,
+                    arg3_bits,
+                ) as u64
+            } else {
+                let func: extern "C" fn(u64, u64, u64, u64, u64) -> i64 =
+                    std::mem::transmute(fn_ptr as usize);
+                func(closure_bits, arg0_bits, arg1_bits, arg2_bits, arg3_bits) as u64
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let func: extern "C" fn(u64, u64, u64, u64, u64) -> i64 =
+                std::mem::transmute(fn_ptr as usize);
+            func(closure_bits, arg0_bits, arg1_bits, arg2_bits, arg3_bits) as u64
+        }
     } else {
-        let func: extern "C" fn(u64, u64, u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
-        func(arg0_bits, arg1_bits, arg2_bits, arg3_bits) as u64
+        #[cfg(target_arch = "wasm32")]
+        {
+            if tramp_ptr != 0 {
+                molt_call_indirect4(fn_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits) as u64
+            } else {
+                let func: extern "C" fn(u64, u64, u64, u64) -> i64 =
+                    std::mem::transmute(fn_ptr as usize);
+                func(arg0_bits, arg1_bits, arg2_bits, arg3_bits) as u64
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let func: extern "C" fn(u64, u64, u64, u64) -> i64 =
+                std::mem::transmute(fn_ptr as usize);
+            func(arg0_bits, arg1_bits, arg2_bits, arg3_bits) as u64
+        }
     };
     frame_stack_pop();
     recursion_guard_exit();
@@ -29233,26 +30346,76 @@ unsafe fn call_function_obj5(
     }
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
+    #[cfg(target_arch = "wasm32")]
+    let tramp_ptr = function_trampoline_ptr(func_ptr);
     let code_bits = ensure_function_code_bits(func_ptr);
     if !recursion_guard_enter() {
         raise!("RecursionError", "maximum recursion depth exceeded");
     }
     frame_stack_push(code_bits);
     let res = if closure_bits != 0 {
-        let func: extern "C" fn(u64, u64, u64, u64, u64, u64) -> i64 =
-            std::mem::transmute(fn_ptr as usize);
-        func(
-            closure_bits,
-            arg0_bits,
-            arg1_bits,
-            arg2_bits,
-            arg3_bits,
-            arg4_bits,
-        ) as u64
+        #[cfg(target_arch = "wasm32")]
+        {
+            if tramp_ptr != 0 {
+                molt_call_indirect6(
+                    fn_ptr,
+                    closure_bits,
+                    arg0_bits,
+                    arg1_bits,
+                    arg2_bits,
+                    arg3_bits,
+                    arg4_bits,
+                ) as u64
+            } else {
+                let func: extern "C" fn(u64, u64, u64, u64, u64, u64) -> i64 =
+                    std::mem::transmute(fn_ptr as usize);
+                func(
+                    closure_bits,
+                    arg0_bits,
+                    arg1_bits,
+                    arg2_bits,
+                    arg3_bits,
+                    arg4_bits,
+                ) as u64
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let func: extern "C" fn(u64, u64, u64, u64, u64, u64) -> i64 =
+                std::mem::transmute(fn_ptr as usize);
+            func(
+                closure_bits,
+                arg0_bits,
+                arg1_bits,
+                arg2_bits,
+                arg3_bits,
+                arg4_bits,
+            ) as u64
+        }
     } else {
-        let func: extern "C" fn(u64, u64, u64, u64, u64) -> i64 =
-            std::mem::transmute(fn_ptr as usize);
-        func(arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits) as u64
+        #[cfg(target_arch = "wasm32")]
+        {
+            if tramp_ptr != 0 {
+                molt_call_indirect5(
+                    fn_ptr,
+                    arg0_bits,
+                    arg1_bits,
+                    arg2_bits,
+                    arg3_bits,
+                    arg4_bits,
+                ) as u64
+            } else {
+                let func: extern "C" fn(u64, u64, u64, u64, u64) -> i64 =
+                    std::mem::transmute(fn_ptr as usize);
+                func(arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits) as u64
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let func: extern "C" fn(u64, u64, u64, u64, u64) -> i64 =
+                std::mem::transmute(fn_ptr as usize);
+            func(arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits) as u64
+        }
     };
     frame_stack_pop();
     recursion_guard_exit();
@@ -29282,29 +30445,84 @@ unsafe fn call_function_obj6(
     }
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
+    #[cfg(target_arch = "wasm32")]
+    let tramp_ptr = function_trampoline_ptr(func_ptr);
     let code_bits = ensure_function_code_bits(func_ptr);
     if !recursion_guard_enter() {
         raise!("RecursionError", "maximum recursion depth exceeded");
     }
     frame_stack_push(code_bits);
     let res = if closure_bits != 0 {
-        let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> i64 =
-            std::mem::transmute(fn_ptr as usize);
-        func(
-            closure_bits,
-            arg0_bits,
-            arg1_bits,
-            arg2_bits,
-            arg3_bits,
-            arg4_bits,
-            arg5_bits,
-        ) as u64
+        #[cfg(target_arch = "wasm32")]
+        {
+            if tramp_ptr != 0 {
+                molt_call_indirect7(
+                    fn_ptr,
+                    closure_bits,
+                    arg0_bits,
+                    arg1_bits,
+                    arg2_bits,
+                    arg3_bits,
+                    arg4_bits,
+                    arg5_bits,
+                ) as u64
+            } else {
+                let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> i64 =
+                    std::mem::transmute(fn_ptr as usize);
+                func(
+                    closure_bits,
+                    arg0_bits,
+                    arg1_bits,
+                    arg2_bits,
+                    arg3_bits,
+                    arg4_bits,
+                    arg5_bits,
+                ) as u64
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> i64 =
+                std::mem::transmute(fn_ptr as usize);
+            func(
+                closure_bits,
+                arg0_bits,
+                arg1_bits,
+                arg2_bits,
+                arg3_bits,
+                arg4_bits,
+                arg5_bits,
+            ) as u64
+        }
     } else {
-        let func: extern "C" fn(u64, u64, u64, u64, u64, u64) -> i64 =
-            std::mem::transmute(fn_ptr as usize);
-        func(
-            arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
-        ) as u64
+        #[cfg(target_arch = "wasm32")]
+        {
+            if tramp_ptr != 0 {
+                molt_call_indirect6(
+                    fn_ptr,
+                    arg0_bits,
+                    arg1_bits,
+                    arg2_bits,
+                    arg3_bits,
+                    arg4_bits,
+                    arg5_bits,
+                ) as u64
+            } else {
+                let func: extern "C" fn(u64, u64, u64, u64, u64, u64) -> i64 =
+                    std::mem::transmute(fn_ptr as usize);
+                func(
+                    arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
+                ) as u64
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let func: extern "C" fn(u64, u64, u64, u64, u64, u64) -> i64 =
+                std::mem::transmute(fn_ptr as usize);
+            func(
+                arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
+            ) as u64
+        }
     };
     frame_stack_pop();
     recursion_guard_exit();
@@ -29336,30 +30554,88 @@ unsafe fn call_function_obj7(
     }
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
+    #[cfg(target_arch = "wasm32")]
+    let tramp_ptr = function_trampoline_ptr(func_ptr);
     let code_bits = ensure_function_code_bits(func_ptr);
     if !recursion_guard_enter() {
         raise!("RecursionError", "maximum recursion depth exceeded");
     }
     frame_stack_push(code_bits);
     let res = if closure_bits != 0 {
-        let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
-            std::mem::transmute(fn_ptr as usize);
-        func(
-            closure_bits,
-            arg0_bits,
-            arg1_bits,
-            arg2_bits,
-            arg3_bits,
-            arg4_bits,
-            arg5_bits,
-            arg6_bits,
-        ) as u64
+        #[cfg(target_arch = "wasm32")]
+        {
+            if tramp_ptr != 0 {
+                molt_call_indirect8(
+                    fn_ptr,
+                    closure_bits,
+                    arg0_bits,
+                    arg1_bits,
+                    arg2_bits,
+                    arg3_bits,
+                    arg4_bits,
+                    arg5_bits,
+                    arg6_bits,
+                ) as u64
+            } else {
+                let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
+                    std::mem::transmute(fn_ptr as usize);
+                func(
+                    closure_bits,
+                    arg0_bits,
+                    arg1_bits,
+                    arg2_bits,
+                    arg3_bits,
+                    arg4_bits,
+                    arg5_bits,
+                    arg6_bits,
+                ) as u64
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
+                std::mem::transmute(fn_ptr as usize);
+            func(
+                closure_bits,
+                arg0_bits,
+                arg1_bits,
+                arg2_bits,
+                arg3_bits,
+                arg4_bits,
+                arg5_bits,
+                arg6_bits,
+            ) as u64
+        }
     } else {
-        let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> i64 =
-            std::mem::transmute(fn_ptr as usize);
-        func(
-            arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
-        ) as u64
+        #[cfg(target_arch = "wasm32")]
+        {
+            if tramp_ptr != 0 {
+                molt_call_indirect7(
+                    fn_ptr,
+                    arg0_bits,
+                    arg1_bits,
+                    arg2_bits,
+                    arg3_bits,
+                    arg4_bits,
+                    arg5_bits,
+                    arg6_bits,
+                ) as u64
+            } else {
+                let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> i64 =
+                    std::mem::transmute(fn_ptr as usize);
+                func(
+                    arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
+                ) as u64
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> i64 =
+                std::mem::transmute(fn_ptr as usize);
+            func(
+                arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
+            ) as u64
+        }
     };
     frame_stack_pop();
     recursion_guard_exit();
@@ -29392,31 +30668,908 @@ unsafe fn call_function_obj8(
     }
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
+    #[cfg(target_arch = "wasm32")]
+    let tramp_ptr = function_trampoline_ptr(func_ptr);
     let code_bits = ensure_function_code_bits(func_ptr);
     if !recursion_guard_enter() {
         raise!("RecursionError", "maximum recursion depth exceeded");
     }
     frame_stack_push(code_bits);
     let res = if closure_bits != 0 {
-        let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
-            std::mem::transmute(fn_ptr as usize);
-        func(
-            closure_bits,
-            arg0_bits,
-            arg1_bits,
-            arg2_bits,
-            arg3_bits,
-            arg4_bits,
-            arg5_bits,
-            arg6_bits,
-            arg7_bits,
-        ) as u64
+        #[cfg(target_arch = "wasm32")]
+        {
+            if tramp_ptr != 0 {
+                molt_call_indirect9(
+                    fn_ptr,
+                    closure_bits,
+                    arg0_bits,
+                    arg1_bits,
+                    arg2_bits,
+                    arg3_bits,
+                    arg4_bits,
+                    arg5_bits,
+                    arg6_bits,
+                    arg7_bits,
+                ) as u64
+            } else {
+                let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
+                    std::mem::transmute(fn_ptr as usize);
+                func(
+                    closure_bits,
+                    arg0_bits,
+                    arg1_bits,
+                    arg2_bits,
+                    arg3_bits,
+                    arg4_bits,
+                    arg5_bits,
+                    arg6_bits,
+                    arg7_bits,
+                ) as u64
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
+                std::mem::transmute(fn_ptr as usize);
+            func(
+                closure_bits,
+                arg0_bits,
+                arg1_bits,
+                arg2_bits,
+                arg3_bits,
+                arg4_bits,
+                arg5_bits,
+                arg6_bits,
+                arg7_bits,
+            ) as u64
+        }
     } else {
-        let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
-            std::mem::transmute(fn_ptr as usize);
-        func(
-            arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits, arg7_bits,
-        ) as u64
+        #[cfg(target_arch = "wasm32")]
+        {
+            if tramp_ptr != 0 {
+                molt_call_indirect8(
+                    fn_ptr,
+                    arg0_bits,
+                    arg1_bits,
+                    arg2_bits,
+                    arg3_bits,
+                    arg4_bits,
+                    arg5_bits,
+                    arg6_bits,
+                    arg7_bits,
+                ) as u64
+            } else {
+                let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
+                    std::mem::transmute(fn_ptr as usize);
+                func(
+                    arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
+                    arg7_bits,
+                ) as u64
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
+                std::mem::transmute(fn_ptr as usize);
+            func(
+                arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
+                arg7_bits,
+            ) as u64
+        }
+    };
+    frame_stack_pop();
+    recursion_guard_exit();
+    res
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe fn call_function_obj9(
+    func_bits: u64,
+    arg0_bits: u64,
+    arg1_bits: u64,
+    arg2_bits: u64,
+    arg3_bits: u64,
+    arg4_bits: u64,
+    arg5_bits: u64,
+    arg6_bits: u64,
+    arg7_bits: u64,
+    arg8_bits: u64,
+) -> u64 {
+    profile_hit(&CALL_DISPATCH_COUNT);
+    let func_obj = obj_from_bits(func_bits);
+    let Some(func_ptr) = func_obj.as_ptr() else {
+        raise!("TypeError", "call expects function object");
+    };
+    if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
+        raise!("TypeError", "call expects function object");
+    }
+    let arity = function_arity(func_ptr);
+    if arity != 9 {
+        raise!("TypeError", "call arity mismatch");
+    }
+    let fn_ptr = function_fn_ptr(func_ptr);
+    let closure_bits = function_closure_bits(func_ptr);
+    #[cfg(target_arch = "wasm32")]
+    let tramp_ptr = function_trampoline_ptr(func_ptr);
+    let code_bits = ensure_function_code_bits(func_ptr);
+    if !recursion_guard_enter() {
+        raise!("RecursionError", "maximum recursion depth exceeded");
+    }
+    frame_stack_push(code_bits);
+    let res = if closure_bits != 0 {
+        #[cfg(target_arch = "wasm32")]
+        {
+            if tramp_ptr != 0 {
+                molt_call_indirect10(
+                    fn_ptr,
+                    closure_bits,
+                    arg0_bits,
+                    arg1_bits,
+                    arg2_bits,
+                    arg3_bits,
+                    arg4_bits,
+                    arg5_bits,
+                    arg6_bits,
+                    arg7_bits,
+                    arg8_bits,
+                ) as u64
+            } else {
+                let func: extern "C" fn(
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                ) -> i64 = std::mem::transmute(fn_ptr as usize);
+                func(
+                    closure_bits,
+                    arg0_bits,
+                    arg1_bits,
+                    arg2_bits,
+                    arg3_bits,
+                    arg4_bits,
+                    arg5_bits,
+                    arg6_bits,
+                    arg7_bits,
+                    arg8_bits,
+                ) as u64
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let func: extern "C" fn(
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+            ) -> i64 = std::mem::transmute(fn_ptr as usize);
+            func(
+                closure_bits,
+                arg0_bits,
+                arg1_bits,
+                arg2_bits,
+                arg3_bits,
+                arg4_bits,
+                arg5_bits,
+                arg6_bits,
+                arg7_bits,
+                arg8_bits,
+            ) as u64
+        }
+    } else {
+        #[cfg(target_arch = "wasm32")]
+        {
+            if tramp_ptr != 0 {
+                molt_call_indirect9(
+                    fn_ptr,
+                    arg0_bits,
+                    arg1_bits,
+                    arg2_bits,
+                    arg3_bits,
+                    arg4_bits,
+                    arg5_bits,
+                    arg6_bits,
+                    arg7_bits,
+                    arg8_bits,
+                ) as u64
+            } else {
+                let func: extern "C" fn(
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                ) -> i64 = std::mem::transmute(fn_ptr as usize);
+                func(
+                    arg0_bits,
+                    arg1_bits,
+                    arg2_bits,
+                    arg3_bits,
+                    arg4_bits,
+                    arg5_bits,
+                    arg6_bits,
+                    arg7_bits,
+                    arg8_bits,
+                ) as u64
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let func: extern "C" fn(
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+            ) -> i64 = std::mem::transmute(fn_ptr as usize);
+            func(
+                arg0_bits,
+                arg1_bits,
+                arg2_bits,
+                arg3_bits,
+                arg4_bits,
+                arg5_bits,
+                arg6_bits,
+                arg7_bits,
+                arg8_bits,
+            ) as u64
+        }
+    };
+    frame_stack_pop();
+    recursion_guard_exit();
+    res
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe fn call_function_obj10(
+    func_bits: u64,
+    arg0_bits: u64,
+    arg1_bits: u64,
+    arg2_bits: u64,
+    arg3_bits: u64,
+    arg4_bits: u64,
+    arg5_bits: u64,
+    arg6_bits: u64,
+    arg7_bits: u64,
+    arg8_bits: u64,
+    arg9_bits: u64,
+) -> u64 {
+    profile_hit(&CALL_DISPATCH_COUNT);
+    let func_obj = obj_from_bits(func_bits);
+    let Some(func_ptr) = func_obj.as_ptr() else {
+        raise!("TypeError", "call expects function object");
+    };
+    if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
+        raise!("TypeError", "call expects function object");
+    }
+    let arity = function_arity(func_ptr);
+    if arity != 10 {
+        raise!("TypeError", "call arity mismatch");
+    }
+    let fn_ptr = function_fn_ptr(func_ptr);
+    let closure_bits = function_closure_bits(func_ptr);
+    #[cfg(target_arch = "wasm32")]
+    let tramp_ptr = function_trampoline_ptr(func_ptr);
+    let code_bits = ensure_function_code_bits(func_ptr);
+    if !recursion_guard_enter() {
+        raise!("RecursionError", "maximum recursion depth exceeded");
+    }
+    frame_stack_push(code_bits);
+    let res = if closure_bits != 0 {
+        #[cfg(target_arch = "wasm32")]
+        {
+            if tramp_ptr != 0 {
+                molt_call_indirect11(
+                    fn_ptr,
+                    closure_bits,
+                    arg0_bits,
+                    arg1_bits,
+                    arg2_bits,
+                    arg3_bits,
+                    arg4_bits,
+                    arg5_bits,
+                    arg6_bits,
+                    arg7_bits,
+                    arg8_bits,
+                    arg9_bits,
+                ) as u64
+            } else {
+                let func: extern "C" fn(
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                ) -> i64 = std::mem::transmute(fn_ptr as usize);
+                func(
+                    closure_bits,
+                    arg0_bits,
+                    arg1_bits,
+                    arg2_bits,
+                    arg3_bits,
+                    arg4_bits,
+                    arg5_bits,
+                    arg6_bits,
+                    arg7_bits,
+                    arg8_bits,
+                    arg9_bits,
+                ) as u64
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let func: extern "C" fn(
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+            ) -> i64 = std::mem::transmute(fn_ptr as usize);
+            func(
+                closure_bits,
+                arg0_bits,
+                arg1_bits,
+                arg2_bits,
+                arg3_bits,
+                arg4_bits,
+                arg5_bits,
+                arg6_bits,
+                arg7_bits,
+                arg8_bits,
+                arg9_bits,
+            ) as u64
+        }
+    } else {
+        #[cfg(target_arch = "wasm32")]
+        {
+            if tramp_ptr != 0 {
+                molt_call_indirect10(
+                    fn_ptr,
+                    arg0_bits,
+                    arg1_bits,
+                    arg2_bits,
+                    arg3_bits,
+                    arg4_bits,
+                    arg5_bits,
+                    arg6_bits,
+                    arg7_bits,
+                    arg8_bits,
+                    arg9_bits,
+                ) as u64
+            } else {
+                let func: extern "C" fn(
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                ) -> i64 = std::mem::transmute(fn_ptr as usize);
+                func(
+                    arg0_bits,
+                    arg1_bits,
+                    arg2_bits,
+                    arg3_bits,
+                    arg4_bits,
+                    arg5_bits,
+                    arg6_bits,
+                    arg7_bits,
+                    arg8_bits,
+                    arg9_bits,
+                ) as u64
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let func: extern "C" fn(
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+            ) -> i64 = std::mem::transmute(fn_ptr as usize);
+            func(
+                arg0_bits,
+                arg1_bits,
+                arg2_bits,
+                arg3_bits,
+                arg4_bits,
+                arg5_bits,
+                arg6_bits,
+                arg7_bits,
+                arg8_bits,
+                arg9_bits,
+            ) as u64
+        }
+    };
+    frame_stack_pop();
+    recursion_guard_exit();
+    res
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe fn call_function_obj11(
+    func_bits: u64,
+    arg0_bits: u64,
+    arg1_bits: u64,
+    arg2_bits: u64,
+    arg3_bits: u64,
+    arg4_bits: u64,
+    arg5_bits: u64,
+    arg6_bits: u64,
+    arg7_bits: u64,
+    arg8_bits: u64,
+    arg9_bits: u64,
+    arg10_bits: u64,
+) -> u64 {
+    profile_hit(&CALL_DISPATCH_COUNT);
+    let func_obj = obj_from_bits(func_bits);
+    let Some(func_ptr) = func_obj.as_ptr() else {
+        raise!("TypeError", "call expects function object");
+    };
+    if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
+        raise!("TypeError", "call expects function object");
+    }
+    let arity = function_arity(func_ptr);
+    if arity != 11 {
+        raise!("TypeError", "call arity mismatch");
+    }
+    let fn_ptr = function_fn_ptr(func_ptr);
+    let closure_bits = function_closure_bits(func_ptr);
+    #[cfg(target_arch = "wasm32")]
+    let tramp_ptr = function_trampoline_ptr(func_ptr);
+    let code_bits = ensure_function_code_bits(func_ptr);
+    if !recursion_guard_enter() {
+        raise!("RecursionError", "maximum recursion depth exceeded");
+    }
+    frame_stack_push(code_bits);
+    let res = if closure_bits != 0 {
+        #[cfg(target_arch = "wasm32")]
+        {
+            if tramp_ptr != 0 {
+                molt_call_indirect12(
+                    fn_ptr,
+                    closure_bits,
+                    arg0_bits,
+                    arg1_bits,
+                    arg2_bits,
+                    arg3_bits,
+                    arg4_bits,
+                    arg5_bits,
+                    arg6_bits,
+                    arg7_bits,
+                    arg8_bits,
+                    arg9_bits,
+                    arg10_bits,
+                ) as u64
+            } else {
+                let func: extern "C" fn(
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                ) -> i64 = std::mem::transmute(fn_ptr as usize);
+                func(
+                    closure_bits,
+                    arg0_bits,
+                    arg1_bits,
+                    arg2_bits,
+                    arg3_bits,
+                    arg4_bits,
+                    arg5_bits,
+                    arg6_bits,
+                    arg7_bits,
+                    arg8_bits,
+                    arg9_bits,
+                    arg10_bits,
+                ) as u64
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let func: extern "C" fn(
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+            ) -> i64 = std::mem::transmute(fn_ptr as usize);
+            func(
+                closure_bits,
+                arg0_bits,
+                arg1_bits,
+                arg2_bits,
+                arg3_bits,
+                arg4_bits,
+                arg5_bits,
+                arg6_bits,
+                arg7_bits,
+                arg8_bits,
+                arg9_bits,
+                arg10_bits,
+            ) as u64
+        }
+    } else {
+        #[cfg(target_arch = "wasm32")]
+        {
+            if tramp_ptr != 0 {
+                molt_call_indirect11(
+                    fn_ptr,
+                    arg0_bits,
+                    arg1_bits,
+                    arg2_bits,
+                    arg3_bits,
+                    arg4_bits,
+                    arg5_bits,
+                    arg6_bits,
+                    arg7_bits,
+                    arg8_bits,
+                    arg9_bits,
+                    arg10_bits,
+                ) as u64
+            } else {
+                let func: extern "C" fn(
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                ) -> i64 = std::mem::transmute(fn_ptr as usize);
+                func(
+                    arg0_bits,
+                    arg1_bits,
+                    arg2_bits,
+                    arg3_bits,
+                    arg4_bits,
+                    arg5_bits,
+                    arg6_bits,
+                    arg7_bits,
+                    arg8_bits,
+                    arg9_bits,
+                    arg10_bits,
+                ) as u64
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let func: extern "C" fn(
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+            ) -> i64 = std::mem::transmute(fn_ptr as usize);
+            func(
+                arg0_bits,
+                arg1_bits,
+                arg2_bits,
+                arg3_bits,
+                arg4_bits,
+                arg5_bits,
+                arg6_bits,
+                arg7_bits,
+                arg8_bits,
+                arg9_bits,
+                arg10_bits,
+            ) as u64
+        }
+    };
+    frame_stack_pop();
+    recursion_guard_exit();
+    res
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe fn call_function_obj12(
+    func_bits: u64,
+    arg0_bits: u64,
+    arg1_bits: u64,
+    arg2_bits: u64,
+    arg3_bits: u64,
+    arg4_bits: u64,
+    arg5_bits: u64,
+    arg6_bits: u64,
+    arg7_bits: u64,
+    arg8_bits: u64,
+    arg9_bits: u64,
+    arg10_bits: u64,
+    arg11_bits: u64,
+) -> u64 {
+    profile_hit(&CALL_DISPATCH_COUNT);
+    let func_obj = obj_from_bits(func_bits);
+    let Some(func_ptr) = func_obj.as_ptr() else {
+        raise!("TypeError", "call expects function object");
+    };
+    if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
+        raise!("TypeError", "call expects function object");
+    }
+    let arity = function_arity(func_ptr);
+    if arity != 12 {
+        raise!("TypeError", "call arity mismatch");
+    }
+    let fn_ptr = function_fn_ptr(func_ptr);
+    let closure_bits = function_closure_bits(func_ptr);
+    #[cfg(target_arch = "wasm32")]
+    let tramp_ptr = function_trampoline_ptr(func_ptr);
+    let code_bits = ensure_function_code_bits(func_ptr);
+    if !recursion_guard_enter() {
+        raise!("RecursionError", "maximum recursion depth exceeded");
+    }
+    frame_stack_push(code_bits);
+    let res = if closure_bits != 0 {
+        #[cfg(target_arch = "wasm32")]
+        {
+            if tramp_ptr != 0 {
+                molt_call_indirect13(
+                    fn_ptr,
+                    closure_bits,
+                    arg0_bits,
+                    arg1_bits,
+                    arg2_bits,
+                    arg3_bits,
+                    arg4_bits,
+                    arg5_bits,
+                    arg6_bits,
+                    arg7_bits,
+                    arg8_bits,
+                    arg9_bits,
+                    arg10_bits,
+                    arg11_bits,
+                ) as u64
+            } else {
+                let func: extern "C" fn(
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                ) -> i64 = std::mem::transmute(fn_ptr as usize);
+                func(
+                    closure_bits,
+                    arg0_bits,
+                    arg1_bits,
+                    arg2_bits,
+                    arg3_bits,
+                    arg4_bits,
+                    arg5_bits,
+                    arg6_bits,
+                    arg7_bits,
+                    arg8_bits,
+                    arg9_bits,
+                    arg10_bits,
+                    arg11_bits,
+                ) as u64
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let func: extern "C" fn(
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+            ) -> i64 = std::mem::transmute(fn_ptr as usize);
+            func(
+                closure_bits,
+                arg0_bits,
+                arg1_bits,
+                arg2_bits,
+                arg3_bits,
+                arg4_bits,
+                arg5_bits,
+                arg6_bits,
+                arg7_bits,
+                arg8_bits,
+                arg9_bits,
+                arg10_bits,
+                arg11_bits,
+            ) as u64
+        }
+    } else {
+        #[cfg(target_arch = "wasm32")]
+        {
+            if tramp_ptr != 0 {
+                molt_call_indirect12(
+                    fn_ptr,
+                    arg0_bits,
+                    arg1_bits,
+                    arg2_bits,
+                    arg3_bits,
+                    arg4_bits,
+                    arg5_bits,
+                    arg6_bits,
+                    arg7_bits,
+                    arg8_bits,
+                    arg9_bits,
+                    arg10_bits,
+                    arg11_bits,
+                ) as u64
+            } else {
+                let func: extern "C" fn(
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                ) -> i64 = std::mem::transmute(fn_ptr as usize);
+                func(
+                    arg0_bits,
+                    arg1_bits,
+                    arg2_bits,
+                    arg3_bits,
+                    arg4_bits,
+                    arg5_bits,
+                    arg6_bits,
+                    arg7_bits,
+                    arg8_bits,
+                    arg9_bits,
+                    arg10_bits,
+                    arg11_bits,
+                ) as u64
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let func: extern "C" fn(
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+            ) -> i64 = std::mem::transmute(fn_ptr as usize);
+            func(
+                arg0_bits,
+                arg1_bits,
+                arg2_bits,
+                arg3_bits,
+                arg4_bits,
+                arg5_bits,
+                arg6_bits,
+                arg7_bits,
+                arg8_bits,
+                arg9_bits,
+                arg10_bits,
+                arg11_bits,
+            ) as u64
+        }
+    };
+    frame_stack_pop();
+    recursion_guard_exit();
+    res
+}
+
+unsafe fn call_function_obj_trampoline(func_bits: u64, args: &[u64]) -> u64 {
+    profile_hit(&CALL_DISPATCH_COUNT);
+    let func_obj = obj_from_bits(func_bits);
+    let Some(func_ptr) = func_obj.as_ptr() else {
+        raise!("TypeError", "call expects function object");
+    };
+    if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
+        raise!("TypeError", "call expects function object");
+    }
+    let arity = function_arity(func_ptr);
+    if arity != args.len() as u64 {
+        raise!("TypeError", "call arity mismatch");
+    }
+    let tramp_ptr = function_trampoline_ptr(func_ptr);
+    if tramp_ptr == 0 {
+        raise!("TypeError", "call arity mismatch");
+    }
+    let closure_bits = function_closure_bits(func_ptr);
+    let code_bits = ensure_function_code_bits(func_ptr);
+    if !recursion_guard_enter() {
+        raise!("RecursionError", "maximum recursion depth exceeded");
+    }
+    frame_stack_push(code_bits);
+    let res = {
+        #[cfg(target_arch = "wasm32")]
+        {
+            molt_call_indirect3(tramp_ptr, closure_bits, args.as_ptr() as u64, args.len() as u64)
+                as u64
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let func: extern "C" fn(u64, u64, u64) -> i64 = std::mem::transmute(tramp_ptr as usize);
+            func(closure_bits, args.as_ptr() as u64, args.len() as u64) as u64
+        }
     };
     frame_stack_pop();
     recursion_guard_exit();
@@ -29440,7 +31593,23 @@ unsafe fn call_function_obj_vec(func_bits: u64, args: &[u64]) -> u64 {
         8 => call_function_obj8(
             func_bits, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7],
         ),
-        _ => raise!("TypeError", "call arity mismatch"),
+        9 => call_function_obj9(
+            func_bits, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7],
+            args[8],
+        ),
+        10 => call_function_obj10(
+            func_bits, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7],
+            args[8], args[9],
+        ),
+        11 => call_function_obj11(
+            func_bits, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7],
+            args[8], args[9], args[10],
+        ),
+        12 => call_function_obj12(
+            func_bits, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7],
+            args[8], args[9], args[10], args[11],
+        ),
+        _ => call_function_obj_trampoline(func_bits, args),
     }
 }
 
@@ -29480,6 +31649,34 @@ unsafe fn alloc_instance_for_class(class_ptr: *mut u8) -> u64 {
 unsafe fn call_class_init_with_args(class_ptr: *mut u8, args: &[u64]) -> u64 {
     let class_bits = MoltObject::from_ptr(class_ptr).bits();
     let builtins = builtin_classes();
+    if issubclass_bits(class_bits, builtins.base_exception) {
+        let args_ptr = alloc_tuple(args);
+        if args_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let args_bits = MoltObject::from_ptr(args_ptr).bits();
+        let exc_ptr = alloc_exception_from_class_bits(class_bits, args_bits);
+        dec_ref_bits(args_bits);
+        if exc_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let exc_bits = MoltObject::from_ptr(exc_ptr).bits();
+        let init_name_bits = intern_static_name(&runtime_state().interned.init_name, b"__init__");
+        let Some(init_bits) = class_attr_lookup(class_ptr, class_ptr, Some(exc_ptr), init_name_bits)
+        else {
+            return exc_bits;
+        };
+        let pos_capacity = MoltObject::from_int(args.len() as i64).bits();
+        let builder_bits = molt_callargs_new(pos_capacity, MoltObject::from_int(0).bits());
+        if builder_bits == 0 {
+            return exc_bits;
+        }
+        for &arg in args {
+            let _ = molt_callargs_push_pos(builder_bits, arg);
+        }
+        let _ = molt_call_bind(init_bits, builder_bits);
+        return exc_bits;
+    }
     if class_bits == builtins.str {
         match args.len() {
             0 => {
@@ -29682,7 +31879,36 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                 self_bits = Some(bound_method_self_bits(call_ptr));
             }
             TYPE_ID_TYPE => {
-                let inst_bits = alloc_instance_for_class(call_ptr);
+                let class_bits = MoltObject::from_ptr(call_ptr).bits();
+                let builtins = builtin_classes();
+                let inst_bits = if issubclass_bits(class_bits, builtins.base_exception) {
+                    let args_bits = if builder_ptr.is_null() {
+                        let args_ptr = alloc_tuple(&[]);
+                        if args_ptr.is_null() {
+                            return MoltObject::none().bits();
+                        }
+                        MoltObject::from_ptr(args_ptr).bits()
+                    } else {
+                        let args_ptr = callargs_ptr(builder_ptr);
+                        let tuple_ptr = if args_ptr.is_null() {
+                            alloc_tuple(&[])
+                        } else {
+                            alloc_tuple(&(*args_ptr).pos)
+                        };
+                        if tuple_ptr.is_null() {
+                            return MoltObject::none().bits();
+                        }
+                        MoltObject::from_ptr(tuple_ptr).bits()
+                    };
+                    let exc_ptr = alloc_exception_from_class_bits(class_bits, args_bits);
+                    dec_ref_bits(args_bits);
+                    if exc_ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    MoltObject::from_ptr(exc_ptr).bits()
+                } else {
+                    alloc_instance_for_class(call_ptr)
+                };
                 let init_name_bits =
                     intern_static_name(&runtime_state().interned.init_name, b"__init__");
                 let Some(init_bits) = class_attr_lookup_raw_mro(call_ptr, init_name_bits) else {
@@ -29726,6 +31952,21 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
         let mut args = Box::from_raw(args_ptr);
         if let Some(self_bits) = self_bits {
             args.pos.insert(0, self_bits);
+        }
+        let bind_kind_bits = function_attr_bits(
+            func_ptr,
+            intern_static_name(
+                &runtime_state().interned.molt_bind_kind,
+                b"__molt_bind_kind__",
+            ),
+        );
+        if let Some(kind_bits) = bind_kind_bits {
+            if obj_from_bits(kind_bits).as_int() == Some(BIND_KIND_OPEN) {
+                if let Some(bound_args) = bind_builtin_open(&args) {
+                    return call_function_obj_vec(func_bits, bound_args.as_slice());
+                }
+                return MoltObject::none().bits();
+            }
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         if fn_ptr == fn_addr!(molt_open_builtin) {
@@ -31022,6 +33263,60 @@ unsafe fn attr_lookup_ptr(obj_ptr: *mut u8, attr_bits: u64) -> Option<u64> {
                 inc_ref_bits(bits);
                 return Some(bits);
             }
+            "__class__" => {
+                let mut class_bits = exception_class_bits(obj_ptr);
+                if obj_from_bits(class_bits).is_none() || class_bits == 0 {
+                    let new_bits = exception_type_bits(exception_kind_bits(obj_ptr));
+                    let slot = obj_ptr.add(7 * std::mem::size_of::<u64>()) as *mut u64;
+                    let old_bits = *slot;
+                    if old_bits != new_bits {
+                        dec_ref_bits(old_bits);
+                        inc_ref_bits(new_bits);
+                        *slot = new_bits;
+                    }
+                    class_bits = new_bits;
+                }
+                inc_ref_bits(class_bits);
+                return Some(class_bits);
+            }
+            "__dict__" => {
+                let mut dict_bits = exception_dict_bits(obj_ptr);
+                if obj_from_bits(dict_bits).is_none() || dict_bits == 0 {
+                    let dict_ptr = alloc_dict_with_pairs(&[]);
+                    if dict_ptr.is_null() {
+                        return None;
+                    }
+                    let new_bits = MoltObject::from_ptr(dict_ptr).bits();
+                    let slot = obj_ptr.add(9 * std::mem::size_of::<u64>()) as *mut u64;
+                    let old_bits = *slot;
+                    if old_bits != new_bits {
+                        dec_ref_bits(old_bits);
+                        *slot = new_bits;
+                    }
+                    dict_bits = new_bits;
+                }
+                inc_ref_bits(dict_bits);
+                return Some(dict_bits);
+            }
+            "args" => {
+                let mut args_bits = exception_args_bits(obj_ptr);
+                if obj_from_bits(args_bits).is_none() || args_bits == 0 {
+                    let ptr = alloc_tuple(&[]);
+                    if ptr.is_null() {
+                        return None;
+                    }
+                    let new_bits = MoltObject::from_ptr(ptr).bits();
+                    let slot = obj_ptr.add(8 * std::mem::size_of::<u64>()) as *mut u64;
+                    let old_bits = *slot;
+                    if old_bits != new_bits {
+                        dec_ref_bits(old_bits);
+                        *slot = new_bits;
+                    }
+                    args_bits = new_bits;
+                }
+                inc_ref_bits(args_bits);
+                return Some(args_bits);
+            }
             "value" => {
                 let kind = string_obj_to_owned(obj_from_bits(exception_kind_bits(obj_ptr)));
                 if kind.as_deref() == Some("StopIteration") {
@@ -31031,6 +33326,32 @@ unsafe fn attr_lookup_ptr(obj_ptr: *mut u8, attr_bits: u64) -> Option<u64> {
                 }
             }
             _ => {}
+        }
+        let dict_bits = exception_dict_bits(obj_ptr);
+        if !obj_from_bits(dict_bits).is_none() && dict_bits != 0 {
+            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+                if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                    if let Some(bits) = dict_get_in_place(dict_ptr, attr_bits) {
+                        inc_ref_bits(bits);
+                        return Some(bits);
+                    }
+                }
+            }
+        }
+        let mut class_bits = exception_class_bits(obj_ptr);
+        if obj_from_bits(class_bits).is_none() || class_bits == 0 {
+            class_bits = exception_type_bits(exception_kind_bits(obj_ptr));
+        }
+        if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
+            if object_type_id(class_ptr) == TYPE_ID_TYPE {
+                if let Some(val_bits) = class_attr_lookup(class_ptr, class_ptr, Some(obj_ptr), attr_bits)
+                {
+                    return Some(val_bits);
+                }
+                if exception_pending() {
+                    return None;
+                }
+            }
         }
     }
     if type_id == TYPE_ID_GENERATOR {
@@ -31935,7 +34256,6 @@ pub unsafe extern "C" fn molt_set_attr_generic(
             return MoltObject::none().bits() as i64;
         };
         let name = string_obj_to_owned(obj_from_bits(attr_bits)).unwrap_or_default();
-        dec_ref_bits(attr_bits);
         if name == "__cause__" || name == "__context__" {
             let val_obj = obj_from_bits(val_bits);
             if !val_obj.is_none() {
@@ -31985,6 +34305,26 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                     }
                 }
             }
+            dec_ref_bits(attr_bits);
+            return MoltObject::none().bits() as i64;
+        }
+        if name == "args" {
+            let args_bits = exception_args_from_iterable(val_bits);
+            if obj_from_bits(args_bits).is_none() {
+                dec_ref_bits(attr_bits);
+                return MoltObject::none().bits() as i64;
+            }
+            let msg_bits = exception_message_from_args(args_bits);
+            if obj_from_bits(msg_bits).is_none() {
+                dec_ref_bits(args_bits);
+                dec_ref_bits(attr_bits);
+                return MoltObject::none().bits() as i64;
+            }
+            unsafe {
+                exception_store_args_and_message(obj_ptr, args_bits, msg_bits);
+                exception_set_stop_iteration_value(obj_ptr, args_bits);
+            }
+            dec_ref_bits(attr_bits);
             return MoltObject::none().bits() as i64;
         }
         if name == "__suppress_context__" {
@@ -31999,12 +34339,44 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                     *slot = suppress_bits;
                 }
             }
+            dec_ref_bits(attr_bits);
+            return MoltObject::none().bits() as i64;
+        }
+        if name == "__dict__" {
+            let val_obj = obj_from_bits(val_bits);
+            let Some(val_ptr) = val_obj.as_ptr() else {
+                let msg = format!(
+                    "__dict__ must be set to a dictionary, not a '{}'",
+                    type_name(val_obj)
+                );
+                dec_ref_bits(attr_bits);
+                raise!("TypeError", &msg);
+            };
+            if object_type_id(val_ptr) != TYPE_ID_DICT {
+                let msg = format!(
+                    "__dict__ must be set to a dictionary, not a '{}'",
+                    type_name(val_obj)
+                );
+                dec_ref_bits(attr_bits);
+                raise!("TypeError", &msg);
+            }
+            unsafe {
+                let slot = obj_ptr.add(9 * std::mem::size_of::<u64>()) as *mut u64;
+                let old_bits = *slot;
+                if old_bits != val_bits {
+                    dec_ref_bits(old_bits);
+                    inc_ref_bits(val_bits);
+                    *slot = val_bits;
+                }
+            }
+            dec_ref_bits(attr_bits);
             return MoltObject::none().bits() as i64;
         }
         if name == "value" {
             let kind = string_obj_to_owned(obj_from_bits(exception_kind_bits(obj_ptr)))
                 .unwrap_or_default();
             if kind != "StopIteration" {
+                dec_ref_bits(attr_bits);
                 return attr_error("exception", attr_name);
             }
             unsafe {
@@ -32016,8 +34388,32 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                     *slot = val_bits;
                 }
             }
+            dec_ref_bits(attr_bits);
             return MoltObject::none().bits() as i64;
         }
+        let mut dict_bits = exception_dict_bits(obj_ptr);
+        if obj_from_bits(dict_bits).is_none() || dict_bits == 0 {
+            let dict_ptr = alloc_dict_with_pairs(&[]);
+            if !dict_ptr.is_null() {
+                dict_bits = MoltObject::from_ptr(dict_ptr).bits();
+                let slot = obj_ptr.add(9 * std::mem::size_of::<u64>()) as *mut u64;
+                let old_bits = *slot;
+                if old_bits != dict_bits {
+                    dec_ref_bits(old_bits);
+                    *slot = dict_bits;
+                }
+            }
+        }
+        if !obj_from_bits(dict_bits).is_none() && dict_bits != 0 {
+            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+                if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                    dict_set_in_place(dict_ptr, attr_bits, val_bits);
+                    dec_ref_bits(attr_bits);
+                    return MoltObject::none().bits() as i64;
+                }
+            }
+        }
+        dec_ref_bits(attr_bits);
         return attr_error("exception", attr_name);
     }
     if type_id == TYPE_ID_FUNCTION {

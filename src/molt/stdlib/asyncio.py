@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Callable
+import builtins as _builtins
 import os as _os
+import sys as _sys
 
 import contextvars as _contextvars
 
@@ -51,8 +53,7 @@ class InvalidStateError(Exception):
     pass
 
 
-class TimeoutError(Exception):
-    pass
+TimeoutError = _builtins.TimeoutError
 
 
 class Future:
@@ -153,12 +154,84 @@ _EVENT_WAITERS: dict[int, list[Future]] = {}
 
 def _debug_gather_enabled() -> bool:
     try:
-        return _os.environ.get("MOLT_DEBUG_GATHER") == "1"
+        return _os.getenv("MOLT_DEBUG_GATHER") == "1"
     except Exception:
         return False
 
 
 _DEBUG_GATHER = _debug_gather_enabled()
+
+
+def _debug_wait_for_enabled() -> bool:
+    try:
+        return _os.getenv("MOLT_DEBUG_WAIT_FOR") == "1"
+    except Exception:
+        return False
+
+
+_DEBUG_WAIT_FOR = _debug_wait_for_enabled()
+
+
+def _debug_tasks_enabled() -> bool:
+    try:
+        return _os.getenv("MOLT_DEBUG_TASKS") == "1"
+    except Exception:
+        return False
+
+
+_DEBUG_TASKS = _debug_tasks_enabled()
+
+
+def _debug_write(message: str) -> None:
+    err = getattr(_sys, "stderr", None)
+    if err is None or not hasattr(err, "write"):
+        err = getattr(_sys, "__stderr__", None)
+    if err is not None and hasattr(err, "write"):
+        try:
+            err.write(f"{message}\n")
+            err.flush()
+            return None
+        except Exception:
+            pass
+    out = getattr(_sys, "stdout", None)
+    if out is not None and hasattr(out, "write"):
+        try:
+            out.write(f"{message}\n")
+            out.flush()
+            return None
+        except Exception:
+            pass
+    try:
+        print(message)
+    except Exception:
+        return None
+
+
+def _future_done(task: Any) -> bool:
+    if isinstance(task, Future):
+        return task._done
+    try:
+        return task.done()
+    except Exception:
+        return False
+
+
+def _future_cancelled(task: Any) -> bool:
+    if isinstance(task, Future):
+        return task._cancelled
+    try:
+        return task.cancelled()
+    except Exception:
+        return False
+
+
+def _future_exception(task: Any) -> BaseException | None:
+    if isinstance(task, Future):
+        return task._exception
+    try:
+        return task.exception()
+    except BaseException as err:
+        return err
 
 
 def _register_event_waiter(token_id: int, fut: Future) -> None:
@@ -229,12 +302,31 @@ class Task(Future):
     async def _runner(self) -> None:
         result: Any = None
         exc: BaseException | None = None
+        if _DEBUG_TASKS:
+            token_id = self._token.token_id()
+            coro_name = getattr(self._coro, "__qualname__", None) or getattr(
+                self._coro, "__name__", None
+            )
+            if coro_name is None:
+                coro_name = type(self._coro).__name__
+            _debug_write(f"asyncio_task_start token={token_id} coro={coro_name}")
         try:
             result = await self._coro
         except BaseException as err:
             exc = err
+            if _DEBUG_TASKS:
+                token_id = self._token.token_id()
+                _debug_write(
+                    "asyncio_task_exc token={token_id} type={exc_type}".format(
+                        token_id=token_id,
+                        exc_type=type(err).__name__,
+                    )
+                )
         if exc is None:
             self.set_result(result)
+            if _DEBUG_TASKS:
+                token_id = self._token.token_id()
+                _debug_write(f"asyncio_task_done token={token_id}")
         else:
             self.set_exception(exc)
         _cleanup_event_waiters_for_token(self._token.token_id())
@@ -369,6 +461,8 @@ async def wait_for(awaitable: Any, timeout: float | None) -> Any:
     timeout_val = float(timeout)
     if timeout_val <= 0.0:
         fut.cancel()
+        if _DEBUG_WAIT_FOR:
+            _debug_write("wait_for_debug: immediate cancel")
         try:
             return await fut
         except BaseException as exc:
@@ -376,19 +470,38 @@ async def wait_for(awaitable: Any, timeout: float | None) -> Any:
                 raise TimeoutError
             raise
     timer = ensure_future(sleep(timeout_val))
+    debug_loops = 0
     try:
         while True:
             if fut.done():
                 timer.cancel()
+                if _DEBUG_WAIT_FOR:
+                    _debug_write(
+                        "wait_for_debug: target done cancelled={}".format(
+                            fut.cancelled()
+                        )
+                    )
                 return fut.result()
             if timer.done():
                 fut.cancel()
+                if _DEBUG_WAIT_FOR:
+                    _debug_write("wait_for_debug: timer done, cancel target")
                 try:
                     return await fut
                 except BaseException as exc:
                     if _is_cancelled_exc(exc):
                         raise TimeoutError
                     raise
+            if _DEBUG_WAIT_FOR:
+                debug_loops += 1
+                if debug_loops % 1000 == 0:
+                    _debug_write(
+                        "wait_for_debug loops={loops} fut_done={fut_done} timer_done={timer_done}".format(
+                            loops=debug_loops,
+                            fut_done=fut.done(),
+                            timer_done=timer.done(),
+                        )
+                    )
             await sleep(0.0)
     except BaseException as exc:
         if _is_cancelled_exc(exc):
@@ -413,15 +526,15 @@ async def gather(*aws: Any, return_exceptions: bool = False) -> list[Any]:
         while idx < len(tasks):
             if not done[idx]:
                 task = tasks[idx]
-                if task.done():
+                if _future_done(task):
                     done[idx] = True
                     completed += 1
                     progress = True
                     exc: BaseException | None = None
-                    if task.cancelled():
+                    if _future_cancelled(task):
                         exc = CancelledError()
                     else:
-                        exc = task.exception()
+                        exc = _future_exception(task)
                     if exc is not None:
                         if return_exceptions:
                             results[idx] = exc
@@ -440,10 +553,14 @@ async def gather(*aws: Any, return_exceptions: bool = False) -> list[Any]:
                 debug_loops += 1
                 if debug_loops % 1000 == 0:
                     states = [
-                        (task.done(), task.cancelled(), getattr(task, "_done", None))
+                        (
+                            _future_done(task),
+                            _future_cancelled(task),
+                            getattr(task, "_done", None),
+                        )
                         for task in tasks
                     ]
-                    print(
+                    _debug_write(
                         f"gather_debug loops={debug_loops} completed={completed} states={states}"
                     )
             await sleep(0.0)

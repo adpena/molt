@@ -10,15 +10,40 @@
 - Keep Rust crate entrypoints (`lib.rs`) thin; place substantive runtime/backend logic in focused modules under `src/` and re-export from `lib.rs`.
 - Standardize naming: Python modules use `snake_case`, Rust crates use `kebab-case`, and paths reflect module names (avoid ad-hoc casing).
 
+## Key Docs
+- `docs/CANONICALS.md`: must-read documents for new work.
+- `docs/INDEX.md`: documentation map and entry points.
+- `docs/spec/README.md`: spec index by area.
+- `CONTRIBUTING.md`: workflow expectations and the change impact matrix.
+- `docs/DEVELOPER_GUIDE.md`: architecture map, layer ownership, and integration checklist.
+- `docs/spec/areas/core/0000-vision.md` and `docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md`: vision, scope, and explicit break policy.
+- `docs/spec/STATUS.md` and `docs/ROADMAP.md`: current scope, limits, and planned work.
+- `docs/OPERATIONS.md`: remote access, logging, benchmarks, progress reports, and multi-agent workflow.
+- `docs/BENCHMARKING.md`: benchmarking overview.
+
 ## Build, Test, and Development Commands
 - `cargo build --release --package molt-runtime`: build the Rust runtime used by compiled binaries.
 - `export PYTHONPATH=src`: make the Python package importable from the repo root.
 - `python3 -m molt.cli build examples/hello.py`: compile a Python example to a native binary.
 - `./hello_molt`: run the compiled output from the previous step.
+- `python3 -m molt.cli build --target wasm --linked examples/hello.py`: emit `output.wasm` and `output_linked.wasm` for wasm targets (linked requires `wasm-ld` + `wasm-tools`).
+- `python3 -m molt.cli build --target wasm --linked --linked-output dist/app.wasm examples/hello.py`: customize the linked output path.
+- `python3 -m molt.cli build --target wasm --require-linked examples/hello.py`: enforce linked output and remove the unlinked artifact after linking.
+- `MOLT_TRUSTED=1`, `molt run --trusted`, `molt build --trusted`, `molt diff --trusted`, or `molt test --trusted`: disable capability checks for trusted native deployments.
 - `tools/dev.py lint`: run `ruff` checks, `ruff format --check`, and `ty check` via `uv run` (Python 3.12).
 - `tools/dev.py test`: run the Python test suite (`pytest -q`) via `uv run` on Python 3.12/3.13/3.14.
 - `cargo test`: run Rust unit tests for runtime crates.
 - `uv sync --group bench --python 3.12`: install optional Cython/Numba benchmark deps before running `tools/bench.py` (Numba requires <3.13).
+
+## WASM Tooling
+- Bench harness: `tools/bench_wasm.py` (`--linked` uses `wasm-ld` when available; `--require-linked` aborts if linking fails).
+- Linking helper: `tools/wasm_link.py` (single-module linking via `wasm-ld`).
+- Profiling helper: `tools/wasm_profile.py` (Node `--cpu-prof` for wasm benches).
+- Inspect binaries: `wasm-tools print <file.wasm>` for imports/exports/sections.
+- Runtime harness: `run_wasm.js` (Node/WASI; prefers `*_linked.wasm` when present, set `MOLT_WASM_PREFER_LINKED=0` to opt out).
+- Runner prefers linked wasm when `*_linked.wasm` exists next to the input (disable with `MOLT_WASM_PREFER_LINKED=0`).
+- Linked builds require `wasm-ld` and `wasm-tools` (install via Homebrew `llvm` + `wasm-tools` or Cargo).
+- Override relocatable table base with `MOLT_WASM_TABLE_BASE=<u32>` (defaults to runtime table size when available).
 
 ## Coding Style & Naming Conventions
 - Python: 4-space indentation, `ruff` line length 88, target version 3.13, and strict typing via `ty`.
@@ -69,12 +94,12 @@
 - NON-NEGOTIABLE: For any partial, hacky, or missing functionality (or any stub/workaround), add explicit inline TODO markers (e.g., `TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): ...`) so follow-ups are discoverable and never deferred.
 - Whenever a stub/partial feature or optimization candidate is added, update `README.md`, the relevant `docs/spec/` file(s), and `ROADMAP.md` in the same change.
 - When major features or optimizations land, run benchmarks with JSON output (`python3 tools/bench.py --json`) and update the Performance & Comparisons section in `README.md` with the summarized results.
-- Follow `docs/spec/0015_STDLIB_COMPATIBILITY_MATRIX.md` for stdlib scope, tiers (core vs import vs gated), and promotion rules.
+- Follow `docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md` for stdlib scope, tiers (core vs import vs gated), and promotion rules.
 - Keep stdlib modules import-only by default; only promote to core after updating the stdlib matrix and `ROADMAP.md`.
 - Treat I/O, OS, network, and process modules as capability-gated and document the required permissions in specs.
 
 ## TODO Taxonomy (Required)
-Use a single, explicit TODO format everywhere (code + docs + tests). This is how we track gaps safely and keep LLMs aligned.
+Use a single, explicit TODO format everywhere (code + docs + tests). This is how we track gaps safely.
 
 **Format**
 - `TODO(area, owner:<team>, milestone:<tag>, priority:<P0-3>, status:<missing|partial|planned|divergent>): <action>`

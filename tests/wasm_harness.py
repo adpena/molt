@@ -134,10 +134,14 @@ const BUILTIN_TYPE_TAGS = new Map([
   [15, 'memoryview'],
   [100, 'object'],
   [101, 'type'],
+  [102, 'BaseException'],
+  [103, 'Exception'],
 ]);
 const builtinTypes = new Map();
 const builtinBaseTag = (tag) => {
   if (tag === 3) return 1;
+  if (tag === 103) return 102;
+  if (tag === 102) return 100;
   if (tag === 101) return 100;
   if (tag === 100) return null;
   if (tag === 4) return 100;
@@ -145,6 +149,16 @@ const builtinBaseTag = (tag) => {
 };
 const getBuiltinType = (tag) => {
   if (builtinTypes.has(tag)) return builtinTypes.get(tag);
+  if (tag === 102) {
+    const clsBits = getBaseExceptionClass();
+    builtinTypes.set(tag, clsBits);
+    return clsBits;
+  }
+  if (tag === 103) {
+    const clsBits = getExceptionClass();
+    builtinTypes.set(tag, clsBits);
+    return clsBits;
+  }
   const name = BUILTIN_TYPE_TAGS.get(tag);
   if (!name) return boxNone();
   const baseTag = builtinBaseTag(tag);
@@ -215,6 +229,8 @@ const GEN_EXC_DEPTH_OFFSET = 24;
 const GEN_FRAME_OFFSET = 32;
 const GEN_YIELD_FROM_OFFSET = 40;
 const GEN_CONTROL_SIZE = 48;
+const TASK_KIND_FUTURE = 0n;
+const TASK_KIND_GENERATOR = 1n;
 const GEN_FLAG_STARTED = 1n << 2n;
 const GEN_FLAG_RUNNING = 1n << 3n;
 const align = (size, align) => (size + (align - 1)) & ~(align - 1);
@@ -651,6 +667,32 @@ const getTableFunc = (idx) => {
   if (!table) return null;
   return table.get(idx);
 };
+const DIRECT_CALL_MAX = 12;
+const callFunctionTrampoline = (func, args) => {
+  if (!memory) {
+    throw new Error('RuntimeError: wasm memory unavailable for trampoline');
+  }
+  if (!func || !func.trampoline) {
+    throw new Error('RuntimeError: function trampoline missing');
+  }
+  const trampFn = getTableFunc(func.trampoline);
+  if (!trampFn) {
+    throw new Error('RuntimeError: function trampoline not found');
+  }
+  let addr = 0;
+  if (args.length) {
+    addr = allocRaw(args.length * 8);
+    if (!addr) {
+      throw new Error('RuntimeError: trampoline arg allocation failed');
+    }
+    const view = new DataView(memory.buffer);
+    for (let i = 0; i < args.length; i += 1) {
+      view.setBigInt64(addr + i * 8, args[i], true);
+    }
+  }
+  const closureBits = func.closure !== undefined ? BigInt(func.closure) : 0n;
+  return trampFn(closureBits, BigInt(addr), BigInt(args.length));
+};
 const callFunctionBits = (funcBits, args) => {
   const func = getFunction(funcBits);
   if (!func) {
@@ -659,6 +701,9 @@ const callFunctionBits = (funcBits, args) => {
   const fn = getTableFunc(func.idx);
   if (!fn) {
     throw new Error('TypeError: call expects function object');
+  }
+  if (func.trampoline && args.length > DIRECT_CALL_MAX && memory) {
+    return callFunctionTrampoline(func, args);
   }
   if (func.closure && func.closure !== 0n && isPtr(func.closure)) {
     return fn(func.closure, ...args);
@@ -755,7 +800,14 @@ const typeName = (val) => {
   const obj = getObj(val);
   if (obj) {
     if (obj.type === 'class') return obj.name ?? 'type';
-    if (obj.type === 'exception') return getStr(obj.kindBits) || 'Exception';
+    if (obj.type === 'exception') {
+      const classBits = obj.classBits;
+      if (classBits && !isNone(classBits)) {
+        const cls = getClass(classBits);
+        if (cls && cls.name) return cls.name;
+      }
+      return getStr(obj.kindBits) || 'Exception';
+    }
     if (obj.type === 'str') return 'str';
     if (obj.type === 'bytes') return 'bytes';
     if (obj.type === 'bytearray') return 'bytearray';
@@ -2058,7 +2110,84 @@ const getSuperType = () => {
 };
 let baseExceptionBits = null;
 let exceptionBits = null;
+let frameTypeBits = null;
+let tracebackTypeBits = null;
 const exceptionClasses = new Map();
+const exceptionAliases = new Map([
+  ['EnvironmentError', 'OSError'],
+  ['IOError', 'OSError'],
+  ['WindowsError', 'OSError'],
+]);
+const exceptionBaseSpecs = new Map([
+  ['BaseExceptionGroup', ['BaseException']],
+  ['ExceptionGroup', ['BaseExceptionGroup', 'Exception']],
+  ['GeneratorExit', ['BaseException']],
+  ['KeyboardInterrupt', ['BaseException']],
+  ['SystemExit', ['BaseException']],
+  [
+    'ArithmeticError',
+    ['Exception'],
+  ],
+  ['AssertionError', ['Exception']],
+  ['AttributeError', ['Exception']],
+  ['BufferError', ['Exception']],
+  ['EOFError', ['Exception']],
+  ['ImportError', ['Exception']],
+  ['LookupError', ['Exception']],
+  ['MemoryError', ['Exception']],
+  ['NameError', ['Exception']],
+  ['OSError', ['Exception']],
+  ['ReferenceError', ['Exception']],
+  ['RuntimeError', ['Exception']],
+  ['StopIteration', ['Exception']],
+  ['StopAsyncIteration', ['Exception']],
+  ['SyntaxError', ['Exception']],
+  ['SystemError', ['Exception']],
+  ['TypeError', ['Exception']],
+  ['ValueError', ['Exception']],
+  ['Warning', ['Exception']],
+  ['FloatingPointError', ['ArithmeticError']],
+  ['OverflowError', ['ArithmeticError']],
+  ['ZeroDivisionError', ['ArithmeticError']],
+  ['ModuleNotFoundError', ['ImportError']],
+  ['IndexError', ['LookupError']],
+  ['KeyError', ['LookupError']],
+  ['UnboundLocalError', ['NameError']],
+  ['ConnectionError', ['OSError']],
+  ['BrokenPipeError', ['ConnectionError']],
+  ['ConnectionAbortedError', ['ConnectionError']],
+  ['ConnectionRefusedError', ['ConnectionError']],
+  ['ConnectionResetError', ['ConnectionError']],
+  ['BlockingIOError', ['OSError']],
+  ['ChildProcessError', ['OSError']],
+  ['FileExistsError', ['OSError']],
+  ['FileNotFoundError', ['OSError']],
+  ['InterruptedError', ['OSError']],
+  ['IsADirectoryError', ['OSError']],
+  ['NotADirectoryError', ['OSError']],
+  ['PermissionError', ['OSError']],
+  ['ProcessLookupError', ['OSError']],
+  ['TimeoutError', ['OSError']],
+  ['NotImplementedError', ['RuntimeError']],
+  ['RecursionError', ['RuntimeError']],
+  ['IndentationError', ['SyntaxError']],
+  ['TabError', ['IndentationError']],
+  ['UnicodeError', ['ValueError']],
+  ['UnicodeDecodeError', ['UnicodeError']],
+  ['UnicodeEncodeError', ['UnicodeError']],
+  ['UnicodeTranslateError', ['UnicodeError']],
+  ['DeprecationWarning', ['Warning']],
+  ['PendingDeprecationWarning', ['Warning']],
+  ['RuntimeWarning', ['Warning']],
+  ['SyntaxWarning', ['Warning']],
+  ['UserWarning', ['Warning']],
+  ['FutureWarning', ['Warning']],
+  ['ImportWarning', ['Warning']],
+  ['UnicodeWarning', ['Warning']],
+  ['BytesWarning', ['Warning']],
+  ['ResourceWarning', ['Warning']],
+  ['EncodingWarning', ['Warning']],
+]);
 const makeExceptionClass = (name, baseBits) => {
   const clsBits = boxPtr({
     type: 'class',
@@ -2089,11 +2218,33 @@ const getExceptionClass = () => {
   exceptionBits = makeExceptionClass('Exception', getBaseExceptionClass());
   return exceptionBits;
 };
+const getFrameType = () => {
+  if (frameTypeBits) return frameTypeBits;
+  frameTypeBits = makeExceptionClass('frame', getBuiltinType(100));
+  return frameTypeBits;
+};
+const getTracebackType = () => {
+  if (tracebackTypeBits) return tracebackTypeBits;
+  tracebackTypeBits = makeExceptionClass('traceback', getBuiltinType(100));
+  return tracebackTypeBits;
+};
 const getExceptionClassForName = (name) => {
   if (name === 'BaseException') return getBaseExceptionClass();
   if (name === 'Exception') return getExceptionClass();
   if (exceptionClasses.has(name)) return exceptionClasses.get(name);
-  const clsBits = makeExceptionClass(name, getExceptionClass());
+  const alias = exceptionAliases.get(name);
+  if (alias) {
+    const aliasBits = getExceptionClassForName(alias);
+    exceptionClasses.set(name, aliasBits);
+    return aliasBits;
+  }
+  const baseNames = exceptionBaseSpecs.get(name);
+  let baseBits = getExceptionClass();
+  if (baseNames && baseNames.length) {
+    const baseBitsList = baseNames.map((base) => getExceptionClassForName(base));
+    baseBits = baseBitsList.length === 1 ? baseBitsList[0] : tupleFromArray(baseBitsList);
+  }
+  const clsBits = makeExceptionClass(name, baseBits);
   exceptionClasses.set(name, clsBits);
   return clsBits;
 };
@@ -2152,7 +2303,7 @@ const isTruthyBits = (val) => {
   }
   return false;
 };
-const lookupExceptionAttr = (exc, name) => {
+const lookupExceptionAttr = (excBits, exc, name) => {
   switch (name) {
     case '__cause__':
       return exc.causeBits;
@@ -2162,14 +2313,31 @@ const lookupExceptionAttr = (exc, name) => {
       return exc.suppressBits;
     case '__traceback__':
       return exc.traceBits ?? boxNone();
+    case '__class__':
+      return exc.classBits || exceptionClass(exc.kindBits);
+    case '__dict__':
+      return exceptionEnsureDict(exc);
+    case 'args':
+      return exc.argsBits || tupleFromArray([]);
     case 'value':
       if (getStr(exc.kindBits) === 'StopIteration') {
         return exc.valueBits ?? boxNone();
       }
-      return undefined;
-    default:
-      return undefined;
+      break;
   }
+  const dictBits = exc.dictBits;
+  if (dictBits && !isNone(dictBits)) {
+    const dict = getDict(dictBits);
+    if (dict) {
+      const nameBits = boxPtr({ type: 'str', value: name });
+      const value = dictGetValue(dict, nameBits);
+      if (value !== null) return value;
+    }
+  }
+  const classBits = exc.classBits || exceptionClass(exc.kindBits);
+  const val = lookupClassAttr(classBits, name, excBits);
+  if (val !== undefined) return val;
+  return undefined;
 };
 const makeBoundMethod = (funcBits, selfBits) => {
   const addr = allocRaw(16);
@@ -2217,7 +2385,7 @@ const lookupClassAttr = (classBits, name, instanceBits = null, startAfter = null
 const lookupAttr = (objBits, name) => {
   const exc = getException(objBits);
   if (exc) {
-    return lookupExceptionAttr(exc, name);
+    return lookupExceptionAttr(objBits, exc, name);
   }
   const superObj = getObj(objBits);
   if (superObj && superObj.type === 'super') {
@@ -2240,6 +2408,10 @@ const lookupAttr = (objBits, name) => {
     return func.attrs.get(name);
   }
   const obj = getObj(objBits);
+  if (obj && obj.type === 'module') {
+    const val = obj.attrs.get(name);
+    return val === undefined ? undefined : val;
+  }
   if (obj && obj.type === 'memoryview') {
     if (name === 'format') return obj.formatBits ?? boxNone();
     if (name === 'itemsize') return boxInt(obj.itemsize);
@@ -2329,7 +2501,7 @@ const lookupAttr = (objBits, name) => {
 const lookupSpecialAttr = (objBits, name) => {
   const exc = getException(objBits);
   if (exc) {
-    return lookupExceptionAttr(exc, name);
+    return lookupExceptionAttr(objBits, exc, name);
   }
   const superObj = getObj(objBits);
   if (superObj && superObj.type === 'super') {
@@ -2371,8 +2543,11 @@ const typeOfBits = (objBits) => {
     if (obj.type === 'class') return getBuiltinType(101);
     if (obj.type === 'super') return getSuperType();
     if (obj.type === 'exception') {
+      if (obj.classBits && !isNone(obj.classBits)) return obj.classBits;
       const name = getStr(obj.kindBits) || 'Exception';
-      return getExceptionClassForName(name);
+      const clsBits = getExceptionClassForName(name);
+      obj.classBits = clsBits;
+      return clsBits;
     }
     if (obj.type === 'str') return getBuiltinType(5);
     if (obj.type === 'bytes') return getBuiltinType(6);
@@ -2393,7 +2568,18 @@ const typeOfBits = (objBits) => {
 };
 const getAttrValue = (objBits, name) => {
   const val = lookupAttr(objBits, name);
-  if (val === undefined) return boxNone();
+  if (val === undefined) {
+    const exc = exceptionNew(
+      boxPtr({ type: 'str', value: 'AttributeError' }),
+      exceptionArgs(
+        boxPtr({
+          type: 'str',
+          value: `'${typeName(objBits)}' object has no attribute '${name}'`,
+        }),
+      ),
+    );
+    return raiseException(exc);
+  }
   return val;
 };
 const getAttrSpecialValue = (objBits, name) => {
@@ -2426,8 +2612,33 @@ const setExceptionAttr = (exc, name, valBits) => {
     exc.traceBits = valBits;
     return true;
   }
+  if (name === 'args') {
+    const argsBits = exceptionArgsFromIterable(valBits);
+    if (argsBits === null) return true;
+    exc.argsBits = argsBits;
+    exc.msgBits = exceptionMessageFromArgs(argsBits);
+    exceptionSetValueFromArgs(exc, argsBits);
+    return true;
+  }
+  if (name === '__dict__') {
+    const dict = getDict(valBits);
+    if (!dict) {
+      throw new Error(
+        `TypeError: __dict__ must be set to a dictionary, not a '${typeName(valBits)}'`,
+      );
+    }
+    exc.dictBits = valBits;
+    return true;
+  }
   if (name === 'value' && getStr(exc.kindBits) === 'StopIteration') {
     exc.valueBits = valBits;
+    return true;
+  }
+  const dictBits = exceptionEnsureDict(exc);
+  const dict = getDict(dictBits);
+  if (dict) {
+    const nameBits = boxPtr({ type: 'str', value: name });
+    dictSetValue(dict, nameBits, valBits);
     return true;
   }
   return false;
@@ -2461,6 +2672,11 @@ const setAttrValue = (objBits, name, valBits) => {
       func.attrs = new Map();
     }
     func.attrs.set(name, valBits);
+    return boxNone();
+  }
+  const moduleObj = getModule(objBits);
+  if (moduleObj) {
+    moduleObj.attrs.set(name, valBits);
     return boxNone();
   }
   const instanceAttrsMap = getInstanceAttrMap(objBits);
@@ -2564,17 +2780,136 @@ const exceptionSetDepth = (depth) => {
     activeExceptionStack.push(boxNone());
   }
 };
-const exceptionNew = (kindBits, msgBits) => {
-  return boxPtr({
+const exceptionArgsItems = (argsBits) => {
+  if (isNone(argsBits) || argsBits === 0n) return [];
+  const obj = getObj(argsBits);
+  if (obj && obj.type === 'tuple') return obj.items;
+  if (obj && obj.type === 'list') return obj.items;
+  return [argsBits];
+};
+const exceptionNormalizeArgs = (argsBits) => {
+  if (isNone(argsBits) || argsBits === 0n) return tupleFromArray([]);
+  const obj = getObj(argsBits);
+  if (obj && obj.type === 'tuple') return argsBits;
+  if (obj && obj.type === 'list') return tupleFromArray([...obj.items]);
+  return tupleFromArray([argsBits]);
+};
+const exceptionArgs = (msgBits) => tupleFromArray([msgBits]);
+const exceptionArgsFromIterable = (argsBits) => {
+  const obj = getObj(argsBits);
+  if (obj && obj.type === 'tuple') return argsBits;
+  if (obj && obj.type === 'list') return tupleFromArray([...obj.items]);
+  const errMsg = `'${typeName(argsBits)}' object is not iterable`;
+  const items = collectIterableValues(argsBits, errMsg);
+  if (items === null) return null;
+  return tupleFromArray(items);
+};
+const exceptionMessageFromArgs = (argsBits) => {
+  const items = exceptionArgsItems(argsBits);
+  if (items.length === 0) return boxPtr({ type: 'str', value: '' });
+  if (items.length === 1) return baseImports.str_from_obj(items[0]);
+  return baseImports.str_from_obj(argsBits);
+};
+const exceptionClass = (kindBits) => {
+  const name = getStrObj(kindBits);
+  if (name === null) {
+    throw new Error('TypeError: exception kind must be a str');
+  }
+  return getExceptionClassForName(name);
+};
+const exceptionEnsureDict = (exc) => {
+  if (!exc.dictBits || isNone(exc.dictBits)) {
+    exc.dictBits = boxPtr({ type: 'dict', entries: [], lookup: new Map() });
+  }
+  return exc.dictBits;
+};
+const exceptionSetValueFromArgs = (exc, argsBits) => {
+  if (getStr(exc.kindBits) !== 'StopIteration') return;
+  const items = exceptionArgsItems(argsBits);
+  exc.valueBits = items.length ? items[0] : boxNone();
+};
+const formatTupleRepr = (items) => {
+  const rendered = items.map((item) => reprStringFromBits(item));
+  if (items.length === 1) {
+    return `(${rendered[0]},)`;
+  }
+  return `(${rendered.join(', ')})`;
+};
+const exceptionReprFromArgs = (kind, argsBits) => {
+  const items = exceptionArgsItems(argsBits);
+  if (items.length === 0) return `${kind}()`;
+  if (items.length === 1) return `${kind}(${reprStringFromBits(items[0])})`;
+  return `${kind}${formatTupleRepr(items)}`;
+};
+const reprStringFromBits = (val) => {
+  if (isTag(val, TAG_INT)) return unboxInt(val).toString();
+  if (isFloat(val)) return formatFloat(bitsToFloat(val));
+  if (isTag(val, TAG_BOOL)) return (val & 1n) === 1n ? 'True' : 'False';
+  if (isTag(val, TAG_NONE)) return 'None';
+  const obj = getObj(val);
+  if (obj && obj.type === 'str') return formatStringRepr(obj.value);
+  if (obj && obj.type === 'exception') {
+    const kind = getStr(obj.kindBits) || 'Exception';
+    return exceptionReprFromArgs(kind, obj.argsBits || boxNone());
+  }
+  if (obj && obj.type === 'bigint') return obj.value.toString();
+  if (obj && obj.type === 'tuple') return formatTupleRepr(obj.items);
+  if (obj && obj.type === 'list') {
+    return `[${obj.items.map((item) => reprStringFromBits(item)).join(', ')}]`;
+  }
+  return '<obj>';
+};
+const exceptionNew = (kindBits, argsBits) => {
+  const normArgsBits = exceptionNormalizeArgs(argsBits);
+  const msgBits = exceptionMessageFromArgs(normArgsBits);
+  const classBits = exceptionClass(kindBits);
+  const exc = {
     type: 'exception',
     kindBits,
     msgBits,
+    argsBits: normArgsBits,
+    classBits,
+    dictBits: boxNone(),
     valueBits: boxNone(),
     causeBits: boxNone(),
     contextBits: boxNone(),
     suppressBits: boxBool(false),
     traceBits: boxNone(),
-  });
+  };
+  exceptionSetValueFromArgs(exc, normArgsBits);
+  return boxPtr(exc);
+};
+const exceptionNewFromClass = (classBits, argsBits) => {
+  const cls = getClass(classBits);
+  if (!cls) {
+    throw new Error('TypeError: exception class must be a type');
+  }
+  let kindBits = null;
+  const nameBits = cls.attrs ? cls.attrs.get('__name__') : undefined;
+  if (nameBits !== undefined && getStrObj(nameBits) !== null) {
+    kindBits = nameBits;
+  } else if (cls.name) {
+    kindBits = boxPtr({ type: 'str', value: cls.name });
+  } else {
+    kindBits = boxPtr({ type: 'str', value: 'Exception' });
+  }
+  const normArgsBits = exceptionNormalizeArgs(argsBits);
+  const msgBits = exceptionMessageFromArgs(normArgsBits);
+  const exc = {
+    type: 'exception',
+    kindBits,
+    msgBits,
+    argsBits: normArgsBits,
+    classBits,
+    dictBits: boxNone(),
+    valueBits: boxNone(),
+    causeBits: boxNone(),
+    contextBits: boxNone(),
+    suppressBits: boxBool(false),
+    traceBits: boxNone(),
+  };
+  exceptionSetValueFromArgs(exc, normArgsBits);
+  return boxPtr(exc);
 };
 const exceptionSetCause = (excBits, causeBits) => {
   const exc = getException(excBits);
@@ -2609,7 +2944,11 @@ const exceptionKind = (excBits) => {
 const exceptionMessage = (excBits) => {
   const exc = getException(excBits);
   if (!exc) return boxNone();
-  return exc.msgBits;
+  if (exc.msgBits && !isNone(exc.msgBits)) return exc.msgBits;
+  const argsBits = exc.argsBits || boxNone();
+  const msgBits = exceptionMessageFromArgs(argsBits);
+  exc.msgBits = msgBits;
+  return msgBits;
 };
 const exceptionLast = () => lastException;
 const exceptionActive = () => {
@@ -2653,14 +2992,41 @@ const frameStackPop = () => {
     frameStack.pop();
   }
 };
+const frameObjectBits = (codeBits, line) => {
+  // TODO(introspection, owner:runtime, milestone:TC2, priority:P1, status:partial): expand frame fields (f_back, f_globals, f_locals) and keep f_lasti/f_lineno updated.
+  if (!memory) return boxNone();
+  const classBits = getFrameType();
+  const frameBits = allocInstanceForClass(classBits);
+  if (isNone(frameBits)) return boxNone();
+  const attrs = getInstanceAttrMap(frameBits);
+  if (attrs) {
+    attrs.set('f_code', codeBits);
+    attrs.set('f_lineno', boxInt(BigInt(line)));
+    attrs.set('f_lasti', boxInt(-1n));
+  }
+  return frameBits;
+};
+const tracebackObjectBits = (frameBits, line, nextBits) => {
+  if (!memory) return boxNone();
+  const classBits = getTracebackType();
+  const tbBits = allocInstanceForClass(classBits);
+  if (isNone(tbBits)) return boxNone();
+  const attrs = getInstanceAttrMap(tbBits);
+  if (attrs) {
+    attrs.set('tb_frame', frameBits);
+    attrs.set('tb_lineno', boxInt(BigInt(line)));
+    attrs.set('tb_next', nextBits);
+  }
+  return tbBits;
+};
 const frameStackTraceBits = () => {
   if (!frameStack.length) return null;
-  const frames = [];
-  for (const entry of frameStack) {
+  let nextBits = boxNone();
+  let built = false;
+  for (let idx = frameStack.length - 1; idx >= 0; idx -= 1) {
+    const entry = frameStack[idx];
     const codeObj = getCode(entry.codeBits);
     if (!codeObj) continue;
-    const filenameBits = codeObj.filenameBits ?? boxNone();
-    const nameBits = codeObj.nameBits ?? boxNone();
     let line = entry.line || 0;
     if (!line) {
       const rawLine = Number(codeObj.firstlineno);
@@ -2669,13 +3035,49 @@ const frameStackTraceBits = () => {
     if (!Number.isFinite(line)) {
       line = 0;
     }
-    frames.push(tupleFromArray([filenameBits, boxInt(BigInt(line)), nameBits]));
+    const frameBits = frameObjectBits(entry.codeBits, line);
+    if (isNone(frameBits)) continue;
+    const tbBits = tracebackObjectBits(frameBits, line, nextBits);
+    if (isNone(tbBits)) continue;
+    nextBits = tbBits;
+    built = true;
   }
-  if (!frames.length) return null;
-  return tupleFromArray(frames);
+  return built ? nextBits : null;
 };
 const raiseException = (excBits) => {
-  const exc = getException(excBits);
+  let exc = getException(excBits);
+  if (!exc) {
+    const cls = getClass(excBits);
+    if (!cls || !isSubclass(excBits, getBaseExceptionClass())) {
+      const errExc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(
+          boxPtr({
+            type: 'str',
+            value: 'exceptions must derive from BaseException',
+          }),
+        ),
+      );
+      excBits = errExc;
+      exc = getException(excBits);
+    } else {
+      const instBits = exceptionNewFromClass(excBits, tupleFromArray([]));
+      if (!isNone(instBits)) {
+        const initBits = lookupClassAttr(excBits, '__init__');
+        if (initBits !== undefined && !isNone(initBits)) {
+          const builder = baseImports.callargs_new(boxInt(0), boxInt(0));
+          const args = getCallArgs(builder);
+          if (args) {
+            args.pos.unshift(instBits);
+          }
+          baseImports.call_bind(initBits, builder);
+          if (exceptionPending() !== 0n) return boxNone();
+        }
+        excBits = instBits;
+        exc = getException(excBits);
+      }
+    }
+  }
   if (exc) {
     const traceBits = frameStackTraceBits();
     exc.traceBits = traceBits === null ? boxNone() : traceBits;
@@ -2930,7 +3332,7 @@ const generatorClose = (gen) => {
   exceptionSetDepth(genDepth);
   const exc = exceptionNew(
     boxPtr({ type: 'str', value: 'GeneratorExit' }),
-    boxPtr({ type: 'str', value: '' }),
+    boxNone(),
   );
   view.setBigInt64(addr + GEN_THROW_OFFSET, exc, true);
   view.setBigInt64(addr + GEN_SEND_OFFSET, boxNone(), true);
@@ -2982,7 +3384,9 @@ const generatorClose = (gen) => {
       if (!done) {
         const errExc = exceptionNew(
           boxPtr({ type: 'str', value: 'RuntimeError' }),
-          boxPtr({ type: 'str', value: 'generator ignored GeneratorExit' }),
+          exceptionArgs(
+            boxPtr({ type: 'str', value: 'generator ignored GeneratorExit' }),
+          ),
         );
         raiseException(errExc);
       }
@@ -3000,14 +3404,13 @@ const generatorPairToValue = (pairBits) => {
   const valBits = pair.items[0];
   const doneBits = pair.items[1];
   if (isTag(doneBits, TAG_BOOL) && (doneBits & 1n) === 1n) {
-    const msgBits = isNone(valBits)
-      ? boxPtr({ type: 'str', value: '' })
-      : baseImports.str_from_obj(valBits);
+    const argsBits = isNone(valBits)
+      ? tupleFromArray([])
+      : tupleFromArray([valBits]);
     const exc = exceptionNew(
       boxPtr({ type: 'str', value: 'StopIteration' }),
-      msgBits,
+      argsBits,
     );
-    exceptionSetValue(exc, valBits);
     return raiseException(exc);
   }
   return valBits;
@@ -3096,7 +3499,7 @@ const getGeneratorMethodBits = (name) => {
     arity = 1;
   }
   if (idx === null) return boxNone();
-  const bits = baseImports.func_new(BigInt(idx), BigInt(arity));
+  const bits = baseImports.func_new(BigInt(idx), 0n, BigInt(arity));
   generatorMethodBits.set(name, bits);
   return bits;
 };
@@ -3473,7 +3876,7 @@ const getBuiltinMethodBits = (classBits, name) => {
   if (!fn) return boxNone();
   const idx = getOrAddTableFunc(fn, arity);
   if (idx === null) return boxNone();
-  const bits = baseImports.func_new(BigInt(idx), BigInt(arity));
+  const bits = baseImports.func_new(BigInt(idx), 0n, BigInt(arity));
   const func = getFunction(bits);
   if (func) {
     func.builtinName = key;
@@ -3524,7 +3927,7 @@ const bindBuiltinCall = (funcBits, func, args) => {
   }
   if (name === 'list.sort') {
     if (out.length === 1) {
-      out.push(missingSentinel());
+      out.push(boxNone());
       out.push(boxBool(false));
     } else if (out.length === 2) {
       out.push(boxBool(false));
@@ -3762,7 +4165,7 @@ BASE_IMPORTS = """\
     if (!isPtr(ptrBits) || heap.has(ptrBits & POINTER_MASK) || !memory || !table) {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'TypeError' }),
-        boxPtr({ type: 'str', value: 'object is not awaitable' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'object is not awaitable' })),
       );
       raiseException(exc);
       return boxNone();
@@ -3770,7 +4173,7 @@ BASE_IMPORTS = """\
     if (tokenIsCancelled(currentTokenId)) {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'CancelledError' }),
-        boxPtr({ type: 'str', value: '' }),
+        boxNone(),
       );
       raiseException(exc);
       return boxNone();
@@ -3782,7 +4185,7 @@ BASE_IMPORTS = """\
     if (!poll) {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'TypeError' }),
-        boxPtr({ type: 'str', value: 'object is not awaitable' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'object is not awaitable' })),
       );
       raiseException(exc);
       return boxNone();
@@ -3802,7 +4205,7 @@ BASE_IMPORTS = """\
     if (!isPtr(ptrBits) || heap.has(ptrBits & POINTER_MASK) || !memory || !table) {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'TypeError' }),
-        boxPtr({ type: 'str', value: 'object is not awaitable' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'object is not awaitable' })),
       );
       raiseException(exc);
       return -1n;
@@ -3814,7 +4217,7 @@ BASE_IMPORTS = """\
     if (!poll) {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'TypeError' }),
-        boxPtr({ type: 'str', value: 'object is not awaitable' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'object is not awaitable' })),
       );
       raiseException(exc);
       return -1n;
@@ -3833,7 +4236,7 @@ BASE_IMPORTS = """\
       if (!Number.isInteger(taskPtr) || taskPtr < 0) {
         const exc = exceptionNew(
           boxPtr({ type: 'str', value: 'TypeError' }),
-          boxPtr({ type: 'str', value: 'object is not awaitable' }),
+          exceptionArgs(boxPtr({ type: 'str', value: 'object is not awaitable' })),
         );
         raiseException(exc);
         return 0n;
@@ -3846,7 +4249,7 @@ BASE_IMPORTS = """\
     } else {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'TypeError' }),
-        boxPtr({ type: 'str', value: 'object is not awaitable' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'object is not awaitable' })),
       );
       raiseException(exc);
       return 0n;
@@ -4638,6 +5041,37 @@ BASE_IMPORTS = """\
             Buffer.from(left.data).equals(Buffer.from(right.data)),
           );
         }
+        if (left.type === 'list' && right.type === 'list') {
+          if (left.items.length !== right.items.length) return boxBool(false);
+          for (let i = 0; i < left.items.length; i += 1) {
+            if (!isTruthyBits(baseImports.eq(left.items[i], right.items[i]))) {
+              return boxBool(false);
+            }
+          }
+          return boxBool(true);
+        }
+        if (left.type === 'tuple' && right.type === 'tuple') {
+          if (left.items.length !== right.items.length) return boxBool(false);
+          for (let i = 0; i < left.items.length; i += 1) {
+            if (!isTruthyBits(baseImports.eq(left.items[i], right.items[i]))) {
+              return boxBool(false);
+            }
+          }
+          return boxBool(true);
+        }
+        if (left.type === 'dict' && right.type === 'dict') {
+          if (left.entries.length !== right.entries.length) {
+            return boxBool(false);
+          }
+          for (const [keyBits, valBits] of left.entries) {
+            const otherVal = dictGetValue(right, keyBits);
+            if (otherVal === null) return boxBool(false);
+            if (!isTruthyBits(baseImports.eq(valBits, otherVal))) {
+              return boxBool(false);
+            }
+          }
+          return boxBool(true);
+        }
       }
     }
     return boxBool(a === b);
@@ -4667,13 +5101,7 @@ BASE_IMPORTS = """\
     return boxNone();
   },
   not: (val) => {
-    if (isTag(val, TAG_BOOL)) {
-      return boxBool((val & 1n) !== 1n);
-    }
-    if (isTag(val, TAG_INT)) {
-      return boxBool(unboxInt(val) === 0n);
-    }
-    return boxBool(true);
+    return boxBool(baseImports.is_truthy(val) === 0n);
   },
   contains: (container, item) => {
     const list = getList(container);
@@ -4989,7 +5417,9 @@ BASE_IMPORTS = """\
     if (val !== undefined) return val;
     const exc = exceptionNew(
       boxPtr({ type: 'str', value: 'NameError' }),
-      boxPtr({ type: 'str', value: `name '${name}' is not defined` }),
+      exceptionArgs(
+        boxPtr({ type: 'str', value: `name '${name}' is not defined` }),
+      ),
     );
     return raiseException(exc);
   },
@@ -5001,7 +5431,9 @@ BASE_IMPORTS = """\
     if (val !== undefined) return val;
     const exc = exceptionNew(
       boxPtr({ type: 'str', value: 'NameError' }),
-      boxPtr({ type: 'str', value: `name '${name}' is not defined` }),
+      exceptionArgs(
+        boxPtr({ type: 'str', value: `name '${name}' is not defined` }),
+      ),
     );
     return raiseException(exc);
   },
@@ -5066,13 +5498,14 @@ BASE_IMPORTS = """\
       const obj = getObj(val);
       if (obj && obj.type === 'str') return obj.value.length ? 1n : 0n;
       if (obj && obj.type === 'bytes') return obj.data.length ? 1n : 0n;
-    if (obj && obj.type === 'bytearray') return obj.data.length ? 1n : 0n;
-    if (obj && obj.type === 'list') return obj.items.length ? 1n : 0n;
-    if (obj && obj.type === 'tuple') return obj.items.length ? 1n : 0n;
-    if (obj && (obj.type === 'set' || obj.type === 'frozenset'))
-      return obj.items.size ? 1n : 0n;
-    if (obj && obj.type === 'iter') return 1n;
-  }
+      if (obj && obj.type === 'bytearray') return obj.data.length ? 1n : 0n;
+      if (obj && obj.type === 'list') return obj.items.length ? 1n : 0n;
+      if (obj && obj.type === 'tuple') return obj.items.length ? 1n : 0n;
+      if (obj && obj.type === 'dict') return obj.entries.length ? 1n : 0n;
+      if (obj && (obj.type === 'set' || obj.type === 'frozenset'))
+        return obj.items.size ? 1n : 0n;
+      if (obj && obj.type === 'iter') return 1n;
+    }
     return 0n;
   },
   json_parse_scalar: (ptr, _len, out) => {
@@ -5080,15 +5513,30 @@ BASE_IMPORTS = """\
     expectPtrAddr(out, 'json_parse_scalar');
     return 0;
   },
+  json_parse_scalar_obj: (bits) => {
+    const obj = getObj(bits);
+    if (!obj || obj.type !== 'str') return boxNone();
+    return boxNone();
+  },
   msgpack_parse_scalar: (ptr, _len, out) => {
     expectPtrAddr(ptr, 'msgpack_parse_scalar');
     expectPtrAddr(out, 'msgpack_parse_scalar');
     return 0;
   },
+  msgpack_parse_scalar_obj: (bits) => {
+    const obj = getObj(bits);
+    if (!obj || (obj.type !== 'bytes' && obj.type !== 'bytearray')) return boxNone();
+    return boxNone();
+  },
   cbor_parse_scalar: (ptr, _len, out) => {
     expectPtrAddr(ptr, 'cbor_parse_scalar');
     expectPtrAddr(out, 'cbor_parse_scalar');
     return 0;
+  },
+  cbor_parse_scalar_obj: (bits) => {
+    const obj = getObj(bits);
+    if (!obj || (obj.type !== 'bytes' && obj.type !== 'bytearray')) return boxNone();
+    return boxNone();
   },
   string_from_bytes: (ptr, len, out) => {
     if (!memory) return 0;
@@ -5272,8 +5720,10 @@ BASE_IMPORTS = """\
       return val;
     }
     if (obj && obj.type === 'exception') {
-      const message = getStr(obj.msgBits);
-      return boxPtr({ type: 'str', value: message });
+      const argsBits = obj.argsBits || boxNone();
+      const msgBits = exceptionMessageFromArgs(argsBits);
+      obj.msgBits = msgBits;
+      return msgBits;
     }
     if (obj && obj.type === 'bigint') {
       return boxPtr({ type: 'str', value: obj.value.toString() });
@@ -5299,12 +5749,9 @@ BASE_IMPORTS = """\
     }
     if (obj && obj.type === 'exception') {
       const kind = getStr(obj.kindBits) || 'Exception';
-      const message = getStr(obj.msgBits);
-      if (!message) {
-        return boxPtr({ type: 'str', value: `${kind}()` });
-      }
-      const msgRepr = formatStringRepr(message);
-      return boxPtr({ type: 'str', value: `${kind}(${msgRepr})` });
+      const argsBits = obj.argsBits || boxNone();
+      const rendered = exceptionReprFromArgs(kind, argsBits);
+      return boxPtr({ type: 'str', value: rendered });
     }
     if (obj && obj.type === 'bigint') {
       return boxPtr({ type: 'str', value: obj.value.toString() });
@@ -6193,7 +6640,12 @@ BASE_IMPORTS = """\
     }
     const exc = exceptionNew(
       boxPtr({ type: 'str', value: 'TypeError' }),
-      boxPtr({ type: 'str', value: `'${typeName(val)}' object is not iterable` }),
+      exceptionArgs(
+        boxPtr({
+          type: 'str',
+          value: `'${typeName(val)}' object is not iterable`,
+        }),
+      ),
     );
     return raiseException(exc);
   },
@@ -6272,6 +6724,25 @@ BASE_IMPORTS = """\
       attr = makeBoundMethod(attr, iterObj);
     }
     return callCallable0(attr);
+  },
+  task_new: (pollFn, closureSize, kind) => {
+    if (kind === TASK_KIND_GENERATOR) {
+      return baseImports.generator_new(pollFn, closureSize);
+    }
+    if (kind !== TASK_KIND_FUTURE) {
+      throw new Error(`TypeError: unknown task kind ${kind}`);
+    }
+    const size = Number(closureSize);
+    const addr = allocRaw(size);
+    if (!addr || !memory) return boxNone();
+    const view = new DataView(memory.buffer);
+    view.setBigInt64(addr - HEADER_POLL_FN_OFFSET, pollFn, true);
+    view.setBigInt64(addr - HEADER_STATE_OFFSET, 0n, true);
+    const slots = Math.floor(size / 8);
+    for (let i = 0; i < slots; i += 1) {
+      view.setBigInt64(addr + i * 8, boxNone(), true);
+    }
+    return boxPtrAddr(addr);
   },
   generator_new: (pollFn, closureSize) => {
     const size = Number(closureSize);
@@ -6394,6 +6865,17 @@ BASE_IMPORTS = """\
     if (!args) return boxNone();
     const cls = getClass(callBits);
     if (cls) {
+      if (isSubclass(callBits, getBaseExceptionClass())) {
+        const excArgsBits = tupleFromArray([...args.pos]);
+        const excBits = exceptionNewFromClass(callBits, excArgsBits);
+        const initBits = lookupClassAttr(callBits, '__init__');
+        if (initBits === undefined || isNone(initBits)) {
+          return excBits;
+        }
+        args.pos.unshift(excBits);
+        baseImports.call_bind(initBits, builderBits);
+        return excBits;
+      }
       const instBits = allocInstanceForClass(callBits);
       const initBits = lookupClassAttr(callBits, '__init__');
       if (initBits === undefined) {
@@ -6412,10 +6894,12 @@ BASE_IMPORTS = """\
     } else if (!getFunction(callBits)) {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'TypeError' }),
-        boxPtr({
-          type: 'str',
-          value: `'${typeName(callBits)}' object is not callable`,
-        }),
+        exceptionArgs(
+          boxPtr({
+            type: 'str',
+            value: `'${typeName(callBits)}' object is not callable`,
+          }),
+        ),
       );
       return raiseException(exc);
     }
@@ -6785,6 +7269,27 @@ BASE_IMPORTS = """\
       }
       return boxPtr({ type: 'str', value: chars[pos] });
     }
+    const dict = getDict(seq);
+    if (dict) {
+      const val = dictGetValue(dict, idxBits);
+      return val === null ? boxNone() : val;
+    }
+    const dictView =
+      getDictKeysView(seq) || getDictValuesView(seq) || getDictItemsView(seq);
+    if (dictView) {
+      if (!isIntLike(idxBits)) return boxNone();
+      let idx = Number(unboxIntLike(idxBits));
+      const viewDict = getDict(dictView.dictBits);
+      if (!viewDict) return boxNone();
+      const len = viewDict.entries.length;
+      if (idx < 0) idx += len;
+      if (idx < 0 || idx >= len) return boxNone();
+      const [keyBits, valBits] = viewDict.entries[idx];
+      if (dictView.type === 'dict_items') {
+        return tupleFromArray([keyBits, valBits]);
+      }
+      return dictView.type === 'dict_keys' ? keyBits : valBits;
+    }
     return boxNone();
   },
   store_index: (seq, idxBits, val) => {
@@ -6839,6 +7344,11 @@ BASE_IMPORTS = """\
         throw new Error('IndexError: list assignment index out of range');
       }
       list.items[i] = val;
+      return seq;
+    }
+    const dict = getDict(seq);
+    if (dict) {
+      dictSetValue(dict, idxBits, val);
       return seq;
     }
     const bytearray = getBytearray(seq);
@@ -7808,7 +8318,9 @@ BASE_IMPORTS = """\
     if (sep === null) {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'TypeError' }),
-        boxPtr({ type: 'str', value: 'join expects a str separator' }),
+        exceptionArgs(
+          boxPtr({ type: 'str', value: 'join expects a str separator' }),
+        ),
       );
       return raiseException(exc);
     }
@@ -7819,10 +8331,12 @@ BASE_IMPORTS = """\
       if (text === null) {
         const exc = exceptionNew(
           boxPtr({ type: 'str', value: 'TypeError' }),
-          boxPtr({
-            type: 'str',
-            value: `sequence item ${idx}: expected str instance, ${typeName(itemBits)} found`,
-          }),
+          exceptionArgs(
+            boxPtr({
+              type: 'str',
+              value: `sequence item ${idx}: expected str instance, ${typeName(itemBits)} found`,
+            }),
+          ),
         );
         raiseException(exc);
         return false;
@@ -7852,7 +8366,7 @@ BASE_IMPORTS = """\
     if (isNone(iterBits)) {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'TypeError' }),
-        boxPtr({ type: 'str', value: 'can only join an iterable' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'can only join an iterable' })),
       );
       return raiseException(exc);
     }
@@ -8343,26 +8857,33 @@ BASE_IMPORTS = """\
     instanceClasses.set(ptrAddr(objBits), getBuiltinType(100));
     return objBits;
   },
-  func_new: (fnIdx, arity) => {
-    const addr = allocRaw(16);
+  func_new: (fnIdx, trampolineIdx, arity) => {
+    const addr = allocRaw(48);
     if (addr && memory) {
       const view = new DataView(memory.buffer);
       view.setBigInt64(addr, fnIdx, true);
       view.setBigInt64(addr + 8, arity, true);
+      view.setBigInt64(addr + 40, trampolineIdx, true);
     }
+    const tramp = Number(trampolineIdx);
     return boxPtr({
       type: 'function',
       idx: Number(fnIdx),
       arity: Number(arity),
+      trampoline: Number.isFinite(tramp) ? tramp : 0,
       attrs: new Map(),
       memAddr: addr || null,
     });
   },
-  func_new_closure: (fnIdx, arity, closureBits) => {
-    const bits = baseImports.func_new(fnIdx, arity);
+  func_new_closure: (fnIdx, trampolineIdx, arity, closureBits) => {
+    const bits = baseImports.func_new(fnIdx, trampolineIdx, arity);
     const func = getFunction(bits);
     if (func) {
       func.closure = closureBits;
+      if (func.memAddr && memory) {
+        const view = new DataView(memory.buffer);
+        view.setBigInt64(func.memAddr + 24, closureBits, true);
+      }
     }
     return bits;
   },
@@ -8565,7 +9086,9 @@ BASE_IMPORTS = """\
     if (!Number.isSafeInteger(count) || count < 0) {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'MemoryError' }),
-        boxPtr({ type: 'str', value: 'code slot count too large' }),
+        exceptionArgs(
+          boxPtr({ type: 'str', value: 'code slot count too large' }),
+        ),
       );
       return raiseException(exc);
     }
@@ -8576,7 +9099,9 @@ BASE_IMPORTS = """\
     if (codeSlots === null) {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'RuntimeError' }),
-        boxPtr({ type: 'str', value: 'code slots not initialized' }),
+        exceptionArgs(
+          boxPtr({ type: 'str', value: 'code slots not initialized' }),
+        ),
       );
       return raiseException(exc);
     }
@@ -8584,14 +9109,16 @@ BASE_IMPORTS = """\
     if (!Number.isSafeInteger(idx) || idx < 0 || idx >= codeSlots.length) {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'IndexError' }),
-        boxPtr({ type: 'str', value: 'code slot out of range' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'code slot out of range' })),
       );
       return raiseException(exc);
     }
     if (!isNone(codeBits) && !getCode(codeBits)) {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'TypeError' }),
-        boxPtr({ type: 'str', value: 'code slot expects code object' }),
+        exceptionArgs(
+          boxPtr({ type: 'str', value: 'code slot expects code object' }),
+        ),
       );
       return raiseException(exc);
     }
@@ -8603,7 +9130,7 @@ BASE_IMPORTS = """\
     if (filename === null) {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'TypeError' }),
-        boxPtr({ type: 'str', value: 'code filename must be str' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'code filename must be str' })),
       );
       return raiseException(exc);
     }
@@ -8611,14 +9138,16 @@ BASE_IMPORTS = """\
     if (name === null) {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'TypeError' }),
-        boxPtr({ type: 'str', value: 'code name must be str' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'code name must be str' })),
       );
       return raiseException(exc);
     }
     if (!isNone(linetableBits) && !getTuple(linetableBits)) {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'TypeError' }),
-        boxPtr({ type: 'str', value: 'code linetable must be tuple or None' }),
+        exceptionArgs(
+          boxPtr({ type: 'str', value: 'code linetable must be tuple or None' }),
+        ),
       );
       return raiseException(exc);
     }
@@ -8922,7 +9451,7 @@ BASE_IMPORTS = """\
     if (path === null) {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'TypeError' }),
-        boxPtr({ type: 'str', value: 'path must be str' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'path must be str' })),
       );
       return raiseException(exc);
     }
@@ -8933,7 +9462,7 @@ BASE_IMPORTS = """\
     if (path === null) {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'TypeError' }),
-        boxPtr({ type: 'str', value: 'path must be str' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'path must be str' })),
       );
       return raiseException(exc);
     }
@@ -8953,7 +9482,7 @@ BASE_IMPORTS = """\
       }
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: kind }),
-        boxPtr({ type: 'str', value: msg }),
+        exceptionArgs(boxPtr({ type: 'str', value: msg })),
       );
       return raiseException(exc);
     }
@@ -8962,7 +9491,9 @@ BASE_IMPORTS = """\
   exception_pop: () => exceptionPop(),
   exception_last: () => exceptionLast(),
   exception_active: () => exceptionActive(),
-  exception_new: (kind, msg) => exceptionNew(kind, msg),
+  exception_new: (kind, args) => exceptionNew(kind, args),
+  exception_new_from_class: (cls, args) => exceptionNewFromClass(cls, args),
+  exception_class: (kind) => exceptionClass(kind),
   exception_clear: () => exceptionClear(),
   exception_pending: () => exceptionPending(),
   exception_kind: (exc) => exceptionKind(exc),
@@ -8973,6 +9504,63 @@ BASE_IMPORTS = """\
   raise: (exc) => raiseException(exc),
   context_closing: (val) => val,
   bridge_unavailable: () => boxNone(),
+  open_builtin: (
+    fileBits,
+    modeBits,
+    _bufferingBits,
+    _encodingBits,
+    _errorsBits,
+    _newlineBits,
+    _closefdBits,
+    _openerBits,
+  ) => {
+    if (isNone(modeBits)) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(
+          boxPtr({
+            type: 'str',
+            value: "open() argument 'mode' must be str, not NoneType",
+          }),
+        ),
+      );
+      return raiseException(exc);
+    }
+    const mode = getStrObj(modeBits);
+    if (mode === null) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(
+          boxPtr({
+            type: 'str',
+            value: `open() argument 'mode' must be str, not ${typeName(modeBits)}`,
+          }),
+        ),
+      );
+      return raiseException(exc);
+    }
+    const readable = mode === '' || mode.includes('r') || mode.includes('+');
+    const writable = mode.includes('w') || mode.includes('a') || mode.includes('x') || mode.includes('+');
+    if (readable) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'PermissionError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'missing fs.read capability' })),
+      );
+      return raiseException(exc);
+    }
+    if (writable) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'PermissionError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'missing fs.write capability' })),
+      );
+      return raiseException(exc);
+    }
+    const exc = exceptionNew(
+      boxPtr({ type: 'str', value: 'ValueError' }),
+      exceptionArgs(boxPtr({ type: 'str', value: 'invalid mode' })),
+    );
+    return raiseException(exc);
+  },
   file_open: () => boxNone(),
   file_read: () => boxNone(),
   file_write: () => boxNone(),
@@ -9061,15 +9649,13 @@ BASE_IMPORTS = """\
       if (defaultBits !== missing) {
         return defaultBits;
       }
-      const msgBits = isTag(valBits, TAG_NONE)
-        ? boxPtr({ type: 'str', value: '' })
-        : baseImports.str_from_obj(valBits);
-      const msg = getStrObj(msgBits) ?? '';
+      const argsBits = isTag(valBits, TAG_NONE)
+        ? tupleFromArray([])
+        : tupleFromArray([valBits]);
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'StopIteration' }),
-        boxPtr({ type: 'str', value: msg }),
+        argsBits,
       );
-      exceptionSetValue(exc, valBits);
       return raiseException(exc);
     }
     return valBits;
@@ -9151,7 +9737,7 @@ BASE_IMPORTS = """\
     if (!args) {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'TypeError' }),
-        boxPtr({ type: 'str', value: 'print expects a tuple' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'print expects a tuple' })),
       );
       return raiseException(exc);
     }
@@ -9161,10 +9747,12 @@ BASE_IMPORTS = """\
       if (text === null) {
         const exc = exceptionNew(
           boxPtr({ type: 'str', value: 'TypeError' }),
-          boxPtr({
-            type: 'str',
-            value: `${label} must be None or a string, not ${typeName(bits)}`,
-          }),
+          exceptionArgs(
+            boxPtr({
+              type: 'str',
+              value: `${label} must be None or a string, not ${typeName(bits)}`,
+            }),
+          ),
         );
         raiseException(exc);
         return null;
@@ -9200,10 +9788,12 @@ BASE_IMPORTS = """\
     if (writeBits === undefined) {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'AttributeError' }),
-        boxPtr({
-          type: 'str',
-          value: `'${typeName(fileBits)}' object has no attribute 'write'`,
-        }),
+        exceptionArgs(
+          boxPtr({
+            type: 'str',
+            value: `'${typeName(fileBits)}' object has no attribute 'write'`,
+          }),
+        ),
       );
       return raiseException(exc);
     }
@@ -9214,10 +9804,12 @@ BASE_IMPORTS = """\
       if (flushMethodBits === undefined) {
         const exc = exceptionNew(
           boxPtr({ type: 'str', value: 'AttributeError' }),
-          boxPtr({
-            type: 'str',
-            value: `'${typeName(fileBits)}' object has no attribute 'flush'`,
-          }),
+          exceptionArgs(
+            boxPtr({
+              type: 'str',
+              value: `'${typeName(fileBits)}' object has no attribute 'flush'`,
+            }),
+          ),
         );
         return raiseException(exc);
       }

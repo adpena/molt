@@ -22,6 +22,8 @@ const INT_WIDTH: u64 = 47;
 const INT_MASK: u64 = (1u64 << INT_WIDTH) - 1;
 const INT_SHIFT: i64 = (64 - INT_WIDTH) as i64;
 const GENERATOR_CONTROL_BYTES: i32 = 48;
+const TASK_KIND_FUTURE: i64 = 0;
+const TASK_KIND_GENERATOR: i64 = 1;
 const FUNC_DEFAULT_NONE: i64 = 1;
 const FUNC_DEFAULT_DICT_POP: i64 = 2;
 const FUNC_DEFAULT_DICT_UPDATE: i64 = 3;
@@ -163,6 +165,8 @@ pub struct OpIR {
     pub out: Option<String>,
     #[serde(default)]
     pub fast_int: Option<bool>,
+    #[serde(default)]
+    pub task_kind: Option<String>,
 }
 
 #[derive(Clone)]
@@ -410,9 +414,28 @@ fn collect_cleanup_tracked(
         .collect()
 }
 
+#[derive(Clone, Hash, Eq, PartialEq)]
+struct TrampolineKey {
+    name: String,
+    arity: usize,
+    has_closure: bool,
+    is_import: bool,
+    is_generator: bool,
+    closure_size: i64,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct TrampolineSpec {
+    pub(crate) arity: usize,
+    pub(crate) has_closure: bool,
+    pub(crate) is_generator: bool,
+    pub(crate) closure_size: i64,
+}
+
 pub struct SimpleBackend {
     module: ObjectModule,
     ctx: Context,
+    trampoline_ids: HashMap<TrampolineKey, cranelift_module::FuncId>,
 }
 
 struct IfFrame {
@@ -472,7 +495,11 @@ impl SimpleBackend {
         let module = ObjectModule::new(builder);
         let ctx = module.make_context();
 
-        Self { module, ctx }
+        Self {
+            module,
+            ctx,
+            trampoline_ids: HashMap::new(),
+        }
     }
 
     pub fn compile(mut self, ir: SimpleIR) -> Vec<u8> {
@@ -480,14 +507,248 @@ impl SimpleBackend {
         for func_ir in &mut ir.functions {
             elide_dead_struct_allocs(func_ir);
         }
+        let mut generator_funcs: HashSet<String> = HashSet::new();
+        let mut generator_closure_sizes: HashMap<String, i64> = HashMap::new();
+        for func_ir in &ir.functions {
+            let mut func_obj_names: HashMap<String, String> = HashMap::new();
+            let mut const_values: HashMap<String, i64> = HashMap::new();
+            let mut const_bools: HashMap<String, bool> = HashMap::new();
+            for op in &func_ir.ops {
+                match op.kind.as_str() {
+                    "const" => {
+                        let Some(out) = op.out.as_ref() else {
+                            continue;
+                        };
+                        let val = op.value.unwrap_or(0);
+                        const_values.insert(out.clone(), val);
+                    }
+                    "const_bool" => {
+                        let Some(out) = op.out.as_ref() else {
+                            continue;
+                        };
+                        let val = op.value.unwrap_or(0) != 0;
+                        const_bools.insert(out.clone(), val);
+                    }
+                    "func_new" | "func_new_closure" => {
+                        let Some(name) = op.s_value.as_ref() else {
+                            continue;
+                        };
+                        if let Some(out) = op.out.as_ref() {
+                            func_obj_names.insert(out.clone(), name.clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for op in &func_ir.ops {
+                if op.kind != "set_attr_generic_obj" {
+                    continue;
+                }
+                let Some(attr) = op.s_value.as_deref() else {
+                    continue;
+                };
+                if attr != "__molt_is_generator__" && attr != "__molt_closure_size__" {
+                    continue;
+                }
+                let args = op.args.as_ref().expect("set_attr_generic_obj args missing");
+                let Some(func_name) = func_obj_names.get(&args[0]) else {
+                    continue;
+                };
+                match attr {
+                    "__molt_is_generator__" => {
+                        let val_name = &args[1];
+                        let is_gen = const_bools
+                            .get(val_name)
+                            .copied()
+                            .or_else(|| const_values.get(val_name).map(|val| *val != 0))
+                            .unwrap_or(false);
+                        if is_gen {
+                            generator_funcs.insert(func_name.clone());
+                        }
+                    }
+                    "__molt_closure_size__" => {
+                        let val_name = &args[1];
+                        if let Some(size) = const_values.get(val_name) {
+                            generator_closure_sizes.insert(func_name.clone(), *size);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
         for func_ir in ir.functions {
-            self.compile_func(func_ir);
+            self.compile_func(func_ir, &generator_funcs, &generator_closure_sizes);
         }
         let product = self.module.finish();
         product.emit().unwrap()
     }
 
-    fn compile_func(&mut self, func_ir: FunctionIR) {
+    fn ensure_trampoline(
+        module: &mut ObjectModule,
+        trampoline_ids: &mut HashMap<TrampolineKey, cranelift_module::FuncId>,
+        func_name: &str,
+        linkage: Linkage,
+        spec: TrampolineSpec,
+    ) -> cranelift_module::FuncId {
+        let TrampolineSpec {
+            arity,
+            has_closure,
+            is_generator,
+            closure_size,
+        } = spec;
+        let is_import = matches!(linkage, Linkage::Import);
+        let key = TrampolineKey {
+            name: func_name.to_string(),
+            arity,
+            has_closure,
+            is_import,
+            is_generator,
+            closure_size,
+        };
+        if let Some(id) = trampoline_ids.get(&key) {
+            return *id;
+        }
+        let closure_suffix = if has_closure { "_closure" } else { "" };
+        let import_suffix = if is_import { "_import" } else { "" };
+        let generator_suffix = if is_generator { "_gen" } else { "" };
+        let trampoline_name = format!(
+            "{func_name}__molt_trampoline_{arity}{closure_suffix}{generator_suffix}{import_suffix}"
+        );
+        let mut ctx = module.make_context();
+        ctx.func
+            .signature
+            .params
+            .push(AbiParam::new(types::I64));
+        ctx.func
+            .signature
+            .params
+            .push(AbiParam::new(types::I64));
+        ctx.func
+            .signature
+            .params
+            .push(AbiParam::new(types::I64));
+        ctx.func
+            .signature
+            .returns
+            .push(AbiParam::new(types::I64));
+
+        let mut builder_ctx = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
+        let entry_block = builder.create_block();
+        builder.append_block_params_for_function_params(entry_block);
+        builder.switch_to_block(entry_block);
+        builder.seal_block(entry_block);
+
+        let closure_bits = builder.block_params(entry_block)[0];
+        let args_ptr = builder.block_params(entry_block)[1];
+        let _args_len = builder.block_params(entry_block)[2];
+
+        if is_generator {
+            if closure_size < 0 {
+                panic!("generator closure size must be non-negative");
+            }
+            let payload_slots = arity + usize::from(has_closure);
+            let needed = GENERATOR_CONTROL_BYTES as i64 + (payload_slots as i64) * 8;
+            if closure_size < needed {
+                panic!("generator closure size too small for trampoline");
+            }
+
+            let mut inc_ref_obj_sig = module.make_signature();
+            inc_ref_obj_sig.params.push(AbiParam::new(types::I64));
+            let inc_ref_obj_callee = module
+                .declare_function("molt_inc_ref_obj", Linkage::Import, &inc_ref_obj_sig)
+                .unwrap();
+            let local_inc_ref_obj = module.declare_func_in_func(inc_ref_obj_callee, builder.func);
+
+            let mut poll_sig = module.make_signature();
+            poll_sig.params.push(AbiParam::new(types::I64));
+            poll_sig.returns.push(AbiParam::new(types::I64));
+            let poll_id = module.declare_function(func_name, linkage, &poll_sig).unwrap();
+            let poll_ref = module.declare_func_in_func(poll_id, builder.func);
+            let poll_addr = builder.ins().func_addr(types::I64, poll_ref);
+
+            let mut task_sig = module.make_signature();
+            task_sig.params.push(AbiParam::new(types::I64));
+            task_sig.params.push(AbiParam::new(types::I64));
+            task_sig.params.push(AbiParam::new(types::I64));
+            task_sig.returns.push(AbiParam::new(types::I64));
+            let task_callee = module
+                .declare_function("molt_task_new", Linkage::Import, &task_sig)
+                .unwrap();
+            let task_local = module.declare_func_in_func(task_callee, builder.func);
+            let size_val = builder.ins().iconst(types::I64, closure_size);
+            let kind_val = builder.ins().iconst(types::I64, TASK_KIND_GENERATOR);
+            let call = builder.ins().call(task_local, &[poll_addr, size_val, kind_val]);
+            let obj = builder.inst_results(call)[0];
+            let obj_ptr = unbox_ptr_value(&mut builder, obj);
+
+            let mut offset = GENERATOR_CONTROL_BYTES;
+            if has_closure {
+                builder
+                    .ins()
+                    .store(MemFlags::new(), closure_bits, obj_ptr, offset);
+                builder.ins().call(local_inc_ref_obj, &[closure_bits]);
+                offset += 8;
+            }
+            for idx in 0..arity {
+                let arg_offset = (idx * std::mem::size_of::<u64>()) as i32;
+                let arg_val = builder.ins().load(types::I64, MemFlags::new(), args_ptr, arg_offset);
+                builder.ins().store(
+                    MemFlags::new(),
+                    arg_val,
+                    obj_ptr,
+                    offset + arg_offset,
+                );
+                builder.ins().call(local_inc_ref_obj, &[arg_val]);
+            }
+            builder.ins().return_(&[obj]);
+        } else {
+            let mut call_args = Vec::with_capacity(arity + if has_closure { 1 } else { 0 });
+            if has_closure {
+                call_args.push(closure_bits);
+            }
+            for idx in 0..arity {
+                let offset = (idx * std::mem::size_of::<u64>()) as i32;
+                let arg_val = builder.ins().load(types::I64, MemFlags::new(), args_ptr, offset);
+                call_args.push(arg_val);
+            }
+
+            let mut target_sig = module.make_signature();
+            if has_closure {
+                target_sig.params.push(AbiParam::new(types::I64));
+            }
+            for _ in 0..arity {
+                target_sig.params.push(AbiParam::new(types::I64));
+            }
+            target_sig.returns.push(AbiParam::new(types::I64));
+            let target_id = module
+                .declare_function(func_name, linkage, &target_sig)
+                .unwrap();
+            let target_ref = module.declare_func_in_func(target_id, builder.func);
+            let call = builder.ins().call(target_ref, &call_args);
+            let res = builder.inst_results(call)[0];
+            builder.ins().return_(&[res]);
+        }
+
+        builder.seal_all_blocks();
+        builder.finalize();
+
+        let trampoline_id = module
+            .declare_function(&trampoline_name, Linkage::Local, &ctx.func.signature)
+            .unwrap();
+        if let Err(err) = module.define_function(trampoline_id, &mut ctx) {
+            panic!("Failed to define trampoline {trampoline_name}: {err:?}");
+        }
+        trampoline_ids.insert(key, trampoline_id);
+        trampoline_id
+    }
+
+    fn compile_func(
+        &mut self,
+        func_ir: FunctionIR,
+        generator_funcs: &HashSet<String>,
+        generator_closure_sizes: &HashMap<String, i64>,
+    ) {
         let mut builder_ctx = FunctionBuilderContext::new();
         self.module.clear_context(&mut self.ctx);
 
@@ -4442,101 +4703,266 @@ impl SimpleBackend {
                 "json_parse" => {
                     let args = op.args.as_ref().unwrap();
                     let arg_name = &args[0];
-                    let ptr = vars
-                        .get(&format!("{}_ptr", arg_name))
-                        .or_else(|| vars.get(arg_name))
-                        .expect("String ptr not found");
-                    let len = vars
-                        .get(&format!("{}_len", arg_name))
-                        .expect("String len not found");
+                    if let Some(len) = vars.get(&format!("{}_len", arg_name)) {
+                        let ptr = vars
+                            .get(&format!("{}_ptr", arg_name))
+                            .or_else(|| vars.get(arg_name))
+                            .expect("String ptr not found");
 
-                    let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64)); // ptr
-                    sig.params.push(AbiParam::new(types::I64)); // len
-                    sig.params.push(AbiParam::new(types::I64)); // out ptr
-                    sig.returns.push(AbiParam::new(types::I32)); // status
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64)); // ptr
+                        sig.params.push(AbiParam::new(types::I64)); // len
+                        sig.params.push(AbiParam::new(types::I64)); // out ptr
+                        sig.returns.push(AbiParam::new(types::I32)); // status
 
-                    let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
-                        StackSlotKind::ExplicitSlot,
-                        8,
-                        3,
-                    ));
-                    let out_ptr = builder.ins().stack_addr(types::I64, out_slot, 0);
+                        let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            8,
+                            3,
+                        ));
+                        let out_ptr = builder.ins().stack_addr(types::I64, out_slot, 0);
 
-                    let callee = self
-                        .module
-                        .declare_function("molt_json_parse_scalar", Linkage::Import, &sig)
-                        .unwrap();
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    builder.ins().call(local_callee, &[*ptr, *len, out_ptr]);
-                    let res = builder.ins().load(types::I64, MemFlags::new(), out_ptr, 0);
-                    vars.insert(op.out.unwrap(), res);
+                        let callee = self
+                            .module
+                            .declare_function("molt_json_parse_scalar", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*ptr, *len, out_ptr]);
+                        let rc = builder.inst_results(call)[0];
+                        let ok_block = builder.create_block();
+                        let err_block = builder.create_block();
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+                        let ok = builder.ins().icmp_imm(IntCC::Equal, rc, 0);
+                        builder.ins().brif(ok, ok_block, &[], err_block, &[]);
+
+                        builder.switch_to_block(ok_block);
+                        builder.seal_block(ok_block);
+                        let ok_res = builder.ins().load(types::I64, MemFlags::new(), out_ptr, 0);
+                        builder.ins().jump(merge_block, &[ok_res]);
+
+                        builder.switch_to_block(err_block);
+                        builder.seal_block(err_block);
+                        let arg_bits = vars
+                            .get(arg_name)
+                            .expect("String arg not found");
+                        let mut err_sig = self.module.make_signature();
+                        err_sig.params.push(AbiParam::new(types::I64));
+                        err_sig.returns.push(AbiParam::new(types::I64));
+                        let err_callee = self
+                            .module
+                            .declare_function(
+                                "molt_json_parse_scalar_obj",
+                                Linkage::Import,
+                                &err_sig,
+                            )
+                            .unwrap();
+                        let err_local =
+                            self.module.declare_func_in_func(err_callee, builder.func);
+                        let err_call = builder.ins().call(err_local, &[*arg_bits]);
+                        let err_res = builder.inst_results(err_call)[0];
+                        builder.ins().jump(merge_block, &[err_res]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                        let res = builder.block_params(merge_block)[0];
+                        vars.insert(op.out.unwrap(), res);
+                    } else {
+                        let arg_bits = vars
+                            .get(arg_name)
+                            .expect("String arg not found");
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function(
+                                "molt_json_parse_scalar_obj",
+                                Linkage::Import,
+                                &sig,
+                            )
+                            .unwrap();
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*arg_bits]);
+                        let res = builder.inst_results(call)[0];
+                        vars.insert(op.out.unwrap(), res);
+                    }
                 }
                 "msgpack_parse" => {
                     let args = op.args.as_ref().unwrap();
                     let arg_name = &args[0];
-                    let ptr = vars
-                        .get(&format!("{}_ptr", arg_name))
-                        .or_else(|| vars.get(arg_name))
-                        .expect("Bytes ptr not found");
-                    let len = vars
-                        .get(&format!("{}_len", arg_name))
-                        .expect("Bytes len not found");
+                    if let Some(len) = vars.get(&format!("{}_len", arg_name)) {
+                        let ptr = vars
+                            .get(&format!("{}_ptr", arg_name))
+                            .or_else(|| vars.get(arg_name))
+                            .expect("Bytes ptr not found");
 
-                    let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64)); // ptr
-                    sig.params.push(AbiParam::new(types::I64)); // len
-                    sig.params.push(AbiParam::new(types::I64)); // out ptr
-                    sig.returns.push(AbiParam::new(types::I32)); // status
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64)); // ptr
+                        sig.params.push(AbiParam::new(types::I64)); // len
+                        sig.params.push(AbiParam::new(types::I64)); // out ptr
+                        sig.returns.push(AbiParam::new(types::I32)); // status
 
-                    let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
-                        StackSlotKind::ExplicitSlot,
-                        8,
-                        3,
-                    ));
-                    let out_ptr = builder.ins().stack_addr(types::I64, out_slot, 0);
+                        let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            8,
+                            3,
+                        ));
+                        let out_ptr = builder.ins().stack_addr(types::I64, out_slot, 0);
 
-                    let callee = self
-                        .module
-                        .declare_function("molt_msgpack_parse_scalar", Linkage::Import, &sig)
-                        .unwrap();
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    builder.ins().call(local_callee, &[*ptr, *len, out_ptr]);
-                    let res = builder.ins().load(types::I64, MemFlags::new(), out_ptr, 0);
-                    vars.insert(op.out.unwrap(), res);
+                        let callee = self
+                            .module
+                            .declare_function("molt_msgpack_parse_scalar", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*ptr, *len, out_ptr]);
+                        let rc = builder.inst_results(call)[0];
+                        let ok_block = builder.create_block();
+                        let err_block = builder.create_block();
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+                        let ok = builder.ins().icmp_imm(IntCC::Equal, rc, 0);
+                        builder.ins().brif(ok, ok_block, &[], err_block, &[]);
+
+                        builder.switch_to_block(ok_block);
+                        builder.seal_block(ok_block);
+                        let ok_res = builder.ins().load(types::I64, MemFlags::new(), out_ptr, 0);
+                        builder.ins().jump(merge_block, &[ok_res]);
+
+                        builder.switch_to_block(err_block);
+                        builder.seal_block(err_block);
+                        let arg_bits = vars
+                            .get(arg_name)
+                            .expect("Bytes arg not found");
+                        let mut err_sig = self.module.make_signature();
+                        err_sig.params.push(AbiParam::new(types::I64));
+                        err_sig.returns.push(AbiParam::new(types::I64));
+                        let err_callee = self
+                            .module
+                            .declare_function(
+                                "molt_msgpack_parse_scalar_obj",
+                                Linkage::Import,
+                                &err_sig,
+                            )
+                            .unwrap();
+                        let err_local =
+                            self.module.declare_func_in_func(err_callee, builder.func);
+                        let err_call = builder.ins().call(err_local, &[*arg_bits]);
+                        let err_res = builder.inst_results(err_call)[0];
+                        builder.ins().jump(merge_block, &[err_res]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                        let res = builder.block_params(merge_block)[0];
+                        vars.insert(op.out.unwrap(), res);
+                    } else {
+                        let arg_bits = vars
+                            .get(arg_name)
+                            .expect("Bytes arg not found");
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function(
+                                "molt_msgpack_parse_scalar_obj",
+                                Linkage::Import,
+                                &sig,
+                            )
+                            .unwrap();
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*arg_bits]);
+                        let res = builder.inst_results(call)[0];
+                        vars.insert(op.out.unwrap(), res);
+                    }
                 }
                 "cbor_parse" => {
                     let args = op.args.as_ref().unwrap();
                     let arg_name = &args[0];
-                    let ptr = vars
-                        .get(&format!("{}_ptr", arg_name))
-                        .or_else(|| vars.get(arg_name))
-                        .expect("Bytes ptr not found");
-                    let len = vars
-                        .get(&format!("{}_len", arg_name))
-                        .expect("Bytes len not found");
+                    if let Some(len) = vars.get(&format!("{}_len", arg_name)) {
+                        let ptr = vars
+                            .get(&format!("{}_ptr", arg_name))
+                            .or_else(|| vars.get(arg_name))
+                            .expect("Bytes ptr not found");
 
-                    let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64)); // ptr
-                    sig.params.push(AbiParam::new(types::I64)); // len
-                    sig.params.push(AbiParam::new(types::I64)); // out ptr
-                    sig.returns.push(AbiParam::new(types::I32)); // status
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64)); // ptr
+                        sig.params.push(AbiParam::new(types::I64)); // len
+                        sig.params.push(AbiParam::new(types::I64)); // out ptr
+                        sig.returns.push(AbiParam::new(types::I32)); // status
 
-                    let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
-                        StackSlotKind::ExplicitSlot,
-                        8,
-                        3,
-                    ));
-                    let out_ptr = builder.ins().stack_addr(types::I64, out_slot, 0);
+                        let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            8,
+                            3,
+                        ));
+                        let out_ptr = builder.ins().stack_addr(types::I64, out_slot, 0);
 
-                    let callee = self
-                        .module
-                        .declare_function("molt_cbor_parse_scalar", Linkage::Import, &sig)
-                        .unwrap();
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    builder.ins().call(local_callee, &[*ptr, *len, out_ptr]);
-                    let res = builder.ins().load(types::I64, MemFlags::new(), out_ptr, 0);
-                    vars.insert(op.out.unwrap(), res);
+                        let callee = self
+                            .module
+                            .declare_function("molt_cbor_parse_scalar", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*ptr, *len, out_ptr]);
+                        let rc = builder.inst_results(call)[0];
+                        let ok_block = builder.create_block();
+                        let err_block = builder.create_block();
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+                        let ok = builder.ins().icmp_imm(IntCC::Equal, rc, 0);
+                        builder.ins().brif(ok, ok_block, &[], err_block, &[]);
+
+                        builder.switch_to_block(ok_block);
+                        builder.seal_block(ok_block);
+                        let ok_res = builder.ins().load(types::I64, MemFlags::new(), out_ptr, 0);
+                        builder.ins().jump(merge_block, &[ok_res]);
+
+                        builder.switch_to_block(err_block);
+                        builder.seal_block(err_block);
+                        let arg_bits = vars
+                            .get(arg_name)
+                            .expect("Bytes arg not found");
+                        let mut err_sig = self.module.make_signature();
+                        err_sig.params.push(AbiParam::new(types::I64));
+                        err_sig.returns.push(AbiParam::new(types::I64));
+                        let err_callee = self
+                            .module
+                            .declare_function(
+                                "molt_cbor_parse_scalar_obj",
+                                Linkage::Import,
+                                &err_sig,
+                            )
+                            .unwrap();
+                        let err_local =
+                            self.module.declare_func_in_func(err_callee, builder.func);
+                        let err_call = builder.ins().call(err_local, &[*arg_bits]);
+                        let err_res = builder.inst_results(err_call)[0];
+                        builder.ins().jump(merge_block, &[err_res]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                        let res = builder.block_params(merge_block)[0];
+                        vars.insert(op.out.unwrap(), res);
+                    } else {
+                        let arg_bits = vars
+                            .get(arg_name)
+                            .expect("Bytes arg not found");
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function(
+                                "molt_cbor_parse_scalar_obj",
+                                Linkage::Import,
+                                &sig,
+                            )
+                            .unwrap();
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*arg_bits]);
+                        let res = builder.inst_results(call)[0];
+                        vars.insert(op.out.unwrap(), res);
+                    }
                 }
                 "block_on" => {
                     let args = op.args.as_ref().unwrap();
@@ -5009,15 +5435,15 @@ impl SimpleBackend {
                         let mut sig = self.module.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
                         sig.params.push(AbiParam::new(types::I64));
+                        sig.params.push(AbiParam::new(types::I64));
                         sig.returns.push(AbiParam::new(types::I64));
-                        let future_callee = self
+                        let task_callee = self
                             .module
-                            .declare_function("molt_future_new", Linkage::Import, &sig)
+                            .declare_function("molt_task_new", Linkage::Import, &sig)
                             .unwrap();
-                        let local_future = self
-                            .module
-                            .declare_func_in_func(future_callee, builder.func);
-                        let call = builder.ins().call(local_future, &[poll_addr, size]);
+                        let task_local = self.module.declare_func_in_func(task_callee, builder.func);
+                        let kind_val = builder.ins().iconst(types::I64, TASK_KIND_FUTURE);
+                        let call = builder.ins().call(task_local, &[poll_addr, size, kind_val]);
                         let obj = builder.inst_results(call)[0];
                         let obj_ptr = unbox_ptr_value(&mut builder, obj);
 
@@ -5053,9 +5479,24 @@ impl SimpleBackend {
                         .unwrap();
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
                     let func_addr = builder.ins().func_addr(types::I64, func_ref);
+                    let tramp_id = Self::ensure_trampoline(
+                        &mut self.module,
+                        &mut self.trampoline_ids,
+                        func_name,
+                        Linkage::Import,
+                        TrampolineSpec {
+                            arity: arity as usize,
+                            has_closure: false,
+                            is_generator: false,
+                            closure_size: 0,
+                        },
+                    );
+                    let tramp_ref = self.module.declare_func_in_func(tramp_id, builder.func);
+                    let tramp_addr = builder.ins().func_addr(types::I64, tramp_ref);
                     let arity_val = builder.ins().iconst(types::I64, arity);
 
                     let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -5064,13 +5505,23 @@ impl SimpleBackend {
                         .declare_function("molt_func_new", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[func_addr, arity_val]);
+                    let call = builder
+                        .ins()
+                        .call(local_callee, &[func_addr, tramp_addr, arity_val]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
                 "func_new" => {
                     let func_name = op.s_value.as_ref().unwrap();
                     let arity = op.value.unwrap();
+                    let is_generator = generator_funcs.contains(func_name);
+                    let closure_size = if is_generator {
+                        *generator_closure_sizes.get(func_name).unwrap_or_else(|| {
+                            panic!("generator closure size missing for {func_name}")
+                        })
+                    } else {
+                        0
+                    };
                     let mut func_sig = self.module.make_signature();
                     if func_name.ends_with("_poll") {
                         func_sig.params.push(AbiParam::new(types::I64));
@@ -5086,9 +5537,24 @@ impl SimpleBackend {
                         .unwrap();
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
                     let func_addr = builder.ins().func_addr(types::I64, func_ref);
+                    let tramp_id = Self::ensure_trampoline(
+                        &mut self.module,
+                        &mut self.trampoline_ids,
+                        func_name,
+                        Linkage::Export,
+                        TrampolineSpec {
+                            arity: arity as usize,
+                            has_closure: false,
+                            is_generator,
+                            closure_size,
+                        },
+                    );
+                    let tramp_ref = self.module.declare_func_in_func(tramp_id, builder.func);
+                    let tramp_addr = builder.ins().func_addr(types::I64, tramp_ref);
                     let arity_val = builder.ins().iconst(types::I64, arity);
 
                     let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -5097,13 +5563,23 @@ impl SimpleBackend {
                         .declare_function("molt_func_new", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[func_addr, arity_val]);
+                    let call = builder
+                        .ins()
+                        .call(local_callee, &[func_addr, tramp_addr, arity_val]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
                 "func_new_closure" => {
                     let func_name = op.s_value.as_ref().unwrap();
                     let arity = op.value.unwrap();
+                    let is_generator = generator_funcs.contains(func_name);
+                    let closure_size = if is_generator {
+                        *generator_closure_sizes.get(func_name).unwrap_or_else(|| {
+                            panic!("generator closure size missing for {func_name}")
+                        })
+                    } else {
+                        0
+                    };
                     let closure_name = op
                         .args
                         .as_ref()
@@ -5126,9 +5602,24 @@ impl SimpleBackend {
                         .unwrap();
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
                     let func_addr = builder.ins().func_addr(types::I64, func_ref);
+                    let tramp_id = Self::ensure_trampoline(
+                        &mut self.module,
+                        &mut self.trampoline_ids,
+                        func_name,
+                        Linkage::Export,
+                        TrampolineSpec {
+                            arity: arity as usize,
+                            has_closure: true,
+                            is_generator,
+                            closure_size,
+                        },
+                    );
+                    let tramp_ref = self.module.declare_func_in_func(tramp_id, builder.func);
+                    let tramp_addr = builder.ins().func_addr(types::I64, tramp_ref);
                     let arity_val = builder.ins().iconst(types::I64, arity);
 
                     let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -5138,9 +5629,10 @@ impl SimpleBackend {
                         .declare_function("molt_func_new_closure", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder
-                        .ins()
-                        .call(local_callee, &[func_addr, arity_val, closure_bits]);
+                    let call = builder.ins().call(
+                        local_callee,
+                        &[func_addr, tramp_addr, arity_val, closure_bits],
+                    );
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
@@ -6948,7 +7440,7 @@ impl SimpleBackend {
                 "exception_new" => {
                     let args = op.args.as_ref().unwrap();
                     let kind = vars.get(&args[0]).expect("Kind not found");
-                    let msg = vars.get(&args[1]).expect("Message not found");
+                    let args_bits = vars.get(&args[1]).expect("Args not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -6958,7 +7450,24 @@ impl SimpleBackend {
                         .declare_function("molt_exception_new", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*kind, *msg]);
+                    let call = builder.ins().call(local_callee, &[*kind, *args_bits]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "exception_new_from_class" => {
+                    let args = op.args.as_ref().unwrap();
+                    let class_bits = vars.get(&args[0]).expect("Class not found");
+                    let args_bits = vars.get(&args[1]).expect("Args not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_exception_new_from_class", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*class_bits, *args_bits]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
@@ -6986,6 +7495,21 @@ impl SimpleBackend {
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*exc]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "exception_class" => {
+                    let args = op.args.as_ref().unwrap();
+                    let kind = vars.get(&args[0]).expect("Exception kind not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_exception_class", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*kind]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
@@ -7744,8 +8268,14 @@ impl SimpleBackend {
                     let out_name = op.out.unwrap();
                     vars.insert(out_name, res);
                 }
-                "alloc_future" => {
+                "alloc_task" => {
                     let closure_size = op.value.unwrap();
+                    let task_kind = op.task_kind.as_deref().unwrap_or("future");
+                    let (kind_bits, payload_base) = match task_kind {
+                        "generator" => (TASK_KIND_GENERATOR, GENERATOR_CONTROL_BYTES),
+                        "future" => (TASK_KIND_FUTURE, 0),
+                        _ => panic!("unknown task kind: {task_kind}"),
+                    };
                     let size = builder.ins().iconst(types::I64, closure_size);
 
                     let poll_func_name = op.s_value.as_ref().unwrap();
@@ -7761,70 +8291,25 @@ impl SimpleBackend {
                         self.module.declare_func_in_func(poll_func_id, builder.func);
                     let poll_addr = builder.ins().func_addr(types::I64, poll_func_ref);
 
-                    let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let future_callee = self
+                    let mut task_sig = self.module.make_signature();
+                    task_sig.params.push(AbiParam::new(types::I64));
+                    task_sig.params.push(AbiParam::new(types::I64));
+                    task_sig.params.push(AbiParam::new(types::I64));
+                    task_sig.returns.push(AbiParam::new(types::I64));
+                    let task_callee = self
                         .module
-                        .declare_function("molt_future_new", Linkage::Import, &sig)
+                        .declare_function("molt_task_new", Linkage::Import, &task_sig)
                         .unwrap();
-                    let local_future = self
-                        .module
-                        .declare_func_in_func(future_callee, builder.func);
-                    let call = builder.ins().call(local_future, &[poll_addr, size]);
+                    let task_local = self.module.declare_func_in_func(task_callee, builder.func);
+                    let kind_val = builder.ins().iconst(types::I64, kind_bits);
+                    let call = builder.ins().call(task_local, &[poll_addr, size, kind_val]);
                     let obj = builder.inst_results(call)[0];
                     let obj_ptr = unbox_ptr_value(&mut builder, obj);
 
                     if let Some(args_names) = &op.args {
                         for (i, name) in args_names.iter().enumerate() {
-                            let arg_val = vars.get(name).expect("Arg not found for alloc_future");
-                            let offset = (i * 8) as i32;
-                            builder
-                                .ins()
-                                .store(MemFlags::new(), *arg_val, obj_ptr, offset);
-                            emit_maybe_ref_adjust(&mut builder, *arg_val, local_inc_ref_obj);
-                        }
-                    }
-
-                    let out_name = op.out.unwrap();
-                    vars.insert(out_name, obj);
-                }
-                "alloc_generator" => {
-                    let closure_size = op.value.unwrap();
-                    let size = builder.ins().iconst(types::I64, closure_size);
-
-                    let poll_func_name = op.s_value.as_ref().unwrap();
-                    let mut poll_sig = self.module.make_signature();
-                    poll_sig.params.push(AbiParam::new(types::I64));
-                    poll_sig.returns.push(AbiParam::new(types::I64));
-
-                    let poll_func_id = self
-                        .module
-                        .declare_function(poll_func_name, Linkage::Export, &poll_sig)
-                        .unwrap();
-                    let poll_func_ref =
-                        self.module.declare_func_in_func(poll_func_id, builder.func);
-                    let poll_addr = builder.ins().func_addr(types::I64, poll_func_ref);
-
-                    let mut gen_sig = self.module.make_signature();
-                    gen_sig.params.push(AbiParam::new(types::I64));
-                    gen_sig.params.push(AbiParam::new(types::I64));
-                    gen_sig.returns.push(AbiParam::new(types::I64));
-                    let gen_callee = self
-                        .module
-                        .declare_function("molt_generator_new", Linkage::Import, &gen_sig)
-                        .unwrap();
-                    let gen_local = self.module.declare_func_in_func(gen_callee, builder.func);
-                    let call = builder.ins().call(gen_local, &[poll_addr, size]);
-                    let obj = builder.inst_results(call)[0];
-                    let obj_ptr = unbox_ptr_value(&mut builder, obj);
-
-                    if let Some(args_names) = &op.args {
-                        for (i, name) in args_names.iter().enumerate() {
-                            let arg_val =
-                                vars.get(name).expect("Arg not found for alloc_generator");
-                            let offset = GENERATOR_CONTROL_BYTES + (i * 8) as i32;
+                            let arg_val = vars.get(name).expect("Arg not found for alloc_task");
+                            let offset = payload_base + (i * 8) as i32;
                             builder
                                 .ins()
                                 .store(MemFlags::new(), *arg_val, obj_ptr, offset);

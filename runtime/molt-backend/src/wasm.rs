@@ -1,14 +1,14 @@
-use crate::{FunctionIR, OpIR, SimpleIR};
+use crate::{FunctionIR, OpIR, SimpleIR, TrampolineSpec};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, CustomSection, DataSection, DataSymbolDefinition,
     ElementMode, ElementSection, ElementSegment, Elements, Encode, EntityType, ExportKind,
     ExportSection, Function, FunctionSection, ImportSection, Instruction, LinkingSection,
-    MemorySection, MemoryType, Module, RefType, StartSection, SymbolTable, TableSection, TableType,
-    TypeSection, ValType,
+    MemorySection, MemoryType, Module, RawSection, RefType, SymbolTable, TableSection,
+    TableType, TypeSection, ValType,
 };
-use wasmparser::{DataKind, ExternalKind, Operator, Parser, Payload, TypeRef};
+use wasmparser::{DataKind, ElementItems, ExternalKind, Operator, Parser, Payload, TypeRef};
 
 const QNAN: u64 = 0x7ff8_0000_0000_0000;
 const TAG_INT: u64 = 0x0001_0000_0000_0000;
@@ -22,8 +22,11 @@ const QNAN_TAG_MASK_I64: i64 = (QNAN | TAG_MASK) as i64;
 const QNAN_TAG_PTR_I64: i64 = (QNAN | TAG_PTR) as i64;
 const INT_MASK: u64 = (1 << 47) - 1;
 const HEADER_SIZE_BYTES: i32 = 40;
-const HEADER_POLL_FN_OFFSET: i32 = -(HEADER_SIZE_BYTES - 8);
 const HEADER_STATE_OFFSET: i32 = -(HEADER_SIZE_BYTES - 16);
+const GEN_CONTROL_SIZE: i32 = 48;
+const TASK_KIND_FUTURE: i64 = 0;
+const TASK_KIND_GENERATOR: i64 = 1;
+const RELOC_TABLE_BASE_DEFAULT: u32 = 4096;
 
 #[derive(Clone, Copy)]
 struct DataSegmentInfo {
@@ -38,13 +41,6 @@ struct DataRelocSite {
 }
 
 #[derive(Clone, Copy)]
-struct TableIndexRelocSite {
-    func_index: u32,
-    offset_in_func: u32,
-    target_func_index: u32,
-}
-
-#[derive(Clone, Copy)]
 struct DataSegmentRef {
     offset: u32,
     index: u32,
@@ -53,7 +49,7 @@ struct DataSegmentRef {
 struct CompileFuncContext<'a> {
     func_map: &'a HashMap<String, u32>,
     func_indices: &'a HashMap<String, u32>,
-    table_func_indices: &'a [u32],
+    trampoline_map: &'a HashMap<String, u32>,
     table_base: u32,
     import_ids: &'a HashMap<String, u32>,
     reloc_enabled: bool,
@@ -96,7 +92,7 @@ pub struct WasmBackend {
     data_offset: u32,
     data_segments: Vec<DataSegmentInfo>,
     data_relocs: Vec<DataRelocSite>,
-    table_index_relocs: Vec<TableIndexRelocSite>,
+    molt_main_index: Option<u32>,
 }
 
 impl Default for WasmBackend {
@@ -122,7 +118,7 @@ impl WasmBackend {
             data_offset: 8,
             data_segments: Vec::new(),
             data_relocs: Vec::new(),
-            table_index_relocs: Vec::new(),
+            molt_main_index: None,
         }
     }
 
@@ -165,6 +161,85 @@ impl WasmBackend {
         for func_ir in &mut ir.functions {
             crate::elide_dead_struct_allocs(func_ir);
         }
+        let mut func_trampoline_spec: HashMap<String, (usize, bool)> = HashMap::new();
+        let mut generator_funcs: HashSet<String> = HashSet::new();
+        let mut generator_closure_sizes: HashMap<String, i64> = HashMap::new();
+        for func_ir in &ir.functions {
+            let mut func_obj_names: HashMap<String, String> = HashMap::new();
+            let mut const_values: HashMap<String, i64> = HashMap::new();
+            let mut const_bools: HashMap<String, bool> = HashMap::new();
+            for op in &func_ir.ops {
+                match op.kind.as_str() {
+                    "const" => {
+                        let Some(out) = op.out.as_ref() else {
+                            continue;
+                        };
+                        let val = op.value.unwrap_or(0);
+                        const_values.insert(out.clone(), val);
+                    }
+                    "const_bool" => {
+                        let Some(out) = op.out.as_ref() else {
+                            continue;
+                        };
+                        let val = op.value.unwrap_or(0) != 0;
+                        const_bools.insert(out.clone(), val);
+                    }
+                    "func_new" | "func_new_closure" => {
+                        let Some(name) = op.s_value.as_ref() else {
+                            continue;
+                        };
+                        let arity = op.value.unwrap_or(0) as usize;
+                        let has_closure = op.kind == "func_new_closure";
+                        if let Some(out) = op.out.as_ref() {
+                            func_obj_names.insert(out.clone(), name.clone());
+                        }
+                        if let Some((prev_arity, prev_closure)) = func_trampoline_spec.get(name) {
+                            if *prev_arity != arity || *prev_closure != has_closure {
+                                panic!("func_new arity mismatch for {name}");
+                            }
+                        } else {
+                            func_trampoline_spec.insert(name.clone(), (arity, has_closure));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for op in &func_ir.ops {
+                if op.kind != "set_attr_generic_obj" {
+                    continue;
+                }
+                let Some(attr) = op.s_value.as_deref() else {
+                    continue;
+                };
+                if attr != "__molt_is_generator__" && attr != "__molt_closure_size__" {
+                    continue;
+                }
+                let args = op.args.as_ref().expect("set_attr_generic_obj args missing");
+                let Some(func_name) = func_obj_names.get(&args[0]) else {
+                    continue;
+                };
+                match attr {
+                    "__molt_is_generator__" => {
+                        let val_name = &args[1];
+                        let is_gen = const_bools
+                            .get(val_name)
+                            .copied()
+                            .or_else(|| const_values.get(val_name).map(|val| *val != 0))
+                            .unwrap_or(false);
+                        if is_gen {
+                            generator_funcs.insert(func_name.clone());
+                        }
+                    }
+                    "__molt_closure_size__" => {
+                        let val_name = &args[1];
+                        if let Some(size) = const_values.get(val_name) {
+                            generator_closure_sizes.insert(func_name.clone(), *size);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
         // Type 0: () -> i64 (User functions)
         self.types
             .function(std::iter::empty::<ValType>(), std::iter::once(ValType::I64));
@@ -184,7 +259,7 @@ impl WasmBackend {
             std::iter::repeat_n(ValType::I64, 3),
             std::iter::once(ValType::I32),
         );
-        // Type 5: (i64, i64, i64) -> i64 (stream_send, ws_send, slice, slice_new, dict_get)
+        // Type 5: (i64, i64, i64) -> i64 (stream_send, ws_send, slice, slice_new, dict_get, task_new)
         self.types.function(
             std::iter::repeat_n(ValType::I64, 3),
             std::iter::once(ValType::I64),
@@ -300,6 +375,11 @@ impl WasmBackend {
         // Type 27: (i32, i32) -> i64 (sleep_register)
         self.types
             .function([ValType::I32, ValType::I32], std::iter::once(ValType::I64));
+        // Type 28: (i64, i64, i64, i64, i64, i64, i64, i64) -> i64 (open_builtin)
+        self.types.function(
+            std::iter::repeat_n(ValType::I64, 8),
+            std::iter::once(ValType::I64),
+        );
 
         let mut import_idx = 0;
         let mut add_import = |name: &str, ty: u32, ids: &mut HashMap<String, u32>| {
@@ -434,6 +514,9 @@ impl WasmBackend {
         add_import("json_parse_scalar", 19, &mut self.import_ids);
         add_import("msgpack_parse_scalar", 19, &mut self.import_ids);
         add_import("cbor_parse_scalar", 19, &mut self.import_ids);
+        add_import("json_parse_scalar_obj", 2, &mut self.import_ids);
+        add_import("msgpack_parse_scalar_obj", 2, &mut self.import_ids);
+        add_import("cbor_parse_scalar_obj", 2, &mut self.import_ids);
         add_import("string_from_bytes", 19, &mut self.import_ids);
         add_import("bytes_from_bytes", 19, &mut self.import_ids);
         add_import("bigint_from_str", 16, &mut self.import_ids);
@@ -458,6 +541,7 @@ impl WasmBackend {
         add_import("chr", 2, &mut self.import_ids);
         add_import("abs_builtin", 2, &mut self.import_ids);
         add_import("divmod_builtin", 3, &mut self.import_ids);
+        add_import("open_builtin", 28, &mut self.import_ids);
         add_import("getargv", 0, &mut self.import_ids);
         add_import("getrecursionlimit", 0, &mut self.import_ids);
         add_import("setrecursionlimit", 2, &mut self.import_ids);
@@ -550,7 +634,7 @@ impl WasmBackend {
         add_import("aiter", 2, &mut self.import_ids);
         add_import("iter_next", 2, &mut self.import_ids);
         add_import("anext", 2, &mut self.import_ids);
-        add_import("generator_new", 3, &mut self.import_ids);
+        add_import("task_new", 5, &mut self.import_ids);
         add_import("generator_send", 3, &mut self.import_ids);
         add_import("generator_throw", 3, &mut self.import_ids);
         add_import("generator_close", 2, &mut self.import_ids);
@@ -625,8 +709,8 @@ impl WasmBackend {
         add_import("isinstance", 3, &mut self.import_ids);
         add_import("issubclass", 3, &mut self.import_ids);
         add_import("object_new", 0, &mut self.import_ids);
-        add_import("func_new", 3, &mut self.import_ids);
-        add_import("func_new_closure", 5, &mut self.import_ids);
+        add_import("func_new", 5, &mut self.import_ids);
+        add_import("func_new_closure", 7, &mut self.import_ids);
         add_import("bound_method_new", 3, &mut self.import_ids);
         add_import("classmethod_new", 2, &mut self.import_ids);
         add_import("staticmethod_new", 2, &mut self.import_ids);
@@ -655,9 +739,11 @@ impl WasmBackend {
         add_import("exception_last", 0, &mut self.import_ids);
         add_import("exception_active", 0, &mut self.import_ids);
         add_import("exception_new", 3, &mut self.import_ids);
+        add_import("exception_new_from_class", 3, &mut self.import_ids);
         add_import("exception_clear", 0, &mut self.import_ids);
         add_import("exception_pending", 0, &mut self.import_ids);
         add_import("exception_kind", 2, &mut self.import_ids);
+        add_import("exception_class", 2, &mut self.import_ids);
         add_import("exception_message", 2, &mut self.import_ids);
         add_import("exception_set_cause", 3, &mut self.import_ids);
         add_import("exception_set_value", 3, &mut self.import_ids);
@@ -677,37 +763,33 @@ impl WasmBackend {
         self.func_count = import_idx;
         let reloc_enabled = should_emit_relocs();
 
-        self.funcs.function(3);
-        self.exports
-            .export("molt_call_indirect1", ExportKind::Func, self.func_count);
-        let mut call_indirect = Function::new_with_locals_types(Vec::new());
-        call_indirect.instruction(&Instruction::LocalGet(1));
-        call_indirect.instruction(&Instruction::LocalGet(0));
-        call_indirect.instruction(&Instruction::I32WrapI64);
-        emit_call_indirect(&mut call_indirect, reloc_enabled, 2, 0);
-        call_indirect.instruction(&Instruction::End);
-        self.codes.function(&call_indirect);
-        self.func_count += 1;
-        let sentinel_func_idx = self.func_count;
-        self.funcs.function(2);
-        let mut sentinel = Function::new_with_locals_types(Vec::new());
-        sentinel.instruction(&Instruction::I64Const(0));
-        sentinel.instruction(&Instruction::End);
-        self.codes.function(&sentinel);
-        self.func_count += 1;
-
         let mut max_func_arity = 0usize;
         let mut max_call_arity = 0usize;
+        let mut builtin_trampoline_specs: HashMap<String, usize> = HashMap::new();
         for func_ir in &ir.functions {
-            if func_ir.name.ends_with("_poll") {
-                continue;
+            let is_poll = func_ir.name.ends_with("_poll");
+            if !is_poll {
+                max_func_arity = max_func_arity.max(func_ir.params.len());
             }
-            max_func_arity = max_func_arity.max(func_ir.params.len());
             for op in &func_ir.ops {
-                if op.kind == "call_func" {
+                if !is_poll && op.kind == "call_func" {
                     if let Some(args) = &op.args {
                         if !args.is_empty() {
                             max_call_arity = max_call_arity.max(args.len() - 1);
+                        }
+                    }
+                }
+                if op.kind == "builtin_func" {
+                    if let Some(name) = op.s_value.as_ref() {
+                        let arity = op.value.unwrap_or(0) as usize;
+                        if let Some(prev) = builtin_trampoline_specs.get(name) {
+                            if *prev != arity {
+                                panic!(
+                                    "builtin trampoline arity mismatch for {name}: {prev} vs {arity}"
+                                );
+                            }
+                        } else {
+                            builtin_trampoline_specs.insert(name.clone(), arity);
                         }
                     }
                 }
@@ -722,8 +804,8 @@ impl WasmBackend {
         user_type_map.insert(4, 7);
         user_type_map.insert(6, 9);
         user_type_map.insert(7, 10);
-        // Types 0-11 are defined above; start new signatures after them.
-        let mut next_type_idx = 12u32;
+        // Types 0-28 are defined above; start new signatures after them.
+        let mut next_type_idx = 29u32;
         for func_ir in &ir.functions {
             if func_ir.name.ends_with("_poll") {
                 continue;
@@ -739,7 +821,10 @@ impl WasmBackend {
             }
         }
 
-        let max_needed_arity = max_func_arity.max(max_call_arity.saturating_add(3));
+        let max_call_indirect = 13usize;
+        let max_needed_arity = max_func_arity
+            .max(max_call_arity.saturating_add(3))
+            .max(max_call_indirect + 1);
         for arity in 0..=max_needed_arity {
             if let std::collections::hash_map::Entry::Vacant(entry) = user_type_map.entry(arity) {
                 self.types.function(
@@ -750,6 +835,37 @@ impl WasmBackend {
                 next_type_idx += 1;
             }
         }
+
+        for arity in 0..=max_call_indirect {
+            let sig_idx = *user_type_map
+                .get(&(arity + 1))
+                .unwrap_or_else(|| panic!("missing call_indirect signature for arity {}", arity + 1));
+            let callee_idx = *user_type_map
+                .get(&arity)
+                .unwrap_or_else(|| panic!("missing call_indirect callee type for arity {}", arity));
+            self.funcs.function(sig_idx);
+            let export_name = format!("molt_call_indirect{arity}");
+            self.exports
+                .export(&export_name, ExportKind::Func, self.func_count);
+            let mut call_indirect = Function::new_with_locals_types(Vec::new());
+            for idx in 0..arity {
+                call_indirect.instruction(&Instruction::LocalGet((idx + 1) as u32));
+            }
+            call_indirect.instruction(&Instruction::LocalGet(0));
+            call_indirect.instruction(&Instruction::I32WrapI64);
+            emit_call_indirect(&mut call_indirect, reloc_enabled, callee_idx, 0);
+            call_indirect.instruction(&Instruction::End);
+            self.codes.function(&call_indirect);
+            self.func_count += 1;
+        }
+
+        let sentinel_func_idx = self.func_count;
+        self.funcs.function(2);
+        let mut sentinel = Function::new_with_locals_types(Vec::new());
+        sentinel.instruction(&Instruction::I64Const(0));
+        sentinel.instruction(&Instruction::End);
+        self.codes.function(&sentinel);
+        self.func_count += 1;
 
         // Memory & Table (imported for shared-instance linking)
         let memory_ty = MemoryType {
@@ -762,64 +878,95 @@ impl WasmBackend {
             .import("env", "memory", EntityType::Memory(memory_ty));
         self.exports.export("molt_memory", ExportKind::Memory, 0);
 
-        let builtin_table_funcs: [(&str, &str); 53] = [
-            ("molt_missing", "missing"),
-            ("molt_repr_builtin", "repr_builtin"),
-            ("molt_format_builtin", "format_builtin"),
-            ("molt_callable_builtin", "callable_builtin"),
-            ("molt_round_builtin", "round_builtin"),
-            ("molt_enumerate_builtin", "enumerate_builtin"),
-            ("molt_iter_sentinel", "iter_sentinel"),
-            ("molt_next_builtin", "next_builtin"),
-            ("molt_any_builtin", "any_builtin"),
-            ("molt_all_builtin", "all_builtin"),
-            ("molt_sum_builtin", "sum_builtin"),
-            ("molt_min_builtin", "min_builtin"),
-            ("molt_max_builtin", "max_builtin"),
-            ("molt_sorted_builtin", "sorted_builtin"),
-            ("molt_map_builtin", "map_builtin"),
-            ("molt_filter_builtin", "filter_builtin"),
-            ("molt_zip_builtin", "zip_builtin"),
-            ("molt_reversed_builtin", "reversed_builtin"),
-            ("molt_getattr_builtin", "getattr_builtin"),
-            ("molt_anext_builtin", "anext_builtin"),
-            ("molt_print_builtin", "print_builtin"),
-            ("molt_super_builtin", "super_builtin"),
-            ("molt_set_attr_name", "set_attr_name"),
-            ("molt_del_attr_name", "del_attr_name"),
-            ("molt_has_attr_name", "has_attr_name"),
-            ("molt_isinstance", "isinstance"),
-            ("molt_issubclass", "issubclass"),
-            ("molt_len", "len"),
-            ("molt_id", "id"),
-            ("molt_ord", "ord"),
-            ("molt_chr", "chr"),
-            ("molt_ascii_from_obj", "ascii_from_obj"),
-            ("molt_bin_builtin", "bin_builtin"),
-            ("molt_oct_builtin", "oct_builtin"),
-            ("molt_hex_builtin", "hex_builtin"),
-            ("molt_abs_builtin", "abs_builtin"),
-            ("molt_divmod_builtin", "divmod_builtin"),
-            ("molt_getargv", "getargv"),
-            ("molt_env_get", "env_get"),
-            ("molt_getpid", "getpid"),
-            ("molt_path_exists", "path_exists"),
-            ("molt_path_unlink", "path_unlink"),
-            ("molt_getrecursionlimit", "getrecursionlimit"),
-            ("molt_setrecursionlimit", "setrecursionlimit"),
-            ("molt_exception_last", "exception_last"),
-            ("molt_exception_active", "exception_active"),
-            ("molt_iter_checked", "iter"),
-            ("molt_aiter", "aiter"),
-            ("molt_heapq_heapify", "heapq_heapify"),
-            ("molt_heapq_heappush", "heapq_heappush"),
-            ("molt_heapq_heappop", "heapq_heappop"),
-            ("molt_heapq_heapreplace", "heapq_heapreplace"),
-            ("molt_heapq_heappushpop", "heapq_heappushpop"),
+        let builtin_table_funcs: [(&str, &str, usize); 54] = [
+            ("molt_missing", "missing", 0),
+            ("molt_repr_builtin", "repr_builtin", 1),
+            ("molt_format_builtin", "format_builtin", 2),
+            ("molt_callable_builtin", "callable_builtin", 1),
+            ("molt_round_builtin", "round_builtin", 2),
+            ("molt_enumerate_builtin", "enumerate_builtin", 2),
+            ("molt_iter_sentinel", "iter_sentinel", 2),
+            ("molt_next_builtin", "next_builtin", 2),
+            ("molt_any_builtin", "any_builtin", 1),
+            ("molt_all_builtin", "all_builtin", 1),
+            ("molt_sum_builtin", "sum_builtin", 2),
+            ("molt_min_builtin", "min_builtin", 3),
+            ("molt_max_builtin", "max_builtin", 3),
+            ("molt_sorted_builtin", "sorted_builtin", 3),
+            ("molt_map_builtin", "map_builtin", 2),
+            ("molt_filter_builtin", "filter_builtin", 2),
+            ("molt_zip_builtin", "zip_builtin", 1),
+            ("molt_reversed_builtin", "reversed_builtin", 1),
+            ("molt_getattr_builtin", "getattr_builtin", 3),
+            ("molt_anext_builtin", "anext_builtin", 2),
+            ("molt_print_builtin", "print_builtin", 5),
+            ("molt_super_builtin", "super_builtin", 2),
+            ("molt_set_attr_name", "set_attr_name", 3),
+            ("molt_del_attr_name", "del_attr_name", 2),
+            ("molt_has_attr_name", "has_attr_name", 2),
+            ("molt_isinstance", "isinstance", 2),
+            ("molt_issubclass", "issubclass", 2),
+            ("molt_len", "len", 1),
+            ("molt_id", "id", 1),
+            ("molt_ord", "ord", 1),
+            ("molt_chr", "chr", 1),
+            ("molt_ascii_from_obj", "ascii_from_obj", 1),
+            ("molt_bin_builtin", "bin_builtin", 1),
+            ("molt_oct_builtin", "oct_builtin", 1),
+            ("molt_hex_builtin", "hex_builtin", 1),
+            ("molt_abs_builtin", "abs_builtin", 1),
+            ("molt_divmod_builtin", "divmod_builtin", 2),
+            ("molt_open_builtin", "open_builtin", 8),
+            ("molt_getargv", "getargv", 0),
+            ("molt_env_get", "env_get", 2),
+            ("molt_getpid", "getpid", 0),
+            ("molt_path_exists", "path_exists", 1),
+            ("molt_path_unlink", "path_unlink", 1),
+            ("molt_getrecursionlimit", "getrecursionlimit", 0),
+            ("molt_setrecursionlimit", "setrecursionlimit", 1),
+            ("molt_exception_last", "exception_last", 0),
+            ("molt_exception_active", "exception_active", 0),
+            ("molt_iter_checked", "iter", 1),
+            ("molt_aiter", "aiter", 1),
+            ("molt_heapq_heapify", "heapq_heapify", 1),
+            ("molt_heapq_heappush", "heapq_heappush", 2),
+            ("molt_heapq_heappop", "heapq_heappop", 1),
+            ("molt_heapq_heapreplace", "heapq_heapreplace", 2),
+            ("molt_heapq_heappushpop", "heapq_heappushpop", 2),
         ];
-        let table_base: u32 = 256;
-        let table_len = (3 + builtin_table_funcs.len() + ir.functions.len()) as u32;
-        let table_min = 192.max(table_base + table_len);
+        let mut builtin_trampoline_funcs: Vec<(String, usize)> = Vec::new();
+        for (runtime_name, _, _) in builtin_table_funcs.iter() {
+            if let Some(arity) = builtin_trampoline_specs.get(*runtime_name) {
+                builtin_trampoline_funcs.push(((*runtime_name).to_string(), *arity));
+            }
+        }
+        let mut builtin_wrapper_funcs: Vec<(String, &str, usize)> = Vec::new();
+        let wrap_all_builtins = reloc_enabled;
+        for (runtime_name, import_name, arity) in builtin_table_funcs.iter() {
+            if wrap_all_builtins || builtin_trampoline_specs.contains_key(*runtime_name) {
+                builtin_wrapper_funcs.push(((*runtime_name).to_string(), *import_name, *arity));
+            }
+        }
+        if builtin_trampoline_specs.len() != builtin_trampoline_funcs.len() {
+            for name in builtin_trampoline_specs.keys() {
+                if !builtin_table_funcs
+                    .iter()
+                    .any(|(entry, _, _)| entry == name)
+                {
+                    panic!("builtin {name} missing from wasm table");
+                }
+            }
+        }
+        let table_base: u32 = if reloc_enabled {
+            table_base_for_reloc()
+        } else {
+            256
+        };
+        let table_len = (3
+            + builtin_table_funcs.len()
+            + builtin_trampoline_funcs.len()
+            + ir.functions.len() * 2) as u32;
+        let table_min = table_base + table_len;
         let table_ty = TableType {
             element_type: RefType::FUNCREF,
             minimum: table_min,
@@ -832,11 +979,63 @@ impl WasmBackend {
         );
         self.exports.export("molt_table", ExportKind::Table, 0);
 
+        let mut builtin_wrapper_indices = HashMap::new();
+        for (runtime_name, import_name, arity) in &builtin_wrapper_funcs {
+            let type_idx = *user_type_map
+                .get(arity)
+                .unwrap_or_else(|| panic!("missing builtin wrapper signature for arity {arity}"));
+            let import_idx = *self
+                .import_ids
+                .get(*import_name)
+                .unwrap_or_else(|| panic!("missing builtin import for {import_name}"));
+            self.funcs.function(type_idx);
+            let func_index = self.func_count;
+            self.func_count += 1;
+            let mut func = Function::new_with_locals_types(Vec::new());
+            for idx in 0..*arity {
+                func.instruction(&Instruction::LocalGet(idx as u32));
+            }
+            emit_call(&mut func, reloc_enabled, import_idx);
+            func.instruction(&Instruction::End);
+            self.codes.function(&func);
+            builtin_wrapper_indices.insert(runtime_name.clone(), func_index);
+        }
+
+        let mut table_import_wrappers = HashMap::new();
+        if reloc_enabled {
+            for (import_name, arity) in [("async_sleep", 1usize), ("anext_default_poll", 1usize)] {
+                let type_idx = *user_type_map
+                    .get(&arity)
+                    .unwrap_or_else(|| panic!("missing wrapper signature for arity {arity}"));
+                let import_idx = *self
+                    .import_ids
+                    .get(import_name)
+                    .unwrap_or_else(|| panic!("missing import for {import_name}"));
+                self.funcs.function(type_idx);
+                let func_index = self.func_count;
+                self.func_count += 1;
+                let mut func = Function::new_with_locals_types(Vec::new());
+                for idx in 0..arity {
+                    func.instruction(&Instruction::LocalGet(idx as u32));
+                }
+                emit_call(&mut func, reloc_enabled, import_idx);
+                func.instruction(&Instruction::End);
+                self.codes.function(&func);
+                table_import_wrappers.insert(import_name.to_string(), func_index);
+            }
+        }
+
         // Function indices for table
+        let async_sleep_idx = *table_import_wrappers
+            .get("async_sleep")
+            .unwrap_or(&self.import_ids["async_sleep"]);
+        let anext_default_poll_idx = *table_import_wrappers
+            .get("anext_default_poll")
+            .unwrap_or(&self.import_ids["anext_default_poll"]);
         let mut table_indices = vec![
             sentinel_func_idx,
-            self.import_ids["async_sleep"],
-            self.import_ids["anext_default_poll"],
+            async_sleep_idx,
+            anext_default_poll_idx,
         ];
         let mut func_to_table_idx = HashMap::new();
         let mut func_to_index = HashMap::new();
@@ -851,31 +1050,56 @@ impl WasmBackend {
         func_to_table_idx.insert("molt_async_sleep".to_string(), 1);
         func_to_table_idx.insert("molt_anext_default_poll".to_string(), 2);
 
-        for (offset, (runtime_name, import_name)) in builtin_table_funcs.iter().enumerate() {
+        for (offset, (runtime_name, import_name, _)) in builtin_table_funcs.iter().enumerate() {
             let idx = (offset + 3) as u32;
-            func_to_table_idx.insert((*runtime_name).to_string(), idx);
-            table_indices.push(self.import_ids[*import_name]);
+            let runtime_key = (*runtime_name).to_string();
+            func_to_table_idx.insert(runtime_key.clone(), idx);
+            if let Some(wrapper_idx) = builtin_wrapper_indices.get(&runtime_key) {
+                func_to_index.insert(runtime_key, *wrapper_idx);
+                table_indices.push(*wrapper_idx);
+            } else {
+                func_to_index.insert(runtime_key, self.import_ids[*import_name]);
+                table_indices.push(self.import_ids[*import_name]);
+            }
         }
 
         let user_func_start = self.func_count;
+        let user_func_count = ir.functions.len() as u32;
+        let builtin_trampoline_count = builtin_trampoline_funcs.len() as u32;
+        let builtin_trampoline_start = user_func_start + user_func_count;
+        let user_trampoline_start = builtin_trampoline_start + builtin_trampoline_count;
         for (i, func_ir) in ir.functions.iter().enumerate() {
             let idx = (i + 3 + builtin_table_funcs.len()) as u32;
             func_to_table_idx.insert(func_ir.name.clone(), idx);
             func_to_index.insert(func_ir.name.clone(), user_func_start + i as u32);
             table_indices.push(user_func_start + i as u32);
         }
+        let mut func_to_trampoline_idx = HashMap::new();
+        for (i, (name, _)) in builtin_trampoline_funcs.iter().enumerate() {
+            let idx = (i + 3 + builtin_table_funcs.len() + ir.functions.len()) as u32;
+            func_to_trampoline_idx.insert(name.clone(), idx);
+            table_indices.push(builtin_trampoline_start + i as u32);
+        }
+        for (i, func_ir) in ir.functions.iter().enumerate() {
+            let idx = (i
+                + 3
+                + builtin_table_funcs.len()
+                + ir.functions.len()
+                + builtin_trampoline_funcs.len()) as u32;
+            func_to_trampoline_idx.insert(func_ir.name.clone(), idx);
+            table_indices.push(user_trampoline_start + i as u32);
+        }
 
-        let table_func_indices = table_indices.clone();
         let import_ids = self.import_ids.clone();
         let compile_ctx = CompileFuncContext {
             func_map: &func_to_table_idx,
             func_indices: &func_to_index,
-            table_func_indices: &table_func_indices,
+            trampoline_map: &func_to_trampoline_idx,
             import_ids: &import_ids,
             reloc_enabled,
             table_base,
         };
-        for func_ir in ir.functions {
+        for func_ir in &ir.functions {
             let type_idx = if func_ir.name.ends_with("_poll") {
                 2
             } else {
@@ -884,35 +1108,122 @@ impl WasmBackend {
             self.compile_func(func_ir, type_idx, &compile_ctx);
         }
 
-        let mut elements = None;
-        let mut start = None;
-        if reloc_enabled {
-            let init_func_index = self.func_count;
-            self.funcs.function(8);
-            let mut init_table = Function::new_with_locals_types(Vec::new());
-            for (table_idx, func_idx) in table_indices.iter().enumerate() {
-                init_table
-                    .instruction(&Instruction::I32Const(table_base as i32 + table_idx as i32));
-                emit_ref_func(&mut init_table, reloc_enabled, *func_idx);
-                init_table.instruction(&Instruction::TableSet(0));
+        if self.func_count != builtin_trampoline_start {
+            panic!(
+                "wasm builtin trampoline index mismatch: expected {builtin_trampoline_start}, got {}",
+                self.func_count
+            );
+        }
+        for (name, arity) in &builtin_trampoline_funcs {
+            let target_idx = *func_to_index
+                .get(name)
+                .unwrap_or_else(|| panic!("builtin trampoline target missing for {name}"));
+            let table_slot = *func_to_table_idx
+                .get(name)
+                .unwrap_or_else(|| panic!("builtin trampoline table slot missing for {name}"));
+            let table_idx = table_base + table_slot;
+            self.compile_trampoline(
+                reloc_enabled,
+                target_idx,
+                table_idx,
+                TrampolineSpec {
+                    arity: *arity,
+                    has_closure: false,
+                    is_generator: false,
+                    closure_size: 0,
+                },
+            );
+        }
+        if self.func_count != user_trampoline_start {
+            panic!(
+                "wasm user trampoline index mismatch: expected {user_trampoline_start}, got {}",
+                self.func_count
+            );
+        }
+        for func_ir in &ir.functions {
+            let default_has_closure = func_ir
+                .params
+                .first()
+                .is_some_and(|name| name == "__molt_closure__");
+            let mut default_arity = func_ir.params.len();
+            if default_has_closure && default_arity > 0 {
+                default_arity = default_arity.saturating_sub(1);
             }
-            init_table.instruction(&Instruction::End);
-            self.codes.function(&init_table);
-            self.func_count += 1;
-            start = Some(StartSection {
-                function_index: init_func_index,
-            });
+            let (arity, has_closure) = match func_trampoline_spec.get(&func_ir.name).copied() {
+                Some(spec) => spec,
+                None => (default_arity, default_has_closure),
+            };
+            let target_idx = *func_to_index
+                .get(&func_ir.name)
+                .expect("trampoline target missing");
+            let table_slot = *func_to_table_idx
+                .get(&func_ir.name)
+                .expect("trampoline table slot missing");
+            let table_idx = table_base + table_slot;
+            let is_generator = generator_funcs.contains(&func_ir.name);
+            let closure_size = if is_generator {
+                *generator_closure_sizes
+                    .get(&func_ir.name)
+                    .unwrap_or_else(|| panic!("generator closure size missing for {}", func_ir.name))
+            } else {
+                0
+            };
+            self.compile_trampoline(
+                reloc_enabled,
+                target_idx,
+                table_idx,
+                TrampolineSpec {
+                    arity,
+                    has_closure,
+                    is_generator,
+                    closure_size,
+                },
+            );
+        }
+
+        let mut element_section = None;
+        let mut element_payload = None;
+        if reloc_enabled {
+            let table_init_index =
+                self.compile_table_init(reloc_enabled, table_base, &table_indices);
+            self.exports
+                .export("molt_table_init", ExportKind::Func, table_init_index);
+            let main_index = self
+                .molt_main_index
+                .unwrap_or_else(|| panic!("molt_main missing for table init wrapper"));
+            let wrapper_index =
+                self.compile_molt_main_wrapper(reloc_enabled, main_index, table_init_index);
+            self.exports
+                .export("molt_main", ExportKind::Func, wrapper_index);
+
+            let mut ref_exported = HashSet::new();
+            for func_index in &table_indices {
+                if ref_exported.insert(*func_index) {
+                    let name = format!("__molt_table_ref_{func_index}");
+                    self.exports.export(&name, ExportKind::Func, *func_index);
+                }
+            }
+
+            let mut payload = Vec::new();
+            1u32.encode(&mut payload);
+            payload.push(0x01);
+            payload.push(0x00);
+            (table_indices.len() as u32).encode(&mut payload);
+            for func_index in &table_indices {
+                encode_u32_leb128_padded(*func_index, &mut payload);
+            }
+            element_payload = Some(payload);
         } else {
-            let mut element_section = ElementSection::new();
+            let mut section = ElementSection::new();
             let offset = ConstExpr::i32_const(table_base as i32);
-            element_section.segment(ElementSegment {
+            section.segment(ElementSegment {
                 mode: ElementMode::Active {
                     table: None,
                     offset: &offset,
                 },
                 elements: Elements::Functions(&table_indices),
             });
-            elements = Some(element_section);
+            element_section = Some(section);
         }
 
         self.module.section(&self.types);
@@ -921,39 +1232,184 @@ impl WasmBackend {
         self.module.section(&self.tables);
         self.module.section(&self.memories);
         self.module.section(&self.exports);
-        if let Some(element_section) = elements.as_ref() {
+        if let Some(element_section) = element_section.as_ref() {
             self.module.section(element_section);
         }
-        if let Some(start_section) = start.as_ref() {
-            self.module.section(start_section);
+        if let Some(payload) = element_payload.as_ref() {
+            let raw_section = RawSection { id: 9, data: payload };
+            self.module.section(&raw_section);
         }
         self.module.section(&self.codes);
         self.module.section(&self.data);
         let mut bytes = self.module.finish();
         if reloc_enabled {
-            bytes = add_reloc_sections(
-                bytes,
-                &self.data_segments,
-                &self.data_relocs,
-                &self.table_index_relocs,
-            );
+            bytes = add_reloc_sections(bytes, &self.data_segments, &self.data_relocs);
         }
         bytes
     }
 
-    fn compile_func(&mut self, func_ir: FunctionIR, type_idx: u32, ctx: &CompileFuncContext<'_>) {
+    fn compile_trampoline(
+        &mut self,
+        reloc_enabled: bool,
+        target_func_index: u32,
+        table_idx: u32,
+        spec: TrampolineSpec,
+    ) {
+        let TrampolineSpec {
+            arity,
+            has_closure,
+            is_generator,
+            closure_size,
+        } = spec;
+        self.funcs.function(5);
+        self.func_count += 1;
+        let mut local_types = Vec::new();
+        if is_generator {
+            local_types.push(ValType::I64);
+            local_types.push(ValType::I32);
+            local_types.push(ValType::I64);
+        }
+        let mut func = Function::new_with_locals_types(local_types);
+        if is_generator {
+            if closure_size < 0 {
+                panic!("generator closure size must be non-negative");
+            }
+            let payload_slots = arity + usize::from(has_closure);
+            let needed = GEN_CONTROL_SIZE as i64 + (payload_slots as i64) * 8;
+            if closure_size < needed {
+                panic!("generator closure size too small for trampoline");
+            }
+            let gen_local = 3;
+            let base_local = 4;
+            let val_local = 5;
+            emit_table_index_i64(&mut func, reloc_enabled, table_idx);
+            func.instruction(&Instruction::I64Const(closure_size));
+            func.instruction(&Instruction::I64Const(TASK_KIND_GENERATOR));
+            emit_call(&mut func, reloc_enabled, self.import_ids["task_new"]);
+            func.instruction(&Instruction::LocalSet(gen_local));
+            if payload_slots > 0 {
+                func.instruction(&Instruction::LocalGet(gen_local));
+                emit_call(&mut func, reloc_enabled, self.import_ids["handle_resolve"]);
+                func.instruction(&Instruction::LocalSet(base_local));
+                let mut offset = GEN_CONTROL_SIZE;
+                if has_closure {
+                    func.instruction(&Instruction::LocalGet(base_local));
+                    func.instruction(&Instruction::I32Const(offset));
+                    func.instruction(&Instruction::I32Add);
+                    func.instruction(&Instruction::LocalGet(0));
+                    func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
+                        align: 3,
+                        offset: 0,
+                        memory_index: 0,
+                    }));
+                    func.instruction(&Instruction::LocalGet(0));
+                    emit_call(&mut func, reloc_enabled, self.import_ids["inc_ref_obj"]);
+                    offset += 8;
+                }
+                for idx in 0..arity {
+                    let arg_offset = offset + (idx as i32) * 8;
+                    func.instruction(&Instruction::LocalGet(1));
+                    func.instruction(&Instruction::I32WrapI64);
+                    func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                        align: 3,
+                        offset: (idx * std::mem::size_of::<u64>()) as u64,
+                        memory_index: 0,
+                    }));
+                    func.instruction(&Instruction::LocalSet(val_local));
+                    func.instruction(&Instruction::LocalGet(base_local));
+                    func.instruction(&Instruction::I32Const(arg_offset));
+                    func.instruction(&Instruction::I32Add);
+                    func.instruction(&Instruction::LocalGet(val_local));
+                    func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
+                        align: 3,
+                        offset: 0,
+                        memory_index: 0,
+                    }));
+                    func.instruction(&Instruction::LocalGet(val_local));
+                    emit_call(&mut func, reloc_enabled, self.import_ids["inc_ref_obj"]);
+                }
+            }
+            func.instruction(&Instruction::LocalGet(gen_local));
+            func.instruction(&Instruction::End);
+            self.codes.function(&func);
+            return;
+        }
+        if has_closure {
+            func.instruction(&Instruction::LocalGet(0));
+        }
+        for idx in 0..arity {
+            func.instruction(&Instruction::LocalGet(1));
+            func.instruction(&Instruction::I32WrapI64);
+            func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                align: 3,
+                offset: (idx * std::mem::size_of::<u64>()) as u64,
+                memory_index: 0,
+            }));
+        }
+        emit_call(&mut func, reloc_enabled, target_func_index);
+        func.instruction(&Instruction::End);
+        self.codes.function(&func);
+    }
+
+    fn compile_table_init(
+        &mut self,
+        reloc_enabled: bool,
+        table_base: u32,
+        table_indices: &[u32],
+    ) -> u32 {
         let func_index = self.func_count;
+        self.funcs.function(8);
+        self.func_count += 1;
+        let mut func = Function::new_with_locals_types(Vec::new());
+        for (slot, target_index) in table_indices.iter().enumerate() {
+            let table_index = table_base + slot as u32;
+            emit_i32_const(&mut func, reloc_enabled, table_index as i32);
+            emit_ref_func(&mut func, reloc_enabled, *target_index);
+            func.instruction(&Instruction::TableSet(0));
+        }
+        func.instruction(&Instruction::End);
+        self.codes.function(&func);
+        func_index
+    }
+
+    fn compile_molt_main_wrapper(
+        &mut self,
+        reloc_enabled: bool,
+        main_index: u32,
+        table_init_index: u32,
+    ) -> u32 {
+        let func_index = self.func_count;
+        self.funcs.function(0);
+        self.func_count += 1;
+        let mut func = Function::new_with_locals_types(Vec::new());
+        emit_call(&mut func, reloc_enabled, table_init_index);
+        emit_call(&mut func, reloc_enabled, main_index);
+        func.instruction(&Instruction::End);
+        self.codes.function(&func);
+        func_index
+    }
+
+    fn compile_func(
+        &mut self,
+        func_ir: &FunctionIR,
+        type_idx: u32,
+        ctx: &CompileFuncContext<'_>,
+    ) {
+        let func_index = self.func_count;
+        let reloc_enabled = ctx.reloc_enabled;
         self.funcs.function(type_idx);
-        self.exports
-            .export(&func_ir.name, ExportKind::Func, self.func_count);
+        if reloc_enabled && func_ir.name == "molt_main" {
+            self.molt_main_index = Some(func_index);
+        } else {
+            self.exports
+                .export(&func_ir.name, ExportKind::Func, self.func_count);
+        }
         self.func_count += 1;
         let func_map = ctx.func_map;
         let func_indices = ctx.func_indices;
-        let table_func_indices = ctx.table_func_indices;
+        let trampoline_map = ctx.trampoline_map;
         let table_base = ctx.table_base;
         let import_ids = ctx.import_ids;
-        let reloc_enabled = ctx.reloc_enabled;
-
         let mut locals = HashMap::new();
         let mut local_count = 0;
         let mut local_types = Vec::new();
@@ -1825,95 +2281,143 @@ impl WasmBackend {
                     "json_parse" => {
                         let args = op.args.as_ref().unwrap();
                         let arg_name = &args[0];
-                        let ptr = locals
-                            .get(&format!("{arg_name}_ptr"))
-                            .copied()
-                            .unwrap_or(locals[arg_name]);
-                        let len = locals[&format!("{arg_name}_len")];
+                        if let Some(len) = locals.get(&format!("{arg_name}_len")).copied() {
+                            let ptr = locals
+                                .get(&format!("{arg_name}_ptr"))
+                                .copied()
+                                .unwrap_or(locals[arg_name]);
+                            let tmp_rc = locals["__molt_tmp0"];
 
-                        func.instruction(&Instruction::I64Const(8));
-                        emit_call(func, reloc_enabled, import_ids["alloc"]);
-                        let out_ptr = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(out_ptr));
+                            func.instruction(&Instruction::I64Const(8));
+                            emit_call(func, reloc_enabled, import_ids["alloc"]);
+                            let out_ptr = locals[op.out.as_ref().unwrap()];
+                            func.instruction(&Instruction::LocalSet(out_ptr));
 
-                        func.instruction(&Instruction::LocalGet(ptr));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::LocalGet(len));
-                        func.instruction(&Instruction::LocalGet(out_ptr));
-                        emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-                        emit_call(func, reloc_enabled, import_ids["json_parse_scalar"]);
-                        func.instruction(&Instruction::Drop);
+                            func.instruction(&Instruction::LocalGet(ptr));
+                            func.instruction(&Instruction::I32WrapI64);
+                            func.instruction(&Instruction::LocalGet(len));
+                            func.instruction(&Instruction::LocalGet(out_ptr));
+                            emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+                            emit_call(func, reloc_enabled, import_ids["json_parse_scalar"]);
+                            func.instruction(&Instruction::I64ExtendI32U);
+                            func.instruction(&Instruction::LocalSet(tmp_rc));
 
-                        func.instruction(&Instruction::LocalGet(out_ptr));
-                        emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-                        func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
-                        func.instruction(&Instruction::LocalSet(out_ptr));
+                            func.instruction(&Instruction::LocalGet(tmp_rc));
+                            func.instruction(&Instruction::I64Eqz);
+                            func.instruction(&Instruction::If(BlockType::Empty));
+                            func.instruction(&Instruction::LocalGet(out_ptr));
+                            emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+                            func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                                align: 3,
+                                offset: 0,
+                                memory_index: 0,
+                            }));
+                            func.instruction(&Instruction::LocalSet(out_ptr));
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::LocalGet(locals[arg_name]));
+                            emit_call(func, reloc_enabled, import_ids["json_parse_scalar_obj"]);
+                            func.instruction(&Instruction::LocalSet(out_ptr));
+                            func.instruction(&Instruction::End);
+                        } else {
+                            let out_ptr = locals[op.out.as_ref().unwrap()];
+                            func.instruction(&Instruction::LocalGet(locals[arg_name]));
+                            emit_call(func, reloc_enabled, import_ids["json_parse_scalar_obj"]);
+                            func.instruction(&Instruction::LocalSet(out_ptr));
+                        }
                     }
                     "msgpack_parse" => {
                         let args = op.args.as_ref().unwrap();
                         let arg_name = &args[0];
-                        let ptr = locals
-                            .get(&format!("{arg_name}_ptr"))
-                            .copied()
-                            .unwrap_or(locals[arg_name]);
-                        let len = locals[&format!("{arg_name}_len")];
+                        if let Some(len) = locals.get(&format!("{arg_name}_len")).copied() {
+                            let ptr = locals
+                                .get(&format!("{arg_name}_ptr"))
+                                .copied()
+                                .unwrap_or(locals[arg_name]);
+                            let tmp_rc = locals["__molt_tmp0"];
 
-                        func.instruction(&Instruction::I64Const(8));
-                        emit_call(func, reloc_enabled, import_ids["alloc"]);
-                        let out_ptr = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(out_ptr));
+                            func.instruction(&Instruction::I64Const(8));
+                            emit_call(func, reloc_enabled, import_ids["alloc"]);
+                            let out_ptr = locals[op.out.as_ref().unwrap()];
+                            func.instruction(&Instruction::LocalSet(out_ptr));
 
-                        func.instruction(&Instruction::LocalGet(ptr));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::LocalGet(len));
-                        func.instruction(&Instruction::LocalGet(out_ptr));
-                        emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-                        emit_call(func, reloc_enabled, import_ids["msgpack_parse_scalar"]);
-                        func.instruction(&Instruction::Drop);
+                            func.instruction(&Instruction::LocalGet(ptr));
+                            func.instruction(&Instruction::I32WrapI64);
+                            func.instruction(&Instruction::LocalGet(len));
+                            func.instruction(&Instruction::LocalGet(out_ptr));
+                            emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+                            emit_call(func, reloc_enabled, import_ids["msgpack_parse_scalar"]);
+                            func.instruction(&Instruction::I64ExtendI32U);
+                            func.instruction(&Instruction::LocalSet(tmp_rc));
 
-                        func.instruction(&Instruction::LocalGet(out_ptr));
-                        emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-                        func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
-                        func.instruction(&Instruction::LocalSet(out_ptr));
+                            func.instruction(&Instruction::LocalGet(tmp_rc));
+                            func.instruction(&Instruction::I64Eqz);
+                            func.instruction(&Instruction::If(BlockType::Empty));
+                            func.instruction(&Instruction::LocalGet(out_ptr));
+                            emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+                            func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                                align: 3,
+                                offset: 0,
+                                memory_index: 0,
+                            }));
+                            func.instruction(&Instruction::LocalSet(out_ptr));
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::LocalGet(locals[arg_name]));
+                            emit_call(func, reloc_enabled, import_ids["msgpack_parse_scalar_obj"]);
+                            func.instruction(&Instruction::LocalSet(out_ptr));
+                            func.instruction(&Instruction::End);
+                        } else {
+                            let out_ptr = locals[op.out.as_ref().unwrap()];
+                            func.instruction(&Instruction::LocalGet(locals[arg_name]));
+                            emit_call(func, reloc_enabled, import_ids["msgpack_parse_scalar_obj"]);
+                            func.instruction(&Instruction::LocalSet(out_ptr));
+                        }
                     }
                     "cbor_parse" => {
                         let args = op.args.as_ref().unwrap();
                         let arg_name = &args[0];
-                        let ptr = locals
-                            .get(&format!("{arg_name}_ptr"))
-                            .copied()
-                            .unwrap_or(locals[arg_name]);
-                        let len = locals[&format!("{arg_name}_len")];
+                        if let Some(len) = locals.get(&format!("{arg_name}_len")).copied() {
+                            let ptr = locals
+                                .get(&format!("{arg_name}_ptr"))
+                                .copied()
+                                .unwrap_or(locals[arg_name]);
+                            let tmp_rc = locals["__molt_tmp0"];
 
-                        func.instruction(&Instruction::I64Const(8));
-                        emit_call(func, reloc_enabled, import_ids["alloc"]);
-                        let out_ptr = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(out_ptr));
+                            func.instruction(&Instruction::I64Const(8));
+                            emit_call(func, reloc_enabled, import_ids["alloc"]);
+                            let out_ptr = locals[op.out.as_ref().unwrap()];
+                            func.instruction(&Instruction::LocalSet(out_ptr));
 
-                        func.instruction(&Instruction::LocalGet(ptr));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::LocalGet(len));
-                        func.instruction(&Instruction::LocalGet(out_ptr));
-                        emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-                        emit_call(func, reloc_enabled, import_ids["cbor_parse_scalar"]);
-                        func.instruction(&Instruction::Drop);
+                            func.instruction(&Instruction::LocalGet(ptr));
+                            func.instruction(&Instruction::I32WrapI64);
+                            func.instruction(&Instruction::LocalGet(len));
+                            func.instruction(&Instruction::LocalGet(out_ptr));
+                            emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+                            emit_call(func, reloc_enabled, import_ids["cbor_parse_scalar"]);
+                            func.instruction(&Instruction::I64ExtendI32U);
+                            func.instruction(&Instruction::LocalSet(tmp_rc));
 
-                        func.instruction(&Instruction::LocalGet(out_ptr));
-                        emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-                        func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
-                        func.instruction(&Instruction::LocalSet(out_ptr));
+                            func.instruction(&Instruction::LocalGet(tmp_rc));
+                            func.instruction(&Instruction::I64Eqz);
+                            func.instruction(&Instruction::If(BlockType::Empty));
+                            func.instruction(&Instruction::LocalGet(out_ptr));
+                            emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+                            func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                                align: 3,
+                                offset: 0,
+                                memory_index: 0,
+                            }));
+                            func.instruction(&Instruction::LocalSet(out_ptr));
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::LocalGet(locals[arg_name]));
+                            emit_call(func, reloc_enabled, import_ids["cbor_parse_scalar_obj"]);
+                            func.instruction(&Instruction::LocalSet(out_ptr));
+                            func.instruction(&Instruction::End);
+                        } else {
+                            let out_ptr = locals[op.out.as_ref().unwrap()];
+                            func.instruction(&Instruction::LocalGet(locals[arg_name]));
+                            emit_call(func, reloc_enabled, import_ids["cbor_parse_scalar_obj"]);
+                            func.instruction(&Instruction::LocalSet(out_ptr));
+                        }
                     }
                     "len" => {
                         let args = op.args.as_ref().unwrap();
@@ -4241,8 +4745,12 @@ impl WasmBackend {
                     }
                     "call_async" => {
                         let payload_len = op.args.as_ref().map(|args| args.len()).unwrap_or(0);
+                        let table_slot = func_map[op.s_value.as_ref().unwrap()];
+                        let table_idx = table_base + table_slot;
+                        emit_table_index_i64(func, reloc_enabled, table_idx);
                         func.instruction(&Instruction::I64Const((payload_len * 8) as i64));
-                        emit_call(func, reloc_enabled, import_ids["alloc"]);
+                        func.instruction(&Instruction::I64Const(TASK_KIND_FUTURE));
+                        emit_call(func, reloc_enabled, import_ids["task_new"]);
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                         if let Some(args) = op.args.as_ref() {
@@ -4258,38 +4766,10 @@ impl WasmBackend {
                                     offset: 0,
                                     memory_index: 0,
                                 }));
+                                func.instruction(&Instruction::LocalGet(arg_val));
+                                emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
                             }
                         }
-                        func.instruction(&Instruction::LocalGet(res));
-                        emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-                        func.instruction(&Instruction::I32Const(HEADER_POLL_FN_OFFSET));
-                        func.instruction(&Instruction::I32Add);
-                        let table_slot = func_map[op.s_value.as_ref().unwrap()];
-                        let table_idx = table_base + table_slot;
-                        let target_func_index = table_func_indices[table_slot as usize];
-                        emit_table_index_i32(
-                            func,
-                            reloc_enabled,
-                            func_index,
-                            table_idx,
-                            target_func_index,
-                            &mut self.table_index_relocs,
-                        );
-                        func.instruction(&Instruction::I32Store(wasm_encoder::MemArg {
-                            align: 2,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
-                        func.instruction(&Instruction::LocalGet(res));
-                        emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-                        func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
-                        func.instruction(&Instruction::I32Add);
-                        func.instruction(&Instruction::I64Const(0));
-                        func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
                     }
                     "call" => {
                         let target_name = op.s_value.as_ref().unwrap();
@@ -4325,15 +4805,10 @@ impl WasmBackend {
                         let arity = op.value.unwrap_or(0);
                         let table_slot = func_map[func_name];
                         let table_idx = table_base + table_slot;
-                        let target_func_index = table_func_indices[table_slot as usize];
-                        emit_table_index_i64(
-                            func,
-                            reloc_enabled,
-                            func_index,
-                            table_idx,
-                            target_func_index,
-                            &mut self.table_index_relocs,
-                        );
+                        let tramp_slot = trampoline_map[func_name];
+                        let tramp_idx = table_base + tramp_slot;
+                        emit_table_index_i64(func, reloc_enabled, table_idx);
+                        emit_table_index_i64(func, reloc_enabled, tramp_idx);
                         func.instruction(&Instruction::I64Const(arity));
                         emit_call(func, reloc_enabled, import_ids["func_new"]);
                         let res = locals[op.out.as_ref().unwrap()];
@@ -4350,15 +4825,10 @@ impl WasmBackend {
                         let closure_bits = locals[closure_name];
                         let table_slot = func_map[func_name];
                         let table_idx = table_base + table_slot;
-                        let target_func_index = table_func_indices[table_slot as usize];
-                        emit_table_index_i64(
-                            func,
-                            reloc_enabled,
-                            func_index,
-                            table_idx,
-                            target_func_index,
-                            &mut self.table_index_relocs,
-                        );
+                        let tramp_slot = trampoline_map[func_name];
+                        let tramp_idx = table_base + tramp_slot;
+                        emit_table_index_i64(func, reloc_enabled, table_idx);
+                        emit_table_index_i64(func, reloc_enabled, tramp_idx);
                         func.instruction(&Instruction::I64Const(arity));
                         func.instruction(&Instruction::LocalGet(closure_bits));
                         emit_call(func, reloc_enabled, import_ids["func_new_closure"]);
@@ -4405,15 +4875,10 @@ impl WasmBackend {
                         let arity = op.value.unwrap_or(0);
                         let table_slot = func_map[func_name];
                         let table_idx = table_base + table_slot;
-                        let target_func_index = table_func_indices[table_slot as usize];
-                        emit_table_index_i64(
-                            func,
-                            reloc_enabled,
-                            func_index,
-                            table_idx,
-                            target_func_index,
-                            &mut self.table_index_relocs,
-                        );
+                        let tramp_slot = trampoline_map[func_name];
+                        let tramp_idx = table_base + tramp_slot;
+                        emit_table_index_i64(func, reloc_enabled, table_idx);
+                        emit_table_index_i64(func, reloc_enabled, tramp_idx);
                         func.instruction(&Instruction::I64Const(arity));
                         emit_call(func, reloc_enabled, import_ids["func_new"]);
                         let res = locals[op.out.as_ref().unwrap()];
@@ -4581,48 +5046,30 @@ impl WasmBackend {
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
-                    "alloc_future" => {
+                    "alloc_task" => {
                         let total = op.value.unwrap_or(0);
-                        func.instruction(&Instruction::I64Const(total));
-                        emit_call(func, reloc_enabled, import_ids["alloc"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
-                        func.instruction(&Instruction::LocalGet(res));
-                        emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-                        func.instruction(&Instruction::I32Const(HEADER_POLL_FN_OFFSET));
-                        func.instruction(&Instruction::I32Add);
+                        let task_kind = op.task_kind.as_deref().unwrap_or("future");
+                        let (kind_bits, payload_base) = match task_kind {
+                            "generator" => (TASK_KIND_GENERATOR, GEN_CONTROL_SIZE),
+                            "future" => (TASK_KIND_FUTURE, 0),
+                            _ => panic!("unknown task kind: {task_kind}"),
+                        };
                         let table_slot = func_map[op.s_value.as_ref().unwrap()];
                         let table_idx = table_base + table_slot;
-                        let target_func_index = table_func_indices[table_slot as usize];
-                        emit_table_index_i32(
-                            func,
-                            reloc_enabled,
-                            func_index,
-                            table_idx,
-                            target_func_index,
-                            &mut self.table_index_relocs,
-                        );
-                        func.instruction(&Instruction::I32Store(wasm_encoder::MemArg {
-                            align: 2,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
-                        func.instruction(&Instruction::LocalGet(res));
-                        emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-                        func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
-                        func.instruction(&Instruction::I32Add);
-                        func.instruction(&Instruction::I64Const(0));
-                        func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
+                        emit_table_index_i64(func, reloc_enabled, table_idx);
+                        func.instruction(&Instruction::I64Const(total));
+                        func.instruction(&Instruction::I64Const(kind_bits));
+                        emit_call(func, reloc_enabled, import_ids["task_new"]);
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
                         if let Some(args) = op.args.as_ref() {
                             for (i, name) in args.iter().enumerate() {
                                 let arg_local = locals[name];
                                 func.instruction(&Instruction::LocalGet(res));
                                 emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-                                func.instruction(&Instruction::I32Const((i as i32) * 8));
+                                func.instruction(&Instruction::I32Const(
+                                    payload_base + (i as i32) * 8,
+                                ));
                                 func.instruction(&Instruction::I32Add);
                                 func.instruction(&Instruction::LocalGet(arg_local));
                                 func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
@@ -4632,39 +5079,6 @@ impl WasmBackend {
                                 }));
                                 func.instruction(&Instruction::LocalGet(arg_local));
                                 emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
-                            }
-                        }
-                    }
-                    "alloc_generator" => {
-                        let total = op.value.unwrap_or(0);
-                        let table_slot = func_map[op.s_value.as_ref().unwrap()];
-                        let table_idx = table_base + table_slot;
-                        let target_func_index = table_func_indices[table_slot as usize];
-                        emit_table_index_i64(
-                            func,
-                            reloc_enabled,
-                            func_index,
-                            table_idx,
-                            target_func_index,
-                            &mut self.table_index_relocs,
-                        );
-                        func.instruction(&Instruction::I64Const(total));
-                        emit_call(func, reloc_enabled, import_ids["generator_new"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
-                        if let Some(args) = op.args.as_ref() {
-                            for (i, name) in args.iter().enumerate() {
-                                let arg_local = locals[name];
-                                func.instruction(&Instruction::LocalGet(res));
-                                emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-                                func.instruction(&Instruction::I32Const(48 + (i as i32) * 8));
-                                func.instruction(&Instruction::I32Add);
-                                func.instruction(&Instruction::LocalGet(arg_local));
-                                func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                                    align: 3,
-                                    offset: 0,
-                                    memory_index: 0,
-                                }));
                             }
                         }
                     }
@@ -4755,10 +5169,19 @@ impl WasmBackend {
                     "exception_new" => {
                         let args = op.args.as_ref().unwrap();
                         let kind = locals[&args[0]];
-                        let msg = locals[&args[1]];
+                        let args_bits = locals[&args[1]];
                         func.instruction(&Instruction::LocalGet(kind));
-                        func.instruction(&Instruction::LocalGet(msg));
+                        func.instruction(&Instruction::LocalGet(args_bits));
                         emit_call(func, reloc_enabled, import_ids["exception_new"]);
+                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                    }
+                    "exception_new_from_class" => {
+                        let args = op.args.as_ref().unwrap();
+                        let class_bits = locals[&args[0]];
+                        let args_bits = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(class_bits));
+                        func.instruction(&Instruction::LocalGet(args_bits));
+                        emit_call(func, reloc_enabled, import_ids["exception_new_from_class"]);
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                     }
                     "exception_clear" => {
@@ -4770,6 +5193,13 @@ impl WasmBackend {
                         let exc = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(exc));
                         emit_call(func, reloc_enabled, import_ids["exception_kind"]);
+                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                    }
+                    "exception_class" => {
+                        let args = op.args.as_ref().unwrap();
+                        let kind = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(kind));
+                        emit_call(func, reloc_enabled, import_ids["exception_class"]);
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                     }
                     "exception_message" => {
@@ -5954,6 +6384,14 @@ fn should_emit_relocs() -> bool {
     matches!(std::env::var("MOLT_WASM_LINK").as_deref(), Ok("1"))
 }
 
+fn table_base_for_reloc() -> u32 {
+    // Allow the driver to pin the table base to the runtime table size.
+    match std::env::var("MOLT_WASM_TABLE_BASE") {
+        Ok(value) => value.parse::<u32>().unwrap_or(RELOC_TABLE_BASE_DEFAULT),
+        Err(_) => RELOC_TABLE_BASE_DEFAULT,
+    }
+}
+
 fn encode_u32_leb128_padded(mut value: u32, out: &mut Vec<u8>) {
     for i in 0..5 {
         let mut byte = (value & 0x7f) as u8;
@@ -6013,7 +6451,7 @@ fn emit_i32_const(func: &mut Function, reloc_enabled: bool, value: i32) {
 fn emit_ref_func(func: &mut Function, reloc_enabled: bool, func_index: u32) {
     if reloc_enabled {
         let mut bytes = Vec::with_capacity(6);
-        bytes.push(0xd2);
+        bytes.push(0xD2);
         encode_u32_leb128_padded(func_index, &mut bytes);
         func.raw(bytes);
     } else {
@@ -6024,38 +6462,17 @@ fn emit_ref_func(func: &mut Function, reloc_enabled: bool, func_index: u32) {
 fn emit_table_index_i32(
     func: &mut Function,
     reloc_enabled: bool,
-    func_index: u32,
     table_index: u32,
-    target_func_index: u32,
-    table_relocs: &mut Vec<TableIndexRelocSite>,
 ) {
-    if reloc_enabled {
-        let imm_offset = func.byte_len() as u32 + 1;
-        table_relocs.push(TableIndexRelocSite {
-            func_index,
-            offset_in_func: imm_offset,
-            target_func_index,
-        });
-    }
     emit_i32_const(func, reloc_enabled, table_index as i32);
 }
 
 fn emit_table_index_i64(
     func: &mut Function,
     reloc_enabled: bool,
-    func_index: u32,
     table_index: u32,
-    target_func_index: u32,
-    table_relocs: &mut Vec<TableIndexRelocSite>,
 ) {
-    emit_table_index_i32(
-        func,
-        reloc_enabled,
-        func_index,
-        table_index,
-        target_func_index,
-        table_relocs,
-    );
+    emit_table_index_i32(func, reloc_enabled, table_index);
     func.instruction(&Instruction::I64ExtendI32U);
 }
 
@@ -6070,7 +6487,6 @@ fn const_expr_i32_const_padded(value: i32) -> ConstExpr {
 enum PendingReloc {
     Function { offset: u32, func_index: u32 },
     Type { offset: u32, type_index: u32 },
-    TableIndex { offset: u32, target_func_index: u32 },
     DataAddr { offset: u32, segment_index: u32 },
 }
 
@@ -6113,7 +6529,6 @@ fn add_reloc_sections(
     mut bytes: Vec<u8>,
     data_segments: &[DataSegmentInfo],
     data_relocs: &[DataRelocSite],
-    table_index_relocs: &[TableIndexRelocSite],
 ) -> Vec<u8> {
     let mut func_imports: Vec<String> = Vec::new();
     let mut func_exports: HashMap<u32, String> = HashMap::new();
@@ -6124,9 +6539,11 @@ fn add_reloc_sections(
     let mut code_section_start = None;
     let mut code_section_index = None;
     let mut data_section_index = None;
+    let mut element_section_index = None;
     let mut func_body_starts: Vec<usize> = Vec::new();
     let mut pending_code: Vec<PendingReloc> = Vec::new();
     let mut pending_data: Vec<PendingReloc> = Vec::new();
+    let mut pending_elem: Vec<PendingReloc> = Vec::new();
     let mut section_index = 0u32;
 
     let mut parse_failed = false;
@@ -6182,8 +6599,20 @@ fn add_reloc_sections(
             Payload::StartSection { .. } => {
                 section_index += 1;
             }
-            Payload::ElementSection(_) => {
+            Payload::ElementSection(reader) => {
+                let element_section_start = reader.range().start;
+                element_section_index = Some(section_index);
                 section_index += 1;
+                for element in reader.into_iter().flatten() {
+                    if let ElementItems::Functions(funcs) = element.items {
+                        for func in funcs.into_iter_with_offsets().flatten() {
+                            let (pos, func_index) = func;
+                            let offset =
+                                (pos.saturating_sub(element_section_start)) as u32;
+                            pending_elem.push(PendingReloc::Function { offset, func_index });
+                        }
+                    }
+                }
             }
             Payload::CodeSectionStart { range, .. } => {
                 code_section_start = Some(range.start);
@@ -6279,21 +6708,8 @@ fn add_reloc_sections(
         }
     }
 
-    for site in table_index_relocs {
-        let def_index = site.func_index.saturating_sub(func_import_count) as usize;
-        if let Some(body_start) = func_body_starts.get(def_index) {
-            let offset = (body_start.saturating_sub(code_section_start) as u32)
-                .saturating_add(site.offset_in_func);
-            pending_code.push(PendingReloc::TableIndex {
-                offset,
-                target_func_index: site.target_func_index,
-            });
-        }
-    }
-
     let total_funcs = func_import_count + defined_func_count;
     let mut func_symbol_map = vec![0u32; total_funcs as usize];
-    let mut table_symbol_map = vec![0u32; (table_import_count + table_defined_count) as usize];
     let mut data_symbol_map = vec![0u32; data_segments.len()];
     let mut symbol_index = 0u32;
 
@@ -6330,13 +6746,15 @@ fn add_reloc_sections(
     for table_idx in 0..table_import_count {
         let flags = SymbolTable::WASM_SYM_UNDEFINED | SymbolTable::WASM_SYM_NO_STRIP;
         sym_tab.table(flags, table_idx, None);
-        table_symbol_map[table_idx as usize] = symbol_index;
         symbol_index += 1;
     }
+    let mut table_names: Vec<String> = Vec::new();
     for table_idx in 0..table_defined_count {
         let index = table_import_count + table_idx;
-        sym_tab.table(0, index, None);
-        table_symbol_map[index as usize] = symbol_index;
+        let name = format!("__molt_table_{index}");
+        table_names.push(name);
+        let name_ref = table_names.last().unwrap();
+        sym_tab.table(0, index, Some(name_ref));
         symbol_index += 1;
     }
 
@@ -6360,6 +6778,7 @@ fn add_reloc_sections(
 
     let mut code_entries: Vec<RelocEntry> = Vec::new();
     let mut data_entries: Vec<RelocEntry> = Vec::new();
+    let mut elem_entries: Vec<RelocEntry> = Vec::new();
     for reloc in pending_code {
         match reloc {
             PendingReloc::Function { offset, func_index } => {
@@ -6379,19 +6798,6 @@ fn add_reloc_sections(
                     index: type_index,
                     addend: 0,
                 });
-            }
-            PendingReloc::TableIndex {
-                offset,
-                target_func_index,
-            } => {
-                if let Some(index) = func_symbol_map.get(target_func_index as usize) {
-                    code_entries.push(RelocEntry {
-                        ty: 1,
-                        offset,
-                        index: *index,
-                        addend: 0,
-                    });
-                }
             }
             PendingReloc::DataAddr {
                 offset,
@@ -6426,8 +6832,22 @@ fn add_reloc_sections(
         }
     }
 
+    for reloc in pending_elem {
+        if let PendingReloc::Function { offset, func_index } = reloc {
+            if let Some(index) = func_symbol_map.get(func_index as usize) {
+                elem_entries.push(RelocEntry {
+                    ty: 0,
+                    offset,
+                    index: *index,
+                    addend: 0,
+                });
+            }
+        }
+    }
+
     code_entries.sort_by_key(|entry| entry.offset);
     data_entries.sort_by_key(|entry| entry.offset);
+    elem_entries.sort_by_key(|entry| entry.offset);
 
     let mut linking = LinkingSection::new();
     linking.symbol_table(&sym_tab);
@@ -6440,6 +6860,12 @@ fn add_reloc_sections(
         if let Some(index) = data_section_index {
             let reloc_data = encode_reloc_section("reloc.DATA", index, &data_entries);
             append_custom_section(&mut bytes, &reloc_data);
+        }
+    }
+    if !elem_entries.is_empty() {
+        if let Some(index) = element_section_index {
+            let reloc_elem = encode_reloc_section("reloc.ELEM", index, &elem_entries);
+            append_custom_section(&mut bytes, &reloc_elem);
         }
     }
 

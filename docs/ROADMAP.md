@@ -4,7 +4,7 @@ Molt compiles a verified subset of Python into extremely fast, single-file nativ
 
 **Ultimate Goal:** A Go-like developer experience for Python, producing binaries that rival C/Rust in performance and safety, suitable for high-concurrency web services, databases, and data pipelines.
 
-**Source of truth:** This file is the canonical status tracker. For near-term sequencing, see `ROADMAP_90_DAYS.md`. For historical milestone framing, see `docs/spec/0006-roadmap.md`.
+**Source of truth:** This file is the canonical status tracker. For near-term sequencing, see `ROADMAP_90_DAYS.md`. For historical milestone framing, see `docs/spec/areas/process/0006-roadmap.md`.
 
 ---
 
@@ -34,7 +34,7 @@ Molt compiles a verified subset of Python into extremely fast, single-file nativ
 ---
 
 ## 🧭 Type Coverage Milestones
-**Tracking doc:** `docs/spec/0014_TYPE_COVERAGE_MATRIX.md`
+**Tracking doc:** `docs/spec/areas/compat/0014_TYPE_COVERAGE_MATRIX.md`
 
 | Milestone | Focus | Owners | Status | Notes |
 | :--- | :--- | :--- | :--- | :--- |
@@ -66,13 +66,15 @@ Type coverage TODOs tracked here for CI parity:
 - TODO(type-coverage, owner:stdlib, milestone:TC2, priority:P2, status:planned): `builtins` module parity notes.
 - TODO(type-coverage, owner:runtime, milestone:TC3, priority:P2, status:planned): buffer protocol + memoryview layout.
 - TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:planned): import/module rules + module object model (`__import__`, package resolution, `sys.path` policy).
+- TODO(import-system, owner:stdlib, milestone:TC3, priority:P1, status:planned): project-root builds (package discovery, `__init__` handling, namespace packages, deterministic dependency graph caching).
+- TODO(import-system, owner:stdlib, milestone:TC3, priority:P1, status:planned): relative imports (explicit and implicit) with deterministic package resolution.
 - TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:planned): reflection builtins (`type`, `isinstance`, `issubclass`, `getattr`, `setattr`, `hasattr`, `dir`, `vars`, `globals`, `locals`).
 - TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:planned): dynamic execution builtins (`eval`, `exec`, `compile`) with sandboxing rules.
 - TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:planned): I/O builtins (`open`, `input`, `help`, `breakpoint`) with capability gating.
 - TODO(type-coverage, owner:runtime, milestone:TC3, priority:P2, status:planned): descriptor builtins (`property`, `classmethod`, `staticmethod`, `super`).
 
 Stdlib compatibility TODOs tracked here for CI parity:
-Ten-item parity plan details live in `docs/spec/0015_STDLIB_COMPATIBILITY_MATRIX.md` (section 3.1).
+Ten-item parity plan details live in `docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md` (section 3.1).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:planned): `functools` fast paths (`lru_cache`, `partial`, `reduce`).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:planned): `itertools` + `operator` core-adjacent intrinsics.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:planned): `math` intrinsics + float determinism policy.
@@ -91,6 +93,7 @@ Ten-item parity plan details live in `docs/spec/0015_STDLIB_COMPATIBILITY_MATRIX
 - TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P2, status:planned): PyO3 bridge phase 2 (embedded CPython feature flag + deterministic denylist + effect contracts).
 - TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P2, status:planned): PyO3 bridge phase 3 (worker-process default; Arrow IPC/MsgPack/CBOR batching; profiling warnings).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): capability-gated I/O (`io`, `os`, `sys`, `pathlib`).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): os.environ parity (mapping methods + backend).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): network/process gating (`socket`, `ssl`, `subprocess`, `asyncio`).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): `typing` runtime helpers + `__annotations__` preservation.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): import-only allowlisted stdlib modules (`argparse`, `ast`, `atexit`, `collections.abc`, `importlib`, `platform`, `queue`, `shlex`, `shutil`, `textwrap`, `time`, `tomllib`, `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pprint`, `string`, `numbers`, `unicodedata`, `glob`, `tempfile`, `ctypes`) to minimal parity.
@@ -112,6 +115,7 @@ Language feature TODOs tracked here for parity:
 - TODO(stdlib-compat, owner:stdlib, milestone:LF1, priority:P1, status:missing): `contextlib.contextmanager` lowering and generator-based manager support.
 - TODO(type-coverage, owner:runtime, milestone:LF2, priority:P2, status:planned): `type`/`object` layout, `isinstance`/`issubclass`.
 - TODO(type-coverage, owner:runtime, milestone:LF2, priority:P2, status:planned): descriptor builtins (`property`, `classmethod`, `staticmethod`, `super`).
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P1, status:planned): method-binding safety pass (guard/deopt on method lookup + cache invalidation rules for call binding).
 - TODO(syntax, owner:frontend, milestone:LF2, priority:P2, status:planned): class lowering for `__init__`, factory classmethods, and dataclass defaults.
 - TODO(stdlib-compat, owner:stdlib, milestone:LF3, priority:P2, status:planned): expand `io`/`pathlib` to buffered + streaming wrappers with capability gates.
 
@@ -129,7 +133,7 @@ Language feature TODOs tracked here for parity:
 - [x] Closure Conversion (for lambdas and inner functions)
 - [x] List/Dict Comprehension Lowering
 - [x] Full `range()` semantics (start/stop/step + negative ranges; step==0 raises ValueError)
-- [ ] Type coverage matrix execution (see `docs/spec/0014_TYPE_COVERAGE_MATRIX.md`) (TODO(type-coverage, owner:tests, milestone:TC2, priority:P2, status:partial): execute matrix end-to-end).
+- [ ] Type coverage matrix execution (see `docs/spec/areas/compat/0014_TYPE_COVERAGE_MATRIX.md`) (TODO(type-coverage, owner:tests, milestone:TC2, priority:P2, status:partial): execute matrix end-to-end).
 
 ### Runtime & Performance
 - [x] NaN-Boxing (Inline Ints, Bools, None)
@@ -155,6 +159,7 @@ Language feature TODOs tracked here for parity:
 
 ### Concurrency & I/O
 - [x] Async/Await Syntax Support
+- [x] Unified Task ABI for futures/generators across native + WASM backends
 - [x] CPython fallback wrappers for channels/spawn (`molt.channel`, `molt.spawn`)
 - [ ] Task-based Concurrency (No GIL) (TODO(async-runtime, owner:runtime, milestone:RT2, priority:P1, status:partial): task-based concurrency).
 - [ ] Rust Executor Integration (Tokio/Smol) (TODO(async-runtime, owner:runtime, milestone:RT2, priority:P2, status:planned): executor integration).
@@ -175,10 +180,9 @@ Language feature TODOs tracked here for parity:
 
 ## 🔬 Research & Innovation Areas
 1. **Semantic Reduction via Invariant Mining:** Automatically identifying which parts of a Python app are "frozen" vs "guarded".
-2. **AI-Assisted Guard Synthesis:** Using dev-time traces to generate optimal guards for dynamic sites.
-3. **WASM Capability Boundaries:** Defining strict security manifests for third-party Molt Packages.
-4. **Deterministic WASM:** Ensuring identical execution for database triggers or smart contracts.
+2. **WASM Capability Boundaries:** Defining strict security manifests for third-party Molt Packages.
+3. **Deterministic WASM:** Ensuring identical execution for database triggers or smart contracts.
 
 ---
 
-*Last Updated: Friday, January 2, 2026 - 19:11 CST*
+*Last Updated: Sunday, January 18, 2026 - 11:08 CST*

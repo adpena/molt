@@ -185,3 +185,5 @@ def test_cli_completion_includes_build_flags() -> None:
     script = payload["data"]["script"]
     assert "--emit" in script
     assert "--rebuild" in script
+    assert "--trusted" in script
+    assert "--no-trusted" in script

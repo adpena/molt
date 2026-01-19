@@ -381,7 +381,7 @@ def _topo_sort_modules(
 
 def _stdlib_allowlist() -> set[str]:
     allowlist: set[str] = set()
-    spec_path = Path("docs/spec/0015_STDLIB_COMPATIBILITY_MATRIX.md")
+    spec_path = Path("docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md")
     if not spec_path.exists():
         return allowlist
     in_table = False
@@ -533,15 +533,19 @@ def _config_value(config: dict[str, Any], path: list[str]) -> Any | None:
     return current
 
 
-def _resolve_build_config(config: dict[str, Any]) -> dict[str, Any]:
-    build_cfg = {}
-    direct = _config_value(config, ["build"])
+def _resolve_command_config(config: dict[str, Any], command: str) -> dict[str, Any]:
+    cmd_cfg: dict[str, Any] = {}
+    direct = _config_value(config, [command])
     if isinstance(direct, dict):
-        build_cfg.update(direct)
-    tool_cfg = _config_value(config, ["tool", "molt", "build"])
+        cmd_cfg.update(direct)
+    tool_cfg = _config_value(config, ["tool", "molt", command])
     if isinstance(tool_cfg, dict):
-        build_cfg.update(tool_cfg)
-    return build_cfg
+        cmd_cfg.update(tool_cfg)
+    return cmd_cfg
+
+
+def _resolve_build_config(config: dict[str, Any]) -> dict[str, Any]:
+    return _resolve_command_config(config, "build")
 
 
 def _resolve_capabilities_config(config: dict[str, Any]) -> list[str] | None:
@@ -664,6 +668,153 @@ def _ensure_runtime_lib(
     return True
 
 
+def _append_rustflags(env: dict[str, str], flags: str) -> None:
+    existing = env.get("RUSTFLAGS", "")
+    joined = f"{existing} {flags}".strip()
+    env["RUSTFLAGS"] = joined
+
+
+def _ensure_runtime_wasm(
+    runtime_wasm: Path,
+    *,
+    reloc: bool,
+    json_output: bool,
+    profile: BuildProfile,
+) -> bool:
+    root = Path(__file__).resolve().parents[2]
+    sources = [
+        root / "runtime/molt-runtime/src",
+        root / "runtime/molt-runtime/Cargo.toml",
+        root / "runtime/molt-obj-model/src",
+        root / "runtime/molt-obj-model/Cargo.toml",
+    ]
+    latest_src = _latest_mtime(sources)
+    wasm_mtime = runtime_wasm.stat().st_mtime if runtime_wasm.exists() else 0.0
+    if wasm_mtime >= latest_src:
+        return True
+    env = os.environ.copy()
+    flags = "-C link-arg=--import-memory -C link-arg=--import-table"
+    if reloc:
+        flags = (
+            f"{flags} -C link-arg=--relocatable -C link-arg=--no-gc-sections"
+            " -C relocation-model=pic"
+        )
+    else:
+        flags = f"{flags} -C link-arg=--growable-table"
+    _append_rustflags(env, flags)
+    cmd = [
+        "cargo",
+        "build",
+        "--package",
+        "molt-runtime",
+        "--target",
+        "wasm32-wasip1",
+    ]
+    if profile == "release":
+        cmd.append("--release")
+    build = subprocess.run(cmd, cwd=root, env=env, capture_output=True, text=True)
+    if build.returncode != 0:
+        if not json_output:
+            err = build.stderr.strip() or build.stdout.strip()
+            if err:
+                print(err, file=sys.stderr)
+            print("Runtime wasm build failed", file=sys.stderr)
+        return False
+    profile_dir = _cargo_profile_dir(profile)
+    src = root / "target" / "wasm32-wasip1" / profile_dir / "molt_runtime.wasm"
+    if not src.exists():
+        if not json_output:
+            print(
+                "Runtime wasm build succeeded but artifact is missing.", file=sys.stderr
+            )
+        return False
+    runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, runtime_wasm)
+    return True
+
+
+def _read_wasm_varuint(data: bytes, offset: int) -> tuple[int, int]:
+    result = 0
+    shift = 0
+    while True:
+        if offset >= len(data):
+            raise ValueError("Unexpected EOF while reading varuint")
+        byte = data[offset]
+        offset += 1
+        result |= (byte & 0x7F) << shift
+        if byte & 0x80 == 0:
+            return result, offset
+        shift += 7
+        if shift > 35:
+            raise ValueError("varuint too large")
+
+
+def _read_wasm_string(data: bytes, offset: int) -> tuple[str, int]:
+    length, offset = _read_wasm_varuint(data, offset)
+    end = offset + length
+    if end > len(data):
+        raise ValueError("Unexpected EOF while reading string")
+    return data[offset:end].decode("utf-8"), end
+
+
+def _read_wasm_table_min(path: Path) -> int | None:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if len(data) < 8 or data[:4] != b"\0asm" or data[4:8] != b"\x01\x00\x00\x00":
+        return None
+    offset = 8
+    try:
+        while offset < len(data):
+            section_id = data[offset]
+            offset += 1
+            size, offset = _read_wasm_varuint(data, offset)
+            end = offset + size
+            if end > len(data):
+                raise ValueError("Unexpected EOF while reading section")
+            if section_id != 2:
+                offset = end
+                continue
+            payload = data[offset:end]
+            offset = end
+            cursor = 0
+            count, cursor = _read_wasm_varuint(payload, cursor)
+            for _ in range(count):
+                module, cursor = _read_wasm_string(payload, cursor)
+                name, cursor = _read_wasm_string(payload, cursor)
+                if cursor >= len(payload):
+                    raise ValueError("Unexpected EOF while reading import")
+                kind = payload[cursor]
+                cursor += 1
+                if kind == 0:
+                    _, cursor = _read_wasm_varuint(payload, cursor)
+                elif kind == 1:
+                    if cursor >= len(payload):
+                        raise ValueError("Unexpected EOF while reading table type")
+                    cursor += 1
+                    flags, cursor = _read_wasm_varuint(payload, cursor)
+                    minimum, cursor = _read_wasm_varuint(payload, cursor)
+                    if flags & 0x1:
+                        _, cursor = _read_wasm_varuint(payload, cursor)
+                    if module == "env" and name == "__indirect_function_table":
+                        return minimum
+                elif kind == 2:
+                    flags, cursor = _read_wasm_varuint(payload, cursor)
+                    _, cursor = _read_wasm_varuint(payload, cursor)
+                    if flags & 0x1:
+                        _, cursor = _read_wasm_varuint(payload, cursor)
+                elif kind == 3:
+                    if cursor + 2 > len(payload):
+                        raise ValueError("Unexpected EOF while reading global type")
+                    cursor += 2
+                else:
+                    raise ValueError("Unknown import kind")
+    except ValueError:
+        return None
+    return None
+
+
 def _cargo_profile_dir(profile: BuildProfile) -> str:
     return "release" if profile == "release" else "debug"
 
@@ -783,9 +934,16 @@ def _cache_fingerprint() -> str:
     return "|".join(parts)
 
 
-def _cache_key(ir: dict[str, Any], target: str, target_triple: str | None) -> str:
+def _cache_key(
+    ir: dict[str, Any],
+    target: str,
+    target_triple: str | None,
+    variant: str = "",
+) -> str:
     payload = json.dumps(ir, sort_keys=True, separators=(",", ":")).encode("utf-8")
     suffix = target_triple or target
+    if variant:
+        suffix = f"{suffix}:{variant}"
     fingerprint = _cache_fingerprint().encode("utf-8")
     digest = hashlib.sha256(
         payload + b"|" + suffix.encode("utf-8") + b"|" + fingerprint
@@ -909,6 +1067,7 @@ def build(
     json_output: bool = False,
     verbose: bool = False,
     deterministic: bool = True,
+    trusted: bool = False,
     capabilities: str | list[str] | None = None,
     cache: bool = True,
     cache_dir: str | None = None,
@@ -917,6 +1076,9 @@ def build(
     emit: EmitMode | None = None,
     out_dir: str | None = None,
     profile: BuildProfile = "release",
+    linked: bool = False,
+    linked_output: str | None = None,
+    require_linked: bool = False,
 ) -> int:
     if profile not in {"dev", "release"}:
         return _fail(f"Invalid build profile: {profile}", json_output, command="build")
@@ -991,6 +1153,32 @@ def build(
         project_root, out_dir_path, output_base
     )
     is_wasm = target == "wasm"
+    if trusted and is_wasm:
+        return _fail(
+            "Trusted mode is not supported for wasm targets",
+            json_output,
+            command="build",
+        )
+    if require_linked and not is_wasm:
+        return _fail(
+            "--require-linked is only supported for wasm targets",
+            json_output,
+            command="build",
+        )
+    if linked_output and not linked and not require_linked:
+        return _fail(
+            "--linked-output requires --linked",
+            json_output,
+            command="build",
+        )
+    if linked and not is_wasm:
+        return _fail(
+            "Linked output is only supported for wasm targets",
+            json_output,
+            command="build",
+        )
+    if require_linked and not linked:
+        linked = True
     target_triple = None if target in {"native", "wasm"} else target
     emit_mode = emit or ("wasm" if is_wasm else "bin")
     if emit_mode not in {"bin", "obj", "wasm"}:
@@ -1013,6 +1201,7 @@ def build(
         )
     backend_output = Path("output.wasm" if is_wasm else "output.o")
     output_binary: Path | None = None
+    linked_output_path: Path | None = None
     if is_wasm:
         output_wasm = _resolve_output_path(
             output,
@@ -1021,6 +1210,20 @@ def build(
             project_root=project_root,
         )
         output_artifact = output_wasm
+        if linked:
+            stem = output_wasm.stem
+            if stem.endswith("_linked"):
+                stem = stem[: -len("_linked")]
+            linked_output_path = output_wasm.with_name(
+                f"{stem}_linked{output_wasm.suffix}"
+            )
+            if linked_output is not None:
+                linked_output_path = _resolve_output_path(
+                    linked_output,
+                    linked_output_path,
+                    out_dir=out_dir_path,
+                    project_root=project_root,
+                )
     else:
         output_obj = artifacts_root / "output.o"
         if emit_mode == "obj":
@@ -1255,7 +1458,8 @@ def build(
     cache_key = None
     cache_path: Path | None = None
     if cache:
-        cache_key = _cache_key(ir, target, target_triple)
+        cache_variant = "linked" if linked else ""
+        cache_key = _cache_key(ir, target, target_triple, cache_variant)
         cache_root = _resolve_cache_root(project_root, cache_dir)
         try:
             cache_root.mkdir(parents=True, exist_ok=True)
@@ -1282,6 +1486,35 @@ def build(
 
     # 2. Backend: JSON IR -> output.o / output.wasm
     if not cache_hit:
+        backend_env = None
+        reloc_requested = is_wasm and (
+            linked or os.environ.get("MOLT_WASM_LINK") == "1"
+        )
+        if reloc_requested:
+            backend_env = os.environ.copy()
+            backend_env["MOLT_WASM_LINK"] = "1"
+            if "MOLT_WASM_TABLE_BASE" not in backend_env:
+                root = Path(__file__).resolve().parents[2]
+                runtime_reloc = root / "wasm" / "molt_runtime_reloc.wasm"
+                if linked and not _ensure_runtime_wasm(
+                    runtime_reloc,
+                    reloc=True,
+                    json_output=json_output,
+                    profile=profile,
+                ):
+                    return _fail(
+                        "Runtime wasm build failed",
+                        json_output,
+                        command="build",
+                    )
+                if runtime_reloc.exists():
+                    table_base = _read_wasm_table_min(runtime_reloc)
+                    if table_base is not None:
+                        backend_env["MOLT_WASM_TABLE_BASE"] = str(table_base)
+                    else:
+                        warnings.append(
+                            "Failed to read runtime table size; using default table base."
+                        )
         cmd = ["cargo", "run", "--quiet"]
         if profile == "release":
             cmd.append("--release")
@@ -1296,6 +1529,7 @@ def build(
             input=json.dumps(ir),
             text=True,
             capture_output=True,
+            env=backend_env,
         )
         if backend_process.returncode != 0:
             if not json_output:
@@ -1335,6 +1569,59 @@ def build(
 
     if is_wasm:
         output_wasm = output_artifact
+        if linked:
+            root = Path(__file__).resolve().parents[2]
+            runtime_reloc = root / "wasm" / "molt_runtime_reloc.wasm"
+            if not _ensure_runtime_wasm(
+                runtime_reloc,
+                reloc=True,
+                json_output=json_output,
+                profile=profile,
+            ):
+                return _fail(
+                    "Runtime wasm build failed",
+                    json_output,
+                    command="build",
+                )
+            if linked_output_path is None:
+                linked_output_path = output_wasm.with_name("output_linked.wasm")
+            if linked_output_path.parent != Path("."):
+                linked_output_path.parent.mkdir(parents=True, exist_ok=True)
+            tool = root / "tools" / "wasm_link.py"
+            link_process = subprocess.run(
+                [
+                    sys.executable,
+                    str(tool),
+                    "--runtime",
+                    str(runtime_reloc),
+                    "--input",
+                    str(output_wasm),
+                    "--output",
+                    str(linked_output_path),
+                ],
+                cwd=root,
+                capture_output=True,
+                text=True,
+            )
+            if link_process.returncode != 0:
+                err = link_process.stderr.strip() or link_process.stdout.strip()
+                msg = "Wasm link failed"
+                if err:
+                    msg = f"{msg}: {err}"
+                return _fail(msg, json_output, command="build")
+            if require_linked and linked_output_path is not None:
+                if output_wasm != linked_output_path and output_wasm.exists():
+                    try:
+                        output_wasm.unlink()
+                    except OSError as exc:
+                        return _fail(
+                            f"Failed to remove unlinked wasm: {exc}",
+                            json_output,
+                            command="build",
+                        )
+        primary_output = output_wasm
+        if require_linked and linked_output_path is not None:
+            primary_output = linked_output_path
         if json_output:
             cache_info: dict[str, Any] = {"enabled": cache, "hit": cache_hit}
             if cache_key:
@@ -1345,15 +1632,20 @@ def build(
                 "target": target,
                 "target_triple": target_triple,
                 "entry": str(source_path),
-                "output": str(output_wasm),
+                "output": str(primary_output),
                 "deterministic": deterministic,
+                "trusted": trusted,
                 "capabilities": capabilities_list,
                 "capability_profiles": capability_profiles,
                 "capabilities_source": capabilities_source,
                 "cache": cache_info,
                 "emit": emit_mode,
                 "profile": profile,
+                "linked": linked,
+                "require_linked": require_linked,
             }
+            if linked_output_path is not None:
+                data["linked_output"] = str(linked_output_path)
             if emit_ir_path is not None:
                 data["emit_ir"] = str(emit_ir_path)
             payload = _json_payload(
@@ -1364,7 +1656,12 @@ def build(
             )
             _emit_json(payload, json_output)
         else:
-            print(f"Successfully built {output_wasm}")
+            if require_linked:
+                print(f"Successfully built {primary_output}")
+            else:
+                print(f"Successfully built {output_wasm}")
+            if linked_output_path is not None and not require_linked:
+                print(f"Successfully linked {linked_output_path}")
         return 0
 
     output_obj = output_artifact
@@ -1381,6 +1678,7 @@ def build(
                 "entry": str(source_path),
                 "output": str(output_obj),
                 "deterministic": deterministic,
+                "trusted": trusted,
                 "capabilities": capabilities_list,
                 "capability_profiles": capability_profiles,
                 "capabilities_source": capabilities_source,
@@ -1403,6 +1701,19 @@ def build(
         return 0
 
     # 3. Linking: output.o + main.c -> binary
+    trusted_snippet = ""
+    trusted_call = ""
+    if trusted:
+        trusted_snippet = """
+static void molt_set_trusted() {
+#ifdef _WIN32
+    _putenv_s("MOLT_TRUSTED", "1");
+#else
+    setenv("MOLT_TRUSTED", "1", 1);
+#endif
+}
+"""
+        trusted_call = "    molt_set_trusted();\n"
     main_c_content = """
 #include <stdio.h>
 #include <stdlib.h>
@@ -1430,6 +1741,7 @@ extern long molt_chan_send(void* chan, long val);
 extern long molt_chan_recv(void* chan);
 extern void molt_print_obj(unsigned long long val);
 extern void molt_profile_dump();
+/* MOLT_TRUSTED_SNIPPET */
 
 static void molt_finish() {
     const char* profile = getenv("MOLT_PROFILE");
@@ -1441,6 +1753,7 @@ static void molt_finish() {
 
 #ifdef _WIN32
 int wmain(int argc, wchar_t** argv) {
+    /* MOLT_TRUSTED_CALL */
     molt_runtime_init();
     molt_set_argv_utf16(argc, (const wchar_t**)argv);
     molt_main();
@@ -1449,6 +1762,7 @@ int wmain(int argc, wchar_t** argv) {
 }
 #else
 int main(int argc, char** argv) {
+    /* MOLT_TRUSTED_CALL */
     molt_runtime_init();
     molt_set_argv(argc, (const char**)argv);
     molt_main();
@@ -1457,6 +1771,10 @@ int main(int argc, char** argv) {
 }
 #endif
 """
+    main_c_content = main_c_content.replace(
+        "/* MOLT_TRUSTED_SNIPPET */", trusted_snippet
+    )
+    main_c_content = main_c_content.replace("/* MOLT_TRUSTED_CALL */", trusted_call)
     stub_path = artifacts_root / "main_stub.c"
     stub_path.write_text(main_c_content)
 
@@ -1549,6 +1867,7 @@ int main(int argc, char** argv) {
                     "runtime": str(runtime_lib),
                 },
                 "deterministic": deterministic,
+                "trusted": trusted,
                 "capabilities": capabilities_list,
                 "capability_profiles": capability_profiles,
                 "capabilities_source": capabilities_source,
@@ -1579,6 +1898,7 @@ int main(int argc, char** argv) {
                 "returncode": link_process.returncode,
                 "emit": emit_mode,
                 "profile": profile,
+                "trusted": trusted,
             }
             data["cache"] = {
                 "enabled": cache,
@@ -1613,6 +1933,7 @@ def run_script(
     no_shims: bool = False,
     compiled: bool = False,
     compiled_args: bool = False,
+    trusted: bool = False,
     build_args: list[str] | None = None,
 ) -> int:
     source_path = Path(file_path)
@@ -1621,9 +1942,13 @@ def run_script(
     root = _find_project_root(source_path.resolve())
     env = _base_env(root, source_path)
     env.update(_collect_env_overrides(file_path))
+    if trusted:
+        env["MOLT_TRUSTED"] = "1"
 
     if compiled:
-        build_args = build_args or []
+        build_args = list(build_args or [])
+        if trusted and not _build_args_has_trusted_flag(build_args):
+            build_args.append("--trusted")
         build_cmd = [sys.executable, "-m", "molt.cli", "build", *build_args, file_path]
         build_res = subprocess.run(
             build_cmd,
@@ -1713,11 +2038,14 @@ def run_script(
 def diff(
     file_path: str | None,
     python_version: str | None,
+    trusted: bool = False,
     json_output: bool = False,
     verbose: bool = False,
 ) -> int:
     root = _find_project_root(Path.cwd())
     env = _base_env(root)
+    if trusted:
+        env["MOLT_TRUSTED"] = "1"
     cmd = [sys.executable, "tests/molt_diff.py"]
     if python_version:
         cmd.extend(["--python-version", python_version])
@@ -1750,11 +2078,14 @@ def test(
     file_path: str | None,
     python_version: str | None,
     pytest_args: list[str],
+    trusted: bool = False,
     json_output: bool = False,
     verbose: bool = False,
 ) -> int:
     root = _find_project_root(Path.cwd())
     env = _base_env(root)
+    if trusted:
+        env["MOLT_TRUSTED"] = "1"
     if suite == "dev":
         cmd = [sys.executable, "tools/dev.py", "test"]
     elif suite == "diff":
@@ -2519,6 +2850,9 @@ def show_config(
     molt_toml = config_root / "molt.toml"
     pyproject = config_root / "pyproject.toml"
     build_cfg = _resolve_build_config(config)
+    run_cfg = _resolve_command_config(config, "run")
+    test_cfg = _resolve_command_config(config, "test")
+    diff_cfg = _resolve_command_config(config, "diff")
     caps_cfg = _resolve_capabilities_config(config)
     data: dict[str, Any] = {
         "root": str(config_root),
@@ -2527,6 +2861,9 @@ def show_config(
             "pyproject": str(pyproject) if pyproject.exists() else None,
         },
         "build": build_cfg,
+        "run": run_cfg,
+        "test": test_cfg,
+        "diff": diff_cfg,
         "capabilities": caps_cfg,
         "paths": {
             "molt_home": str(_default_molt_home()),
@@ -2556,6 +2893,24 @@ def show_config(
             print(f"- {key}: {build_cfg[key]}")
     else:
         print("Build defaults: none")
+    if run_cfg:
+        print("Run defaults:")
+        for key in sorted(run_cfg):
+            print(f"- {key}: {run_cfg[key]}")
+    else:
+        print("Run defaults: none")
+    if test_cfg:
+        print("Test defaults:")
+        for key in sorted(test_cfg):
+            print(f"- {key}: {test_cfg[key]}")
+    else:
+        print("Test defaults: none")
+    if diff_cfg:
+        print("Diff defaults:")
+        for key in sorted(diff_cfg):
+            print(f"- {key}: {diff_cfg[key]}")
+    else:
+        print("Diff defaults: none")
     if caps_cfg:
         print(f"Capabilities: {', '.join(caps_cfg)}")
     else:
@@ -2600,6 +2955,8 @@ def _completion_script(shell: str) -> str:
             "--profile",
             "--deterministic",
             "--no-deterministic",
+            "--trusted",
+            "--no-trusted",
             "--capabilities",
             "--cache",
             "--no-cache",
@@ -2618,11 +2975,26 @@ def _completion_script(shell: str) -> str:
             "--build-arg",
             "--rebuild",
             "--compiled-args",
+            "--trusted",
+            "--no-trusted",
             "--json",
             "--verbose",
         ],
-        "test": ["--suite", "--python-version", "--json", "--verbose"],
-        "diff": ["--python-version", "--json", "--verbose"],
+        "test": [
+            "--suite",
+            "--python-version",
+            "--trusted",
+            "--no-trusted",
+            "--json",
+            "--verbose",
+        ],
+        "diff": [
+            "--python-version",
+            "--trusted",
+            "--no-trusted",
+            "--json",
+            "--verbose",
+        ],
         "bench": ["--wasm", "--json", "--verbose"],
         "profile": ["--json", "--verbose"],
         "lint": ["--json", "--verbose"],
@@ -2798,6 +3170,13 @@ def _build_args_has_cache_flag(args: list[str]) -> bool:
     return False
 
 
+def _build_args_has_trusted_flag(args: list[str]) -> bool:
+    for arg in args:
+        if arg in {"--trusted", "--no-trusted"}:
+            return True
+    return False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="molt")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -2853,6 +3232,25 @@ def main() -> int:
         help="Select which artifact to emit (native: bin/obj, wasm: wasm).",
     )
     build_parser.add_argument(
+        "--linked",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Emit a linked wasm artifact (output_linked.wasm) alongside output.wasm.",
+    )
+    build_parser.add_argument(
+        "--linked-output",
+        help=(
+            "Output path for the linked wasm artifact "
+            "(relative to --out-dir when set, otherwise project root)."
+        ),
+    )
+    build_parser.add_argument(
+        "--require-linked",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Require linked wasm output for wasm targets (fails if linking is unavailable).",
+    )
+    build_parser.add_argument(
         "--emit-ir",
         help="Write the lowered IR JSON to a file path.",
     )
@@ -2867,6 +3265,12 @@ def main() -> int:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Require deterministic inputs (lockfiles).",
+    )
+    build_parser.add_argument(
+        "--trusted",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Disable capability checks for trusted deployments (native only).",
     )
     build_parser.add_argument(
         "--cache",
@@ -2959,6 +3363,12 @@ def main() -> int:
         help="Pass argv through to compiled binaries (runtime support pending).",
     )
     run_parser.add_argument(
+        "--trusted",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Disable capability checks for trusted deployments.",
+    )
+    run_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."
     )
     run_parser.add_argument(
@@ -2981,6 +3391,12 @@ def main() -> int:
         "--python-version",
         help="Python version for diff suite (e.g. 3.13).",
     )
+    test_parser.add_argument(
+        "--trusted",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Disable capability checks for trusted deployments.",
+    )
     test_parser.add_argument("path", nargs="?", help="Optional test path.")
     test_parser.add_argument(
         "pytest_args",
@@ -3000,6 +3416,12 @@ def main() -> int:
     diff_parser.add_argument("path", nargs="?", help="File or directory to test.")
     diff_parser.add_argument(
         "--python-version", help="Python version to test against (e.g. 3.13)."
+    )
+    diff_parser.add_argument(
+        "--trusted",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Disable capability checks for trusted deployments.",
     )
     diff_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."
@@ -3261,6 +3683,9 @@ def main() -> int:
             config_root = _find_project_root(Path.cwd())
     config = _load_molt_config(config_root)
     build_cfg = _resolve_build_config(config)
+    run_cfg = _resolve_command_config(config, "run")
+    test_cfg = _resolve_command_config(config, "test")
+    diff_cfg = _resolve_command_config(config, "diff")
     cfg_capabilities = _resolve_capabilities_config(config)
 
     if args.command == "build":
@@ -3278,12 +3703,29 @@ def main() -> int:
             or build_cfg.get("build_profile")
             or "release"
         )
+        linked_output_path = (
+            args.linked_output
+            or build_cfg.get("linked_output")
+            or build_cfg.get("linked-output")
+        )
+        require_linked = args.require_linked
+        if require_linked is None:
+            require_linked = _coerce_bool(
+                build_cfg.get("require_linked") or build_cfg.get("require-linked"),
+                False,
+            )
         type_facts = args.type_facts or build_cfg.get("type_facts")
         deterministic = (
             args.deterministic
             if args.deterministic is not None
             else _coerce_bool(build_cfg.get("deterministic"), True)
         )
+        trusted = args.trusted
+        if trusted is None:
+            trusted = _coerce_bool(build_cfg.get("trusted"), False)
+        linked = args.linked
+        if linked is None:
+            linked = _coerce_bool(build_cfg.get("linked"), False)
         cache = (
             args.cache
             if args.cache is not None
@@ -3311,6 +3753,7 @@ def main() -> int:
             args.json,
             args.verbose,
             deterministic,
+            trusted,
             capabilities,
             cache,
             cache_dir,
@@ -3319,6 +3762,9 @@ def main() -> int:
             emit,
             out_dir,
             build_profile,
+            linked,
+            linked_output_path,
+            require_linked,
         )
     if args.command == "check":
         return check(args.path, args.output, args.strict, args.json, args.verbose)
@@ -3327,6 +3773,9 @@ def main() -> int:
         build_args = _strip_leading_double_dash(args.build_arg)
         if args.rebuild and not _build_args_has_cache_flag(build_args):
             build_args.append("--no-cache")
+        trusted = args.trusted
+        if trusted is None:
+            trusted = _coerce_bool(run_cfg.get("trusted"), False)
         return run_script(
             args.file,
             python_exe,
@@ -3336,22 +3785,36 @@ def main() -> int:
             args.no_shims,
             args.compiled,
             args.compiled_args,
+            trusted,
             build_args,
         )
     if args.command == "test":
         pytest_args = _strip_leading_double_dash(args.pytest_args)
         if args.suite == "dev" and (args.path or pytest_args) and args.verbose:
             print("Ignoring extra args for suite=dev.")
+        trusted = args.trusted
+        if trusted is None:
+            trusted = _coerce_bool(test_cfg.get("trusted"), False)
         return test(
             args.suite,
             args.path,
             args.python_version,
             pytest_args,
+            trusted,
             args.json,
             args.verbose,
         )
     if args.command == "diff":
-        return diff(args.path, args.python_version, args.json, args.verbose)
+        trusted = args.trusted
+        if trusted is None:
+            trusted = _coerce_bool(diff_cfg.get("trusted"), False)
+        return diff(
+            args.path,
+            args.python_version,
+            trusted,
+            args.json,
+            args.verbose,
+        )
     if args.command == "bench":
         return bench(
             args.wasm,

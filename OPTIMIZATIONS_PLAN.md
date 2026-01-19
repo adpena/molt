@@ -228,6 +228,7 @@ and regression control.
   - Native: use `cargo flamegraph`/`perf` (or macOS Instruments) on `bench_deeply_nested_loop`, `bench_sum_list`, `bench_str_find*`, `bench_dict_ops`, `bench_attr_access`.
   - Python frontend: `py-spy`/`scalene` on compiler CLI for compile-time hotspots.
   - WASM: capture wasm-level profiles (wasmtime `--profile`, `perf` on AOT, or node `--prof` for `run_wasm.js`).
+  - TODO(wasm-host, owner:runtime, milestone:RT3, priority:P2, status:planned): resolve wasmtime execution blockers (ABI imports/memory/table + WASI config) so wasm benches can run under wasmtime for profiling.
 - Phase 2: Targeted optimizations (ranked by impact)
   - Dispatch: inline cache for method/attribute lookup; fast-path for common builtins.
   - Containers: iterator+index fast paths (range/list/tuple) and avoid temporary boxing.
@@ -364,7 +365,7 @@ and regression control.
 - SIMD counters show non-zero usage for string/bytes kernels on representative inputs.
 - ≥15% speedup on string/bytes kernels and ≥3x on deeply nested loop bench, with no regressions >5%.
 - Miri clean under strict provenance; fuzz targets green.
-- Documented tradeoffs in `docs/spec/0020_RUNTIME_SAFETY_INVARIANTS.md`.
+- Documented tradeoffs in `docs/spec/areas/security/0020_RUNTIME_SAFETY_INVARIANTS.md`.
 
 **Latest Results (2026-01-07, partial suite)**
 - `bench_handle_lock.json` vs `bench_handle_sharded.json`:
@@ -787,7 +788,7 @@ and regression control.
 - CPython PEP 659: Specializing Adaptive Interpreter.
 
 **Plan**
-- Phase 0: Define specialization policy in docs/spec/0017_TYPE_SYSTEM_AND_SPECIALIZATION.md.
+- Phase 0: Define specialization policy in docs/spec/areas/compiler/0017_TYPE_SYSTEM_AND_SPECIALIZATION.md.
 - Phase 1: Emit guarded monomorphic clones for numeric-heavy locals and known globals.
 - Phase 2: Add multi-version cache keyed by type vector at call sites.
 - Phase 3: Add perf gates and regression detection on type-unstable workloads.

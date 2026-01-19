@@ -128,7 +128,9 @@ def _append_rustflags(env: dict[str, str], flags: str) -> None:
 
 def build_runtime_wasm(*, reloc: bool, output: Path) -> bool:
     env = os.environ.copy()
-    base_flags = "-C link-arg=--import-memory -C link-arg=--import-table -C link-arg=--growable-table"
+    base_flags = "-C link-arg=--import-memory -C link-arg=--import-table"
+    if not reloc:
+        base_flags = f"{base_flags} -C link-arg=--growable-table"
     if reloc:
         base_flags = (
             f"{base_flags} -C link-arg=--relocatable -C link-arg=--no-gc-sections"
@@ -167,20 +169,30 @@ def _want_linked() -> bool:
     return os.environ.get("MOLT_WASM_LINK") == "1"
 
 
-def _link_wasm(env: dict[str, str], input_path: Path) -> Path | None:
+def _link_wasm(
+    env: dict[str, str],
+    input_path: Path,
+    *,
+    require_linked: bool,
+) -> Path | None:
     if not _want_linked():
         return None
     if WASM_LD is None:
         global _LINK_WARNED
-        if not _LINK_WARNED:
-            print(
-                "Skipping wasm link: wasm-ld not found (install LLVM to enable).",
-                file=sys.stderr,
-            )
+        msg = "Skipping wasm link: wasm-ld not found (install LLVM to enable)."
+        if require_linked:
+            print(f"{msg} Linked output is required.", file=sys.stderr)
+        elif not _LINK_WARNED:
+            print(msg, file=sys.stderr)
             _LINK_WARNED = True
         return None
     global _LINK_DISABLED
     if _LINK_DISABLED:
+        if require_linked:
+            print(
+                "WASM link disabled after prior failure; linked output is required.",
+                file=sys.stderr,
+            )
         return None
     if LINKED_WASM.exists():
         LINKED_WASM.unlink()
@@ -215,6 +227,8 @@ def _link_wasm(env: dict[str, str], input_path: Path) -> Path | None:
                     file=sys.stderr,
                 )
                 _LINK_DISABLED = True
+        if require_linked:
+            print("Linked output is required; aborting.", file=sys.stderr)
         return None
     if not LINKED_WASM.exists():
         print("WASM link produced no output artifact.", file=sys.stderr)
@@ -222,13 +236,10 @@ def _link_wasm(env: dict[str, str], input_path: Path) -> Path | None:
     return LINKED_WASM
 
 
-def prepare_wasm_binary(script: str) -> WasmBinary | None:
-    temp_dir = tempfile.TemporaryDirectory(prefix="molt-wasm-bench-")
-    output_path = Path(temp_dir.name) / "output.wasm"
-    env = _base_env()
-    env["MOLT_WASM_PATH"] = str(output_path)
+def _build_wasm_output(
+    python_exe: str, env: dict[str, str], output_path: Path, script: str
+) -> float | None:
     extra_args = MOLT_ARGS_BY_BENCH.get(script, [])
-    python_exe = _python_executable()
     start = time.perf_counter()
     build_res = subprocess.run(
         [
@@ -253,20 +264,61 @@ def prepare_wasm_binary(script: str) -> WasmBinary | None:
         err = build_res.stderr.strip() or build_res.stdout.strip()
         if err:
             print(f"WASM build failed for {script}: {err}", file=sys.stderr)
-        temp_dir.cleanup()
         return None
-
     if not output_path.exists():
         print(f"WASM build produced no output.wasm for {script}", file=sys.stderr)
+        return None
+    return build_s
+
+
+def prepare_wasm_binary(script: str, *, require_linked: bool) -> WasmBinary | None:
+    temp_dir = tempfile.TemporaryDirectory(prefix="molt-wasm-bench-")
+    output_path = Path(temp_dir.name) / "output.wasm"
+    base_env = _base_env()
+    base_env["MOLT_WASM_PATH"] = str(output_path)
+    python_exe = _python_executable()
+
+    env = base_env.copy()
+    want_linked = _want_linked() or require_linked
+    if want_linked:
+        env["MOLT_WASM_LINK"] = "1"
+    else:
+        env.pop("MOLT_WASM_LINK", None)
+
+    build_s = _build_wasm_output(python_exe, env, output_path, script)
+    if build_s is None:
         temp_dir.cleanup()
         return None
 
-    linked = _link_wasm(env, output_path)
+    linked = (
+        _link_wasm(env, output_path, require_linked=require_linked)
+        if want_linked
+        else None
+    )
     linked_used = linked is not None
+    if require_linked and not linked_used:
+        print(
+            f"WASM link required but unavailable for {script}.",
+            file=sys.stderr,
+        )
+        temp_dir.cleanup()
+        raise RuntimeError("linked wasm required")
+    if want_linked and not linked_used:
+        print(
+            f"WASM link unavailable; falling back to non-linked build for {script}.",
+            file=sys.stderr,
+        )
+        env = base_env.copy()
+        env.pop("MOLT_WASM_LINK", None)
+        build_s = _build_wasm_output(python_exe, env, output_path, script)
+        if build_s is None:
+            temp_dir.cleanup()
+            return None
+
     wasm_path = linked if linked_used else output_path
     wasm_size = wasm_path.stat().st_size / 1024
     run_env = env.copy()
-    if linked is not None:
+    if linked_used:
         run_env["MOLT_WASM_LINKED"] = "1"
         run_env["MOLT_WASM_LINKED_PATH"] = str(linked)
     return WasmBinary(run_env, temp_dir, build_s, wasm_size, linked_used)
@@ -317,7 +369,12 @@ def summarize_samples(samples: list[float]) -> dict[str, float]:
 
 
 def bench_results(
-    benchmarks: list[str], samples: int, warmup: int, super_run: bool
+    benchmarks: list[str],
+    samples: int,
+    warmup: int,
+    super_run: bool,
+    *,
+    require_linked: bool,
 ) -> dict[str, dict]:
     data: dict[str, dict] = {}
     print(f"{'Benchmark':<30} | {'WASM (s)':<12} | {'WASM size':<10}")
@@ -330,7 +387,7 @@ def bench_results(
         linked_used = False
         ok = False
         wasm_samples: list[float] = []
-        wasm_binary = prepare_wasm_binary(script)
+        wasm_binary = prepare_wasm_binary(script, require_linked=require_linked)
         if wasm_binary is not None:
             try:
                 wasm_samples, ok = collect_samples(wasm_binary, samples, warmup)
@@ -376,13 +433,18 @@ def main() -> None:
         help="Attempt single-module wasm linking with wasm-ld when available.",
     )
     parser.add_argument(
+        "--require-linked",
+        action="store_true",
+        help="Require linked wasm artifacts; abort if linking is unavailable.",
+    )
+    parser.add_argument(
         "--super",
         action="store_true",
         help="Run all benchmarks 10x and emit mean/median/variance/range stats.",
     )
     args = parser.parse_args()
 
-    if args.linked:
+    if args.linked or args.require_linked:
         os.environ["MOLT_WASM_LINK"] = "1"
     if args.super and args.smoke:
         parser.error("--super cannot be combined with --smoke")
@@ -392,6 +454,12 @@ def main() -> None:
     if not build_runtime_wasm(reloc=False, output=RUNTIME_WASM):
         sys.exit(1)
     if _want_linked() and not build_runtime_wasm(reloc=True, output=RUNTIME_WASM_RELOC):
+        if args.require_linked:
+            print(
+                "Relocatable runtime build failed; linked output is required.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         print(
             "Relocatable runtime build failed; falling back to non-linked wasm runs.",
             file=sys.stderr,
@@ -404,7 +472,17 @@ def main() -> None:
         else (args.samples if args.samples is not None else (1 if args.smoke else 3))
     )
     warmup = args.warmup if args.warmup is not None else (0 if args.smoke else 1)
-    results = bench_results(benchmarks, samples, warmup, args.super)
+    try:
+        results = bench_results(
+            benchmarks,
+            samples,
+            warmup,
+            args.super,
+            require_linked=args.require_linked,
+        )
+    except RuntimeError as exc:
+        print(f"WASM bench aborted: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     load_avg = None
     try:

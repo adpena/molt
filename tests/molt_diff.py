@@ -70,16 +70,20 @@ def run_molt(file_path):
     env["PYTHONHASHSEED"] = "0"
     env.update(_collect_env_overrides(file_path))
     try:
+        build_cmd = [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            file_path,
+            "--out-dir",
+            str(output_root),
+        ]
+        codec = env.get("MOLT_CODEC")
+        if codec:
+            build_cmd.extend(["--codec", codec])
         build_res = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "molt.cli",
-                "build",
-                file_path,
-                "--out-dir",
-                str(output_root),
-            ],
+            build_cmd,
             env=env,
             capture_output=True,
             text=True,

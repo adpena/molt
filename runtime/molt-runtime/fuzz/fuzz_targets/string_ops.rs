@@ -10,7 +10,7 @@ use molt_runtime::{
 fuzz_target!(|data: &[u8]| {
     let mut hay_bits = 0u64;
     unsafe {
-        let out_bits = (&mut hay_bits as *mut u64) as u64;
+        let out_bits = &mut hay_bits as *mut u64;
         if molt_string_from_bytes(data.as_ptr(), data.len() as u64, out_bits) != 0 {
             return;
         }
@@ -22,11 +22,11 @@ fuzz_target!(|data: &[u8]| {
     let mut repl_bits = 0u64;
 
     unsafe {
-        let needle_out = (&mut needle_bits as *mut u64) as u64;
+        let needle_out = &mut needle_bits as *mut u64;
         if molt_string_from_bytes(left.as_ptr(), left.len() as u64, needle_out) != 0 {
             return;
         }
-        let repl_out = (&mut repl_bits as *mut u64) as u64;
+        let repl_out = &mut repl_bits as *mut u64;
         if molt_string_from_bytes(right.as_ptr(), right.len() as u64, repl_out) != 0 {
             return;
         }

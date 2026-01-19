@@ -6,7 +6,7 @@ from typing import Any, Iterable
 
 __all__ = ["SimpleNamespace", "MappingProxyType", "NotImplementedType"]
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL3): add full types helpers.
+# TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): add full types helpers (TracebackType, FrameType, FunctionType, MethodType, etc).
 
 NotImplementedType = type(NotImplemented)
 

@@ -85,6 +85,8 @@ interface intrinsics {
     is_truthy: func(val: molt-object) -> u64;
     function_default_kind: func(func: molt-object) -> u64;
     function_closure_bits: func(func: molt-object) -> molt-object;
+    function_is_generator: func(func: molt-object) -> molt-object;
+    function_is_coroutine: func(func: molt-object) -> molt-object;
     call_arity_error: func(expected: u64, got: u64) -> molt-object;
     callargs_new: func(pos_capacity: u64, kw_capacity: u64) -> molt-object;
     callargs_push_pos: func(builder: u64, val: molt-object) -> molt-object;
@@ -92,12 +94,16 @@ interface intrinsics {
     callargs_expand_star: func(builder: u64, iterable: molt-object) -> molt-object;
     callargs_expand_kwstar: func(builder: u64, mapping: molt-object) -> molt-object;
     call_bind: func(callable: molt-object, builder: u64) -> molt-object;
+    iter_sentinel: func(callable: molt-object, sentinel: molt-object) -> molt-object;
     missing: func() -> molt-object;
     not_implemented: func() -> molt-object;
 
     json_parse_scalar: func(ptr: molt-ptr, len: u64, out: molt-ptr) -> s32;
     msgpack_parse_scalar: func(ptr: molt-ptr, len: u64, out: molt-ptr) -> s32;
     cbor_parse_scalar: func(ptr: molt-ptr, len: u64, out: molt-ptr) -> s32;
+    json_parse_scalar_obj: func(val: molt-object) -> molt-object;
+    msgpack_parse_scalar_obj: func(val: molt-object) -> molt-object;
+    cbor_parse_scalar_obj: func(val: molt-object) -> molt-object;
     string_from_bytes: func(ptr: molt-ptr, len: u64, out: molt-ptr) -> s32;
     bytes_from_bytes: func(ptr: molt-ptr, len: u64, out: molt-ptr) -> s32;
     bigint_from_str: func(ptr: molt-ptr, len: u64) -> molt-object;
@@ -149,6 +155,16 @@ interface intrinsics {
     chr: func(val: molt-object) -> molt-object;
     abs_builtin: func(val: molt-object) -> molt-object;
     divmod_builtin: func(a: molt-object, b: molt-object) -> molt-object;
+    open_builtin: func(
+        file: molt-object,
+        mode: molt-object,
+        buffering: molt-object,
+        encoding: molt-object,
+        errors: molt-object,
+        newline: molt-object,
+        closefd: molt-object,
+        opener: molt-object,
+    ) -> molt-object;
     bin_builtin: func(val: molt-object) -> molt-object;
     oct_builtin: func(val: molt-object) -> molt-object;
     hex_builtin: func(val: molt-object) -> molt-object;
@@ -176,6 +192,10 @@ interface intrinsics {
     sum_builtin: func(iter: molt-object, start: molt-object) -> molt-object;
     min_builtin: func(args: molt-object, key: molt-object, default: molt-object) -> molt-object;
     max_builtin: func(args: molt-object, key: molt-object, default: molt-object) -> molt-object;
+    map_builtin: func(func: molt-object, iterables: molt-object) -> molt-object;
+    filter_builtin: func(func: molt-object, iterable: molt-object) -> molt-object;
+    zip_builtin: func(iterables: molt-object) -> molt-object;
+    reversed_builtin: func(seq: molt-object) -> molt-object;
     sorted_builtin: func(iter: molt-object, key: molt-object, reverse: molt-object) -> molt-object;
     getattr_builtin: func(obj: molt-object, name: molt-object, default: molt-object) -> molt-object;
     anext_builtin: func(iter: molt-object, default: molt-object) -> molt-object;
@@ -249,6 +269,7 @@ interface intrinsics {
     aiter: func(obj: molt-object) -> molt-object;
     iter_next: func(iter: molt-object) -> molt-object;
     anext: func(iter: molt-object) -> molt-object;
+    task_new: func(poll_fn: u64, closure_size: u64, kind: u64) -> molt-object;
     generator_new: func(poll_fn: u64, closure_size: u64) -> molt-object;
     generator_send: func(gen: molt-object, val: molt-object) -> molt-object;
     generator_throw: func(gen: molt-object, exc: molt-object) -> molt-object;
@@ -331,8 +352,8 @@ interface intrinsics {
     isinstance: func(obj: molt-object, class_obj: molt-object) -> molt-object;
     issubclass: func(sub_obj: molt-object, class_obj: molt-object) -> molt-object;
     object_new: func() -> molt-object;
-    func_new: func(fn_idx: u64, arity: u64) -> molt-object;
-    func_new_closure: func(fn_idx: u64, arity: u64, closure: molt-object) -> molt-object;
+    func_new: func(fn_idx: u64, trampoline_ptr: u64, arity: u64) -> molt-object;
+    func_new_closure: func(fn_idx: u64, trampoline_ptr: u64, arity: u64, closure: molt-object) -> molt-object;
     bound_method_new: func(func: molt-object, self_obj: molt-object) -> molt-object;
     classmethod_new: func(func: molt-object) -> molt-object;
     staticmethod_new: func(func: molt-object) -> molt-object;
@@ -349,10 +370,12 @@ interface intrinsics {
     exception_pop: func() -> molt-object;
     exception_last: func() -> molt-object;
     exception_active: func() -> molt-object;
-    exception_new: func(kind: molt-object, msg: molt-object) -> molt-object;
+    exception_new: func(kind: molt-object, args: molt-object) -> molt-object;
+    exception_new_from_class: func(class_obj: molt-object, args: molt-object) -> molt-object;
     exception_clear: func() -> molt-object;
     exception_pending: func() -> u64;
     exception_kind: func(exc: molt-object) -> molt-object;
+    exception_class: func(kind: molt-object) -> molt-object;
     exception_message: func(exc: molt-object) -> molt-object;
     exception_set_cause: func(exc: molt-object, cause: molt-object) -> molt-object;
     exception_set_value: func(exc: molt-object, value: molt-object) -> molt-object;

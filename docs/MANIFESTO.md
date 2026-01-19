@@ -69,19 +69,6 @@ Molt prefers:
 Crashes are bugs.
 Silent miscompilation is unacceptable.
 
----
-
-### 5. AI Is a Tool, Not a Crutch
-AI is used:
-- at development time
-- to propose invariants
-- to generate tests
-- to explore optimization space
-
-AI is **not required at runtime**.
-
----
-
 ## The Endgame
 
 If Molt succeeds:
