@@ -81,8 +81,7 @@ extern "C" {
     #[link_name = "molt_call_indirect3"]
     fn molt_call_indirect3(func_idx: u64, arg0: u64, arg1: u64, arg2: u64) -> i64;
     #[link_name = "molt_call_indirect4"]
-    fn molt_call_indirect4(func_idx: u64, arg0: u64, arg1: u64, arg2: u64, arg3: u64)
-        -> i64;
+    fn molt_call_indirect4(func_idx: u64, arg0: u64, arg1: u64, arg2: u64, arg3: u64) -> i64;
     #[link_name = "molt_call_indirect5"]
     fn molt_call_indirect5(
         func_idx: u64,
@@ -5401,8 +5400,14 @@ unsafe fn alloc_frame_obj(code_bits: u64, line: i64) -> Option<u64> {
     let f_lasti_bits = intern_static_name(&runtime_state().interned.f_lasti_name, b"f_lasti");
     let line_bits = MoltObject::from_int(line).bits();
     let lasti_bits = MoltObject::from_int(-1).bits();
-    let dict_ptr =
-        alloc_dict_with_pairs(&[f_code_bits, code_bits, f_lineno_bits, line_bits, f_lasti_bits, lasti_bits]);
+    let dict_ptr = alloc_dict_with_pairs(&[
+        f_code_bits,
+        code_bits,
+        f_lineno_bits,
+        line_bits,
+        f_lasti_bits,
+        lasti_bits,
+    ]);
     if dict_ptr.is_null() {
         dec_ref_bits(frame_bits);
         return None;
@@ -5423,8 +5428,7 @@ unsafe fn alloc_traceback_obj(frame_bits: u64, line: i64, next_bits: u64) -> Opt
     let tb_bits = alloc_instance_for_class(class_ptr);
     let tb_ptr = obj_from_bits(tb_bits).as_ptr()?;
     let tb_frame_bits = intern_static_name(&runtime_state().interned.tb_frame_name, b"tb_frame");
-    let tb_lineno_bits =
-        intern_static_name(&runtime_state().interned.tb_lineno_name, b"tb_lineno");
+    let tb_lineno_bits = intern_static_name(&runtime_state().interned.tb_lineno_name, b"tb_lineno");
     let tb_next_bits = intern_static_name(&runtime_state().interned.tb_next_name, b"tb_next");
     let line_bits = MoltObject::from_int(line).bits();
     let dict_ptr = alloc_dict_with_pairs(&[
@@ -5670,25 +5674,12 @@ fn exception_base_spec(name: &str) -> Option<ExceptionBaseSpec> {
         "GeneratorExit" | "KeyboardInterrupt" | "SystemExit" => {
             Some(ExceptionBaseSpec::One("BaseException"))
         }
-        "ArithmeticError"
-        | "AssertionError"
-        | "AttributeError"
-        | "BufferError"
-        | "EOFError"
-        | "ImportError"
-        | "LookupError"
-        | "MemoryError"
-        | "NameError"
-        | "OSError"
-        | "ReferenceError"
-        | "RuntimeError"
-        | "StopIteration"
-        | "StopAsyncIteration"
-        | "SyntaxError"
-        | "SystemError"
-        | "TypeError"
-        | "ValueError"
-        | "Warning" => Some(ExceptionBaseSpec::One("Exception")),
+        "ArithmeticError" | "AssertionError" | "AttributeError" | "BufferError" | "EOFError"
+        | "ImportError" | "LookupError" | "MemoryError" | "NameError" | "OSError"
+        | "ReferenceError" | "RuntimeError" | "StopIteration" | "StopAsyncIteration"
+        | "SyntaxError" | "SystemError" | "TypeError" | "ValueError" | "Warning" => {
+            Some(ExceptionBaseSpec::One("Exception"))
+        }
         "FloatingPointError" | "OverflowError" | "ZeroDivisionError" => {
             Some(ExceptionBaseSpec::One("ArithmeticError"))
         }
@@ -5700,16 +5691,9 @@ fn exception_base_spec(name: &str) -> Option<ExceptionBaseSpec> {
         | "ConnectionAbortedError"
         | "ConnectionRefusedError"
         | "ConnectionResetError" => Some(ExceptionBaseSpec::One("ConnectionError")),
-        "BlockingIOError"
-        | "ChildProcessError"
-        | "FileExistsError"
-        | "FileNotFoundError"
-        | "InterruptedError"
-        | "IsADirectoryError"
-        | "NotADirectoryError"
-        | "PermissionError"
-        | "ProcessLookupError"
-        | "TimeoutError" => Some(ExceptionBaseSpec::One("OSError")),
+        "BlockingIOError" | "ChildProcessError" | "FileExistsError" | "FileNotFoundError"
+        | "InterruptedError" | "IsADirectoryError" | "NotADirectoryError" | "PermissionError"
+        | "ProcessLookupError" | "TimeoutError" => Some(ExceptionBaseSpec::One("OSError")),
         "NotImplementedError" | "RecursionError" => Some(ExceptionBaseSpec::One("RuntimeError")),
         "IndentationError" => Some(ExceptionBaseSpec::One("SyntaxError")),
         "TabError" => Some(ExceptionBaseSpec::One("IndentationError")),
@@ -27811,10 +27795,8 @@ fn format_traceback(ptr: *mut u8) -> Option<String> {
         return None;
     }
     let mut out = String::from("Traceback (most recent call last):\n");
-    let tb_frame_bits =
-        intern_static_name(&runtime_state().interned.tb_frame_name, b"tb_frame");
-    let tb_lineno_bits =
-        intern_static_name(&runtime_state().interned.tb_lineno_name, b"tb_lineno");
+    let tb_frame_bits = intern_static_name(&runtime_state().interned.tb_frame_name, b"tb_frame");
+    let tb_lineno_bits = intern_static_name(&runtime_state().interned.tb_lineno_name, b"tb_lineno");
     let tb_next_bits = intern_static_name(&runtime_state().interned.tb_next_name, b"tb_next");
     let f_code_bits = intern_static_name(&runtime_state().interned.f_code_name, b"f_code");
     let f_lineno_bits = intern_static_name(&runtime_state().interned.f_lineno_name, b"f_lineno");
@@ -30025,9 +30007,7 @@ unsafe fn call_function_obj1(func_bits: u64, arg0_bits: u64) -> u64 {
     let res = if closure_bits != 0 {
         #[cfg(target_arch = "wasm32")]
         {
-            if tramp_ptr == 0
-                && std::env::var("MOLT_WASM_CALL_DEBUG").as_deref() == Ok("1")
-            {
+            if tramp_ptr == 0 && std::env::var("MOLT_WASM_CALL_DEBUG").as_deref() == Ok("1") {
                 eprintln!("molt wasm call1 direct: fn=0x{fn_ptr:x}");
             }
             if tramp_ptr != 0 {
@@ -30045,9 +30025,7 @@ unsafe fn call_function_obj1(func_bits: u64, arg0_bits: u64) -> u64 {
     } else {
         #[cfg(target_arch = "wasm32")]
         {
-            if tramp_ptr == 0
-                && std::env::var("MOLT_WASM_CALL_DEBUG").as_deref() == Ok("1")
-            {
+            if tramp_ptr == 0 && std::env::var("MOLT_WASM_CALL_DEBUG").as_deref() == Ok("1") {
                 eprintln!("molt wasm call1 direct: fn=0x{fn_ptr:x}");
             }
             if tramp_ptr != 0 {
@@ -30154,7 +30132,8 @@ unsafe fn call_function_obj2(func_bits: u64, arg0_bits: u64, arg1_bits: u64) -> 
             if tramp_ptr != 0 {
                 molt_call_indirect3(fn_ptr, closure_bits, arg0_bits, arg1_bits) as u64
             } else {
-                let func: extern "C" fn(u64, u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
+                let func: extern "C" fn(u64, u64, u64) -> i64 =
+                    std::mem::transmute(fn_ptr as usize);
                 func(closure_bits, arg0_bits, arg1_bits) as u64
             }
         }
@@ -30234,7 +30213,8 @@ unsafe fn call_function_obj3(
             if tramp_ptr != 0 {
                 molt_call_indirect3(fn_ptr, arg0_bits, arg1_bits, arg2_bits) as u64
             } else {
-                let func: extern "C" fn(u64, u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
+                let func: extern "C" fn(u64, u64, u64) -> i64 =
+                    std::mem::transmute(fn_ptr as usize);
                 func(arg0_bits, arg1_bits, arg2_bits) as u64
             }
         }
@@ -30397,12 +30377,7 @@ unsafe fn call_function_obj5(
         {
             if tramp_ptr != 0 {
                 molt_call_indirect5(
-                    fn_ptr,
-                    arg0_bits,
-                    arg1_bits,
-                    arg2_bits,
-                    arg3_bits,
-                    arg4_bits,
+                    fn_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits,
                 ) as u64
             } else {
                 let func: extern "C" fn(u64, u64, u64, u64, u64) -> i64 =
@@ -30499,13 +30474,7 @@ unsafe fn call_function_obj6(
         {
             if tramp_ptr != 0 {
                 molt_call_indirect6(
-                    fn_ptr,
-                    arg0_bits,
-                    arg1_bits,
-                    arg2_bits,
-                    arg3_bits,
-                    arg4_bits,
-                    arg5_bits,
+                    fn_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
                 ) as u64
             } else {
                 let func: extern "C" fn(u64, u64, u64, u64, u64, u64) -> i64 =
@@ -30611,13 +30580,7 @@ unsafe fn call_function_obj7(
         {
             if tramp_ptr != 0 {
                 molt_call_indirect7(
-                    fn_ptr,
-                    arg0_bits,
-                    arg1_bits,
-                    arg2_bits,
-                    arg3_bits,
-                    arg4_bits,
-                    arg5_bits,
+                    fn_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
                     arg6_bits,
                 ) as u64
             } else {
@@ -30728,15 +30691,8 @@ unsafe fn call_function_obj8(
         {
             if tramp_ptr != 0 {
                 molt_call_indirect8(
-                    fn_ptr,
-                    arg0_bits,
-                    arg1_bits,
-                    arg2_bits,
-                    arg3_bits,
-                    arg4_bits,
-                    arg5_bits,
-                    arg6_bits,
-                    arg7_bits,
+                    fn_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
+                    arg6_bits, arg7_bits,
                 ) as u64
             } else {
                 let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
@@ -30814,18 +30770,8 @@ unsafe fn call_function_obj9(
                     arg8_bits,
                 ) as u64
             } else {
-                let func: extern "C" fn(
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                ) -> i64 = std::mem::transmute(fn_ptr as usize);
+                let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
+                    std::mem::transmute(fn_ptr as usize);
                 func(
                     closure_bits,
                     arg0_bits,
@@ -30842,18 +30788,8 @@ unsafe fn call_function_obj9(
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let func: extern "C" fn(
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-            ) -> i64 = std::mem::transmute(fn_ptr as usize);
+            let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
+                std::mem::transmute(fn_ptr as usize);
             func(
                 closure_bits,
                 arg0_bits,
@@ -30872,65 +30808,25 @@ unsafe fn call_function_obj9(
         {
             if tramp_ptr != 0 {
                 molt_call_indirect9(
-                    fn_ptr,
-                    arg0_bits,
-                    arg1_bits,
-                    arg2_bits,
-                    arg3_bits,
-                    arg4_bits,
-                    arg5_bits,
-                    arg6_bits,
-                    arg7_bits,
-                    arg8_bits,
+                    fn_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
+                    arg6_bits, arg7_bits, arg8_bits,
                 ) as u64
             } else {
-                let func: extern "C" fn(
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                ) -> i64 = std::mem::transmute(fn_ptr as usize);
+                let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
+                    std::mem::transmute(fn_ptr as usize);
                 func(
-                    arg0_bits,
-                    arg1_bits,
-                    arg2_bits,
-                    arg3_bits,
-                    arg4_bits,
-                    arg5_bits,
-                    arg6_bits,
-                    arg7_bits,
-                    arg8_bits,
+                    arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
+                    arg7_bits, arg8_bits,
                 ) as u64
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let func: extern "C" fn(
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-            ) -> i64 = std::mem::transmute(fn_ptr as usize);
+            let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
+                std::mem::transmute(fn_ptr as usize);
             func(
-                arg0_bits,
-                arg1_bits,
-                arg2_bits,
-                arg3_bits,
-                arg4_bits,
-                arg5_bits,
-                arg6_bits,
-                arg7_bits,
-                arg8_bits,
+                arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
+                arg7_bits, arg8_bits,
             ) as u64
         }
     };
@@ -31023,19 +30919,8 @@ unsafe fn call_function_obj10(
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let func: extern "C" fn(
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-            ) -> i64 = std::mem::transmute(fn_ptr as usize);
+            let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
+                std::mem::transmute(fn_ptr as usize);
             func(
                 closure_bits,
                 arg0_bits,
@@ -31055,70 +30940,25 @@ unsafe fn call_function_obj10(
         {
             if tramp_ptr != 0 {
                 molt_call_indirect10(
-                    fn_ptr,
-                    arg0_bits,
-                    arg1_bits,
-                    arg2_bits,
-                    arg3_bits,
-                    arg4_bits,
-                    arg5_bits,
-                    arg6_bits,
-                    arg7_bits,
-                    arg8_bits,
-                    arg9_bits,
+                    fn_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
+                    arg6_bits, arg7_bits, arg8_bits, arg9_bits,
                 ) as u64
             } else {
-                let func: extern "C" fn(
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                ) -> i64 = std::mem::transmute(fn_ptr as usize);
+                let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
+                    std::mem::transmute(fn_ptr as usize);
                 func(
-                    arg0_bits,
-                    arg1_bits,
-                    arg2_bits,
-                    arg3_bits,
-                    arg4_bits,
-                    arg5_bits,
-                    arg6_bits,
-                    arg7_bits,
-                    arg8_bits,
-                    arg9_bits,
+                    arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
+                    arg7_bits, arg8_bits, arg9_bits,
                 ) as u64
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let func: extern "C" fn(
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-            ) -> i64 = std::mem::transmute(fn_ptr as usize);
+            let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
+                std::mem::transmute(fn_ptr as usize);
             func(
-                arg0_bits,
-                arg1_bits,
-                arg2_bits,
-                arg3_bits,
-                arg4_bits,
-                arg5_bits,
-                arg6_bits,
-                arg7_bits,
-                arg8_bits,
-                arg9_bits,
+                arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
+                arg7_bits, arg8_bits, arg9_bits,
             ) as u64
         }
     };
@@ -31249,18 +31089,8 @@ unsafe fn call_function_obj11(
         {
             if tramp_ptr != 0 {
                 molt_call_indirect11(
-                    fn_ptr,
-                    arg0_bits,
-                    arg1_bits,
-                    arg2_bits,
-                    arg3_bits,
-                    arg4_bits,
-                    arg5_bits,
-                    arg6_bits,
-                    arg7_bits,
-                    arg8_bits,
-                    arg9_bits,
-                    arg10_bits,
+                    fn_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
+                    arg6_bits, arg7_bits, arg8_bits, arg9_bits, arg10_bits,
                 ) as u64
             } else {
                 let func: extern "C" fn(
@@ -31277,47 +31107,18 @@ unsafe fn call_function_obj11(
                     u64,
                 ) -> i64 = std::mem::transmute(fn_ptr as usize);
                 func(
-                    arg0_bits,
-                    arg1_bits,
-                    arg2_bits,
-                    arg3_bits,
-                    arg4_bits,
-                    arg5_bits,
-                    arg6_bits,
-                    arg7_bits,
-                    arg8_bits,
-                    arg9_bits,
-                    arg10_bits,
+                    arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
+                    arg7_bits, arg8_bits, arg9_bits, arg10_bits,
                 ) as u64
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let func: extern "C" fn(
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-                u64,
-            ) -> i64 = std::mem::transmute(fn_ptr as usize);
+            let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
+                std::mem::transmute(fn_ptr as usize);
             func(
-                arg0_bits,
-                arg1_bits,
-                arg2_bits,
-                arg3_bits,
-                arg4_bits,
-                arg5_bits,
-                arg6_bits,
-                arg7_bits,
-                arg8_bits,
-                arg9_bits,
-                arg10_bits,
+                arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
+                arg7_bits, arg8_bits, arg9_bits, arg10_bits,
             ) as u64
         }
     };
@@ -31454,19 +31255,8 @@ unsafe fn call_function_obj12(
         {
             if tramp_ptr != 0 {
                 molt_call_indirect12(
-                    fn_ptr,
-                    arg0_bits,
-                    arg1_bits,
-                    arg2_bits,
-                    arg3_bits,
-                    arg4_bits,
-                    arg5_bits,
-                    arg6_bits,
-                    arg7_bits,
-                    arg8_bits,
-                    arg9_bits,
-                    arg10_bits,
-                    arg11_bits,
+                    fn_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
+                    arg6_bits, arg7_bits, arg8_bits, arg9_bits, arg10_bits, arg11_bits,
                 ) as u64
             } else {
                 let func: extern "C" fn(
@@ -31484,18 +31274,8 @@ unsafe fn call_function_obj12(
                     u64,
                 ) -> i64 = std::mem::transmute(fn_ptr as usize);
                 func(
-                    arg0_bits,
-                    arg1_bits,
-                    arg2_bits,
-                    arg3_bits,
-                    arg4_bits,
-                    arg5_bits,
-                    arg6_bits,
-                    arg7_bits,
-                    arg8_bits,
-                    arg9_bits,
-                    arg10_bits,
-                    arg11_bits,
+                    arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
+                    arg7_bits, arg8_bits, arg9_bits, arg10_bits, arg11_bits,
                 ) as u64
             }
         }
@@ -31516,18 +31296,8 @@ unsafe fn call_function_obj12(
                 u64,
             ) -> i64 = std::mem::transmute(fn_ptr as usize);
             func(
-                arg0_bits,
-                arg1_bits,
-                arg2_bits,
-                arg3_bits,
-                arg4_bits,
-                arg5_bits,
-                arg6_bits,
-                arg7_bits,
-                arg8_bits,
-                arg9_bits,
-                arg10_bits,
-                arg11_bits,
+                arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
+                arg7_bits, arg8_bits, arg9_bits, arg10_bits, arg11_bits,
             ) as u64
         }
     };
@@ -31562,8 +31332,12 @@ unsafe fn call_function_obj_trampoline(func_bits: u64, args: &[u64]) -> u64 {
     let res = {
         #[cfg(target_arch = "wasm32")]
         {
-            molt_call_indirect3(tramp_ptr, closure_bits, args.as_ptr() as u64, args.len() as u64)
-                as u64
+            molt_call_indirect3(
+                tramp_ptr,
+                closure_bits,
+                args.as_ptr() as u64,
+                args.len() as u64,
+            ) as u64
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -31662,7 +31436,8 @@ unsafe fn call_class_init_with_args(class_ptr: *mut u8, args: &[u64]) -> u64 {
         }
         let exc_bits = MoltObject::from_ptr(exc_ptr).bits();
         let init_name_bits = intern_static_name(&runtime_state().interned.init_name, b"__init__");
-        let Some(init_bits) = class_attr_lookup(class_ptr, class_ptr, Some(exc_ptr), init_name_bits)
+        let Some(init_bits) =
+            class_attr_lookup(class_ptr, class_ptr, Some(exc_ptr), init_name_bits)
         else {
             return exc_bits;
         };
@@ -33344,7 +33119,8 @@ unsafe fn attr_lookup_ptr(obj_ptr: *mut u8, attr_bits: u64) -> Option<u64> {
         }
         if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
             if object_type_id(class_ptr) == TYPE_ID_TYPE {
-                if let Some(val_bits) = class_attr_lookup(class_ptr, class_ptr, Some(obj_ptr), attr_bits)
+                if let Some(val_bits) =
+                    class_attr_lookup(class_ptr, class_ptr, Some(obj_ptr), attr_bits)
                 {
                     return Some(val_bits);
                 }

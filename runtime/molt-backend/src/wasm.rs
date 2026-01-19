@@ -5,8 +5,8 @@ use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, CustomSection, DataSection, DataSymbolDefinition,
     ElementMode, ElementSection, ElementSegment, Elements, Encode, EntityType, ExportKind,
     ExportSection, Function, FunctionSection, ImportSection, Instruction, LinkingSection,
-    MemorySection, MemoryType, Module, RawSection, RefType, SymbolTable, TableSection,
-    TableType, TypeSection, ValType,
+    MemorySection, MemoryType, Module, RawSection, RefType, SymbolTable, TableSection, TableType,
+    TypeSection, ValType,
 };
 use wasmparser::{DataKind, ElementItems, ExternalKind, Operator, Parser, Payload, TypeRef};
 
@@ -837,9 +837,9 @@ impl WasmBackend {
         }
 
         for arity in 0..=max_call_indirect {
-            let sig_idx = *user_type_map
-                .get(&(arity + 1))
-                .unwrap_or_else(|| panic!("missing call_indirect signature for arity {}", arity + 1));
+            let sig_idx = *user_type_map.get(&(arity + 1)).unwrap_or_else(|| {
+                panic!("missing call_indirect signature for arity {}", arity + 1)
+            });
             let callee_idx = *user_type_map
                 .get(&arity)
                 .unwrap_or_else(|| panic!("missing call_indirect callee type for arity {}", arity));
@@ -1032,11 +1032,7 @@ impl WasmBackend {
         let anext_default_poll_idx = *table_import_wrappers
             .get("anext_default_poll")
             .unwrap_or(&self.import_ids["anext_default_poll"]);
-        let mut table_indices = vec![
-            sentinel_func_idx,
-            async_sleep_idx,
-            anext_default_poll_idx,
-        ];
+        let mut table_indices = vec![sentinel_func_idx, async_sleep_idx, anext_default_poll_idx];
         let mut func_to_table_idx = HashMap::new();
         let mut func_to_index = HashMap::new();
         func_to_index.insert(
@@ -1164,7 +1160,9 @@ impl WasmBackend {
             let closure_size = if is_generator {
                 *generator_closure_sizes
                     .get(&func_ir.name)
-                    .unwrap_or_else(|| panic!("generator closure size missing for {}", func_ir.name))
+                    .unwrap_or_else(|| {
+                        panic!("generator closure size missing for {}", func_ir.name)
+                    })
             } else {
                 0
             };
@@ -1236,7 +1234,10 @@ impl WasmBackend {
             self.module.section(element_section);
         }
         if let Some(payload) = element_payload.as_ref() {
-            let raw_section = RawSection { id: 9, data: payload };
+            let raw_section = RawSection {
+                id: 9,
+                data: payload,
+            };
             self.module.section(&raw_section);
         }
         self.module.section(&self.codes);
@@ -1389,12 +1390,7 @@ impl WasmBackend {
         func_index
     }
 
-    fn compile_func(
-        &mut self,
-        func_ir: &FunctionIR,
-        type_idx: u32,
-        ctx: &CompileFuncContext<'_>,
-    ) {
+    fn compile_func(&mut self, func_ir: &FunctionIR, type_idx: u32, ctx: &CompileFuncContext<'_>) {
         let func_index = self.func_count;
         let reloc_enabled = ctx.reloc_enabled;
         self.funcs.function(type_idx);
@@ -6459,19 +6455,11 @@ fn emit_ref_func(func: &mut Function, reloc_enabled: bool, func_index: u32) {
     }
 }
 
-fn emit_table_index_i32(
-    func: &mut Function,
-    reloc_enabled: bool,
-    table_index: u32,
-) {
+fn emit_table_index_i32(func: &mut Function, reloc_enabled: bool, table_index: u32) {
     emit_i32_const(func, reloc_enabled, table_index as i32);
 }
 
-fn emit_table_index_i64(
-    func: &mut Function,
-    reloc_enabled: bool,
-    table_index: u32,
-) {
+fn emit_table_index_i64(func: &mut Function, reloc_enabled: bool, table_index: u32) {
     emit_table_index_i32(func, reloc_enabled, table_index);
     func.instruction(&Instruction::I64ExtendI32U);
 }
@@ -6607,8 +6595,7 @@ fn add_reloc_sections(
                     if let ElementItems::Functions(funcs) = element.items {
                         for func in funcs.into_iter_with_offsets().flatten() {
                             let (pos, func_index) = func;
-                            let offset =
-                                (pos.saturating_sub(element_section_start)) as u32;
+                            let offset = (pos.saturating_sub(element_section_start)) as u32;
                             pending_elem.push(PendingReloc::Function { offset, func_index });
                         }
                     }
