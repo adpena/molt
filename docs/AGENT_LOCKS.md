@@ -8,5 +8,4 @@ This file coordinates parallel agent work to prevent file collisions.
 - Remove your claim when finished.
 
 ## Active locks
-codex-53491 -> tests/differential/
-codex-53491 -> logs/
+codex-68675 -> tests/differential/
