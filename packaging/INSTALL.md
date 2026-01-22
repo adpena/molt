@@ -76,6 +76,25 @@ molt build examples\\hello.py
 Expected: JSON output, exit code 0. Compiled binary under `$MOLT_BIN` (defaults to
 `~/.molt/bin` on Unix, `%USERPROFILE%\\.molt\\bin` on Windows).
 
+Example JSON shape (values vary):
+
+```json
+{
+  "schema_version": "1.0",
+  "command": "doctor",
+  "status": "ok",
+  "data": {
+    "checks": [
+      {"name": "python", "ok": true, "detail": "3.12.x (requires >=3.12)"},
+      {"name": "uv", "ok": true, "detail": "<path-to-uv>"},
+      {"name": "cargo", "ok": true, "detail": "<path-to-cargo>"}
+    ]
+  },
+  "warnings": [],
+  "errors": []
+}
+```
+
 ## Optional environment overrides
 
 - `MOLT_HOME`: override the data/build root (defaults to `~/.molt` unless the bundle is writable)

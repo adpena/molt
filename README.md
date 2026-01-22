@@ -124,6 +124,25 @@ molt build examples/hello.py
 
 Expected: compiled binary under `$MOLT_BIN` (defaults to `~/.molt/bin`).
 
+Example JSON shape (values vary):
+
+```json
+{
+  "schema_version": "1.0",
+  "command": "doctor",
+  "status": "ok",
+  "data": {
+    "checks": [
+      {"name": "python", "ok": true, "detail": "3.12.x (requires >=3.12)"},
+      {"name": "uv", "ok": true, "detail": "<path-to-uv>"},
+      {"name": "cargo", "ok": true, "detail": "<path-to-cargo>"}
+    ]
+  },
+  "warnings": [],
+  "errors": []
+}
+```
+
 ### Windows (Winget/Scoop/script)
 
 ```powershell
