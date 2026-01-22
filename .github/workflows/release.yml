@@ -23,18 +23,23 @@ jobs:
           - os: macos-14
             platform: macos
             arch: arm64
+            self_hosted: false
           - os: [self-hosted, macos, x64, molt-release]
             platform: macos
             arch: x86_64
+            self_hosted: true
           - os: ubuntu-24.04
             platform: linux
             arch: x86_64
+            self_hosted: false
           - os: ubuntu-24.04-arm
             platform: linux
             arch: aarch64
+            self_hosted: false
           - os: windows-2022
             platform: windows
             arch: x86_64
+            self_hosted: false
     env:
       RELEASE_TAG: ${{ github.event.release.tag_name }}
       INPUT_VERSION: ${{ inputs.version }}
@@ -55,22 +60,21 @@ jobs:
           VERSION="${VERSION#v}"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
-      - name: Ensure toolcache dir
-        shell: bash
-        run: |
-          mkdir -p "$RUNNER_TEMP/_tool"
-
       - uses: actions/setup-python@v5
+        if: ${{ !matrix.self_hosted }}
         with:
           python-version: "3.12"
-        env:
-          AGENT_TOOLSDIRECTORY: ${{ runner.temp }}/_tool
-          RUNNER_TOOL_CACHE: ${{ runner.temp }}/_tool
+
+      - name: Show Python version (self-hosted)
+        if: ${{ matrix.self_hosted }}
+        shell: bash
+        run: |
+          python3 --version
 
       - name: Verify version matches pyproject.toml
         shell: bash
         run: |
-          python - <<'PY'
+          python3 - <<'PY'
           import os
           import tomllib
           from pathlib import Path
@@ -94,8 +98,8 @@ jobs:
       - name: Build wheel
         shell: bash
         run: |
-          python -m pip install --upgrade pip build
-          python -m build --wheel --outdir dist
+          python3 -m pip install --upgrade pip build
+          python3 -m build --wheel --outdir dist
 
       - name: Build molt-worker
         shell: bash
@@ -125,7 +129,7 @@ jobs:
             exit 1
           fi
 
-          python tools/release/build_bundle.py \
+          python3 tools/release/build_bundle.py \
             --version "$VERSION" \
             --platform "${{ matrix.platform }}" \
             --arch "${{ matrix.arch }}" \
@@ -133,7 +137,7 @@ jobs:
             --worker "$WORKER" \
             --output "dist/molt-$VERSION-${{ matrix.platform }}-${{ matrix.arch }}.$EXT"
 
-          python tools/release/build_bundle.py \
+          python3 tools/release/build_bundle.py \
             --version "$VERSION" \
             --platform "${{ matrix.platform }}" \
             --arch "${{ matrix.arch }}" \
