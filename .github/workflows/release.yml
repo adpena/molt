@@ -60,21 +60,29 @@ jobs:
           VERSION="${VERSION#v}"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
+      - name: Select Python
+        shell: bash
+        run: |
+          if [ "${{ matrix.self_hosted }}" = "true" ]; then
+            echo "PYTHON_BIN=python3" >> "$GITHUB_ENV"
+          else
+            echo "PYTHON_BIN=python" >> "$GITHUB_ENV"
+          fi
+
       - uses: actions/setup-python@v5
         if: ${{ !matrix.self_hosted }}
         with:
           python-version: "3.12"
 
-      - name: Show Python version (self-hosted)
-        if: ${{ matrix.self_hosted }}
+      - name: Install uv
         shell: bash
         run: |
-          python3 --version
+          "$PYTHON_BIN" -m pip install --upgrade uv
 
       - name: Verify version matches pyproject.toml
         shell: bash
         run: |
-          python3 - <<'PY'
+          "$PYTHON_BIN" - <<'PY'
           import os
           import tomllib
           from pathlib import Path
@@ -98,8 +106,8 @@ jobs:
       - name: Build wheel
         shell: bash
         run: |
-          python3 -m pip install --upgrade pip build
-          python3 -m build --wheel --outdir dist
+          uv pip install --system --python "$PYTHON_BIN" build
+          "$PYTHON_BIN" -m build --wheel --outdir dist
 
       - name: Build molt-worker
         shell: bash
@@ -129,7 +137,7 @@ jobs:
             exit 1
           fi
 
-          python3 tools/release/build_bundle.py \
+          "$PYTHON_BIN" tools/release/build_bundle.py \
             --version "$VERSION" \
             --platform "${{ matrix.platform }}" \
             --arch "${{ matrix.arch }}" \
@@ -137,7 +145,7 @@ jobs:
             --worker "$WORKER" \
             --output "dist/molt-$VERSION-${{ matrix.platform }}-${{ matrix.arch }}.$EXT"
 
-          python3 tools/release/build_bundle.py \
+          "$PYTHON_BIN" tools/release/build_bundle.py \
             --version "$VERSION" \
             --platform "${{ matrix.platform }}" \
             --arch "${{ matrix.arch }}" \
