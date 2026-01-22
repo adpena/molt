@@ -140,9 +140,10 @@ jobs:
           path: dist/molt-*-${{ matrix.platform }}-${{ matrix.arch }}.*
 
       - name: Upload release assets
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ env.VERSION }}
           files: dist/molt-*-${{ matrix.platform }}-${{ matrix.arch }}.*
 
   manifest:
@@ -185,9 +186,10 @@ jobs:
           python tools/release/release_manifest.py --version "$VERSION" --out dist/release_manifest.json dist/molt-*.*
 
       - name: Upload release manifest assets
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ env.VERSION }}
           files: |
             dist/SHA256SUMS
             dist/release_manifest.json
