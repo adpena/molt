@@ -1,0 +1,4 @@
+PackageIdentifier: Adpena.Molt
+PackageVersion: "{{VERSION}}"
+ManifestType: version
+ManifestVersion: 1.6.0

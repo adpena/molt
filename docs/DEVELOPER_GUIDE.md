@@ -149,10 +149,51 @@ If you want to modify Molt, follow these steps:
     # Run the full dev suite
     tools/dev.py test
     ```
+    ```bash
+    # Run CPython regrtest against Molt (logs under logs/cpython_regrtest/)
+    python3 tools/cpython_regrtest.py --clone
+    ```
+    ```bash
+    # Run with uv-managed Python 3.12 and coverage enabled
+    python3 tools/cpython_regrtest.py --uv --uv-python 3.12 --uv-prepare --coverage
+    ```
+    ```bash
+    # Include Rust coverage (requires cargo-llvm-cov)
+    python3 tools/cpython_regrtest.py --uv --uv-python 3.12 --uv-prepare --rust-coverage
+    ```
+    ```bash
+    # Multi-version run (3.12 + 3.13) with a skip list
+    python3 tools/cpython_regrtest.py --uv --uv-python 3.12 --uv-python 3.13 \
+        --uv-prepare --skip-file tools/cpython_regrtest_skip.txt
+    ```
+    ```bash
+    # Core-only smoke run (curated test list)
+    python3 tools/cpython_regrtest.py --core-only --core-file tools/cpython_regrtest_core.txt
+    ```
+    The regrtest harness writes logs to `logs/cpython_regrtest/` with a
+    per-version `summary.md` plus a root `summary.md`. Each run also includes
+    `diff_summary.md`, `type_semantics_matrix.md`, and (when enabled)
+    Rust coverage output under `rust_coverage/` to align parity work with the
+    stdlib and type/semantics matrices. `--coverage` combines host regrtest
+    coverage with Molt subprocess coverage (use a Python-based `--molt-cmd` to
+    capture it). Use `--no-diff` for regrtest-only runs, and use
+    `--clone`/`--uv-prepare` explicitly when you want networked downloads.
+    Multi-version runs clone versioned checkouts under
+    `third_party/cpython-<ver>/`. The shim treats `MOLT_COMPAT_ERROR` results as
+    skipped and records the reason in `junit.xml`. Regrtest runs set
+    `MOLT_MODULE_ROOTS` and `MOLT_REGRTEST_CPYTHON_DIR` so CPython `Lib/test`
+    sources are compiled without polluting host `PYTHONPATH`.
 4.  **Explore**:
     - Start with `README.md` for CLI usage.
     - Read `docs/spec/STATUS.md` for current feature parity.
     - Check `ROADMAP.md` for where we are going.
+
+If you have a packaged install (Homebrew/Scoop/Winget), keep local dev
+isolated by running the repo CLI directly:
+
+```bash
+MOLT_HOME=~/.molt-dev PYTHONPATH=src uv run --python 3.12 python3 -m molt.cli build examples/hello.py
+```
 
 ## WASM Workflow
 

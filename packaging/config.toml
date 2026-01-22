@@ -1,0 +1,35 @@
+[project]
+name = "molt"
+worker_name = "molt-worker"
+license = "Apache-2.0"
+
+[github]
+owner = "adpena"
+repo = "molt"
+
+[homebrew]
+owner = "adpena"
+repo = "homebrew-molt"
+tap = "adpena/molt"
+
+[scoop]
+owner = "adpena"
+repo = "scoop-molt"
+
+[winget]
+publisher = "Adpena"
+package = "Molt"
+worker_package = "MoltWorker"
+
+[artifacts]
+# Naming convention (without leading 'v'):
+# molt-<version>-macos-<arch>.tar.gz
+# molt-<version>-linux-<arch>-<libc>.tar.gz
+# molt-<version>-windows-<arch>.zip
+# molt-worker-<version>-macos-<arch>.tar.gz
+# molt-worker-<version>-linux-<arch>-<libc>.tar.gz
+# molt-worker-<version>-windows-<arch>.zip
+macos_arches = ["arm64", "x86_64"]
+linux_arches = ["x86_64", "aarch64"]
+linux_libc = ["gnu"]
+windows_arches = ["x86_64"]

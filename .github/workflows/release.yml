@@ -1,0 +1,193 @@
+name: release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g., v0.0.001)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            platform: macos
+            arch: arm64
+          - os: macos-13
+            platform: macos
+            arch: x86_64
+          - os: ubuntu-24.04
+            platform: linux
+            arch: x86_64
+          - os: ubuntu-24.04-arm
+            platform: linux
+            arch: aarch64
+          - os: windows-2022
+            platform: windows
+            arch: x86_64
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+      INPUT_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        shell: bash
+        run: |
+          if [ -n "$RELEASE_TAG" ]; then
+            VERSION="$RELEASE_TAG"
+          elif [ -n "$INPUT_VERSION" ]; then
+            VERSION="$INPUT_VERSION"
+          else
+            echo "Version is required (tag or input)." >&2
+            exit 1
+          fi
+          VERSION="${VERSION#v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Verify version matches pyproject.toml
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          data = tomllib.loads(Path("pyproject.toml").read_text())
+          version = data["project"]["version"]
+          expected = os.environ["VERSION"]
+          if version != expected:
+              raise SystemExit(f"pyproject.toml version {version} != {expected}")
+          PY
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system deps (Linux)
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld pkg-config libssl-dev
+
+      - name: Build wheel
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel --outdir dist
+
+      - name: Build molt-worker
+        shell: bash
+        run: |
+          cargo build -p molt-worker --release
+
+      - name: Build bundles
+        shell: bash
+        run: |
+          mkdir -p dist
+          WHEEL=$(ls dist/molt-*.whl | head -1)
+          if [ -z "$WHEEL" ]; then
+            echo "Wheel not found" >&2
+            exit 1
+          fi
+
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+            WORKER="target/release/molt-worker.exe"
+            EXT="zip"
+          else
+            WORKER="target/release/molt-worker"
+            EXT="tar.gz"
+          fi
+
+          if [ ! -f "$WORKER" ]; then
+            echo "Worker binary missing: $WORKER" >&2
+            exit 1
+          fi
+
+          python tools/release/build_bundle.py \
+            --version "$VERSION" \
+            --platform "${{ matrix.platform }}" \
+            --arch "${{ matrix.arch }}" \
+            --wheel "$WHEEL" \
+            --worker "$WORKER" \
+            --output "dist/molt-$VERSION-${{ matrix.platform }}-${{ matrix.arch }}.$EXT"
+
+          python tools/release/build_bundle.py \
+            --version "$VERSION" \
+            --platform "${{ matrix.platform }}" \
+            --arch "${{ matrix.arch }}" \
+            --kind molt-worker \
+            --worker "$WORKER" \
+            --output "dist/molt-worker-$VERSION-${{ matrix.platform }}-${{ matrix.arch }}.$EXT"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/molt-*-${{ matrix.platform }}-${{ matrix.arch }}.*
+
+      - name: Upload release assets
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/molt-*-${{ matrix.platform }}-${{ matrix.arch }}.*
+
+  manifest:
+    runs-on: ubuntu-24.04
+    needs: build
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+      INPUT_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        shell: bash
+        run: |
+          if [ -n "$RELEASE_TAG" ]; then
+            VERSION="$RELEASE_TAG"
+          elif [ -n "$INPUT_VERSION" ]; then
+            VERSION="$INPUT_VERSION"
+          else
+            echo "Version is required (tag or input)." >&2
+            exit 1
+          fi
+          VERSION="${VERSION#v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: release-*
+          merge-multiple: true
+
+      - name: Generate checksums and manifest
+        shell: bash
+        run: |
+          python tools/release/write_checksums.py --out dist/SHA256SUMS dist/molt-*.*
+          python tools/release/release_manifest.py --version "$VERSION" --out dist/release_manifest.json dist/molt-*.*
+
+      - name: Upload release manifest assets
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/SHA256SUMS
+            dist/release_manifest.json

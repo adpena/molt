@@ -1,0 +1,4 @@
+PackageIdentifier: Adpena.MoltWorker
+PackageVersion: "{{VERSION}}"
+ManifestType: version
+ManifestVersion: 1.6.0

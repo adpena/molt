@@ -1,0 +1,13 @@
+{
+  "version": "{{VERSION}}",
+  "description": "Molt worker helper for offload/DB IPC",
+  "homepage": "https://github.com/adpena/molt",
+  "license": "Apache-2.0",
+  "url": "{{WIN_URL}}",
+  "hash": "{{WIN_SHA256}}",
+  "bin": ["bin\\molt-worker.exe"],
+  "checkver": "github",
+  "autoupdate": {
+    "url": "https://github.com/adpena/molt/releases/download/v$version/molt-worker-$version-windows-x86_64.zip"
+  }
+}

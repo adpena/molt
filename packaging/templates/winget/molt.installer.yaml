@@ -1,0 +1,15 @@
+PackageIdentifier: Adpena.Molt
+PackageVersion: "{{VERSION}}"
+InstallerType: zip
+Installers:
+  - Architecture: x64
+    InstallerUrl: "{{WIN_URL}}"
+    InstallerSha256: "{{WIN_SHA256}}"
+    NestedInstallerType: portable
+    NestedInstallerFiles:
+      - RelativeFilePath: bin\\molt.cmd
+        PortableCommandAlias: molt
+      - RelativeFilePath: bin\\molt-worker.exe
+        PortableCommandAlias: molt-worker
+ManifestType: installer
+ManifestVersion: 1.6.0

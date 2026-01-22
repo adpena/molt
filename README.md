@@ -19,6 +19,7 @@ Canonical status lives in `docs/spec/STATUS.md` (README and ROADMAP are kept in 
 - **Molt Packages**: First-class support for Rust-backed packages, with production wire formats (MsgPack/CBOR) and Arrow IPC for tabular data; JSON is a compatibility/debug format.
 - **AOT Compilation**: Uses Cranelift to generate high-performance machine code.
 - **Differential Testing**: Verified against CPython 3.12.
+- **Generic aliases (PEP 585)**: builtin `list`/`dict`/`tuple`/`set`/`frozenset`/`type` support `__origin__`/`__args__`.
 - **Sets**: literals + constructor with add/contains/iter/len + algebra (`|`, `&`, `-`, `^`); `frozenset` constructor + algebra.
 - **Numeric builtins**: `int()`/`round()`/`math.trunc()` with `__int__`/`__index__`/`__round__`/`__trunc__` hooks and base parsing for string/bytes.
 - **BigInt fallback**: heap-backed ints for values beyond inline range.
@@ -35,21 +36,76 @@ Canonical status lives in `docs/spec/STATUS.md` (README and ROADMAP are kept in 
 - **Dataclasses**: compile-time lowering for frozen/eq/repr/slots; no `default_factory`, `kw_only`, or `order`; runtime `dataclasses` module provides metadata only.
 - **Exceptions**: `try/except/else/finally` + `raise`/reraise support; still partial vs full BaseException semantics (see `docs/spec/areas/compat/0014_TYPE_COVERAGE_MATRIX.md`).
 - **Imports**: static module graph only; no dynamic import hooks or full package resolution.
-- **Stdlib**: partial shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pprint`, `string`, `typing`, `sys`, `os`, `asyncio`, `threading`, `bisect`, `heapq`, `functools`, `itertools`, `collections`; import-only stubs for `collections.abc`, `importlib`, `importlib.util` (dynamic import hooks pending).
+- **Stdlib**: partial shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pickle` (protocol 0 only), `pprint`, `string`, `typing`, `sys`, `os`, `gc`, `random`, `test` (regrtest helpers only), `asyncio`, `threading`, `bisect`, `heapq`, `functools`, `itertools`, `collections`, `socket` (error classes only), `select` (error alias only); import-only stubs for `collections.abc`, `importlib`, `importlib.util` (dynamic import hooks pending).
 - **Reflection**: `type`, `isinstance`, `issubclass`, and `object` are supported with C3 MRO + multiple inheritance; no metaclasses or dynamic `type()` construction.
 - **Async iteration**: `anext` returns an awaitable; `__aiter__` must return an async iterator (awaitable `__aiter__` still pending).
-- **Asyncio**: shim exposes `run`/`sleep`, `EventLoop`, `Task`/`Future`, `create_task`/`ensure_future`/`current_task`, `Event`, and basic `gather`; timeouts/task groups/wait/shield and I/O adapters pending.
+- **Asyncio**: shim exposes `run`/`sleep`, `EventLoop`, `Task`/`Future`, `create_task`/`ensure_future`/`current_task`, `Event`, `wait`, `wait_for`, `shield`, and basic `gather`; task groups and I/O adapters pending.
+- **Typing metadata**: `types.GenericAlias.__parameters__` derivation from `TypeVar`/`ParamSpec`/`TypeVarTuple` is pending.
 - **ASGI**: shim only (no websocket support) and not integrated into compiled runtime yet.
 - **Async with**: only a single context manager and simple name binding are supported.
 - **Matmul**: `@` is supported only for `molt_buffer`/`buffer2d`; other types raise `TypeError`.
 - **Numeric tower**: complex/decimal not implemented; missing int helpers (e.g., `bit_length`, `to_bytes`, `from_bytes`).
 - **Format protocol**: partial beyond ints/floats; locale-aware grouping still pending (WASM uses host locale for `n`).
+- **List membership perf**: `in`/`count`/`index` snapshot list elements to avoid mutation during comparisons; optimization pending.
 - **memoryview**: no multidimensional slicing/sub-views; advanced buffer exports pending.
 - **Runtime lifecycle**: explicit init/shutdown now clears caches, pools, and async registries, but per-thread TLS drain and worker thread joins are still pending (see `docs/spec/areas/runtime/0024_RUNTIME_STATE_LIFECYCLE.md`).
 - **Offload demo**: `molt_accel` scaffolding exists (optional dep `pip install .[accel]`), with hooks/metrics (including payload/response byte sizes), auto cancel-check detection, and shared demo payload builders; a `molt_worker` stdio shell supports sync/async runtimes plus `db_query`/`db_exec` (SQLite sync + Postgres async). The decorator can fall back to `molt-worker` in PATH using a packaged default exports manifest when `MOLT_WORKER_CMD` is unset. A Django demo scaffold and k6 harness live in `demo/` and `bench/k6/`; compiled entrypoint dispatch is wired for `list_items`, `compute`, `offload_table`, and `health` while other exports still return a clear error until compiled handlers exist. `molt_db_adapter` adds a framework-agnostic DB IPC payload builder to share with Django/Flask/FastAPI adapters.
 - **DB layer**: `molt-db` includes the bounded pool, async pool primitive, SQLite connector (native-only), and an async Postgres connector with per-connection statement cache; Arrow IPC output supports arrays/ranges/intervals/multiranges via struct/list encodings and preserves array lower bounds. WASM builds now have a DB host interface with `db.read`/`db.write` gating, but host adapters/client shims remain pending.
 
-## Quick start
+## Install (packages)
+
+### macOS/Linux (Homebrew)
+
+```bash
+brew tap adpena/molt
+brew install molt
+```
+
+The `molt` package includes `molt-worker`. Optional minimal worker:
+
+```bash
+brew install molt-worker
+```
+
+### Linux/macOS (script)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/adpena/molt/main/packaging/install.sh | bash
+```
+
+### Windows (Winget / Scoop)
+
+```powershell
+winget install Adpena.Molt
+```
+
+```powershell
+scoop bucket add adpena https://github.com/adpena/scoop-molt
+scoop install molt
+```
+
+Script install (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/adpena/molt/main/packaging/install.ps1 | iex
+```
+
+### Dev vs package installs (no collisions)
+
+- Packaged installs keep build artifacts in `~/.molt` by default.
+- For local development, use the repo directly:
+
+```bash
+PYTHONPATH=src uv run --python 3.12 python3 -m molt.cli build examples/hello.py
+```
+
+To keep dev artifacts isolated, set a different home:
+
+```bash
+MOLT_HOME=~/.molt-dev PYTHONPATH=src uv run --python 3.12 python3 -m molt.cli build examples/hello.py
+```
+
+## Quick start (source)
 
 ```bash
 # 1. Install toolchains (Rust + Python 3.12); uv recommended for Python deps.

@@ -30,6 +30,7 @@ bench/codon/
 bench/codon_probe/
 runtime/molt-runtime/fuzz/corpus/
 runtime/molt-runtime/fuzz/artifacts/
+packaging/out/
 *.md
 !/README.md
 !/AGENTS.md
@@ -37,3 +38,4 @@ runtime/molt-runtime/fuzz/artifacts/
 !/OPTIMIZATIONS_PLAN.md
 !/ROADMAP.md
 !/docs/**/*.md
+!/packaging/**/*.md
