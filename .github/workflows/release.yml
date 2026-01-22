@@ -55,9 +55,17 @@ jobs:
           VERSION="${VERSION#v}"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
+      - name: Ensure toolcache dir
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/_tool"
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+        env:
+          AGENT_TOOLSDIRECTORY: ${{ runner.temp }}/_tool
+          RUNNER_TOOL_CACHE: ${{ runner.temp }}/_tool
 
       - name: Verify version matches pyproject.toml
         shell: bash
