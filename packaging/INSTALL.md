@@ -95,6 +95,30 @@ Example JSON shape (values vary):
 }
 ```
 
+Failed checks include a `level` and optional `advice` list in `data.checks`.
+
+## Common failures (doctor)
+
+- **python**: install Python 3.12+ and reopen your terminal.
+  - macOS: `brew install python@3.12`
+  - Windows: `winget install Python.Python.3.12`
+  - Linux: install Python 3.12+ via your package manager
+- **uv** (recommended): install uv.
+  - macOS: `brew install uv`
+  - Windows: `winget install Astral.Uv` or `scoop install uv`
+  - Linux: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- **cargo/rustup**: install Rust toolchain and ensure PATH is updated.
+  - macOS/Linux: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+  - Windows: `winget install Rustlang.Rustup`
+  - Then: `source $HOME/.cargo/env` (macOS/Linux) or reopen your terminal (Windows)
+- **clang**: install a C toolchain.
+  - macOS: `xcode-select --install`
+  - Linux: `sudo apt-get update && sudo apt-get install -y clang lld`
+  - Windows: `winget install LLVM.LLVM` and set `CC=clang`
+- **wasm-target** (optional): `rustup target add wasm32-wasip1`
+- **uv.lock** / **uv.lock_fresh**: run `uv sync` or `uv lock`
+- **molt-runtime**: run `cargo build --release --package molt-runtime`
+
 ## Optional environment overrides
 
 - `MOLT_HOME`: override the data/build root (defaults to `~/.molt` unless the bundle is writable)

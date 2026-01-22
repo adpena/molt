@@ -1,7 +1,9 @@
 import argparse
 import ast
+import errno
 import datetime as dt
 import hashlib
+import tempfile
 import json
 import os
 import platform
@@ -11,11 +13,14 @@ import shutil
 import subprocess
 import sys
 import tomllib
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
 from typing import Any, Literal
 
+from packaging.markers import InvalidMarker, Marker
+from packaging.requirements import InvalidRequirement, Requirement
 from molt.compat import CompatibilityError
 from molt.frontend import SimpleTIRGenerator
 from molt.type_facts import (
@@ -35,20 +40,14 @@ STUB_PARENT_MODULES = {"molt"}
 JSON_SCHEMA_VERSION = "1.0"
 CAPABILITY_PROFILES: dict[str, list[str]] = {
     "core": [],
-    "net": [
-        "network:connect",
-        "network:listen",
-        "websocket:connect",
-        "websocket:listen",
-    ],
-    "fs": [
-        "fs:read",
-        "fs:write",
-    ],
+    "fs": ["fs.read", "fs.write"],
+    "env": ["env.read", "env.write"],
+    "net": ["net", "websocket.connect", "websocket.listen"],
+    "db": ["db.read", "db.write"],
+    "time": ["time"],
+    "random": ["random"],
 }
-# TODO(tooling, owner:cli, milestone:TL2): align capability profiles with
-# docs/spec (process/time/random/db and future host integrations).
-CAPABILITY_TOKEN_RE = re.compile(r"^[a-z0-9][a-z0-9:._-]*$")
+CAPABILITY_TOKEN_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _OUTPUT_BASE_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -261,12 +260,19 @@ def _module_name_from_path(path: Path, roots: list[Path], stdlib_root: Path) -> 
             return ".".join(rel.parts)
         rel = None
     if rel is None:
+        best_rel = None
+        best_len = -1
         for root in roots:
             try:
-                rel = resolved.relative_to(root.resolve())
-                break
+                root_resolved = root.resolve()
+                candidate = resolved.relative_to(root_resolved)
             except ValueError:
                 continue
+            root_len = len(root_resolved.parts)
+            if root_len > best_len:
+                best_len = root_len
+                best_rel = candidate
+        rel = best_rel
     if rel is None:
         rel = resolved.with_suffix("")
     if rel.name == "__init__.py":
@@ -282,6 +288,13 @@ def _expand_module_chain(name: str) -> list[str]:
 
 
 def _find_project_root(start: Path) -> Path:
+    override = os.environ.get("MOLT_PROJECT_ROOT")
+    if override:
+        path = Path(override).expanduser()
+        if not path.is_absolute():
+            path = (Path.cwd() / path).absolute()
+        if path.exists():
+            return path
     for parent in [start] + list(start.parents):
         if (parent / "pyproject.toml").exists() or (parent / ".git").exists():
             return parent
@@ -299,6 +312,32 @@ def _resolve_module_path(module_name: str, roots: list[Path]) -> Path | None:
         if pkg_path.exists():
             return pkg_path
     return None
+
+
+def _has_namespace_dir(module_name: str, roots: list[Path]) -> bool:
+    rel = Path(*module_name.split("."))
+    for root in roots:
+        candidate = root / rel
+        if candidate.exists() and candidate.is_dir():
+            return True
+    return False
+
+
+def _collect_namespace_parents(
+    module_graph: dict[str, Path], roots: list[Path]
+) -> set[str]:
+    namespace_parents: set[str] = set()
+    for module_name in module_graph:
+        parts = module_name.split(".")
+        for idx in range(1, len(parts)):
+            parent = ".".join(parts[:idx])
+            if parent in module_graph:
+                continue
+            if _resolve_module_path(parent, roots) is not None:
+                continue
+            if _has_namespace_dir(parent, roots):
+                namespace_parents.add(parent)
+    return namespace_parents
 
 
 def _collect_imports(tree: ast.AST) -> list[str]:
@@ -468,6 +507,7 @@ def _check_lockfiles(
     json_output: bool,
     warnings: list[str],
     deterministic: bool,
+    deterministic_warn: bool,
     command: str,
 ) -> int | None:
     pyproject = project_root / "pyproject.toml"
@@ -482,23 +522,67 @@ def _check_lockfiles(
         missing.append("Cargo.lock")
     if missing and deterministic:
         missing_text = ", ".join(missing)
-        return _fail(
-            f"Missing lockfiles ({missing_text}); run `uv lock` and ensure Cargo.lock.",
-            json_output,
-            command=command,
+        message = (
+            f"Missing lockfiles ({missing_text}); run `uv lock` and ensure Cargo.lock."
         )
+        if deterministic_warn:
+            warnings.append(message)
+        else:
+            return _fail(message, json_output, command=command)
     if missing:
         warnings.append(f"Missing lockfiles: {', '.join(missing)}")
         return None
-    # TODO(tooling, owner:cli, milestone:TL2): validate lockfile hashes and enforce
-    # uv sync --frozen semantics for deterministic builds.
+    if deterministic:
+        uv_error = _verify_uv_lock(project_root)
+        if uv_error is not None:
+            if deterministic_warn:
+                warnings.append(uv_error)
+            else:
+                return _fail(uv_error, json_output, command=command)
+        cargo_error = _verify_cargo_lock(project_root)
+        if cargo_error is not None:
+            if deterministic_warn:
+                warnings.append(cargo_error)
+            else:
+                return _fail(cargo_error, json_output, command=command)
+    return None
+
+
+def _verify_uv_lock(project_root: Path) -> str | None:
+    if shutil.which("uv") is None:
+        return "Deterministic builds require uv; install uv to validate uv.lock."
     try:
-        if lock_path.stat().st_mtime < pyproject.stat().st_mtime:
-            warnings.append(
-                "uv.lock is older than pyproject.toml; run `uv lock` to refresh."
-            )
-    except OSError:
-        warnings.append("Failed to stat uv.lock or pyproject.toml for freshness check.")
+        result = subprocess.run(
+            ["uv", "lock", "--check"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        return f"Failed to run `uv lock --check`: {exc}"
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip() or "uv lock check failed"
+        return f"uv.lock is out of date or invalid: {detail}"
+    return None
+
+
+def _verify_cargo_lock(project_root: Path) -> str | None:
+    if shutil.which("cargo") is None:
+        return "Deterministic builds require cargo; install Rust toolchain to validate Cargo.lock."
+    try:
+        result = subprocess.run(
+            ["cargo", "metadata", "--locked", "--format-version", "1"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        return f"Failed to run `cargo metadata --locked`: {exc}"
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip() or "cargo metadata failed"
+        return f"Cargo.lock is out of date or invalid: {detail}"
     return None
 
 
@@ -572,7 +656,7 @@ def _load_capabilities(path: Path) -> tuple[list[str], str] | None:
             data = tomllib.loads(path.read_text())
     except (OSError, json.JSONDecodeError, tomllib.TOMLDecodeError):
         return None
-    # TODO(tooling, owner:cli, milestone:TL2): support richer capability manifests
+    # TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:planned): support richer capability manifests
     # (deny lists, per-package grants, and effect annotations).
     caps = None
     if isinstance(data, dict):
@@ -934,13 +1018,21 @@ def _cache_fingerprint() -> str:
     return "|".join(parts)
 
 
+def _json_ir_default(value: Any) -> Any:
+    if isinstance(value, complex):
+        return {"__complex__": [value.real, value.imag]}
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
 def _cache_key(
     ir: dict[str, Any],
     target: str,
     target_triple: str | None,
     variant: str = "",
 ) -> str:
-    payload = json.dumps(ir, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    payload = json.dumps(
+        ir, sort_keys=True, separators=(",", ":"), default=_json_ir_default
+    ).encode("utf-8")
     suffix = target_triple or target
     if variant:
         suffix = f"{suffix}:{variant}"
@@ -1003,7 +1095,7 @@ def _strip_arch_flags(args: list[str]) -> list[str]:
 
 
 def _zig_target_query(target_triple: str) -> str:
-    # TODO(tooling, owner:cli, milestone:TL2): replace with a comprehensive
+    # TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): replace with a comprehensive
     # target-triple to zig target query mapping (vendor/abi/sysroot aware).
     parts = target_triple.split("-")
     if len(parts) < 3:
@@ -1067,6 +1159,7 @@ def build(
     json_output: bool = False,
     verbose: bool = False,
     deterministic: bool = True,
+    deterministic_warn: bool = False,
     trusted: bool = False,
     capabilities: str | list[str] | None = None,
     cache: bool = True,
@@ -1108,7 +1201,12 @@ def build(
     stub_parents = STUB_PARENT_MODULES - entry_imports
     project_root = _find_project_root(source_path.resolve())
     lock_error = _check_lockfiles(
-        project_root, json_output, warnings, deterministic, "build"
+        project_root,
+        json_output,
+        warnings,
+        deterministic,
+        deterministic_warn,
+        "build",
     )
     if lock_error is not None:
         return lock_error
@@ -1128,11 +1226,27 @@ def build(
         capabilities_source = source
     cwd_root = _find_project_root(Path.cwd())
     module_roots: list[Path] = []
+    extra_roots = os.environ.get("MOLT_MODULE_ROOTS", "")
+    if extra_roots:
+        for entry in extra_roots.split(os.pathsep):
+            if not entry:
+                continue
+            entry_path = Path(entry).expanduser()
+            if entry_path.exists():
+                module_roots.append(entry_path)
     for root in (project_root, cwd_root):
         src_root = root / "src"
         if src_root.exists():
             module_roots.append(src_root)
     module_roots.append(source_path.parent)
+    pythonpath = os.environ.get("PYTHONPATH", "")
+    if pythonpath:
+        for entry in pythonpath.split(os.pathsep):
+            if not entry:
+                continue
+            entry_path = Path(entry).expanduser()
+            if entry_path.exists():
+                module_roots.append(entry_path)
     module_roots = list(dict.fromkeys(root.resolve() for root in module_roots))
     roots = module_roots + [stdlib_root]
     module_graph, _explicit_imports = _discover_module_graph(
@@ -1142,6 +1256,9 @@ def build(
         skip_modules=STUB_MODULES,
         stub_parents=stub_parents,
     )
+    namespace_parents = _collect_namespace_parents(module_graph, roots)
+    if namespace_parents:
+        stub_parents = stub_parents.union(namespace_parents)
     if verbose and not json_output:
         print(f"Project root: {project_root}")
         print(f"Module roots: {', '.join(str(root) for root in module_roots)}")
@@ -1199,7 +1316,6 @@ def build(
             json_output,
             command="build",
         )
-    backend_output = Path("output.wasm" if is_wasm else "output.o")
     output_binary: Path | None = None
     linked_output_path: Path | None = None
     if is_wasm:
@@ -1451,7 +1567,9 @@ def build(
     ir = {"functions": functions}
     if emit_ir_path is not None:
         try:
-            emit_ir_path.write_text(json.dumps(ir, indent=2) + "\n")
+            emit_ir_path.write_text(
+                json.dumps(ir, indent=2, default=_json_ir_default) + "\n"
+            )
         except OSError as exc:
             return _fail(f"Failed to write IR: {exc}", json_output, command="build")
     cache_hit = False
@@ -1524,43 +1642,60 @@ def build(
         elif target_triple:
             cmd.extend(["--target-triple", target_triple])
 
-        backend_process = subprocess.run(
-            cmd,
-            input=json.dumps(ir),
-            text=True,
-            capture_output=True,
-            env=backend_env,
-        )
-        if backend_process.returncode != 0:
-            if not json_output:
-                if backend_process.stderr:
-                    print(backend_process.stderr, end="", file=sys.stderr)
+        with tempfile.TemporaryDirectory(
+            dir=artifacts_root, prefix="backend_"
+        ) as backend_dir:
+            backend_dir_path = Path(backend_dir)
+            backend_output = backend_dir_path / (
+                "output.wasm" if is_wasm else "output.o"
+            )
+            cmd_with_output = cmd + ["--output", str(backend_output)]
+            backend_process = subprocess.run(
+                cmd_with_output,
+                input=json.dumps(ir, default=_json_ir_default),
+                text=True,
+                capture_output=True,
+                env=backend_env,
+            )
+            if backend_process.returncode != 0:
+                if not json_output:
+                    if backend_process.stderr:
+                        print(backend_process.stderr, end="", file=sys.stderr)
+                    if backend_process.stdout:
+                        print(backend_process.stdout, end="")
+                return _fail(
+                    "Backend compilation failed",
+                    json_output,
+                    backend_process.returncode or 1,
+                    command="build",
+                )
+            if verbose and not json_output:
                 if backend_process.stdout:
                     print(backend_process.stdout, end="")
-            return _fail(
-                "Backend compilation failed",
-                json_output,
-                backend_process.returncode or 1,
-                command="build",
-            )
-        if verbose and not json_output:
-            if backend_process.stdout:
-                print(backend_process.stdout, end="")
-            if backend_process.stderr:
-                print(backend_process.stderr, end="", file=sys.stderr)
-        if not backend_output.exists():
-            return _fail("Backend output missing", json_output, command="build")
-        if backend_output != output_artifact:
+                if backend_process.stderr:
+                    print(backend_process.stderr, end="", file=sys.stderr)
+            if not backend_output.exists():
+                return _fail("Backend output missing", json_output, command="build")
             try:
                 if output_artifact.parent != Path("."):
                     output_artifact.parent.mkdir(parents=True, exist_ok=True)
                 backend_output.replace(output_artifact)
             except OSError as exc:
-                return _fail(
-                    f"Failed to move backend output: {exc}",
-                    json_output,
-                    command="build",
-                )
+                if exc.errno != errno.EXDEV:
+                    return _fail(
+                        f"Failed to move backend output: {exc}",
+                        json_output,
+                        command="build",
+                    )
+                try:
+                    shutil.copy2(backend_output, output_artifact)
+                    backend_output.unlink()
+                except OSError as copy_exc:
+                    return _fail(
+                        f"Failed to move backend output: {copy_exc}",
+                        json_output,
+                        command="build",
+                    )
         if cache and cache_path is not None:
             try:
                 shutil.copy2(output_artifact, cache_path)
@@ -1714,6 +1849,20 @@ static void molt_set_trusted() {
 }
 """
         trusted_call = "    molt_set_trusted();\n"
+    capabilities_snippet = ""
+    capabilities_call = ""
+    if capabilities_list is not None:
+        caps_literal = json.dumps(",".join(capabilities_list))
+        capabilities_snippet = f"""
+static void molt_set_capabilities() {{
+#ifdef _WIN32
+    _putenv_s("MOLT_CAPABILITIES", {caps_literal});
+#else
+    setenv("MOLT_CAPABILITIES", {caps_literal}, 1);
+#endif
+}}
+"""
+        capabilities_call = "    molt_set_capabilities();\n"
     main_c_content = """
 #include <stdio.h>
 #include <stdlib.h>
@@ -1742,6 +1891,7 @@ extern long molt_chan_recv(void* chan);
 extern void molt_print_obj(unsigned long long val);
 extern void molt_profile_dump();
 /* MOLT_TRUSTED_SNIPPET */
+/* MOLT_CAPABILITIES_SNIPPET */
 
 static void molt_finish() {
     const char* profile = getenv("MOLT_PROFILE");
@@ -1754,6 +1904,7 @@ static void molt_finish() {
 #ifdef _WIN32
 int wmain(int argc, wchar_t** argv) {
     /* MOLT_TRUSTED_CALL */
+    /* MOLT_CAPABILITIES_CALL */
     molt_runtime_init();
     molt_set_argv_utf16(argc, (const wchar_t**)argv);
     molt_main();
@@ -1763,6 +1914,7 @@ int wmain(int argc, wchar_t** argv) {
 #else
 int main(int argc, char** argv) {
     /* MOLT_TRUSTED_CALL */
+    /* MOLT_CAPABILITIES_CALL */
     molt_runtime_init();
     molt_set_argv(argc, (const char**)argv);
     molt_main();
@@ -1774,7 +1926,13 @@ int main(int argc, char** argv) {
     main_c_content = main_c_content.replace(
         "/* MOLT_TRUSTED_SNIPPET */", trusted_snippet
     )
+    main_c_content = main_c_content.replace(
+        "/* MOLT_CAPABILITIES_SNIPPET */", capabilities_snippet
+    )
     main_c_content = main_c_content.replace("/* MOLT_TRUSTED_CALL */", trusted_call)
+    main_c_content = main_c_content.replace(
+        "/* MOLT_CAPABILITIES_CALL */", capabilities_call
+    )
     stub_path = artifacts_root / "main_stub.c"
     stub_path.write_text(main_c_content)
 
@@ -1793,7 +1951,7 @@ int main(int argc, char** argv) {
     cc = os.environ.get("CC", "clang")
     link_cmd = shlex.split(cc)
     if target_triple:
-        # TODO(tooling, owner:cli, milestone:TL2): support sysroot configuration,
+        # TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): support sysroot configuration,
         # target-specific flags, and cached runtime cross-builds.
         cross_cc = os.environ.get("MOLT_CROSS_CC")
         target_arg = target_triple
@@ -1934,6 +2092,7 @@ def run_script(
     compiled: bool = False,
     compiled_args: bool = False,
     trusted: bool = False,
+    capabilities: str | list[str] | None = None,
     build_args: list[str] | None = None,
 ) -> int:
     source_path = Path(file_path)
@@ -1944,11 +2103,27 @@ def run_script(
     env.update(_collect_env_overrides(file_path))
     if trusted:
         env["MOLT_TRUSTED"] = "1"
+    if capabilities:
+        parsed, _profiles, _source, errors = _parse_capabilities(capabilities)
+        if errors:
+            return _fail(
+                "Invalid capabilities: " + ", ".join(errors),
+                json_output,
+                command="run",
+            )
+        if parsed is not None:
+            env["MOLT_CAPABILITIES"] = ",".join(parsed)
 
     if compiled:
         build_args = list(build_args or [])
         if trusted and not _build_args_has_trusted_flag(build_args):
             build_args.append("--trusted")
+        if capabilities and not _build_args_has_capabilities_flag(build_args):
+            if isinstance(capabilities, list):
+                cap_arg = ",".join(capabilities)
+            else:
+                cap_arg = capabilities
+            build_args.extend(["--capabilities", cap_arg])
         build_cmd = [sys.executable, "-m", "molt.cli", "build", *build_args, file_path]
         build_res = subprocess.run(
             build_cmd,
@@ -1995,7 +2170,7 @@ def run_script(
             out_dir=out_dir_path,
             project_root=root,
         )
-        # TODO(tooling, owner:cli, milestone:TL2): plumb argv support for compiled
+        # TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): plumb argv support for compiled
         # binaries once the runtime exposes argument handling.
         ignored_warning = None
         if script_args and not compiled_args:
@@ -2150,37 +2325,126 @@ def doctor(
 ) -> int:
     root = _find_project_root(Path.cwd())
     checks: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    errors: list[str] = []
+    system = platform.system()
 
-    def record(name: str, ok: bool, detail: str) -> None:
-        checks.append({"name": name, "ok": ok, "detail": detail})
+    def record(
+        name: str,
+        ok: bool,
+        detail: str,
+        *,
+        level: Literal["warning", "error"] = "error",
+        advice: list[str] | None = None,
+    ) -> None:
+        entry: dict[str, Any] = {"name": name, "ok": ok, "detail": detail}
+        if not ok:
+            entry["level"] = level
+            if advice:
+                entry["advice"] = advice
+            message = f"{name}: {detail}"
+            if advice:
+                message = f"{message}. See advice."
+            if level == "error":
+                errors.append(message)
+            else:
+                warnings.append(message)
+        checks.append(entry)
+
+    def _python_advice() -> list[str]:
+        if system == "Darwin":
+            return ["brew install python@3.12", "Ensure python3 is on PATH"]
+        if system == "Windows":
+            return ["winget install Python.Python.3.12", "Reopen your terminal"]
+        return ["Install Python 3.12+ via your package manager"]
+
+    def _uv_advice() -> list[str]:
+        if system == "Darwin":
+            return ["brew install uv"]
+        if system == "Windows":
+            return ["winget install Astral.Uv", "or: scoop install uv"]
+        return ["curl -LsSf https://astral.sh/uv/install.sh | sh"]
+
+    def _rustup_advice() -> list[str]:
+        if system == "Windows":
+            return ["winget install Rustlang.Rustup", "Reopen your terminal"]
+        return ["curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"]
+
+    def _cargo_advice() -> list[str]:
+        return _rustup_advice() + ["source $HOME/.cargo/env (Unix)"]
+
+    def _clang_advice() -> list[str]:
+        if system == "Darwin":
+            return ["xcode-select --install"]
+        if system == "Windows":
+            return ["winget install LLVM.LLVM", "set CC=clang"]
+        return ["sudo apt-get update", "sudo apt-get install -y clang lld"]
 
     python_ok = sys.version_info >= (3, 12)
     record(
         "python",
         python_ok,
         f"{sys.version.split()[0]} (requires >=3.12)",
+        level="error",
+        advice=_python_advice() if not python_ok else None,
     )
 
     uv_path = shutil.which("uv")
-    record("uv", bool(uv_path), uv_path or "not found")
+    record(
+        "uv",
+        bool(uv_path),
+        uv_path or "not found",
+        level="warning",
+        advice=_uv_advice() if not uv_path else None,
+    )
 
     cargo_path = shutil.which("cargo")
-    record("cargo", bool(cargo_path), cargo_path or "not found")
+    record(
+        "cargo",
+        bool(cargo_path),
+        cargo_path or "not found",
+        level="error",
+        advice=_cargo_advice() if not cargo_path else None,
+    )
 
     rustup_path = shutil.which("rustup")
-    record("rustup", bool(rustup_path), rustup_path or "not found")
+    record(
+        "rustup",
+        bool(rustup_path),
+        rustup_path or "not found",
+        level="warning",
+        advice=_rustup_advice() if not rustup_path else None,
+    )
 
     cc = os.environ.get("CC", "clang")
     cc_path = shutil.which(cc) or shutil.which("clang")
-    record("clang", bool(cc_path), cc_path or "not found")
+    record(
+        "clang",
+        bool(cc_path),
+        cc_path or "not found",
+        level="error",
+        advice=_clang_advice() if not cc_path else None,
+    )
 
     zig_path = shutil.which("zig")
-    record("zig", bool(zig_path), zig_path or "not found")
+    record(
+        "zig",
+        bool(zig_path),
+        zig_path or "not found",
+        level="warning",
+        advice=["Install zig if you need wasm linking"] if not zig_path else None,
+    )
 
     pyproject = root / "pyproject.toml"
     lock_path = root / "uv.lock"
     if pyproject.exists():
-        record("uv.lock", lock_path.exists(), str(lock_path))
+        record(
+            "uv.lock",
+            lock_path.exists(),
+            str(lock_path),
+            level="warning",
+            advice=["uv sync", "or: uv lock"] if not lock_path.exists() else None,
+        )
         if lock_path.exists():
             try:
                 if lock_path.stat().st_mtime < pyproject.stat().st_mtime:
@@ -2188,12 +2452,28 @@ def doctor(
                         "uv.lock_fresh",
                         False,
                         "uv.lock older than pyproject.toml",
+                        level="warning",
+                        advice=["uv lock", "or: uv sync"],
                     )
             except OSError:
-                record("uv.lock_fresh", False, "unable to stat uv.lock")
+                record(
+                    "uv.lock_fresh",
+                    False,
+                    "unable to stat uv.lock",
+                    level="warning",
+                    advice=["Ensure uv.lock exists and is readable"],
+                )
 
     runtime_lib = root / "target" / "release" / "libmolt_runtime.a"
-    record("molt-runtime", runtime_lib.exists(), str(runtime_lib))
+    record(
+        "molt-runtime",
+        runtime_lib.exists(),
+        str(runtime_lib),
+        level="warning",
+        advice=["cargo build --release --package molt-runtime"]
+        if not runtime_lib.exists()
+        else None,
+    )
 
     if rustup_path:
         try:
@@ -2215,22 +2495,35 @@ def doctor(
                 "wasm-target",
                 wasm_ok,
                 "wasm32-wasip1 or wasm32-unknown-unknown",
+                level="warning",
+                advice=["rustup target add wasm32-wasip1"] if not wasm_ok else None,
             )
 
-    failures = [check for check in checks if not check["ok"]]
+    failures = [
+        check
+        for check in checks
+        if not check["ok"] and check.get("level", "error") == "error"
+    ]
     status = "ok" if not failures else "error"
     if json_output:
         payload = _json_payload(
             "doctor",
             status,
             data={"checks": checks},
+            warnings=warnings,
+            errors=errors,
         )
         _emit_json(payload, json_output=True)
     else:
         for check in checks:
-            marker = "OK" if check["ok"] else "MISSING"
-            print(f"{marker}: {check['name']} ({check['detail']})")
-    if strict and failures:
+            if check["ok"]:
+                print(f"OK: {check['name']} ({check['detail']})")
+                continue
+            level = check.get("level", "error").upper()
+            print(f"{level}: {check['name']} ({check['detail']})")
+            for hint in check.get("advice", []):
+                print(f"  -> {hint}")
+    if strict and any(not check["ok"] for check in checks):
         return 1
     return 0
 
@@ -2333,7 +2626,7 @@ def package(
     else:
         print(f"Packaged {output_path}")
         if verbose:
-            # TODO(tooling, owner:cli, milestone:TL2): emit SBOM + signature metadata
+            # TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): emit SBOM + signature metadata
             # once signing and SBOM generation are implemented.
             print(f"Checksum: {checksum}")
     return 0
@@ -2394,7 +2687,7 @@ def publish(
         action = "Would publish" if dry_run else "Published"
         print(f"{action} {source} -> {dest}")
         if verbose:
-            # TODO(tooling, owner:cli, milestone:TL2): support registry auth and
+            # TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): support registry auth and
             # remote publish flows.
             print(f"Registry: {registry_path}")
     return 0
@@ -2499,7 +2792,7 @@ def verify(
                 errors.append(
                     "capabilities missing from allowlist: " + ", ".join(missing)
                 )
-        # TODO(tooling, owner:cli, milestone:TL2): enforce ABI compatibility and
+        # TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): enforce ABI compatibility and
         # schema versioning when the package ABI stabilizes.
 
     status = "ok" if not errors else "error"
@@ -2699,7 +2992,7 @@ def vendor(
             )
             continue
         if source.get("git"):
-            # TODO(tooling, owner:cli, milestone:TL2): support vendoring git sources
+            # TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): support vendoring git sources
             # with pinned revisions and integrity metadata.
             blockers.append(
                 {
@@ -2782,63 +3075,109 @@ def clean(
     verbose: bool = False,
     cache: bool = True,
     artifacts: bool = True,
+    bins: bool = True,
+    repo_artifacts: bool = True,
     cargo_target: bool = False,
+    clean_all: bool = False,
+    include_venvs: bool = False,
 ) -> int:
     root = _find_project_root(Path.cwd())
     removed: list[str] = []
     missing: list[str] = []
-    if cache:
-        cache_root = _default_molt_cache()
-        if cache_root.exists():
-            shutil.rmtree(cache_root)
-            removed.append(str(cache_root))
-        else:
-            missing.append(str(cache_root))
-        legacy_root = root / ".molt"
-        # TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): remove legacy .molt cleanup once one-time MOLT_HOME/MOLT_CACHE migration is complete.
-        if legacy_root.exists():
-            shutil.rmtree(legacy_root)
-            removed.append(str(legacy_root))
-        else:
-            missing.append(str(legacy_root))
-    if artifacts:
-        build_root = _default_molt_home() / "build"
-        if build_root.exists():
-            shutil.rmtree(build_root)
-            removed.append(str(build_root))
-        else:
-            missing.append(str(build_root))
-        # TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): remove legacy output artifact cleanup after out-dir defaults land.
-        for name in ("output.o", "output.wasm", "main_stub.c"):
-            path = root / name
+    failures: list[str] = []
+
+    if clean_all:
+        cache = True
+        artifacts = True
+        bins = True
+        repo_artifacts = True
+        cargo_target = True
+        include_venvs = True
+
+    def _remove_path(path: Path) -> None:
+        try:
             if path.exists():
-                path.unlink()
+                if path.is_dir():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
                 removed.append(str(path))
             else:
                 missing.append(str(path))
+        except OSError as exc:
+            failures.append(f"{path}: {exc}")
+
+    def _is_virtualenv_path(path: Path) -> bool:
+        for part in path.parts:
+            if part in {"venv", ".env", "env"}:
+                return True
+            if part.startswith(".venv"):
+                return True
+        return False
+
+    if cache:
+        cache_root = _default_molt_cache()
+        _remove_path(cache_root)
+    if artifacts:
+        build_root = _default_molt_home() / "build"
+        _remove_path(build_root)
+    if bins:
+        bin_root = _default_molt_bin()
+        _remove_path(bin_root)
+    if repo_artifacts:
+        repo_dirs = [
+            root / "vendor",
+            root / "logs",
+            root / "dist",
+            root / "build",
+            root / ".pytest_cache",
+            root / ".ruff_cache",
+            root / ".mypy_cache",
+            root / "__pycache__",
+        ]
+        for path in repo_dirs:
+            _remove_path(path)
+        for path in root.rglob("__pycache__"):
+            if not include_venvs and _is_virtualenv_path(path):
+                continue
+            _remove_path(path)
+        repo_files = [
+            root / "output.wasm",
+            root / "output_linked.wasm",
+            root / "output.o",
+            root / "main_stub.c",
+        ]
+        for path in repo_files:
+            _remove_path(path)
     if cargo_target:
         cargo_root = root / "target"
-        if cargo_root.exists():
-            shutil.rmtree(cargo_root)
-            removed.append(str(cargo_root))
-        else:
-            missing.append(str(cargo_root))
+        _remove_path(cargo_root)
     if json_output:
         data: dict[str, Any] = {"removed": removed}
         if verbose:
             data["missing"] = missing
-        payload = _json_payload("clean", "ok", data=data)
+        status = "error" if failures else "ok"
+        payload = _json_payload(
+            "clean",
+            status,
+            data=data,
+            errors=failures if failures else None,
+        )
         _emit_json(payload, json_output=True)
     else:
         if removed:
             print("Removed:")
             for path in removed:
                 print(f"- {path}")
+        if failures:
+            print("Failed:")
+            for entry in failures:
+                print(f"- {entry}")
         if verbose and missing:
             print("Missing:")
             for path in missing:
                 print(f"- {path}")
-    return 0
+    return 1 if failures else 0
 
 
 def show_config(
@@ -2955,6 +3294,8 @@ def _completion_script(shell: str) -> str:
             "--profile",
             "--deterministic",
             "--no-deterministic",
+            "--deterministic-warn",
+            "--no-deterministic-warn",
             "--trusted",
             "--no-trusted",
             "--capabilities",
@@ -2975,6 +3316,7 @@ def _completion_script(shell: str) -> str:
             "--build-arg",
             "--rebuild",
             "--compiled-args",
+            "--capabilities",
             "--trusted",
             "--no-trusted",
             "--json",
@@ -3037,10 +3379,18 @@ def _completion_script(shell: str) -> str:
             "--verbose",
         ],
         "clean": [
+            "--all",
             "--cache",
             "--no-cache",
             "--artifacts",
             "--no-artifacts",
+            "--bins",
+            "--no-bins",
+            "--repo-artifacts",
+            "--no-repo-artifacts",
+            "--include-venvs",
+            "--cargo-target",
+            "--no-cargo-target",
             "--json",
             "--verbose",
         ],
@@ -3177,6 +3527,13 @@ def _build_args_has_trusted_flag(args: list[str]) -> bool:
     return False
 
 
+def _build_args_has_capabilities_flag(args: list[str]) -> bool:
+    for arg in args:
+        if arg == "--capabilities" or arg.startswith("--capabilities="):
+            return True
+    return False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="molt")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -3265,6 +3622,12 @@ def main() -> int:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Require deterministic inputs (lockfiles).",
+    )
+    build_parser.add_argument(
+        "--deterministic-warn",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Warn instead of failing when deterministic lockfile checks fail.",
     )
     build_parser.add_argument(
         "--trusted",
@@ -3361,6 +3724,10 @@ def main() -> int:
         "--compiled-args",
         action="store_true",
         help="Pass argv through to compiled binaries (runtime support pending).",
+    )
+    run_parser.add_argument(
+        "--capabilities",
+        help="Capability profiles/tokens or path to manifest (toml/json).",
     )
     run_parser.add_argument(
         "--trusted",
@@ -3613,22 +3980,41 @@ def main() -> int:
     )
 
     clean_parser = subparsers.add_parser(
-        "clean", help="Remove Molt cache and transient build artifacts"
+        "clean", help="Remove Molt caches, build artifacts, and repo outputs"
+    )
+    clean_parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Remove all caches, build artifacts, repo outputs, and cargo targets.",
     )
     clean_parser.add_argument(
         "--cache",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Remove build caches under MOLT_CACHE (and legacy .molt caches).",
+        help="Remove build caches under MOLT_CACHE.",
     )
     clean_parser.add_argument(
         "--artifacts",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help=(
-            "Remove build artifacts under MOLT_HOME/build "
-            "(and legacy output.o/output.wasm/main_stub.c)."
-        ),
+        help="Remove build artifacts under MOLT_HOME/build.",
+    )
+    clean_parser.add_argument(
+        "--bins",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Remove Molt binaries under MOLT_BIN.",
+    )
+    clean_parser.add_argument(
+        "--repo-artifacts",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Remove repo-local artifacts (vendor/, logs/, caches, output*.wasm).",
+    )
+    clean_parser.add_argument(
+        "--include-venvs",
+        action="store_true",
+        help="Also clean virtualenv caches when removing repo artifacts.",
     )
     clean_parser.add_argument(
         "--cargo-target",
@@ -3720,6 +4106,13 @@ def main() -> int:
             if args.deterministic is not None
             else _coerce_bool(build_cfg.get("deterministic"), True)
         )
+        deterministic_warn = args.deterministic_warn
+        if deterministic_warn is None:
+            deterministic_warn = _coerce_bool(
+                build_cfg.get("deterministic_warn")
+                or build_cfg.get("deterministic-warn"),
+                False,
+            )
         trusted = args.trusted
         if trusted is None:
             trusted = _coerce_bool(build_cfg.get("trusted"), False)
@@ -3753,6 +4146,7 @@ def main() -> int:
             args.json,
             args.verbose,
             deterministic,
+            deterministic_warn,
             trusted,
             capabilities,
             cache,
@@ -3776,6 +4170,9 @@ def main() -> int:
         trusted = args.trusted
         if trusted is None:
             trusted = _coerce_bool(run_cfg.get("trusted"), False)
+        capabilities = (
+            args.capabilities or run_cfg.get("capabilities") or cfg_capabilities
+        )
         return run_script(
             args.file,
             python_exe,
@@ -3786,6 +4183,7 @@ def main() -> int:
             args.compiled,
             args.compiled_args,
             trusted,
+            capabilities,
             build_args,
         )
     if args.command == "test":
@@ -3885,7 +4283,15 @@ def main() -> int:
         )
     if args.command == "clean":
         return clean(
-            args.json, args.verbose, args.cache, args.artifacts, args.cargo_target
+            args.json,
+            args.verbose,
+            args.cache,
+            args.artifacts,
+            args.bins,
+            args.repo_artifacts,
+            args.cargo_target,
+            args.all,
+            args.include_venvs,
         )
     if args.command == "config":
         return show_config(config_root, config, args.json, args.verbose)
@@ -3910,7 +4316,9 @@ def _marker_environment() -> dict[str, str]:
     return {
         "python_version": f"{version.major}.{version.minor}",
         "python_full_version": f"{version.major}.{version.minor}.{version.micro}",
+        "os_name": os.name,
         "sys_platform": sys.platform,
+        "platform_python_implementation": platform.python_implementation(),
         "platform_system": platform.system(),
         "platform_machine": platform.machine(),
         "platform_release": platform.release(),
@@ -3921,85 +4329,12 @@ def _marker_environment() -> dict[str, str]:
 
 
 def _parse_requirement(spec: str) -> tuple[str, set[str], str | None]:
-    head, *marker_parts = spec.split(";", 1)
-    marker = marker_parts[0].strip() if marker_parts else None
-    head = head.strip()
-    head = head.split("@", 1)[0].strip()
-    match = re.match(r"^([A-Za-z0-9_.-]+)(?:\[([^\]]+)\])?", head)
-    if not match:
-        return "", set(), marker
-    name = match.group(1)
-    extras_raw = match.group(2) or ""
-    extras = {extra.strip() for extra in extras_raw.split(",") if extra.strip()}
-    return name, extras, marker
-
-
-def _version_key(value: str) -> tuple[int, ...]:
-    parts = []
-    for chunk in re.split(r"[.+-]", value):
-        if not chunk:
-            continue
-        if chunk.isdigit():
-            parts.append(int(chunk))
-        else:
-            parts.append(0)
-    return tuple(parts)
-
-
-def _eval_marker_value(node: ast.AST, env: dict[str, str]) -> tuple[Any, str]:
-    if isinstance(node, ast.Name):
-        value = env.get(node.id, "")
-        kind = (
-            "version" if node.id in {"python_version", "python_full_version"} else "str"
-        )
-        return value, kind
-    if isinstance(node, ast.Constant):
-        return node.value, "str"
-    raise ValueError("Unsupported marker value")
-
-
-def _eval_marker(node: ast.AST, env: dict[str, str]) -> bool:
-    if isinstance(node, ast.Expression):
-        return _eval_marker(node.body, env)
-    if isinstance(node, ast.BoolOp):
-        values = [_eval_marker(value, env) for value in node.values]
-        if isinstance(node.op, ast.And):
-            return all(values)
-        if isinstance(node.op, ast.Or):
-            return any(values)
-        raise ValueError("Unsupported boolean op")
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
-        return not _eval_marker(node.operand, env)
-    if isinstance(node, ast.Compare):
-        left_val, left_kind = _eval_marker_value(node.left, env)
-        for op, comparator in zip(node.ops, node.comparators):
-            right_val, right_kind = _eval_marker_value(comparator, env)
-            use_version = left_kind == "version" or right_kind == "version"
-            if use_version:
-                left_cmp = _version_key(str(left_val))
-                right_cmp = _version_key(str(right_val))
-            else:
-                left_cmp = left_val
-                right_cmp = right_val
-            if isinstance(op, ast.Eq):
-                ok = left_cmp == right_cmp
-            elif isinstance(op, ast.NotEq):
-                ok = left_cmp != right_cmp
-            elif isinstance(op, ast.Lt):
-                ok = left_cmp < right_cmp
-            elif isinstance(op, ast.LtE):
-                ok = left_cmp <= right_cmp
-            elif isinstance(op, ast.Gt):
-                ok = left_cmp > right_cmp
-            elif isinstance(op, ast.GtE):
-                ok = left_cmp >= right_cmp
-            else:
-                raise ValueError("Unsupported comparison op")
-            if not ok:
-                return False
-            left_val, left_kind = right_val, right_kind
-        return True
-    raise ValueError("Unsupported marker expression")
+    try:
+        req = Requirement(spec)
+    except InvalidRequirement:
+        return "", set(), None
+    marker = str(req.marker) if req.marker else None
+    return req.name, set(req.extras), marker
 
 
 def _marker_satisfied(
@@ -4008,16 +4343,18 @@ def _marker_satisfied(
     extras: set[str],
 ) -> bool:
     try:
-        tree = ast.parse(marker, mode="eval")
-    except SyntaxError:
+        parsed = Marker(marker)
+    except InvalidMarker:
         return False
-    # TODO(tooling, owner:cli, milestone:TL2): replace with a full PEP 508 marker
-    # parser/evaluator (packaging markers) to match pip/uv behavior.
+    base_env = dict(env)
+    base_env.setdefault("extra", "")
     if "extra" in marker:
         if extras:
-            return any(_eval_marker(tree, {**env, "extra": extra}) for extra in extras)
-        return _eval_marker(tree, {**env, "extra": ""})
-    return _eval_marker(tree, env)
+            return any(
+                parsed.evaluate({**base_env, "extra": extra}) for extra in extras
+            )
+        return parsed.evaluate(base_env)
+    return parsed.evaluate(base_env)
 
 
 def _collect_dep_specs(
@@ -4150,16 +4487,70 @@ def _pick_vendor_artifact(pkg: dict[str, Any]) -> tuple[str, dict[str, Any]] | N
     return None
 
 
+def _vendor_cache_path(url: str, expected_hash: str) -> Path | None:
+    if not expected_hash:
+        return None
+    algo = "sha256"
+    digest = expected_hash
+    if ":" in expected_hash:
+        algo, digest = expected_hash.split(":", 1)
+    if not digest:
+        return None
+    suffixes = Path(urllib.parse.urlparse(url).path).suffixes
+    suffix = "".join(suffixes) if suffixes else ""
+    cache_root = _default_molt_cache() / "vendor"
+    try:
+        cache_root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    return cache_root / f"{algo}-{digest}{suffix}"
+
+
+def _read_cached_artifact(cache_path: Path, expected_digest: str) -> bytes | None:
+    try:
+        data = cache_path.read_bytes()
+    except OSError:
+        return None
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != expected_digest:
+        try:
+            cache_path.unlink()
+        except OSError:
+            pass
+        return None
+    return data
+
+
+def _write_cached_artifact(cache_path: Path, data: bytes) -> None:
+    tmp_path = cache_path.with_name(f"{cache_path.name}.tmp")
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path.write_bytes(data)
+        tmp_path.replace(cache_path)
+    except OSError:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
+
+
 def _download_artifact(url: str, expected_hash: str) -> bytes:
     if not url or not expected_hash:
         raise ValueError("missing url or hash")
-    # TODO(tooling, owner:cli, milestone:TL2): add local cache for vendored artifacts.
+    cache_path = _vendor_cache_path(url, expected_hash)
+    expected = expected_hash.split(":", 1)[-1]
+    if cache_path is not None:
+        cached = _read_cached_artifact(cache_path, expected)
+        if cached is not None:
+            return cached
     with urllib.request.urlopen(url) as response:
         data = response.read()
     digest = hashlib.sha256(data).hexdigest()
-    expected = expected_hash.split(":", 1)[-1]
     if digest != expected:
         raise ValueError("hash mismatch")
+    if cache_path is not None:
+        _write_cached_artifact(cache_path, data)
     return data
 
 
