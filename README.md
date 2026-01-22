@@ -79,6 +79,9 @@ curl -fsSL https://raw.githubusercontent.com/adpena/molt/main/packaging/install.
 winget install Adpena.Molt
 ```
 
+If winget doesn't list `Adpena.Molt` yet, the submission may still be pending. In that case,
+use Scoop or the script installer below.
+
 ```powershell
 scoop bucket add adpena https://github.com/adpena/scoop-molt
 scoop install molt
@@ -104,6 +107,36 @@ To keep dev artifacts isolated, set a different home:
 ```bash
 MOLT_HOME=~/.molt-dev PYTHONPATH=src uv run --python 3.12 python3 -m molt.cli build examples/hello.py
 ```
+
+## Install verification
+
+### macOS/Linux (Homebrew or script)
+
+```bash
+molt doctor --json
+```
+
+Expected: JSON output, exit code 0.
+
+```bash
+molt build examples/hello.py
+```
+
+Expected: compiled binary under `$MOLT_BIN` (defaults to `~/.molt/bin`).
+
+### Windows (Winget/Scoop/script)
+
+```powershell
+molt doctor --json
+```
+
+Expected: JSON output, exit code 0.
+
+```powershell
+molt build examples\\hello.py
+```
+
+Expected: compiled binary under `%MOLT_BIN%` (defaults to `%USERPROFILE%\\.molt\\bin`).
 
 ## Quick start (source)
 
