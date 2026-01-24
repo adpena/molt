@@ -803,6 +803,12 @@ impl MoltScheduler {
         if !self.running.load(AtomicOrdering::Relaxed) {
             return;
         }
+        if async_trace_enabled() {
+            eprintln!(
+                "molt async trace: enqueue task=0x{:x}",
+                task.future_ptr as usize
+            );
+        }
         if self.stealers.is_empty() {
             Self::execute_task(task, &self.injector);
         } else {
@@ -867,6 +873,12 @@ impl MoltScheduler {
                     exception_stack_set_depth(_py, task_depth);
                     let prev_raise = task_raise_active();
                     set_task_raise_active(true);
+                    if async_trace_enabled() {
+                        eprintln!(
+                            "molt async trace: poll_start task=0x{:x} poll=0x{:x}",
+                            task_ptr as usize, poll_fn_addr
+                        );
+                    }
                     loop {
                         let mut res = call_poll_fn(_py, poll_fn_addr, task_ptr);
                         if task_cancel_pending(task_ptr) {
@@ -955,6 +967,12 @@ impl MoltScheduler {
                     exception_stack_set_depth(_py, task_depth);
                     let prev_raise = task_raise_active();
                     set_task_raise_active(true);
+                    if async_trace_enabled() {
+                        eprintln!(
+                            "molt async trace: poll_start task=0x{:x} poll=0x{:x}",
+                            task_ptr as usize, poll_fn_addr
+                        );
+                    }
                     let mut res = call_poll_fn(_py, poll_fn_addr, task_ptr);
                     if task_cancel_pending(task_ptr) {
                         task_take_cancel_pending(task_ptr);
@@ -1037,6 +1055,9 @@ pub unsafe extern "C" fn molt_spawn(task_bits: u64) {
         let Some(task_ptr) = resolve_task_ptr(task_bits) else {
             return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
         };
+        if async_trace_enabled() {
+            eprintln!("molt async trace: spawn task=0x{:x}", task_ptr as usize);
+        }
         cancel_tokens(_py);
         let token = current_token_id();
         register_task_token(_py, task_ptr, token);
@@ -1059,6 +1080,9 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
         let Some(task_ptr) = resolve_task_ptr(task_bits) else {
             return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
         };
+        if async_trace_enabled() {
+            eprintln!("molt async trace: block_on task=0x{:x}", task_ptr as usize);
+        }
         cancel_tokens(_py);
         let header = task_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
         let poll_fn_addr = (*header).poll_fn;
