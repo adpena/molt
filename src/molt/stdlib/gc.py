@@ -13,6 +13,14 @@ garbage: list[object] = []
 
 def collect(generation: int = 2) -> int:
     del generation
+    try:
+        import weakref as _weakref
+
+        hook = getattr(_weakref, "_gc_collect_hook", None)
+        if hook is not None:
+            hook()
+    except Exception:
+        pass
     return 0
 
 

@@ -1,6 +1,6 @@
 # STATUS (Canonical)
 
-Last updated: 2026-01-22
+Last updated: 2026-01-24
 
 This document is the source of truth for Molt's current capabilities and
 limitations. Update this file whenever behavior or scope changes, and keep
@@ -285,7 +285,7 @@ README/ROADMAP in sync.
 - Partial shims: `warnings`, `traceback`, `types`, `inspect`, `fnmatch` (`*`/`?`
   + bracket class/range matching; literal `[]`/`[[]`/`[]]` escapes (no backslash
   quoting)), `copy`, `pprint`, `string`, `typing`, `sys`, `os`, `pathlib`,
-  `tempfile`, `gc`, `random` (`seed`, `randrange`, `shuffle`), `time` (`monotonic`, `perf_counter`, `sleep`, `time`/`time_ns` gated by `time.wall`), `json` (loads/dumps with parse hooks, indent, separators, allow_nan), `pickle` (protocol 0 only),
+  `tempfile`, `gc`, `weakref`, `random` (`seed`, `randrange`, `shuffle`), `time` (`monotonic`, `perf_counter`, `sleep`, `time`/`time_ns` gated by `time.wall`), `json` (loads/dumps with parse hooks, indent, separators, allow_nan), `pickle` (protocol 0 only),
   `socket` (runtime-backed, capability-gated; advanced options + wasm parity pending), `select` (selectors-backed for sockets only),
   `selectors` (io_wait-backed readiness), `asyncio`, `contextvars`, `contextlib`, `threading`,
   `functools`, `itertools`, `operator`, `bisect`, `heapq`, `collections`.
@@ -295,6 +295,7 @@ README/ROADMAP in sync.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): os.environ parity (mapping methods + backend).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): `json` shim parity (Encoder/Decoder classes, JSONDecodeError details, runtime fast-path parser).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): `gc` module exposes only minimal toggles/collect; wire to runtime cycle collector and implement full API.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): `weakref` shim supports `ref` cleared on `gc.collect`; add GC-aware semantics + full weakref API.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): `random` shim exposes seed/randrange/shuffle; expand to CPython-compatible Random API + algorithm.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): expand `time` module surface (timezone/tzname/struct_time/get_clock_info/process_time) + deterministic clock policy.
 - TODO(stdlib-compat, owner:runtime, milestone:TC1, priority:P2, status:partial): codec error handlers (surrogateescape/backslashreplace/etc) pending; blocked on surrogate-capable string representation.

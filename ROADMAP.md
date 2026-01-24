@@ -146,12 +146,13 @@ Sign-off criteria:
 - Partial: importable `builtins` module binding supported builtins (attribute gaps tracked in the matrix).
   (TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): fill `builtins` module attribute coverage.)
 - Partial: asyncio shim (`run`/`sleep` lowered to runtime with delay/result semantics; `wait`/`wait_for`/`shield` + basic `gather` supported; `set_event_loop`/`new_event_loop` stubs); loop/task APIs still pending (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): asyncio loop/task API parity).
-- Partial: shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pickle` (protocol 0 only), `pprint`, `string`, `typing`, `sys`, `os`, `json`, `asyncio`, `threading`, `bisect`, `heapq`, `functools`, `itertools`, and `collections` (capability-gated env access).
+- Partial: shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pickle` (protocol 0 only), `pprint`, `string`, `typing`, `sys`, `os`, `json`, `asyncio`, `threading`, `weakref`, `bisect`, `heapq`, `functools`, `itertools`, and `collections` (capability-gated env access).
   (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): advance partial shims to parity per matrix.)
 - Partial: capability-gated `socket`/`select`/`selectors` backed by runtime sockets + io_poller (native-only); wasm host parity pending.
   (TODO(wasm-parity, owner:runtime, milestone:RT2, priority:P0, status:missing): implement wasm socket + io_poller host bindings with capability enforcement.)
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): `json` shim parity (Encoder/Decoder classes, JSONDecodeError details, runtime fast-path parser).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): expand `time` module surface (timezone/tzname/struct_time/get_clock_info/process_time) + deterministic clock policy.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): `weakref` shim supports `ref` cleared on `gc.collect`; add GC-aware semantics + full weakref API.
 - TODO(stdlib-compat, owner:runtime, milestone:TC1, priority:P2, status:partial): codec error handlers (surrogateescape/backslashreplace/etc) pending; blocked on surrogate-capable string representation.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): `pickle` protocol 1+ and broader type coverage (bytes/bytearray, memo cycles).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): expand `math` shim beyond constants + `isfinite`/`isnan`/`isinf`; add intrinsics + determinism policy.

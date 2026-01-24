@@ -40,6 +40,7 @@ __all__ = [
     "threading",
     "traceback",
     "types",
+    "weakref",
     "typing",
     "unittest",
     "warnings",

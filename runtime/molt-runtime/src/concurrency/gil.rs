@@ -23,16 +23,27 @@ pub(crate) struct PyToken<'gil> {
 
 impl GilGuard {
     pub(crate) fn new() -> Self {
-        let needs_lock = GIL_DEPTH.with(|depth| {
+        let needs_lock = match GIL_DEPTH.try_with(|depth| {
             let current = depth.get();
             depth.set(current + 1);
             current == 0
-        });
+        }) {
+            Ok(needs_lock) => needs_lock,
+            Err(_) => return Self { _marker: () },
+        };
         if needs_lock {
             let guard = molt_gil().lock().unwrap();
-            GIL_GUARD.with(|slot| {
-                *slot.borrow_mut() = Some(guard);
-            });
+            let stored = GIL_GUARD
+                .try_with(|slot| {
+                    *slot.borrow_mut() = Some(guard);
+                })
+                .is_ok();
+            if !stored {
+                let _ = GIL_DEPTH.try_with(|depth| {
+                    let current = depth.get();
+                    depth.set(current.saturating_sub(1));
+                });
+            }
         }
         Self { _marker: () }
     }
@@ -44,14 +55,17 @@ impl GilGuard {
 
 impl Drop for GilGuard {
     fn drop(&mut self) {
-        let should_release = GIL_DEPTH.with(|depth| {
+        let should_release = match GIL_DEPTH.try_with(|depth| {
             let current = depth.get();
             let next = current.saturating_sub(1);
             depth.set(next);
             next == 0
-        });
+        }) {
+            Ok(should_release) => should_release,
+            Err(_) => return,
+        };
         if should_release {
-            GIL_GUARD.with(|slot| {
+            let _ = GIL_GUARD.try_with(|slot| {
                 let _ = slot.borrow_mut().take();
             });
         }
@@ -64,12 +78,17 @@ pub(crate) struct GilReleaseGuard {
 
 impl GilReleaseGuard {
     pub(crate) fn new() -> Self {
-        let depth = GIL_DEPTH.with(|d| d.get());
+        let depth = match GIL_DEPTH.try_with(|d| d.get()) {
+            Ok(depth) => depth,
+            Err(_) => return Self { depth: 0 },
+        };
         if depth == 0 {
             return Self { depth: 0 };
         }
-        GIL_DEPTH.with(|d| d.set(0));
-        GIL_GUARD.with(|slot| {
+        if GIL_DEPTH.try_with(|d| d.set(0)).is_err() {
+            return Self { depth: 0 };
+        }
+        let _ = GIL_GUARD.try_with(|slot| {
             let _ = slot.borrow_mut().take();
         });
         Self { depth }
@@ -82,15 +101,19 @@ impl Drop for GilReleaseGuard {
             return;
         }
         let guard = molt_gil().lock().unwrap();
-        GIL_GUARD.with(|slot| {
-            *slot.borrow_mut() = Some(guard);
-        });
-        GIL_DEPTH.with(|d| d.set(self.depth));
+        let stored = GIL_GUARD
+            .try_with(|slot| {
+                *slot.borrow_mut() = Some(guard);
+            })
+            .is_ok();
+        if stored {
+            let _ = GIL_DEPTH.try_with(|d| d.set(self.depth));
+        }
     }
 }
 
 pub(crate) fn gil_held() -> bool {
-    GIL_DEPTH.with(|depth| depth.get() > 0)
+    GIL_DEPTH.try_with(|depth| depth.get() > 0).unwrap_or(false)
 }
 
 thread_local! {

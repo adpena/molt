@@ -62,7 +62,7 @@
 | contextlib | Stdlib | Partial | P2 | SL2 | stdlib | `nullcontext` + `closing` lowered; `contextmanager` pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): contextlib pending parity) |
 | contextvars | Stdlib | Partial | P2 | SL3 | stdlib/runtime | `ContextVar`/`Token`/`Context` + `copy_context`; task context propagation via cancel tokens; `Context.run` implemented. |
 | gc | Stdlib | Partial | P2 | SL2 | stdlib/runtime | Minimal `collect`/enable/disable shim for test support; cycle collector wiring + full API pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): implement full gc module API + runtime cycle collector hook.) |
-| weakref | Stdlib | Planned | P3 | SL3 | runtime | Weak references (GC-aware). |
+| weakref | Stdlib | Partial | P3 | SL3 | stdlib | Minimal `ref` shim (cleared on `gc.collect`); GC-aware semantics pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): implement GC-aware weakrefs + full weakref API.) |
 | logging | Stdlib | Planned | P2 | SL2 | stdlib | Structured logging; gated sinks. |
 | logging.config | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; config parsing pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): logging.config pending parity) |
 | logging.handlers | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; handler wiring pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): logging.handlers pending parity) |
