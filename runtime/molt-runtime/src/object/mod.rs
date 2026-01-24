@@ -5,6 +5,8 @@ use std::sync::{Arc, Mutex};
 use molt_obj_model::MoltObject;
 use num_bigint::BigInt;
 
+pub(crate) mod ops;
+
 use crate::provenance::{register_ptr, release_ptr, resolve_ptr};
 use crate::{
     asyncgen_gen_bits, asyncgen_pending_bits, asyncgen_registry_remove, asyncgen_running_bits,

@@ -36,7 +36,7 @@ use crate::{
     TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE,
 };
 
-struct CallArgs {
+pub(crate) struct CallArgs {
     pos: Vec<u64>,
     kw_names: Vec<u64>,
     kw_values: Vec<u64>,
