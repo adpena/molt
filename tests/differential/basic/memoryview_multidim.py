@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for memoryview multidim."""
+
 import traceback
 
 

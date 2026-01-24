@@ -72,8 +72,10 @@ class _ContextVar:
         return _Token(self, old_value, had_value, _current_context_id())
 
     def reset(self, token: "_Token") -> None:
-        if token._used or token._var is not self:
+        if token._var is not self:
             raise ValueError("Token was created by a different ContextVar")
+        if token._used:
+            raise RuntimeError("Token has already been used once")
         if token._context_id != _current_context_id():
             raise ValueError("Token was created in a different Context")
         ctx = _current_context()

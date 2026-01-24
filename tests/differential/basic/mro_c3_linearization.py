@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for mro c3 linearization."""
+
+
 class Root:
     def f(self) -> str:
         return "O"

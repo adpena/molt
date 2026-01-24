@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for collections basic."""
+
 from molt.stdlib import collections
 
 d = collections.deque([1, 2])

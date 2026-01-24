@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for memoryview basics."""
+
 data = bytearray(b"abcd")
 mv = memoryview(data)
 print(mv[1])

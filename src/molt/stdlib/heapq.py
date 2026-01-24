@@ -4,6 +4,16 @@ from __future__ import annotations
 
 from typing import Any, Callable, Iterable, Protocol, TypeVar
 
+import builtins as _builtins
+
+
+def _load_intrinsic(name: str) -> Any | None:
+    direct = globals().get(name)
+    if direct is not None:
+        return direct
+    return getattr(_builtins, name, None)
+
+
 __all__ = [
     "heapify",
     "heappush",
@@ -22,25 +32,21 @@ class _SupportsLessThan(Protocol):
 
 T = TypeVar("T", bound=_SupportsLessThan)
 
-_molt_heapq_heapify: Callable[[list[Any]], None] | None
-_molt_heapq_heappush: Callable[[list[Any], Any], None] | None
-_molt_heapq_heappop: Callable[[list[Any]], Any] | None
-_molt_heapq_heapreplace: Callable[[list[Any], Any], Any] | None
-_molt_heapq_heappushpop: Callable[[list[Any], Any], Any] | None
-
-
-try:
-    _molt_heapq_heapify = _molt_heapq_heapify  # type: ignore[unresolved-reference]
-    _molt_heapq_heappush = _molt_heapq_heappush  # type: ignore[unresolved-reference]
-    _molt_heapq_heappop = _molt_heapq_heappop  # type: ignore[unresolved-reference]
-    _molt_heapq_heapreplace = _molt_heapq_heapreplace  # type: ignore[unresolved-reference]
-    _molt_heapq_heappushpop = _molt_heapq_heappushpop  # type: ignore[unresolved-reference]
-except NameError:
-    _molt_heapq_heapify = None
-    _molt_heapq_heappush = None
-    _molt_heapq_heappop = None
-    _molt_heapq_heapreplace = None
-    _molt_heapq_heappushpop = None
+_molt_heapq_heapify: Callable[[list[Any]], None] | None = _load_intrinsic(
+    "_molt_heapq_heapify"
+)
+_molt_heapq_heappush: Callable[[list[Any], Any], None] | None = _load_intrinsic(
+    "_molt_heapq_heappush"
+)
+_molt_heapq_heappop: Callable[[list[Any]], Any] | None = _load_intrinsic(
+    "_molt_heapq_heappop"
+)
+_molt_heapq_heapreplace: Callable[[list[Any], Any], Any] | None = _load_intrinsic(
+    "_molt_heapq_heapreplace"
+)
+_molt_heapq_heappushpop: Callable[[list[Any], Any], Any] | None = _load_intrinsic(
+    "_molt_heapq_heappushpop"
+)
 
 
 def _siftdown(heap: list[T], startpos: int, pos: int) -> None:

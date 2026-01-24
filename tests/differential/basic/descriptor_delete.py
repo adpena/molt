@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for descriptor delete."""
+
+
 class DeleteDesc:
     def __get__(self, obj, objtype=None) -> str:
         return "value"

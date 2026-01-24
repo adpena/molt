@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for augassign inplace."""
+
+
 class Count:
     def __index__(self):
         return 2

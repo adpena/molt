@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for str count unicode slices."""
+
 s = "cafe\u0301"
 
 print(s.count("é"))

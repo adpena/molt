@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for set basic."""
+
+
 def main() -> None:
     s = {1, 2, 2, 3}
     print(len(s))

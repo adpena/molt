@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for nonlocal and class closure."""
+
 import asyncio
 
 

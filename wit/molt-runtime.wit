@@ -14,10 +14,107 @@ interface intrinsics {
     alloc_class_static: func(size: u64, class_bits: molt-object) -> molt-object;
     async_sleep: func(obj: u64) -> u64;
     anext_default_poll: func(obj: u64) -> u64;
+    asyncgen_poll: func(obj: u64) -> u64;
+    asyncgen_new: func(obj: molt-object) -> molt-object;
+    asyncgen_shutdown: func() -> u64;
     future_poll_fn: func(obj: u64) -> u64;
     future_poll: func(obj: u64) -> u64;
+    future_cancel: func(obj: u64) -> u64;
+    future_cancel_msg: func(obj: u64, msg: u64) -> u64;
+    future_cancel_clear: func(obj: u64) -> u64;
+    io_wait: func(obj: molt-object) -> molt-object;
+    io_wait_new: func(socket: molt-object, events: molt-object, timeout: molt-object) -> molt-object;
+    thread_submit: func(callable: molt-object, args: molt-object, kwargs: molt-object) -> molt-object;
+    thread_poll: func(obj: molt-object) -> molt-object;
+    process_spawn: func(
+        args: molt-object,
+        env: molt-object,
+        cwd: molt-object,
+        stdin: molt-object,
+        stdout: molt-object,
+        stderr: molt-object
+    ) -> molt-object;
+    process_wait_future: func(proc: molt-object) -> molt-object;
+    process_poll: func(obj: molt-object) -> molt-object;
+    process_pid: func(proc: molt-object) -> molt-object;
+    process_returncode: func(proc: molt-object) -> molt-object;
+    process_kill: func(proc: molt-object) -> molt-object;
+    process_terminate: func(proc: molt-object) -> molt-object;
+    process_stdin: func(proc: molt-object) -> molt-object;
+    process_stdout: func(proc: molt-object) -> molt-object;
+    process_stderr: func(proc: molt-object) -> molt-object;
+    process_drop: func(proc: molt-object);
+    socket_constants: func() -> molt-object;
+    socket_has_ipv6: func() -> molt-object;
+    socket_new: func(
+        family: molt-object,
+        sock_type: molt-object,
+        proto: molt-object,
+        fileno: molt-object
+    ) -> molt-object;
+    socket_close: func(sock: molt-object) -> molt-object;
+    socket_drop: func(sock: molt-object);
+    socket_clone: func(sock: molt-object) -> molt-object;
+    socket_fileno: func(sock: molt-object) -> molt-object;
+    socket_gettimeout: func(sock: molt-object) -> molt-object;
+    socket_settimeout: func(sock: molt-object, timeout: molt-object) -> molt-object;
+    socket_setblocking: func(sock: molt-object, flag: molt-object) -> molt-object;
+    socket_getblocking: func(sock: molt-object) -> molt-object;
+    socket_bind: func(sock: molt-object, addr: molt-object) -> molt-object;
+    socket_listen: func(sock: molt-object, backlog: molt-object) -> molt-object;
+    socket_accept: func(sock: molt-object) -> molt-object;
+    socket_connect: func(sock: molt-object, addr: molt-object) -> molt-object;
+    socket_connect_ex: func(sock: molt-object, addr: molt-object) -> molt-object;
+    socket_recv: func(sock: molt-object, size: molt-object, flags: molt-object) -> molt-object;
+    socket_recv_into: func(
+        sock: molt-object,
+        buffer: molt-object,
+        size: molt-object,
+        flags: molt-object
+    ) -> molt-object;
+    socket_send: func(sock: molt-object, data: molt-object, flags: molt-object) -> molt-object;
+    socket_sendall: func(sock: molt-object, data: molt-object, flags: molt-object) -> molt-object;
+    socket_sendto: func(
+        sock: molt-object,
+        data: molt-object,
+        flags: molt-object,
+        addr: molt-object
+    ) -> molt-object;
+    socket_recvfrom: func(sock: molt-object, size: molt-object, flags: molt-object) -> molt-object;
+    socket_shutdown: func(sock: molt-object, how: molt-object) -> molt-object;
+    socket_getsockname: func(sock: molt-object) -> molt-object;
+    socket_getpeername: func(sock: molt-object) -> molt-object;
+    socket_setsockopt: func(
+        sock: molt-object,
+        level: molt-object,
+        optname: molt-object,
+        value: molt-object
+    ) -> molt-object;
+    socket_getsockopt: func(
+        sock: molt-object,
+        level: molt-object,
+        optname: molt-object,
+        buflen: molt-object
+    ) -> molt-object;
+    socket_detach: func(sock: molt-object) -> molt-object;
+    socketpair: func(family: molt-object, sock_type: molt-object, proto: molt-object) -> molt-object;
+    socket_getaddrinfo: func(
+        host: molt-object,
+        port: molt-object,
+        family: molt-object,
+        sock_type: molt-object,
+        proto: molt-object,
+        flags: molt-object
+    ) -> molt-object;
+    socket_getnameinfo: func(addr: molt-object, flags: molt-object) -> molt-object;
+    socket_gethostname: func() -> molt-object;
+    socket_getservbyname: func(name: molt-object, proto: molt-object) -> molt-object;
+    socket_getservbyport: func(port: molt-object, proto: molt-object) -> molt-object;
+    socket_inet_pton: func(family: molt-object, address: molt-object) -> molt-object;
+    socket_inet_ntop: func(family: molt-object, packed: molt-object) -> molt-object;
     sleep_register: func(task: molt-ptr, future: molt-ptr) -> u64;
     block_on: func(task: u64) -> u64;
+    spawn: func(task: molt-object);
     cancel_token_new: func(parent: molt-object) -> molt-object;
     cancel_token_clone: func(token: molt-object) -> molt-object;
     cancel_token_drop: func(token: molt-object) -> molt-object;
@@ -76,6 +173,7 @@ interface intrinsics {
     gt: func(a: molt-object, b: molt-object) -> molt-object;
     ge: func(a: molt-object, b: molt-object) -> molt-object;
     eq: func(a: molt-object, b: molt-object) -> molt-object;
+    ne: func(a: molt-object, b: molt-object) -> molt-object;
     string_eq: func(a: molt-object, b: molt-object) -> molt-object;
     is: func(a: molt-object, b: molt-object) -> molt-object;
     closure_load: func(ptr: molt-ptr, offset: u64) -> molt-object;
@@ -97,6 +195,7 @@ interface intrinsics {
     iter_sentinel: func(callable: molt-object, sentinel: molt-object) -> molt-object;
     missing: func() -> molt-object;
     not_implemented: func() -> molt-object;
+    ellipsis: func() -> molt-object;
 
     json_parse_scalar: func(ptr: molt-ptr, len: u64, out: molt-ptr) -> s32;
     msgpack_parse_scalar: func(ptr: molt-ptr, len: u64, out: molt-ptr) -> s32;
@@ -144,6 +243,7 @@ interface intrinsics {
     module_get_global: func(module: molt-object, attr: molt-object) -> molt-object;
     module_get_name: func(module: molt-object, attr: molt-object) -> molt-object;
     module_set_attr: func(module: molt-object, attr: molt-object, val: molt-object) -> molt-object;
+    module_import_star: func(src: molt-object, dst: molt-object) -> molt-object;
     get_attr_name: func(obj: molt-object, name: molt-object) -> molt-object;
     get_attr_name_default: func(obj: molt-object, name: molt-object, default: molt-object) -> molt-object;
     has_attr_name: func(obj: molt-object, name: molt-object) -> molt-object;
@@ -270,6 +370,7 @@ interface intrinsics {
     iter_next: func(iter: molt-object) -> molt-object;
     anext: func(iter: molt-object) -> molt-object;
     task_new: func(poll_fn: u64, closure_size: u64, kind: u64) -> molt-object;
+    task_register_token_owned: func(task: molt-object, token: molt-object) -> molt-object;
     generator_new: func(poll_fn: u64, closure_size: u64) -> molt-object;
     generator_send: func(gen: molt-object, val: molt-object) -> molt-object;
     generator_throw: func(gen: molt-object, exc: molt-object) -> molt-object;
@@ -308,6 +409,10 @@ interface intrinsics {
     bytearray_count_slice: func(haystack: molt-object, needle: molt-object, start: molt-object, end: molt-object, has_start: molt-object, has_end: molt-object) -> molt-object;
     env_get: func(key: molt-object, default: molt-object) -> molt-object;
     getpid: func() -> molt-object;
+    time_monotonic: func() -> molt-object;
+    time_monotonic_ns: func() -> molt-object;
+    time_time: func() -> molt-object;
+    time_time_ns: func() -> molt-object;
     path_exists: func(path: molt-object) -> molt-object;
     path_unlink: func(path: molt-object) -> molt-object;
     string_join: func(sep: molt-object, items: molt-object) -> molt-object;
@@ -317,6 +422,8 @@ interface intrinsics {
     string_upper: func(haystack: molt-object) -> molt-object;
     string_capitalize: func(haystack: molt-object) -> molt-object;
     string_strip: func(haystack: molt-object, chars: molt-object) -> molt-object;
+    string_lstrip: func(haystack: molt-object, chars: molt-object) -> molt-object;
+    string_rstrip: func(haystack: molt-object, chars: molt-object) -> molt-object;
     bytes_split: func(haystack: molt-object, needle: molt-object) -> molt-object;
     bytes_split_max: func(haystack: molt-object, needle: molt-object, maxsplit: molt-object) -> molt-object;
     bytearray_split: func(haystack: molt-object, needle: molt-object) -> molt-object;
@@ -380,18 +487,36 @@ interface intrinsics {
     exception_set_cause: func(exc: molt-object, cause: molt-object) -> molt-object;
     exception_set_value: func(exc: molt-object, value: molt-object) -> molt-object;
     exception_context_set: func(exc: molt-object) -> molt-object;
+    exception_set_last: func(exc: molt-object) -> molt-object;
     raise: func(exc: molt-object) -> molt-object;
     file_open: func(path: molt-object, mode: molt-object) -> molt-object;
     file_read: func(handle: molt-object, size: molt-object) -> molt-object;
+    file_readline: func(handle: molt-object, size: molt-object) -> molt-object;
+    file_readlines: func(handle: molt-object, hint: molt-object) -> molt-object;
+    file_readinto: func(handle: molt-object, buffer: molt-object) -> molt-object;
     file_write: func(handle: molt-object, data: molt-object) -> molt-object;
+    file_writelines: func(handle: molt-object, lines: molt-object) -> molt-object;
+    file_seek: func(handle: molt-object, offset: molt-object, whence: molt-object) -> molt-object;
+    file_tell: func(handle: molt-object) -> molt-object;
+    file_fileno: func(handle: molt-object) -> molt-object;
+    file_truncate: func(handle: molt-object, size: molt-object) -> molt-object;
+    file_flush: func(handle: molt-object) -> molt-object;
+    file_readable: func(handle: molt-object) -> molt-object;
+    file_writable: func(handle: molt-object) -> molt-object;
+    file_seekable: func(handle: molt-object) -> molt-object;
+    file_isatty: func(handle: molt-object) -> molt-object;
     file_close: func(handle: molt-object) -> molt-object;
-    // TODO(wasm-parity, owner:wasm, milestone:SL1): add imports for full file
-    // method parity (readline(s), seek/tell, flush, truncate, attrs).
+    file_detach: func(handle: molt-object) -> molt-object;
+    file_reconfigure: func(handle: molt-object, encoding: molt-object, errors: molt-object, newline: molt-object, line_buffering: molt-object, write_through: molt-object) -> molt-object;
+    // TODO(wasm-parity, owner:wasm, milestone:SL1): add imports for remaining
+    // file methods (readinto1) once implemented.
     bridge_unavailable: func(msg: molt-object) -> molt-object;
     db_query: func(ptr: molt-ptr, len: u64, out: molt-ptr, cancel_token: molt-object) -> s32;
     db_exec: func(ptr: molt-ptr, len: u64, out: molt-ptr, cancel_token: molt-object) -> s32;
     stream_new: func(capacity: u64) -> u64;
+    stream_clone: func(handle: u64) -> u64;
     stream_send: func(handle: u64, ptr: molt-ptr, len: u64) -> u64;
+    stream_send_obj: func(handle: u64, data: molt-object) -> molt-object;
     stream_recv: func(handle: u64) -> u64;
     stream_close: func(handle: u64);
     stream_drop: func(handle: u64);

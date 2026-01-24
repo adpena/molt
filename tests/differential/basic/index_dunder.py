@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for index dunder."""
+
+
 class Idx:
     def __index__(self):
         return 1

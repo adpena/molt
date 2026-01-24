@@ -1,4 +1,6 @@
 # MOLT_ENV: PYTHONPATH=src:tests/differential/basic
+"""Purpose: differential coverage for import package init."""
+
 import pkg_basic
 from pkg_basic import submod
 

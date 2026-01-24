@@ -32,6 +32,8 @@
 - `MOLT_TRUSTED=1`, `molt run --trusted`, `molt build --trusted`, `molt diff --trusted`, or `molt test --trusted`: disable capability checks for trusted native deployments.
 - `tools/dev.py lint`: run `ruff` checks, `ruff format --check`, and `ty check` via `uv run` (Python 3.12).
 - `tools/dev.py test`: run the Python test suite (`pytest -q`) via `uv run` on Python 3.12/3.13/3.14.
+- `python3 tools/cpython_regrtest.py --clone`: run CPython regrtest against Molt (logs under `logs/cpython_regrtest/`); defaults to `python -m molt.cli run --compiled`.
+- `python3 tools/cpython_regrtest.py --uv --uv-python 3.12 --uv-prepare --coverage`: run regrtest with uv-managed Python + coverage.
 - `cargo test`: run Rust unit tests for runtime crates.
 - `uv sync --group bench --python 3.12`: install optional Cython/Numba benchmark deps before running `tools/bench.py` (Numba requires <3.13).
 
@@ -51,8 +53,24 @@
 - Rust: format with `cargo fmt` and keep clippy clean (`cargo clippy -- -D warnings`).
 - Tests follow `test_*.py` naming; keep test modules in `tests/` or subdirectories like `tests/differential/`.
 
+## Runtime Locking & Unsafe Policy
+- Runtime mutation requires the GIL token; do not bypass it.
+- Unsafe code must live in provenance/object modules; other runtime modules should be safe Rust.
+- When changing handle resolution or the pointer registry, run strict provenance checks (Miri when available) and the lock-sensitive bench subset.
+
 ## Testing Guidelines
 - Use `pytest tests/differential` for `molt-diff` parity checks against CPython.
+- The `tests/differential/basic/bytes_codec.py` case requires `msgpack` + `cbor2` (install via `uv sync --group dev`); otherwise the diff harness will skip it.
+- Use `tools/cpython_regrtest.py` to track CPython regression parity; it uses `tools/molt_regrtest_shim.py` to run tests via `--molt-cmd`. Keep skip reasons in `tools/cpython_regrtest_skip.txt`, and review `summary.md` + `junit.xml` in `logs/cpython_regrtest/`.
+- `--coverage` now combines host regrtest + Molt subprocess coverage (requires `coverage` and a Python-based `--molt-cmd`; non-Python commands log a warning and skip Molt coverage).
+- Regrtest runs set `MOLT_CAPABILITIES=fs.read,env.read` by default; override with `--molt-capabilities` if you need stricter or broader access.
+- The regrtest shim marks `MOLT_COMPAT_ERROR` results as skipped; check `junit.xml` for reasons and codify intentional exclusions in `tools/cpython_regrtest_skip.txt`.
+- The regrtest shim forces `MOLT_PROJECT_ROOT` to the repo so compiled runs link against the Molt runtime even for `third_party/` test sources.
+- The regrtest shim sets `MOLT_MODULE_ROOTS` (and `MOLT_REGRTEST_CPYTHON_DIR`) to the CPython `Lib` directory so `test.*` resolves to CPython sources; avoid exporting that path via `PYTHONPATH` to the host Python.
+- Use `molt test` for fast iteration, then use regrtest to surface broad regressions and map failures back to the stdlib matrix (`docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md`).
+- Regrtest runs also emit `diff_summary.md` and `type_semantics_matrix.md` per run to track type/semantics coverage gaps against `0014`/`0023`.
+- Use `--no-diff` if you want regrtest-only runs (the diff suite is enabled by default).
+- Use `--rust-coverage` with `cargo-llvm-cov` installed to collect Rust runtime coverage under `logs/cpython_regrtest/<ts>/py*/rust_coverage/`.
 - Keep semantic tests deterministic; update or add differential cases when changing runtime or lowering behavior.
 - For Rust changes that affect runtime semantics, add or update `cargo test` coverage.
 - Avoid excessive lint/test loops while implementing; validate once after a cohesive set of changes is complete unless debugging a failure.
@@ -65,15 +83,20 @@
 - Sound the alarm immediately on performance regressions and trigger an optimization-first feedback loop (bench → lint → test → optimize) until green, but avoid repeated cycles before the implementation is complete.
 - Prefer performance wins even if they increase compile time or binary size; document tradeoffs explicitly.
 - Always run tests via `uv run --python 3.12/3.13/3.14`; never use the raw `.venv` interpreter directly.
+  - For CPython regrtest runs, prefer `--uv --uv-prepare --uv-python 3.12/3.13/3.14` so results are reproducible across versions.
 
 ## Commit & Pull Request Guidelines
 - The current branch has no commit history, so no established convention exists yet. Use concise, imperative subjects and add a scope when helpful (e.g., `runtime: tighten object layout guards`).
 - PRs should include a short summary, tests run, and any determinism or security impacts. Link issues when applicable.
 - Release tags start at `v0.0.001` and increment at the thousandth place (e.g., `v0.0.002`, `v0.0.003`).
 
+## Refactor-Only PR Rule
+- Refactor-only PRs must not change semantics. If behavior changes, split into a separate PR and update STATUS/ROADMAP/tests in that PR.
+
 ## Determinism & Reproducibility Notes
 - Treat `uv.lock` and Rust lockfiles as part of the build contract; update them only when dependency changes are intentional.
 - Avoid introducing nondeterminism in compiler output or tests unless explicitly gated behind a debug flag.
+- `tools/cpython_regrtest.py --uv-prepare` runs `uv add --dev` (coverage/stdlib-list/etc.), so expect `uv.lock` changes when you opt in.
 
 ## Agent Expectations
 - You are the finest compiler/runtime/Rust/Python engineer in the world; operate with rigor, speed, and ambition.
@@ -137,3 +160,13 @@ Use a single, explicit TODO format everywhere (code + docs + tests). This is how
 - After any push, monitor CI logs until green; if failures appear, propose fixes, implement them, push again, and repeat until green.
 - Avoid infinite commit/push/CI loops: only repeat the cycle when there are new changes or an explicit user request to re-run; otherwise stop and ask before looping again.
 - If a user request implies repeating commit/push/CI without new changes, pause and ask before re-running.
+
+## Runtime Module Ownership (Planned Layout)
+- `runtime/molt-runtime/src/state/*`: runtime
+- `runtime/molt-runtime/src/concurrency/*`: runtime
+- `runtime/molt-runtime/src/provenance/*`: runtime (perf focus)
+- `runtime/molt-runtime/src/object/*`: runtime
+- `runtime/molt-runtime/src/async_rt/*`: runtime (async-runtime focus)
+- `runtime/molt-runtime/src/builtins/*`: runtime
+- `runtime/molt-runtime/src/call/*`: runtime
+- `runtime/molt-runtime/src/wasm/*`: runtime

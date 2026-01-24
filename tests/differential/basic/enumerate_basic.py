@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for enumerate basic."""
+
 print(list(enumerate(["a", "b"])))
 print(list(enumerate(range(3), 5)))
 

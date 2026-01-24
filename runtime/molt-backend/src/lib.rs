@@ -379,6 +379,104 @@ fn compute_last_use(ops: &[OpIR]) -> HashMap<String, usize> {
     last_use
 }
 
+fn compute_first_def(ops: &[OpIR], params: &[String]) -> HashMap<String, usize> {
+    let mut first_def = HashMap::new();
+    for name in params {
+        first_def.entry(name.clone()).or_insert(0);
+    }
+    for (idx, op) in ops.iter().enumerate() {
+        if let Some(out) = &op.out {
+            if out != "none" {
+                first_def.entry(out.clone()).or_insert(idx);
+            }
+        }
+    }
+    first_def
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ensure_label_params(
+    label_id: i64,
+    label_ids: &HashSet<i64>,
+    label_op_idx: &HashMap<i64, usize>,
+    first_def: &HashMap<String, usize>,
+    last_use: &HashMap<String, usize>,
+    exclude_names: &HashSet<String>,
+    label_param_names: &mut HashMap<i64, Vec<String>>,
+    state_blocks: &HashMap<i64, Block>,
+    builder: &mut FunctionBuilder,
+    vars_filter: Option<&HashMap<String, Value>>,
+) -> Vec<String> {
+    if !label_ids.contains(&label_id) {
+        return Vec::new();
+    }
+    if let Some(names) = label_param_names.get(&label_id) {
+        return names.clone();
+    }
+    let label_idx = label_op_idx.get(&label_id).copied().unwrap_or(0);
+    let mut names: Vec<String> = last_use
+        .iter()
+        .filter(|(name, last_idx)| {
+            !exclude_names.contains(*name)
+                && **last_idx > label_idx
+                && first_def.get(*name).copied().unwrap_or(usize::MAX) <= label_idx
+                && vars_filter.is_none_or(|vars| vars.contains_key(*name))
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    names.sort();
+    let block = state_blocks[&label_id];
+    if !names.is_empty() {
+        for _ in &names {
+            builder.append_block_param(block, types::I64);
+        }
+    }
+    label_param_names.insert(label_id, names.clone());
+    names
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_label_jump_args(
+    label_id: i64,
+    label_ids: &HashSet<i64>,
+    label_op_idx: &HashMap<i64, usize>,
+    first_def: &HashMap<String, usize>,
+    last_use: &HashMap<String, usize>,
+    exclude_names: &HashSet<String>,
+    label_param_names: &mut HashMap<i64, Vec<String>>,
+    state_blocks: &HashMap<i64, Block>,
+    builder: &mut FunctionBuilder,
+    vars_for_args: &HashMap<String, Value>,
+    vars_filter: Option<&HashMap<String, Value>>,
+) -> Vec<Value> {
+    if !label_ids.contains(&label_id) {
+        return Vec::new();
+    }
+    let names = ensure_label_params(
+        label_id,
+        label_ids,
+        label_op_idx,
+        first_def,
+        last_use,
+        exclude_names,
+        label_param_names,
+        state_blocks,
+        builder,
+        Some(vars_filter.unwrap_or(vars_for_args)),
+    );
+    if names.is_empty() {
+        return Vec::new();
+    }
+    names
+        .iter()
+        .map(|name| {
+            *vars_for_args
+                .get(name)
+                .unwrap_or_else(|| panic!("label arg not found: {name}"))
+        })
+        .collect()
+}
+
 fn drain_cleanup_tracked(
     names: &mut Vec<TrackedValue>,
     last_use: &HashMap<String, usize>,
@@ -788,15 +886,31 @@ impl SimpleBackend {
         let mut vars = HashMap::new();
         let mut tracked_vars = Vec::new();
         let mut tracked_obj_vars = Vec::new();
+        let mut entry_vars: HashMap<String, Value> = HashMap::new();
         let mut state_blocks = HashMap::new();
         let mut resume_states: HashSet<i64> = HashSet::new();
         let mut is_block_filled = false;
         let mut if_stack: Vec<IfFrame> = Vec::new();
+        let mut exception_vars_stack: Vec<HashMap<String, Value>> = Vec::new();
         let mut loop_stack: Vec<LoopFrame> = Vec::new();
         let mut loop_depth: i32 = 0;
         let mut block_tracked_obj: HashMap<Block, Vec<TrackedValue>> = HashMap::new();
         let mut block_tracked_ptr: HashMap<Block, Vec<TrackedValue>> = HashMap::new();
         let last_use = compute_last_use(&func_ir.ops);
+        let first_def = compute_first_def(&func_ir.ops, &func_ir.params);
+        let mut label_ids: HashSet<i64> = HashSet::new();
+        let mut label_op_idx: HashMap<i64, usize> = HashMap::new();
+        let mut label_param_names: HashMap<i64, Vec<String>> = HashMap::new();
+        let param_names: HashSet<String> = func_ir.params.iter().cloned().collect();
+        let mut param_vars: HashMap<String, Value> = HashMap::new();
+
+        for (idx, op) in func_ir.ops.iter().enumerate() {
+            if op.kind == "label" || op.kind == "state_label" {
+                let label_id = op.value.expect("label missing value");
+                label_ids.insert(label_id);
+                label_op_idx.entry(label_id).or_insert(idx);
+            }
+        }
 
         let entry_block = builder.create_block();
         let master_return_block = builder.create_block();
@@ -875,6 +989,11 @@ impl SimpleBackend {
             if let Some(self_ptr) = vars.get("self").copied() {
                 let self_bits = box_ptr_value(&mut builder, self_ptr);
                 vars.insert("self".to_string(), self_bits);
+            }
+        }
+        for name in &func_ir.params {
+            if let Some(val) = vars.get(name).copied() {
+                param_vars.insert(name.clone(), val);
             }
         }
 
@@ -1012,6 +1131,18 @@ impl SimpleBackend {
                     let callee = self
                         .module
                         .declare_function("molt_not_implemented", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "const_ellipsis" => {
+                    let mut sig = self.module.make_signature();
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_ellipsis", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
@@ -3018,6 +3149,33 @@ impl SimpleBackend {
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
+                "asyncgen_new" => {
+                    let args = op.args.as_ref().unwrap();
+                    let gen = vars.get(&args[0]).expect("Generator not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_asyncgen_new", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*gen]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "asyncgen_shutdown" => {
+                    let mut sig = self.module.make_signature();
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_asyncgen_shutdown", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
                 "gen_send" => {
                     let args = op.args.as_ref().unwrap();
                     let gen = vars.get(&args[0]).expect("Generator not found");
@@ -3877,6 +4035,40 @@ impl SimpleBackend {
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
+                "string_lstrip" => {
+                    let args = op.args.as_ref().unwrap();
+                    let hay = vars.get(&args[0]).expect("Lstrip string not found");
+                    let chars = vars.get(&args[1]).expect("Lstrip chars not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_string_lstrip", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*hay, *chars]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "string_rstrip" => {
+                    let args = op.args.as_ref().unwrap();
+                    let hay = vars.get(&args[0]).expect("Rstrip string not found");
+                    let chars = vars.get(&args[1]).expect("Rstrip chars not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_string_rstrip", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*hay, *chars]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
                 "string_replace" => {
                     let args = op.args.as_ref().unwrap();
                     let hay = vars.get(&args[0]).expect("Replace haystack not found");
@@ -4544,6 +4736,56 @@ impl SimpleBackend {
                     };
                     vars.insert(op.out.unwrap(), res);
                 }
+                "ne" => {
+                    let args = op.args.as_ref().unwrap();
+                    let lhs = vars.get(&args[0]).expect("LHS not found");
+                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let res = if op.fast_int.unwrap_or(false) {
+                        let lhs_val = unbox_int(&mut builder, *lhs);
+                        let rhs_val = unbox_int(&mut builder, *rhs);
+                        let cmp = builder.ins().icmp(IntCC::NotEqual, lhs_val, rhs_val);
+                        box_bool_value(&mut builder, cmp)
+                    } else {
+                        let lhs_is_int = is_int_tag(&mut builder, *lhs);
+                        let rhs_is_int = is_int_tag(&mut builder, *rhs);
+                        let both_int = builder.ins().band(lhs_is_int, rhs_is_int);
+                        let fast_block = builder.create_block();
+                        let slow_block = builder.create_block();
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+                        builder
+                            .ins()
+                            .brif(both_int, fast_block, &[], slow_block, &[]);
+
+                        builder.switch_to_block(fast_block);
+                        builder.seal_block(fast_block);
+                        let lhs_val = unbox_int(&mut builder, *lhs);
+                        let rhs_val = unbox_int(&mut builder, *rhs);
+                        let cmp = builder.ins().icmp(IntCC::NotEqual, lhs_val, rhs_val);
+                        let fast_res = box_bool_value(&mut builder, cmp);
+                        builder.ins().jump(merge_block, &[fast_res]);
+
+                        builder.switch_to_block(slow_block);
+                        builder.seal_block(slow_block);
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_ne", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                        let slow_res = builder.inst_results(call)[0];
+                        builder.ins().jump(merge_block, &[slow_res]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                        builder.block_params(merge_block)[0]
+                    };
+                    vars.insert(op.out.unwrap(), res);
+                }
                 "string_eq" => {
                     let args = op.args.as_ref().unwrap();
                     let lhs = vars.get(&args[0]).expect("LHS not found");
@@ -4965,14 +5207,31 @@ impl SimpleBackend {
                     sorted_states.sort();
 
                     for id in sorted_states {
+                        let mut label_exclude = param_names.clone();
+                        label_exclude.extend(entry_vars.keys().cloned());
                         let block = state_blocks[&id];
+                        let target_args = build_label_jump_args(
+                            id,
+                            &label_ids,
+                            &label_op_idx,
+                            &first_def,
+                            &last_use,
+                            &label_exclude,
+                            &mut label_param_names,
+                            &state_blocks,
+                            &mut builder,
+                            &vars,
+                            None,
+                        );
                         let id_const = builder.ins().iconst(types::I64, id);
                         let is_state = builder.ins().icmp(IntCC::Equal, state, id_const);
                         let next_check = builder.create_block();
                         if let Some(current_block) = builder.current_block() {
                             builder.insert_block_after(next_check, current_block);
                         }
-                        builder.ins().brif(is_state, block, &[], next_check, &[]);
+                        builder
+                            .ins()
+                            .brif(is_state, block, &target_args, next_check, &[]);
                         builder.switch_to_block(next_check);
                         builder.seal_block(next_check);
                     }
@@ -5062,7 +5321,22 @@ impl SimpleBackend {
                     if args.len() <= 1 {
                         vars.insert(op.out.unwrap(), res);
                     }
-                    builder.ins().jump(next_block, &[]);
+                    let mut label_exclude = param_names.clone();
+                    label_exclude.extend(entry_vars.keys().cloned());
+                    let target_args = build_label_jump_args(
+                        next_state_id,
+                        &label_ids,
+                        &label_op_idx,
+                        &first_def,
+                        &last_use,
+                        &label_exclude,
+                        &mut label_param_names,
+                        &state_blocks,
+                        &mut builder,
+                        &vars,
+                        None,
+                    );
+                    builder.ins().jump(next_block, &target_args);
 
                     builder.switch_to_block(next_block);
                     builder.seal_block(next_block);
@@ -5143,7 +5417,22 @@ impl SimpleBackend {
                         .ins()
                         .store(MemFlags::new(), state_val, self_ptr, HEADER_STATE_OFFSET);
                     vars.insert(op.out.unwrap(), res);
-                    builder.ins().jump(next_block, &[]);
+                    let mut label_exclude = param_names.clone();
+                    label_exclude.extend(entry_vars.keys().cloned());
+                    let target_args = build_label_jump_args(
+                        next_state_id,
+                        &label_ids,
+                        &label_op_idx,
+                        &first_def,
+                        &last_use,
+                        &label_exclude,
+                        &mut label_param_names,
+                        &state_blocks,
+                        &mut builder,
+                        &vars,
+                        None,
+                    );
+                    builder.ins().jump(next_block, &target_args);
 
                     builder.switch_to_block(next_block);
                     builder.seal_block(next_block);
@@ -5199,7 +5488,22 @@ impl SimpleBackend {
                         .ins()
                         .store(MemFlags::new(), state_val, self_ptr, HEADER_STATE_OFFSET);
                     vars.insert(op.out.unwrap(), res);
-                    builder.ins().jump(next_block, &[]);
+                    let mut label_exclude = param_names.clone();
+                    label_exclude.extend(entry_vars.keys().cloned());
+                    let target_args = build_label_jump_args(
+                        next_state_id,
+                        &label_ids,
+                        &label_op_idx,
+                        &first_def,
+                        &last_use,
+                        &label_exclude,
+                        &mut label_param_names,
+                        &state_blocks,
+                        &mut builder,
+                        &vars,
+                        None,
+                    );
+                    builder.ins().jump(next_block, &target_args);
 
                     builder.switch_to_block(next_block);
                     builder.seal_block(next_block);
@@ -5297,6 +5601,81 @@ impl SimpleBackend {
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder.ins().call(local_callee, &[*token]);
+                }
+                "future_cancel" => {
+                    let args = op.args.as_ref().unwrap();
+                    let future = vars.get(&args[0]).expect("Future not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_future_cancel", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    builder.ins().call(local_callee, &[*future]);
+                }
+                "future_cancel_msg" => {
+                    let args = op.args.as_ref().unwrap();
+                    let future = vars.get(&args[0]).expect("Future not found");
+                    let msg = vars.get(&args[1]).expect("Cancel message not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_future_cancel_msg", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    builder.ins().call(local_callee, &[*future, *msg]);
+                }
+                "future_cancel_clear" => {
+                    let args = op.args.as_ref().unwrap();
+                    let future = vars.get(&args[0]).expect("Future not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_future_cancel_clear", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    builder.ins().call(local_callee, &[*future]);
+                }
+                "thread_submit" => {
+                    let args = op.args.as_ref().unwrap();
+                    let callable = vars.get(&args[0]).expect("Callable not found");
+                    let call_args = vars.get(&args[1]).expect("Args not found");
+                    let call_kwargs = vars.get(&args[2]).expect("Kwargs not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_thread_submit", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    builder
+                        .ins()
+                        .call(local_callee, &[*callable, *call_args, *call_kwargs]);
+                }
+                "task_register_token_owned" => {
+                    let args = op.args.as_ref().unwrap();
+                    let task = vars.get(&args[0]).expect("Task not found");
+                    let token = vars.get(&args[1]).expect("Token not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_task_register_token_owned", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    builder.ins().call(local_callee, &[*task, *token]);
                 }
                 "cancel_token_is_cancelled" => {
                     let args = op.args.as_ref().unwrap();
@@ -6782,6 +7161,70 @@ impl SimpleBackend {
                     builder.seal_block(func_direct_block);
                     let resolve_call = builder.ins().call(resolve_local, &[*func_bits]);
                     let func_ptr = builder.inst_results(resolve_call)[0];
+                    let func_arity = builder.ins().load(types::I64, MemFlags::new(), func_ptr, 8);
+                    let provided_arity = builder.ins().iconst(types::I64, args.len() as i64);
+                    let arity_match = builder.ins().icmp(IntCC::Equal, func_arity, provided_arity);
+                    let func_direct_call_block = builder.create_block();
+                    let func_bind_block = builder.create_block();
+                    builder.ins().brif(
+                        arity_match,
+                        func_direct_call_block,
+                        &[],
+                        func_bind_block,
+                        &[],
+                    );
+
+                    builder.switch_to_block(func_bind_block);
+                    builder.seal_block(func_bind_block);
+                    let mut new_sig = self.module.make_signature();
+                    new_sig.params.push(AbiParam::new(types::I64));
+                    new_sig.params.push(AbiParam::new(types::I64));
+                    new_sig.returns.push(AbiParam::new(types::I64));
+                    let callargs_new = self
+                        .module
+                        .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
+                        .unwrap();
+                    let callargs_new_local =
+                        self.module.declare_func_in_func(callargs_new, builder.func);
+                    let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
+                    let kw_capacity = builder.ins().iconst(types::I64, 0);
+                    let callargs_call = builder
+                        .ins()
+                        .call(callargs_new_local, &[pos_capacity, kw_capacity]);
+                    let callargs_ptr = builder.inst_results(callargs_call)[0];
+                    let mut push_sig = self.module.make_signature();
+                    push_sig.params.push(AbiParam::new(types::I64));
+                    push_sig.params.push(AbiParam::new(types::I64));
+                    push_sig.returns.push(AbiParam::new(types::I64));
+                    let callargs_push_pos = self
+                        .module
+                        .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
+                        .unwrap();
+                    let callargs_push_local = self
+                        .module
+                        .declare_func_in_func(callargs_push_pos, builder.func);
+                    for arg in &args {
+                        builder
+                            .ins()
+                            .call(callargs_push_local, &[callargs_ptr, *arg]);
+                    }
+                    let mut bind_sig = self.module.make_signature();
+                    bind_sig.params.push(AbiParam::new(types::I64));
+                    bind_sig.params.push(AbiParam::new(types::I64));
+                    bind_sig.returns.push(AbiParam::new(types::I64));
+                    let call_bind = self
+                        .module
+                        .declare_function("molt_call_bind", Linkage::Import, &bind_sig)
+                        .unwrap();
+                    let call_bind_local = self.module.declare_func_in_func(call_bind, builder.func);
+                    let bind_call = builder
+                        .ins()
+                        .call(call_bind_local, &[*func_bits, callargs_ptr]);
+                    let bind_res = builder.inst_results(bind_call)[0];
+                    builder.ins().jump(merge_block, &[bind_res]);
+
+                    builder.switch_to_block(func_direct_call_block);
+                    builder.seal_block(func_direct_call_block);
                     let fn_ptr = builder.ins().load(types::I64, MemFlags::new(), func_ptr, 0);
 
                     let mut sig = self.module.make_signature();
@@ -7223,6 +7666,29 @@ impl SimpleBackend {
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
+                "module_del_global" => {
+                    let args = op.args.as_ref().unwrap();
+                    let module_bits = vars.get(&args[0]).expect("Module not found");
+                    let attr_bits = vars.get(&args[1]).expect("Attr not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_module_del_global", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder
+                        .ins()
+                        .call(local_callee, &[*module_bits, *attr_bits]);
+                    if let Some(out_name) = op.out.as_ref() {
+                        if out_name != "none" {
+                            let res = builder.inst_results(call)[0];
+                            vars.insert(out_name.clone(), res);
+                        }
+                    }
+                }
                 "module_get_name" => {
                     let args = op.args.as_ref().unwrap();
                     let module_bits = vars.get(&args[0]).expect("Module not found");
@@ -7265,6 +7731,21 @@ impl SimpleBackend {
                     builder
                         .ins()
                         .call(local_callee, &[*module_bits, *attr_bits, *val_bits]);
+                }
+                "module_import_star" => {
+                    let args = op.args.as_ref().unwrap();
+                    let src_bits = vars.get(&args[0]).expect("Module not found");
+                    let dst_bits = vars.get(&args[1]).expect("Module not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_module_import_star", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    builder.ins().call(local_callee, &[*src_bits, *dst_bits]);
                 }
                 "context_null" => {
                     let args = op.args.as_ref().unwrap();
@@ -7383,6 +7864,7 @@ impl SimpleBackend {
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
+                    exception_vars_stack.push(vars.clone());
                 }
                 "exception_pop" => {
                     let mut sig = self.module.make_signature();
@@ -7395,6 +7877,7 @@ impl SimpleBackend {
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
+                    let _ = exception_vars_stack.pop();
                 }
                 "exception_last" => {
                     let mut sig = self.module.make_signature();
@@ -7516,6 +7999,21 @@ impl SimpleBackend {
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }
+                "exception_set_last" => {
+                    let args = op.args.as_ref().unwrap();
+                    let exc = vars.get(&args[0]).expect("Exception not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_exception_set_last", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*exc]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
                 "exception_set_value" => {
                     let args = op.args.as_ref().unwrap();
                     let exc = vars.get(&args[0]).expect("Exception not found");
@@ -7577,9 +8075,25 @@ impl SimpleBackend {
                     let pending = builder.inst_results(call)[0];
                     let cond = builder.ins().icmp_imm(IntCC::NotEqual, pending, 0);
                     let fallthrough = builder.create_block();
+                    let vars_for_exc = exception_vars_stack.last().unwrap_or(&vars);
+                    let mut label_exclude = param_names.clone();
+                    label_exclude.extend(entry_vars.keys().cloned());
+                    let target_args = build_label_jump_args(
+                        target_id,
+                        &label_ids,
+                        &label_op_idx,
+                        &first_def,
+                        &last_use,
+                        &label_exclude,
+                        &mut label_param_names,
+                        &state_blocks,
+                        &mut builder,
+                        vars_for_exc,
+                        Some(vars_for_exc),
+                    );
                     builder
                         .ins()
-                        .brif(cond, target_block, &[], fallthrough, &[]);
+                        .brif(cond, target_block, &target_args, fallthrough, &[]);
                     if let Some(current_block) = builder.current_block() {
                         builder.insert_block_after(fallthrough, current_block);
                     }
@@ -8286,6 +8800,47 @@ impl SimpleBackend {
                                 .store(MemFlags::new(), *arg_val, obj_ptr, offset);
                             emit_maybe_ref_adjust(&mut builder, *arg_val, local_inc_ref_obj);
                         }
+                    }
+                    if task_kind == "future" {
+                        let mut get_sig = self.module.make_signature();
+                        get_sig.returns.push(AbiParam::new(types::I64));
+                        let get_callee = self
+                            .module
+                            .declare_function(
+                                "molt_cancel_token_get_current",
+                                Linkage::Import,
+                                &get_sig,
+                            )
+                            .unwrap();
+                        let get_local = self.module.declare_func_in_func(get_callee, builder.func);
+                        let get_call = builder.ins().call(get_local, &[]);
+                        let current_token = builder.inst_results(get_call)[0];
+
+                        let mut new_sig = self.module.make_signature();
+                        new_sig.params.push(AbiParam::new(types::I64));
+                        new_sig.returns.push(AbiParam::new(types::I64));
+                        let new_callee = self
+                            .module
+                            .declare_function("molt_cancel_token_new", Linkage::Import, &new_sig)
+                            .unwrap();
+                        let new_local = self.module.declare_func_in_func(new_callee, builder.func);
+                        let new_call = builder.ins().call(new_local, &[current_token]);
+                        let new_token = builder.inst_results(new_call)[0];
+
+                        let mut reg_sig = self.module.make_signature();
+                        reg_sig.params.push(AbiParam::new(types::I64));
+                        reg_sig.params.push(AbiParam::new(types::I64));
+                        reg_sig.returns.push(AbiParam::new(types::I64));
+                        let reg_callee = self
+                            .module
+                            .declare_function(
+                                "molt_task_register_token_owned",
+                                Linkage::Import,
+                                &reg_sig,
+                            )
+                            .unwrap();
+                        let reg_local = self.module.declare_func_in_func(reg_callee, builder.func);
+                        builder.ins().call(reg_local, &[obj, new_token]);
                     }
 
                     output_is_ptr = false;
@@ -9062,6 +9617,16 @@ impl SimpleBackend {
                     }
                     tracked_vars.retain(|v| v != var_name);
                     tracked_obj_vars.retain(|v| v != var_name);
+                    for name in &tracked_vars {
+                        if let Some(val) = entry_vars.get(name) {
+                            builder.ins().call(local_dec_ref, &[*val]);
+                        }
+                    }
+                    for name in &tracked_obj_vars {
+                        if let Some(val) = entry_vars.get(name) {
+                            builder.ins().call(local_dec_ref_obj, &[*val]);
+                        }
+                    }
                     if has_ret {
                         builder.ins().jump(master_return_block, &[ret_val]);
                     } else {
@@ -9082,6 +9647,16 @@ impl SimpleBackend {
                             for tracked in cleanup {
                                 builder.ins().call(local_dec_ref, &[tracked.value]);
                             }
+                        }
+                    }
+                    for name in &tracked_vars {
+                        if let Some(val) = entry_vars.get(name) {
+                            builder.ins().call(local_dec_ref, &[*val]);
+                        }
+                    }
+                    for name in &tracked_obj_vars {
+                        if let Some(val) = entry_vars.get(name) {
+                            builder.ins().call(local_dec_ref_obj, &[*val]);
                         }
                     }
                     if has_ret {
@@ -9109,7 +9684,22 @@ impl SimpleBackend {
                             }
                         }
                     }
-                    builder.ins().jump(target_block, &[]);
+                    let mut label_exclude = param_names.clone();
+                    label_exclude.extend(entry_vars.keys().cloned());
+                    let target_args = build_label_jump_args(
+                        target_id,
+                        &label_ids,
+                        &label_op_idx,
+                        &first_def,
+                        &last_use,
+                        &label_exclude,
+                        &mut label_param_names,
+                        &state_blocks,
+                        &mut builder,
+                        &vars,
+                        None,
+                    );
+                    builder.ins().jump(target_block, &target_args);
                     is_block_filled = true;
                 }
                 "br_if" => {
@@ -9128,9 +9718,28 @@ impl SimpleBackend {
                     // Actually, let's play safe and check != 0.
                     let cond_bool = builder.ins().icmp_imm(IntCC::NotEqual, *cond, 0);
 
-                    builder
-                        .ins()
-                        .brif(cond_bool, target_block, &[], fallthrough_block, &[]);
+                    let mut label_exclude = param_names.clone();
+                    label_exclude.extend(entry_vars.keys().cloned());
+                    let target_args = build_label_jump_args(
+                        target_id,
+                        &label_ids,
+                        &label_op_idx,
+                        &first_def,
+                        &last_use,
+                        &label_exclude,
+                        &mut label_param_names,
+                        &state_blocks,
+                        &mut builder,
+                        &vars,
+                        None,
+                    );
+                    builder.ins().brif(
+                        cond_bool,
+                        target_block,
+                        &target_args,
+                        fallthrough_block,
+                        &[],
+                    );
 
                     if let Some(current_block) = builder.current_block() {
                         builder.insert_block_after(fallthrough_block, current_block);
@@ -9141,12 +9750,57 @@ impl SimpleBackend {
                 "label" | "state_label" => {
                     let label_id = op.value.unwrap();
                     let block = state_blocks[&label_id];
+                    let is_param_label = op.kind == "label" || op.kind == "state_label";
+                    let mut label_exclude = param_names.clone();
+                    label_exclude.extend(entry_vars.keys().cloned());
 
                     if !is_block_filled {
-                        builder.ins().jump(block, &[]);
+                        let jump_args = if is_param_label {
+                            build_label_jump_args(
+                                label_id,
+                                &label_ids,
+                                &label_op_idx,
+                                &first_def,
+                                &last_use,
+                                &label_exclude,
+                                &mut label_param_names,
+                                &state_blocks,
+                                &mut builder,
+                                &vars,
+                                None,
+                            )
+                        } else {
+                            Vec::new()
+                        };
+                        builder.ins().jump(block, &jump_args);
                     }
 
                     builder.switch_to_block(block);
+                    if is_param_label {
+                        let names = ensure_label_params(
+                            label_id,
+                            &label_ids,
+                            &label_op_idx,
+                            &first_def,
+                            &last_use,
+                            &label_exclude,
+                            &mut label_param_names,
+                            &state_blocks,
+                            &mut builder,
+                            Some(&vars),
+                        );
+                        let params = builder.block_params(block);
+                        let mut new_vars = param_vars.clone();
+                        for (name, value) in entry_vars.iter() {
+                            if !new_vars.contains_key(name) {
+                                new_vars.insert(name.clone(), *value);
+                            }
+                        }
+                        for (idx, name) in names.iter().enumerate() {
+                            new_vars.insert(name.clone(), params[idx]);
+                        }
+                        vars = new_vars;
+                    }
                     builder.seal_block(block);
                     is_block_filled = false;
                 }
@@ -9159,9 +9813,12 @@ impl SimpleBackend {
                     if let Some(block) = builder.current_block() {
                         if block == entry_block && loop_depth == 0 {
                             if output_is_ptr {
-                                tracked_vars.push(name);
+                                tracked_vars.push(name.clone());
                             } else {
-                                tracked_obj_vars.push(name);
+                                tracked_obj_vars.push(name.clone());
+                            }
+                            if let Some(val) = vars.get(&name) {
+                                entry_vars.insert(name.clone(), *val);
                             }
                         } else if let Some(val) = vars.get(&name) {
                             let tracked = TrackedValue {
@@ -9181,6 +9838,16 @@ impl SimpleBackend {
 
         // Finalize Master Return Block
         if !is_block_filled {
+            for name in &tracked_vars {
+                if let Some(val) = entry_vars.get(name) {
+                    builder.ins().call(local_dec_ref, &[*val]);
+                }
+            }
+            for name in &tracked_obj_vars {
+                if let Some(val) = entry_vars.get(name) {
+                    builder.ins().call(local_dec_ref_obj, &[*val]);
+                }
+            }
             if has_ret {
                 let zero = builder.ins().iconst(types::I64, 0);
                 builder.ins().jump(master_return_block, &[zero]);
@@ -9198,19 +9865,6 @@ impl SimpleBackend {
         } else {
             None
         };
-
-        // Cleanup: DecRef tracked vars
-        for name in tracked_vars {
-            if let Some(val) = vars.get(&name) {
-                builder.ins().call(local_dec_ref, &[*val]);
-            }
-        }
-
-        for name in tracked_obj_vars {
-            if let Some(val) = vars.get(&name) {
-                builder.ins().call(local_dec_ref_obj, &[*val]);
-            }
-        }
 
         if let Some(res) = final_res {
             builder.ins().return_(&[res]);

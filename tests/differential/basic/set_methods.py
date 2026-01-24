@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for set methods."""
+
+
 def main() -> None:
     s = {1, 2}
     u = s.union([2, 3])

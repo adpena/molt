@@ -77,6 +77,86 @@ fn box_pending() -> i64 {
     (QNAN | TAG_PENDING) as i64
 }
 
+fn is_stateful_dispatch_terminator(kind: &str) -> bool {
+    matches!(
+        kind,
+        "state_switch"
+            | "state_transition"
+            | "state_yield"
+            | "chan_send_yield"
+            | "chan_recv_yield"
+            | "if"
+            | "else"
+            | "end_if"
+            | "loop_start"
+            | "loop_index_start"
+            | "loop_break_if_true"
+            | "loop_break_if_false"
+            | "loop_break"
+            | "loop_continue"
+            | "loop_end"
+            | "jump"
+            | "try_start"
+            | "try_end"
+            | "label"
+            | "state_label"
+            | "check_exception"
+            | "ret"
+            | "ret_void"
+    )
+}
+
+fn build_dispatch_blocks(ops: &[OpIR]) -> (Vec<usize>, Vec<usize>) {
+    let op_count = ops.len();
+    if op_count == 0 {
+        return (Vec::new(), Vec::new());
+    }
+
+    let mut is_start = vec![false; op_count];
+    is_start[0] = true;
+    for (idx, op) in ops.iter().enumerate() {
+        match op.kind.as_str() {
+            "label" | "state_label" | "loop_start" | "loop_index_start" | "loop_end" => {
+                is_start[idx] = true;
+            }
+            _ => {}
+        }
+        if is_stateful_dispatch_terminator(op.kind.as_str()) {
+            if idx + 1 < op_count {
+                is_start[idx + 1] = true;
+            }
+        }
+    }
+
+    let mut starts = Vec::new();
+    for (idx, start) in is_start.iter().enumerate() {
+        if *start {
+            starts.push(idx);
+        }
+    }
+
+    let mut block_for_op = vec![0; op_count];
+    let mut block_idx = 0usize;
+    let mut next_start = starts.get(1).copied().unwrap_or(op_count);
+    for idx in 0..op_count {
+        if idx == next_start {
+            block_idx += 1;
+            next_start = starts.get(block_idx + 1).copied().unwrap_or(op_count);
+        }
+        block_for_op[idx] = block_idx;
+    }
+
+    (starts, block_for_op)
+}
+
+fn build_dispatch_block_map(block_for_op: &[usize]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(block_for_op.len() * 4);
+    for &block_idx in block_for_op {
+        bytes.extend_from_slice(&(block_idx as u32).to_le_bytes());
+    }
+    bytes
+}
+
 pub struct WasmBackend {
     module: Module,
     types: TypeSection,
@@ -249,7 +329,7 @@ impl WasmBackend {
         // Type 2: (i64) -> i64 (alloc, sleep, block_on, is_truthy, is_bound_method)
         self.types
             .function(std::iter::once(ValType::I64), std::iter::once(ValType::I64));
-        // Type 3: (i64, i64) -> i64 (add/sub/mul/lt/list_append/list_pop/alloc_class)
+        // Type 3: (i64, i64) -> i64 (add/sub/mul/lt/list_append/list_pop/alloc_class/stream_send_obj)
         self.types.function(
             std::iter::repeat_n(ValType::I64, 2),
             std::iter::once(ValType::I64),
@@ -400,9 +480,67 @@ impl WasmBackend {
         add_import("alloc_class_static", 3, &mut self.import_ids);
         add_import("async_sleep", 2, &mut self.import_ids);
         add_import("anext_default_poll", 2, &mut self.import_ids);
+        add_import("asyncgen_poll", 2, &mut self.import_ids);
+        add_import("asyncgen_new", 2, &mut self.import_ids);
+        add_import("asyncgen_shutdown", 0, &mut self.import_ids);
         add_import("future_poll", 2, &mut self.import_ids);
+        add_import("future_cancel", 2, &mut self.import_ids);
+        add_import("future_cancel_msg", 3, &mut self.import_ids);
+        add_import("future_cancel_clear", 2, &mut self.import_ids);
+        add_import("io_wait", 2, &mut self.import_ids);
+        add_import("io_wait_new", 5, &mut self.import_ids);
+        add_import("thread_submit", 5, &mut self.import_ids);
+        add_import("thread_poll", 2, &mut self.import_ids);
+        add_import("process_spawn", 9, &mut self.import_ids);
+        add_import("process_wait_future", 2, &mut self.import_ids);
+        add_import("process_poll", 2, &mut self.import_ids);
+        add_import("process_pid", 2, &mut self.import_ids);
+        add_import("process_returncode", 2, &mut self.import_ids);
+        add_import("process_kill", 2, &mut self.import_ids);
+        add_import("process_terminate", 2, &mut self.import_ids);
+        add_import("process_stdin", 2, &mut self.import_ids);
+        add_import("process_stdout", 2, &mut self.import_ids);
+        add_import("process_stderr", 2, &mut self.import_ids);
+        add_import("process_drop", 1, &mut self.import_ids);
+        add_import("socket_constants", 0, &mut self.import_ids);
+        add_import("socket_has_ipv6", 0, &mut self.import_ids);
+        add_import("socket_new", 7, &mut self.import_ids);
+        add_import("socket_close", 2, &mut self.import_ids);
+        add_import("socket_drop", 1, &mut self.import_ids);
+        add_import("socket_clone", 2, &mut self.import_ids);
+        add_import("socket_fileno", 2, &mut self.import_ids);
+        add_import("socket_gettimeout", 2, &mut self.import_ids);
+        add_import("socket_settimeout", 3, &mut self.import_ids);
+        add_import("socket_setblocking", 3, &mut self.import_ids);
+        add_import("socket_getblocking", 2, &mut self.import_ids);
+        add_import("socket_bind", 3, &mut self.import_ids);
+        add_import("socket_listen", 3, &mut self.import_ids);
+        add_import("socket_accept", 2, &mut self.import_ids);
+        add_import("socket_connect", 3, &mut self.import_ids);
+        add_import("socket_connect_ex", 3, &mut self.import_ids);
+        add_import("socket_recv", 5, &mut self.import_ids);
+        add_import("socket_recv_into", 7, &mut self.import_ids);
+        add_import("socket_send", 5, &mut self.import_ids);
+        add_import("socket_sendall", 5, &mut self.import_ids);
+        add_import("socket_sendto", 7, &mut self.import_ids);
+        add_import("socket_recvfrom", 5, &mut self.import_ids);
+        add_import("socket_shutdown", 3, &mut self.import_ids);
+        add_import("socket_getsockname", 2, &mut self.import_ids);
+        add_import("socket_getpeername", 2, &mut self.import_ids);
+        add_import("socket_setsockopt", 7, &mut self.import_ids);
+        add_import("socket_getsockopt", 7, &mut self.import_ids);
+        add_import("socket_detach", 2, &mut self.import_ids);
+        add_import("socketpair", 5, &mut self.import_ids);
+        add_import("socket_getaddrinfo", 9, &mut self.import_ids);
+        add_import("socket_getnameinfo", 3, &mut self.import_ids);
+        add_import("socket_gethostname", 0, &mut self.import_ids);
+        add_import("socket_getservbyname", 3, &mut self.import_ids);
+        add_import("socket_getservbyport", 3, &mut self.import_ids);
+        add_import("socket_inet_pton", 3, &mut self.import_ids);
+        add_import("socket_inet_ntop", 3, &mut self.import_ids);
         add_import("sleep_register", 27, &mut self.import_ids);
         add_import("block_on", 2, &mut self.import_ids);
+        add_import("spawn", 1, &mut self.import_ids);
         add_import("cancel_token_new", 2, &mut self.import_ids);
         add_import("cancel_token_clone", 2, &mut self.import_ids);
         add_import("cancel_token_drop", 2, &mut self.import_ids);
@@ -460,6 +598,7 @@ impl WasmBackend {
         add_import("gt", 3, &mut self.import_ids);
         add_import("ge", 3, &mut self.import_ids);
         add_import("eq", 3, &mut self.import_ids);
+        add_import("ne", 3, &mut self.import_ids);
         add_import("string_eq", 3, &mut self.import_ids);
         add_import("is", 3, &mut self.import_ids);
         add_import("closure_load", 16, &mut self.import_ids);
@@ -494,8 +633,10 @@ impl WasmBackend {
         add_import("module_cache_set", 3, &mut self.import_ids);
         add_import("module_get_attr", 3, &mut self.import_ids);
         add_import("module_get_global", 3, &mut self.import_ids);
+        add_import("module_del_global", 3, &mut self.import_ids);
         add_import("module_get_name", 3, &mut self.import_ids);
         add_import("module_set_attr", 5, &mut self.import_ids);
+        add_import("module_import_star", 3, &mut self.import_ids);
         add_import("get_attr_name", 3, &mut self.import_ids);
         add_import("get_attr_name_default", 5, &mut self.import_ids);
         add_import("has_attr_name", 3, &mut self.import_ids);
@@ -511,6 +652,7 @@ impl WasmBackend {
         add_import("call_arity_error", 3, &mut self.import_ids);
         add_import("missing", 0, &mut self.import_ids);
         add_import("not_implemented", 0, &mut self.import_ids);
+        add_import("ellipsis", 0, &mut self.import_ids);
         add_import("json_parse_scalar", 19, &mut self.import_ids);
         add_import("msgpack_parse_scalar", 19, &mut self.import_ids);
         add_import("cbor_parse_scalar", 19, &mut self.import_ids);
@@ -537,6 +679,7 @@ impl WasmBackend {
         add_import("intarray_from_seq", 2, &mut self.import_ids);
         add_import("len", 2, &mut self.import_ids);
         add_import("id", 2, &mut self.import_ids);
+        add_import("hash_builtin", 2, &mut self.import_ids);
         add_import("ord", 2, &mut self.import_ids);
         add_import("chr", 2, &mut self.import_ids);
         add_import("abs_builtin", 2, &mut self.import_ids);
@@ -568,6 +711,8 @@ impl WasmBackend {
         add_import("zip_builtin", 2, &mut self.import_ids);
         add_import("reversed_builtin", 2, &mut self.import_ids);
         add_import("getattr_builtin", 5, &mut self.import_ids);
+        add_import("dir_builtin", 2, &mut self.import_ids);
+        add_import("vars_builtin", 2, &mut self.import_ids);
         add_import("anext_builtin", 3, &mut self.import_ids);
         add_import("print_builtin", 12, &mut self.import_ids);
         add_import("super_builtin", 3, &mut self.import_ids);
@@ -635,6 +780,7 @@ impl WasmBackend {
         add_import("iter_next", 2, &mut self.import_ids);
         add_import("anext", 2, &mut self.import_ids);
         add_import("task_new", 5, &mut self.import_ids);
+        add_import("task_register_token_owned", 3, &mut self.import_ids);
         add_import("generator_send", 3, &mut self.import_ids);
         add_import("generator_throw", 3, &mut self.import_ids);
         add_import("generator_close", 2, &mut self.import_ids);
@@ -669,7 +815,12 @@ impl WasmBackend {
         add_import("bytes_count_slice", 9, &mut self.import_ids);
         add_import("bytearray_count_slice", 9, &mut self.import_ids);
         add_import("env_get", 3, &mut self.import_ids);
+        add_import("errno_constants", 0, &mut self.import_ids);
         add_import("getpid", 0, &mut self.import_ids);
+        add_import("time_monotonic", 0, &mut self.import_ids);
+        add_import("time_monotonic_ns", 0, &mut self.import_ids);
+        add_import("time_time", 0, &mut self.import_ids);
+        add_import("time_time_ns", 0, &mut self.import_ids);
         add_import("path_exists", 2, &mut self.import_ids);
         add_import("path_unlink", 2, &mut self.import_ids);
         add_import("string_join", 3, &mut self.import_ids);
@@ -679,6 +830,8 @@ impl WasmBackend {
         add_import("string_upper", 2, &mut self.import_ids);
         add_import("string_capitalize", 2, &mut self.import_ids);
         add_import("string_strip", 3, &mut self.import_ids);
+        add_import("string_lstrip", 3, &mut self.import_ids);
+        add_import("string_rstrip", 3, &mut self.import_ids);
         add_import("bytes_split", 3, &mut self.import_ids);
         add_import("bytes_split_max", 5, &mut self.import_ids);
         add_import("bytearray_split", 3, &mut self.import_ids);
@@ -717,7 +870,9 @@ impl WasmBackend {
         add_import("property_new", 5, &mut self.import_ids);
         add_import("object_set_class", 16, &mut self.import_ids);
         add_import("stream_new", 2, &mut self.import_ids);
+        add_import("stream_clone", 2, &mut self.import_ids);
         add_import("stream_send", 18, &mut self.import_ids);
+        add_import("stream_send_obj", 3, &mut self.import_ids);
         add_import("stream_recv", 2, &mut self.import_ids);
         add_import("stream_close", 1, &mut self.import_ids);
         add_import("stream_drop", 1, &mut self.import_ids);
@@ -748,17 +903,32 @@ impl WasmBackend {
         add_import("exception_set_cause", 3, &mut self.import_ids);
         add_import("exception_set_value", 3, &mut self.import_ids);
         add_import("exception_context_set", 2, &mut self.import_ids);
+        add_import("exception_set_last", 2, &mut self.import_ids);
         add_import("raise", 2, &mut self.import_ids);
         add_import("bridge_unavailable", 2, &mut self.import_ids);
         add_import("db_query", 26, &mut self.import_ids);
         add_import("db_exec", 26, &mut self.import_ids);
         add_import("file_open", 3, &mut self.import_ids);
         add_import("file_read", 3, &mut self.import_ids);
+        add_import("file_readline", 3, &mut self.import_ids);
+        add_import("file_readlines", 3, &mut self.import_ids);
+        add_import("file_readinto", 3, &mut self.import_ids);
         add_import("file_write", 3, &mut self.import_ids);
+        add_import("file_writelines", 3, &mut self.import_ids);
+        add_import("file_seek", 5, &mut self.import_ids);
+        add_import("file_tell", 2, &mut self.import_ids);
+        add_import("file_fileno", 2, &mut self.import_ids);
+        add_import("file_truncate", 3, &mut self.import_ids);
+        add_import("file_flush", 2, &mut self.import_ids);
+        add_import("file_readable", 2, &mut self.import_ids);
+        add_import("file_writable", 2, &mut self.import_ids);
+        add_import("file_seekable", 2, &mut self.import_ids);
+        add_import("file_isatty", 2, &mut self.import_ids);
         add_import("file_close", 2, &mut self.import_ids);
-        // TODO(wasm-parity, owner:wasm, milestone:SL1): extend wasm host imports
-        // to cover full open() + file method parity (readline(s), seek/tell,
-        // flush, truncate, attrs) beyond basic read/write/close.
+        add_import("file_detach", 2, &mut self.import_ids);
+        add_import("file_reconfigure", 9, &mut self.import_ids);
+        // TODO(wasm-parity, owner:wasm, milestone:SL1): add imports for remaining
+        // file methods (readinto1) once implemented.
 
         self.func_count = import_idx;
         let reloc_enabled = should_emit_relocs();
@@ -878,7 +1048,7 @@ impl WasmBackend {
             .import("env", "memory", EntityType::Memory(memory_ty));
         self.exports.export("molt_memory", ExportKind::Memory, 0);
 
-        let builtin_table_funcs: [(&str, &str, usize); 54] = [
+        let builtin_table_funcs: [(&str, &str, usize); 80] = [
             ("molt_missing", "missing", 0),
             ("molt_repr_builtin", "repr_builtin", 1),
             ("molt_format_builtin", "format_builtin", 2),
@@ -898,6 +1068,8 @@ impl WasmBackend {
             ("molt_zip_builtin", "zip_builtin", 1),
             ("molt_reversed_builtin", "reversed_builtin", 1),
             ("molt_getattr_builtin", "getattr_builtin", 3),
+            ("molt_dir_builtin", "dir_builtin", 1),
+            ("molt_vars_builtin", "vars_builtin", 1),
             ("molt_anext_builtin", "anext_builtin", 2),
             ("molt_print_builtin", "print_builtin", 5),
             ("molt_super_builtin", "super_builtin", 2),
@@ -908,6 +1080,7 @@ impl WasmBackend {
             ("molt_issubclass", "issubclass", 2),
             ("molt_len", "len", 1),
             ("molt_id", "id", 1),
+            ("molt_hash_builtin", "hash_builtin", 1),
             ("molt_ord", "ord", 1),
             ("molt_chr", "chr", 1),
             ("molt_ascii_from_obj", "ascii_from_obj", 1),
@@ -919,7 +1092,13 @@ impl WasmBackend {
             ("molt_open_builtin", "open_builtin", 8),
             ("molt_getargv", "getargv", 0),
             ("molt_env_get", "env_get", 2),
+            ("molt_errno_constants", "errno_constants", 0),
+            ("molt_socket_constants", "socket_constants", 0),
             ("molt_getpid", "getpid", 0),
+            ("molt_time_monotonic", "time_monotonic", 0),
+            ("molt_time_monotonic_ns", "time_monotonic_ns", 0),
+            ("molt_time_time", "time_time", 0),
+            ("molt_time_time_ns", "time_time_ns", 0),
             ("molt_path_exists", "path_exists", 1),
             ("molt_path_unlink", "path_unlink", 1),
             ("molt_getrecursionlimit", "getrecursionlimit", 0),
@@ -928,11 +1107,28 @@ impl WasmBackend {
             ("molt_exception_active", "exception_active", 0),
             ("molt_iter_checked", "iter", 1),
             ("molt_aiter", "aiter", 1),
+            ("molt_io_wait_new", "io_wait_new", 3),
             ("molt_heapq_heapify", "heapq_heapify", 1),
             ("molt_heapq_heappush", "heapq_heappush", 2),
             ("molt_heapq_heappop", "heapq_heappop", 1),
             ("molt_heapq_heapreplace", "heapq_heapreplace", 2),
             ("molt_heapq_heappushpop", "heapq_heappushpop", 2),
+            ("molt_process_spawn", "process_spawn", 6),
+            ("molt_process_wait_future", "process_wait_future", 1),
+            ("molt_process_pid", "process_pid", 1),
+            ("molt_process_returncode", "process_returncode", 1),
+            ("molt_process_kill", "process_kill", 1),
+            ("molt_process_terminate", "process_terminate", 1),
+            ("molt_process_stdin", "process_stdin", 1),
+            ("molt_process_stdout", "process_stdout", 1),
+            ("molt_process_stderr", "process_stderr", 1),
+            ("molt_process_drop", "process_drop", 1),
+            ("molt_stream_new", "stream_new", 1),
+            ("molt_stream_clone", "stream_clone", 1),
+            ("molt_stream_send_obj", "stream_send_obj", 2),
+            ("molt_stream_recv", "stream_recv", 1),
+            ("molt_stream_close", "stream_close", 1),
+            ("molt_stream_drop", "stream_drop", 1),
         ];
         let mut builtin_trampoline_funcs: Vec<(String, usize)> = Vec::new();
         for (runtime_name, _, _) in builtin_table_funcs.iter() {
@@ -947,6 +1143,9 @@ impl WasmBackend {
                 builtin_wrapper_funcs.push(((*runtime_name).to_string(), *import_name, *arity));
             }
         }
+        let void_builtin_imports: HashSet<&str> = ["process_drop", "stream_close", "stream_drop"]
+            .into_iter()
+            .collect();
         if builtin_trampoline_specs.len() != builtin_trampoline_funcs.len() {
             for name in builtin_trampoline_specs.keys() {
                 if !builtin_table_funcs
@@ -962,7 +1161,7 @@ impl WasmBackend {
         } else {
             256
         };
-        let table_len = (3
+        let table_len = (4
             + builtin_table_funcs.len()
             + builtin_trampoline_funcs.len()
             + ir.functions.len() * 2) as u32;
@@ -996,6 +1195,9 @@ impl WasmBackend {
                 func.instruction(&Instruction::LocalGet(idx as u32));
             }
             emit_call(&mut func, reloc_enabled, import_idx);
+            if void_builtin_imports.contains(*import_name) {
+                func.instruction(&Instruction::I64Const(box_none()));
+            }
             func.instruction(&Instruction::End);
             self.codes.function(&func);
             builtin_wrapper_indices.insert(runtime_name.clone(), func_index);
@@ -1003,7 +1205,11 @@ impl WasmBackend {
 
         let mut table_import_wrappers = HashMap::new();
         if reloc_enabled {
-            for (import_name, arity) in [("async_sleep", 1usize), ("anext_default_poll", 1usize)] {
+            for (import_name, arity) in [
+                ("async_sleep", 1usize),
+                ("anext_default_poll", 1usize),
+                ("asyncgen_poll", 1usize),
+            ] {
                 let type_idx = *user_type_map
                     .get(&arity)
                     .unwrap_or_else(|| panic!("missing wrapper signature for arity {arity}"));
@@ -1032,7 +1238,15 @@ impl WasmBackend {
         let anext_default_poll_idx = *table_import_wrappers
             .get("anext_default_poll")
             .unwrap_or(&self.import_ids["anext_default_poll"]);
-        let mut table_indices = vec![sentinel_func_idx, async_sleep_idx, anext_default_poll_idx];
+        let asyncgen_poll_idx = *table_import_wrappers
+            .get("asyncgen_poll")
+            .unwrap_or(&self.import_ids["asyncgen_poll"]);
+        let mut table_indices = vec![
+            sentinel_func_idx,
+            async_sleep_idx,
+            anext_default_poll_idx,
+            asyncgen_poll_idx,
+        ];
         let mut func_to_table_idx = HashMap::new();
         let mut func_to_index = HashMap::new();
         func_to_index.insert(
@@ -1045,9 +1259,10 @@ impl WasmBackend {
         );
         func_to_table_idx.insert("molt_async_sleep".to_string(), 1);
         func_to_table_idx.insert("molt_anext_default_poll".to_string(), 2);
+        func_to_table_idx.insert("molt_asyncgen_poll".to_string(), 3);
 
         for (offset, (runtime_name, import_name, _)) in builtin_table_funcs.iter().enumerate() {
-            let idx = (offset + 3) as u32;
+            let idx = (offset + 4) as u32;
             let runtime_key = (*runtime_name).to_string();
             func_to_table_idx.insert(runtime_key.clone(), idx);
             if let Some(wrapper_idx) = builtin_wrapper_indices.get(&runtime_key) {
@@ -1065,20 +1280,20 @@ impl WasmBackend {
         let builtin_trampoline_start = user_func_start + user_func_count;
         let user_trampoline_start = builtin_trampoline_start + builtin_trampoline_count;
         for (i, func_ir) in ir.functions.iter().enumerate() {
-            let idx = (i + 3 + builtin_table_funcs.len()) as u32;
+            let idx = (i + 4 + builtin_table_funcs.len()) as u32;
             func_to_table_idx.insert(func_ir.name.clone(), idx);
             func_to_index.insert(func_ir.name.clone(), user_func_start + i as u32);
             table_indices.push(user_func_start + i as u32);
         }
         let mut func_to_trampoline_idx = HashMap::new();
         for (i, (name, _)) in builtin_trampoline_funcs.iter().enumerate() {
-            let idx = (i + 3 + builtin_table_funcs.len() + ir.functions.len()) as u32;
+            let idx = (i + 4 + builtin_table_funcs.len() + ir.functions.len()) as u32;
             func_to_trampoline_idx.insert(name.clone(), idx);
             table_indices.push(builtin_trampoline_start + i as u32);
         }
         for (i, func_ir) in ir.functions.iter().enumerate() {
             let idx = (i
-                + 3
+                + 4
                 + builtin_table_funcs.len()
                 + ir.functions.len()
                 + builtin_trampoline_funcs.len()) as u32;
@@ -1539,6 +1754,14 @@ impl WasmBackend {
         } else {
             None
         };
+        let block_map_base_local = if stateful || jumpful {
+            let idx = local_count;
+            local_types.push(ValType::I64);
+            local_count += 1;
+            Some(idx)
+        } else {
+            None
+        };
         let _ = local_count;
         let mut func = Function::new_with_locals_types(local_types);
         #[derive(Clone, Copy)]
@@ -1552,6 +1775,21 @@ impl WasmBackend {
         let mut try_stack: Vec<usize> = Vec::new();
         let mut label_stack: Vec<i64> = Vec::new();
         let mut label_depths: HashMap<i64, usize> = HashMap::new();
+
+        let dispatch_blocks = if stateful || jumpful {
+            let (block_starts, block_for_op) = build_dispatch_blocks(&func_ir.ops);
+            let block_map_bytes = build_dispatch_block_map(&block_for_op);
+            let block_map_segment = self.add_data_segment(reloc_enabled, &block_map_bytes);
+            Some((block_starts, block_map_segment))
+        } else {
+            None
+        };
+        if let Some((_, block_map_segment)) = dispatch_blocks.as_ref() {
+            let block_map_base_local =
+                block_map_base_local.expect("block map base local missing for dispatch");
+            self.emit_data_ptr(reloc_enabled, func_index, &mut func, *block_map_segment);
+            func.instruction(&Instruction::LocalSet(block_map_base_local));
+        }
 
         let mut emit_ops = |func: &mut Function,
                             ops: &[OpIR],
@@ -1586,6 +1824,11 @@ impl WasmBackend {
                     }
                     "const_not_implemented" => {
                         emit_call(func, reloc_enabled, import_ids["not_implemented"]);
+                        let local_idx = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(local_idx));
+                    }
+                    "const_ellipsis" => {
+                        emit_call(func, reloc_enabled, import_ids["ellipsis"]);
                         let local_idx = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(local_idx));
                     }
@@ -2135,6 +2378,16 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(lhs));
                         func.instruction(&Instruction::LocalGet(rhs));
                         emit_call(func, reloc_enabled, import_ids["eq"]);
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "ne" => {
+                        let args = op.args.as_ref().unwrap();
+                        let lhs = locals[&args[0]];
+                        let rhs = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(lhs));
+                        func.instruction(&Instruction::LocalGet(rhs));
+                        emit_call(func, reloc_enabled, import_ids["ne"]);
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
@@ -2968,6 +3221,19 @@ impl WasmBackend {
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
+                    "asyncgen_new" => {
+                        let args = op.args.as_ref().unwrap();
+                        let gen = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(gen));
+                        emit_call(func, reloc_enabled, import_ids["asyncgen_new"]);
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "asyncgen_shutdown" => {
+                        emit_call(func, reloc_enabled, import_ids["asyncgen_shutdown"]);
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
                     "gen_send" => {
                         let args = op.args.as_ref().unwrap();
                         let gen = locals[&args[0]];
@@ -3444,6 +3710,11 @@ impl WasmBackend {
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
+                    "errno_constants" => {
+                        emit_call(func, reloc_enabled, import_ids["errno_constants"]);
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
                     "string_join" => {
                         let args = op.args.as_ref().unwrap();
                         let sep = locals[&args[0]];
@@ -3507,6 +3778,26 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(hay));
                         func.instruction(&Instruction::LocalGet(chars));
                         emit_call(func, reloc_enabled, import_ids["string_strip"]);
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "string_lstrip" => {
+                        let args = op.args.as_ref().unwrap();
+                        let hay = locals[&args[0]];
+                        let chars = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(hay));
+                        func.instruction(&Instruction::LocalGet(chars));
+                        emit_call(func, reloc_enabled, import_ids["string_lstrip"]);
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "string_rstrip" => {
+                        let args = op.args.as_ref().unwrap();
+                        let hay = locals[&args[0]];
+                        let chars = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(hay));
+                        func.instruction(&Instruction::LocalGet(chars));
+                        emit_call(func, reloc_enabled, import_ids["string_rstrip"]);
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
@@ -3883,7 +4174,11 @@ impl WasmBackend {
                             if out != "none" {
                                 let res = locals[out];
                                 func.instruction(&Instruction::LocalSet(res));
+                            } else {
+                                func.instruction(&Instruction::Drop);
                             }
+                        } else {
+                            func.instruction(&Instruction::Drop);
                         }
                     }
                     "isinstance" => {
@@ -5020,6 +5315,24 @@ impl WasmBackend {
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
+                    "module_del_global" => {
+                        let args = op.args.as_ref().unwrap();
+                        let module = locals[&args[0]];
+                        let name = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(module));
+                        func.instruction(&Instruction::LocalGet(name));
+                        emit_call(func, reloc_enabled, import_ids["module_del_global"]);
+                        if let Some(out) = op.out.as_ref() {
+                            if out != "none" {
+                                let res = locals[out];
+                                func.instruction(&Instruction::LocalSet(res));
+                            } else {
+                                func.instruction(&Instruction::Drop);
+                            }
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
                     "module_get_name" => {
                         let args = op.args.as_ref().unwrap();
                         let module = locals[&args[0]];
@@ -5039,6 +5352,16 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(name));
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids["module_set_attr"]);
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "module_import_star" => {
+                        let args = op.args.as_ref().unwrap();
+                        let src = locals[&args[0]];
+                        let dst = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(src));
+                        func.instruction(&Instruction::LocalGet(dst));
+                        emit_call(func, reloc_enabled, import_ids["module_import_star"]);
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
@@ -5076,6 +5399,12 @@ impl WasmBackend {
                                 func.instruction(&Instruction::LocalGet(arg_local));
                                 emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
                             }
+                        }
+                        if task_kind == "future" {
+                            func.instruction(&Instruction::LocalGet(res));
+                            emit_call(func, reloc_enabled, import_ids["cancel_token_get_current"]);
+                            emit_call(func, reloc_enabled, import_ids["cancel_token_new"]);
+                            emit_call(func, reloc_enabled, import_ids["task_register_token_owned"]);
                         }
                     }
                     "state_yield" => {
@@ -5230,6 +5559,13 @@ impl WasmBackend {
                         emit_call(func, reloc_enabled, import_ids["exception_context_set"]);
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                     }
+                    "exception_set_last" => {
+                        let args = op.args.as_ref().unwrap();
+                        let exc = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(exc));
+                        emit_call(func, reloc_enabled, import_ids["exception_set_last"]);
+                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                    }
                     "raise" => {
                         let args = op.args.as_ref().unwrap();
                         let exc = locals[&args[0]];
@@ -5305,6 +5641,54 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(token));
                         emit_call(func, reloc_enabled, import_ids["cancel_token_cancel"]);
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                    }
+                    "future_cancel" => {
+                        let args = op.args.as_ref().unwrap();
+                        let future = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(future));
+                        emit_call(func, reloc_enabled, import_ids["future_cancel"]);
+                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                    }
+                    "future_cancel_msg" => {
+                        let args = op.args.as_ref().unwrap();
+                        let future = locals[&args[0]];
+                        let msg = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(future));
+                        func.instruction(&Instruction::LocalGet(msg));
+                        emit_call(func, reloc_enabled, import_ids["future_cancel_msg"]);
+                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                    }
+                    "future_cancel_clear" => {
+                        let args = op.args.as_ref().unwrap();
+                        let future = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(future));
+                        emit_call(func, reloc_enabled, import_ids["future_cancel_clear"]);
+                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                    }
+                    "thread_submit" => {
+                        let args = op.args.as_ref().unwrap();
+                        let callable = locals[&args[0]];
+                        let call_args = locals[&args[1]];
+                        let call_kwargs = locals[&args[2]];
+                        func.instruction(&Instruction::LocalGet(callable));
+                        func.instruction(&Instruction::LocalGet(call_args));
+                        func.instruction(&Instruction::LocalGet(call_kwargs));
+                        emit_call(func, reloc_enabled, import_ids["thread_submit"]);
+                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                    }
+                    "task_register_token_owned" => {
+                        let args = op.args.as_ref().unwrap();
+                        let task = locals[&args[0]];
+                        let token = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(task));
+                        func.instruction(&Instruction::LocalGet(token));
+                        emit_call(func, reloc_enabled, import_ids["task_register_token_owned"]);
+                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                    }
+                    "spawn" => {
+                        let args = op.args.as_ref().unwrap();
+                        func.instruction(&Instruction::LocalGet(locals[&args[0]]));
+                        emit_call(func, reloc_enabled, import_ids["spawn"]);
                     }
                     "cancel_token_is_cancelled" => {
                         let args = op.args.as_ref().unwrap();
@@ -5476,6 +5860,12 @@ impl WasmBackend {
                 .get("self")
                 .expect("self local missing for stateful wasm");
             let op_count = func_ir.ops.len();
+            let (block_starts, _) = dispatch_blocks
+                .as_ref()
+                .expect("dispatch blocks missing for stateful wasm");
+            let block_count = block_starts.len();
+            let block_map_base_local =
+                block_map_base_local.expect("block map base local missing for stateful wasm");
             let mut label_to_index: HashMap<i64, usize> = HashMap::new();
             for (idx, op) in func_ir.ops.iter().enumerate() {
                 if op.kind == "label" || op.kind == "state_label" {
@@ -5546,17 +5936,16 @@ impl WasmBackend {
                     _ => {}
                 }
             }
-
             let mut state_map: HashMap<i64, usize> = HashMap::new();
             state_map.insert(0, 0);
             for (idx, op) in func_ir.ops.iter().enumerate() {
                 match op.kind.as_str() {
-                    "state_yield" => {
+                    "state_transition" | "state_yield" | "chan_send_yield" | "chan_recv_yield" => {
                         if let Some(state_id) = op.value {
                             state_map.insert(state_id, idx + 1);
                         }
                     }
-                    "state_label" => {
+                    "label" | "state_label" => {
                         if let Some(state_id) = op.value {
                             state_map.insert(state_id, idx);
                         }
@@ -5564,10 +5953,15 @@ impl WasmBackend {
                     _ => {}
                 }
             }
-
-            let dispatch_depths: Vec<u32> = (0..op_count)
-                .map(|idx| (op_count - 1 - idx) as u32)
-                .collect();
+            let mut const_ints: HashMap<String, i64> = HashMap::new();
+            for op in &func_ir.ops {
+                if op.kind != "const" {
+                    continue;
+                }
+                if let (Some(out), Some(value)) = (op.out.as_ref(), op.value) {
+                    const_ints.insert(out.clone(), value);
+                }
+            }
 
             func.instruction(&Instruction::LocalGet(self_param));
             func.instruction(&Instruction::LocalSet(self_ptr_local));
@@ -5609,426 +6003,509 @@ impl WasmBackend {
             }
             func.instruction(&Instruction::End);
 
+            let dispatch_depths: Vec<u32> = (0..block_count)
+                .map(|idx| (block_count - 1 - idx) as u32)
+                .collect();
+
             func.instruction(&Instruction::Loop(BlockType::Empty));
-            for _ in (0..op_count).rev() {
+            for _ in (0..block_count).rev() {
                 func.instruction(&Instruction::Block(BlockType::Empty));
             }
 
             func.instruction(&Instruction::LocalGet(state_local));
+            func.instruction(&Instruction::I64Const(op_count as i64));
+            func.instruction(&Instruction::I64GeU);
+            func.instruction(&Instruction::If(BlockType::Empty));
+            func.instruction(&Instruction::I64Const(block_count as i64));
+            func.instruction(&Instruction::LocalSet(state_local));
+            func.instruction(&Instruction::Else);
+            func.instruction(&Instruction::LocalGet(block_map_base_local));
             func.instruction(&Instruction::I32WrapI64);
-            let targets: Vec<u32> = (0..op_count).map(|idx| idx as u32).collect();
-            func.instruction(&Instruction::BrTable(targets.into(), op_count as u32));
+            func.instruction(&Instruction::LocalGet(state_local));
+            func.instruction(&Instruction::I32WrapI64);
+            func.instruction(&Instruction::I32Const(4));
+            func.instruction(&Instruction::I32Mul);
+            func.instruction(&Instruction::I32Add);
+            func.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
+                align: 2,
+                offset: 0,
+                memory_index: 0,
+            }));
+            func.instruction(&Instruction::I64ExtendI32U);
+            func.instruction(&Instruction::LocalSet(state_local));
+            func.instruction(&Instruction::End);
+
+            func.instruction(&Instruction::LocalGet(state_local));
+            func.instruction(&Instruction::I32WrapI64);
+            let targets: Vec<u32> = (0..block_count).map(|idx| idx as u32).collect();
+            func.instruction(&Instruction::BrTable(targets.into(), block_count as u32));
             func.instruction(&Instruction::End);
 
             let mut scratch_control: Vec<ControlKind> = Vec::new();
             let mut scratch_try: Vec<usize> = Vec::new();
-            let mut const_ints: HashMap<String, i64> = HashMap::new();
 
-            for (idx, op) in func_ir.ops.iter().enumerate() {
-                let depth = dispatch_depths[idx];
-                if op.kind == "const" {
-                    if let (Some(out), Some(value)) = (op.out.as_ref(), op.value) {
-                        const_ints.insert(out.clone(), value);
-                    }
-                }
-                match op.kind.as_str() {
-                    "state_switch" => {
-                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth));
-                    }
-                    "aiter" => {
-                        let args = op.args.as_ref().unwrap();
-                        let iter = locals[&args[0]];
-                        func.instruction(&Instruction::LocalGet(iter));
-                        emit_call(func, reloc_enabled, import_ids["aiter"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
-                    }
-                    "state_transition" => {
-                        let args = op.args.as_ref().unwrap();
-                        let future = locals[&args[0]];
-                        let (slot_bits, pending_state) = if args.len() == 2 {
-                            (None, locals[&args[1]])
-                        } else {
-                            (Some(locals[&args[1]]), locals[&args[2]])
-                        };
-                        let pending_state_name = if args.len() == 2 { &args[1] } else { &args[2] };
-                        let pending_target_idx = const_ints
-                            .get(pending_state_name)
-                            .and_then(|state_id| state_map.get(state_id).copied())
-                            .map(|idx| !(idx as i64));
-                        let next_state_id = op.value.unwrap();
-                        let out = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::LocalGet(self_ptr_local));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
-                        func.instruction(&Instruction::I32Add);
-                        if let Some(pending_encoded) = pending_target_idx {
-                            func.instruction(&Instruction::I64Const(pending_encoded));
-                        } else {
-                            func.instruction(&Instruction::LocalGet(pending_state));
-                            func.instruction(&Instruction::I64Const(INT_MASK as i64));
-                            func.instruction(&Instruction::I64And);
+            for (block_idx, start) in block_starts.iter().enumerate() {
+                let end = block_starts.get(block_idx + 1).copied().unwrap_or(op_count);
+                let depth = dispatch_depths[block_idx];
+                let mut block_terminated = false;
+
+                for idx in *start..end {
+                    let op = &func_ir.ops[idx];
+                    match op.kind.as_str() {
+                        "state_switch" => {
+                            let next_block = idx + 1;
+                            func.instruction(&Instruction::I64Const(next_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth));
+                            block_terminated = true;
                         }
-                        func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
-                        func.instruction(&Instruction::LocalGet(future));
-                        emit_call(func, reloc_enabled, import_ids["future_poll"]);
-                        func.instruction(&Instruction::LocalSet(out));
-                        func.instruction(&Instruction::LocalGet(out));
-                        func.instruction(&Instruction::I64Const(box_pending()));
-                        func.instruction(&Instruction::I64Eq);
-                        func.instruction(&Instruction::If(BlockType::Empty));
-                        func.instruction(&Instruction::LocalGet(self_ptr_local));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::LocalGet(future));
-                        emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-                        emit_call(func, reloc_enabled, import_ids["sleep_register"]);
-                        func.instruction(&Instruction::Drop);
-                        func.instruction(&Instruction::I64Const(box_pending()));
-                        func.instruction(&Instruction::Return);
-                        func.instruction(&Instruction::End);
-                        if let Some(slot) = slot_bits {
+                        "aiter" => {
+                            let args = op.args.as_ref().unwrap();
+                            let iter = locals[&args[0]];
+                            func.instruction(&Instruction::LocalGet(iter));
+                            emit_call(func, reloc_enabled, import_ids["aiter"]);
+                            func.instruction(&Instruction::LocalSet(
+                                locals[op.out.as_ref().unwrap()],
+                            ));
+                        }
+                        "state_transition" => {
+                            let args = op.args.as_ref().unwrap();
+                            let future = locals[&args[0]];
+                            let (slot_bits, pending_state) = if args.len() == 2 {
+                                (None, locals[&args[1]])
+                            } else {
+                                (Some(locals[&args[1]]), locals[&args[2]])
+                            };
+                            let pending_state_name =
+                                if args.len() == 2 { &args[1] } else { &args[2] };
+                            let pending_target_idx = const_ints
+                                .get(pending_state_name)
+                                .and_then(|state_id| state_map.get(state_id).copied())
+                                .map(|idx| !(idx as i64));
+                            let next_state_id = op.value.unwrap();
+                            let out = locals[op.out.as_ref().unwrap()];
+                            let next_block = idx + 1;
+                            func.instruction(&Instruction::I64Const(next_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
                             func.instruction(&Instruction::LocalGet(self_ptr_local));
                             func.instruction(&Instruction::I32WrapI64);
-                            func.instruction(&Instruction::LocalGet(slot));
-                            func.instruction(&Instruction::I64Const(INT_MASK as i64));
-                            func.instruction(&Instruction::I64And);
+                            func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
+                            func.instruction(&Instruction::I32Add);
+                            if let Some(pending_encoded) = pending_target_idx {
+                                func.instruction(&Instruction::I64Const(pending_encoded));
+                            } else {
+                                func.instruction(&Instruction::LocalGet(pending_state));
+                                func.instruction(&Instruction::I64Const(INT_MASK as i64));
+                                func.instruction(&Instruction::I64And);
+                            }
+                            func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
+                                align: 3,
+                                offset: 0,
+                                memory_index: 0,
+                            }));
+                            func.instruction(&Instruction::LocalGet(future));
+                            emit_call(func, reloc_enabled, import_ids["future_poll"]);
+                            func.instruction(&Instruction::LocalSet(out));
                             func.instruction(&Instruction::LocalGet(out));
-                            emit_call(func, reloc_enabled, import_ids["closure_store"]);
+                            func.instruction(&Instruction::I64Const(box_pending()));
+                            func.instruction(&Instruction::I64Eq);
+                            func.instruction(&Instruction::If(BlockType::Empty));
+                            func.instruction(&Instruction::LocalGet(self_ptr_local));
+                            func.instruction(&Instruction::I32WrapI64);
+                            func.instruction(&Instruction::LocalGet(future));
+                            emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+                            emit_call(func, reloc_enabled, import_ids["sleep_register"]);
                             func.instruction(&Instruction::Drop);
+                            func.instruction(&Instruction::I64Const(box_pending()));
+                            func.instruction(&Instruction::Return);
+                            func.instruction(&Instruction::End);
+                            if let Some(slot) = slot_bits {
+                                func.instruction(&Instruction::LocalGet(self_ptr_local));
+                                func.instruction(&Instruction::I32WrapI64);
+                                func.instruction(&Instruction::LocalGet(slot));
+                                func.instruction(&Instruction::I64Const(INT_MASK as i64));
+                                func.instruction(&Instruction::I64And);
+                                func.instruction(&Instruction::LocalGet(out));
+                                emit_call(func, reloc_enabled, import_ids["closure_store"]);
+                                func.instruction(&Instruction::Drop);
+                            }
+                            func.instruction(&Instruction::LocalGet(self_ptr_local));
+                            func.instruction(&Instruction::I32WrapI64);
+                            func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
+                            func.instruction(&Instruction::I32Add);
+                            func.instruction(&Instruction::I64Const(next_state_id));
+                            func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
+                                align: 3,
+                                offset: 0,
+                                memory_index: 0,
+                            }));
+                            func.instruction(&Instruction::Br(depth));
+                            block_terminated = true;
                         }
-                        func.instruction(&Instruction::LocalGet(self_ptr_local));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
-                        func.instruction(&Instruction::I32Add);
-                        func.instruction(&Instruction::I64Const(next_state_id));
-                        func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
-                        func.instruction(&Instruction::Br(depth));
-                    }
-                    "state_yield" => {
-                        let args = op.args.as_ref().unwrap();
-                        let pair = locals[&args[0]];
-                        let resume_state_id = op.value.unwrap();
-                        let resume_encoded = state_map
-                            .get(&resume_state_id)
-                            .copied()
-                            .map(|idx| !(idx as i64));
-                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::LocalGet(self_ptr_local));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
-                        func.instruction(&Instruction::I32Add);
-                        if let Some(encoded) = resume_encoded {
-                            func.instruction(&Instruction::I64Const(encoded));
-                        } else {
-                            func.instruction(&Instruction::I64Const(resume_state_id));
+                        "state_yield" => {
+                            let args = op.args.as_ref().unwrap();
+                            let pair = locals[&args[0]];
+                            let resume_state_id = op.value.unwrap();
+                            let resume_encoded = state_map
+                                .get(&resume_state_id)
+                                .copied()
+                                .map(|idx| !(idx as i64));
+                            let next_block = idx + 1;
+                            func.instruction(&Instruction::I64Const(next_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::LocalGet(self_ptr_local));
+                            func.instruction(&Instruction::I32WrapI64);
+                            func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
+                            func.instruction(&Instruction::I32Add);
+                            if let Some(encoded) = resume_encoded {
+                                func.instruction(&Instruction::I64Const(encoded));
+                            } else {
+                                func.instruction(&Instruction::I64Const(resume_state_id));
+                            }
+                            func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
+                                align: 3,
+                                offset: 0,
+                                memory_index: 0,
+                            }));
+                            func.instruction(&Instruction::LocalGet(pair));
+                            func.instruction(&Instruction::Return);
+                            block_terminated = true;
                         }
-                        func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
-                        func.instruction(&Instruction::LocalGet(pair));
-                        func.instruction(&Instruction::Return);
-                    }
-                    "chan_send_yield" => {
-                        let args = op.args.as_ref().unwrap();
-                        let chan = locals[&args[0]];
-                        let val = locals[&args[1]];
-                        let pending_state = locals[&args[2]];
-                        let pending_state_name = &args[2];
-                        let pending_target_idx = const_ints
-                            .get(pending_state_name)
-                            .and_then(|state_id| state_map.get(state_id).copied())
-                            .map(|idx| !(idx as i64));
-                        let next_state_id = op.value.unwrap();
-                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::LocalGet(self_ptr_local));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
-                        func.instruction(&Instruction::I32Add);
-                        if let Some(pending_encoded) = pending_target_idx {
-                            func.instruction(&Instruction::I64Const(pending_encoded));
-                        } else {
-                            func.instruction(&Instruction::LocalGet(pending_state));
-                            func.instruction(&Instruction::I64Const(INT_MASK as i64));
-                            func.instruction(&Instruction::I64And);
+                        "chan_send_yield" => {
+                            let args = op.args.as_ref().unwrap();
+                            let chan = locals[&args[0]];
+                            let val = locals[&args[1]];
+                            let pending_state = locals[&args[2]];
+                            let pending_state_name = &args[2];
+                            let pending_target_idx = const_ints
+                                .get(pending_state_name)
+                                .and_then(|state_id| state_map.get(state_id).copied())
+                                .map(|idx| !(idx as i64));
+                            let next_state_id = op.value.unwrap();
+                            let next_block = idx + 1;
+                            func.instruction(&Instruction::I64Const(next_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::LocalGet(self_ptr_local));
+                            func.instruction(&Instruction::I32WrapI64);
+                            func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
+                            func.instruction(&Instruction::I32Add);
+                            if let Some(pending_encoded) = pending_target_idx {
+                                func.instruction(&Instruction::I64Const(pending_encoded));
+                            } else {
+                                func.instruction(&Instruction::LocalGet(pending_state));
+                                func.instruction(&Instruction::I64Const(INT_MASK as i64));
+                                func.instruction(&Instruction::I64And);
+                            }
+                            func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
+                                align: 3,
+                                offset: 0,
+                                memory_index: 0,
+                            }));
+                            func.instruction(&Instruction::LocalGet(chan));
+                            func.instruction(&Instruction::I32WrapI64);
+                            func.instruction(&Instruction::LocalGet(val));
+                            emit_call(func, reloc_enabled, import_ids["chan_send"]);
+                            let out = locals[op.out.as_ref().unwrap()];
+                            func.instruction(&Instruction::LocalSet(out));
+                            func.instruction(&Instruction::LocalGet(out));
+                            func.instruction(&Instruction::I64Const(box_pending()));
+                            func.instruction(&Instruction::I64Eq);
+                            func.instruction(&Instruction::If(BlockType::Empty));
+                            func.instruction(&Instruction::I64Const(box_pending()));
+                            func.instruction(&Instruction::Return);
+                            func.instruction(&Instruction::End);
+                            func.instruction(&Instruction::LocalGet(self_ptr_local));
+                            func.instruction(&Instruction::I32WrapI64);
+                            func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
+                            func.instruction(&Instruction::I32Add);
+                            func.instruction(&Instruction::I64Const(next_state_id));
+                            func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
+                                align: 3,
+                                offset: 0,
+                                memory_index: 0,
+                            }));
+                            func.instruction(&Instruction::Br(depth));
+                            block_terminated = true;
                         }
-                        func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
-                        func.instruction(&Instruction::LocalGet(chan));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::LocalGet(val));
-                        emit_call(func, reloc_enabled, import_ids["chan_send"]);
-                        let out = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(out));
-                        func.instruction(&Instruction::LocalGet(out));
-                        func.instruction(&Instruction::I64Const(box_pending()));
-                        func.instruction(&Instruction::I64Eq);
-                        func.instruction(&Instruction::If(BlockType::Empty));
-                        func.instruction(&Instruction::I64Const(box_pending()));
-                        func.instruction(&Instruction::Return);
-                        func.instruction(&Instruction::End);
-                        func.instruction(&Instruction::LocalGet(self_ptr_local));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
-                        func.instruction(&Instruction::I32Add);
-                        func.instruction(&Instruction::I64Const(next_state_id));
-                        func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
-                        func.instruction(&Instruction::Br(depth));
-                    }
-                    "chan_recv_yield" => {
-                        let args = op.args.as_ref().unwrap();
-                        let chan = locals[&args[0]];
-                        let pending_state = locals[&args[1]];
-                        let pending_state_name = &args[1];
-                        let pending_target_idx = const_ints
-                            .get(pending_state_name)
-                            .and_then(|state_id| state_map.get(state_id).copied())
-                            .map(|idx| !(idx as i64));
-                        let next_state_id = op.value.unwrap();
-                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::LocalGet(self_ptr_local));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
-                        func.instruction(&Instruction::I32Add);
-                        if let Some(pending_encoded) = pending_target_idx {
-                            func.instruction(&Instruction::I64Const(pending_encoded));
-                        } else {
-                            func.instruction(&Instruction::LocalGet(pending_state));
-                            func.instruction(&Instruction::I64Const(INT_MASK as i64));
-                            func.instruction(&Instruction::I64And);
+                        "chan_recv_yield" => {
+                            let args = op.args.as_ref().unwrap();
+                            let chan = locals[&args[0]];
+                            let pending_state = locals[&args[1]];
+                            let pending_state_name = &args[1];
+                            let pending_target_idx = const_ints
+                                .get(pending_state_name)
+                                .and_then(|state_id| state_map.get(state_id).copied())
+                                .map(|idx| !(idx as i64));
+                            let next_state_id = op.value.unwrap();
+                            let next_block = idx + 1;
+                            func.instruction(&Instruction::I64Const(next_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::LocalGet(self_ptr_local));
+                            func.instruction(&Instruction::I32WrapI64);
+                            func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
+                            func.instruction(&Instruction::I32Add);
+                            if let Some(pending_encoded) = pending_target_idx {
+                                func.instruction(&Instruction::I64Const(pending_encoded));
+                            } else {
+                                func.instruction(&Instruction::LocalGet(pending_state));
+                                func.instruction(&Instruction::I64Const(INT_MASK as i64));
+                                func.instruction(&Instruction::I64And);
+                            }
+                            func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
+                                align: 3,
+                                offset: 0,
+                                memory_index: 0,
+                            }));
+                            func.instruction(&Instruction::LocalGet(chan));
+                            func.instruction(&Instruction::I32WrapI64);
+                            emit_call(func, reloc_enabled, import_ids["chan_recv"]);
+                            let out = locals[op.out.as_ref().unwrap()];
+                            func.instruction(&Instruction::LocalSet(out));
+                            func.instruction(&Instruction::LocalGet(out));
+                            func.instruction(&Instruction::I64Const(box_pending()));
+                            func.instruction(&Instruction::I64Eq);
+                            func.instruction(&Instruction::If(BlockType::Empty));
+                            func.instruction(&Instruction::I64Const(box_pending()));
+                            func.instruction(&Instruction::Return);
+                            func.instruction(&Instruction::End);
+                            func.instruction(&Instruction::LocalGet(self_ptr_local));
+                            func.instruction(&Instruction::I32WrapI64);
+                            func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
+                            func.instruction(&Instruction::I32Add);
+                            func.instruction(&Instruction::I64Const(next_state_id));
+                            func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
+                                align: 3,
+                                offset: 0,
+                                memory_index: 0,
+                            }));
+                            func.instruction(&Instruction::Br(depth));
+                            block_terminated = true;
                         }
-                        func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
-                        func.instruction(&Instruction::LocalGet(chan));
-                        func.instruction(&Instruction::I32WrapI64);
-                        emit_call(func, reloc_enabled, import_ids["chan_recv"]);
-                        let out = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(out));
-                        func.instruction(&Instruction::LocalGet(out));
-                        func.instruction(&Instruction::I64Const(box_pending()));
-                        func.instruction(&Instruction::I64Eq);
-                        func.instruction(&Instruction::If(BlockType::Empty));
-                        func.instruction(&Instruction::I64Const(box_pending()));
-                        func.instruction(&Instruction::Return);
-                        func.instruction(&Instruction::End);
-                        func.instruction(&Instruction::LocalGet(self_ptr_local));
-                        func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
-                        func.instruction(&Instruction::I32Add);
-                        func.instruction(&Instruction::I64Const(next_state_id));
-                        func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
-                        func.instruction(&Instruction::Br(depth));
-                    }
-                    "if" => {
-                        let args = op.args.as_ref().unwrap();
-                        let cond = locals[&args[0]];
-                        let else_idx = else_for_if.get(&idx).copied();
-                        let end_idx = end_for_if.get(&idx).copied().expect("if without end_if");
-                        let false_target = if let Some(else_pos) = else_idx {
-                            else_pos + 1
-                        } else {
-                            end_idx + 1
-                        };
-                        func.instruction(&Instruction::LocalGet(cond));
-                        emit_call(func, reloc_enabled, import_ids["is_truthy"]);
-                        func.instruction(&Instruction::I64Const(0));
-                        func.instruction(&Instruction::I64Ne);
-                        func.instruction(&Instruction::If(BlockType::Empty));
-                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth + 1));
-                        func.instruction(&Instruction::Else);
-                        func.instruction(&Instruction::I64Const(false_target as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth + 1));
-                        func.instruction(&Instruction::End);
-                    }
-                    "else" => {
-                        let end_idx = end_for_else
-                            .get(&idx)
-                            .copied()
-                            .expect("else without end_if");
-                        func.instruction(&Instruction::I64Const((end_idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth));
-                    }
-                    "end_if" => {
-                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth));
-                    }
-                    "loop_start" => {
-                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth));
-                    }
-                    "loop_index_start" => {
-                        let args = op.args.as_ref().unwrap();
-                        let start = locals[&args[0]];
-                        let out = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalGet(start));
-                        func.instruction(&Instruction::LocalSet(out));
-                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth));
-                    }
-                    "loop_break_if_true" => {
-                        let args = op.args.as_ref().unwrap();
-                        let cond = locals[&args[0]];
-                        let end_idx = loop_break_target
-                            .get(&idx)
-                            .copied()
-                            .expect("loop break without loop");
-                        func.instruction(&Instruction::LocalGet(cond));
-                        emit_call(func, reloc_enabled, import_ids["is_truthy"]);
-                        func.instruction(&Instruction::I64Const(0));
-                        func.instruction(&Instruction::I64Ne);
-                        func.instruction(&Instruction::If(BlockType::Empty));
-                        func.instruction(&Instruction::I64Const((end_idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth + 1));
-                        func.instruction(&Instruction::Else);
-                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth + 1));
-                        func.instruction(&Instruction::End);
-                    }
-                    "loop_break_if_false" => {
-                        let args = op.args.as_ref().unwrap();
-                        let cond = locals[&args[0]];
-                        let end_idx = loop_break_target
-                            .get(&idx)
-                            .copied()
-                            .expect("loop break without loop");
-                        func.instruction(&Instruction::LocalGet(cond));
-                        emit_call(func, reloc_enabled, import_ids["is_truthy"]);
-                        func.instruction(&Instruction::I64Const(0));
-                        func.instruction(&Instruction::I64Eq);
-                        func.instruction(&Instruction::If(BlockType::Empty));
-                        func.instruction(&Instruction::I64Const((end_idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth + 1));
-                        func.instruction(&Instruction::Else);
-                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth + 1));
-                        func.instruction(&Instruction::End);
-                    }
-                    "loop_break" => {
-                        let end_idx = loop_break_target
-                            .get(&idx)
-                            .copied()
-                            .expect("loop break without loop");
-                        func.instruction(&Instruction::I64Const((end_idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth + 1));
-                    }
-                    "loop_continue" => {
-                        let start_idx = loop_continue_target
-                            .get(&idx)
-                            .copied()
-                            .expect("loop continue without loop");
-                        func.instruction(&Instruction::I64Const((start_idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth));
-                    }
-                    "loop_end" => {
-                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth));
-                    }
-                    "jump" => {
-                        let target_label = op.value.expect("jump missing label");
-                        let target_idx = label_to_index
-                            .get(&target_label)
-                            .copied()
-                            .expect("unknown jump label");
-                        func.instruction(&Instruction::I64Const(target_idx as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth));
-                    }
-                    "try_start" | "try_end" | "label" | "state_label" => {
-                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth));
-                    }
-                    "check_exception" => {
-                        let target_label = op.value.expect("check_exception missing label");
-                        let target_idx = label_to_index
-                            .get(&target_label)
-                            .copied()
-                            .expect("unknown check_exception label");
-                        emit_call(func, reloc_enabled, import_ids["exception_pending"]);
-                        func.instruction(&Instruction::I64Const(0));
-                        func.instruction(&Instruction::I64Ne);
-                        func.instruction(&Instruction::If(BlockType::Empty));
-                        func.instruction(&Instruction::I64Const(target_idx as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth + 1));
-                        func.instruction(&Instruction::Else);
-                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth + 1));
-                        func.instruction(&Instruction::End);
-                    }
-                    "ret" => {
-                        func.instruction(&Instruction::LocalGet(locals[op.var.as_ref().unwrap()]));
-                        func.instruction(&Instruction::Return);
-                    }
-                    "ret_void" => {
-                        if type_idx == 0 || type_idx == 2 {
+                        "if" => {
+                            let args = op.args.as_ref().unwrap();
+                            let cond = locals[&args[0]];
+                            let else_idx = else_for_if.get(&idx).copied();
+                            let end_idx = end_for_if.get(&idx).copied().expect("if without end_if");
+                            let false_target = if let Some(else_pos) = else_idx {
+                                else_pos + 1
+                            } else {
+                                end_idx + 1
+                            };
+                            let true_block = idx + 1;
+                            let false_block = false_target;
+                            func.instruction(&Instruction::LocalGet(cond));
+                            emit_call(func, reloc_enabled, import_ids["is_truthy"]);
                             func.instruction(&Instruction::I64Const(0));
+                            func.instruction(&Instruction::I64Ne);
+                            func.instruction(&Instruction::If(BlockType::Empty));
+                            func.instruction(&Instruction::I64Const(true_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth + 1));
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::I64Const(false_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth + 1));
+                            func.instruction(&Instruction::End);
+                            block_terminated = true;
                         }
-                        func.instruction(&Instruction::Return);
+                        "else" => {
+                            let end_idx = end_for_else
+                                .get(&idx)
+                                .copied()
+                                .expect("else without end_if");
+                            let end_block = end_idx + 1;
+                            func.instruction(&Instruction::I64Const(end_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth));
+                            block_terminated = true;
+                        }
+                        "end_if" => {
+                            let next_block = idx + 1;
+                            func.instruction(&Instruction::I64Const(next_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth));
+                            block_terminated = true;
+                        }
+                        "loop_start" => {
+                            let next_block = idx + 1;
+                            func.instruction(&Instruction::I64Const(next_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth));
+                            block_terminated = true;
+                        }
+                        "loop_index_start" => {
+                            let args = op.args.as_ref().unwrap();
+                            let start = locals[&args[0]];
+                            let out = locals[op.out.as_ref().unwrap()];
+                            func.instruction(&Instruction::LocalGet(start));
+                            func.instruction(&Instruction::LocalSet(out));
+                            let next_block = idx + 1;
+                            func.instruction(&Instruction::I64Const(next_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth));
+                            block_terminated = true;
+                        }
+                        "loop_break_if_true" => {
+                            let args = op.args.as_ref().unwrap();
+                            let cond = locals[&args[0]];
+                            let end_idx = loop_break_target
+                                .get(&idx)
+                                .copied()
+                                .expect("loop break without loop");
+                            let end_block = end_idx + 1;
+                            let next_block = idx + 1;
+                            func.instruction(&Instruction::LocalGet(cond));
+                            emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+                            func.instruction(&Instruction::I64Const(0));
+                            func.instruction(&Instruction::I64Ne);
+                            func.instruction(&Instruction::If(BlockType::Empty));
+                            func.instruction(&Instruction::I64Const(end_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth + 1));
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::I64Const(next_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth + 1));
+                            func.instruction(&Instruction::End);
+                            block_terminated = true;
+                        }
+                        "loop_break_if_false" => {
+                            let args = op.args.as_ref().unwrap();
+                            let cond = locals[&args[0]];
+                            let end_idx = loop_break_target
+                                .get(&idx)
+                                .copied()
+                                .expect("loop break without loop");
+                            let end_block = end_idx + 1;
+                            let next_block = idx + 1;
+                            func.instruction(&Instruction::LocalGet(cond));
+                            emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+                            func.instruction(&Instruction::I64Const(0));
+                            func.instruction(&Instruction::I64Eq);
+                            func.instruction(&Instruction::If(BlockType::Empty));
+                            func.instruction(&Instruction::I64Const(end_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth + 1));
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::I64Const(next_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth + 1));
+                            func.instruction(&Instruction::End);
+                            block_terminated = true;
+                        }
+                        "loop_break" => {
+                            let end_idx = loop_break_target
+                                .get(&idx)
+                                .copied()
+                                .expect("loop break without loop");
+                            let end_block = end_idx + 1;
+                            func.instruction(&Instruction::I64Const(end_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth));
+                            block_terminated = true;
+                        }
+                        "loop_continue" => {
+                            let start_idx = loop_continue_target
+                                .get(&idx)
+                                .copied()
+                                .expect("loop continue without loop");
+                            let start_block = start_idx + 1;
+                            func.instruction(&Instruction::I64Const(start_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth));
+                            block_terminated = true;
+                        }
+                        "loop_end" => {
+                            let next_block = idx + 1;
+                            func.instruction(&Instruction::I64Const(next_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth));
+                            block_terminated = true;
+                        }
+                        "jump" => {
+                            let target_label = op.value.expect("jump missing label");
+                            let target_idx = label_to_index
+                                .get(&target_label)
+                                .copied()
+                                .expect("unknown jump label");
+                            let target_block = target_idx;
+                            func.instruction(&Instruction::I64Const(target_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth));
+                            block_terminated = true;
+                        }
+                        "try_start" | "try_end" | "label" | "state_label" => {
+                            let next_block = idx + 1;
+                            func.instruction(&Instruction::I64Const(next_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth));
+                            block_terminated = true;
+                        }
+                        "check_exception" => {
+                            let target_label = op.value.expect("check_exception missing label");
+                            let target_idx = label_to_index
+                                .get(&target_label)
+                                .copied()
+                                .expect("unknown check_exception label");
+                            let target_block = target_idx;
+                            let next_block = idx + 1;
+                            emit_call(func, reloc_enabled, import_ids["exception_pending"]);
+                            func.instruction(&Instruction::I64Const(0));
+                            func.instruction(&Instruction::I64Ne);
+                            func.instruction(&Instruction::If(BlockType::Empty));
+                            func.instruction(&Instruction::I64Const(target_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth + 1));
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::I64Const(next_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth + 1));
+                            func.instruction(&Instruction::End);
+                            block_terminated = true;
+                        }
+                        "ret" => {
+                            func.instruction(&Instruction::LocalGet(
+                                locals[op.var.as_ref().unwrap()],
+                            ));
+                            func.instruction(&Instruction::Return);
+                            block_terminated = true;
+                        }
+                        "ret_void" => {
+                            if type_idx == 0 || type_idx == 2 {
+                                func.instruction(&Instruction::I64Const(0));
+                            }
+                            func.instruction(&Instruction::Return);
+                            block_terminated = true;
+                        }
+                        _ => {
+                            emit_ops(
+                                func,
+                                std::slice::from_ref(op),
+                                &mut scratch_control,
+                                &mut scratch_try,
+                                &mut label_stack,
+                                &mut label_depths,
+                            );
+                        }
                     }
-                    _ => {
-                        emit_ops(
-                            func,
-                            std::slice::from_ref(op),
-                            &mut scratch_control,
-                            &mut scratch_try,
-                            &mut label_stack,
-                            &mut label_depths,
-                        );
-                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth));
+                    if block_terminated {
+                        break;
                     }
                 }
-                if idx + 1 < op_count {
+
+                let next_state = end;
+                if !block_terminated {
+                    func.instruction(&Instruction::I64Const(next_state as i64));
+                    func.instruction(&Instruction::LocalSet(state_local));
+                }
+                func.instruction(&Instruction::Br(depth));
+
+                if block_idx + 1 < block_count {
                     func.instruction(&Instruction::End);
                 }
             }
 
+            func.instruction(&Instruction::Br(0));
             func.instruction(&Instruction::End);
             func.instruction(&Instruction::I64Const(box_none()));
             func.instruction(&Instruction::Return);
@@ -6037,6 +6514,12 @@ impl WasmBackend {
             let func = &mut func;
             let state_local = state_local.expect("state local missing for jumpful wasm");
             let op_count = func_ir.ops.len();
+            let (block_starts, _) = dispatch_blocks
+                .as_ref()
+                .expect("dispatch blocks missing for jumpful wasm");
+            let block_count = block_starts.len();
+            let block_map_base_local =
+                block_map_base_local.expect("block map base local missing for jumpful wasm");
             let mut label_to_index: HashMap<i64, usize> = HashMap::new();
             for (idx, op) in func_ir.ops.iter().enumerate() {
                 if op.kind == "label" {
@@ -6108,219 +6591,291 @@ impl WasmBackend {
                 }
             }
 
-            let dispatch_depths: Vec<u32> = (0..op_count)
-                .map(|idx| (op_count - 1 - idx) as u32)
-                .collect();
             let mut scratch_control: Vec<ControlKind> = Vec::new();
             let mut scratch_try: Vec<usize> = Vec::new();
             let mut label_stack: Vec<i64> = Vec::new();
             let mut label_depths: HashMap<i64, usize> = HashMap::new();
 
+            let dispatch_depths: Vec<u32> = (0..block_count)
+                .map(|idx| (block_count - 1 - idx) as u32)
+                .collect();
+
             func.instruction(&Instruction::I64Const(0));
             func.instruction(&Instruction::LocalSet(state_local));
 
             func.instruction(&Instruction::Loop(BlockType::Empty));
-            for _ in (0..op_count).rev() {
+            for _ in (0..block_count).rev() {
                 func.instruction(&Instruction::Block(BlockType::Empty));
             }
 
             func.instruction(&Instruction::LocalGet(state_local));
+            func.instruction(&Instruction::I64Const(op_count as i64));
+            func.instruction(&Instruction::I64GeU);
+            func.instruction(&Instruction::If(BlockType::Empty));
+            func.instruction(&Instruction::I64Const(block_count as i64));
+            func.instruction(&Instruction::LocalSet(state_local));
+            func.instruction(&Instruction::Else);
+            func.instruction(&Instruction::LocalGet(block_map_base_local));
             func.instruction(&Instruction::I32WrapI64);
-            let targets: Vec<u32> = (0..op_count).map(|idx| idx as u32).collect();
-            func.instruction(&Instruction::BrTable(targets.into(), op_count as u32));
+            func.instruction(&Instruction::LocalGet(state_local));
+            func.instruction(&Instruction::I32WrapI64);
+            func.instruction(&Instruction::I32Const(4));
+            func.instruction(&Instruction::I32Mul);
+            func.instruction(&Instruction::I32Add);
+            func.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
+                align: 2,
+                offset: 0,
+                memory_index: 0,
+            }));
+            func.instruction(&Instruction::I64ExtendI32U);
+            func.instruction(&Instruction::LocalSet(state_local));
             func.instruction(&Instruction::End);
 
-            for (idx, op) in func_ir.ops.iter().enumerate() {
-                let depth = dispatch_depths[idx];
-                match op.kind.as_str() {
-                    "state_switch" | "state_transition" | "state_yield" | "chan_send_yield"
-                    | "chan_recv_yield" => {
-                        panic!(
-                            "jumpful wasm path hit stateful op {} in {}",
-                            op.kind, func_ir.name
-                        );
-                    }
-                    "if" => {
-                        let args = op.args.as_ref().unwrap();
-                        let cond = locals[&args[0]];
-                        let else_idx = else_for_if.get(&idx).copied();
-                        let end_idx = end_for_if.get(&idx).copied().expect("if without end_if");
-                        let false_target = if let Some(else_pos) = else_idx {
-                            else_pos + 1
-                        } else {
-                            end_idx + 1
-                        };
-                        func.instruction(&Instruction::LocalGet(cond));
-                        emit_call(func, reloc_enabled, import_ids["is_truthy"]);
-                        func.instruction(&Instruction::I64Const(0));
-                        func.instruction(&Instruction::I64Ne);
-                        func.instruction(&Instruction::If(BlockType::Empty));
-                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth + 1));
-                        func.instruction(&Instruction::Else);
-                        func.instruction(&Instruction::I64Const(false_target as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth + 1));
-                        func.instruction(&Instruction::End);
-                    }
-                    "else" => {
-                        let end_idx = end_for_else
-                            .get(&idx)
-                            .copied()
-                            .expect("else without end_if");
-                        func.instruction(&Instruction::I64Const((end_idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth));
-                    }
-                    "end_if" => {
-                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth));
-                    }
-                    "loop_start" => {
-                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth));
-                    }
-                    "loop_index_start" => {
-                        let args = op.args.as_ref().unwrap();
-                        let start = locals[&args[0]];
-                        let out = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalGet(start));
-                        func.instruction(&Instruction::LocalSet(out));
-                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth));
-                    }
-                    "loop_break_if_true" => {
-                        let args = op.args.as_ref().unwrap();
-                        let cond = locals[&args[0]];
-                        let end_idx = loop_break_target
-                            .get(&idx)
-                            .copied()
-                            .expect("loop break without loop");
-                        func.instruction(&Instruction::LocalGet(cond));
-                        emit_call(func, reloc_enabled, import_ids["is_truthy"]);
-                        func.instruction(&Instruction::I64Const(0));
-                        func.instruction(&Instruction::I64Ne);
-                        func.instruction(&Instruction::If(BlockType::Empty));
-                        func.instruction(&Instruction::I64Const((end_idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth + 1));
-                        func.instruction(&Instruction::Else);
-                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth + 1));
-                        func.instruction(&Instruction::End);
-                    }
-                    "loop_break_if_false" => {
-                        let args = op.args.as_ref().unwrap();
-                        let cond = locals[&args[0]];
-                        let end_idx = loop_break_target
-                            .get(&idx)
-                            .copied()
-                            .expect("loop break without loop");
-                        func.instruction(&Instruction::LocalGet(cond));
-                        emit_call(func, reloc_enabled, import_ids["is_truthy"]);
-                        func.instruction(&Instruction::I64Const(0));
-                        func.instruction(&Instruction::I64Eq);
-                        func.instruction(&Instruction::If(BlockType::Empty));
-                        func.instruction(&Instruction::I64Const((end_idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth + 1));
-                        func.instruction(&Instruction::Else);
-                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth + 1));
-                        func.instruction(&Instruction::End);
-                    }
-                    "loop_break" => {
-                        let end_idx = loop_break_target
-                            .get(&idx)
-                            .copied()
-                            .expect("loop break without loop");
-                        func.instruction(&Instruction::I64Const((end_idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth));
-                    }
-                    "loop_continue" => {
-                        let start_idx = loop_continue_target
-                            .get(&idx)
-                            .copied()
-                            .expect("loop continue without loop");
-                        func.instruction(&Instruction::I64Const((start_idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth));
-                    }
-                    "loop_end" => {
-                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth));
-                    }
-                    "jump" => {
-                        let target_label = op.value.expect("jump missing label");
-                        let target_idx = label_to_index
-                            .get(&target_label)
-                            .copied()
-                            .expect("unknown jump label");
-                        func.instruction(&Instruction::I64Const(target_idx as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth));
-                    }
-                    "try_start" | "try_end" | "label" => {
-                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth));
-                    }
-                    "check_exception" => {
-                        let target_label = op.value.expect("check_exception missing label");
-                        let target_idx = label_to_index
-                            .get(&target_label)
-                            .copied()
-                            .expect("unknown check_exception label");
-                        emit_call(func, reloc_enabled, import_ids["exception_pending"]);
-                        func.instruction(&Instruction::I64Const(0));
-                        func.instruction(&Instruction::I64Ne);
-                        func.instruction(&Instruction::If(BlockType::Empty));
-                        func.instruction(&Instruction::I64Const(target_idx as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth + 1));
-                        func.instruction(&Instruction::Else);
-                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth + 1));
-                        func.instruction(&Instruction::End);
-                    }
-                    "ret" => {
-                        func.instruction(&Instruction::LocalGet(locals[op.var.as_ref().unwrap()]));
-                        func.instruction(&Instruction::Return);
-                    }
-                    "ret_void" => {
-                        if type_idx == 0 || type_idx == 2 {
-                            func.instruction(&Instruction::I64Const(0));
+            func.instruction(&Instruction::LocalGet(state_local));
+            func.instruction(&Instruction::I32WrapI64);
+            let targets: Vec<u32> = (0..block_count).map(|idx| idx as u32).collect();
+            func.instruction(&Instruction::BrTable(targets.into(), block_count as u32));
+            func.instruction(&Instruction::End);
+
+            for (block_idx, start) in block_starts.iter().enumerate() {
+                let end = block_starts.get(block_idx + 1).copied().unwrap_or(op_count);
+                let depth = dispatch_depths[block_idx];
+                let mut block_terminated = false;
+
+                for idx in *start..end {
+                    let op = &func_ir.ops[idx];
+                    match op.kind.as_str() {
+                        "state_switch" | "state_transition" | "state_yield" | "chan_send_yield"
+                        | "chan_recv_yield" => {
+                            panic!(
+                                "jumpful wasm path hit stateful op {} in {}",
+                                op.kind, func_ir.name
+                            );
                         }
-                        func.instruction(&Instruction::Return);
+                        "if" => {
+                            let args = op.args.as_ref().unwrap();
+                            let cond = locals[&args[0]];
+                            let else_idx = else_for_if.get(&idx).copied();
+                            let end_idx = end_for_if.get(&idx).copied().expect("if without end_if");
+                            let false_target = if let Some(else_pos) = else_idx {
+                                else_pos + 1
+                            } else {
+                                end_idx + 1
+                            };
+                            let true_block = idx + 1;
+                            let false_block = false_target;
+                            func.instruction(&Instruction::LocalGet(cond));
+                            emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+                            func.instruction(&Instruction::I64Const(0));
+                            func.instruction(&Instruction::I64Ne);
+                            func.instruction(&Instruction::If(BlockType::Empty));
+                            func.instruction(&Instruction::I64Const(true_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth + 1));
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::I64Const(false_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth + 1));
+                            func.instruction(&Instruction::End);
+                            block_terminated = true;
+                        }
+                        "else" => {
+                            let end_idx = end_for_else
+                                .get(&idx)
+                                .copied()
+                                .expect("else without end_if");
+                            let end_block = end_idx + 1;
+                            func.instruction(&Instruction::I64Const(end_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth));
+                            block_terminated = true;
+                        }
+                        "end_if" => {
+                            let next_block = idx + 1;
+                            func.instruction(&Instruction::I64Const(next_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth));
+                            block_terminated = true;
+                        }
+                        "loop_start" => {
+                            let next_block = idx + 1;
+                            func.instruction(&Instruction::I64Const(next_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth));
+                            block_terminated = true;
+                        }
+                        "loop_index_start" => {
+                            let args = op.args.as_ref().unwrap();
+                            let start = locals[&args[0]];
+                            let out = locals[op.out.as_ref().unwrap()];
+                            func.instruction(&Instruction::LocalGet(start));
+                            func.instruction(&Instruction::LocalSet(out));
+                            let next_block = idx + 1;
+                            func.instruction(&Instruction::I64Const(next_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth));
+                            block_terminated = true;
+                        }
+                        "loop_break_if_true" => {
+                            let args = op.args.as_ref().unwrap();
+                            let cond = locals[&args[0]];
+                            let end_idx = loop_break_target
+                                .get(&idx)
+                                .copied()
+                                .expect("loop break without loop");
+                            let end_block = end_idx + 1;
+                            let next_block = idx + 1;
+                            func.instruction(&Instruction::LocalGet(cond));
+                            emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+                            func.instruction(&Instruction::I64Const(0));
+                            func.instruction(&Instruction::I64Ne);
+                            func.instruction(&Instruction::If(BlockType::Empty));
+                            func.instruction(&Instruction::I64Const(end_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth + 1));
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::I64Const(next_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth + 1));
+                            func.instruction(&Instruction::End);
+                            block_terminated = true;
+                        }
+                        "loop_break_if_false" => {
+                            let args = op.args.as_ref().unwrap();
+                            let cond = locals[&args[0]];
+                            let end_idx = loop_break_target
+                                .get(&idx)
+                                .copied()
+                                .expect("loop break without loop");
+                            let end_block = end_idx + 1;
+                            let next_block = idx + 1;
+                            func.instruction(&Instruction::LocalGet(cond));
+                            emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+                            func.instruction(&Instruction::I64Const(0));
+                            func.instruction(&Instruction::I64Eq);
+                            func.instruction(&Instruction::If(BlockType::Empty));
+                            func.instruction(&Instruction::I64Const(end_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth + 1));
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::I64Const(next_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth + 1));
+                            func.instruction(&Instruction::End);
+                            block_terminated = true;
+                        }
+                        "loop_break" => {
+                            let end_idx = loop_break_target
+                                .get(&idx)
+                                .copied()
+                                .expect("loop break without loop");
+                            let end_block = end_idx + 1;
+                            func.instruction(&Instruction::I64Const(end_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth));
+                            block_terminated = true;
+                        }
+                        "loop_continue" => {
+                            let start_idx = loop_continue_target
+                                .get(&idx)
+                                .copied()
+                                .expect("loop continue without loop");
+                            let start_block = start_idx + 1;
+                            func.instruction(&Instruction::I64Const(start_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth));
+                            block_terminated = true;
+                        }
+                        "loop_end" => {
+                            let next_block = idx + 1;
+                            func.instruction(&Instruction::I64Const(next_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth));
+                            block_terminated = true;
+                        }
+                        "jump" => {
+                            let target_label = op.value.expect("jump missing label");
+                            let target_idx = label_to_index
+                                .get(&target_label)
+                                .copied()
+                                .expect("unknown jump label");
+                            let target_block = target_idx;
+                            func.instruction(&Instruction::I64Const(target_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth));
+                            block_terminated = true;
+                        }
+                        "try_start" | "try_end" | "label" => {
+                            let next_block = idx + 1;
+                            func.instruction(&Instruction::I64Const(next_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth));
+                            block_terminated = true;
+                        }
+                        "check_exception" => {
+                            let target_label = op.value.expect("check_exception missing label");
+                            let target_idx = label_to_index
+                                .get(&target_label)
+                                .copied()
+                                .expect("unknown check_exception label");
+                            let target_block = target_idx;
+                            let next_block = idx + 1;
+                            emit_call(func, reloc_enabled, import_ids["exception_pending"]);
+                            func.instruction(&Instruction::I64Const(0));
+                            func.instruction(&Instruction::I64Ne);
+                            func.instruction(&Instruction::If(BlockType::Empty));
+                            func.instruction(&Instruction::I64Const(target_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth + 1));
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::I64Const(next_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth + 1));
+                            func.instruction(&Instruction::End);
+                            block_terminated = true;
+                        }
+                        "ret" => {
+                            func.instruction(&Instruction::LocalGet(
+                                locals[op.var.as_ref().unwrap()],
+                            ));
+                            func.instruction(&Instruction::Return);
+                            block_terminated = true;
+                        }
+                        "ret_void" => {
+                            if type_idx == 0 || type_idx == 2 {
+                                func.instruction(&Instruction::I64Const(0));
+                            }
+                            func.instruction(&Instruction::Return);
+                            block_terminated = true;
+                        }
+                        _ => {
+                            emit_ops(
+                                func,
+                                std::slice::from_ref(op),
+                                &mut scratch_control,
+                                &mut scratch_try,
+                                &mut label_stack,
+                                &mut label_depths,
+                            );
+                        }
                     }
-                    _ => {
-                        emit_ops(
-                            func,
-                            std::slice::from_ref(op),
-                            &mut scratch_control,
-                            &mut scratch_try,
-                            &mut label_stack,
-                            &mut label_depths,
-                        );
-                        func.instruction(&Instruction::I64Const((idx + 1) as i64));
-                        func.instruction(&Instruction::LocalSet(state_local));
-                        func.instruction(&Instruction::Br(depth));
+                    if block_terminated {
+                        break;
                     }
                 }
-                if idx + 1 < op_count {
+
+                let next_state = end;
+                if !block_terminated {
+                    func.instruction(&Instruction::I64Const(next_state as i64));
+                    func.instruction(&Instruction::LocalSet(state_local));
+                }
+                func.instruction(&Instruction::Br(depth));
+
+                if block_idx + 1 < block_count {
                     func.instruction(&Instruction::End);
                 }
             }
-
+            func.instruction(&Instruction::Br(0));
             func.instruction(&Instruction::End);
             func.instruction(&Instruction::I64Const(box_none()));
             func.instruction(&Instruction::Return);

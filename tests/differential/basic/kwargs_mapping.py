@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for kwargs mapping."""
+
+
 class Mapping:
     def __init__(self):
         self.data = {"a": 1, "b": 2}

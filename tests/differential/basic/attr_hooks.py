@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for attr hooks."""
+
 calls = []
 
 

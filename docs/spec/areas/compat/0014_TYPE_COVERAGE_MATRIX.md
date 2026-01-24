@@ -13,16 +13,16 @@
 | int | arithmetic, comparisons, hash | Supported | P0 | TC0 | runtime |
 | float | arithmetic, comparisons, repr | Supported | P0 | TC0 | runtime |
 | complex | arithmetic, comparisons, repr | Planned | P1 | TC2 | runtime |
-| str | len, index/slice via `__index__`, iter, find/split/replace/startswith/endswith/count/join/strip/lower/upper/capitalize, concat, repr | Partial | P0 | TC1 | runtime/frontend |
-| bytes | len, index/slice via `__index__`, iter, find (bytes-like/int needles)/count/startswith/endswith/split/replace (start/end slices), concat | Partial | P0 | TC1 | runtime |
-| bytearray | mutability, index/slice via `__index__`, slice assign/delete, iter, find (bytes-like/int needles)/count/startswith/endswith/split/replace (start/end slices), concat, in-place concat/repeat | Partial | P0 | TC1 | runtime |
+| str | len, index/slice via `__index__`, iter, find/split/splitlines/partition/rpartition/replace/startswith/endswith/count/join/strip/lstrip/rstrip/lower/upper/capitalize/encode, concat, repr | Partial | P0 | TC1 | runtime/frontend |
+| bytes | len, index/slice via `__index__`, iter, find (bytes-like/int needles)/count/startswith/endswith/split/splitlines/partition/rpartition/replace (start/end slices)/decode, concat | Partial | P0 | TC1 | runtime |
+| bytearray | mutability, index/slice via `__index__`, slice assign/delete, iter, find (bytes-like/int needles)/count/startswith/endswith/split/splitlines/partition/rpartition/replace (start/end slices)/decode, concat, in-place concat/repeat | Partial | P0 | TC1 | runtime |
 | list | literals, index/slice via `__index__`, slice assign/delete, append/extend/insert/remove/pop/count/index/clear/copy/reverse, iter, in-place add/mul | Partial | P0 | TC1 | runtime/frontend |
 | tuple | literals, index/slice via `__index__`, hash, iter | Partial | P0 | TC1 | runtime/frontend |
 | dict | literals, index/set, views, iter, basic methods (keys/values/items/get/pop/clear/copy/popitem/setdefault/update/fromkeys) | Partial | P0 | TC1 | runtime/frontend |
 | set | literals, constructor, add/remove/contains/iter/len, algebra (`|`, `&`, `-`, `^`) + in-place updates (dict view RHS) | Partial | P1 | TC2 | runtime/frontend |
 | frozenset | constructor, hash, contains/iter/len, algebra (`|`, `&`, `-`, `^`) | Partial | P1 | TC2 | runtime/frontend |
 | range | len/index via `__index__`/iter; step==0 error | Partial | P0 | TC1 | runtime/frontend |
-| slice | slice objects + normalization + step + `__index__` bounds | Partial | P1 | TC2 | runtime/frontend |
+| slice | slice objects + normalization + step + `__index__` bounds + start/stop/step attrs + indices + hash/eq | Partial | P1 | TC2 | runtime/frontend |
 | memoryview | buffer protocol (format/shape/strides), cast, tuple scalar indexing, 1D slicing + slice assignment, writable views | Partial | P2 | TC3 | runtime |
 | iterator | iter/next protocol, StopIteration | Partial | P0 | TC1 | runtime |
 | generator/coroutine | send/throw/close, await | Partial | P0 | TC2 | runtime/frontend |
@@ -127,7 +127,7 @@
   - Implemented: generator function closures capture free vars in generator frames.
   - Implemented: `nonlocal` rebinding in nested sync/async closures.
 - Implemented: async state machine (`await`, `asyncio.run`/`asyncio.sleep`) with delay/result semantics and pending sentinel across native + wasm harness.
-  - Implemented: `async with` lowering for `__aenter__`/`__aexit__` (single manager, simple name binding).
+  - Implemented: `async with` lowering for `__aenter__`/`__aexit__`.
   - Implemented: StopIteration.value propagation for generator returns, explicit raises, and iterator next.
   - Implemented: generator state objects (`gi_running`, `gi_frame` stub, `gi_yieldfrom`) and `inspect.getgeneratorstate`.
   - TODO(introspection, owner:runtime, milestone:TC3, priority:P2, status:missing): full frame objects + `gi_code` parity.
@@ -146,7 +146,7 @@
   - TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:partial): reflection builtins (`type`, `isinstance`, `issubclass`, `dir`, `vars`, `globals`, `locals`).
   - TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:missing): dynamic execution builtins (`eval`, `exec`, `compile`) with sandboxing rules.
 - TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:missing): I/O builtins (`open`, `input`, `help`, `breakpoint`) with capability gating.
-- TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P1, status:partial): finish `open`/file object parity (non-UTF-8 encodings, readinto/writelines/reconfigure, text-mode seek/tell cookies, Windows fileno/isatty) with differential + wasm coverage.
+- TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P1, status:partial): finish `open`/file object parity (broader codecs + full error handlers, text-mode seek/tell cookies, Windows fileno/isatty) with differential + wasm coverage.
   - Implemented: descriptor deleter support (`__delete__`, property deleter) + attribute deletion wiring.
 
 ## 3. Runtime Object Model Expansion
@@ -161,7 +161,7 @@
 - Implemented: frozenset hashing (order-insensitive) + set/frozenset algebra intrinsics with CPython mixing parity.
 - Implemented: exception objects with args/class/dict + cause/context/suppress fields.
   - Implemented: exception class objects derived from `BaseException` with CPython hierarchy (BaseExceptionGroup, ExceptionGroup MRO, OSError/Warning trees).
-  - TODO(semantics, owner:runtime, milestone:TC2, priority:P1, status:partial): exception `__init__` + subclass attribute parity (OSError errno/filename, UnicodeError fields, ExceptionGroup tree).
+  - TODO(semantics, owner:runtime, milestone:TC2, priority:P1, status:partial): exception `__init__` + subclass attribute parity (UnicodeError fields, ExceptionGroup tree).
 - Implemented: `__traceback__` capture as traceback objects (`tb_frame`/`tb_lineno`/`tb_next`) with frame objects carrying `f_code`/`f_lineno` from the last executed statement in each frame and global code slots across the module graph.
   - TODO(introspection, owner:runtime, milestone:TC2, priority:P1, status:partial): expand frame objects to CPython parity (`f_globals`, `f_locals`, `f_lasti`, `f_lineno` updates).
 - Implemented: object-level `__getattribute__`/`__setattr__`/`__delattr__` builtins with CPython-style raw semantics.

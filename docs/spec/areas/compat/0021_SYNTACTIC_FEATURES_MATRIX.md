@@ -19,22 +19,22 @@
 - [ ] Match Guard (case A if x:)
 
 ### 1.2 Async / Await
-**Status:** Partial (Milestone 2; `async for`/`async with` supported, async comprehensions pending; TODO(syntax, owner:frontend, milestone:TC2, priority:P2, status:missing): async comprehensions lowering.)
+**Status:** Supported (Milestone 2)
 **Complexity:** High (State machine transformation).
 - [x] `async def` (Coroutine creation)
 - [x] `await` (Suspension point)
 - [x] `async for` (Async iterator loop)
 - [x] `async with` (Async context manager)
-- [ ] `async` comprehensions (`[await x async for y in z]`)
+- [x] `async` comprehensions (`[await x async for y in z]`)
 
 ### 1.3 Comprehensions & Generators
-**Status:** Partial (Milestone 1)
+**Status:** Supported (Milestone 1)
 - [x] List comprehension (`[x for y in z]`)
 - [x] Dict comprehension (`{k:v for x in y}`)
 - [x] Set comprehension (`{x for y in z}`)
 - [x] Generator expression (`(x for y in z)`)
-- [ ] Nested comprehensions
-- [ ] `await` inside comprehensions (see 1.2)
+- [x] Nested comprehensions
+- [x] `await` inside comprehensions (see 1.2)
 
 ### 1.4 F-Strings
 **Status:** Partial (Milestone 1)
@@ -78,8 +78,8 @@ The gap is primarily in **Lowering** (AST -> HIR), not Parsing.
 
 ## 3. TODOs
 - TODO(syntax, owner:frontend, milestone:M3, priority:P2, status:missing): Implement `match` lowering (start with simple literals).
-- TODO(syntax, owner:frontend, milestone:M2, priority:P2, status:partial): Implement `f-string` format specifiers + debug spec (needs `format()` protocol).
-- TODO(syntax, owner:frontend, milestone:TC2, priority:P2, status:missing): Implement async comprehensions (`await` in comprehensions + async iter lowering).
+- TODO(syntax, owner:frontend, milestone:M2, priority:P2, status:partial): Implement `f-string` format specifiers + conversion flags + debug spec (needs `format()` protocol).
+
 
 ## 4. Matrix Audit (2026-01-16)
 Coverage evidence (selected):
@@ -87,6 +87,6 @@ Coverage evidence (selected):
 - `tests/differential/basic/comprehensions.py` (list/set/dict comprehensions).
 - `tests/differential/basic/generator_protocol.py` (generator expression lowering).
 - `tests/differential/basic/async_for_else.py`, `tests/differential/basic/async_with_instance_callable.py` (async for/with lowering).
+- `tests/differential/basic/async_comprehensions.py`, `tests/differential/basic/async_comprehensions_nested.py` (async comprehensions, nested + await coverage).
 
 Gaps or missing coverage (audit findings):
-- TODO(tests, owner:frontend, milestone:TC2, priority:P2, status:planned): add differential coverage for nested comprehensions and `await` in comprehension bodies once lowering lands.

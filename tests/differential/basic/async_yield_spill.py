@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for async yield spill."""
+
 import asyncio
 
 x = 1

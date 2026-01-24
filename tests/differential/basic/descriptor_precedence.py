@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for descriptor precedence."""
+
+
 class C:
     def x(self) -> int:
         return 1

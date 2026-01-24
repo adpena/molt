@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for generator protocol."""
+
+
 def header(name: str) -> None:
     print(f"-- {name} --")
 

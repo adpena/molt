@@ -1,0 +1,58 @@
+# CPython regrtest skip list for Molt.
+# One module per line (test_foo, test_foo.py, or Lib/test/test_foo.py).
+# Lines starting with "#" are comments.
+#
+# Starter list for capability-gated or unsupported areas.
+# Trim as support lands; keep notes in this file for intentional skips.
+test_asyncio
+test_asyncio_events
+test_asyncio_futures
+test_asyncio_tasks
+test_cgi
+test_ctypes
+test_email
+test_ftplib
+test_http_client
+test_http_cookiejar
+test_http_servers
+test_imaplib
+test_importlib
+test_importlib_resources
+test_io
+test_locale
+test_multiprocessing
+test_multiprocessing_fork
+test_multiprocessing_forkserver
+test_multiprocessing_spawn
+test_os
+test_pathlib
+test_pydoc
+test_select
+test_signal
+test_socket
+test_ssl
+test_subprocess
+test_sys
+# Requires eval/exec/compile builtins (test_future_stmt/test_future_flags, exec-driven cases).
+test_future_stmt
+test_sysconfig
+test_tempfile
+test_threading
+test_time
+test_urllib
+test_urllib2
+test_urllibnet
+test_urllib_response
+test_warnings
+test_xml_etree
+test_compiler_assemble
+test_descrtut
+test_extcall
+test_genexps
+test_idle
+test_launcher
+test_metaclass
+test_pep646_syntax
+test_pyclbr
+test_wait3
+test_wait4

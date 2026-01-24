@@ -32,9 +32,9 @@ extensions, while preserving correctness and security.
 
 ## 3) Capability & Determinism Rules
 - Bridge access requires explicit capability grants:
-  - `python:bridge`
-  - `python:bridge:modules=<allowlist>`
-  - `python:bridge:extensions=<allowlist>`
+  - `python.bridge`
+  - `python.bridge.modules=<allowlist>`
+  - `python.bridge.extensions=<allowlist>`
 - Deterministic builds must reject the bridge unless explicitly allowed by
   a deterministic exception manifest (owned by the user).
 - All bridge calls are treated as `io + nondet + mutates(all)` unless a stricter

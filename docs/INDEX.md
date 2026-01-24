@@ -18,6 +18,8 @@
 ## Architecture and Runtime
 - 0002 Architecture: `docs/spec/areas/core/0002-architecture.md`
 - 0003 Runtime: `docs/spec/areas/runtime/0003-runtime.md`
+- 0026 Concurrency And GIL: `docs/spec/areas/runtime/0026_CONCURRENCY_AND_GIL.md`
+- 0027 Runtime Architecture Map: `docs/spec/areas/runtime/0027_RUNTIME_ARCHITECTURE_MAP.md`
 - 0004 Tiers: `docs/spec/areas/core/0004-tiers.md`
 - 0191 Deopt And Guard Model: `docs/spec/areas/compiler/0191_DEOPT_AND_GUARD_MODEL.md`
 

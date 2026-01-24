@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for contextvars basic."""
+
 import contextvars
 
 var = contextvars.ContextVar("var", default="default")

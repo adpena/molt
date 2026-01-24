@@ -4,6 +4,15 @@ from __future__ import annotations
 
 from typing import Any
 
+import builtins as _builtins
+
+
+def _load_intrinsic(name: str) -> Any | None:
+    direct = globals().get(name)
+    if direct is not None:
+        return direct
+    return getattr(_builtins, name, None)
+
 
 try:
     from molt import capabilities as _capabilities
@@ -40,20 +49,27 @@ __all__ = [
     "getfilesystemencoding",
 ]
 
-try:
-    argv = _molt_getargv()  # type: ignore[unresolved-reference]
-except NameError:
-    if _py_sys is not None:
-        argv = list(getattr(_py_sys, "argv", []))
-    else:
-        argv = []
+_MOLT_GETARGV = _load_intrinsic("_molt_getargv")
+_MOLT_GETRECURSIONLIMIT = _load_intrinsic("_molt_getrecursionlimit")
+_MOLT_SETRECURSIONLIMIT = _load_intrinsic("_molt_setrecursionlimit")
+_MOLT_EXCEPTION_ACTIVE = _load_intrinsic("_molt_exception_active")
+_MOLT_EXCEPTION_LAST = _load_intrinsic("_molt_exception_last")
+
+if callable(_MOLT_GETARGV):
+    argv = list(_MOLT_GETARGV())
+elif _py_sys is not None:
+    argv = list(getattr(_py_sys, "argv", []))
+else:
+    argv = []
+
+_existing_modules = globals().get("modules")
 
 if _py_sys is not None:
     platform = getattr(_py_sys, "platform", "molt")
     version = getattr(_py_sys, "version", "3.13.0 (molt)")
     version_info = getattr(_py_sys, "version_info", (3, 13, 0, "final", 0))
     path = list(getattr(_py_sys, "path", []))
-    modules = getattr(_py_sys, "modules", {})
+    modules = getattr(_py_sys, "modules", _existing_modules or {})
     stdin = getattr(_py_sys, "stdin", None)
     stdout = getattr(_py_sys, "stdout", None)
     stderr = getattr(_py_sys, "stderr", None)
@@ -64,7 +80,10 @@ else:
     version = "3.13.0 (molt)"
     version_info = (3, 13, 0, "final", 0)
     path = []
-    modules: dict[str, Any] = {}
+    if _existing_modules is None:
+        modules: dict[str, Any] = {}
+    else:
+        modules = _existing_modules
     stdin = None
     stdout = None
     stderr = None
@@ -75,20 +94,16 @@ _recursionlimit = 1000
 
 
 def getrecursionlimit() -> int:
-    try:
-        return _molt_getrecursionlimit()  # type: ignore[unresolved-reference]
-    except NameError:
-        pass
+    if callable(_MOLT_GETRECURSIONLIMIT):
+        return int(_MOLT_GETRECURSIONLIMIT())
     return _recursionlimit
 
 
 def setrecursionlimit(limit: int) -> None:
     global _recursionlimit
-    try:
-        _molt_setrecursionlimit(limit)  # type: ignore[unresolved-reference]
+    if callable(_MOLT_SETRECURSIONLIMIT):
+        _MOLT_SETRECURSIONLIMIT(limit)
         return
-    except NameError:
-        pass
     if not isinstance(limit, int):
         name = type(limit).__name__
         raise TypeError(f"'{name}' object cannot be interpreted as an integer")
@@ -100,21 +115,19 @@ def setrecursionlimit(limit: int) -> None:
 def exc_info() -> tuple[Any, Any, Any]:
     if _py_sys is not None:
         return _py_sys.exc_info()
-    try:
-        exc = _molt_exception_active()  # type: ignore[unresolved-reference]
-    except NameError:
-        exc = None
+    exc = None
+    if callable(_MOLT_EXCEPTION_ACTIVE):
+        exc = _MOLT_EXCEPTION_ACTIVE()
     if exc is None:
-        try:
-            exc = _molt_exception_last()  # type: ignore[unresolved-reference]
-        except NameError:
-            exc = None
+        if callable(_MOLT_EXCEPTION_LAST):
+            exc = _MOLT_EXCEPTION_LAST()
     if exc is None:
         return None, None, None
     return type(exc), exc, getattr(exc, "__traceback__", None)
 
 
 def _getframe(depth: int = 0) -> Any | None:
+    # TODO(introspection, owner:runtime, milestone:TC2, priority:P2, status:partial): implement sys._getframe for compiled runtimes.
     if _py_sys is not None and hasattr(_py_sys, "_getframe"):
         try:
             return _py_sys._getframe(depth + 1)

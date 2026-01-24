@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for format numeric."""
+
 value = 12345
 
 print(f"{value:08d}")

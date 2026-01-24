@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for memoryview format."""
+
 data = b"abcd"
 
 mv = memoryview(data)

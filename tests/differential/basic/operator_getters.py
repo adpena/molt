@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for operator getters."""
+
 import operator
 
 

@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for float protocol."""
+
+
 class Floaty:
     def __float__(self):
         return 1.25

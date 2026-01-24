@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for context closing."""
+
 import contextlib
 
 

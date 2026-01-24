@@ -1,0 +1,25 @@
+# Curated core-only regrtest list for Molt.
+# One module per line (test_foo).
+# Keep this list small and focused on core language semantics.
+test_bool
+test_int
+test_float
+test_unicode
+test_bytes
+test_list
+test_tuple
+test_dict
+test_set
+test_range
+test_slice
+test_iter
+test_enumerate
+test_operator
+test_math
+test_builtin
+test_compare
+test_funcattrs
+test_class
+test_exception_hierarchy
+test_raise
+test_with

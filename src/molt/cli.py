@@ -374,6 +374,31 @@ def _module_dependencies(
     return deps
 
 
+def _default_spec_for_expr(expr: ast.expr) -> dict[str, Any]:
+    if isinstance(expr, ast.Constant):
+        return {"const": True, "value": expr.value}
+    return {"const": False}
+
+
+def _default_specs_from_args(args: ast.arguments) -> list[dict[str, Any]]:
+    default_specs = [_default_spec_for_expr(expr) for expr in args.defaults]
+    if not args.kwonlyargs or not args.kw_defaults:
+        return default_specs
+    kwonly_names = [arg.arg for arg in args.kwonlyargs]
+    kwonly_pairs = list(zip(kwonly_names, args.kw_defaults))
+    suffix: list[tuple[str, ast.expr]] = []
+    for name, expr in reversed(kwonly_pairs):
+        if expr is None:
+            break
+        suffix.append((name, expr))
+    for name, expr in reversed(suffix):
+        spec = _default_spec_for_expr(expr)
+        spec["kwonly"] = True
+        spec["name"] = name
+        default_specs.append(spec)
+    return default_specs
+
+
 def _collect_func_defaults(tree: ast.AST) -> dict[str, dict[str, Any]]:
     defaults: dict[str, dict[str, Any]] = {}
     if not isinstance(tree, ast.Module):
@@ -381,15 +406,13 @@ def _collect_func_defaults(tree: ast.AST) -> dict[str, dict[str, Any]]:
     for stmt in tree.body:
         if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        if stmt.args.vararg or stmt.args.kwarg or stmt.args.kwonlyargs:
+        if stmt.args.vararg or stmt.args.kwarg:
             continue
-        params = [arg.arg for arg in stmt.args.args]
-        default_specs: list[dict[str, Any]] = []
-        for expr in stmt.args.defaults:
-            if isinstance(expr, ast.Constant):
-                default_specs.append({"const": True, "value": expr.value})
-            else:
-                default_specs.append({"const": False})
+        params = [
+            arg.arg
+            for arg in (stmt.args.posonlyargs + stmt.args.args + stmt.args.kwonlyargs)
+        ]
+        default_specs = _default_specs_from_args(stmt.args)
         defaults[stmt.name] = {"params": len(params), "defaults": default_specs}
     return defaults
 
@@ -1172,6 +1195,7 @@ def build(
     linked: bool = False,
     linked_output: str | None = None,
     require_linked: bool = False,
+    respect_pythonpath: bool = False,
 ) -> int:
     if profile not in {"dev", "release"}:
         return _fail(f"Invalid build profile: {profile}", json_output, command="build")
@@ -1239,14 +1263,15 @@ def build(
         if src_root.exists():
             module_roots.append(src_root)
     module_roots.append(source_path.parent)
-    pythonpath = os.environ.get("PYTHONPATH", "")
-    if pythonpath:
-        for entry in pythonpath.split(os.pathsep):
-            if not entry:
-                continue
-            entry_path = Path(entry).expanduser()
-            if entry_path.exists():
-                module_roots.append(entry_path)
+    if respect_pythonpath:
+        pythonpath = os.environ.get("PYTHONPATH", "")
+        if pythonpath:
+            for entry in pythonpath.split(os.pathsep):
+                if not entry:
+                    continue
+                entry_path = Path(entry).expanduser()
+                if entry_path.exists():
+                    module_roots.append(entry_path)
     module_roots = list(dict.fromkeys(root.resolve() for root in module_roots))
     roots = module_roots + [stdlib_root]
     module_graph, _explicit_imports = _discover_module_graph(
@@ -3075,8 +3100,8 @@ def clean(
     verbose: bool = False,
     cache: bool = True,
     artifacts: bool = True,
-    bins: bool = True,
-    repo_artifacts: bool = True,
+    bins: bool = False,
+    repo_artifacts: bool = False,
     cargo_target: bool = False,
     clean_all: bool = False,
     include_venvs: bool = False,
@@ -3096,6 +3121,10 @@ def clean(
 
     def _remove_path(path: Path) -> None:
         try:
+            if path.is_symlink():
+                path.unlink()
+                removed.append(str(path))
+                return
             if path.exists():
                 if path.is_dir():
                     shutil.rmtree(path)
@@ -3114,6 +3143,25 @@ def clean(
             if part.startswith(".venv"):
                 return True
         return False
+
+    def _iter_pycache_dirs(root_dir: Path) -> list[Path]:
+        pycache_dirs: list[Path] = []
+        for dirpath, dirnames, _filenames in os.walk(root_dir, followlinks=False):
+            current = Path(dirpath)
+            if not include_venvs and _is_virtualenv_path(current):
+                dirnames[:] = []
+                continue
+            pruned: list[str] = []
+            for name in dirnames:
+                candidate = Path(dirpath, name)
+                if candidate.is_symlink():
+                    continue
+                pruned.append(name)
+            dirnames[:] = pruned
+            if current.name == "__pycache__":
+                pycache_dirs.append(current)
+                dirnames[:] = []
+        return pycache_dirs
 
     if cache:
         cache_root = _default_molt_cache()
@@ -3137,9 +3185,7 @@ def clean(
         ]
         for path in repo_dirs:
             _remove_path(path)
-        for path in root.rglob("__pycache__"):
-            if not include_venvs and _is_virtualenv_path(path):
-                continue
+        for path in _iter_pycache_dirs(root):
             _remove_path(path)
         repo_files = [
             root / "output.wasm",
@@ -3304,6 +3350,8 @@ def _completion_script(shell: str) -> str:
             "--cache-dir",
             "--cache-report",
             "--rebuild",
+            "--respect-pythonpath",
+            "--no-respect-pythonpath",
             "--json",
             "--verbose",
         ],
@@ -3656,6 +3704,12 @@ def main() -> int:
         help="Disable the build cache (alias for --no-cache).",
     )
     build_parser.add_argument(
+        "--respect-pythonpath",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Include PYTHONPATH entries as module roots during compilation.",
+    )
+    build_parser.add_argument(
         "--capabilities",
         help="Capability profiles/tokens or path to manifest (toml/json).",
     )
@@ -4002,13 +4056,13 @@ def main() -> int:
     clean_parser.add_argument(
         "--bins",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help="Remove Molt binaries under MOLT_BIN.",
     )
     clean_parser.add_argument(
         "--repo-artifacts",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help="Remove repo-local artifacts (vendor/, logs/, caches, output*.wasm).",
     )
     clean_parser.add_argument(
@@ -4132,6 +4186,13 @@ def main() -> int:
         cache_report = args.cache_report or _coerce_bool(
             build_cfg.get("cache_report") or build_cfg.get("cache-report"), False
         )
+        respect_pythonpath = args.respect_pythonpath
+        if respect_pythonpath is None:
+            respect_pythonpath = _coerce_bool(
+                build_cfg.get("respect_pythonpath")
+                or build_cfg.get("respect-pythonpath"),
+                False,
+            )
         capabilities = (
             args.capabilities or build_cfg.get("capabilities") or cfg_capabilities
         )
@@ -4159,6 +4220,7 @@ def main() -> int:
             linked,
             linked_output_path,
             require_linked,
+            respect_pythonpath,
         )
     if args.command == "check":
         return check(args.path, args.output, args.strict, args.json, args.verbose)

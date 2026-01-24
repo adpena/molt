@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for django calling conventions."""
+
+
 def passthrough(fn):
     def wrapper(*args, **kwargs):
         return fn(*args, **kwargs)

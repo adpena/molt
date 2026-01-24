@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for raise from context."""
+
+
 def raise_from() -> None:
     try:
         raise KeyError("x")

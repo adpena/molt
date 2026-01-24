@@ -68,13 +68,19 @@ struct MoltHeader {
 - **Ranges**: `MoltRange` - Lazy sequence storing `start/stop/step` inline. `len`, `iter`, and `index` are computed without materializing lists.
 - **Slices**: `MoltSlice` - Inline `start/stop/step` object used by indexing and slicing ops.
 
-## 5. Concurrency: No GIL
-Molt does not have a Global Interpreter Lock.
+## 5. Concurrency: GIL-Like Serialization (Current)
+Molt currently serializes runtime mutation with a GIL-like lock. The concurrency
+contract is defined in `docs/spec/areas/runtime/0026_CONCURRENCY_AND_GIL.md`.
 - **Thread Safety**:
-    - Primitives and immutable objects (Strings, Tuples) are safe to share.
-    - Mutable objects (Lists, Dicts) use fine-grained locking or are restricted to a single thread by default (requiring explicit `MoltThread` boundaries).
-- **Async (core runtime)**: Built on a custom poll/scheduler loop in `molt-runtime` (no tokio dependency). Python `async/await` lowers to Molt futures with explicit poll state.
-- **Async (host services)**: `molt-worker` and `molt-db` use tokio/tokio-postgres where OS-level I/O is required.
+    - Runtime state and object headers are not thread-safe; `Value` and heap
+      objects are not `Send`/`Sync` unless explicitly documented otherwise.
+    - Cross-thread sharing of live Python objects is unsupported; serialize or
+      freeze data before crossing threads.
+- **Async (core runtime)**: Built on a custom poll/scheduler loop in
+  `molt-runtime` (no tokio dependency). Python `async/await` lowers to Molt
+  futures with explicit poll state.
+- **Async (host services)**: `molt-worker` and `molt-db` use tokio/tokio-postgres
+  where OS-level I/O is required.
 
 ### Decision: Core Async Scheduler vs Host Executor
 - **Why**: Deterministic scheduling, capability gating, and WASM/WASI parity are core requirements for compiled binaries.

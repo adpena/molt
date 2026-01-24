@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for bitwise int."""
+
 print(f"int_and:{5 & 3}")
 print(f"int_or:{5 | 2}")
 print(f"int_xor:{5 ^ 3}")

@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for args kwargs."""
+
+
 def f(a, b=2, /, c=3, *, d, e=5):
     return (a, b, c, d, e)
 

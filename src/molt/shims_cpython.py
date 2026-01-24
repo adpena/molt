@@ -13,6 +13,8 @@ import os
 import queue
 import threading
 import time
+import socket as _socket
+import select as _select
 from pathlib import Path
 from typing import Any, cast
 
@@ -31,6 +33,49 @@ _CANCEL_TOKENS: dict[int, dict[str, int | bool]] = {
 _CANCEL_NEXT_ID = 2
 _CANCEL_CURRENT = 1
 _ORIG_ASYNCIO_SLEEP: Any | None = None
+_SOCKET_NEXT_ID = 1
+_SOCKET_HANDLES: dict[int, "_SocketHandle"] = {}
+
+
+class _SocketHandle:
+    def __init__(self, sock: _socket.socket) -> None:
+        self.sock = sock
+        self.refs = 1
+        self.closed = False
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            self.sock.close()
+        except Exception:
+            pass
+
+
+def _register_socket(sock: _socket.socket) -> int:
+    global _SOCKET_NEXT_ID
+    handle_id = _SOCKET_NEXT_ID
+    _SOCKET_NEXT_ID += 1
+    _SOCKET_HANDLES[handle_id] = _SocketHandle(sock)
+    return handle_id
+
+
+def _get_socket_handle(handle: Any) -> _SocketHandle | None:
+    if isinstance(handle, _SocketHandle):
+        return handle
+    if isinstance(handle, int):
+        entry = _SOCKET_HANDLES.get(handle)
+        if entry is not None:
+            return entry
+        # TODO(perf, owner:tooling, milestone:TL2, priority:P2, status:planned): maintain fd->handle mapping to avoid linear scan when add_reader/add_writer pass raw fds.
+        for candidate in _SOCKET_HANDLES.values():
+            try:
+                if candidate.sock.fileno() == handle:
+                    return candidate
+            except Exception:
+                continue
+    return None
 
 
 def _box_int(value: int) -> int:
@@ -127,6 +172,13 @@ def _configure_runtime_lib(lib: ctypes.CDLL) -> None:
     _bind_required(lib, "molt_cancel_token_get_current", [], ctypes.c_longlong)
     _bind_required(lib, "molt_cancelled", [], ctypes.c_longlong)
     _bind_required(lib, "molt_cancel_current", [], ctypes.c_longlong)
+    _bind_required(lib, "molt_future_cancel", [ctypes.c_longlong], ctypes.c_longlong)
+    _bind_required(
+        lib,
+        "molt_task_register_token_owned",
+        [ctypes.c_longlong, ctypes.c_longlong],
+        ctypes.c_longlong,
+    )
     _bind_required(
         lib,
         "molt_json_parse_int",
@@ -380,6 +432,76 @@ def molt_cancel_current() -> None:
         entry["cancelled"] = True
 
 
+def molt_future_cancel(future: Any) -> int:
+    if _use_runtime_concurrency():
+        lib = load_runtime()
+        if lib is not None:
+            task_ptr = _chan_ptr(future)
+            if task_ptr is not None:
+                lib.molt_future_cancel(task_ptr)
+                return 0
+    if hasattr(future, "cancel"):
+        try:
+            future.cancel()
+        except Exception:
+            return 0
+    return 0
+
+
+def molt_future_cancel_msg(future: Any, msg: Any) -> int:
+    if _use_runtime_concurrency():
+        lib = load_runtime()
+        if lib is not None:
+            task_ptr = _chan_ptr(future)
+            if task_ptr is not None:
+                try:
+                    lib.molt_future_cancel_msg(task_ptr, 0)
+                except Exception:
+                    lib.molt_future_cancel(task_ptr)
+                return 0
+    if hasattr(future, "cancel"):
+        try:
+            future.cancel(msg)
+        except TypeError:
+            try:
+                future.cancel()
+            except Exception:
+                return 0
+        except Exception:
+            return 0
+    return 0
+
+
+def molt_future_cancel_clear(future: Any) -> int:
+    if _use_runtime_concurrency():
+        lib = load_runtime()
+        if lib is not None:
+            task_ptr = _chan_ptr(future)
+            if task_ptr is not None:
+                try:
+                    lib.molt_future_cancel_clear(task_ptr)
+                except Exception:
+                    return 0
+                return 0
+    if hasattr(future, "_cancel_message"):
+        try:
+            setattr(future, "_cancel_message", None)
+        except Exception:
+            return 0
+    return 0
+
+
+def molt_task_register_token_owned(task: Any, token_id: int) -> int:
+    if _use_runtime_concurrency():
+        lib = load_runtime()
+        if lib is not None:
+            task_ptr = _chan_ptr(task)
+            if task_ptr is not None:
+                lib.molt_task_register_token_owned(task_ptr, token_id)
+                return 0
+    return 0
+
+
 def molt_spawn(task: Any) -> None:
     if _use_runtime_concurrency():
         lib = load_runtime()
@@ -398,6 +520,22 @@ def molt_spawn(task: Any) -> None:
     raise TypeError("molt_spawn expects a coroutine or callable")
 
 
+def molt_thread_submit(callable: Any, args: Any, kwargs: Any) -> Any:
+    if args is None:
+        call_args = ()
+    else:
+        call_args = tuple(args)
+    if kwargs is None:
+        call_kwargs: dict[str, Any] = {}
+    else:
+        call_kwargs = dict(kwargs)
+
+    async def _runner() -> Any:
+        return await asyncio.to_thread(callable, *call_args, **call_kwargs)
+
+    return _runner()
+
+
 def molt_block_on(task: Any) -> Any:
     loop = _ensure_loop()
     if asyncio.iscoroutine(task) or isinstance(task, asyncio.Future):
@@ -410,11 +548,7 @@ def molt_block_on(task: Any) -> Any:
 
 def molt_async_sleep(_delay: float = 0.0, _result: Any | None = None) -> Any:
     async def _sleep() -> Any:
-        if molt_cancelled():
-            raise asyncio.CancelledError()
         await asyncio.sleep(_delay)
-        if molt_cancelled():
-            raise asyncio.CancelledError()
         return _result
 
     return _sleep()
@@ -481,6 +615,391 @@ def molt_chan_drop(chan: Any) -> None:
     return None
 
 
+def molt_socket_new(
+    family: int | None, type: int | None, proto: int | None, fileno: int | None
+) -> int:
+    fam = _socket.AF_INET if family is None else int(family)
+    sock_type = _socket.SOCK_STREAM if type is None else int(type)
+    proto_val = 0 if proto is None else int(proto)
+    if fileno is None:
+        sock = _socket.socket(fam, sock_type, proto_val)
+    else:
+        sock = _socket.socket(fam, sock_type, proto_val, fileno=fileno)
+    return _register_socket(sock)
+
+
+def molt_socket_close(sock: Any) -> None:
+    handle = _get_socket_handle(sock)
+    if handle is None:
+        return None
+    handle.close()
+    return None
+
+
+def molt_socket_drop(sock: Any) -> None:
+    if not isinstance(sock, int):
+        return None
+    handle = _SOCKET_HANDLES.get(sock)
+    if handle is None:
+        return None
+    if not handle.closed:
+        handle.close()
+    handle.refs -= 1
+    if handle.refs <= 0:
+        _SOCKET_HANDLES.pop(sock, None)
+    return None
+
+
+def molt_socket_clone(sock: Any) -> int:
+    handle = _get_socket_handle(sock)
+    if handle is None:
+        raise TypeError("invalid socket handle")
+    handle.refs += 1
+    return int(sock)
+
+
+def molt_socket_fileno(sock: Any) -> int:
+    handle = _get_socket_handle(sock)
+    if handle is None:
+        return -1
+    return handle.sock.fileno()
+
+
+def molt_socket_gettimeout(sock: Any) -> float | None:
+    handle = _get_socket_handle(sock)
+    if handle is None:
+        raise TypeError("invalid socket handle")
+    return handle.sock.gettimeout()
+
+
+def molt_socket_settimeout(sock: Any, timeout: float | None) -> None:
+    handle = _get_socket_handle(sock)
+    if handle is None:
+        raise TypeError("invalid socket handle")
+    handle.sock.settimeout(timeout)
+    return None
+
+
+def molt_socket_setblocking(sock: Any, flag: bool) -> None:
+    handle = _get_socket_handle(sock)
+    if handle is None:
+        raise TypeError("invalid socket handle")
+    handle.sock.setblocking(bool(flag))
+    return None
+
+
+def molt_socket_getblocking(sock: Any) -> bool:
+    handle = _get_socket_handle(sock)
+    if handle is None:
+        raise TypeError("invalid socket handle")
+    if hasattr(handle.sock, "getblocking"):
+        return bool(handle.sock.getblocking())
+    return handle.sock.gettimeout() != 0.0
+
+
+def molt_socket_bind(sock: Any, addr: Any) -> None:
+    handle = _get_socket_handle(sock)
+    if handle is None:
+        raise TypeError("invalid socket handle")
+    handle.sock.bind(addr)
+    return None
+
+
+def molt_socket_listen(sock: Any, backlog: int) -> None:
+    handle = _get_socket_handle(sock)
+    if handle is None:
+        raise TypeError("invalid socket handle")
+    handle.sock.listen(int(backlog))
+    return None
+
+
+def molt_socket_accept(sock: Any) -> tuple[int, Any]:
+    handle = _get_socket_handle(sock)
+    if handle is None:
+        raise TypeError("invalid socket handle")
+    conn, addr = handle.sock.accept()
+    return _register_socket(conn), addr
+
+
+def molt_socket_connect(sock: Any, addr: Any) -> None:
+    handle = _get_socket_handle(sock)
+    if handle is None:
+        raise TypeError("invalid socket handle")
+    handle.sock.connect(addr)
+    return None
+
+
+def molt_socket_connect_ex(sock: Any, addr: Any) -> int:
+    handle = _get_socket_handle(sock)
+    if handle is None:
+        raise TypeError("invalid socket handle")
+    return int(handle.sock.connect_ex(addr))
+
+
+def molt_socket_recv(sock: Any, size: int, flags: int) -> bytes:
+    handle = _get_socket_handle(sock)
+    if handle is None:
+        raise TypeError("invalid socket handle")
+    return handle.sock.recv(int(size), int(flags))
+
+
+def molt_socket_recv_into(sock: Any, buffer: Any, size: int, flags: int) -> int:
+    handle = _get_socket_handle(sock)
+    if handle is None:
+        raise TypeError("invalid socket handle")
+    return int(handle.sock.recv_into(buffer, int(size), int(flags)))
+
+
+def molt_socket_send(sock: Any, data: Any, flags: int) -> int:
+    handle = _get_socket_handle(sock)
+    if handle is None:
+        raise TypeError("invalid socket handle")
+    return int(handle.sock.send(data, int(flags)))
+
+
+def molt_socket_sendall(sock: Any, data: Any, flags: int) -> None:
+    handle = _get_socket_handle(sock)
+    if handle is None:
+        raise TypeError("invalid socket handle")
+    handle.sock.sendall(data, int(flags))
+    return None
+
+
+def molt_socket_sendto(sock: Any, data: Any, flags: int, addr: Any) -> int:
+    handle = _get_socket_handle(sock)
+    if handle is None:
+        raise TypeError("invalid socket handle")
+    return int(handle.sock.sendto(data, int(flags), addr))
+
+
+def molt_socket_recvfrom(sock: Any, size: int, flags: int) -> tuple[bytes, Any]:
+    handle = _get_socket_handle(sock)
+    if handle is None:
+        raise TypeError("invalid socket handle")
+    return handle.sock.recvfrom(int(size), int(flags))
+
+
+def molt_socket_shutdown(sock: Any, how: int) -> None:
+    handle = _get_socket_handle(sock)
+    if handle is None:
+        raise TypeError("invalid socket handle")
+    handle.sock.shutdown(int(how))
+    return None
+
+
+def molt_socket_getsockname(sock: Any) -> Any:
+    handle = _get_socket_handle(sock)
+    if handle is None:
+        raise TypeError("invalid socket handle")
+    return handle.sock.getsockname()
+
+
+def molt_socket_getpeername(sock: Any) -> Any:
+    handle = _get_socket_handle(sock)
+    if handle is None:
+        raise TypeError("invalid socket handle")
+    return handle.sock.getpeername()
+
+
+def molt_socket_setsockopt(sock: Any, level: int, optname: int, value: Any) -> None:
+    handle = _get_socket_handle(sock)
+    if handle is None:
+        raise TypeError("invalid socket handle")
+    handle.sock.setsockopt(int(level), int(optname), value)
+    return None
+
+
+def molt_socket_getsockopt(sock: Any, level: int, optname: int, buflen: int) -> Any:
+    handle = _get_socket_handle(sock)
+    if handle is None:
+        raise TypeError("invalid socket handle")
+    if buflen:
+        return handle.sock.getsockopt(int(level), int(optname), int(buflen))
+    return handle.sock.getsockopt(int(level), int(optname))
+
+
+def molt_socket_detach(sock: Any) -> int:
+    handle = _get_socket_handle(sock)
+    if handle is None:
+        raise TypeError("invalid socket handle")
+    handle.closed = True
+    return handle.sock.detach()
+
+
+def molt_socketpair(
+    family: int | None, type: int | None, proto: int | None
+) -> tuple[int, int]:
+    fam = (
+        _socket.AF_UNIX
+        if family is None and hasattr(_socket, "AF_UNIX")
+        else (_socket.AF_INET if family is None else int(family))
+    )
+    sock_type = _socket.SOCK_STREAM if type is None else int(type)
+    proto_val = 0 if proto is None else int(proto)
+    left, right = _socket.socketpair(fam, sock_type, proto_val)
+    return _register_socket(left), _register_socket(right)
+
+
+def molt_socket_getaddrinfo(
+    host: str | bytes | None,
+    port: int | str | bytes | None,
+    family: int,
+    type: int,
+    proto: int,
+    flags: int,
+) -> list[tuple[int, int, int, str | None, Any]]:
+    raw = _socket.getaddrinfo(
+        host, port, int(family), int(type), int(proto), int(flags)
+    )
+    return [
+        (int(fam), int(socktype), int(proto_val), canon, sockaddr)
+        for fam, socktype, proto_val, canon, sockaddr in raw
+    ]
+
+
+def molt_socket_getnameinfo(addr: Any, flags: int) -> tuple[str, str]:
+    return _socket.getnameinfo(addr, int(flags))
+
+
+def molt_socket_gethostname() -> str:
+    return _socket.gethostname()
+
+
+def molt_socket_getservbyname(name: str, proto: str | None) -> int:
+    if proto is None:
+        return int(_socket.getservbyname(name))
+    return int(_socket.getservbyname(name, proto))
+
+
+def molt_socket_getservbyport(port: int, proto: str | None) -> str:
+    if proto is None:
+        return _socket.getservbyport(int(port))
+    return _socket.getservbyport(int(port), proto)
+
+
+def molt_socket_inet_pton(family: int, address: str) -> bytes:
+    return _socket.inet_pton(int(family), address)
+
+
+def molt_socket_inet_ntop(family: int, packed: bytes) -> str:
+    return _socket.inet_ntop(int(family), packed)
+
+
+def molt_socket_constants() -> dict[str, int]:
+    names = [
+        "AF_INET",
+        "AF_INET6",
+        "AF_UNIX",
+        "SOCK_STREAM",
+        "SOCK_DGRAM",
+        "SOCK_RAW",
+        "SOL_SOCKET",
+        "SO_REUSEADDR",
+        "SO_KEEPALIVE",
+        "SO_SNDBUF",
+        "SO_RCVBUF",
+        "SO_ERROR",
+        "SO_LINGER",
+        "SO_BROADCAST",
+        "SO_REUSEPORT",
+        "IPPROTO_TCP",
+        "IPPROTO_UDP",
+        "IPPROTO_IPV6",
+        "IPV6_V6ONLY",
+        "TCP_NODELAY",
+        "SHUT_RD",
+        "SHUT_WR",
+        "SHUT_RDWR",
+        "AI_PASSIVE",
+        "AI_CANONNAME",
+        "AI_NUMERICHOST",
+        "AI_NUMERICSERV",
+        "NI_NUMERICHOST",
+        "NI_NUMERICSERV",
+        "MSG_PEEK",
+        "MSG_DONTWAIT",
+        "EAI_AGAIN",
+        "EAI_FAIL",
+        "EAI_FAMILY",
+        "EAI_NONAME",
+        "EAI_SERVICE",
+        "EAI_SOCKTYPE",
+    ]
+    out: dict[str, int] = {}
+    for name in names:
+        if hasattr(_socket, name):
+            out[name] = int(getattr(_socket, name))
+    return out
+
+
+def molt_socket_has_ipv6() -> bool:
+    return bool(getattr(_socket, "has_ipv6", False))
+
+
+def molt_io_wait_new(sock: Any, events: int, timeout: float | None) -> Any:
+    handle = _get_socket_handle(sock)
+    if handle is None:
+        raise TypeError("invalid socket handle")
+    if events == 0:
+        raise ValueError("events must be non-zero")
+    loop = asyncio.get_running_loop()
+    fut: asyncio.Future[int] = loop.create_future()
+    fd = handle.sock.fileno()
+
+    def cleanup() -> None:
+        try:
+            if events & 1:
+                loop.remove_reader(fd)
+            if events & 2:
+                loop.remove_writer(fd)
+        except Exception:
+            pass
+
+    def compute_mask() -> int:
+        # TODO(perf, owner:tooling, milestone:TL2, priority:P2, status:planned): avoid per-callback select calls by caching readiness or using a shared selector.
+        mask = 0
+        try:
+            if events & 1:
+                rlist, _, _ = _select.select([handle.sock], [], [], 0)
+                if rlist:
+                    mask |= 1
+            if events & 2:
+                _, wlist, _ = _select.select([], [handle.sock], [], 0)
+                if wlist:
+                    mask |= 2
+        except Exception:
+            mask |= 4
+        return mask if mask else events
+
+    def on_ready() -> None:
+        if fut.done():
+            return
+        fut.set_result(compute_mask())
+        cleanup()
+
+    if timeout is not None and timeout <= 0:
+        fut.set_exception(TimeoutError())
+        return fut
+
+    if events & 1:
+        loop.add_reader(fd, on_ready)
+    if events & 2:
+        loop.add_writer(fd, on_ready)
+
+    if timeout is not None:
+
+        def on_timeout() -> None:
+            if fut.done():
+                return
+            fut.set_exception(TimeoutError())
+            cleanup()
+
+        loop.call_later(float(timeout), on_timeout)
+
+    fut.add_done_callback(lambda _fut: cleanup())
+    return fut
+
+
 def install() -> None:
     import builtins
 
@@ -489,13 +1008,7 @@ def install() -> None:
         _ORIG_ASYNCIO_SLEEP = asyncio.sleep
 
         async def _molt_sleep(delay: float = 0.0, result: Any | None = None) -> Any:
-            if molt_cancelled():
-                raise asyncio.CancelledError()
-            try:
-                return await _ORIG_ASYNCIO_SLEEP(delay, result)
-            finally:
-                if molt_cancelled():
-                    raise asyncio.CancelledError()
+            return await _ORIG_ASYNCIO_SLEEP(delay, result)
 
         asyncio.sleep = cast(Any, _molt_sleep)
 
@@ -515,6 +1028,48 @@ def install() -> None:
     setattr(builtins, "molt_cancel_token_get_current", molt_cancel_token_get_current)
     setattr(builtins, "molt_cancelled", molt_cancelled)
     setattr(builtins, "molt_cancel_current", molt_cancel_current)
+    setattr(builtins, "molt_future_cancel", molt_future_cancel)
+    setattr(builtins, "molt_future_cancel_msg", molt_future_cancel_msg)
+    setattr(builtins, "molt_future_cancel_clear", molt_future_cancel_clear)
+    setattr(builtins, "molt_task_register_token_owned", molt_task_register_token_owned)
+    setattr(builtins, "molt_thread_submit", molt_thread_submit)
+    setattr(builtins, "_molt_io_wait_new", molt_io_wait_new)
+    setattr(builtins, "_molt_socket_new", molt_socket_new)
+    setattr(builtins, "_molt_socket_close", molt_socket_close)
+    setattr(builtins, "_molt_socket_drop", molt_socket_drop)
+    setattr(builtins, "_molt_socket_clone", molt_socket_clone)
+    setattr(builtins, "_molt_socket_fileno", molt_socket_fileno)
+    setattr(builtins, "_molt_socket_gettimeout", molt_socket_gettimeout)
+    setattr(builtins, "_molt_socket_settimeout", molt_socket_settimeout)
+    setattr(builtins, "_molt_socket_setblocking", molt_socket_setblocking)
+    setattr(builtins, "_molt_socket_getblocking", molt_socket_getblocking)
+    setattr(builtins, "_molt_socket_bind", molt_socket_bind)
+    setattr(builtins, "_molt_socket_listen", molt_socket_listen)
+    setattr(builtins, "_molt_socket_accept", molt_socket_accept)
+    setattr(builtins, "_molt_socket_connect", molt_socket_connect)
+    setattr(builtins, "_molt_socket_connect_ex", molt_socket_connect_ex)
+    setattr(builtins, "_molt_socket_recv", molt_socket_recv)
+    setattr(builtins, "_molt_socket_recv_into", molt_socket_recv_into)
+    setattr(builtins, "_molt_socket_send", molt_socket_send)
+    setattr(builtins, "_molt_socket_sendall", molt_socket_sendall)
+    setattr(builtins, "_molt_socket_sendto", molt_socket_sendto)
+    setattr(builtins, "_molt_socket_recvfrom", molt_socket_recvfrom)
+    setattr(builtins, "_molt_socket_shutdown", molt_socket_shutdown)
+    setattr(builtins, "_molt_socket_getsockname", molt_socket_getsockname)
+    setattr(builtins, "_molt_socket_getpeername", molt_socket_getpeername)
+    setattr(builtins, "_molt_socket_setsockopt", molt_socket_setsockopt)
+    setattr(builtins, "_molt_socket_getsockopt", molt_socket_getsockopt)
+    setattr(builtins, "_molt_socket_detach", molt_socket_detach)
+    setattr(builtins, "_molt_socketpair", molt_socketpair)
+    setattr(builtins, "_molt_socket_getaddrinfo", molt_socket_getaddrinfo)
+    setattr(builtins, "_molt_socket_getnameinfo", molt_socket_getnameinfo)
+    setattr(builtins, "_molt_socket_gethostname", molt_socket_gethostname)
+    setattr(builtins, "_molt_socket_getservbyname", molt_socket_getservbyname)
+    setattr(builtins, "_molt_socket_getservbyport", molt_socket_getservbyport)
+    setattr(builtins, "_molt_socket_inet_pton", molt_socket_inet_pton)
+    setattr(builtins, "_molt_socket_inet_ntop", molt_socket_inet_ntop)
+    setattr(builtins, "_molt_socket_constants", molt_socket_constants)
+    setattr(builtins, "_molt_socket_has_ipv6", molt_socket_has_ipv6)
     setattr(builtins, "molt_stream", net_mod.stream)
     setattr(builtins, "molt_stream_channel", net_mod.stream_channel)
     setattr(builtins, "molt_ws_pair", net_mod.ws_pair)

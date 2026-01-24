@@ -9,6 +9,10 @@ from molt import capabilities
 from molt import net
 
 
+class UnsupportedOperation(OSError, ValueError):
+    pass
+
+
 class _StreamIter:
     def __init__(self, handle, chunk_size: int) -> None:
         self._handle = handle
@@ -27,6 +31,73 @@ class _StreamIter:
             self._handle.close()
             raise StopIteration
         return chunk
+
+
+class StringIO:
+    def __init__(self, initial_value: str = "") -> None:
+        if not isinstance(initial_value, str):
+            name = type(initial_value).__name__
+            raise TypeError(f"initial_value must be str, not {name}")
+        self._value = initial_value
+        self._pos = 0
+        self.closed = False
+
+    def write(self, s: str) -> int:
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
+        if not isinstance(s, str):
+            name = type(s).__name__
+            raise TypeError(f"string argument expected, got {name}")
+        if self._pos > len(self._value):
+            self._value += "\x00" * (self._pos - len(self._value))
+        if self._pos == len(self._value):
+            self._value += s
+        else:
+            prefix = self._value[: self._pos]
+            suffix_start = self._pos + len(s)
+            suffix = (
+                self._value[suffix_start:] if suffix_start < len(self._value) else ""
+            )
+            self._value = prefix + s + suffix
+        self._pos += len(s)
+        return len(s)
+
+    def read(self, n: int = -1) -> str:
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
+        if n is None or n < 0:
+            out = self._value[self._pos :]
+            self._pos = len(self._value)
+            return out
+        end = min(len(self._value), self._pos + n)
+        out = self._value[self._pos : end]
+        self._pos = end
+        return out
+
+    def getvalue(self) -> str:
+        return self._value
+
+    def seek(self, pos: int, whence: int = 0) -> int:
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
+        if whence == 0:
+            new_pos = pos
+        elif whence == 1:
+            new_pos = self._pos + pos
+        elif whence == 2:
+            new_pos = len(self._value) + pos
+        else:
+            raise ValueError("invalid whence")
+        if new_pos < 0:
+            raise ValueError("negative seek position")
+        self._pos = new_pos
+        return self._pos
+
+    def tell(self) -> int:
+        return self._pos
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def _require_caps_for_mode(mode: str) -> None:

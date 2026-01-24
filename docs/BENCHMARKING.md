@@ -53,6 +53,14 @@ We enforce strict "Performance Gates" in CI. If a PR causes a regression beyond 
 | Matrix/Buffer | 5% | `matmul`, buffer access |
 | General Loops | 10% | CSV parsing, deep loops |
 
+## Lock-Sensitive Benchmarks
+
+When changing the GIL, pointer registry, handle resolution, scheduler locks, or
+other runtime synchronization, run a targeted subset in addition to the full
+suite. Prioritize workloads that stress attribute access/descriptor dispatch,
+struct/shape access, container ops, deep loops, and channel throughput.
+Validate native + WASM parity for the same cases.
+
 ## How to Interpret Results
 
 - **Speedup (x.xx)**: Molt is X times faster than CPython. (e.g., 10.0x = Molt is 10x faster).

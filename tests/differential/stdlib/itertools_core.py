@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for itertools core."""
+
 import itertools
 
 print(list(itertools.islice(itertools.count(10, 2), 5)))

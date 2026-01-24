@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for heapq more."""
+
 import heapq
 
 data = [3, 1, 4, 1, 5, 9, 2]

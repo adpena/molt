@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for builtin numeric ops."""
+
+
 class AbsObj:
     def __abs__(self):
         return "abs-ok"

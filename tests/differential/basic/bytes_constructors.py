@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for bytes constructors."""
+
 print(bytes("abc", "utf-8"))
 print(bytes("abc", encoding="utf-8"))
 print(bytearray("abc", "utf-8"))

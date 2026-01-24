@@ -12,6 +12,7 @@ cranelift-native = "0.116"
 target-lexicon = "0.13"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_path_to_error = "0.1"
 molt-obj-model = { path = "../molt-obj-model" }
 wasm-encoder = "0.32.0"
 wasmparser = "0.243.0"

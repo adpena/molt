@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for lambda sorting."""
+
+
 def main():
     factor = 3
 

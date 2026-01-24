@@ -87,6 +87,66 @@ class WasmBinary:
     linked_used: bool
 
 
+@dataclass(frozen=True)
+class _RunResult:
+    returncode: int
+    stdout: str = ""
+    stderr: str = ""
+
+
+def _enable_line_buffering() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(line_buffering=True)
+        except AttributeError:
+            continue
+
+
+def _run_with_pty(cmd: list[str], env: dict[str, str]) -> _RunResult:
+    import os
+    import pty
+
+    master_fd, slave_fd = pty.openpty()
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            env=env,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+        )
+    finally:
+        os.close(slave_fd)
+
+    try:
+        while True:
+            data = os.read(master_fd, 1024)
+            if not data:
+                break
+            if hasattr(sys.stdout, "buffer"):
+                sys.stdout.buffer.write(data)
+                sys.stdout.buffer.flush()
+            else:
+                sys.stdout.write(data.decode(errors="replace"))
+                sys.stdout.flush()
+    except KeyboardInterrupt:
+        proc.terminate()
+        raise
+    finally:
+        os.close(master_fd)
+
+    return _RunResult(returncode=proc.wait())
+
+
+def _run_cmd(
+    cmd: list[str], env: dict[str, str], *, capture: bool, tty: bool
+) -> _RunResult:
+    if tty and not capture and os.name == "posix":
+        return _run_with_pty(cmd, env)
+    res = subprocess.run(cmd, capture_output=capture, text=True, env=env)
+    return _RunResult(res.returncode, res.stdout or "", res.stderr or "")
+
+
 def _git_rev() -> str | None:
     try:
         res = subprocess.run(
@@ -106,6 +166,7 @@ def _base_env() -> dict[str, str]:
     env = os.environ.copy()
     env["PYTHONPATH"] = "src"
     env.setdefault("PYTHONHASHSEED", "0")
+    env.setdefault("PYTHONUNBUFFERED", "1")
     env.setdefault("MOLT_MACOSX_DEPLOYMENT_TARGET", "26.2")
     return env
 
@@ -126,7 +187,7 @@ def _append_rustflags(env: dict[str, str], flags: str) -> None:
     env["RUSTFLAGS"] = joined
 
 
-def build_runtime_wasm(*, reloc: bool, output: Path) -> bool:
+def build_runtime_wasm(*, reloc: bool, output: Path, tty: bool) -> bool:
     env = os.environ.copy()
     base_flags = "-C link-arg=--import-memory -C link-arg=--import-table"
     if not reloc:
@@ -137,7 +198,7 @@ def build_runtime_wasm(*, reloc: bool, output: Path) -> bool:
             " -C relocation-model=pic"
         )
     _append_rustflags(env, base_flags)
-    res = subprocess.run(
+    res = _run_cmd(
         [
             "cargo",
             "build",
@@ -148,13 +209,16 @@ def build_runtime_wasm(*, reloc: bool, output: Path) -> bool:
             "wasm32-wasip1",
         ],
         env=env,
-        capture_output=True,
-        text=True,
+        capture=not tty,
+        tty=tty,
     )
     if res.returncode != 0:
-        err = res.stderr.strip() or res.stdout.strip()
-        if err:
-            print(f"WASM runtime build failed: {err}", file=sys.stderr)
+        if res.stderr or res.stdout:
+            err = (res.stderr or res.stdout).strip()
+            if err:
+                print(f"WASM runtime build failed: {err}", file=sys.stderr)
+        else:
+            print("WASM runtime build failed.", file=sys.stderr)
         return False
     src = Path("target/wasm32-wasip1/release/molt_runtime.wasm")
     if not src.exists():
@@ -237,11 +301,11 @@ def _link_wasm(
 
 
 def _build_wasm_output(
-    python_exe: str, env: dict[str, str], output_path: Path, script: str
+    python_exe: str, env: dict[str, str], output_path: Path, script: str, *, tty: bool
 ) -> float | None:
     extra_args = MOLT_ARGS_BY_BENCH.get(script, [])
     start = time.perf_counter()
-    build_res = subprocess.run(
+    build_res = _run_cmd(
         [
             python_exe,
             "-m",
@@ -256,14 +320,17 @@ def _build_wasm_output(
             script,
         ],
         env=env,
-        capture_output=True,
-        text=True,
+        capture=not tty,
+        tty=tty,
     )
     build_s = time.perf_counter() - start
     if build_res.returncode != 0:
-        err = build_res.stderr.strip() or build_res.stdout.strip()
-        if err:
-            print(f"WASM build failed for {script}: {err}", file=sys.stderr)
+        if build_res.stderr or build_res.stdout:
+            err = (build_res.stderr or build_res.stdout).strip()
+            if err:
+                print(f"WASM build failed for {script}: {err}", file=sys.stderr)
+        else:
+            print(f"WASM build failed for {script}.", file=sys.stderr)
         return None
     if not output_path.exists():
         print(f"WASM build produced no output.wasm for {script}", file=sys.stderr)
@@ -271,7 +338,9 @@ def _build_wasm_output(
     return build_s
 
 
-def prepare_wasm_binary(script: str, *, require_linked: bool) -> WasmBinary | None:
+def prepare_wasm_binary(
+    script: str, *, require_linked: bool, tty: bool
+) -> WasmBinary | None:
     temp_dir = tempfile.TemporaryDirectory(prefix="molt-wasm-bench-")
     output_path = Path(temp_dir.name) / "output.wasm"
     base_env = _base_env()
@@ -285,7 +354,7 @@ def prepare_wasm_binary(script: str, *, require_linked: bool) -> WasmBinary | No
     else:
         env.pop("MOLT_WASM_LINK", None)
 
-    build_s = _build_wasm_output(python_exe, env, output_path, script)
+    build_s = _build_wasm_output(python_exe, env, output_path, script, tty=tty)
     if build_s is None:
         temp_dir.cleanup()
         return None
@@ -310,7 +379,7 @@ def prepare_wasm_binary(script: str, *, require_linked: bool) -> WasmBinary | No
         )
         env = base_env.copy()
         env.pop("MOLT_WASM_LINK", None)
-        build_s = _build_wasm_output(python_exe, env, output_path, script)
+        build_s = _build_wasm_output(python_exe, env, output_path, script, tty=tty)
         if build_s is None:
             temp_dir.cleanup()
             return None
@@ -375,6 +444,7 @@ def bench_results(
     super_run: bool,
     *,
     require_linked: bool,
+    tty: bool,
 ) -> dict[str, dict]:
     data: dict[str, dict] = {}
     print(f"{'Benchmark':<30} | {'WASM (s)':<12} | {'WASM size':<10}")
@@ -387,7 +457,9 @@ def bench_results(
         linked_used = False
         ok = False
         wasm_samples: list[float] = []
-        wasm_binary = prepare_wasm_binary(script, require_linked=require_linked)
+        wasm_binary = prepare_wasm_binary(
+            script, require_linked=require_linked, tty=tty
+        )
         if wasm_binary is not None:
             try:
                 wasm_samples, ok = collect_samples(wasm_binary, samples, warmup)
@@ -417,6 +489,7 @@ def write_json(path: Path, payload: dict) -> None:
 
 
 def main() -> None:
+    _enable_line_buffering()
     parser = argparse.ArgumentParser(description="Run Molt WASM benchmark suite.")
     parser.add_argument("--json-out", type=Path, default=None)
     parser.add_argument("--samples", type=int, default=None)
@@ -442,6 +515,11 @@ def main() -> None:
         action="store_true",
         help="Run all benchmarks 10x and emit mean/median/variance/range stats.",
     )
+    parser.add_argument(
+        "--tty",
+        action="store_true",
+        help="Attach subprocesses to a pseudo-TTY for immediate output.",
+    )
     args = parser.parse_args()
 
     if args.linked or args.require_linked:
@@ -451,9 +529,13 @@ def main() -> None:
     if args.super and args.samples is not None:
         parser.error("--super cannot be combined with --samples")
 
-    if not build_runtime_wasm(reloc=False, output=RUNTIME_WASM):
+    use_tty = args.tty or os.environ.get("MOLT_TTY") == "1"
+
+    if not build_runtime_wasm(reloc=False, output=RUNTIME_WASM, tty=use_tty):
         sys.exit(1)
-    if _want_linked() and not build_runtime_wasm(reloc=True, output=RUNTIME_WASM_RELOC):
+    if _want_linked() and not build_runtime_wasm(
+        reloc=True, output=RUNTIME_WASM_RELOC, tty=use_tty
+    ):
         if args.require_linked:
             print(
                 "Relocatable runtime build failed; linked output is required.",
@@ -479,6 +561,7 @@ def main() -> None:
             warmup,
             args.super,
             require_linked=args.require_linked,
+            tty=use_tty,
         )
     except RuntimeError as exc:
         print(f"WASM bench aborted: {exc}", file=sys.stderr)

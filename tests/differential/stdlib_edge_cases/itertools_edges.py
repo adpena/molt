@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for itertools edges."""
+
 import itertools
 
 

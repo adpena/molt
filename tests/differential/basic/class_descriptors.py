@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for class descriptors."""
+
+
 class Widget:
     kind = "widget"
 

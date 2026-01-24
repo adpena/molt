@@ -18,6 +18,8 @@ Long-form topic docs live under `docs/spec/areas/`.
 - 0003 Runtime: `docs/spec/areas/runtime/0003-runtime.md`
 - 0009 GC Design: `docs/spec/areas/runtime/0009_GC_DESIGN.md`
 - 0024 Runtime State Lifecycle: `docs/spec/areas/runtime/0024_RUNTIME_STATE_LIFECYCLE.md`
+- 0026 Concurrency And GIL: `docs/spec/areas/runtime/0026_CONCURRENCY_AND_GIL.md`
+- 0027 Runtime Architecture Map: `docs/spec/areas/runtime/0027_RUNTIME_ARCHITECTURE_MAP.md`
 - 0300 Tasks And Channels: `docs/spec/areas/runtime/0300_TASKS_AND_CHANNELS.md`
 - 0501 Data Model And Dtypes: `docs/spec/areas/runtime/0501_DATA_MODEL_AND_DTYPES.md`
 - 0502 Execution Engine: `docs/spec/areas/runtime/0502_EXECUTION_ENGINE.md`
@@ -45,6 +47,8 @@ Long-form topic docs live under `docs/spec/areas/`.
 - 0018 Molt Package ABI: `docs/spec/areas/compat/0018_MOLT_PACKAGE_ABI.md`
 - 0021 Syntactic Features Matrix: `docs/spec/areas/compat/0021_SYNTACTIC_FEATURES_MATRIX.md`
 - 0023 Semantic Behavior Matrix: `docs/spec/areas/compat/0023_SEMANTIC_BEHAVIOR_MATRIX.md`
+- 0024 Asyncio Coverage Matrix: `docs/spec/areas/compat/0024_ASYNCIO_COVERAGE_MATRIX.md`
+- 0025 Core Language PEP Coverage: `docs/spec/areas/compat/0025_CORE_LANGUAGE_PEP_COVERAGE.md`
 - 0210 CPython Bridge PyO3: `docs/spec/areas/compat/0210_CPYTHON_BRIDGE_PYO3.md`
 - 0211 Compatibility And Fallback Contract: `docs/spec/areas/compat/0211_COMPATIBILITY_AND_FALLBACK_CONTRACT.md`
 - 0212 C API Symbol Matrix: `docs/spec/areas/compat/0212_C_API_SYMBOL_MATRIX.md`

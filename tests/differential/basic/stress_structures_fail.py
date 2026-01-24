@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for stress structures fail."""
+
+
 def run():
     # 1. Nested Structures (List of Dict of Set)
     print("--- Nested Structures ---")

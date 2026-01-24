@@ -7,32 +7,37 @@ compiled code without introducing dynamic indirection.
 from __future__ import annotations
 
 import builtins as _py_builtins
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable, Optional, cast
+
+
+def _load_intrinsic(name: str) -> Any | None:
+    direct = globals().get(name)
+    if direct is not None:
+        return direct
+    return getattr(_py_builtins, name, None)
+
 
 if TYPE_CHECKING:
-
-    def _molt_getargv() -> list[str]:
-        return []
-
-    def _molt_getrecursionlimit() -> int:
-        return 0
-
-    def _molt_setrecursionlimit(limit: int) -> None:
-        return None
-
-    def _molt_exception_last() -> BaseException | None:
-        return None
-
-    def _molt_exception_active() -> BaseException | None:
-        return None
+    _molt_getargv: Callable[[], list[str]]
+    _molt_getrecursionlimit: Callable[[], int]
+    _molt_setrecursionlimit: Callable[[int], None]
+    _molt_exception_last: Callable[[], Optional[BaseException]]
+    _molt_exception_active: Callable[[], Optional[BaseException]]
+    _molt_getpid: Callable[[], int]
+    _molt_env_get_raw: Callable[..., object]
+    _molt_errno_constants: Callable[[], tuple[dict[str, int], dict[int, str]]]
+    _molt_path_exists: Callable[[object], bool]
+    _molt_path_unlink: Callable[[object], None]
 
 
+# TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:missing): implement eval/exec/compile builtins with sandboxing rules.
 __all__ = [
     "object",
     "type",
     "isinstance",
     "issubclass",
     "len",
+    "hash",
     "ord",
     "chr",
     "ascii",
@@ -43,6 +48,7 @@ __all__ = [
     "divmod",
     "repr",
     "format",
+    "dir",
     "callable",
     "any",
     "all",
@@ -81,6 +87,8 @@ __all__ = [
     "hasattr",
     "super",
     "print",
+    "vars",
+    "Ellipsis",
     "NotImplemented",
     "BaseException",
     "BaseExceptionGroup",
@@ -131,6 +139,7 @@ __all__ = [
     "SystemError",
     "SystemExit",
     "TimeoutError",
+    "CancelledError",
     "ProcessLookupError",
     "TypeError",
     "UnboundLocalError",
@@ -162,6 +171,7 @@ isinstance = isinstance
 issubclass = issubclass
 
 len = len
+hash = hash
 ord = ord
 chr = chr
 ascii = ascii
@@ -172,6 +182,7 @@ abs = abs
 divmod = divmod
 repr = repr
 format = format
+dir = dir
 callable = callable
 any = any
 all = all
@@ -210,11 +221,27 @@ delattr = delattr
 hasattr = hasattr
 super = super
 print = print
+vars = vars
+Ellipsis = Ellipsis
 NotImplemented = NotImplemented
 BaseException = BaseException
 BaseExceptionGroup = BaseExceptionGroup
 Exception = Exception
 ExceptionGroup = ExceptionGroup
+try:
+    _cancelled_error = getattr(_py_builtins, "CancelledError")
+except AttributeError:
+    _cancelled_error = None
+
+if _cancelled_error is None:
+
+    class CancelledError(_py_builtins.BaseException):
+        pass
+
+else:
+    CancelledError = _cancelled_error
+
+
 ArithmeticError = ArithmeticError
 AssertionError = AssertionError
 AttributeError = AttributeError
@@ -283,11 +310,34 @@ EncodingWarning = EncodingWarning
 
 WindowsError = getattr(_py_builtins, "WindowsError", OSError)
 
-try:
-    _molt_getargv = _molt_getargv
-    _molt_getrecursionlimit = _molt_getrecursionlimit
-    _molt_setrecursionlimit = _molt_setrecursionlimit
-    _molt_exception_last = _molt_exception_last
-    _molt_exception_active = _molt_exception_active
-except NameError:
-    pass
+_molt_getargv = cast(Callable[[], list[str]], _load_intrinsic("_molt_getargv"))
+_molt_getrecursionlimit = cast(
+    Callable[[], int],
+    _load_intrinsic("_molt_getrecursionlimit"),
+)
+_molt_setrecursionlimit = cast(
+    Callable[[int], None],
+    _load_intrinsic("_molt_setrecursionlimit"),
+)
+_molt_exception_last = cast(
+    Callable[[], Optional[BaseException]],
+    _load_intrinsic("_molt_exception_last"),
+)
+_molt_exception_active = cast(
+    Callable[[], Optional[BaseException]],
+    _load_intrinsic("_molt_exception_active"),
+)
+_molt_getpid = cast(Callable[[], int], _load_intrinsic("_molt_getpid"))
+_molt_env_get_raw = cast(Callable[..., object], _load_intrinsic("_molt_env_get_raw"))
+_molt_errno_constants = cast(
+    Callable[[], tuple[dict[str, int], dict[int, str]]],
+    _load_intrinsic("_molt_errno_constants"),
+)
+_molt_path_exists = cast(
+    Callable[[object], bool],
+    _load_intrinsic("_molt_path_exists"),
+)
+_molt_path_unlink = cast(
+    Callable[[object], None],
+    _load_intrinsic("_molt_path_unlink"),
+)

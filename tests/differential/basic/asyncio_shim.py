@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for asyncio shim."""
+
 import asyncio as aio
 from asyncio import run, sleep
 

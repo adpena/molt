@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for math edges."""
+
+
 def section(name):
     print(f"--- {name} ---")
 

@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for functools edges."""
+
 import functools
 
 

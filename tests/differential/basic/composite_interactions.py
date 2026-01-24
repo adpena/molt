@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for composite interactions."""
+
+
 def section(name):
     print(f"--- {name} ---")
 

@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for descriptor set name."""
+
+
 class Log:
     def __init__(self, tag: str) -> None:
         self.tag = tag

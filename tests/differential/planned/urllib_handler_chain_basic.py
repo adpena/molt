@@ -1,0 +1,50 @@
+# MOLT_ENV: MOLT_CAPABILITIES=net.listen,net.outbound
+"""Purpose: differential coverage for urllib handler chain basic."""
+
+import socket
+import threading
+import urllib.request
+
+
+ready = threading.Event()
+port_holder: list[int] = []
+header_seen: list[bool] = []
+
+
+def server() -> None:
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 0))
+    port_holder.append(srv.getsockname()[1])
+    srv.listen(1)
+    ready.set()
+
+    conn, _addr = srv.accept()
+    data = conn.recv(2048).decode("latin-1")
+    header_seen.append("X-Test: 1" in data)
+    conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK")
+    conn.close()
+    srv.close()
+
+
+class AddHeaderHandler(urllib.request.BaseHandler):
+    def http_request(self, req):
+        req.add_header("X-Test", "1")
+        return req
+
+    https_request = http_request
+
+
+t = threading.Thread(target=server)
+t.start()
+ready.wait(timeout=1.0)
+
+opener = urllib.request.build_opener(AddHeaderHandler())
+url = f"http://127.0.0.1:{port_holder[0]}/"
+with opener.open(url, timeout=1.0) as resp:
+    body = resp.read().decode()
+    print(resp.status, body)
+
+
+t.join()
+print("header", header_seen[0])

@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for class decorators."""
+
+
 class Decorator:
     def __init__(self, tag):
         self.tag = tag

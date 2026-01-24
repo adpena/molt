@@ -29,6 +29,13 @@ Canonical status lives in `docs/spec/STATUS.md` (README and ROADMAP are kept in 
 - **Importable builtins**: `import builtins` binds supported builtins for compiled code.
 - **Builtin function objects**: allowlisted builtins (`any`, `all`, `callable`, `repr`, `getattr`, `hasattr`, `round`, `next`, `anext`, `print`, `super`) lower to first-class functions.
 
+## Concurrency Model (Vision)
+
+- **CPython-correct asyncio**: single-threaded event loop semantics with deterministic ordering and structured cancellation.
+- **True parallelism is explicit**: executors + isolated runtimes/actors with message passing.
+- **Shared-memory parallelism is opt-in**: capability-gated and limited to explicitly safe types.
+- **Runtime-first**: the compiled binary embeds the Rust runtime (event loop + I/O poller); stdlib wrappers stay thin.
+
 ## Limitations (Current)
 
 - **Classes & object model**: C3 MRO + multiple inheritance + `super()` resolution for attribute lookup; no metaclasses or dynamic `type()` construction.

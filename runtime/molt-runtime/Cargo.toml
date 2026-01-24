@@ -25,6 +25,8 @@ libc = "0.2"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 simdutf = "0.6"
 getrandom = "0.2"
+mio = { version = "0.8", features = ["os-poll", "net"] }
+socket2 = "0.5"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }

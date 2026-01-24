@@ -53,5 +53,5 @@ Molt uses a "Principle of Least Privilege".
 - **Explicit**: Capabilities are granted in `molt.toml` or `pyproject.toml`.
   ```toml
   [molt.packages.molt_http]
-  capabilities = ["network:connect"]
+  capabilities = ["net"]
   ```

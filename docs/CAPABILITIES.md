@@ -13,11 +13,32 @@ By default, a compiled Molt binary has **zero** capabilities. Any access to the 
 
 | Capability | Scope | Description |
 | --- | --- | --- |
-| `net` | Sockets, DNS, HTTP | Required for ASGI shims and DB connectors. |
+| `net` | Sockets, DNS, HTTP | Required for ASGI shims and network access. |
+| `websocket.connect` | WebSockets | Allow outbound WebSocket connections. |
+| `websocket.listen` | WebSockets | Allow WebSocket listener endpoints (planned). |
 | `fs.read` | Filesystem | Read-only access to specific paths. |
 | `fs.write` | Filesystem | Write access to specific paths. |
-| `env` | Environment | Access to environment variables. |
-| `time` | System Clock | Access to monotonic and wall clocks. |
+| `env.read` | Environment | Read environment variables. |
+| `env.write` | Environment | Write environment variables. |
+| `db.read` | Database | Allow database reads via `molt-worker`. |
+| `db.write` | Database | Allow database writes via `molt-worker`. |
+| `time.wall` | System Clock | Wall-clock access for `time.time`/`datetime`; monotonic/perf_counter use deterministic timers. |
+| `time` | System Clock | Legacy alias for `time.wall`. |
+| `random` | Randomness | Allow nondeterministic randomness (planned). |
+
+## Built-in Profiles
+
+Profiles are convenience aliases you can pass to `--capabilities`:
+
+| Profile | Expands to |
+| --- | --- |
+| `core` | *(empty set)* |
+| `fs` | `fs.read`, `fs.write` |
+| `env` | `env.read`, `env.write` |
+| `net` | `net`, `websocket.connect`, `websocket.listen` |
+| `db` | `db.read`, `db.write` |
+| `time` | `time` |
+| `random` | `random` |
 
 ## Using Capabilities in Code
 

@@ -4,9 +4,15 @@ from pathlib import Path
 
 BASE_PREAMBLE = """\
 const fs = require('fs');
+const os = require('os');
+const crypto = require('crypto');
 const wasmPath = process.argv[2];
 const runtimeArgv = [wasmPath, ...process.argv.slice(3)];
 const wasmBuffer = fs.readFileSync(wasmPath);
+const MONO_START =
+  typeof process !== 'undefined' && process.hrtime && process.hrtime.bigint
+    ? process.hrtime.bigint()
+    : BigInt(Date.now()) * 1000000n;
 const QNAN = 0x7ff8000000000000n;
 const TAG_INT = 0x0001000000000000n;
 const TAG_BOOL = 0x0002000000000000n;
@@ -192,6 +198,22 @@ const getGeneratorType = () => {
   generatorTypeBits = clsBits;
   return clsBits;
 };
+let asyncGeneratorTypeBits = null;
+const getAsyncGeneratorType = () => {
+  if (asyncGeneratorTypeBits !== null) return asyncGeneratorTypeBits;
+  const clsBits = boxPtr({
+    type: 'class',
+    name: 'async_generator',
+    attrs: new Map(),
+    baseBits: boxNone(),
+    basesBits: null,
+    mroBits: null,
+  });
+  classLayoutVersions.set(clsBits, 0n);
+  setClassBases(clsBits, getBuiltinType(100));
+  asyncGeneratorTypeBits = clsBits;
+  return clsBits;
+};
 const heap = new Map();
 const instanceClasses = new Map();
 const classLayoutVersions = new Map();
@@ -200,15 +222,30 @@ const instanceAttrs = new Map();
 let nextPtr = 1n << 40n;
 let memory = null;
 let table = null;
+let memViewCache = null;
+let memViewBuffer = null;
+const memView = () => {
+  if (!memory) throw new Error('memory not initialized');
+  const buf = memory.buffer;
+  if (memViewCache === null || memViewBuffer !== buf) {
+    memViewBuffer = buf;
+    memViewCache = new DataView(buf);
+  }
+  return memViewCache;
+};
 const HOST_TABLE_FLAG = 0x80000000;
 const HOST_TABLE_MASK = 0x7fffffff;
 const hostTable = [];
 const chanQueues = new Map();
 const chanCaps = new Map();
 const moduleCache = new Map();
+const asyncgenRegistry = new Set();
+const taskWaitingOn = new Map();
+const runnableTasks = new Set();
+const runnableQueue = [];
 let codeSlots = null;
 const frameStack = [];
-const sleepPending = new Set();
+const cancelPending = new Set();
 const cancelTokens = new Map();
 const taskTokens = new Map();
 let nextCancelTokenId = 2n;
@@ -231,6 +268,10 @@ const GEN_YIELD_FROM_OFFSET = 40;
 const GEN_CONTROL_SIZE = 48;
 const TASK_KIND_FUTURE = 0n;
 const TASK_KIND_GENERATOR = 1n;
+const ASYNCGEN_OP_ANEXT = 0n;
+const ASYNCGEN_OP_ASEND = 1n;
+const ASYNCGEN_OP_ATHROW = 2n;
+const ASYNCGEN_OP_ACLOSE = 3n;
 const GEN_FLAG_STARTED = 1n << 2n;
 const GEN_FLAG_RUNNING = 1n << 3n;
 const align = (size, align) => (size + (align - 1)) & ~(align - 1);
@@ -477,6 +518,13 @@ const missingSentinel = () => {
   }
   return missingBits;
 };
+let ellipsisBits = null;
+const ellipsisObj = () => {
+  if (ellipsisBits === null) {
+    ellipsisBits = boxPtr({ type: 'ellipsis' });
+  }
+  return ellipsisBits;
+};
 let notImplementedBits = null;
 const notImplementedSentinel = () => {
   if (notImplementedBits === null) {
@@ -491,8 +539,20 @@ let generatorCloseMethodIdx = null;
 let generatorIterMethodIdx = null;
 let generatorNextMethodIdx = null;
 const generatorMethodBits = new Map();
+let asyncgenAiterMethodIdx = null;
+let asyncgenAnextMethodIdx = null;
+let asyncgenAsendMethodIdx = null;
+let asyncgenAthrowMethodIdx = null;
+let asyncgenAcloseMethodIdx = null;
+const asyncgenMethodBits = new Map();
+let asyncgenPollIdx = null;
 const tableFuncCache = new Map();
 const getObj = (val) => heap.get(val & POINTER_MASK);
+const getAsyncGenerator = (val) => {
+  const obj = getObj(val);
+  return obj && obj.type === 'asyncgen' ? obj : null;
+};
+const isAsyncGenerator = (val) => getAsyncGenerator(val) !== null;
 const ensureRootToken = () => {
   if (!cancelTokens.has(1n)) {
     cancelTokens.set(1n, { parent: 0n, cancelled: false, refs: 1n });
@@ -815,6 +875,7 @@ const typeName = (val) => {
     if (obj.type === 'tuple') return 'tuple';
     if (obj.type === 'slice') return 'slice';
     if (obj.type === 'memoryview') return 'memoryview';
+    if (obj.type === 'ellipsis') return 'ellipsis';
     if (obj.type === 'set') return 'set';
     if (obj.type === 'frozenset') return 'frozenset';
     if (obj.type === 'dict') return 'dict';
@@ -827,6 +888,7 @@ const typeName = (val) => {
     if (obj.type === 'filter') return 'filter';
     if (obj.type === 'zip') return 'zip';
     if (obj.type === 'reversed') return 'reversed';
+    if (obj.type === 'asyncgen') return 'async_generator';
     if (obj.type === 'call_iter') return 'callable_iterator';
   }
   if (isPtr(val) && !heap.has(val & POINTER_MASK)) {
@@ -989,6 +1051,26 @@ const stringStripChars = (hay, chars) => {
     end -= 1;
   }
   return hayChars.slice(start, end).join('');
+};
+const stringLStripChars = (hay, chars) => {
+  if (chars === '') return hay;
+  const hayChars = Array.from(hay);
+  const stripSet = new Set(Array.from(chars));
+  let start = 0;
+  while (start < hayChars.length && stripSet.has(hayChars[start])) {
+    start += 1;
+  }
+  return hayChars.slice(start).join('');
+};
+const stringRStripChars = (hay, chars) => {
+  if (chars === '') return hay;
+  const hayChars = Array.from(hay);
+  const stripSet = new Set(Array.from(chars));
+  let end = hayChars.length;
+  while (end > 0 && stripSet.has(hayChars[end - 1])) {
+    end -= 1;
+  }
+  return hayChars.slice(0, end).join('');
 };
 const splitMaxsplitFromBits = (bits) => {
   const errMsg = `'${typeName(bits)}' object cannot be interpreted as an integer`;
@@ -1719,6 +1801,197 @@ const getSetOpItems = (val) => {
   }
   return null;
 };
+const setItemsFromIterable = (otherBits) => {
+  const other = getSetLike(otherBits);
+  if (other) {
+    return new Set(other.items);
+  }
+  const iterBits = baseImports.iter(otherBits);
+  if (isNone(iterBits)) {
+    throw new Error(`TypeError: '${typeName(otherBits)}' object is not iterable`);
+  }
+  const items = new Set();
+  while (true) {
+    const pairBits = baseImports.iter_next(iterBits);
+    const tuple = getTuple(pairBits);
+    if (!tuple || tuple.items.length < 2) {
+      throw new Error(`TypeError: '${typeName(otherBits)}' object is not iterable`);
+    }
+    const doneBits = tuple.items[1];
+    if (isTruthyBits(doneBits)) break;
+    items.add(tuple.items[0]);
+  }
+  return items;
+};
+const setCopyBits = (selfBits) => {
+  const setLike = getSetLike(selfBits);
+  if (!setLike) return boxNone();
+  if (setLike.type === 'frozenset') {
+    return selfBits;
+  }
+  return boxPtr({ type: 'set', items: new Set(setLike.items) });
+};
+const setClearBits = (selfBits) => {
+  const set = getSet(selfBits);
+  if (!set) return boxNone();
+  set.items.clear();
+  return boxNone();
+};
+const setUnionItems = (leftItems, rightItems) => {
+  const out = new Set(leftItems);
+  for (const item of rightItems) {
+    out.add(item);
+  }
+  return out;
+};
+const setIntersectionItems = (leftItems, rightItems) => {
+  const out = new Set();
+  for (const item of leftItems) {
+    if (rightItems.has(item)) out.add(item);
+  }
+  return out;
+};
+const setDifferenceItems = (leftItems, rightItems) => {
+  const out = new Set();
+  for (const item of leftItems) {
+    if (!rightItems.has(item)) out.add(item);
+  }
+  return out;
+};
+const setSymdiffItems = (leftItems, rightItems) => {
+  const out = new Set();
+  for (const item of leftItems) {
+    if (!rightItems.has(item)) out.add(item);
+  }
+  for (const item of rightItems) {
+    if (!leftItems.has(item)) out.add(item);
+  }
+  return out;
+};
+const setUnionMulti = (selfBits, othersBits) => {
+  const self = getSetLike(selfBits);
+  if (!self) return boxNone();
+  const tuple = getTuple(othersBits);
+  const others = tuple ? tuple.items : [othersBits];
+  let resultItems = new Set(self.items);
+  for (const otherBits of others) {
+    const items = setItemsFromIterable(otherBits);
+    resultItems = setUnionItems(resultItems, items);
+  }
+  return boxPtr({ type: self.type, items: resultItems });
+};
+const setIntersectionMulti = (selfBits, othersBits) => {
+  const self = getSetLike(selfBits);
+  if (!self) return boxNone();
+  const tuple = getTuple(othersBits);
+  const others = tuple ? tuple.items : [othersBits];
+  let resultItems = new Set(self.items);
+  for (const otherBits of others) {
+    const items = setItemsFromIterable(otherBits);
+    resultItems = setIntersectionItems(resultItems, items);
+  }
+  return boxPtr({ type: self.type, items: resultItems });
+};
+const setDifferenceMulti = (selfBits, othersBits) => {
+  const self = getSetLike(selfBits);
+  if (!self) return boxNone();
+  const tuple = getTuple(othersBits);
+  const others = tuple ? tuple.items : [othersBits];
+  let resultItems = new Set(self.items);
+  for (const otherBits of others) {
+    const items = setItemsFromIterable(otherBits);
+    resultItems = setDifferenceItems(resultItems, items);
+  }
+  return boxPtr({ type: self.type, items: resultItems });
+};
+const setSymdiffBits = (selfBits, otherBits) => {
+  const self = getSetLike(selfBits);
+  if (!self) return boxNone();
+  const otherItems = setItemsFromIterable(otherBits);
+  const resultItems = setSymdiffItems(self.items, otherItems);
+  return boxPtr({ type: self.type, items: resultItems });
+};
+const setUpdateMulti = (selfBits, othersBits) => {
+  const set = getSet(selfBits);
+  if (!set) return boxNone();
+  const tuple = getTuple(othersBits);
+  const others = tuple ? tuple.items : [othersBits];
+  for (const otherBits of others) {
+    const items = setItemsFromIterable(otherBits);
+    for (const item of items) {
+      set.items.add(item);
+    }
+  }
+  return boxNone();
+};
+const setIntersectionUpdateMulti = (selfBits, othersBits) => {
+  const set = getSet(selfBits);
+  if (!set) return boxNone();
+  const tuple = getTuple(othersBits);
+  const others = tuple ? tuple.items : [othersBits];
+  for (const otherBits of others) {
+    const items = setItemsFromIterable(otherBits);
+    for (const item of [...set.items]) {
+      if (!items.has(item)) {
+        set.items.delete(item);
+      }
+    }
+  }
+  return boxNone();
+};
+const setDifferenceUpdateMulti = (selfBits, othersBits) => {
+  const set = getSet(selfBits);
+  if (!set) return boxNone();
+  const tuple = getTuple(othersBits);
+  const others = tuple ? tuple.items : [othersBits];
+  for (const otherBits of others) {
+    const items = setItemsFromIterable(otherBits);
+    for (const item of items) {
+      set.items.delete(item);
+    }
+  }
+  return boxNone();
+};
+const setSymdiffUpdateBits = (selfBits, otherBits) => {
+  const set = getSet(selfBits);
+  if (!set) return boxNone();
+  const items = setItemsFromIterable(otherBits);
+  set.items = setSymdiffItems(set.items, items);
+  return boxNone();
+};
+const setIsDisjointBits = (selfBits, otherBits) => {
+  const self = getSetLike(selfBits);
+  if (!self) return boxNone();
+  const otherItems = setItemsFromIterable(otherBits);
+  let left = self.items;
+  let right = otherItems;
+  if (left.size > right.size) {
+    left = otherItems;
+    right = self.items;
+  }
+  for (const item of left) {
+    if (right.has(item)) return boxBool(false);
+  }
+  return boxBool(true);
+};
+const setIsSubsetBits = (selfBits, otherBits) => {
+  const self = getSetLike(selfBits);
+  if (!self) return boxNone();
+  const otherItems = setItemsFromIterable(otherBits);
+  for (const item of self.items) {
+    if (!otherItems.has(item)) return boxBool(false);
+  }
+  return boxBool(true);
+};
+const setIsSupersetBits = (selfBits, otherBits) => {
+  const self = getSetLike(selfBits);
+  if (!self) return boxNone();
+  const otherItems = setItemsFromIterable(otherBits);
+  for (const item of otherItems) {
+    if (!self.items.has(item)) return boxBool(false);
+  }
+  return boxBool(true);
+};
 const getBytes = (val) => {
   const obj = getObj(val);
   if (!obj || obj.type !== 'bytes') return null;
@@ -2409,8 +2682,12 @@ const lookupAttr = (objBits, name) => {
   }
   const obj = getObj(objBits);
   if (obj && obj.type === 'module') {
-    const val = obj.attrs.get(name);
-    return val === undefined ? undefined : val;
+    if (name === '__dict__') return obj.dictBits ?? boxNone();
+    const dict = getDict(obj.dictBits);
+    if (!dict) return undefined;
+    const nameBits = boxPtr({ type: 'str', value: name });
+    const val = dictGetValue(dict, nameBits);
+    return val === null ? undefined : val;
   }
   if (obj && obj.type === 'memoryview') {
     if (name === 'format') return obj.formatBits ?? boxNone();
@@ -2437,22 +2714,38 @@ const lookupAttr = (objBits, name) => {
     const closedBits = view.getBigInt64(addr + GEN_CLOSED_OFFSET, true);
     const closed = isTag(closedBits, TAG_BOOL) && (closedBits & 1n) === 1n;
     if (name === 'gi_running') {
-      return boxBool(generatorIsRunning(view, addr));
+      return boxBool(generatorIsRunning(addr));
     }
     if (name === 'gi_frame') {
       if (closed) return boxNone();
-      const frameBits = generatorFrameBits(view, addr);
+      const frameBits = generatorFrameBits(addr);
       return isNone(frameBits) ? boxNone() : frameBits;
     }
     if (name === 'gi_yieldfrom') {
       if (closed) return boxNone();
-      const yieldBits = generatorYieldFromBits(view, addr);
+      const yieldBits = generatorYieldFromBits(addr);
       return isNone(yieldBits) ? boxNone() : yieldBits;
     }
     if (name === 'gi_code') {
       return boxNone();
     }
     const funcBits = getGeneratorMethodBits(name);
+    if (!isNone(funcBits)) {
+      return makeBoundMethod(funcBits, objBits);
+    }
+  }
+  const asyncgenObj = getAsyncGenerator(objBits);
+  if (asyncgenObj) {
+    if (name === 'ag_running') {
+      return boxBool(asyncgenRunning(asyncgenObj));
+    }
+    if (name === 'ag_await') {
+      return asyncgenAwaitBits(asyncgenObj);
+    }
+    if (name === 'ag_code') {
+      return asyncgenCodeBits(asyncgenObj);
+    }
+    const funcBits = getAsyncGeneratorMethodBits(name);
     if (!isNone(funcBits)) {
       return makeBoundMethod(funcBits, objBits);
     }
@@ -2559,6 +2852,7 @@ const typeOfBits = (objBits) => {
     if (obj.type === 'frozenset') return getBuiltinType(18);
     if (obj.type === 'memoryview') return getBuiltinType(15);
   }
+  if (isAsyncGenerator(objBits)) return getAsyncGeneratorType();
   if (isGenerator(objBits)) return getGeneratorType();
   if (isPtr(objBits) && !heap.has(objBits & POINTER_MASK)) {
     const clsBits = instanceClasses.get(ptrAddr(objBits));
@@ -2676,7 +2970,16 @@ const setAttrValue = (objBits, name, valBits) => {
   }
   const moduleObj = getModule(objBits);
   if (moduleObj) {
-    moduleObj.attrs.set(name, valBits);
+    const dict = getDict(moduleObj.dictBits);
+    if (!dict) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'module dict missing' })),
+      );
+      return raiseException(exc);
+    }
+    const nameBits = boxPtr({ type: 'str', value: name });
+    dictSetValue(dict, nameBits, valBits);
     return boxNone();
   }
   const instanceAttrsMap = getInstanceAttrMap(objBits);
@@ -2738,7 +3041,16 @@ const delAttrValue = (objBits, name) => {
   }
   const moduleObj = getModule(objBits);
   if (moduleObj) {
-    moduleObj.attrs.delete(name);
+    const dict = getDict(moduleObj.dictBits);
+    if (!dict) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'module dict missing' })),
+      );
+      return raiseException(exc);
+    }
+    const nameBits = boxPtr({ type: 'str', value: name });
+    dictDelete(dict, nameBits);
     return boxNone();
   }
   const instanceAttrsMap = getInstanceAttrMap(objBits);
@@ -2810,6 +3122,13 @@ const exceptionMessageFromArgs = (argsBits) => {
   if (items.length === 1) return baseImports.str_from_obj(items[0]);
   return baseImports.str_from_obj(argsBits);
 };
+const exceptionMessageForKind = (kindBits, argsBits) => {
+  const items = exceptionArgsItems(argsBits);
+  if (items.length === 1 && getStr(kindBits) === 'KeyError') {
+    return boxPtr({ type: 'str', value: reprStringFromBits(items[0]) });
+  }
+  return exceptionMessageFromArgs(argsBits);
+};
 const exceptionClass = (kindBits) => {
   const name = getStrObj(kindBits);
   if (name === null) {
@@ -2857,11 +3176,25 @@ const reprStringFromBits = (val) => {
   if (obj && obj.type === 'list') {
     return `[${obj.items.map((item) => reprStringFromBits(item)).join(', ')}]`;
   }
+  if (obj && obj.type === 'dict') {
+    const pairs = obj.entries.map(
+      ([key, value]) => `${reprStringFromBits(key)}: ${reprStringFromBits(value)}`,
+    );
+    return `{${pairs.join(', ')}}`;
+  }
+  if (obj && (obj.type === 'set' || obj.type === 'frozenset')) {
+    const items = [...obj.items].map((item) => reprStringFromBits(item));
+    if (items.length === 0) {
+      return obj.type === 'frozenset' ? 'frozenset()' : 'set()';
+    }
+    const body = `{${items.join(', ')}}`;
+    return obj.type === 'frozenset' ? `frozenset(${body})` : body;
+  }
   return '<obj>';
 };
 const exceptionNew = (kindBits, argsBits) => {
   const normArgsBits = exceptionNormalizeArgs(argsBits);
-  const msgBits = exceptionMessageFromArgs(normArgsBits);
+  const msgBits = exceptionMessageForKind(kindBits, normArgsBits);
   const classBits = exceptionClass(kindBits);
   const exc = {
     type: 'exception',
@@ -2894,7 +3227,7 @@ const exceptionNewFromClass = (classBits, argsBits) => {
     kindBits = boxPtr({ type: 'str', value: 'Exception' });
   }
   const normArgsBits = exceptionNormalizeArgs(argsBits);
-  const msgBits = exceptionMessageFromArgs(normArgsBits);
+  const msgBits = exceptionMessageForKind(kindBits, normArgsBits);
   const exc = {
     type: 'exception',
     kindBits,
@@ -2936,6 +3269,23 @@ const exceptionContextSet = (excBits) => {
   activeExceptionStack[activeExceptionStack.length - 1] = excBits;
   return boxNone();
 };
+const exceptionSetLast = (excBits) => {
+  const exc = getException(excBits);
+  if (!exc) {
+    throw new Error('TypeError: expected exception object');
+  }
+  const traceBits = frameStackTraceBits();
+  exc.traceBits = traceBits === null ? boxNone() : traceBits;
+  const activeContext = lastNonNone(activeExceptionStack);
+  const fallbackContext = lastNonNone(activeExceptionFallback);
+  const context = !isNone(activeContext) ? activeContext : fallbackContext;
+  const candidate = !isNone(lastException) ? lastException : context;
+  if (isNone(exc.contextBits) && !isNone(candidate) && candidate !== excBits) {
+    exc.contextBits = candidate;
+  }
+  lastException = excBits;
+  return boxNone();
+};
 const exceptionKind = (excBits) => {
   const exc = getException(excBits);
   if (!exc) return boxNone();
@@ -2946,7 +3296,7 @@ const exceptionMessage = (excBits) => {
   if (!exc) return boxNone();
   if (exc.msgBits && !isNone(exc.msgBits)) return exc.msgBits;
   const argsBits = exc.argsBits || boxNone();
-  const msgBits = exceptionMessageFromArgs(argsBits);
+  const msgBits = exceptionMessageForKind(exc.kindBits, argsBits);
   exc.msgBits = msgBits;
   return msgBits;
 };
@@ -3044,6 +3394,48 @@ const frameStackTraceBits = () => {
   }
   return built ? nextBits : null;
 };
+const formatTraceback = (traceBits) => {
+  if (isNone(traceBits)) return '';
+  let out = 'Traceback (most recent call last):\\n';
+  let current = traceBits;
+  let depth = 0;
+  while (!isNone(current) && depth < 512) {
+    const frameBits = lookupAttr(current, 'tb_frame');
+    const lineBits = lookupAttr(current, 'tb_lineno');
+    let line = 0;
+    if (lineBits !== undefined && isIntLike(lineBits)) {
+      const rawLine = Number(unboxIntLike(lineBits));
+      line = Number.isFinite(rawLine) ? Math.trunc(rawLine) : 0;
+    }
+    let filename = '<unknown>';
+    let name = '<module>';
+    if (frameBits !== undefined && !isNone(frameBits)) {
+      const codeBits = lookupAttr(frameBits, 'f_code');
+      const codeObj = codeBits !== undefined ? getCode(codeBits) : null;
+      if (codeObj) {
+        const rawFilename = getStr(codeObj.filenameBits);
+        const rawName = getStr(codeObj.nameBits);
+        if (rawFilename) filename = rawFilename;
+        if (rawName) name = rawName;
+      }
+      if (!line) {
+        const fLineBits = lookupAttr(frameBits, 'f_lineno');
+        if (fLineBits !== undefined && isIntLike(fLineBits)) {
+          const rawLine = Number(unboxIntLike(fLineBits));
+          line = Number.isFinite(rawLine) ? Math.trunc(rawLine) : 0;
+        }
+      }
+    }
+    out += `  File "${filename}", line ${line}, in ${name}\n`;
+    const nextBits = lookupAttr(current, 'tb_next');
+    current = nextBits === undefined ? boxNone() : nextBits;
+    depth += 1;
+  }
+  if (!isNone(current)) {
+    out += '  <traceback truncated>\\n';
+  }
+  return out;
+};
 const raiseException = (excBits) => {
   let exc = getException(excBits);
   if (!exc) {
@@ -3097,15 +3489,25 @@ const raiseException = (excBits) => {
   lastException = excBits;
   if (!exceptionStack.length && !generatorRaise && !asyncRaise) {
     const kind = exc ? getStr(exc.kindBits) : 'Exception';
-    const msg = exc ? getStr(exc.msgBits) : '';
-    throw new Error(`${kind}: ${msg}`);
+    let msg = '';
+    if (exc) {
+      const msgBits = exceptionMessageForKind(exc.kindBits, exc.argsBits || boxNone());
+      msg = getStr(msgBits);
+    }
+    let rendered = '';
+    if (exc && exc.traceBits && !isNone(exc.traceBits)) {
+      rendered += formatTraceback(exc.traceBits);
+    }
+    rendered += msg ? `${kind}: ${msg}` : kind;
+    throw new Error(rendered);
   }
   return boxNone();
 };
-const generatorFlags = (view, addr) =>
-  view.getBigInt64(addr - HEADER_FLAGS_OFFSET, true);
-const generatorSetFlag = (view, addr, flag, enabled) => {
-  let flags = generatorFlags(view, addr);
+const generatorFlags = (addr) =>
+  memView().getBigInt64(addr - HEADER_FLAGS_OFFSET, true);
+const generatorSetFlag = (addr, flag, enabled) => {
+  const view = memView();
+  let flags = view.getBigInt64(addr - HEADER_FLAGS_OFFSET, true);
   if (enabled) {
     flags |= flag;
   } else {
@@ -3113,24 +3515,22 @@ const generatorSetFlag = (view, addr, flag, enabled) => {
   }
   view.setBigInt64(addr - HEADER_FLAGS_OFFSET, flags, true);
 };
-const generatorIsRunning = (view, addr) =>
-  (generatorFlags(view, addr) & GEN_FLAG_RUNNING) !== 0n;
-const generatorMarkStarted = (view, addr) =>
-  generatorSetFlag(view, addr, GEN_FLAG_STARTED, true);
-const generatorSetRunning = (view, addr, running) =>
-  generatorSetFlag(view, addr, GEN_FLAG_RUNNING, running);
-const generatorFrameBits = (view, addr) =>
-  view.getBigInt64(addr + GEN_FRAME_OFFSET, true);
-const generatorSetFrameBits = (view, addr, bits) =>
-  view.setBigInt64(addr + GEN_FRAME_OFFSET, bits, true);
-const generatorYieldFromBits = (view, addr) =>
-  view.getBigInt64(addr + GEN_YIELD_FROM_OFFSET, true);
-const generatorSetYieldFromBits = (view, addr, bits) =>
-  view.setBigInt64(addr + GEN_YIELD_FROM_OFFSET, bits, true);
-const generatorClearIntrospection = (view, addr) => {
-  generatorSetYieldFromBits(view, addr, boxNone());
-  generatorSetFrameBits(view, addr, boxNone());
-  generatorSetRunning(view, addr, false);
+const generatorIsRunning = (addr) =>
+  (generatorFlags(addr) & GEN_FLAG_RUNNING) !== 0n;
+const generatorMarkStarted = (addr) => generatorSetFlag(addr, GEN_FLAG_STARTED, true);
+const generatorSetRunning = (addr, running) =>
+  generatorSetFlag(addr, GEN_FLAG_RUNNING, running);
+const generatorFrameBits = (addr) => memView().getBigInt64(addr + GEN_FRAME_OFFSET, true);
+const generatorSetFrameBits = (addr, bits) =>
+  memView().setBigInt64(addr + GEN_FRAME_OFFSET, bits, true);
+const generatorYieldFromBits = (addr) =>
+  memView().getBigInt64(addr + GEN_YIELD_FROM_OFFSET, true);
+const generatorSetYieldFromBits = (addr, bits) =>
+  memView().setBigInt64(addr + GEN_YIELD_FROM_OFFSET, bits, true);
+const generatorClearIntrospection = (addr) => {
+  generatorSetYieldFromBits(addr, boxNone());
+  generatorSetFrameBits(addr, boxNone());
+  generatorSetRunning(addr, false);
 };
 const frameNew = (lasti) => {
   const addr = allocRaw(8);
@@ -3149,29 +3549,22 @@ const frameSetLasti = (frameBits, lasti) => {
     attrs.set('f_lasti', boxInt(BigInt(lasti)));
   }
 };
-const generatorSend = (gen, sendVal) => {
+const generatorResume = (gen) => {
   if (!isGenerator(gen) || !memory || !table) {
     return tupleFromArray([boxNone(), boxBool(true)]);
   }
   const addr = ptrAddr(gen);
-  const view = new DataView(memory.buffer);
-  const closedBits = view.getBigInt64(addr + GEN_CLOSED_OFFSET, true);
+  const closedBits = memView().getBigInt64(addr + GEN_CLOSED_OFFSET, true);
   const closed = isTag(closedBits, TAG_BOOL) && (closedBits & 1n) === 1n;
   if (closed) {
     return tupleFromArray([boxNone(), boxBool(true)]);
   }
-  if (generatorIsRunning(view, addr)) {
+  if (generatorIsRunning(addr)) {
     throw new Error('ValueError: generator already executing');
   }
-  const started = (generatorFlags(view, addr) & GEN_FLAG_STARTED) !== 0n;
-  if (!started && !isNone(sendVal)) {
-    throw new Error(
-      "TypeError: can't send non-None value to a just-started generator",
-    );
-  }
-  if (!started) {
-    generatorMarkStarted(view, addr);
-    frameSetLasti(generatorFrameBits(view, addr), 0);
+  if ((generatorFlags(addr) & GEN_FLAG_STARTED) === 0n) {
+    generatorMarkStarted(addr);
+    frameSetLasti(generatorFrameBits(addr), 0);
   }
   const callerDepth = exceptionDepth();
   const callerStack = activeExceptionStack.slice();
@@ -3183,28 +3576,26 @@ const generatorSend = (gen, sendVal) => {
   const genStack = generatorExceptionStacks.get(key) || [];
   activeExceptionStack.length = 0;
   activeExceptionStack.push(...genStack);
-  const depthBits = view.getBigInt64(addr + GEN_EXC_DEPTH_OFFSET, true);
+  const depthBits = memView().getBigInt64(addr + GEN_EXC_DEPTH_OFFSET, true);
   const genDepth = isTag(depthBits, TAG_INT) ? Number(unboxInt(depthBits)) : 0;
   exceptionSetDepth(genDepth);
-  view.setBigInt64(addr + GEN_SEND_OFFSET, sendVal, true);
-  view.setBigInt64(addr + GEN_THROW_OFFSET, boxNone(), true);
-  const pollIdx = view.getUint32(addr - HEADER_POLL_FN_OFFSET, true);
+  const pollIdx = memView().getUint32(addr - HEADER_POLL_FN_OFFSET, true);
   const poll = getTableFunc(pollIdx);
   const prevRaise = generatorRaise;
   generatorRaise = true;
-  generatorSetRunning(view, addr, true);
+  generatorSetRunning(addr, true);
   let res;
   try {
     res = poll ? poll(BigInt(addr)) : tupleFromArray([boxNone(), boxBool(true)]);
   } finally {
     generatorRaise = prevRaise;
-    generatorSetRunning(view, addr, false);
+    generatorSetRunning(addr, false);
   }
   const pending = exceptionPending() !== 0n;
   const excBits = pending ? exceptionLast() : boxNone();
   if (pending) exceptionClear();
   const newDepth = exceptionDepth();
-  view.setBigInt64(addr + GEN_EXC_DEPTH_OFFSET, boxInt(newDepth), true);
+  memView().setBigInt64(addr + GEN_EXC_DEPTH_OFFSET, boxInt(newDepth), true);
   exceptionSetDepth(newDepth);
   generatorExceptionStacks.set(key, activeExceptionStack.slice());
   activeExceptionStack.length = 0;
@@ -3212,8 +3603,8 @@ const generatorSend = (gen, sendVal) => {
   exceptionSetDepth(callerDepth);
   activeExceptionFallback.pop();
   if (pending) {
-    view.setBigInt64(addr + GEN_CLOSED_OFFSET, boxBool(true), true);
-    generatorClearIntrospection(view, addr);
+    memView().setBigInt64(addr + GEN_CLOSED_OFFSET, boxBool(true), true);
+    generatorClearIntrospection(addr);
     return raiseException(excBits);
   }
   if (res) {
@@ -3221,8 +3612,86 @@ const generatorSend = (gen, sendVal) => {
     if (pair && pair.items.length >= 2) {
       const doneBits = pair.items[1];
       if (isTag(doneBits, TAG_BOOL) && (doneBits & 1n) === 1n) {
-        view.setBigInt64(addr + GEN_CLOSED_OFFSET, boxBool(true), true);
-        generatorClearIntrospection(view, addr);
+        memView().setBigInt64(addr + GEN_CLOSED_OFFSET, boxBool(true), true);
+        generatorClearIntrospection(addr);
+      }
+    }
+  }
+  return res;
+};
+const generatorSend = (gen, sendVal) => {
+  if (!isGenerator(gen) || !memory || !table) {
+    return tupleFromArray([boxNone(), boxBool(true)]);
+  }
+  const addr = ptrAddr(gen);
+  const closedBits = memView().getBigInt64(addr + GEN_CLOSED_OFFSET, true);
+  const closed = isTag(closedBits, TAG_BOOL) && (closedBits & 1n) === 1n;
+  if (closed) {
+    return tupleFromArray([boxNone(), boxBool(true)]);
+  }
+  if (generatorIsRunning(addr)) {
+    throw new Error('ValueError: generator already executing');
+  }
+  const started = (generatorFlags(addr) & GEN_FLAG_STARTED) !== 0n;
+  if (!started && !isNone(sendVal)) {
+    throw new Error(
+      "TypeError: can't send non-None value to a just-started generator",
+    );
+  }
+  if (!started) {
+    generatorMarkStarted(addr);
+    frameSetLasti(generatorFrameBits(addr), 0);
+  }
+  const callerDepth = exceptionDepth();
+  const callerStack = activeExceptionStack.slice();
+  const callerContext = callerStack.length
+    ? callerStack[callerStack.length - 1]
+    : boxNone();
+  activeExceptionFallback.push(callerContext);
+  const key = addr;
+  const genStack = generatorExceptionStacks.get(key) || [];
+  activeExceptionStack.length = 0;
+  activeExceptionStack.push(...genStack);
+  const depthBits = memView().getBigInt64(addr + GEN_EXC_DEPTH_OFFSET, true);
+  const genDepth = isTag(depthBits, TAG_INT) ? Number(unboxInt(depthBits)) : 0;
+  exceptionSetDepth(genDepth);
+  memView().setBigInt64(addr + GEN_SEND_OFFSET, sendVal, true);
+  memView().setBigInt64(addr + GEN_THROW_OFFSET, boxNone(), true);
+  const pollIdx = memView().getUint32(addr - HEADER_POLL_FN_OFFSET, true);
+  const poll = getTableFunc(pollIdx);
+  const prevRaise = generatorRaise;
+  generatorRaise = true;
+  generatorSetRunning(addr, true);
+  let res;
+  try {
+    res = poll ? poll(BigInt(addr)) : tupleFromArray([boxNone(), boxBool(true)]);
+  } finally {
+    generatorRaise = prevRaise;
+    generatorSetRunning(addr, false);
+  }
+  const pending = exceptionPending() !== 0n;
+  const excBits = pending ? exceptionLast() : boxNone();
+  if (pending) exceptionClear();
+  const newDepth = exceptionDepth();
+  memView().setBigInt64(addr + GEN_EXC_DEPTH_OFFSET, boxInt(newDepth), true);
+  exceptionSetDepth(newDepth);
+  generatorExceptionStacks.set(key, activeExceptionStack.slice());
+  activeExceptionStack.length = 0;
+  activeExceptionStack.push(...callerStack);
+  exceptionSetDepth(callerDepth);
+  activeExceptionFallback.pop();
+  if (pending) {
+    memView().setBigInt64(addr + GEN_CLOSED_OFFSET, boxBool(true), true);
+    generatorClearIntrospection(addr);
+    return raiseException(excBits);
+  }
+  if (res) {
+    const pair = getTuple(res);
+    if (pair && pair.items.length >= 2) {
+      const doneBits = pair.items[1];
+      if (isTag(doneBits, TAG_BOOL) && (doneBits & 1n) === 1n) {
+        memView().setBigInt64(addr + GEN_CLOSED_OFFSET, boxBool(true), true);
+        generatorClearIntrospection(addr);
       }
     }
   }
@@ -3233,18 +3702,17 @@ const generatorThrow = (gen, exc) => {
     return tupleFromArray([boxNone(), boxBool(true)]);
   }
   const addr = ptrAddr(gen);
-  const view = new DataView(memory.buffer);
-  const closedBits = view.getBigInt64(addr + GEN_CLOSED_OFFSET, true);
+  const closedBits = memView().getBigInt64(addr + GEN_CLOSED_OFFSET, true);
   const closed = isTag(closedBits, TAG_BOOL) && (closedBits & 1n) === 1n;
   if (closed) {
     return raiseException(exc);
   }
-  if (generatorIsRunning(view, addr)) {
+  if (generatorIsRunning(addr)) {
     throw new Error('ValueError: generator already executing');
   }
-  if ((generatorFlags(view, addr) & GEN_FLAG_STARTED) === 0n) {
-    generatorMarkStarted(view, addr);
-    frameSetLasti(generatorFrameBits(view, addr), 0);
+  if ((generatorFlags(addr) & GEN_FLAG_STARTED) === 0n) {
+    generatorMarkStarted(addr);
+    frameSetLasti(generatorFrameBits(addr), 0);
   }
   const callerDepth = exceptionDepth();
   const callerStack = activeExceptionStack.slice();
@@ -3256,12 +3724,12 @@ const generatorThrow = (gen, exc) => {
   const genStack = generatorExceptionStacks.get(key) || [];
   activeExceptionStack.length = 0;
   activeExceptionStack.push(...genStack);
-  const depthBits = view.getBigInt64(addr + GEN_EXC_DEPTH_OFFSET, true);
+  const depthBits = memView().getBigInt64(addr + GEN_EXC_DEPTH_OFFSET, true);
   const genDepth = isTag(depthBits, TAG_INT) ? Number(unboxInt(depthBits)) : 0;
   exceptionSetDepth(genDepth);
-  view.setBigInt64(addr + GEN_THROW_OFFSET, exc, true);
-  view.setBigInt64(addr + GEN_SEND_OFFSET, boxNone(), true);
-  const pollIdx = view.getUint32(addr - HEADER_POLL_FN_OFFSET, true);
+  memView().setBigInt64(addr + GEN_THROW_OFFSET, exc, true);
+  memView().setBigInt64(addr + GEN_SEND_OFFSET, boxNone(), true);
+  const pollIdx = memView().getUint32(addr - HEADER_POLL_FN_OFFSET, true);
   const poll = getTableFunc(pollIdx);
   if (!poll) {
     activeExceptionFallback.pop();
@@ -3269,19 +3737,19 @@ const generatorThrow = (gen, exc) => {
   }
   const prevRaise = generatorRaise;
   generatorRaise = true;
-  generatorSetRunning(view, addr, true);
+  generatorSetRunning(addr, true);
   let res;
   try {
     res = poll(BigInt(addr));
   } finally {
     generatorRaise = prevRaise;
-    generatorSetRunning(view, addr, false);
+    generatorSetRunning(addr, false);
   }
   const pending = exceptionPending() !== 0n;
   const excBits = pending ? exceptionLast() : boxNone();
   if (pending) exceptionClear();
   const newDepth = exceptionDepth();
-  view.setBigInt64(addr + GEN_EXC_DEPTH_OFFSET, boxInt(newDepth), true);
+  memView().setBigInt64(addr + GEN_EXC_DEPTH_OFFSET, boxInt(newDepth), true);
   exceptionSetDepth(newDepth);
   generatorExceptionStacks.set(key, activeExceptionStack.slice());
   activeExceptionStack.length = 0;
@@ -3289,8 +3757,8 @@ const generatorThrow = (gen, exc) => {
   exceptionSetDepth(callerDepth);
   activeExceptionFallback.pop();
   if (pending) {
-    view.setBigInt64(addr + GEN_CLOSED_OFFSET, boxBool(true), true);
-    generatorClearIntrospection(view, addr);
+    memView().setBigInt64(addr + GEN_CLOSED_OFFSET, boxBool(true), true);
+    generatorClearIntrospection(addr);
     return raiseException(excBits);
   }
   if (res) {
@@ -3298,8 +3766,8 @@ const generatorThrow = (gen, exc) => {
     if (pair && pair.items.length >= 2) {
       const doneBits = pair.items[1];
       if (isTag(doneBits, TAG_BOOL) && (doneBits & 1n) === 1n) {
-        view.setBigInt64(addr + GEN_CLOSED_OFFSET, boxBool(true), true);
-        generatorClearIntrospection(view, addr);
+        memView().setBigInt64(addr + GEN_CLOSED_OFFSET, boxBool(true), true);
+        generatorClearIntrospection(addr);
       }
     }
   }
@@ -3310,11 +3778,10 @@ const generatorClose = (gen) => {
     return boxNone();
   }
   const addr = ptrAddr(gen);
-  const view = new DataView(memory.buffer);
-  const closedBits = view.getBigInt64(addr + GEN_CLOSED_OFFSET, true);
+  const closedBits = memView().getBigInt64(addr + GEN_CLOSED_OFFSET, true);
   const closed = isTag(closedBits, TAG_BOOL) && (closedBits & 1n) === 1n;
   if (closed) return boxNone();
-  if (generatorIsRunning(view, addr)) {
+  if (generatorIsRunning(addr)) {
     throw new Error('ValueError: generator already executing');
   }
   const callerDepth = exceptionDepth();
@@ -3327,37 +3794,37 @@ const generatorClose = (gen) => {
   const genStack = generatorExceptionStacks.get(key) || [];
   activeExceptionStack.length = 0;
   activeExceptionStack.push(...genStack);
-  const depthBits = view.getBigInt64(addr + GEN_EXC_DEPTH_OFFSET, true);
+  const depthBits = memView().getBigInt64(addr + GEN_EXC_DEPTH_OFFSET, true);
   const genDepth = isTag(depthBits, TAG_INT) ? Number(unboxInt(depthBits)) : 0;
   exceptionSetDepth(genDepth);
   const exc = exceptionNew(
     boxPtr({ type: 'str', value: 'GeneratorExit' }),
     boxNone(),
   );
-  view.setBigInt64(addr + GEN_THROW_OFFSET, exc, true);
-  view.setBigInt64(addr + GEN_SEND_OFFSET, boxNone(), true);
-  const pollIdx = view.getUint32(addr - HEADER_POLL_FN_OFFSET, true);
+  memView().setBigInt64(addr + GEN_THROW_OFFSET, exc, true);
+  memView().setBigInt64(addr + GEN_SEND_OFFSET, boxNone(), true);
+  const pollIdx = memView().getUint32(addr - HEADER_POLL_FN_OFFSET, true);
   const poll = getTableFunc(pollIdx);
   if (!poll) {
-    view.setBigInt64(addr + GEN_CLOSED_OFFSET, boxBool(true), true);
-    generatorClearIntrospection(view, addr);
+    memView().setBigInt64(addr + GEN_CLOSED_OFFSET, boxBool(true), true);
+    generatorClearIntrospection(addr);
     return boxNone();
   }
   const prevRaise = generatorRaise;
   generatorRaise = true;
-  generatorSetRunning(view, addr, true);
+  generatorSetRunning(addr, true);
   let res;
   try {
     res = poll(BigInt(addr));
   } finally {
     generatorRaise = prevRaise;
-    generatorSetRunning(view, addr, false);
+    generatorSetRunning(addr, false);
   }
   const pending = exceptionPending() !== 0n;
   const excBits = pending ? exceptionLast() : boxNone();
   if (pending) exceptionClear();
   const newDepth = exceptionDepth();
-  view.setBigInt64(addr + GEN_EXC_DEPTH_OFFSET, boxInt(newDepth), true);
+  memView().setBigInt64(addr + GEN_EXC_DEPTH_OFFSET, boxInt(newDepth), true);
   exceptionSetDepth(newDepth);
   generatorExceptionStacks.set(key, activeExceptionStack.slice());
   activeExceptionStack.length = 0;
@@ -3368,12 +3835,12 @@ const generatorClose = (gen) => {
     const excObj = getException(excBits);
     const isExit = excObj && getStr(excObj.kindBits) === 'GeneratorExit';
     if (isExit) {
-      view.setBigInt64(addr + GEN_CLOSED_OFFSET, boxBool(true), true);
-      generatorClearIntrospection(view, addr);
+      memView().setBigInt64(addr + GEN_CLOSED_OFFSET, boxBool(true), true);
+      generatorClearIntrospection(addr);
       return boxNone();
     }
-    view.setBigInt64(addr + GEN_CLOSED_OFFSET, boxBool(true), true);
-    generatorClearIntrospection(view, addr);
+    memView().setBigInt64(addr + GEN_CLOSED_OFFSET, boxBool(true), true);
+    generatorClearIntrospection(addr);
     return raiseException(excBits);
   }
   if (res) {
@@ -3392,9 +3859,208 @@ const generatorClose = (gen) => {
       }
     }
   }
-  view.setBigInt64(addr + GEN_CLOSED_OFFSET, boxBool(true), true);
-  generatorClearIntrospection(view, addr);
+  memView().setBigInt64(addr + GEN_CLOSED_OFFSET, boxBool(true), true);
+  generatorClearIntrospection(addr);
   return boxNone();
+};
+const asyncgenPoll = (taskPtr) => {
+  const addr = expectPtrAddr(taskPtr, 'asyncgen_poll');
+  if (addr === 0 || !memory || !table) return boxNone();
+  const state = Number(memView().getBigInt64(addr - HEADER_STATE_OFFSET, true));
+  const asyncgenBits = memView().getBigInt64(addr + 0, true);
+  const opBits = memView().getBigInt64(addr + 8, true);
+  const argBits = memView().getBigInt64(addr + 16, true);
+  const asyncgenObj = getAsyncGenerator(asyncgenBits);
+  if (!asyncgenObj) {
+    const exc = exceptionNew(
+      boxPtr({ type: 'str', value: 'TypeError' }),
+      exceptionArgs(boxPtr({ type: 'str', value: 'expected async generator' })),
+    );
+    return raiseException(exc);
+  }
+  const genBits = asyncgenObj.genBits;
+  if (!isGenerator(genBits)) {
+    const exc = exceptionNew(
+      boxPtr({ type: 'str', value: 'TypeError' }),
+      exceptionArgs(boxPtr({ type: 'str', value: 'expected generator' })),
+    );
+    return raiseException(exc);
+  }
+  const genAddr = ptrAddr(genBits);
+  const runningBits = asyncgenObj.runningBits;
+  const taskBits = boxPtrAddr(addr);
+  if (state === 0) {
+    if (!isNone(runningBits) && runningBits !== taskBits) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'RuntimeError' }),
+        exceptionArgs(
+          boxPtr({
+            type: 'str',
+            value: 'anext()/asend()/athrow()/aclose() already running',
+          }),
+        ),
+      );
+      return raiseException(exc);
+    }
+  } else if (!isNone(runningBits) && runningBits !== taskBits) {
+    const exc = exceptionNew(
+      boxPtr({ type: 'str', value: 'RuntimeError' }),
+      exceptionArgs(
+        boxPtr({
+          type: 'str',
+          value: 'anext()/asend()/athrow()/aclose() already running',
+        }),
+      ),
+    );
+    return raiseException(exc);
+  }
+  if (generatorIsRunning(genAddr)) {
+    const exc = exceptionNew(
+      boxPtr({ type: 'str', value: 'RuntimeError' }),
+      exceptionArgs(
+        boxPtr({
+          type: 'str',
+          value: 'anext()/asend()/athrow()/aclose() already running',
+        }),
+      ),
+    );
+    return raiseException(exc);
+  }
+  const op = isTag(opBits, TAG_INT) ? Number(unboxInt(opBits)) : Number(opBits);
+  let res;
+  if (state !== 0) {
+    res = generatorResume(genBits);
+  } else if (op === Number(ASYNCGEN_OP_ANEXT)) {
+    const closedBits = memView().getBigInt64(genAddr + GEN_CLOSED_OFFSET, true);
+    const closed = isTag(closedBits, TAG_BOOL) && (closedBits & 1n) === 1n;
+    if (closed) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'StopAsyncIteration' }),
+        boxNone(),
+      );
+      return raiseException(exc);
+    }
+    const pendingThrow = memView().getBigInt64(genAddr + GEN_THROW_OFFSET, true);
+    if (!isNone(pendingThrow)) {
+      res = generatorResume(genBits);
+    } else {
+      res = generatorSend(genBits, boxNone());
+    }
+  } else if (op === Number(ASYNCGEN_OP_ASEND)) {
+    const closedBits = memView().getBigInt64(genAddr + GEN_CLOSED_OFFSET, true);
+    const closed = isTag(closedBits, TAG_BOOL) && (closedBits & 1n) === 1n;
+    if (closed) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'StopAsyncIteration' }),
+        boxNone(),
+      );
+      return raiseException(exc);
+    }
+    const started = (generatorFlags(genAddr) & GEN_FLAG_STARTED) !== 0n;
+    if (!started && !isNone(argBits)) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(
+          boxPtr({
+            type: 'str',
+            value: "can't send non-None value to a just-started async generator",
+          }),
+        ),
+      );
+      return raiseException(exc);
+    }
+    const pendingThrow = memView().getBigInt64(genAddr + GEN_THROW_OFFSET, true);
+    if (!isNone(pendingThrow)) {
+      res = generatorResume(genBits);
+    } else {
+      res = generatorSend(genBits, argBits);
+    }
+  } else if (op === Number(ASYNCGEN_OP_ATHROW)) {
+    const closedBits = memView().getBigInt64(genAddr + GEN_CLOSED_OFFSET, true);
+    const closed = isTag(closedBits, TAG_BOOL) && (closedBits & 1n) === 1n;
+    if (closed) return boxNone();
+    res = generatorThrow(genBits, argBits);
+  } else if (op === Number(ASYNCGEN_OP_ACLOSE)) {
+    const closedBits = memView().getBigInt64(genAddr + GEN_CLOSED_OFFSET, true);
+    const closed = isTag(closedBits, TAG_BOOL) && (closedBits & 1n) === 1n;
+    if (closed) return boxNone();
+    const started = (generatorFlags(genAddr) & GEN_FLAG_STARTED) !== 0n;
+    if (!started) {
+      memView().setBigInt64(genAddr + GEN_CLOSED_OFFSET, boxBool(true), true);
+      return boxNone();
+    }
+    res = generatorThrow(genBits, argBits);
+  } else {
+    const exc = exceptionNew(
+      boxPtr({ type: 'str', value: 'TypeError' }),
+      exceptionArgs(
+        boxPtr({ type: 'str', value: 'invalid async generator op' }),
+      ),
+    );
+    return raiseException(exc);
+  }
+  if (exceptionPending() !== 0n) {
+    if (asyncgenObj.runningBits === taskBits) {
+      asyncgenObj.runningBits = boxNone();
+    }
+    memView().setBigInt64(addr - HEADER_STATE_OFFSET, 0n, true);
+    return res;
+  }
+  if (isPending(res)) {
+    asyncgenObj.runningBits = taskBits;
+    memView().setBigInt64(addr - HEADER_STATE_OFFSET, 1n, true);
+    return res;
+  }
+  if (asyncgenObj.runningBits === taskBits) {
+    asyncgenObj.runningBits = boxNone();
+  }
+  memView().setBigInt64(addr - HEADER_STATE_OFFSET, 0n, true);
+  const pair = getTuple(res);
+  if (pair && pair.items.length >= 2) {
+    const valBits = pair.items[0];
+    const doneBits = pair.items[1];
+    const done = isTag(doneBits, TAG_BOOL) && (doneBits & 1n) === 1n;
+    if (op === Number(ASYNCGEN_OP_ACLOSE)) {
+      memView().setBigInt64(genAddr + GEN_CLOSED_OFFSET, boxBool(true), true);
+      if (!done) {
+        const exc = exceptionNew(
+          boxPtr({ type: 'str', value: 'RuntimeError' }),
+          exceptionArgs(
+            boxPtr({
+              type: 'str',
+              value: 'async generator ignored GeneratorExit',
+            }),
+          ),
+        );
+        return raiseException(exc);
+      }
+      return boxNone();
+    }
+    if (!done) {
+      return valBits;
+    }
+    if (op === Number(ASYNCGEN_OP_ANEXT) || op === Number(ASYNCGEN_OP_ASEND)) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'StopAsyncIteration' }),
+        boxNone(),
+      );
+      return raiseException(exc);
+    }
+    return boxNone();
+  }
+  if (op === Number(ASYNCGEN_OP_ACLOSE)) {
+    const exc = exceptionNew(
+      boxPtr({ type: 'str', value: 'RuntimeError' }),
+      exceptionArgs(
+        boxPtr({
+          type: 'str',
+          value: 'async generator ignored GeneratorExit',
+        }),
+      ),
+    );
+    return raiseException(exc);
+  }
+  return res;
 };
 const generatorPairToValue = (pairBits) => {
   const pair = getTuple(pairBits);
@@ -3503,10 +4169,582 @@ const getGeneratorMethodBits = (name) => {
   generatorMethodBits.set(name, bits);
   return bits;
 };
+const asyncgenRunning = (asyncgenObj) => {
+  if (!asyncgenObj) return false;
+  if (!isNone(asyncgenObj.runningBits)) return true;
+  const genBits = asyncgenObj.genBits;
+  if (!isGenerator(genBits) || !memory) return false;
+  const addr = ptrAddr(genBits);
+  return generatorIsRunning(addr);
+};
+const asyncgenAwaitBits = (asyncgenObj) => {
+  if (!asyncgenObj) return boxNone();
+  const runningBits = asyncgenObj.runningBits;
+  if (isNone(runningBits)) return boxNone();
+  if (!isPtr(runningBits) || heap.has(runningBits & POINTER_MASK)) return boxNone();
+  const addr = ptrAddr(runningBits);
+  const awaited = taskWaitingOn.get(addr);
+  return awaited === undefined ? boxNone() : awaited;
+};
+const asyncgenCodeBits = (_asyncgenObj) => boxNone();
+const asyncgenFutureNew = (asyncgenBits, opKind, argBits) => {
+  const asyncgenObj = getAsyncGenerator(asyncgenBits);
+  if (!asyncgenObj) {
+    const exc = exceptionNew(
+      boxPtr({ type: 'str', value: 'TypeError' }),
+      exceptionArgs(boxPtr({ type: 'str', value: 'expected async generator' })),
+    );
+    return raiseException(exc);
+  }
+  if (!memory || !table) return boxNone();
+  let pollIdx = asyncgenPollIdx;
+  if (pollIdx === null) {
+    pollIdx = getOrAddTableFunc(baseImports.asyncgen_poll, 1);
+    if (pollIdx === null) return boxNone();
+    asyncgenPollIdx = pollIdx;
+  }
+  const addr = allocRaw(24);
+  if (!addr) return boxNone();
+  const view = new DataView(memory.buffer);
+  view.setUint32(addr - HEADER_POLL_FN_OFFSET, pollIdx, true);
+  view.setBigInt64(addr - HEADER_STATE_OFFSET, 0n, true);
+  view.setBigInt64(addr + 0, asyncgenBits, true);
+  view.setBigInt64(addr + 8, boxInt(opKind), true);
+  view.setBigInt64(addr + 16, argBits, true);
+  return boxPtrAddr(addr);
+};
+const asyncgenAiterMethod = (selfBits) => selfBits;
+const asyncgenAnextMethod = (selfBits) =>
+  asyncgenFutureNew(selfBits, ASYNCGEN_OP_ANEXT, boxNone());
+const asyncgenAsendMethod = (selfBits, valBits) =>
+  asyncgenFutureNew(selfBits, ASYNCGEN_OP_ASEND, valBits);
+const asyncgenAthrowMethod = (selfBits, excBits) =>
+  asyncgenFutureNew(selfBits, ASYNCGEN_OP_ATHROW, excBits);
+const asyncgenAcloseMethod = (selfBits) => {
+  const exc = exceptionNew(
+    boxPtr({ type: 'str', value: 'GeneratorExit' }),
+    boxNone(),
+  );
+  return asyncgenFutureNew(selfBits, ASYNCGEN_OP_ACLOSE, exc);
+};
+const getAsyncGeneratorMethodBits = (name) => {
+  const cached = asyncgenMethodBits.get(name);
+  if (cached !== undefined) return cached;
+  let idx = null;
+  let arity = 0;
+  if (name === '__aiter__') {
+    if (asyncgenAiterMethodIdx === null) {
+      asyncgenAiterMethodIdx = getOrAddTableFunc(asyncgenAiterMethod, 1);
+    }
+    idx = asyncgenAiterMethodIdx;
+    arity = 1;
+  } else if (name === '__anext__') {
+    if (asyncgenAnextMethodIdx === null) {
+      asyncgenAnextMethodIdx = getOrAddTableFunc(asyncgenAnextMethod, 1);
+    }
+    idx = asyncgenAnextMethodIdx;
+    arity = 1;
+  } else if (name === 'asend') {
+    if (asyncgenAsendMethodIdx === null) {
+      asyncgenAsendMethodIdx = getOrAddTableFunc(asyncgenAsendMethod, 2);
+    }
+    idx = asyncgenAsendMethodIdx;
+    arity = 2;
+  } else if (name === 'athrow') {
+    if (asyncgenAthrowMethodIdx === null) {
+      asyncgenAthrowMethodIdx = getOrAddTableFunc(asyncgenAthrowMethod, 2);
+    }
+    idx = asyncgenAthrowMethodIdx;
+    arity = 2;
+  } else if (name === 'aclose') {
+    if (asyncgenAcloseMethodIdx === null) {
+      asyncgenAcloseMethodIdx = getOrAddTableFunc(asyncgenAcloseMethod, 1);
+    }
+    idx = asyncgenAcloseMethodIdx;
+    arity = 1;
+  }
+  if (idx === null) return boxNone();
+  const bits = baseImports.func_new(BigInt(idx), 0n, BigInt(arity));
+  asyncgenMethodBits.set(name, bits);
+  return bits;
+};
 const builtinMethodBits = new Map();
 const FUNC_DEFAULT_NONE = 1;
 const FUNC_DEFAULT_DICT_POP = 2;
 const FUNC_DEFAULT_DICT_UPDATE = 3;
+const builtinMethodNamesForClass = (className) => {
+  if (className === 'object') return ['__init__'];
+  if (className === 'list') {
+    return [
+      'append',
+      'extend',
+      'insert',
+      'remove',
+      'pop',
+      'clear',
+      'copy',
+      'reverse',
+      'count',
+      'index',
+      'sort',
+      '__iter__',
+      '__len__',
+      '__contains__',
+      '__reversed__',
+    ];
+  }
+  if (className === 'dict') {
+    return [
+      'keys',
+      'values',
+      'items',
+      'get',
+      'setdefault',
+      'pop',
+      'update',
+      'clear',
+      'copy',
+      'popitem',
+      '__iter__',
+      '__len__',
+      '__contains__',
+      '__reversed__',
+    ];
+  }
+  if (className === 'tuple') return ['count', 'index'];
+  if (className === 'str') {
+    return [
+      'upper',
+      'lower',
+      'strip',
+      'lstrip',
+      'rstrip',
+      '__iter__',
+      '__len__',
+      '__contains__',
+    ];
+  }
+  if (className === 'bytes' || className === 'bytearray') {
+    return [
+      '__iter__',
+      '__len__',
+      '__contains__',
+      '__reversed__',
+      'find',
+      'split',
+      'replace',
+      'startswith',
+      'endswith',
+      'count',
+    ];
+  }
+  if (className === 'set') {
+    return [
+      'add',
+      'discard',
+      'remove',
+      'pop',
+      'clear',
+      'update',
+      'union',
+      'intersection',
+      'difference',
+      'symmetric_difference',
+      'intersection_update',
+      'difference_update',
+      'symmetric_difference_update',
+      'isdisjoint',
+      'issubset',
+      'issuperset',
+      'copy',
+      '__iter__',
+      '__len__',
+      '__contains__',
+    ];
+  }
+  if (className === 'frozenset') {
+    return [
+      'union',
+      'intersection',
+      'difference',
+      'symmetric_difference',
+      'isdisjoint',
+      'issubset',
+      'issuperset',
+      'copy',
+      '__iter__',
+      '__len__',
+      '__contains__',
+    ];
+  }
+  if (className === 'memoryview') return ['tobytes', 'cast'];
+  return [];
+};
+const collectDirNamesFromDict = (names, dictBits) => {
+  const dict = getDict(dictBits);
+  if (!dict) return;
+  for (const [keyBits] of dict.entries) {
+    const key = getStrObj(keyBits);
+    if (key !== null) names.add(key);
+  }
+};
+const collectDirNamesFromInstanceAttrs = (names, objBits) => {
+  if (!isPtr(objBits)) return;
+  if (heap.has(objBits & POINTER_MASK)) return;
+  const attrs = instanceAttrs.get(ptrAddr(objBits));
+  if (!attrs) return;
+  for (const name of attrs.keys()) {
+    names.add(name);
+  }
+};
+const collectDirNamesFromClass = (names, classBits) => {
+  const mro = classMroList(classBits);
+  for (const currentBits of mro) {
+    const cls = getClass(currentBits);
+    if (!cls) continue;
+    for (const name of cls.attrs.keys()) {
+      names.add(name);
+    }
+    for (const name of builtinMethodNamesForClass(cls.name)) {
+      names.add(name);
+    }
+  }
+};
+const PY_HASH_BITS = 61n;
+const PY_HASH_MODULUS = (1n << PY_HASH_BITS) - 1n;
+const PY_HASH_INF = 314159n;
+const PY_HASH_NONE = 0xfca86420n;
+const PY_HASHSEED_MAX = 4294967295n;
+const HASH_MASK_64 = (1n << 64n) - 1n;
+const fixHash = (hash) => (hash === -1n ? -2n : hash);
+const toSigned64 = (value) => {
+  const masked = value & HASH_MASK_64;
+  return masked >= (1n << 63n) ? masked - (1n << 64n) : masked;
+};
+const rotl64 = (value, shift) =>
+  ((value << BigInt(shift)) | (value >> (64n - BigInt(shift)))) & HASH_MASK_64;
+const add64 = (lhs, rhs) => (lhs + rhs) & HASH_MASK_64;
+const mul64 = (lhs, rhs) => (lhs * rhs) & HASH_MASK_64;
+const expMod = (exp) => {
+  const bits = Number(PY_HASH_BITS);
+  if (exp >= 0) return exp % bits;
+  return bits - 1 - ((-1 - exp) % bits);
+};
+const pow2Mod = (exp) => {
+  let value = 1n;
+  for (let i = 0; i < exp; i += 1) {
+    value <<= 1n;
+    if (value >= PY_HASH_MODULUS) value -= PY_HASH_MODULUS;
+  }
+  return value;
+};
+const reduceMersenne = (value) => {
+  let out = value;
+  out = (out & PY_HASH_MODULUS) + (out >> PY_HASH_BITS);
+  out = (out & PY_HASH_MODULUS) + (out >> PY_HASH_BITS);
+  if (out >= PY_HASH_MODULUS) out -= PY_HASH_MODULUS;
+  return out;
+};
+const mulModMersenne = (lhs, rhs) => reduceMersenne(lhs * rhs);
+const frexp = (value) => {
+  if (value === 0) return [0, 0];
+  const bits = floatToBits(value);
+  let exp = Number((bits >> 52n) & 0x7ffn);
+  let mant = bits & ((1n << 52n) - 1n);
+  if (exp === 0) {
+    let e = -1022;
+    while ((mant & (1n << 52n)) === 0n) {
+      mant <<= 1n;
+      e -= 1;
+    }
+    exp = e;
+    mant &= (1n << 52n) - 1n;
+  } else {
+    exp -= 1022;
+  }
+  const fracBits = (1022n << 52n) | mant;
+  FLOAT_VIEW.setBigUint64(0, fracBits, true);
+  return [FLOAT_VIEW.getFloat64(0, true), exp];
+};
+const bytesToU64LE = (bytes, offset) => {
+  let value = 0n;
+  for (let i = 0; i < 8; i += 1) {
+    value |= BigInt(bytes[offset + i]) << (8n * BigInt(i));
+  }
+  return value;
+};
+const lcgHashSeed = (seed) => {
+  let x = seed >>> 0;
+  const out = new Uint8Array(16);
+  for (let i = 0; i < out.length; i += 1) {
+    x = (x * 214013 + 2531011) >>> 0;
+    out[i] = (x >> 16) & 0xff;
+  }
+  return out;
+};
+const randomHashSecret = () => {
+  if (typeof crypto !== 'undefined' && crypto.randomBytes) {
+    const bytes = crypto.randomBytes(16);
+    return {
+      k0: bytesToU64LE(bytes, 0),
+      k1: bytesToU64LE(bytes, 8),
+    };
+  }
+  return { k0: 0n, k1: 0n };
+};
+const initHashSecret = () => {
+  const seedText =
+    typeof process !== 'undefined' && process.env ? process.env.PYTHONHASHSEED : undefined;
+  if (seedText === undefined || seedText === 'random') {
+    return randomHashSecret();
+  }
+  const seed = Number(seedText);
+  if (!Number.isFinite(seed) || seed < 0 || seed > Number(PY_HASHSEED_MAX)) {
+    throw new Error(
+      `Fatal Python error: PYTHONHASHSEED must be \"random\" or an integer in range [0; ${PY_HASHSEED_MAX}]`,
+    );
+  }
+  if (seed === 0) return { k0: 0n, k1: 0n };
+  const bytes = lcgHashSeed(seed);
+  return {
+    k0: bytesToU64LE(bytes, 0),
+    k1: bytesToU64LE(bytes, 8),
+  };
+};
+const HASH_SECRET = initHashSecret();
+const sipHash13 = (bytes, k0, k1) => {
+  let v0 = 0x736f6d6570736575n ^ k0;
+  let v1 = 0x646f72616e646f6dn ^ k1;
+  let v2 = 0x6c7967656e657261n ^ k0;
+  let v3 = 0x7465646279746573n ^ k1;
+  let tail = 0n;
+  let ntail = 0;
+  let totalLen = 0n;
+  const sipRound = () => {
+    v0 = add64(v0, v1);
+    v1 = rotl64(v1, 13);
+    v1 ^= v0;
+    v0 = rotl64(v0, 32);
+    v2 = add64(v2, v3);
+    v3 = rotl64(v3, 16);
+    v3 ^= v2;
+    v0 = add64(v0, v3);
+    v3 = rotl64(v3, 21);
+    v3 ^= v0;
+    v2 = add64(v2, v1);
+    v1 = rotl64(v1, 17);
+    v1 ^= v2;
+    v2 = rotl64(v2, 32);
+  };
+  const processBlock = (block) => {
+    v3 ^= block;
+    sipRound();
+    v0 ^= block;
+  };
+  for (const byte of bytes) {
+    totalLen += 1n;
+    tail |= BigInt(byte) << (8n * BigInt(ntail));
+    ntail += 1;
+    if (ntail === 8) {
+      processBlock(tail);
+      tail = 0n;
+      ntail = 0;
+    }
+  }
+  const b = tail | ((totalLen & 0xffn) << 56n);
+  processBlock(b);
+  v2 ^= 0xffn;
+  sipRound();
+  sipRound();
+  sipRound();
+  return (v0 ^ v1 ^ v2 ^ v3) & HASH_MASK_64;
+};
+const hashBytesWithSecret = (bytes, secret) => {
+  if (bytes.length === 0) return 0n;
+  const hash = sipHash13(bytes, secret.k0, secret.k1);
+  return fixHash(toSigned64(hash));
+};
+const hashBytes = (bytes) => hashBytesWithSecret(bytes, HASH_SECRET);
+const hashString = (text) => {
+  if (text.length === 0) return 0n;
+  let maxCodepoint = 0;
+  for (const ch of text) {
+    const code = ch.codePointAt(0);
+    if (code > maxCodepoint) maxCodepoint = code;
+  }
+  const bytes = [];
+  if (maxCodepoint <= 0xff) {
+    for (const ch of text) {
+      bytes.push(ch.codePointAt(0) & 0xff);
+    }
+  } else if (maxCodepoint <= 0xffff) {
+    for (const ch of text) {
+      const code = ch.codePointAt(0);
+      bytes.push(code & 0xff, (code >> 8) & 0xff);
+    }
+  } else {
+    for (const ch of text) {
+      const code = ch.codePointAt(0);
+      bytes.push(code & 0xff, (code >> 8) & 0xff, (code >> 16) & 0xff, (code >> 24) & 0xff);
+    }
+  }
+  return hashBytesWithSecret(bytes, HASH_SECRET);
+};
+const hashInt = (val) => {
+  let mag = val;
+  let sign = 1n;
+  if (mag < 0n) {
+    sign = -1n;
+    mag = -mag;
+  }
+  let hash = mag % PY_HASH_MODULUS;
+  if (sign < 0n) hash = -hash;
+  return fixHash(hash);
+};
+const hashBigInt = (val) => {
+  let mag = val;
+  let sign = 1n;
+  if (mag < 0n) {
+    sign = -1n;
+    mag = -mag;
+  }
+  let hash = mag % PY_HASH_MODULUS;
+  if (sign < 0n) hash = -hash;
+  return fixHash(hash);
+};
+const hashFloat = (val) => {
+  if (Number.isNaN(val)) return 0n;
+  if (!Number.isFinite(val)) {
+    return val > 0 ? PY_HASH_INF : -PY_HASH_INF;
+  }
+  if (val === 0) return 0n;
+  const sign = val < 0 ? -1n : 1n;
+  const value = Math.abs(val);
+  let [frac, exp] = frexp(value);
+  let hash = 0n;
+  while (frac !== 0) {
+    frac *= 1 << 28;
+    const intpart = Math.floor(frac);
+    frac -= intpart;
+    hash = ((hash << 28n) & PY_HASH_MODULUS) | BigInt(intpart);
+    exp -= 28;
+  }
+  const expValue = expMod(exp);
+  hash = mulModMersenne(hash, pow2Mod(expValue));
+  const signed = hash * sign;
+  return fixHash(signed);
+};
+const hashPointer = (ptrBits) => fixHash(toSigned64((ptrBits >> 4n) & HASH_MASK_64));
+const hashTupleBits = (tupleBits) => {
+  const tuple = getTuple(tupleBits);
+  if (!tuple) return 0n;
+  const XXPRIME_1 = 11400714785074694791n;
+  const XXPRIME_2 = 14029467366897019727n;
+  const XXPRIME_5 = 2870177450012600261n;
+  let acc = XXPRIME_5;
+  for (const elem of tuple.items) {
+    const lane = hashBitsSigned(elem);
+    if (exceptionPending() !== 0n) return 0n;
+    const laneU64 = lane & HASH_MASK_64;
+    acc = add64(acc, mul64(laneU64, XXPRIME_2));
+    acc = rotl64(acc, 31);
+    acc = mul64(acc, XXPRIME_1);
+  }
+  acc = add64(acc, BigInt(tuple.items.length) ^ (XXPRIME_5 ^ 3527539n));
+  if (acc === HASH_MASK_64) return 1546275796n;
+  return toSigned64(acc);
+};
+const hashSliceBits = (sliceBits) => {
+  const slice = getSlice(sliceBits);
+  if (!slice) return 0n;
+  const lanes = [
+    hashBitsSigned(slice.start),
+    hashBitsSigned(slice.stop),
+    hashBitsSigned(slice.step),
+  ];
+  if (exceptionPending() !== 0n) return 0n;
+  const XXPRIME_1 = 11400714785074694791n;
+  const XXPRIME_2 = 14029467366897019727n;
+  const XXPRIME_5 = 2870177450012600261n;
+  let acc = XXPRIME_5;
+  for (const lane of lanes) {
+    const laneU64 = lane & HASH_MASK_64;
+    acc = add64(acc, mul64(laneU64, XXPRIME_2));
+    acc = rotl64(acc, 31);
+    acc = mul64(acc, XXPRIME_1);
+  }
+  if (acc === HASH_MASK_64) return 1546275796n;
+  return toSigned64(acc);
+};
+const shuffleFrozensetHash = (hash) => {
+  const mixed = (hash ^ 89869747n) ^ (hash << 16n);
+  return mul64(mixed, 3644798167n);
+};
+const hashFrozensetBits = (setBits) => {
+  const setObj = getFrozenSet(setBits);
+  if (!setObj) return 0n;
+  let hash = 0n;
+  for (const elem of setObj.items) {
+    hash ^= shuffleFrozensetHash(hashBits(elem));
+  }
+  if (setObj.items.size & 1) {
+    hash ^= shuffleFrozensetHash(0n);
+  }
+  hash ^= (BigInt(setObj.items.size) + 1n) * 1927868237n;
+  hash ^= (hash >> 11n) ^ (hash >> 25n);
+  hash = add64(mul64(hash, 69069n), 907133923n);
+  if (hash === HASH_MASK_64) hash = 590923713n;
+  return toSigned64(hash);
+};
+const hashUnhashable = (bits) => {
+  const exc = exceptionNew(
+    boxPtr({ type: 'str', value: 'TypeError' }),
+    exceptionArgs(
+      boxPtr({
+        type: 'str',
+        value: `unhashable type: '${typeName(bits)}'`,
+      }),
+    ),
+  );
+  raiseException(exc);
+  return 0n;
+};
+const hashBits = (bits) => hashBitsSigned(bits) & HASH_MASK_64;
+const hashBitsSigned = (bits) => {
+  if (isTag(bits, TAG_INT)) return hashInt(unboxInt(bits));
+  if (isTag(bits, TAG_BOOL)) return hashInt((bits & 1n) === 1n ? 1n : 0n);
+  if (isTag(bits, TAG_NONE)) return PY_HASH_NONE;
+  if (isFloat(bits)) return hashFloat(bitsToFloat(bits));
+  const obj = getObj(bits);
+  if (obj) {
+    if (
+      obj.type === 'list' ||
+      obj.type === 'dict' ||
+      obj.type === 'set' ||
+      obj.type === 'bytearray' ||
+      obj.type === 'memoryview' ||
+      obj.type === 'list_builder' ||
+      obj.type === 'dict_builder' ||
+      obj.type === 'set_builder' ||
+      obj.type === 'dict_keys' ||
+      obj.type === 'dict_values' ||
+      obj.type === 'dict_items' ||
+      obj.type === 'callargs'
+    ) {
+      return hashUnhashable(bits);
+    }
+    if (obj.type === 'str') return hashString(obj.value);
+    if (obj.type === 'bytes') return hashBytes(obj.data);
+    if (obj.type === 'bigint') return hashBigInt(obj.value);
+    if (obj.type === 'tuple') return hashTupleBits(bits);
+    if (obj.type === 'slice') return hashSliceBits(bits);
+    if (obj.type === 'frozenset') return hashFrozensetBits(bits);
+  }
+  if (isPtr(bits) && !heap.has(bits & POINTER_MASK)) {
+    return hashPointer(bits);
+  }
+  return hashPointer(bits);
+};
 const getBuiltinMethodBits = (classBits, name) => {
   const cls = getClass(classBits);
   if (!cls) return boxNone();
@@ -3517,7 +4755,12 @@ const getBuiltinMethodBits = (classBits, name) => {
   let fn = null;
   let arity = 0;
   let defaultKind = 0;
-  if (className === 'list') {
+  if (className === 'object') {
+    if (name === '__init__') {
+      fn = (_selfBits) => boxNone();
+      arity = 1;
+    }
+  } else if (className === 'list') {
     if (name === 'append') {
       fn = (selfBits, valBits) => baseImports.list_append(selfBits, valBits);
       arity = 2;
@@ -3637,6 +4880,14 @@ const getBuiltinMethodBits = (classBits, name) => {
       fn = (selfBits, charsBits) => baseImports.string_strip(selfBits, charsBits);
       arity = 2;
       defaultKind = FUNC_DEFAULT_NONE;
+    } else if (name === 'lstrip') {
+      fn = (selfBits, charsBits) => baseImports.string_lstrip(selfBits, charsBits);
+      arity = 2;
+      defaultKind = FUNC_DEFAULT_NONE;
+    } else if (name === 'rstrip') {
+      fn = (selfBits, charsBits) => baseImports.string_rstrip(selfBits, charsBits);
+      arity = 2;
+      defaultKind = FUNC_DEFAULT_NONE;
     } else if (name === '__iter__') {
       fn = (selfBits) => baseImports.iter(selfBits);
       arity = 1;
@@ -3693,7 +4944,11 @@ const getBuiltinMethodBits = (classBits, name) => {
         if (isIntLike(countBits)) {
           count = Number(unboxIntLike(countBits));
         } else {
-          const idx = indexFromBitsWithOverflow(countBits, 'replace() count must be int', null);
+          const idx = indexFromBitsWithOverflow(
+            countBits,
+            `'${typeName(countBits)}' object cannot be interpreted as an integer`,
+            null,
+          );
           if (idx === null) return boxNone();
           count = idx;
         }
@@ -3801,7 +5056,11 @@ const getBuiltinMethodBits = (classBits, name) => {
         if (isIntLike(countBits)) {
           count = Number(unboxIntLike(countBits));
         } else {
-          const idx = indexFromBitsWithOverflow(countBits, 'replace() count must be int', null);
+          const idx = indexFromBitsWithOverflow(
+            countBits,
+            `'${typeName(countBits)}' object cannot be interpreted as an integer`,
+            null,
+          );
           if (idx === null) return boxNone();
           count = idx;
         }
@@ -3863,6 +5122,103 @@ const getBuiltinMethodBits = (classBits, name) => {
         );
       arity = 6;
     }
+  } else if (className === 'set') {
+    if (name === 'add') {
+      fn = (selfBits, valBits) => baseImports.set_add(selfBits, valBits);
+      arity = 2;
+    } else if (name === 'discard') {
+      fn = (selfBits, valBits) => baseImports.set_discard(selfBits, valBits);
+      arity = 2;
+    } else if (name === 'remove') {
+      fn = (selfBits, valBits) => baseImports.set_remove(selfBits, valBits);
+      arity = 2;
+    } else if (name === 'pop') {
+      fn = (selfBits) => baseImports.set_pop(selfBits);
+      arity = 1;
+    } else if (name === 'clear') {
+      fn = (selfBits) => setClearBits(selfBits);
+      arity = 1;
+    } else if (name === 'update') {
+      fn = (selfBits, othersBits) => setUpdateMulti(selfBits, othersBits);
+      arity = 2;
+    } else if (name === 'union') {
+      fn = (selfBits, othersBits) => setUnionMulti(selfBits, othersBits);
+      arity = 2;
+    } else if (name === 'intersection') {
+      fn = (selfBits, othersBits) => setIntersectionMulti(selfBits, othersBits);
+      arity = 2;
+    } else if (name === 'difference') {
+      fn = (selfBits, othersBits) => setDifferenceMulti(selfBits, othersBits);
+      arity = 2;
+    } else if (name === 'symmetric_difference') {
+      fn = (selfBits, otherBits) => setSymdiffBits(selfBits, otherBits);
+      arity = 2;
+    } else if (name === 'intersection_update') {
+      fn = (selfBits, othersBits) => setIntersectionUpdateMulti(selfBits, othersBits);
+      arity = 2;
+    } else if (name === 'difference_update') {
+      fn = (selfBits, othersBits) => setDifferenceUpdateMulti(selfBits, othersBits);
+      arity = 2;
+    } else if (name === 'symmetric_difference_update') {
+      fn = (selfBits, otherBits) => setSymdiffUpdateBits(selfBits, otherBits);
+      arity = 2;
+    } else if (name === 'isdisjoint') {
+      fn = (selfBits, otherBits) => setIsDisjointBits(selfBits, otherBits);
+      arity = 2;
+    } else if (name === 'issubset') {
+      fn = (selfBits, otherBits) => setIsSubsetBits(selfBits, otherBits);
+      arity = 2;
+    } else if (name === 'issuperset') {
+      fn = (selfBits, otherBits) => setIsSupersetBits(selfBits, otherBits);
+      arity = 2;
+    } else if (name === 'copy') {
+      fn = (selfBits) => setCopyBits(selfBits);
+      arity = 1;
+    } else if (name === '__iter__') {
+      fn = (selfBits) => baseImports.iter(selfBits);
+      arity = 1;
+    } else if (name === '__len__') {
+      fn = (selfBits) => baseImports.len(selfBits);
+      arity = 1;
+    } else if (name === '__contains__') {
+      fn = (selfBits, itemBits) => baseImports.contains(selfBits, itemBits);
+      arity = 2;
+    }
+  } else if (className === 'frozenset') {
+    if (name === 'union') {
+      fn = (selfBits, othersBits) => setUnionMulti(selfBits, othersBits);
+      arity = 2;
+    } else if (name === 'intersection') {
+      fn = (selfBits, othersBits) => setIntersectionMulti(selfBits, othersBits);
+      arity = 2;
+    } else if (name === 'difference') {
+      fn = (selfBits, othersBits) => setDifferenceMulti(selfBits, othersBits);
+      arity = 2;
+    } else if (name === 'symmetric_difference') {
+      fn = (selfBits, otherBits) => setSymdiffBits(selfBits, otherBits);
+      arity = 2;
+    } else if (name === 'isdisjoint') {
+      fn = (selfBits, otherBits) => setIsDisjointBits(selfBits, otherBits);
+      arity = 2;
+    } else if (name === 'issubset') {
+      fn = (selfBits, otherBits) => setIsSubsetBits(selfBits, otherBits);
+      arity = 2;
+    } else if (name === 'issuperset') {
+      fn = (selfBits, otherBits) => setIsSupersetBits(selfBits, otherBits);
+      arity = 2;
+    } else if (name === 'copy') {
+      fn = (selfBits) => setCopyBits(selfBits);
+      arity = 1;
+    } else if (name === '__iter__') {
+      fn = (selfBits) => baseImports.iter(selfBits);
+      arity = 1;
+    } else if (name === '__len__') {
+      fn = (selfBits) => baseImports.len(selfBits);
+      arity = 1;
+    } else if (name === '__contains__') {
+      fn = (selfBits, itemBits) => baseImports.contains(selfBits, itemBits);
+      arity = 2;
+    }
   } else if (className === 'memoryview') {
     if (name === 'tobytes') {
       fn = (selfBits) => baseImports.memoryview_tobytes(selfBits);
@@ -3890,20 +5246,21 @@ const getBuiltinMethodBits = (classBits, name) => {
 const bindBuiltinCall = (funcBits, func, args) => {
   const out = [...args.pos];
   const name = func && typeof func.builtinName === 'string' ? func.builtinName : null;
+  const isSetMethod = name && (name.startsWith('set.') || name.startsWith('frozenset.'));
   if (args.kwNames.length) {
     if (name === 'memoryview.cast') {
       if (args.kwNames.length !== 1) {
         throw new Error('TypeError: cast() takes at most 2 arguments');
       }
       if (out.length !== 2) {
-        baseImports.call_arity_error(BigInt(2), BigInt(out.length));
+        return baseImports.call_arity_error(BigInt(2), BigInt(out.length));
       }
       const kwName = getStrObj(args.kwNames[0]);
       if (kwName !== 'shape') {
         throw new Error(`TypeError: cast() got an unexpected keyword argument '${kwName}'`);
       }
       out.push(args.kwValues[0]);
-    } else {
+    } else if (!isSetMethod) {
       throw new Error('TypeError: keywords are not supported for this builtin');
     }
   }
@@ -3912,7 +5269,7 @@ const bindBuiltinCall = (funcBits, func, args) => {
     if (out.length === 1) {
       out.push(missingSentinel());
     } else if (out.length !== 2) {
-      baseImports.call_arity_error(BigInt(2), BigInt(out.length));
+      return baseImports.call_arity_error(BigInt(2), BigInt(out.length));
     }
     return callFunctionBits(funcBits, out);
   }
@@ -3921,7 +5278,7 @@ const bindBuiltinCall = (funcBits, func, args) => {
       out.push(missingSentinel());
     }
     if (out.length !== 4) {
-      baseImports.call_arity_error(BigInt(4), BigInt(out.length));
+      return baseImports.call_arity_error(BigInt(4), BigInt(out.length));
     }
     return callFunctionBits(funcBits, out);
   }
@@ -3932,7 +5289,7 @@ const bindBuiltinCall = (funcBits, func, args) => {
     } else if (out.length === 2) {
       out.push(boxBool(false));
     } else if (out.length !== 3) {
-      baseImports.call_arity_error(BigInt(3), BigInt(out.length));
+      return baseImports.call_arity_error(BigInt(3), BigInt(out.length));
     }
     return callFunctionBits(funcBits, out);
   }
@@ -3940,7 +5297,7 @@ const bindBuiltinCall = (funcBits, func, args) => {
     if (out.length === 2) {
       out.push(boxNone());
     } else if (out.length !== 3) {
-      baseImports.call_arity_error(BigInt(3), BigInt(out.length));
+      return baseImports.call_arity_error(BigInt(3), BigInt(out.length));
     }
     return callFunctionBits(funcBits, out);
   }
@@ -3951,7 +5308,7 @@ const bindBuiltinCall = (funcBits, func, args) => {
     } else if (out.length === 3) {
       out.push(boxInt(1));
     } else if (out.length !== 4) {
-      baseImports.call_arity_error(BigInt(4), BigInt(out.length));
+      return baseImports.call_arity_error(BigInt(4), BigInt(out.length));
     }
     return callFunctionBits(funcBits, out);
   }
@@ -3959,7 +5316,7 @@ const bindBuiltinCall = (funcBits, func, args) => {
     if (out.length === 1) {
       out.push(missingSentinel());
     } else if (out.length !== 2) {
-      baseImports.call_arity_error(BigInt(2), BigInt(out.length));
+      return baseImports.call_arity_error(BigInt(2), BigInt(out.length));
     }
     return callFunctionBits(funcBits, out);
   }
@@ -3986,7 +5343,7 @@ const bindBuiltinCall = (funcBits, func, args) => {
       out.push(boxInt(1));
       out.push(boxInt(1));
     } else if (out.length !== 6) {
-      baseImports.call_arity_error(BigInt(4), BigInt(out.length));
+      return baseImports.call_arity_error(BigInt(4), BigInt(out.length));
     }
     return callFunctionBits(funcBits, out);
   }
@@ -3994,7 +5351,7 @@ const bindBuiltinCall = (funcBits, func, args) => {
     if (out.length === 3) {
       out.push(boxInt(-1));
     } else if (out.length !== 4) {
-      baseImports.call_arity_error(BigInt(4), BigInt(out.length));
+      return baseImports.call_arity_error(BigInt(4), BigInt(out.length));
     }
     return callFunctionBits(funcBits, out);
   }
@@ -4005,13 +5362,98 @@ const bindBuiltinCall = (funcBits, func, args) => {
     } else if (out.length === 3) {
       out.push(boxInt(1));
     } else if (out.length !== 4) {
-      baseImports.call_arity_error(BigInt(3), BigInt(out.length));
+      return baseImports.call_arity_error(BigInt(3), BigInt(out.length));
     }
     return callFunctionBits(funcBits, out);
   }
+  if (isSetMethod) {
+    const [ownerName, methodName] = name.split('.');
+    if (out.length < 1) {
+      return baseImports.call_arity_error(BigInt(1), BigInt(out.length));
+    }
+    const selfBits = out[0];
+    const isOwner =
+      ownerName === 'set' ? Boolean(getSet(selfBits)) : Boolean(getFrozenSet(selfBits));
+    if (!isOwner) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(
+          boxPtr({
+            type: 'str',
+            value: `descriptor '${methodName}' for '${ownerName}' objects doesn't apply to a '${typeName(selfBits)}' object`,
+          }),
+        ),
+      );
+      return raiseException(exc);
+    }
+    if (args.kwNames.length) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(
+          boxPtr({
+            type: 'str',
+            value: `${name}() takes no keyword arguments`,
+          }),
+        ),
+      );
+      return raiseException(exc);
+    }
+    const method = methodName;
+    const given = out.length - 1;
+    if (
+      method === 'union' ||
+      method === 'intersection' ||
+      method === 'difference' ||
+      method === 'update' ||
+      method === 'intersection_update' ||
+      method === 'difference_update'
+    ) {
+      if (out.length < 1) {
+        return baseImports.call_arity_error(BigInt(1), BigInt(out.length));
+      }
+      const othersBits = tupleFromArray(out.slice(1));
+      return callFunctionBits(funcBits, [out[0], othersBits]);
+    }
+    if (
+      method === 'symmetric_difference' ||
+      method === 'symmetric_difference_update' ||
+      method === 'isdisjoint' ||
+      method === 'issubset' ||
+      method === 'issuperset'
+    ) {
+      if (given !== 1) {
+        const exc = exceptionNew(
+          boxPtr({ type: 'str', value: 'TypeError' }),
+          exceptionArgs(
+            boxPtr({
+              type: 'str',
+              value: `${name}() takes exactly one argument (${given} given)`,
+            }),
+          ),
+        );
+        return raiseException(exc);
+      }
+      return callFunctionBits(funcBits, out);
+    }
+    if (method === 'copy' || method === 'clear') {
+      if (given !== 0) {
+        const exc = exceptionNew(
+          boxPtr({ type: 'str', value: 'TypeError' }),
+          exceptionArgs(
+            boxPtr({
+              type: 'str',
+              value: `${name}() takes no arguments (${given} given)`,
+            }),
+          ),
+        );
+        return raiseException(exc);
+      }
+      return callFunctionBits(funcBits, out);
+    }
+  }
   const missing = arity - out.length;
   if (missing < 0) {
-    baseImports.call_arity_error(BigInt(arity), BigInt(out.length));
+    return baseImports.call_arity_error(BigInt(arity), BigInt(out.length));
   }
   if (missing === 0) {
     return callFunctionBits(funcBits, out);
@@ -4035,13 +5477,20 @@ const bindBuiltinCall = (funcBits, func, args) => {
     out.push(missingSentinel());
     return callFunctionBits(funcBits, out);
   }
-  baseImports.call_arity_error(BigInt(arity), BigInt(out.length));
+  return baseImports.call_arity_error(BigInt(arity), BigInt(out.length));
 };
 """
 
 BASE_IMPORTS = """\
   runtime_init: () => 1n,
   runtime_shutdown: () => 1n,
+  unsupported_import: (name) => {
+    const exc = exceptionNew(
+      boxPtr({ type: 'str', value: 'RuntimeError' }),
+      exceptionArgs(boxPtr({ type: 'str', value: `${name} unsupported` })),
+    );
+    return raiseException(exc);
+  },
   print_obj: (val) => {
     if (isTag(val, TAG_INT)) {
       console.log(unboxInt(val).toString());
@@ -4106,13 +5555,36 @@ BASE_IMPORTS = """\
   },
   async_sleep: (taskPtr) => {
     const addr = expectPtrAddr(taskPtr, 'async_sleep');
-    if (addr === 0) return boxNone();
-    const key = addr.toString();
-    if (!sleepPending.has(key)) {
-      sleepPending.add(key);
+    if (addr === 0 || !memory) return boxNone();
+    const view = memView();
+    const stateBits = view.getBigInt64(addr - HEADER_STATE_OFFSET, true);
+    const state = Number(stateBits);
+    if (state === 0) {
+      const delayBits = view.getBigInt64(addr + 0, true);
+      let delay = numberFromVal(delayBits);
+      if (delay === null || !Number.isFinite(delay) || delay <= 0) delay = 0;
+      if (delay > 0) {
+        const now =
+          typeof process !== 'undefined' && process.hrtime && process.hrtime.bigint
+            ? process.hrtime.bigint()
+            : BigInt(Date.now()) * 1000000n;
+        const deadline = Number(now - MONO_START) / 1e9 + delay;
+        view.setBigInt64(addr + 0, boxFloat(deadline), true);
+      }
+      view.setBigInt64(addr - HEADER_STATE_OFFSET, 1n, true);
       return boxPending();
     }
-    return boxNone();
+    const deadlineBits = view.getBigInt64(addr + 0, true);
+    const deadline = numberFromVal(deadlineBits);
+    if (deadline !== null && Number.isFinite(deadline) && deadline > 0) {
+      const now =
+        typeof process !== 'undefined' && process.hrtime && process.hrtime.bigint
+          ? process.hrtime.bigint()
+          : BigInt(Date.now()) * 1000000n;
+      const nowSecs = Number(now - MONO_START) / 1e9;
+      if (nowSecs < deadline) return boxPending();
+    }
+    return view.getBigInt64(addr + 8, true);
   },
   anext_default_poll: (taskPtr) => {
     const addr = expectPtrAddr(taskPtr, 'anext_default_poll');
@@ -4198,6 +5670,23 @@ BASE_IMPORTS = """\
     } finally {
       asyncRaise = prevAsync;
     }
+    if (currentTaskPtr !== 0 && addr !== currentTaskPtr) {
+      if (isPending(res)) {
+        taskWaitingOn.set(currentTaskPtr, ptrBits);
+      } else {
+        taskWaitingOn.delete(currentTaskPtr);
+      }
+    }
+    const cancelKey = addr.toString();
+    if (cancelPending.has(cancelKey)) {
+      cancelPending.delete(cancelKey);
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'CancelledError' }),
+        boxNone(),
+      );
+      raiseException(exc);
+      return boxNone();
+    }
     return res;
   },
   future_poll_fn: (futureBits) => {
@@ -4224,10 +5713,68 @@ BASE_IMPORTS = """\
     }
     return BigInt(pollIdx);
   },
+  future_cancel: (futureBits) => {
+    const ptrBits = futureBits;
+    if (!isPtr(ptrBits) || heap.has(ptrBits & POINTER_MASK)) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'object is not awaitable' })),
+      );
+      raiseException(exc);
+      return boxNone();
+    }
+    const addr = ptrAddr(ptrBits);
+    cancelPending.add(addr.toString());
+    return boxNone();
+  },
+  future_cancel_msg: (futureBits, msgBits) => {
+    const ptrBits = futureBits;
+    if (!isPtr(ptrBits) || heap.has(ptrBits & POINTER_MASK)) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'object is not awaitable' })),
+      );
+      raiseException(exc);
+      return boxNone();
+    }
+    const addr = ptrAddr(ptrBits);
+    cancelPending.add(addr.toString());
+    return boxNone();
+  },
+  future_cancel_clear: (futureBits) => {
+    const ptrBits = futureBits;
+    if (!isPtr(ptrBits) || heap.has(ptrBits & POINTER_MASK)) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'object is not awaitable' })),
+      );
+      raiseException(exc);
+      return boxNone();
+    }
+    const addr = ptrAddr(ptrBits);
+    cancelPending.delete(addr.toString());
+    return boxNone();
+  },
   sleep_register: (taskPtr, futurePtr) => {
     expectPtrAddr(taskPtr, 'sleep_register');
     expectPtrAddr(futurePtr, 'sleep_register');
     return 0n;
+  },
+  spawn: (taskBits) => {
+    const ptrBits = taskBits;
+    if (!isPtr(ptrBits) || heap.has(ptrBits & POINTER_MASK) || !memory || !table) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'task must be awaitable' })),
+      );
+      raiseException(exc);
+      return;
+    }
+    const addr = ptrAddr(ptrBits);
+    const key = addr.toString();
+    if (runnableTasks.has(key)) return;
+    runnableTasks.add(key);
+    runnableQueue.push(addr);
   },
   block_on: (taskPtr) => {
     if (!memory || !table) return 0n;
@@ -4255,29 +5802,42 @@ BASE_IMPORTS = """\
       return 0n;
     }
     if (addr === 0) return 0n;
-    const view = new DataView(memory.buffer);
-    const pollIdx = view.getUint32(addr - HEADER_POLL_FN_OFFSET, true);
-    const poll = getTableFunc(pollIdx);
-    if (!poll) return 0n;
     const prevTask = currentTaskPtr;
     const prevToken = currentTokenId;
     currentTaskPtr = addr;
     const token = ensureTaskToken(addr);
     setCurrentTokenId(token);
+    const rootBits = boxPtrAddr(addr);
     while (true) {
-      const prevAsync = asyncRaise;
-      asyncRaise = true;
-      let res;
-      try {
-        res = poll(BigInt(addr));
-      } finally {
-        asyncRaise = prevAsync;
+      const res = baseImports.future_poll(rootBits);
+      if (!isPending(res)) {
+        setCurrentTokenId(prevToken);
+        currentTaskPtr = prevTask;
+        clearTaskToken(addr);
+        return res;
       }
-      if (isPending(res)) continue;
-      setCurrentTokenId(prevToken);
-      currentTaskPtr = prevTask;
-      clearTaskToken(addr);
-      return res;
+      const pendingCount = runnableQueue.length;
+      for (let i = 0; i < pendingCount; i += 1) {
+        const taskAddr = runnableQueue.shift();
+        const key = taskAddr.toString();
+        if (!runnableTasks.has(key)) continue;
+        const prevInnerTask = currentTaskPtr;
+        const prevInnerToken = currentTokenId;
+        currentTaskPtr = taskAddr;
+        const innerToken = ensureTaskToken(taskAddr);
+        setCurrentTokenId(innerToken);
+        const taskBits = boxPtrAddr(taskAddr);
+        const taskRes = baseImports.future_poll(taskBits);
+        setCurrentTokenId(prevInnerToken);
+        currentTaskPtr = prevInnerTask;
+        if (isPending(taskRes)) {
+          runnableQueue.push(taskAddr);
+          continue;
+        }
+        runnableTasks.delete(key);
+        clearTaskToken(taskAddr);
+        taskWaitingOn.delete(taskAddr);
+      }
     }
   },
   cancel_token_new: (parentBits) => {
@@ -5384,11 +6944,13 @@ BASE_IMPORTS = """\
   },
   module_new: (nameBits) => {
     const name = getStrObj(nameBits);
-    return boxPtr({
-      type: 'module',
-      name: name ?? '<module>',
-      attrs: new Map(),
-    });
+    const dictBits = boxPtr({ type: 'dict', entries: [], lookup: new Map() });
+    const dict = getDict(dictBits);
+    if (dict) {
+      const keyBits = boxPtr({ type: 'str', value: '__name__' });
+      dictSetValue(dict, keyBits, nameBits);
+    }
+    return boxPtr({ type: 'module', name: name ?? '<module>', dictBits });
   },
   module_cache_get: (nameBits) => {
     const name = getStrObj(nameBits);
@@ -5405,16 +6967,60 @@ BASE_IMPORTS = """\
   module_get_attr: (moduleBits, nameBits) => {
     const name = getStrObj(nameBits);
     const moduleObj = getModule(moduleBits);
-    if (!moduleObj || name === null) return boxNone();
-    const val = moduleObj.attrs.get(name);
-    return val === undefined ? boxNone() : val;
+    if (!moduleObj || name === null) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(
+          boxPtr({ type: 'str', value: 'module attribute access expects module' }),
+        ),
+      );
+      return raiseException(exc);
+    }
+    const dict = getDict(moduleObj.dictBits);
+    if (!dict) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'module dict missing' })),
+      );
+      return raiseException(exc);
+    }
+    if (name === '__dict__') return moduleObj.dictBits;
+    const val = dictGetValue(dict, nameBits);
+    if (val !== null) return val;
+    const moduleName = moduleObj.name ?? '';
+    const exc = exceptionNew(
+      boxPtr({ type: 'str', value: 'AttributeError' }),
+      exceptionArgs(
+        boxPtr({
+          type: 'str',
+          value: `module '${moduleName}' has no attribute '${name}'`,
+        }),
+      ),
+    );
+    return raiseException(exc);
   },
   module_get_global: (moduleBits, nameBits) => {
     const name = getStrObj(nameBits);
     const moduleObj = getModule(moduleBits);
-    if (!moduleObj || name === null) return boxNone();
-    const val = moduleObj.attrs.get(name);
-    if (val !== undefined) return val;
+    if (!moduleObj || name === null) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(
+          boxPtr({ type: 'str', value: 'module attribute access expects module' }),
+        ),
+      );
+      return raiseException(exc);
+    }
+    const dict = getDict(moduleObj.dictBits);
+    if (!dict) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'module dict missing' })),
+      );
+      return raiseException(exc);
+    }
+    const val = dictGetValue(dict, nameBits);
+    if (val !== null) return val;
     const exc = exceptionNew(
       boxPtr({ type: 'str', value: 'NameError' }),
       exceptionArgs(
@@ -5424,11 +7030,32 @@ BASE_IMPORTS = """\
     return raiseException(exc);
   },
   module_get_name: (moduleBits, nameBits) => {
+    return baseImports.module_get_attr(moduleBits, nameBits);
+  },
+  module_del_global: (moduleBits, nameBits) => {
     const name = getStrObj(nameBits);
     const moduleObj = getModule(moduleBits);
-    if (!moduleObj || name === null) return boxNone();
-    const val = moduleObj.attrs.get(name);
-    if (val !== undefined) return val;
+    if (!moduleObj || name === null) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(
+          boxPtr({
+            type: 'str',
+            value: 'module attribute access expects module',
+          }),
+        ),
+      );
+      return raiseException(exc);
+    }
+    const dict = getDict(moduleObj.dictBits);
+    if (!dict) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'module dict missing' })),
+      );
+      return raiseException(exc);
+    }
+    if (dictDelete(dict, nameBits)) return boxNone();
     const exc = exceptionNew(
       boxPtr({ type: 'str', value: 'NameError' }),
       exceptionArgs(
@@ -5437,11 +7064,97 @@ BASE_IMPORTS = """\
     );
     return raiseException(exc);
   },
+  module_import_star: (srcBits, dstBits) => {
+    const srcModule = getModule(srcBits);
+    const dstModule = getModule(dstBits);
+    if (!srcModule || !dstModule) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(
+          boxPtr({ type: 'str', value: 'module import expects module' }),
+        ),
+      );
+      return raiseException(exc);
+    }
+    const srcDict = getDict(srcModule.dictBits);
+    const dstDict = getDict(dstModule.dictBits);
+    if (!srcDict || !dstDict) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'module dict missing' })),
+      );
+      return raiseException(exc);
+    }
+    const moduleName = srcModule.name ?? '';
+    const allNameBits = boxPtr({ type: 'str', value: '__all__' });
+    const allBits = dictGetValue(srcDict, allNameBits);
+    if (allBits !== null) {
+      const iterBits = baseImports.iter(allBits);
+      if (isNone(iterBits)) return boxNone();
+      while (true) {
+        const pairBits = baseImports.iter_next(iterBits);
+        const tuple = getTuple(pairBits);
+        if (!tuple || tuple.items.length < 2) {
+          return boxNone();
+        }
+        const doneBits = tuple.items[1];
+        if (isTruthyBits(doneBits)) {
+          break;
+        }
+        const nameBits = tuple.items[0];
+        const name = getStrObj(nameBits);
+        if (name === null) {
+          const exc = exceptionNew(
+            boxPtr({ type: 'str', value: 'TypeError' }),
+            exceptionArgs(
+              boxPtr({
+                type: 'str',
+                value: `Item in ${moduleName}.__all__ must be str, not ${typeName(nameBits)}`,
+              }),
+            ),
+          );
+          return raiseException(exc);
+        }
+        const val = dictGetValue(srcDict, nameBits);
+        if (val === null) {
+          const exc = exceptionNew(
+            boxPtr({ type: 'str', value: 'AttributeError' }),
+            exceptionArgs(
+              boxPtr({
+                type: 'str',
+                value: `module '${moduleName}' has no attribute '${name}'`,
+              }),
+            ),
+          );
+          return raiseException(exc);
+        }
+        dictSetValue(dstDict, nameBits, val);
+      }
+      return boxNone();
+    }
+    for (const [keyBits, val] of srcDict.entries) {
+      const name = getStrObj(keyBits);
+      if (name === null) continue;
+      if (name.length > 0 && name[0] === '_') {
+        continue;
+      }
+      dictSetValue(dstDict, keyBits, val);
+    }
+    return boxNone();
+  },
   module_set_attr: (moduleBits, nameBits, val) => {
     const name = getStrObj(nameBits);
     const moduleObj = getModule(moduleBits);
     if (!moduleObj || name === null) return boxNone();
-    moduleObj.attrs.set(name, val);
+    const dict = getDict(moduleObj.dictBits);
+    if (!dict) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'module dict missing' })),
+      );
+      return raiseException(exc);
+    }
+    dictSetValue(dict, nameBits, val);
     return boxNone();
   },
   get_attr_name: (obj, nameBits) => {
@@ -5504,6 +7217,7 @@ BASE_IMPORTS = """\
       if (obj && obj.type === 'dict') return obj.entries.length ? 1n : 0n;
       if (obj && (obj.type === 'set' || obj.type === 'frozenset'))
         return obj.items.size ? 1n : 0n;
+      if (obj && obj.type === 'asyncgen') return 1n;
       if (obj && obj.type === 'iter') return 1n;
     }
     return 0n;
@@ -5727,6 +7441,16 @@ BASE_IMPORTS = """\
     }
     if (obj && obj.type === 'bigint') {
       return boxPtr({ type: 'str', value: obj.value.toString() });
+    }
+    if (
+      obj &&
+      (obj.type === 'list' ||
+        obj.type === 'tuple' ||
+        obj.type === 'dict' ||
+        obj.type === 'set' ||
+        obj.type === 'frozenset')
+    ) {
+      return boxPtr({ type: 'str', value: reprStringFromBits(val) });
     }
     return boxPtr({ type: 'str', value: '<obj>' });
   },
@@ -6298,7 +8022,7 @@ BASE_IMPORTS = """\
     if (val === null) {
       const hasDefault = isTruthyBits(hasDefaultBits);
       if (hasDefault) return defaultBits;
-      throw new Error('KeyError: dict.pop missing key');
+      throw new Error(`KeyError: ${reprStringFromBits(keyBits)}`);
     }
     dictDelete(dict, keyBits);
     return val;
@@ -6744,6 +8468,20 @@ BASE_IMPORTS = """\
     }
     return boxPtrAddr(addr);
   },
+  task_register_token_owned: (taskBits, tokenBits) => {
+    if (!isPtr(taskBits) || heap.has(taskBits & POINTER_MASK)) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'task must be awaitable' })),
+      );
+      raiseException(exc);
+      return boxNone();
+    }
+    const addr = ptrAddr(taskBits);
+    const tokenId = tokenIdFromBits(tokenBits);
+    registerTaskToken(addr, tokenId === 0n ? 1n : tokenId);
+    return boxNone();
+  },
   generator_new: (pollFn, closureSize) => {
     const size = Number(closureSize);
     const addr = allocRaw(size);
@@ -6765,6 +8503,47 @@ BASE_IMPORTS = """\
     }
     return boxPtrAddr(addr);
   },
+  asyncgen_new: (genBits) => {
+    if (!isGenerator(genBits)) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'expected generator' })),
+      );
+      return raiseException(exc);
+    }
+    const objBits = boxPtr({
+      type: 'asyncgen',
+      genBits,
+      runningBits: boxNone(),
+    });
+    asyncgenRegistry.add(objBits);
+    return objBits;
+  },
+  asyncgen_shutdown: () => {
+    const gens = Array.from(asyncgenRegistry);
+    asyncgenRegistry.clear();
+    for (const genBits of gens) {
+      const asyncgenObj = getAsyncGenerator(genBits);
+      if (!asyncgenObj) continue;
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'GeneratorExit' }),
+        boxNone(),
+      );
+      const futureBits = asyncgenFutureNew(
+        genBits,
+        ASYNCGEN_OP_ACLOSE,
+        exc,
+      );
+      if (!isNone(futureBits)) {
+        baseImports.block_on(futureBits);
+        if (exceptionPending() !== 0n) {
+          exceptionClear();
+        }
+      }
+    }
+    return boxNone();
+  },
+  asyncgen_poll: (taskPtr) => asyncgenPoll(taskPtr),
   generator_send: (gen, sendVal) => generatorSend(gen, sendVal),
   generator_throw: (gen, exc) => generatorThrow(gen, exc),
   generator_close: (gen) => generatorClose(gen),
@@ -6791,7 +8570,16 @@ BASE_IMPORTS = """\
     return func && func.closure ? func.closure : 0n;
   },
   call_arity_error: (expected, got) => {
-    throw new Error(`TypeError: call arity mismatch (expected ${expected}, got ${got})`);
+    const exc = exceptionNew(
+      boxPtr({ type: 'str', value: 'TypeError' }),
+      exceptionArgs(
+        boxPtr({
+          type: 'str',
+          value: `call arity mismatch (expected ${expected}, got ${got})`,
+        }),
+      ),
+    );
+    return raiseException(exc);
   },
   callargs_new: (_posCap, _kwCap) =>
     boxPtr({ type: 'callargs', pos: [], kwNames: [], kwValues: [] }),
@@ -6909,6 +8697,14 @@ BASE_IMPORTS = """\
     }
     if (selfBits !== null) {
       args.pos.unshift(selfBits);
+    }
+    if (typeof func.builtinName === 'string') {
+      return bindBuiltinCall(funcBits, func, args);
+    }
+    const nameBits = func.attrs ? func.attrs.get('__name__') : undefined;
+    const nameStr = nameBits !== undefined ? getStrObj(nameBits) : null;
+    if (nameStr === 'sorted') {
+      return bindBuiltinCall(funcBits, func, args);
     }
     const attrs = func.attrs || new Map();
     const argNamesBits = attrs.get('__molt_arg_names__');
@@ -8443,6 +10239,30 @@ BASE_IMPORTS = """\
     }
     return boxPtr({ type: 'str', value: stringStripChars(str, chars) });
   },
+  string_lstrip: (haystack, charsBits) => {
+    const str = getStrObj(haystack);
+    if (str === null) return boxNone();
+    if (isNone(charsBits)) {
+      return boxPtr({ type: 'str', value: str.trimStart() });
+    }
+    const chars = getStrObj(charsBits);
+    if (chars === null) {
+      throw new Error('TypeError: lstrip arg must be None or str');
+    }
+    return boxPtr({ type: 'str', value: stringLStripChars(str, chars) });
+  },
+  string_rstrip: (haystack, charsBits) => {
+    const str = getStrObj(haystack);
+    if (str === null) return boxNone();
+    if (isNone(charsBits)) {
+      return boxPtr({ type: 'str', value: str.trimEnd() });
+    }
+    const chars = getStrObj(charsBits);
+    if (chars === null) {
+      throw new Error('TypeError: rstrip arg must be None or str');
+    }
+    return boxPtr({ type: 'str', value: stringRStripChars(str, chars) });
+  },
   bytes_split: (hayBits, needleBits) => {
     const hay = getBytes(hayBits);
     if (!hay) return boxNone();
@@ -8915,6 +10735,11 @@ BASE_IMPORTS = """\
   },
   context_null: (val) => val,
   id: (val) => val,
+  hash_builtin: (val) => {
+    const hash = hashBitsSigned(val);
+    if (exceptionPending() !== 0n) return boxNone();
+    return boxIntOrBigint(hash);
+  },
   ord: (val) => {
     const str = getStrObj(val);
     if (str !== null) {
@@ -9446,6 +11271,24 @@ BASE_IMPORTS = """\
     const pid = typeof process !== 'undefined' ? process.pid : 0;
     return boxInt(BigInt(pid ?? 0));
   },
+  time_monotonic: () => {
+    const now =
+      typeof process !== 'undefined' && process.hrtime && process.hrtime.bigint
+        ? process.hrtime.bigint()
+        : BigInt(Date.now()) * 1000000n;
+    const delta = now - MONO_START;
+    return boxFloat(Number(delta) / 1e9);
+  },
+  time_monotonic_ns: () => {
+    const now =
+      typeof process !== 'undefined' && process.hrtime && process.hrtime.bigint
+        ? process.hrtime.bigint()
+        : BigInt(Date.now()) * 1000000n;
+    const delta = now - MONO_START;
+    return boxIntOrBigint(delta);
+  },
+  time_time: () => boxFloat(Date.now() / 1000),
+  time_time_ns: () => boxIntOrBigint(BigInt(Date.now()) * 1000000n),
   path_exists: (pathBits) => {
     const path = getStrObj(pathBits);
     if (path === null) {
@@ -9501,6 +11344,7 @@ BASE_IMPORTS = """\
   exception_set_cause: (exc, cause) => exceptionSetCause(exc, cause),
   exception_set_value: (exc, value) => exceptionSetValue(exc, value),
   exception_context_set: (exc) => exceptionContextSet(exc),
+  exception_set_last: (exc) => exceptionSetLast(exc),
   raise: (exc) => raiseException(exc),
   context_closing: (val) => val,
   bridge_unavailable: () => boxNone(),
@@ -9563,8 +11407,23 @@ BASE_IMPORTS = """\
   },
   file_open: () => boxNone(),
   file_read: () => boxNone(),
+  file_readline: () => boxNone(),
+  file_readlines: () => boxNone(),
+  file_readinto: () => boxNone(),
   file_write: () => boxNone(),
+  file_writelines: () => boxNone(),
+  file_seek: () => boxNone(),
+  file_tell: () => boxNone(),
+  file_fileno: () => boxNone(),
+  file_truncate: () => boxNone(),
+  file_flush: () => boxNone(),
+  file_readable: () => boxNone(),
+  file_writable: () => boxNone(),
+  file_seekable: () => boxNone(),
+  file_isatty: () => boxNone(),
   file_close: () => boxNone(),
+  file_detach: () => boxNone(),
+  file_reconfigure: () => boxNone(),
   db_query: (ptr, _len, out, _token) => {
     expectPtrAddr(ptr, 'db_query');
     if (!memory) return 7;
@@ -9608,7 +11467,52 @@ BASE_IMPORTS = """\
   ws_recv: () => 0n,
   ws_close: () => {},
   ws_drop: () => {},
+  errno_constants: () => {
+    const errno = os.constants && os.constants.errno ? os.constants.errno : {};
+    const names = [
+      'EACCES',
+      'EAGAIN',
+      'EALREADY',
+      'ECHILD',
+      'ECONNABORTED',
+      'ECONNREFUSED',
+      'ECONNRESET',
+      'EEXIST',
+      'EINPROGRESS',
+      'EINTR',
+      'EISDIR',
+      'ENOENT',
+      'ENOTDIR',
+      'EPERM',
+      'EPIPE',
+      'ESRCH',
+      'ETIMEDOUT',
+      'EWOULDBLOCK',
+      'ESHUTDOWN',
+      'ENOTCAPABLE',
+    ];
+    const dictBits = boxPtr({ type: 'dict', entries: [], lookup: new Map() });
+    const reverseBits = boxPtr({ type: 'dict', entries: [], lookup: new Map() });
+    const dict = getDict(dictBits);
+    const reverse = getDict(reverseBits);
+    if (!dict || !reverse) return boxNone();
+    for (const name of names) {
+      let value = errno[name];
+      if (value === undefined && name === 'EWOULDBLOCK') {
+        value = errno.EAGAIN;
+      }
+      if (value === undefined) {
+        continue;
+      }
+      const nameBits = boxPtr({ type: 'str', value: name });
+      const valueBits = boxInt(BigInt(value));
+      dictSetValue(dict, nameBits, valueBits);
+      dictSetValue(reverse, valueBits, nameBits);
+    }
+    return tupleFromArray([dictBits, reverseBits]);
+  },
   missing: () => missingSentinel(),
+  ellipsis: () => ellipsisObj(),
   not_implemented: () => notImplementedSentinel(),
   repr_builtin: (val) => baseImports.repr_from_obj(val),
   format_builtin: (val, specBits) => {
@@ -9708,6 +11612,47 @@ BASE_IMPORTS = """\
       return baseImports.get_attr_name(objBits, nameBits);
     }
     return baseImports.get_attr_name_default(objBits, nameBits, defaultBits);
+  },
+  vars_builtin: (objBits) => {
+    const dictNameBits = boxPtr({ type: 'str', value: '__dict__' });
+    const missing = missingSentinel();
+    const dictBits = baseImports.get_attr_name_default(objBits, dictNameBits, missing);
+    if (exceptionPending() !== 0n) return boxNone();
+    if (dictBits === missing) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(
+          boxPtr({
+            type: 'str',
+            value: 'vars() argument must have __dict__ attribute',
+          }),
+        ),
+      );
+      return raiseException(exc);
+    }
+    return dictBits;
+  },
+  dir_builtin: (objBits) => {
+    const dirMethodBits = lookupAttr(objBits, '__dir__');
+    if (dirMethodBits !== undefined) {
+      return callCallable0(dirMethodBits);
+    }
+    const names = new Set();
+    const obj = getObj(objBits);
+    if (obj && obj.type === 'module') {
+      collectDirNamesFromDict(names, obj.dictBits);
+    } else {
+      collectDirNamesFromInstanceAttrs(names, objBits);
+      const dictBits = lookupAttr(objBits, '__dict__');
+      if (dictBits !== undefined) {
+        collectDirNamesFromDict(names, dictBits);
+      }
+      const typeBits = getClass(objBits) ? objBits : typeOfBits(objBits);
+      collectDirNamesFromClass(names, typeBits);
+    }
+    const out = Array.from(names);
+    out.sort();
+    return listFromArray(out.map((name) => boxPtr({ type: 'str', value: name })));
   },
   anext_builtin: (iterBits, defaultBits) => {
     const missing = missingSentinel();
@@ -9818,6 +11763,65 @@ BASE_IMPORTS = """\
     return boxNone();
   },
   super_builtin: (typeBits, objBits) => baseImports.super_new(typeBits, objBits),
+
+  io_wait: (..._args) => baseImports.unsupported_import('io_wait'),
+  io_wait_new: (..._args) => baseImports.unsupported_import('io_wait_new'),
+  thread_submit: (..._args) => baseImports.unsupported_import('thread_submit'),
+  thread_poll: (..._args) => baseImports.unsupported_import('thread_poll'),
+  process_spawn: (..._args) => baseImports.unsupported_import('process_spawn'),
+  process_wait_future: (..._args) => baseImports.unsupported_import('process_wait_future'),
+  process_poll: (..._args) => baseImports.unsupported_import('process_poll'),
+  process_pid: (..._args) => baseImports.unsupported_import('process_pid'),
+  process_returncode: (..._args) => baseImports.unsupported_import('process_returncode'),
+  process_kill: (..._args) => baseImports.unsupported_import('process_kill'),
+  process_terminate: (..._args) => baseImports.unsupported_import('process_terminate'),
+  process_stdin: (..._args) => baseImports.unsupported_import('process_stdin'),
+  process_stdout: (..._args) => baseImports.unsupported_import('process_stdout'),
+  process_stderr: (..._args) => baseImports.unsupported_import('process_stderr'),
+  process_drop: (..._args) => baseImports.unsupported_import('process_drop'),
+  socket_constants: (..._args) => baseImports.unsupported_import('socket_constants'),
+  socket_has_ipv6: (..._args) => baseImports.unsupported_import('socket_has_ipv6'),
+  socket_new: (..._args) => baseImports.unsupported_import('socket_new'),
+  socket_close: (..._args) => baseImports.unsupported_import('socket_close'),
+  socket_drop: (..._args) => baseImports.unsupported_import('socket_drop'),
+  socket_clone: (..._args) => baseImports.unsupported_import('socket_clone'),
+  socket_fileno: (..._args) => baseImports.unsupported_import('socket_fileno'),
+  socket_gettimeout: (..._args) => baseImports.unsupported_import('socket_gettimeout'),
+  socket_settimeout: (..._args) => baseImports.unsupported_import('socket_settimeout'),
+  socket_setblocking: (..._args) => baseImports.unsupported_import('socket_setblocking'),
+  socket_getblocking: (..._args) => baseImports.unsupported_import('socket_getblocking'),
+  socket_bind: (..._args) => baseImports.unsupported_import('socket_bind'),
+  socket_listen: (..._args) => baseImports.unsupported_import('socket_listen'),
+  socket_accept: (..._args) => baseImports.unsupported_import('socket_accept'),
+  socket_connect: (..._args) => baseImports.unsupported_import('socket_connect'),
+  socket_connect_ex: (..._args) => baseImports.unsupported_import('socket_connect_ex'),
+  socket_recv: (..._args) => baseImports.unsupported_import('socket_recv'),
+  socket_recv_into: (..._args) => baseImports.unsupported_import('socket_recv_into'),
+  socket_send: (..._args) => baseImports.unsupported_import('socket_send'),
+  socket_sendall: (..._args) => baseImports.unsupported_import('socket_sendall'),
+  socket_sendto: (..._args) => baseImports.unsupported_import('socket_sendto'),
+  socket_recvfrom: (..._args) => baseImports.unsupported_import('socket_recvfrom'),
+  socket_shutdown: (..._args) => baseImports.unsupported_import('socket_shutdown'),
+  socket_getsockname: (..._args) => baseImports.unsupported_import('socket_getsockname'),
+  socket_getpeername: (..._args) => baseImports.unsupported_import('socket_getpeername'),
+  socket_setsockopt: (..._args) => baseImports.unsupported_import('socket_setsockopt'),
+  socket_getsockopt: (..._args) => baseImports.unsupported_import('socket_getsockopt'),
+  socket_detach: (..._args) => baseImports.unsupported_import('socket_detach'),
+  socketpair: (..._args) => baseImports.unsupported_import('socketpair'),
+  socket_getaddrinfo: (..._args) => baseImports.unsupported_import('socket_getaddrinfo'),
+  socket_getnameinfo: (..._args) => baseImports.unsupported_import('socket_getnameinfo'),
+  socket_gethostname: (..._args) => baseImports.unsupported_import('socket_gethostname'),
+  socket_getservbyname: (..._args) => baseImports.unsupported_import('socket_getservbyname'),
+  socket_getservbyport: (..._args) => baseImports.unsupported_import('socket_getservbyport'),
+  socket_inet_pton: (..._args) => baseImports.unsupported_import('socket_inet_pton'),
+  socket_inet_ntop: (..._args) => baseImports.unsupported_import('socket_inet_ntop'),
+  ne: (a, b) => {
+    const res = baseImports.eq(a, b);
+    if (exceptionPending() !== 0n) return boxNone();
+    return boxBool(baseImports.is_truthy(res) === 0n);
+  },
+  stream_clone: (..._args) => baseImports.unsupported_import('stream_clone'),
+  stream_send_obj: (..._args) => baseImports.unsupported_import('stream_send_obj'),
 """
 
 IMPORT_HELPERS = """\

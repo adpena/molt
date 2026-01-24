@@ -13,6 +13,7 @@
 | Slice Arguments | `start:stop:step` | Supported | Matches CPython. | Evaluated L-to-R. |
 | Dictionary Literals | Key then Value | Supported | Matches CPython. | L-to-R pairs. |
 | Generator Expressions | `iter` created immed. | Supported | Matches CPython. | First iterable evaluated at call site. |
+| Annotations (PEP 649) | Lazy evaluation via `__annotate__` | Supported | Matches CPython 3.14. | Module/class `__annotations__` cached in `__dict__`; formats 1/2 (VALUE/STRING). |
 
 ## 2. Scoping & Namespaces
 | Feature | Semantics | Status | Molt Behavior | Notes |
@@ -56,7 +57,7 @@
 | GC | Refcounting + Cycle Det | Partial | RC only (cycle collector pending) | Deterministic RC is key (TODO(semantics, owner:runtime, milestone:TC3, priority:P2, status:missing): cycle collector). |
 | Finalizers | `__del__` | Partial | Best-effort | Not guaranteed at exit (TODO(semantics, owner:runtime, milestone:TC3, priority:P2, status:partial): finalizer guarantees). |
 | Module Init | Once per process | Supported | Matches CPython. | Locks on import. |
-| File I/O | `open` + file object semantics | Partial | Full `open()` signature + core file methods/attrs | UTF-8-only text encoding, text-mode seek/tell cookie semantics, and advanced file APIs (readinto/writelines/detach/reconfigure) still missing; Windows fileno/isatty parity pending. |
+| File I/O | `open` + file object semantics | Partial | Full `open()` signature + core file methods/attrs | utf-8/ascii/latin-1 only, partial text-mode seek/tell cookie semantics, and Windows fileno/isatty parity pending. |
 
 ## 6. Arithmetic & Numbers
 | Feature | Semantics | Status | Molt Behavior | Notes |
@@ -86,6 +87,7 @@ Coverage evidence (selected):
 - `tests/differential/basic/args_kwargs_eval_order.py` (evaluation order).
 - `tests/differential/basic/iter_non_iterator.py` (iter non-iterator TypeError parity).
 - `tests/differential/basic/recursion_limit.py` (recursion limit semantics).
+- `tests/differential/basic/pep649_lazy_annotations.py` (PEP 649 lazy annotations + __annotate__ formats).
 
 Gaps or missing coverage (audit findings):
 - TODO(tests, owner:runtime, milestone:TC2, priority:P2, status:planned): add security-focused differential tests for attribute access edge cases (descriptor exceptions, `__getattr__` recursion traps).

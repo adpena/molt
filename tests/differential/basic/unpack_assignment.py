@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for unpack assignment."""
+
 from __future__ import annotations
 
 

@@ -379,7 +379,7 @@ def ws_pair(maxsize: int = 0) -> tuple[WebSocket, WebSocket]:
     return left, right
 
 
-def ws_connect(url: str, capability: str = "websocket:connect") -> WebSocket:
+def ws_connect(url: str, capability: str = "websocket.connect") -> WebSocket:
     capabilities.require(capability)
     shims = _get_shims()
     lib = shims.load_runtime()

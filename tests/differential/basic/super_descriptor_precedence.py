@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for super descriptor precedence."""
+
+
 class DataDesc:
     def __get__(self, obj, owner=None) -> str:
         name = getattr(owner, "__name__", "None")

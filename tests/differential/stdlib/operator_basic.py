@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for operator basic."""
+
 import operator
 
 

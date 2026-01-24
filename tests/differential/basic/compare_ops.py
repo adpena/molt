@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for compare ops."""
+
 nums = [1, 2, 3]
 
 print((1 < 2, 2 <= 2, 3 > 2, 3 >= 4, 3 != 4, 3 == 3))

@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for recursion limit."""
+
 import sys
 
 print(sys.getrecursionlimit() > 0)

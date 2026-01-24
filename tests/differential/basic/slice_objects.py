@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for slice objects."""
+
 lst = [0, 1, 2, 3, 4, 5]
 print(lst[1:5:2])
 print(lst[::-1])

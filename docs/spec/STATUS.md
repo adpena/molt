@@ -1,6 +1,6 @@
 # STATUS (Canonical)
 
-Last updated: 2026-01-18
+Last updated: 2026-01-22
 
 This document is the source of truth for Molt's current capabilities and
 limitations. Update this file whenever behavior or scope changes, and keep
@@ -21,31 +21,37 @@ README/ROADMAP in sync.
 - Async context managers: `async with` lowering for `__aenter__`/`__aexit__`.
 - `anext(..., default)` awaitable creation outside `await`.
 - AOT compilation via Cranelift for native targets.
-- Differential testing vs CPython 3.12 for supported constructs.
+- Differential testing vs CPython 3.12 for supported constructs (PEP 649 annotation parity validated against CPython 3.14).
+- PEP 649 lazy annotations: compiler emits `__annotate__` for module/class/function, `__annotations__` computed lazily and cached (formats 1/2: VALUE/STRING).
+- PEP 585 generic aliases for builtin containers (`list`/`dict`/`tuple`/`set`/`frozenset`/`type`) with `__origin__`/`__args__`.
 - Molt packages for Rust-backed deps using MsgPack/CBOR and Arrow IPC.
-- Sets: literals + constructor with add/contains/iter/len + algebra (`|`, `&`, `-`, `^`) over set/frozenset/dict view RHS; `frozenset` constructor + algebra.
+- Sets: literals + constructor with add/contains/iter/len + algebra (`|`, `&`, `-`, `^`) over set/frozenset/dict view RHS; `frozenset` constructor + algebra; set/frozenset method attributes for union/intersection/difference/symmetric_difference, update variants, copy/clear, and isdisjoint/issubset/issuperset.
 - Numeric builtins: `int()`/`abs()`/`divmod()`/`round()`/`math.trunc()` with `__int__`/`__index__`/`__round__`/`__trunc__` hooks and base parsing for string/bytes.
 - Formatting builtins: `ascii()`/`bin()`/`oct()`/`hex()` with `__index__` fallback and CPython parity errors for non-integers.
 - `chr()` and `ord()` parity errors for type/range checks; `chr()` accepts `__index__` and `ord()` enforces length-1 for `str`/`bytes`/`bytearray`.
 - BigInt heap fallback for ints beyond inline range (arithmetic/bitwise/shift parity for large ints).
 - Bitwise invert (`~`) supported for ints/bools/bigints (bool returns int result).
-- Format mini-language for ints/floats + `__format__` dispatch + named field access in `str.format` + f-string conversion flags (`!r`, `!s`, `!a`).
+- Format mini-language for ints/floats + `__format__` dispatch + `str.format` field resolution (positional/keyword, attr/index, conversion flags, nested format specs).
 - memoryview exposes `format`/`shape`/`strides`/`nbytes`, `cast`, tuple scalar indexing, and 1D slicing/assignment for bytes/bytearray-backed views.
-- `str.find`/`str.count`/`str.startswith`/`str.endswith` support start/end slices with Unicode-aware offsets; `str.split` supports `None` separators and `maxsplit` for str/bytes/bytearray; `str.replace` supports `count`; `str.strip` supports default whitespace and `chars` argument; `str.join` accepts arbitrary iterables.
+- `str.find`/`str.count`/`str.startswith`/`str.endswith` support start/end slices with Unicode-aware offsets; `str.split`/`str.rsplit` support `None` separators and `maxsplit` for str/bytes/bytearray; `str.replace` supports `count`; `str.strip`/`str.lstrip`/`str.rstrip` support default whitespace and `chars` argument; `str.join` accepts arbitrary iterables.
 - `str.lower`/`str.upper`/`str.capitalize`, list methods (`append`/`extend`/`insert`/`remove`/`pop`/`count`/`index` with start/stop + parity errors, `clear`/`copy`/`reverse`/`sort`),
   and `dict.clear`/`dict.copy`/`dict.popitem`/`dict.setdefault`/`dict.update`/`dict.fromkeys`.
-- Builtin containers expose `__iter__`/`__len__`/`__contains__`/`__reversed__` (where defined) for list/dict/str/bytes/bytearray, including class-level access to builtin methods.
+- List dunder arithmetic methods (`__add__`/`__mul__`/`__rmul__`/`__iadd__`/`__imul__`) are available for dynamic access and follow CPython error behavior.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): implement full `re` syntax/flags + group semantics (literal-only `search`/`match`/`fullmatch` are currently supported).
+- Builtin containers expose `__iter__`/`__len__`/`__contains__`/`__reversed__` (where defined) for list/dict/str/bytes/bytearray, including class-level access to builtin methods. Item dunder access via getattr is available for dict/list/bytearray/memoryview (`__getitem__`/`__setitem__`/`__delitem__`).
+- TODO(semantics, owner:runtime, milestone:TC2, priority:P1, status:partial): move dict subclass storage out of instance `__dict__` (currently uses `__molt_dict_data__` key) to avoid attribute leakage and match CPython mapping/attribute separation.
 - Membership tests (`in`) honor `__contains__` and iterate via `__iter__`/`__getitem__` fallbacks for user-defined objects.
 - `list.extend` accepts iterable inputs (range/generator/etc.) via the iter protocol.
 - Iterable unpacking in assignment/loop targets (including starred targets) with CPython-style error messages.
 - `for`/`async for` `else` blocks execute when loops exhaust without `break`.
 - Indexing and slicing honor `__index__` for integer indices (including slice bounds/steps).
+- `slice` objects expose `start`/`stop`/`step`, `indices`, and hash/eq parity.
 - Slice assignment/deletion parity for list/bytearray/memoryview (including `__index__` errors; memoryview delete raises `TypeError`).
 - Augmented assignment (`+=`, `*=`, `|=`, `&=`, `^=`, `-=`) uses in-place list/bytearray/set semantics for name/attribute/subscript targets.
 - `dict()` supports positional mapping/iterable inputs (keys/`__getitem__` mapping fallback) plus keyword/`**` expansion
   (string key enforcement for `**`); `dict.update` mirrors the mapping fallback.
 - `bytes`/`bytearray` constructors accept int counts, iterable-of-ints, and str+encoding (`utf-8`/`latin-1`/`ascii`/`utf-16`/`utf-32`) with basic error handlers (`strict`/`ignore`/`replace`) and parity errors for negative counts/range checks.
-- `bytes`/`bytearray` methods `find` (bytes-like/int needles)/`split`/`replace`/`count`/`startswith`/`endswith` (including start/end slices and tuple prefixes) and indexing return int values with CPython-style bounds errors.
+- `bytes`/`bytearray` methods `find`/`count` (bytes-like/int needles)/`split`/`rsplit`/`replace`/`startswith`/`endswith`/`strip`/`lstrip`/`rstrip` (including start/end slices and tuple prefixes) and indexing return int values with CPython-style bounds errors.
 - `dict`/`dict.update` raise CPython parity errors for non-iterable elements and invalid pair lengths.
 - `len()` falls back to `__len__` with CPython parity errors for negative, non-int, and overflow results.
 - Dict/set key hashability parity for common unhashable types (list/dict/set/bytearray/memoryview).
@@ -53,8 +59,11 @@ README/ROADMAP in sync.
 - `enumerate` builtin returns an iterator over `(index, value)` with optional `start`.
 - `iter(callable, sentinel)`, `map`, `filter`, `zip`, and `reversed` return lazy iterator objects with CPython-style stop conditions.
 - `iter(obj)` enforces that `__iter__` returns an iterator, raising `TypeError` with CPython-style messages for non-iterators.
-- Builtin function objects for allowlisted builtins (`any`, `all`, `abs`, `ascii`, `bin`, `oct`, `hex`, `chr`, `ord`, `divmod`, `callable`, `repr`, `format`, `getattr`, `hasattr`, `round`, `iter`, `next`, `anext`, `print`, `super`, `sum`, `min`, `max`, `sorted`, `map`, `filter`, `zip`, `reversed`).
+- Builtin function objects for allowlisted builtins (`any`, `all`, `abs`, `ascii`, `bin`, `oct`, `hex`, `chr`, `ord`, `divmod`, `hash`, `callable`, `repr`, `format`, `getattr`, `hasattr`, `round`, `iter`, `next`, `anext`, `print`, `super`, `sum`, `min`, `max`, `sorted`, `map`, `filter`, `zip`, `reversed`).
+- TODO(semantics, owner:frontend, milestone:LF1, priority:P2, status:partial): allow positional `key`/`reverse` arguments for `sorted()` to match CPython; currently treated as kw-only.
 - Builtin reductions: `sum`, `min`, `max` with key/default support across core ordering types.
+- TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:missing): dynamic execution builtins (`eval`, `exec`, `compile`) with sandboxing rules; regrtest `test_future_stmt` depends on `compile`.
+- Differential parity probes for dynamic execution (`eval`/`exec`) are tracked in `tests/differential/planned/exec_*` and `tests/differential/planned/eval_*` and are **expected to fail** until sandboxed dynamic execution lands.
 - `print` supports keyword arguments (`sep`, `end`, `file`, `flush`) with CPython-style type errors; `file=None` uses `sys.stdout` when initialized.
 - Lexicographic ordering for `str`/`bytes`/`bytearray`/`list`/`tuple` (cross-type ordering raises `TypeError`).
 - Ordering comparisons fall back to `__lt__`/`__le__`/`__gt__`/`__ge__` for user-defined objects
@@ -95,19 +104,34 @@ README/ROADMAP in sync.
 
 ## Limitations (Current)
 - Classes/object model: no metaclasses or dynamic `type()` construction.
+- TODO(type-coverage, owner:runtime, milestone:TC3, priority:P2, status:partial): derive `types.GenericAlias.__parameters__` from `TypeVar`/`ParamSpec`/`TypeVarTuple` once typing metadata lands.
 - Attributes: fixed struct fields with dynamic instance-dict fallback; no
   user-defined `__slots__` beyond dataclass lowering; object-level
   class `__dict__` uses a mutable dict (mappingproxy pending).
   (TODO(type-coverage, owner:runtime, milestone:TC2, priority:P2, status:missing): mappingproxy view for class `__dict__`.)
+- Class instantiation bypasses user-defined `__new__` for non-exception classes (allocates instances directly before `__init__`).
+  (TODO(semantics, owner:frontend, milestone:TC2, priority:P1, status:partial): honor `__new__` overrides for non-exception classes.)
 - Strings: `str.isdigit` is missing, and `str.startswith`/`str.endswith` ignore start/end parameters.
   (TODO(type-coverage, owner:runtime, milestone:TC2, priority:P1, status:partial): implement `str.isdigit` and start/end support for string prefix/suffix checks.)
-- Dataclasses: compile-time lowering for frozen/eq/repr/slots; no
-  `default_factory`, `kw_only`, or `order`.
-  (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:missing): implement dataclass defaults,
-  kw-only fields, and ordering parity.)
+- Dataclasses: compile-time lowering for frozen/eq/repr/slots with defaults and
+  `default_factory`; missing `kw_only` and `order`.
+  (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): implement kw-only fields
+  and ordering parity.)
 - Call binding: allowlisted stdlib modules now permit dynamic calls (keyword/variadic via `CALL_BIND`);
   direct-call fast paths still require allowlisted functions and positional-only calls. Non-allowlisted imports
   remain blocked unless the bridge policy is enabled.
+- Builtin arity checks are still enforced at compile time for some constructors/methods (e.g., `bool`, `str`, `list`, `range`, `join`).
+  (TODO(semantics, owner:frontend, milestone:TC2, priority:P1, status:partial): lower builtin arity checks to runtime `TypeError` instead of compile-time rejection.)
+- List membership/count/index snapshot list elements to guard against mutation during `__eq__`/`__contains__`, which allocates on hot paths.
+  (TODO(perf, owner:runtime, milestone:TC1, priority:P2, status:planned): avoid list_snapshot allocations in membership/count/index by using a list mutation version or iterator guard.)
+- `int()` keyword arguments (`x`, `base`) are not accepted.
+  (TODO(type-coverage, owner:frontend, milestone:TC2, priority:P1, status:partial): support keyword arguments for `int()` with CPython parity.)
+- `range()` rejects some arguments that fail lowering (e.g., oversized ints) instead of deferring to runtime errors.
+  (TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:partial): lower unsupported `range()` arguments to runtime parity errors.)
+- f-string conversion flags (`!r`, `!s`, `!a`) are not supported in format placeholders.
+  (TODO(syntax, owner:frontend, milestone:M2, priority:P2, status:partial): implement f-string conversion flags and parity tests.)
+- Async generators (`async def` with `yield`) are not supported.
+  (TODO(async-runtime, owner:frontend, milestone:TC2, priority:P1, status:missing): implement async generator lowering and runtime parity.)
 - `contextlib.contextmanager` decorators are still unsupported.
   (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:missing): implement `contextmanager` lowering.)
 - `str()` decoding with `encoding`/`errors` arguments is not supported; only 0/1-arg `str(obj)` conversion is available.
@@ -118,31 +142,39 @@ README/ROADMAP in sync.
   (TODO(wasm-parity, owner:wasm, milestone:TC1, priority:P2, status:partial): call `__str__` for non-primitive objects in wasm host bindings.)
 - WASM `string_format`/`format()` only handle empty format specs; non-empty specs raise `TypeError`.
   (TODO(wasm-parity, owner:wasm, milestone:TC1, priority:P2, status:partial): implement full format spec parsing + rendering in the wasm host.)
-- File I/O parity is partial: `open()` supports the full signature (mode/buffering/encoding/errors/newline/closefd/opener), fd-based `open`, and file objects now expose read/write/seek/tell/fileno/readline(s)/truncate/iteration/flush/close + core attrs. Remaining gaps include non-UTF-8 encodings/error handlers, text-mode seek/tell cookie semantics, `readinto`/`writelines`/`detach`/`reconfigure`, and Windows fileno/isatty accuracy.
+- File I/O parity is partial: `open()` supports the full signature (mode/buffering/encoding/errors/newline/closefd/opener), fd-based `open`, and file objects now expose read/readinto/write/writelines/seek/tell/fileno/readline(s)/truncate/iteration/flush/close + core attrs. Remaining gaps include broader codec support + full error handlers (utf-8/ascii/latin-1 only), partial text-mode seek/tell cookie semantics, and Windows fileno/isatty accuracy.
   (TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P1, status:partial): finish file/open parity per ROADMAP checklist + tests, with native/wasm lockstep.)
-  (TODO(wasm-parity, owner:wasm, milestone:SL1, priority:P1, status:missing): add wasm host hooks for full `open()` + file method parity, not just basic read/write/close.)
+  (TODO(wasm-parity, owner:wasm, milestone:SL1, priority:P1, status:partial): extend wasm host hooks for remaining file methods (readinto1) and parity coverage.)
+  (TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P2, status:partial): align file handle type names in error/AttributeError messages with CPython _io.* wrappers.)
 - WASM `os.getpid()` currently returns a 0 placeholder.
   (TODO(wasm-parity, owner:runtime, milestone:SL2, priority:P2, status:partial): add a host-backed getpid or document the placeholder semantics.)
 - Generator introspection: `gi_code` is still stubbed and frame objects only expose `f_lasti`.
   (TODO(introspection, owner:runtime, milestone:TC3, priority:P2, status:missing): implement `gi_code` + full frame objects.)
-- Comprehensions: list/set/dict comprehensions and generator expressions are supported; async comprehensions are still pending.
-  (TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:missing): async comprehensions parity.)
+- Comprehensions: list/set/dict comprehensions, generator expressions, and async comprehensions (async for/await) are supported.
 - Control flow: `while`-`else` is still unsupported.
   (TODO(syntax, owner:frontend, milestone:TC2, priority:P2, status:missing): `while`-`else` lowering and tests.)
+- Differential tests: core-language basic now includes pattern matching, async generator finalization, and `while`-`else` probes; failures are expected until the features are implemented.
 - Augmented assignment: slice targets (`seq[a:b] += ...`) are not supported yet.
   (TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:missing): augassign slice targets.)
 - Exceptions: `try/except/else/finally` + `raise`/reraise; `__traceback__` now returns traceback objects
   (`tb_frame`/`tb_lineno`/`tb_next`) with frame objects carrying `f_code`/`f_lineno` (see `docs/spec/areas/compat/0014_TYPE_COVERAGE_MATRIX.md`).
   Builtin exception hierarchy now matches CPython (BaseExceptionGroup, OSError/Warning trees, ExceptionGroup MRO).
   (TODO(introspection, owner:runtime, milestone:TC2, priority:P1, status:partial): expand frame objects to full CPython parity fields.)
-  (TODO(semantics, owner:runtime, milestone:TC2, priority:P1, status:partial): exception `__init__` + subclass attribute parity (OSError errno/filename, UnicodeError fields, ExceptionGroup tree).)
+  (TODO(semantics, owner:runtime, milestone:TC2, priority:P1, status:partial): exception `__init__` + subclass attribute parity (UnicodeError fields, ExceptionGroup tree).)
 - Code objects: `__code__` exposes `co_filename`/`co_name`/`co_firstlineno`; `co_varnames`, arg counts, and
   `co_linetable` remain minimal.
   (TODO(introspection, owner:runtime, milestone:TC2, priority:P2, status:partial): fill out code object fields for parity.)
 - Runtime lifecycle: `molt_runtime_init()`/`molt_runtime_shutdown()` manage a `RuntimeState` that owns caches, pools, and async registries; TLS guard drains per-thread caches on thread exit, and scheduler/sleep workers join on shutdown.
 - Tooling: `molt clean --cargo-target` removes Cargo `target/` build artifacts when requested.
+- Process-based concurrency is unsupported: `multiprocessing`, `subprocess`, and `concurrent.futures` await capability-gated process model integration (start-method policy, IPC primitives, worker lifecycle).
+  (TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P3, status:planned): process model integration for `multiprocessing`/`subprocess`/`concurrent.futures`.)
 - `sys.argv` is initialized from compiled argv (native + wasm harness); decoding currently uses lossy UTF-8/UTF-16 until surrogateescape/fs-encoding parity lands.
   (TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P2, status:partial): decode argv via filesystem encoding + surrogateescape once Molt strings can represent surrogate escapes.)
+- `sys.modules` mirrors the runtime module cache for compiled code; `sys._getframe` is still unavailable in compiled runtimes.
+  (TODO(introspection, owner:runtime, milestone:TC2, priority:P2, status:partial): implement `sys._getframe` for compiled runtimes.)
+- `globals()`/`locals()`/`vars()`/`dir()` are lowered as direct calls; `locals()` snapshots the current locals,
+  and first-class builtin objects (especially no-arg `dir`/`vars` passed around) are still limited.
+  (TODO(introspection, owner:frontend, milestone:TC2, priority:P2, status:partial): implement `globals`/`locals`/`vars`/`dir` builtins with correct scope semantics + callable parity.)
 - Runtime safety: NaN-boxed pointer conversions resolve through a pointer registry to avoid int->ptr casts in Rust; host pointer args now use raw pointer ABI in native + wasm; strict-provenance Miri is green.
 - Hashing: SipHash13 + `PYTHONHASHSEED` parity (randomized by default; deterministic when seed=0); see `docs/spec/areas/compat/0023_SEMANTIC_BEHAVIOR_MATRIX.md`.
 - GC: reference counting only; cycle collector pending (see `docs/spec/areas/compat/0023_SEMANTIC_BEHAVIOR_MATRIX.md`).
@@ -150,16 +182,22 @@ README/ROADMAP in sync.
 - Imports: static module graph only; no dynamic import hooks or full package
   resolution.
   (TODO(import-system, owner:stdlib, milestone:TC3, priority:P2, status:missing): dynamic import hooks + package resolution.)
-- TODO(import-system, owner:stdlib, milestone:TC3, priority:P1, status:planned): project-root builds (package discovery, `__init__` handling, namespace packages, deterministic dependency graph caching).
+- Entry modules are aliased as `__main__` in the module cache; importing the entry module shares the same module object.
+  (TODO(import-system, owner:frontend, milestone:TC3, priority:P2, status:partial): split `__main__` and importable entry modules when the entry module is imported elsewhere.)
+- Module metadata: compiled modules set `__file__`/`__package__` and package `__path__`.
+  (TODO(import-system, owner:frontend, milestone:TC3, priority:P1, status:partial): populate module `__spec__` for compiled modules.)
+- Imports: module-level `from x import *` honors `__all__` (with strict name checks) and otherwise skips underscore-prefixed names.
+- TODO(import-system, owner:stdlib, milestone:TC3, priority:P1, status:partial): project-root builds (namespace packages + PYTHONPATH roots supported; remaining: package discovery hardening, `__init__` edge cases, deterministic dependency graph caching).
 - TODO(import-system, owner:stdlib, milestone:TC3, priority:P1, status:planned): relative imports (explicit and implicit) with deterministic package resolution.
 - TODO(compiler, owner:compiler, milestone:LF2, priority:P1, status:planned): method-binding safety pass (guard/deopt on method lookup + cache invalidation rules for call binding).
-- Asyncio: shim exposes `run`/`sleep`, `EventLoop`, `Task`/`Future`, `Event`, `wait_for`, and basic `gather`; advanced loop
-  APIs and I/O adapters remain pending.
-  (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): asyncio loop/task APIs + I/O adapters.)
+- Asyncio: shim exposes `run`/`sleep`, `EventLoop`, `Task`/`Future`, `Event`, `wait`, `wait_for`, `shield`, basic `gather`,
+  stream helpers (`open_connection`/`start_server`), and `add_reader`/`add_writer`; advanced loop APIs, task groups, and full
+  transport/protocol adapters remain pending. Event-loop semantics target a single-threaded, deterministic scheduler;
+  true parallelism is explicit via executors or isolated runtimes.
+  (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): asyncio loop/task APIs + task groups + I/O adapters + executor semantics.)
+  (TODO(async-runtime, owner:runtime, milestone:RT3, priority:P1, status:planned): parallel runtime tier with isolated heaps/actors and explicit message passing; shared-memory parallelism only via opt-in safe types.)
 - C API: no `libmolt` C-extension surface yet; `docs/spec/areas/compat/0212_C_API_SYMBOL_MATRIX.md` is target-only
   (TODO(c-api, owner:runtime, milestone:SL3, priority:P2, status:missing): define and implement the initial C API shim).
-- Async with: only a single context manager and simple name binding are supported.
-  (TODO(syntax, owner:frontend, milestone:TC2, priority:P2, status:missing): multi-manager `async with` + tuple targets.)
 - Matmul (`@`): supported only for `molt_buffer`/`buffer2d`; other types raise
   `TypeError` (TODO(type-coverage, owner:runtime, milestone:TC2, priority:P2, status:partial): consider
   `__matmul__`/`__rmatmul__` fallback for custom types).
@@ -168,6 +206,9 @@ README/ROADMAP in sync.
 - Numeric tower: complex/decimal pending; `int` still missing full method surface
   (e.g., `bit_length`, `to_bytes`, `from_bytes`).
   (TODO(type-coverage, owner:runtime, milestone:TC3, priority:P2, status:partial): complex/decimal + `int` method parity.)
+  (TODO(type-coverage, owner:frontend, milestone:TC2, priority:P1, status:missing): complex literals + lowering support.)
+- errno: basic constants + errorcode mapping to support OSError mapping; full table pending.
+  (TODO(stdlib-compat, owner:runtime, milestone:SL2, priority:P1, status:partial): expand errno constants + errorcode mapping to full CPython table.)
 - Format protocol: WASM `n` formatting uses host locale separators via
   `MOLT_WASM_LOCALE_*` (set by `run_wasm.js` when available).
 - memoryview: multi-dimensional slicing/sub-views remain pending; slice assignments
@@ -177,6 +218,8 @@ README/ROADMAP in sync.
   overrides; advanced schema coverage (binary/float/large ints/tags) is still expanding.
   (TODO(tests, owner:runtime, milestone:SL1, priority:P1, status:partial): expand codec parity coverage for
   binary/floats/large ints/tagged values/deeper container shapes.)
+- WASM parity: socket/select/selector I/O is native-only; wasm host networking and readiness integration are missing.
+  (TODO(wasm-parity, owner:runtime, milestone:RT2, priority:P0, status:missing): implement wasm socket + io_poller host bindings with capability enforcement.)
 - Structured codecs: MsgPack is the production default while JSON remains for compatibility/debug.
 - Cancellation: cooperative checks plus automatic cancellation injection on await
   boundaries; async I/O cancellation propagation still pending.
@@ -199,6 +242,8 @@ README/ROADMAP in sync.
   registration (sleep queue + block_on integration); `asyncio.gather` and
   `asyncio.Event` are supported for core patterns; `asyncio.wait_for` now
   supports timeout + cancellation propagation across task boundaries.
+- TODO(compiler, owner:compiler, milestone:TC2, priority:P0, status:partial): fix async lowering/back-end verifier for `asyncio.gather` poll paths (dominance issues) and wasm stack-balance errors; async protocol parity tests currently fail.
+- TODO(perf, owner:compiler, milestone:TC2, priority:P1, status:planned): tighten async spill/restore to a CFG-based liveness pass to reduce closure traffic and shrink state_label reload sets.
 - `asyncio.Event` prunes cancelled waiters during task teardown and cooperates
   with cancellation propagation.
 - Raising non-exception objects raises `TypeError` with BaseException checks (CPython parity); subclass-specific attributes remain pending.
@@ -210,16 +255,40 @@ README/ROADMAP in sync.
   sleeps are handled by blocking registration in the same task loop.
   (TODO(async-runtime, owner:runtime, milestone:RT2, priority:P2, status:planned): wasm scheduler background workers.)
 
+## Thread Safety + GIL Notes
+- Runtime mutation is serialized by a GIL-like lock; only one host thread may
+  execute Python/runtime code at a time within the process.
+- Runtime state and object headers are not thread-safe; `Value` and heap objects
+  are not `Send`/`Sync` unless explicitly documented otherwise.
+- Cross-thread sharing of live Python objects is unsupported; serialize or
+  freeze data before crossing threads.
+- Handle table and pointer registry may use internal locks; lock ordering rules
+  are defined in `docs/spec/areas/runtime/0026_CONCURRENCY_AND_GIL.md`.
+- TODO(runtime, owner:runtime, milestone:RT2, priority:P1, status:planned): define
+  the per-runtime GIL strategy, runtime instance ownership model, and allowed
+  cross-thread object sharing rules.
+- TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): implement
+  sharded/lock-free handle resolution and measure lock-sensitive benchmark deltas
+  (attr access, container ops).
+
 ## Stdlib Coverage
 - Partial shims: `warnings`, `traceback`, `types`, `inspect`, `fnmatch` (`*`/`?`
   + bracket class/range matching; literal `[]`/`[[]`/`[]]` escapes (no backslash
   quoting)), `copy`, `pprint`, `string`, `typing`, `sys`, `os`, `pathlib`,
-  `tempfile`, `json` (loads/dumps with parse hooks, indent, separators, allow_nan), `asyncio`, `contextvars`,
-  `contextlib`, `threading`, `functools`, `itertools`, `operator`, `bisect`,
-  `heapq`, `collections`.
+  `tempfile`, `gc`, `random` (`seed`, `randrange`, `shuffle`), `time` (`monotonic`, `perf_counter`, `sleep`, `time`/`time_ns` gated by `time.wall`), `json` (loads/dumps with parse hooks, indent, separators, allow_nan), `pickle` (protocol 0 only),
+  `socket` (runtime-backed, capability-gated; advanced options + wasm parity pending), `select` (selectors-backed for sockets only),
+  `selectors` (io_wait-backed readiness), `asyncio`, `contextvars`, `contextlib`, `threading`,
+  `functools`, `itertools`, `operator`, `bisect`, `heapq`, `collections`.
   (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): advance partial shims to parity per matrix.)
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): complete socket/select/selectors parity (poll/epoll/select objects, fd inheritance, error mapping, cancellation) and align with asyncio adapters.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): unittest/test/doctest stubs exist for regrtest (support: captured_output/captured_stdout/captured_stderr, warnings_helper.check_warnings, cpython_only, requires, swap_attr/swap_item, import_helper.import_module/import_fresh_module, os_helper.temp_dir/unlink); doctest is blocked on eval/exec/compile gating and full unittest parity is pending.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): os.environ parity (mapping methods + backend).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): `json` shim parity (Encoder/Decoder classes, JSONDecodeError details, runtime fast-path parser).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): `gc` module exposes only minimal toggles/collect; wire to runtime cycle collector and implement full API.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): `random` shim exposes seed/randrange/shuffle; expand to CPython-compatible Random API + algorithm.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): expand `time` module surface (timezone/tzname/struct_time/get_clock_info/process_time) + deterministic clock policy.
+- TODO(stdlib-compat, owner:runtime, milestone:TC1, priority:P2, status:partial): codec error handlers (surrogateescape/backslashreplace/etc) pending; blocked on surrogate-capable string representation.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): `pickle` protocol 1+ and broader type coverage (bytes/bytearray, memo cycles).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): `math` shim only covers constants + `isfinite`/`isnan`/`isinf`; intrinsics pending.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): expand `types` shims (TracebackType, FrameType, FunctionType, MethodType, etc).
 - Import-only stubs: `collections.abc`, `importlib`, `importlib.util`.
@@ -261,8 +330,6 @@ README/ROADMAP in sync.
 - Use `tools/dev.py lint` and `tools/dev.py test` for local validation.
 - WIT interface contract lives at `wit/molt-runtime.wit` (WASM runtime intrinsics).
 - Experimental single-module wasm link attempt via `tools/wasm_link.py` (requires `wasm-ld`); run via `MOLT_WASM_LINKED=1`.
-- Legacy `.molt/` cleanup is still performed during the MOLT_HOME/MOLT_CACHE migration.
-  (TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): remove legacy `.molt/` cleanup after migration.)
 
 ## Known Gaps
 - uv-managed Python 3.14 hangs on arm64; system Python 3.14 used as workaround.

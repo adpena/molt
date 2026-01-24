@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for hashability."""
+
+
 def report(label, fn):
     try:
         fn()

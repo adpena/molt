@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for slice assign."""
+
+
 class Idx:
     def __index__(self):
         return 1

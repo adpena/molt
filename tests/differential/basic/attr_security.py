@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for attr security."""
+
+
 def show_exc(label, func):
     try:
         func()

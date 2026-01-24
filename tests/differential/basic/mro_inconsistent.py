@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for mro inconsistent."""
+
+
 class X:
     pass
 

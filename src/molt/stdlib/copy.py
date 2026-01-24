@@ -13,6 +13,8 @@ def copy(obj: Any) -> Any:
     copier = getattr(obj, "__copy__", None)
     if callable(copier):
         return copier()
+    if isinstance(obj, slice):
+        return obj
     if isinstance(obj, list):
         return list(obj)
     if isinstance(obj, dict):
@@ -33,6 +35,10 @@ def deepcopy(obj: Any, memo: dict[int, Any] | None = None) -> Any:
     copier = getattr(obj, "__deepcopy__", None)
     if callable(copier):
         result = copier(memo)
+        memo[obj_id] = result
+        return result
+    if isinstance(obj, slice):
+        result = slice(obj.start, obj.stop, obj.step)
         memo[obj_id] = result
         return result
     if isinstance(obj, list):

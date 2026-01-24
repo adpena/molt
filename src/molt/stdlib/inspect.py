@@ -18,6 +18,7 @@ __all__ = [
     "isfunction",
     "ismodule",
     "iscoroutinefunction",
+    "isasyncgenfunction",
     "isgeneratorfunction",
     "signature",
 ]
@@ -169,6 +170,13 @@ def iscoroutinefunction(obj: Any) -> bool:
         return True
     flags = getattr(getattr(obj, "__code__", None), "co_flags", 0)
     return bool(flags & 0x80)
+
+
+def isasyncgenfunction(obj: Any) -> bool:
+    if getattr(obj, "__molt_is_async_generator__", False):
+        return True
+    flags = getattr(getattr(obj, "__code__", None), "co_flags", 0)
+    return bool(flags & 0x200)
 
 
 def isgeneratorfunction(obj: Any) -> bool:

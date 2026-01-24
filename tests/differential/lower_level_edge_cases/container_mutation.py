@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for container mutation."""
+
+
 def section(name):
     print(f"--- {name} ---")
 

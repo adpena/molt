@@ -13,13 +13,27 @@ fn main() -> io::Result<()> {
         .position(|arg| arg == "--target-triple")
         .and_then(|idx| args.get(idx + 1))
         .map(|value| value.as_str());
+    let output_path = args
+        .iter()
+        .position(|arg| arg == "--output")
+        .and_then(|idx| args.get(idx + 1))
+        .map(|value| value.as_str());
 
     let mut buffer = String::new();
     io::stdin().read_to_string(&mut buffer)?;
 
-    let ir: SimpleIR = serde_json::from_str(&buffer).expect("Invalid IR JSON");
+    let mut deserializer = serde_json::Deserializer::from_str(&buffer);
+    let ir: SimpleIR = match serde_path_to_error::deserialize(&mut deserializer) {
+        Ok(ir) => ir,
+        Err(err) => {
+            let path = err.path().to_string();
+            let inner = err.into_inner();
+            eprintln!("Invalid IR JSON at {path}: {inner}");
+            std::process::exit(1);
+        }
+    };
 
-    let output_file = if is_wasm { "output.wasm" } else { "output.o" };
+    let output_file = output_path.unwrap_or(if is_wasm { "output.wasm" } else { "output.o" });
     let mut file = File::create(output_file)?;
 
     if is_wasm {

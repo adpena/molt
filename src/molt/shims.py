@@ -35,9 +35,14 @@ __all__ = [
     "molt_cancel_token_get_current",
     "molt_cancelled",
     "molt_cancel_current",
+    "molt_future_cancel",
+    "molt_future_cancel_msg",
+    "molt_future_cancel_clear",
+    "molt_task_register_token_owned",
     "molt_spawn",
     "molt_block_on",
     "molt_async_sleep",
+    "molt_thread_submit",
     "molt_chan_new",
     "molt_chan_send",
     "molt_chan_recv",
@@ -59,9 +64,14 @@ if _IMPL is _runtime:
     molt_cancel_token_get_current = _runtime.molt_cancel_token_get_current
     molt_cancelled = _runtime.molt_cancelled
     molt_cancel_current = _runtime.molt_cancel_current
+    molt_future_cancel = _runtime.molt_future_cancel
+    molt_future_cancel_msg = _runtime.molt_future_cancel_msg
+    molt_future_cancel_clear = _runtime.molt_future_cancel_clear
+    molt_task_register_token_owned = _runtime.molt_task_register_token_owned
     molt_spawn = _runtime.molt_spawn
     molt_block_on = _runtime.molt_block_on
     molt_async_sleep = _runtime.molt_async_sleep
+    molt_thread_submit = _runtime.molt_thread_submit
     molt_chan_new = _runtime.molt_chan_new
     molt_chan_send = _runtime.molt_chan_send
     molt_chan_recv = _runtime.molt_chan_recv
@@ -81,9 +91,14 @@ else:
     molt_cancel_token_get_current = _IMPL.molt_cancel_token_get_current
     molt_cancelled = _IMPL.molt_cancelled
     molt_cancel_current = _IMPL.molt_cancel_current
+    molt_future_cancel = _IMPL.molt_future_cancel
+    molt_future_cancel_msg = _IMPL.molt_future_cancel_msg
+    molt_future_cancel_clear = _IMPL.molt_future_cancel_clear
+    molt_task_register_token_owned = _IMPL.molt_task_register_token_owned
     molt_spawn = _IMPL.molt_spawn
     molt_block_on = _IMPL.molt_block_on
     molt_async_sleep = _IMPL.molt_async_sleep
+    molt_thread_submit = _IMPL.molt_thread_submit
     molt_chan_new = _IMPL.molt_chan_new
     molt_chan_send = _IMPL.molt_chan_send
     molt_chan_recv = _IMPL.molt_chan_recv

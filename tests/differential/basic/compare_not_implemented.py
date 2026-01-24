@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for compare not implemented."""
+
+
 class Left:
     def __lt__(self, other):
         return NotImplemented

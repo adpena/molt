@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for mro diamond super."""
+
+
 class A:
     def who(self) -> str:
         return "A"

@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for functools partial lru."""
+
 import functools
 
 

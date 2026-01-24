@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for dataclass slots."""
+
 from dataclasses import dataclass
 
 

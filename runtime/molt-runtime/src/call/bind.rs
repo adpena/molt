@@ -1,0 +1,2038 @@
+use crate::{
+    alloc_dict_with_pairs, alloc_exception_from_class_bits, alloc_instance_for_class, alloc_object,
+    alloc_string, alloc_tuple, attr_lookup_ptr, attr_name_bits_from_bytes, bits_from_ptr,
+    bound_method_func_bits, bound_method_self_bits, builtin_classes, call_callable0,
+    call_callable1, call_class_init_with_args, call_function_obj_vec, class_attr_lookup_raw_mro,
+    class_name_for_error, dec_ref_bits, dict_fromkeys_method, dict_get_in_place, dict_get_method,
+    dict_order, dict_pop_method, dict_setdefault_method, dict_update_apply, dict_update_method,
+    dict_update_set_in_place, dict_update_set_via_store, exception_class_bits, exception_pending,
+    exception_type_bits_from_name, function_arity, function_attr_bits, function_closure_bits,
+    function_fn_ptr, inc_ref_bits, init_atomic_bits, intern_static_name, is_builtin_class_bits,
+    is_truthy, isinstance_bits, issubclass_bits, lookup_call_attr, missing_bits,
+    molt_bytearray_count_slice, molt_bytearray_decode, molt_bytearray_endswith_slice,
+    molt_bytearray_find_slice, molt_bytearray_rfind_slice, molt_bytearray_rsplit_max,
+    molt_bytearray_split_max, molt_bytearray_splitlines, molt_bytearray_startswith_slice,
+    molt_bytes_count_slice, molt_bytes_decode, molt_bytes_endswith_slice, molt_bytes_find_slice,
+    molt_bytes_rfind_slice, molt_bytes_rsplit_max, molt_bytes_split_max, molt_bytes_splitlines,
+    molt_bytes_startswith_slice, molt_dict_from_obj, molt_dict_new, molt_file_reconfigure,
+    molt_frozenset_copy_method, molt_frozenset_difference_multi, molt_frozenset_intersection_multi,
+    molt_frozenset_isdisjoint, molt_frozenset_issubset, molt_frozenset_issuperset,
+    molt_frozenset_symmetric_difference, molt_frozenset_union_multi, molt_function_default_kind,
+    molt_generator_new, molt_iter, molt_iter_next, molt_list_index_range, molt_list_pop,
+    molt_list_sort, molt_memoryview_cast, molt_open_builtin, molt_set_clear, molt_set_copy_method,
+    molt_set_difference_multi, molt_set_difference_update_multi, molt_set_intersection_multi,
+    molt_set_intersection_update_multi, molt_set_isdisjoint, molt_set_issubset,
+    molt_set_issuperset, molt_set_symmetric_difference, molt_set_symmetric_difference_update,
+    molt_set_union_multi, molt_set_update_multi, molt_string_count_slice, molt_string_encode,
+    molt_string_endswith_slice, molt_string_find_slice, molt_string_format_method,
+    molt_string_rfind_slice, molt_string_rsplit_max, molt_string_split_max, molt_string_splitlines,
+    molt_string_startswith_slice, obj_eq, obj_from_bits, object_type_id, ptr_from_bits,
+    raise_exception, raise_not_callable, raise_not_iterable, runtime_state, seq_vec_ref,
+    string_obj_to_owned, type_name, usize_from_bits, MoltHeader, MoltObject, PtrDropGuard,
+    BIND_KIND_OPEN, FUNC_DEFAULT_DICT_POP, FUNC_DEFAULT_DICT_UPDATE, FUNC_DEFAULT_MISSING,
+    FUNC_DEFAULT_NEG_ONE, FUNC_DEFAULT_NONE, FUNC_DEFAULT_REPLACE_COUNT, FUNC_DEFAULT_ZERO,
+    GEN_CONTROL_SIZE, TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS, TYPE_ID_DATACLASS, TYPE_ID_DICT,
+    TYPE_ID_EXCEPTION, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_OBJECT, TYPE_ID_SET,
+    TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE,
+};
+
+struct CallArgs {
+    pos: Vec<u64>,
+    kw_names: Vec<u64>,
+    kw_values: Vec<u64>,
+}
+
+pub(crate) unsafe fn callargs_ptr(ptr: *mut u8) -> *mut CallArgs {
+    *(ptr as *mut *mut CallArgs)
+}
+
+#[no_mangle]
+pub extern "C" fn molt_callargs_new(pos_capacity_bits: u64, kw_capacity_bits: u64) -> u64 {
+    let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut CallArgs>();
+    let ptr = alloc_object(total, TYPE_ID_CALLARGS);
+    if ptr.is_null() {
+        return 0;
+    }
+    unsafe {
+        let pos_capacity = usize_from_bits(pos_capacity_bits);
+        let kw_capacity = usize_from_bits(kw_capacity_bits);
+        let args = Box::new(CallArgs {
+            pos: Vec::with_capacity(pos_capacity),
+            kw_names: Vec::with_capacity(kw_capacity),
+            kw_values: Vec::with_capacity(kw_capacity),
+        });
+        let args_ptr = Box::into_raw(args);
+        *(ptr as *mut *mut CallArgs) = args_ptr;
+    }
+    bits_from_ptr(ptr)
+}
+
+/// # Safety
+/// `builder_bits` must be a valid pointer returned by `molt_callargs_new` and
+/// remain owned by the caller for the duration of this call.
+#[no_mangle]
+pub unsafe extern "C" fn molt_callargs_push_pos(builder_bits: u64, val: u64) -> u64 {
+    let builder_ptr = ptr_from_bits(builder_bits);
+    if builder_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    let args_ptr = callargs_ptr(builder_ptr);
+    if args_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    let args = &mut *args_ptr;
+    args.pos.push(val);
+    MoltObject::none().bits()
+}
+
+unsafe fn callargs_push_kw(builder_ptr: *mut u8, name_bits: u64, val_bits: u64) -> u64 {
+    let name_obj = obj_from_bits(name_bits);
+    let Some(name_ptr) = name_obj.as_ptr() else {
+        return raise_exception::<_>("TypeError", "keywords must be strings");
+    };
+    if object_type_id(name_ptr) != TYPE_ID_STRING {
+        return raise_exception::<_>("TypeError", "keywords must be strings");
+    }
+    let args_ptr = callargs_ptr(builder_ptr);
+    if args_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    let args = &mut *args_ptr;
+    for existing in args.kw_names.iter().copied() {
+        if obj_eq(obj_from_bits(existing), name_obj) {
+            let name = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
+            let msg = format!("got multiple values for keyword argument '{name}'");
+            return raise_exception::<_>("TypeError", &msg);
+        }
+    }
+    args.kw_names.push(name_bits);
+    args.kw_values.push(val_bits);
+    MoltObject::none().bits()
+}
+
+/// # Safety
+/// `builder_bits` must be a valid pointer returned by `molt_callargs_new`.
+/// `name_bits` must reference a Molt string object.
+#[no_mangle]
+pub unsafe extern "C" fn molt_callargs_push_kw(
+    builder_bits: u64,
+    name_bits: u64,
+    val_bits: u64,
+) -> u64 {
+    let builder_ptr = ptr_from_bits(builder_bits);
+    if builder_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    callargs_push_kw(builder_ptr, name_bits, val_bits)
+}
+
+/// # Safety
+/// `builder_bits` must be a valid pointer returned by `molt_callargs_new`.
+#[no_mangle]
+pub unsafe extern "C" fn molt_callargs_expand_star(builder_bits: u64, iterable_bits: u64) -> u64 {
+    let builder_ptr = ptr_from_bits(builder_bits);
+    if builder_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    let iter_bits = molt_iter(iterable_bits);
+    if obj_from_bits(iter_bits).is_none() {
+        return raise_not_iterable(iterable_bits);
+    }
+    loop {
+        let pair_bits = molt_iter_next(iter_bits);
+        let pair_obj = obj_from_bits(pair_bits);
+        let Some(pair_ptr) = pair_obj.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+            return MoltObject::none().bits();
+        }
+        let elems = seq_vec_ref(pair_ptr);
+        if elems.len() < 2 {
+            return MoltObject::none().bits();
+        }
+        let done_bits = elems[1];
+        if is_truthy(obj_from_bits(done_bits)) {
+            break;
+        }
+        let val_bits = elems[0];
+        let res = molt_callargs_push_pos(builder_bits, val_bits);
+        if obj_from_bits(res).is_none() && exception_pending() {
+            return res;
+        }
+    }
+    MoltObject::none().bits()
+}
+
+/// # Safety
+/// `builder_bits` must be a valid pointer returned by `molt_callargs_new`.
+#[no_mangle]
+pub unsafe extern "C" fn molt_callargs_expand_kwstar(builder_bits: u64, mapping_bits: u64) -> u64 {
+    let builder_ptr = ptr_from_bits(builder_bits);
+    if builder_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    let mapping_obj = obj_from_bits(mapping_bits);
+    let Some(mapping_ptr) = mapping_obj.as_ptr() else {
+        return raise_exception::<_>("TypeError", "argument after ** must be a mapping");
+    };
+    if object_type_id(mapping_ptr) == TYPE_ID_DICT {
+        let order = dict_order(mapping_ptr);
+        for idx in (0..order.len()).step_by(2) {
+            let key_bits = order[idx];
+            let val_bits = order[idx + 1];
+            let res = callargs_push_kw(builder_ptr, key_bits, val_bits);
+            if obj_from_bits(res).is_none() && exception_pending() {
+                return res;
+            }
+        }
+        return MoltObject::none().bits();
+    }
+    let Some(keys_bits) = attr_name_bits_from_bytes(b"keys") else {
+        return raise_exception::<_>("TypeError", "argument after ** must be a mapping");
+    };
+    let keys_method_bits = attr_lookup_ptr(mapping_ptr, keys_bits);
+    dec_ref_bits(keys_bits);
+    let Some(keys_method_bits) = keys_method_bits else {
+        return raise_exception::<_>("TypeError", "argument after ** must be a mapping");
+    };
+    let keys_iterable = call_callable0(keys_method_bits);
+    let iter_bits = molt_iter(keys_iterable);
+    if obj_from_bits(iter_bits).is_none() {
+        return raise_exception::<_>("TypeError", "argument after ** must be a mapping");
+    }
+    let Some(getitem_bits) = attr_name_bits_from_bytes(b"__getitem__") else {
+        return raise_exception::<_>("TypeError", "argument after ** must be a mapping");
+    };
+    let getitem_method_bits = attr_lookup_ptr(mapping_ptr, getitem_bits);
+    dec_ref_bits(getitem_bits);
+    let Some(getitem_method_bits) = getitem_method_bits else {
+        return raise_exception::<_>("TypeError", "argument after ** must be a mapping");
+    };
+    loop {
+        let pair_bits = molt_iter_next(iter_bits);
+        let pair_obj = obj_from_bits(pair_bits);
+        let Some(pair_ptr) = pair_obj.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+            return MoltObject::none().bits();
+        }
+        let elems = seq_vec_ref(pair_ptr);
+        if elems.len() < 2 {
+            return MoltObject::none().bits();
+        }
+        let done_bits = elems[1];
+        if is_truthy(obj_from_bits(done_bits)) {
+            break;
+        }
+        let key_bits = elems[0];
+        let key_obj = obj_from_bits(key_bits);
+        let Some(key_ptr) = key_obj.as_ptr() else {
+            return raise_exception::<_>("TypeError", "keywords must be strings");
+        };
+        if object_type_id(key_ptr) != TYPE_ID_STRING {
+            return raise_exception::<_>("TypeError", "keywords must be strings");
+        }
+        let val_bits = call_callable1(getitem_method_bits, key_bits);
+        let res = callargs_push_kw(builder_ptr, key_bits, val_bits);
+        if obj_from_bits(res).is_none() && exception_pending() {
+            return res;
+        }
+    }
+    MoltObject::none().bits()
+}
+
+#[no_mangle]
+/// # Safety
+/// Caller must ensure `builder_bits` is valid and points to a list builder.
+pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
+    unsafe {
+        let builder_ptr = ptr_from_bits(builder_bits);
+        let mut builder_guard = PtrDropGuard::new(builder_ptr);
+        let call_obj = obj_from_bits(call_bits);
+        let Some(call_ptr) = call_obj.as_ptr() else {
+            return raise_not_callable(call_obj);
+        };
+        let mut func_bits = call_bits;
+        let mut self_bits = None;
+        match object_type_id(call_ptr) {
+            TYPE_ID_FUNCTION => {}
+            TYPE_ID_BOUND_METHOD => {
+                func_bits = bound_method_func_bits(call_ptr);
+                self_bits = Some(bound_method_self_bits(call_ptr));
+            }
+            TYPE_ID_TYPE => {
+                let class_bits = MoltObject::from_ptr(call_ptr).bits();
+                let builtins = builtin_classes();
+                if is_builtin_class_bits(class_bits) {
+                    let args_ptr = if builder_ptr.is_null() {
+                        None
+                    } else {
+                        let ptr = callargs_ptr(builder_ptr);
+                        if ptr.is_null() {
+                            return MoltObject::none().bits();
+                        }
+                        Some(ptr)
+                    };
+                    if class_bits == builtins.dict {
+                        let (pos_args, kw_names, kw_values) = if let Some(ptr) = args_ptr {
+                            (
+                                (*ptr).pos.as_slice(),
+                                (*ptr).kw_names.as_slice(),
+                                (*ptr).kw_values.as_slice(),
+                            )
+                        } else {
+                            (&[] as &[u64], &[] as &[u64], &[] as &[u64])
+                        };
+                        let dict_bits = match pos_args.len() {
+                            0 => molt_dict_new(0),
+                            1 => molt_dict_from_obj(pos_args[0]),
+                            _ => {
+                                let msg = format!(
+                                    "dict expected at most 1 argument, got {}",
+                                    pos_args.len()
+                                );
+                                return raise_exception::<_>("TypeError", &msg);
+                            }
+                        };
+                        if obj_from_bits(dict_bits).is_none() {
+                            return MoltObject::none().bits();
+                        }
+                        for (name_bits, val_bits) in
+                            kw_names.iter().copied().zip(kw_values.iter().copied())
+                        {
+                            dict_update_set_via_store(dict_bits, name_bits, val_bits);
+                            if exception_pending() {
+                                dec_ref_bits(dict_bits);
+                                return MoltObject::none().bits();
+                            }
+                        }
+                        return dict_bits;
+                    }
+                    if let Some(ptr) = args_ptr {
+                        if !(*ptr).kw_names.is_empty() {
+                            let class_name = class_name_for_error(class_bits);
+                            let msg = format!("{class_name}() takes no keyword arguments");
+                            return raise_exception::<_>("TypeError", &msg);
+                        }
+                        return call_class_init_with_args(call_ptr, &(*ptr).pos);
+                    }
+                    return call_class_init_with_args(call_ptr, &[]);
+                }
+                let inst_bits = if issubclass_bits(class_bits, builtins.base_exception) {
+                    let new_name_bits =
+                        intern_static_name(&runtime_state().interned.new_name, b"__new__");
+                    if let Some(new_bits) = class_attr_lookup_raw_mro(call_ptr, new_name_bits) {
+                        let (pos_len, kw_len) = if builder_ptr.is_null() {
+                            (1usize, 0usize)
+                        } else {
+                            let args_ptr = callargs_ptr(builder_ptr);
+                            if args_ptr.is_null() {
+                                (1usize, 0usize)
+                            } else {
+                                (1 + (*args_ptr).pos.len(), (*args_ptr).kw_names.len())
+                            }
+                        };
+                        let new_builder_bits = molt_callargs_new(pos_len as u64, kw_len as u64);
+                        if new_builder_bits == 0 {
+                            return MoltObject::none().bits();
+                        }
+                        let _ = molt_callargs_push_pos(new_builder_bits, class_bits);
+                        if !builder_ptr.is_null() {
+                            let args_ptr = callargs_ptr(builder_ptr);
+                            if !args_ptr.is_null() {
+                                for &arg in (*args_ptr).pos.iter() {
+                                    let _ = molt_callargs_push_pos(new_builder_bits, arg);
+                                }
+                                for (&name_bits, &val_bits) in (*args_ptr)
+                                    .kw_names
+                                    .iter()
+                                    .zip((*args_ptr).kw_values.iter())
+                                {
+                                    let _ = molt_callargs_push_kw(
+                                        new_builder_bits,
+                                        name_bits,
+                                        val_bits,
+                                    );
+                                }
+                            }
+                        }
+                        let inst_bits = molt_call_bind(new_bits, new_builder_bits);
+                        if exception_pending() {
+                            return MoltObject::none().bits();
+                        }
+                        if !isinstance_bits(inst_bits, class_bits) {
+                            return inst_bits;
+                        }
+                        inst_bits
+                    } else {
+                        let args_bits = if builder_ptr.is_null() {
+                            let args_ptr = alloc_tuple(&[]);
+                            if args_ptr.is_null() {
+                                return MoltObject::none().bits();
+                            }
+                            MoltObject::from_ptr(args_ptr).bits()
+                        } else {
+                            let args_ptr = callargs_ptr(builder_ptr);
+                            let tuple_ptr = if args_ptr.is_null() {
+                                alloc_tuple(&[])
+                            } else {
+                                alloc_tuple(&(*args_ptr).pos)
+                            };
+                            if tuple_ptr.is_null() {
+                                return MoltObject::none().bits();
+                            }
+                            MoltObject::from_ptr(tuple_ptr).bits()
+                        };
+                        let exc_ptr = alloc_exception_from_class_bits(class_bits, args_bits);
+                        dec_ref_bits(args_bits);
+                        if exc_ptr.is_null() {
+                            return MoltObject::none().bits();
+                        }
+                        MoltObject::from_ptr(exc_ptr).bits()
+                    }
+                } else {
+                    alloc_instance_for_class(call_ptr)
+                };
+                let init_name_bits =
+                    intern_static_name(&runtime_state().interned.init_name, b"__init__");
+                let Some(init_bits) = class_attr_lookup_raw_mro(call_ptr, init_name_bits) else {
+                    return inst_bits;
+                };
+                if builder_ptr.is_null() {
+                    return inst_bits;
+                }
+                builder_guard.release();
+                let args_ptr = callargs_ptr(builder_ptr);
+                if !args_ptr.is_null() {
+                    (*args_ptr).pos.insert(0, inst_bits);
+                }
+                let _ = molt_call_bind(init_bits, builder_bits);
+                return inst_bits;
+            }
+            TYPE_ID_OBJECT | TYPE_ID_DATACLASS => {
+                let Some(call_attr_bits) = lookup_call_attr(call_ptr) else {
+                    return raise_not_callable(call_obj);
+                };
+                builder_guard.release();
+                return molt_call_bind(call_attr_bits, builder_bits);
+            }
+            _ => return raise_not_callable(call_obj),
+        }
+        let func_obj = obj_from_bits(func_bits);
+        let Some(func_ptr) = func_obj.as_ptr() else {
+            return raise_exception::<_>("TypeError", "call expects function object");
+        };
+        if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
+            return raise_exception::<_>("TypeError", "call expects function object");
+        }
+        if builder_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let args_ptr = callargs_ptr(builder_ptr);
+        if args_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        *(builder_ptr as *mut *mut CallArgs) = std::ptr::null_mut();
+        let mut args = Box::from_raw(args_ptr);
+        if let Some(self_bits) = self_bits {
+            args.pos.insert(0, self_bits);
+        }
+        let bind_kind_bits = function_attr_bits(
+            func_ptr,
+            intern_static_name(
+                &runtime_state().interned.molt_bind_kind,
+                b"__molt_bind_kind__",
+            ),
+        );
+        if let Some(kind_bits) = bind_kind_bits {
+            if obj_from_bits(kind_bits).as_int() == Some(BIND_KIND_OPEN) {
+                if let Some(bound_args) = bind_builtin_open(&args) {
+                    return call_function_obj_vec(func_bits, bound_args.as_slice());
+                }
+                return MoltObject::none().bits();
+            }
+        }
+        let fn_ptr = function_fn_ptr(func_ptr);
+        if fn_ptr == fn_addr!(dict_update_method) {
+            return bind_builtin_dict_update(&args);
+        }
+        if fn_ptr == fn_addr!(molt_open_builtin) {
+            if let Some(bound_args) = bind_builtin_open(&args) {
+                return call_function_obj_vec(func_bits, bound_args.as_slice());
+            }
+            return MoltObject::none().bits();
+        }
+
+        let arg_names_bits = function_attr_bits(
+            func_ptr,
+            intern_static_name(
+                &runtime_state().interned.molt_arg_names,
+                b"__molt_arg_names__",
+            ),
+        );
+        let arg_names = if let Some(bits) = arg_names_bits {
+            let arg_names_ptr = obj_from_bits(bits).as_ptr();
+            let Some(arg_names_ptr) = arg_names_ptr else {
+                return raise_exception::<_>("TypeError", "call expects function object");
+            };
+            if object_type_id(arg_names_ptr) != TYPE_ID_TUPLE {
+                return raise_exception::<_>("TypeError", "call expects function object");
+            }
+            seq_vec_ref(arg_names_ptr).clone()
+        } else {
+            if let Some(bound_args) = bind_builtin_call(func_bits, func_ptr, &args) {
+                return call_function_obj_vec(func_bits, bound_args.as_slice());
+            }
+            if exception_pending() {
+                return MoltObject::none().bits();
+            }
+            return raise_exception::<_>("TypeError", "call expects function object");
+        };
+
+        let posonly_bits = function_attr_bits(
+            func_ptr,
+            intern_static_name(&runtime_state().interned.molt_posonly, b"__molt_posonly__"),
+        )
+        .unwrap_or_else(|| MoltObject::from_int(0).bits());
+        let posonly = obj_from_bits(posonly_bits).as_int().unwrap_or(0).max(0) as usize;
+
+        let kwonly_bits = function_attr_bits(
+            func_ptr,
+            intern_static_name(
+                &runtime_state().interned.molt_kwonly_names,
+                b"__molt_kwonly_names__",
+            ),
+        )
+        .unwrap_or_else(|| MoltObject::none().bits());
+        let mut kwonly_names: Vec<u64> = Vec::new();
+        if !obj_from_bits(kwonly_bits).is_none() {
+            let Some(kw_ptr) = obj_from_bits(kwonly_bits).as_ptr() else {
+                return raise_exception::<_>("TypeError", "call expects function object");
+            };
+            if object_type_id(kw_ptr) != TYPE_ID_TUPLE {
+                return raise_exception::<_>("TypeError", "call expects function object");
+            }
+            kwonly_names = seq_vec_ref(kw_ptr).clone();
+        }
+
+        let vararg_bits = function_attr_bits(
+            func_ptr,
+            intern_static_name(&runtime_state().interned.molt_vararg, b"__molt_vararg__"),
+        )
+        .unwrap_or_else(|| MoltObject::none().bits());
+        let varkw_bits = function_attr_bits(
+            func_ptr,
+            intern_static_name(&runtime_state().interned.molt_varkw, b"__molt_varkw__"),
+        )
+        .unwrap_or_else(|| MoltObject::none().bits());
+        let has_vararg = !obj_from_bits(vararg_bits).is_none();
+        let has_varkw = !obj_from_bits(varkw_bits).is_none();
+
+        let defaults_bits = function_attr_bits(
+            func_ptr,
+            intern_static_name(&runtime_state().interned.defaults_name, b"__defaults__"),
+        )
+        .unwrap_or_else(|| MoltObject::none().bits());
+        let mut defaults: Vec<u64> = Vec::new();
+        if !obj_from_bits(defaults_bits).is_none() {
+            let Some(def_ptr) = obj_from_bits(defaults_bits).as_ptr() else {
+                return raise_exception::<_>("TypeError", "call expects function object");
+            };
+            if object_type_id(def_ptr) != TYPE_ID_TUPLE {
+                return raise_exception::<_>("TypeError", "call expects function object");
+            }
+            defaults = seq_vec_ref(def_ptr).clone();
+        }
+
+        let kwdefaults_bits = function_attr_bits(
+            func_ptr,
+            intern_static_name(&runtime_state().interned.kwdefaults_name, b"__kwdefaults__"),
+        )
+        .unwrap_or_else(|| MoltObject::none().bits());
+        let mut kwdefaults_ptr = None;
+        if !obj_from_bits(kwdefaults_bits).is_none() {
+            let Some(ptr) = obj_from_bits(kwdefaults_bits).as_ptr() else {
+                return raise_exception::<_>("TypeError", "call expects function object");
+            };
+            if object_type_id(ptr) != TYPE_ID_DICT {
+                return raise_exception::<_>("TypeError", "call expects function object");
+            }
+            kwdefaults_ptr = Some(ptr);
+        }
+
+        let total_pos = arg_names.len();
+        let kwonly_start = total_pos + if has_vararg { 1 } else { 0 };
+        let total_params = kwonly_start + kwonly_names.len() + if has_varkw { 1 } else { 0 };
+        let mut slots: Vec<Option<u64>> = vec![None; total_params];
+        let mut extra_pos: Vec<u64> = Vec::new();
+        for (idx, val) in args.pos.iter().copied().enumerate() {
+            if idx < total_pos {
+                slots[idx] = Some(val);
+            } else if has_vararg {
+                extra_pos.push(val);
+            } else {
+                return raise_exception::<_>("TypeError", "too many positional arguments");
+            }
+        }
+
+        let mut extra_kwargs: Vec<u64> = Vec::new();
+        for (name_bits, val_bits) in args
+            .kw_names
+            .iter()
+            .copied()
+            .zip(args.kw_values.iter().copied())
+        {
+            let name_obj = obj_from_bits(name_bits);
+            let mut matched = false;
+            for (idx, param_bits) in arg_names.iter().copied().enumerate() {
+                if obj_eq(name_obj, obj_from_bits(param_bits)) {
+                    if idx < posonly {
+                        let name = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
+                        let msg =
+                            format!("got positional-only argument '{name}' passed as keyword");
+                        return raise_exception::<_>("TypeError", &msg);
+                    }
+                    if slots[idx].is_some() {
+                        let name = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
+                        let msg = format!("got multiple values for argument '{name}'");
+                        return raise_exception::<_>("TypeError", &msg);
+                    }
+                    slots[idx] = Some(val_bits);
+                    matched = true;
+                    break;
+                }
+            }
+            if matched {
+                continue;
+            }
+            for (kw_idx, kw_name_bits) in kwonly_names.iter().copied().enumerate() {
+                if obj_eq(name_obj, obj_from_bits(kw_name_bits)) {
+                    let slot_idx = kwonly_start + kw_idx;
+                    if slots[slot_idx].is_some() {
+                        let name = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
+                        let msg = format!("got multiple values for argument '{name}'");
+                        return raise_exception::<_>("TypeError", &msg);
+                    }
+                    slots[slot_idx] = Some(val_bits);
+                    matched = true;
+                    break;
+                }
+            }
+            if matched {
+                continue;
+            }
+            if has_varkw {
+                extra_kwargs.push(name_bits);
+                extra_kwargs.push(val_bits);
+            } else {
+                let name = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
+                let msg = format!("got an unexpected keyword '{name}'");
+                return raise_exception::<_>("TypeError", &msg);
+            }
+        }
+
+        let defaults_len = defaults.len();
+        let default_start = total_pos.saturating_sub(defaults_len);
+        for idx in 0..total_pos {
+            if slots[idx].is_some() {
+                continue;
+            }
+            if idx >= default_start {
+                slots[idx] = Some(defaults[idx - default_start]);
+                continue;
+            }
+            let name = string_obj_to_owned(obj_from_bits(arg_names[idx]))
+                .unwrap_or_else(|| "?".to_string());
+            let msg = format!("missing required argument '{name}'");
+            return raise_exception::<_>("TypeError", &msg);
+        }
+
+        for (kw_idx, name_bits) in kwonly_names.iter().copied().enumerate() {
+            let slot_idx = kwonly_start + kw_idx;
+            if slots[slot_idx].is_some() {
+                continue;
+            }
+            let mut default = None;
+            if let Some(dict_ptr) = kwdefaults_ptr {
+                default = dict_get_in_place(dict_ptr, name_bits);
+            }
+            if let Some(val) = default {
+                slots[slot_idx] = Some(val);
+                continue;
+            }
+            let name =
+                string_obj_to_owned(obj_from_bits(name_bits)).unwrap_or_else(|| "?".to_string());
+            let msg = format!("missing required keyword-only argument '{name}'");
+            return raise_exception::<_>("TypeError", &msg);
+        }
+
+        if has_vararg {
+            let tuple_ptr = alloc_tuple(extra_pos.as_slice());
+            if tuple_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            slots[total_pos] = Some(MoltObject::from_ptr(tuple_ptr).bits());
+        }
+
+        if has_varkw {
+            let dict_ptr = alloc_dict_with_pairs(extra_kwargs.as_slice());
+            if dict_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let varkw_idx = kwonly_start + kwonly_names.len();
+            slots[varkw_idx] = Some(MoltObject::from_ptr(dict_ptr).bits());
+        }
+
+        let mut final_args: Vec<u64> = Vec::with_capacity(slots.len());
+        for slot in slots {
+            let Some(val) = slot else {
+                return raise_exception::<_>("TypeError", "call binding failed");
+            };
+            final_args.push(val);
+        }
+        let is_gen = function_attr_bits(
+            func_ptr,
+            intern_static_name(
+                &runtime_state().interned.molt_is_generator,
+                b"__molt_is_generator__",
+            ),
+        )
+        .is_some_and(|bits| is_truthy(obj_from_bits(bits)));
+        if is_gen {
+            let size_bits = function_attr_bits(
+                func_ptr,
+                intern_static_name(
+                    &runtime_state().interned.molt_closure_size,
+                    b"__molt_closure_size__",
+                ),
+            )
+            .unwrap_or_else(|| MoltObject::none().bits());
+            let Some(size_val) = obj_from_bits(size_bits).as_int() else {
+                return raise_exception::<_>("TypeError", "call expects function object");
+            };
+            if size_val < 0 {
+                return raise_exception::<_>("TypeError", "closure size must be non-negative");
+            }
+            let closure_size = size_val as usize;
+            let fn_ptr = function_fn_ptr(func_ptr);
+            let closure_bits = function_closure_bits(func_ptr);
+            let mut payload: Vec<u64> =
+                Vec::with_capacity(final_args.len() + if closure_bits != 0 { 1 } else { 0 });
+            if closure_bits != 0 {
+                payload.push(closure_bits);
+            }
+            payload.extend(final_args.iter().copied());
+            let base = GEN_CONTROL_SIZE;
+            let needed = base + payload.len() * std::mem::size_of::<u64>();
+            if closure_size < needed {
+                return raise_exception::<_>("TypeError", "call expects function object");
+            }
+            let obj_bits = molt_generator_new(fn_ptr, closure_size as u64);
+            let Some(obj_ptr) = obj_from_bits(obj_bits).as_ptr() else {
+                return MoltObject::none().bits();
+            };
+            let mut offset = base;
+            for val_bits in payload {
+                let slot = obj_ptr.add(offset) as *mut u64;
+                *slot = val_bits;
+                inc_ref_bits(val_bits);
+                offset += std::mem::size_of::<u64>();
+            }
+            return obj_bits;
+        }
+        call_function_obj_vec(func_bits, final_args.as_slice())
+    }
+}
+
+unsafe fn bind_builtin_call(
+    func_bits: u64,
+    func_ptr: *mut u8,
+    args: &CallArgs,
+) -> Option<Vec<u64>> {
+    let fn_ptr = function_fn_ptr(func_ptr);
+    if fn_ptr == fn_addr!(crate::builtins::exceptions::molt_exception_init)
+        || fn_ptr == fn_addr!(crate::builtins::exceptions::molt_exception_new_bound)
+    {
+        return bind_builtin_exception_args(args);
+    }
+    if fn_ptr == fn_addr!(molt_open_builtin) {
+        return bind_builtin_open(args);
+    }
+    if fn_ptr == fn_addr!(dict_get_method) {
+        return bind_builtin_keywords(
+            args,
+            &["key", "default"],
+            Some(MoltObject::none().bits()),
+            None,
+        );
+    }
+    if fn_ptr == fn_addr!(dict_setdefault_method) {
+        return bind_builtin_keywords(
+            args,
+            &["key", "default"],
+            Some(MoltObject::none().bits()),
+            None,
+        );
+    }
+    if fn_ptr == fn_addr!(dict_fromkeys_method) {
+        return bind_builtin_keywords(
+            args,
+            &["iterable", "value"],
+            Some(MoltObject::none().bits()),
+            None,
+        );
+    }
+    if fn_ptr == fn_addr!(dict_update_method) {
+        return bind_builtin_keywords(args, &["other"], Some(missing_bits()), None);
+    }
+    if fn_ptr == fn_addr!(dict_pop_method) {
+        return bind_builtin_pop(args);
+    }
+    if fn_ptr == fn_addr!(molt_list_sort) {
+        return bind_builtin_list_sort(args);
+    }
+    if fn_ptr == fn_addr!(molt_list_pop) {
+        return bind_builtin_list_pop(args);
+    }
+    if fn_ptr == fn_addr!(molt_list_index_range) {
+        return bind_builtin_list_index_range(args);
+    }
+    if fn_ptr == fn_addr!(molt_string_find_slice) {
+        return bind_builtin_string_find(args, "find");
+    }
+    if fn_ptr == fn_addr!(molt_string_rfind_slice) {
+        return bind_builtin_string_find(args, "rfind");
+    }
+    if fn_ptr == fn_addr!(molt_bytes_find_slice) || fn_ptr == fn_addr!(molt_bytearray_find_slice) {
+        return bind_builtin_string_find(args, "find");
+    }
+    if fn_ptr == fn_addr!(molt_bytes_rfind_slice) || fn_ptr == fn_addr!(molt_bytearray_rfind_slice)
+    {
+        return bind_builtin_string_find(args, "rfind");
+    }
+    if fn_ptr == fn_addr!(molt_string_split_max)
+        || fn_ptr == fn_addr!(molt_bytes_split_max)
+        || fn_ptr == fn_addr!(molt_bytearray_split_max)
+    {
+        return bind_builtin_split(args, "split");
+    }
+    if fn_ptr == fn_addr!(molt_string_rsplit_max)
+        || fn_ptr == fn_addr!(molt_bytes_rsplit_max)
+        || fn_ptr == fn_addr!(molt_bytearray_rsplit_max)
+    {
+        return bind_builtin_split(args, "rsplit");
+    }
+    if fn_ptr == fn_addr!(molt_string_count_slice)
+        || fn_ptr == fn_addr!(molt_bytes_count_slice)
+        || fn_ptr == fn_addr!(molt_bytearray_count_slice)
+    {
+        return bind_builtin_count(args, "count");
+    }
+    if fn_ptr == fn_addr!(molt_string_startswith_slice) {
+        return bind_builtin_prefix_check(args, "startswith", "prefix");
+    }
+    if fn_ptr == fn_addr!(molt_string_endswith_slice) {
+        return bind_builtin_prefix_check(args, "endswith", "suffix");
+    }
+    if fn_ptr == fn_addr!(molt_bytes_startswith_slice)
+        || fn_ptr == fn_addr!(molt_bytearray_startswith_slice)
+    {
+        return bind_builtin_prefix_check(args, "startswith", "prefix");
+    }
+    if fn_ptr == fn_addr!(molt_bytes_endswith_slice)
+        || fn_ptr == fn_addr!(molt_bytearray_endswith_slice)
+    {
+        return bind_builtin_prefix_check(args, "endswith", "suffix");
+    }
+    if fn_ptr == fn_addr!(molt_string_format_method) {
+        return bind_builtin_string_format(args);
+    }
+    if fn_ptr == fn_addr!(molt_string_splitlines)
+        || fn_ptr == fn_addr!(molt_bytes_splitlines)
+        || fn_ptr == fn_addr!(molt_bytearray_splitlines)
+    {
+        return bind_builtin_splitlines(args);
+    }
+    if fn_ptr == fn_addr!(molt_set_union_multi) {
+        return bind_builtin_set_multi(args, "union", "set", TYPE_ID_SET);
+    }
+    if fn_ptr == fn_addr!(molt_frozenset_union_multi) {
+        return bind_builtin_set_multi(args, "union", "frozenset", TYPE_ID_FROZENSET);
+    }
+    if fn_ptr == fn_addr!(molt_set_intersection_multi) {
+        return bind_builtin_set_multi(args, "intersection", "set", TYPE_ID_SET);
+    }
+    if fn_ptr == fn_addr!(molt_frozenset_intersection_multi) {
+        return bind_builtin_set_multi(args, "intersection", "frozenset", TYPE_ID_FROZENSET);
+    }
+    if fn_ptr == fn_addr!(molt_set_difference_multi) {
+        return bind_builtin_set_multi(args, "difference", "set", TYPE_ID_SET);
+    }
+    if fn_ptr == fn_addr!(molt_frozenset_difference_multi) {
+        return bind_builtin_set_multi(args, "difference", "frozenset", TYPE_ID_FROZENSET);
+    }
+    if fn_ptr == fn_addr!(molt_set_update_multi) {
+        return bind_builtin_set_multi(args, "update", "set", TYPE_ID_SET);
+    }
+    if fn_ptr == fn_addr!(molt_set_intersection_update_multi) {
+        return bind_builtin_set_multi(args, "intersection_update", "set", TYPE_ID_SET);
+    }
+    if fn_ptr == fn_addr!(molt_set_difference_update_multi) {
+        return bind_builtin_set_multi(args, "difference_update", "set", TYPE_ID_SET);
+    }
+    if fn_ptr == fn_addr!(molt_set_symmetric_difference) {
+        return bind_builtin_set_single(args, "symmetric_difference", "set", TYPE_ID_SET);
+    }
+    if fn_ptr == fn_addr!(molt_frozenset_symmetric_difference) {
+        return bind_builtin_set_single(
+            args,
+            "symmetric_difference",
+            "frozenset",
+            TYPE_ID_FROZENSET,
+        );
+    }
+    if fn_ptr == fn_addr!(molt_set_symmetric_difference_update) {
+        return bind_builtin_set_single(args, "symmetric_difference_update", "set", TYPE_ID_SET);
+    }
+    if fn_ptr == fn_addr!(molt_set_isdisjoint) {
+        return bind_builtin_set_single(args, "isdisjoint", "set", TYPE_ID_SET);
+    }
+    if fn_ptr == fn_addr!(molt_frozenset_isdisjoint) {
+        return bind_builtin_set_single(args, "isdisjoint", "frozenset", TYPE_ID_FROZENSET);
+    }
+    if fn_ptr == fn_addr!(molt_set_issubset) {
+        return bind_builtin_set_single(args, "issubset", "set", TYPE_ID_SET);
+    }
+    if fn_ptr == fn_addr!(molt_frozenset_issubset) {
+        return bind_builtin_set_single(args, "issubset", "frozenset", TYPE_ID_FROZENSET);
+    }
+    if fn_ptr == fn_addr!(molt_set_issuperset) {
+        return bind_builtin_set_single(args, "issuperset", "set", TYPE_ID_SET);
+    }
+    if fn_ptr == fn_addr!(molt_frozenset_issuperset) {
+        return bind_builtin_set_single(args, "issuperset", "frozenset", TYPE_ID_FROZENSET);
+    }
+    if fn_ptr == fn_addr!(molt_set_copy_method) {
+        return bind_builtin_set_noargs(args, "copy", "set", TYPE_ID_SET);
+    }
+    if fn_ptr == fn_addr!(molt_frozenset_copy_method) {
+        return bind_builtin_set_noargs(args, "copy", "frozenset", TYPE_ID_FROZENSET);
+    }
+    if fn_ptr == fn_addr!(molt_set_clear) {
+        return bind_builtin_set_noargs(args, "clear", "set", TYPE_ID_SET);
+    }
+    if fn_ptr == fn_addr!(molt_string_encode) {
+        return bind_builtin_text_codec(args, "encode");
+    }
+    if fn_ptr == fn_addr!(molt_bytes_decode) || fn_ptr == fn_addr!(molt_bytearray_decode) {
+        return bind_builtin_text_codec(args, "decode");
+    }
+    if fn_ptr == fn_addr!(molt_memoryview_cast) {
+        return bind_builtin_memoryview_cast(args);
+    }
+    if fn_ptr == fn_addr!(molt_file_reconfigure) {
+        return bind_builtin_file_reconfigure(args);
+    }
+
+    if !args.kw_names.is_empty() {
+        return raise_exception::<_>("TypeError", "keywords are not supported for this builtin");
+    }
+
+    let mut out = args.pos.clone();
+    let arity = function_arity(func_ptr) as usize;
+    if out.len() > arity {
+        return raise_exception::<_>("TypeError", "too many positional arguments");
+    }
+    let missing = arity - out.len();
+    if missing == 0 {
+        return Some(out);
+    }
+    let default_kind = molt_function_default_kind(func_bits);
+    if missing == 1 {
+        if default_kind == FUNC_DEFAULT_NONE {
+            out.push(MoltObject::none().bits());
+            return Some(out);
+        }
+        if default_kind == FUNC_DEFAULT_DICT_POP {
+            out.push(MoltObject::from_int(1).bits());
+            return Some(out);
+        }
+        if default_kind == FUNC_DEFAULT_DICT_UPDATE {
+            out.push(missing_bits());
+            return Some(out);
+        }
+        if default_kind == FUNC_DEFAULT_REPLACE_COUNT {
+            out.push(MoltObject::from_int(-1).bits());
+            return Some(out);
+        }
+        if default_kind == FUNC_DEFAULT_NEG_ONE {
+            out.push(MoltObject::from_int(-1).bits());
+            return Some(out);
+        }
+        if default_kind == FUNC_DEFAULT_ZERO {
+            out.push(MoltObject::from_int(0).bits());
+            return Some(out);
+        }
+        if default_kind == FUNC_DEFAULT_MISSING {
+            out.push(missing_bits());
+            return Some(out);
+        }
+    }
+    if missing == 2 && default_kind == FUNC_DEFAULT_DICT_POP {
+        out.push(MoltObject::none().bits());
+        out.push(MoltObject::from_int(0).bits());
+        return Some(out);
+    }
+    return raise_exception::<_>("TypeError", "missing required arguments");
+}
+
+unsafe fn bind_builtin_exception_args(args: &CallArgs) -> Option<Vec<u64>> {
+    if args.pos.is_empty() {
+        return raise_exception::<_>("TypeError", "missing required arguments");
+    }
+    if !args.kw_names.is_empty() {
+        let head = args.pos[0];
+        let head_obj = obj_from_bits(head);
+        let Some(head_ptr) = head_obj.as_ptr() else {
+            return raise_exception::<_>(
+                "TypeError",
+                "keywords are not supported for this builtin",
+            );
+        };
+        let allow_kw = match object_type_id(head_ptr) {
+            TYPE_ID_TYPE => true,
+            TYPE_ID_EXCEPTION => {
+                let oserror_bits = exception_type_bits_from_name("OSError");
+                issubclass_bits(exception_class_bits(head_ptr), oserror_bits)
+            }
+            _ => false,
+        };
+        if !allow_kw {
+            return raise_exception::<_>(
+                "TypeError",
+                "keywords are not supported for this builtin",
+            );
+        }
+    }
+    let head = args.pos[0];
+    let rest = &args.pos[1..];
+    let tuple_ptr = alloc_tuple(rest);
+    if tuple_ptr.is_null() {
+        return None;
+    }
+    let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
+    Some(vec![head, tuple_bits])
+}
+
+unsafe fn bind_builtin_dict_update(args: &CallArgs) -> u64 {
+    if args.pos.is_empty() {
+        return raise_exception::<_>("TypeError", "missing required argument 'self'");
+    }
+    let positional = args.pos.len().saturating_sub(1);
+    if positional > 1 {
+        let msg = format!("update expected at most 1 argument, got {}", positional);
+        return raise_exception::<_>("TypeError", &msg);
+    }
+    let dict_bits = args.pos[0];
+    if positional == 1 {
+        let other_bits = args.pos[1];
+        let dict_obj = obj_from_bits(dict_bits);
+        if let Some(dict_ptr) = dict_obj.as_ptr() {
+            if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                let _ = dict_update_apply(dict_bits, dict_update_set_in_place, other_bits);
+            } else {
+                let _ = dict_update_apply(dict_bits, dict_update_set_via_store, other_bits);
+            }
+        } else {
+            let _ = dict_update_apply(dict_bits, dict_update_set_via_store, other_bits);
+        }
+        if exception_pending() {
+            return MoltObject::none().bits();
+        }
+    }
+    if !args.kw_names.is_empty() {
+        for (name_bits, val_bits) in args
+            .kw_names
+            .iter()
+            .copied()
+            .zip(args.kw_values.iter().copied())
+        {
+            let name_obj = obj_from_bits(name_bits);
+            let Some(name_ptr) = name_obj.as_ptr() else {
+                return raise_exception::<_>("TypeError", "keywords must be strings");
+            };
+            if object_type_id(name_ptr) != TYPE_ID_STRING {
+                return raise_exception::<_>("TypeError", "keywords must be strings");
+            }
+            dict_update_set_via_store(dict_bits, name_bits, val_bits);
+            if exception_pending() {
+                return MoltObject::none().bits();
+            }
+        }
+    }
+    MoltObject::none().bits()
+}
+
+fn default_open_mode_bits() -> u64 {
+    init_atomic_bits(&runtime_state().special_cache.open_default_mode, || {
+        let ptr = alloc_string(b"r");
+        if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+unsafe fn bind_builtin_keywords(
+    args: &CallArgs,
+    names: &[&str],
+    default_bits: Option<u64>,
+    extra_bits: Option<u64>,
+) -> Option<Vec<u64>> {
+    if args.pos.is_empty() {
+        return raise_exception::<_>("TypeError", "missing required argument 'self'");
+    }
+    let mut out = vec![args.pos[0]];
+    let mut values: Vec<Option<u64>> = vec![None; names.len()];
+    let mut pos_idx = 1usize;
+    while pos_idx < args.pos.len() {
+        let idx = pos_idx - 1;
+        if idx >= names.len() {
+            return raise_exception::<_>("TypeError", "too many positional arguments");
+        }
+        values[idx] = Some(args.pos[pos_idx]);
+        pos_idx += 1;
+    }
+    for (name_bits, val_bits) in args
+        .kw_names
+        .iter()
+        .copied()
+        .zip(args.kw_values.iter().copied())
+    {
+        let name_obj = obj_from_bits(name_bits);
+        let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
+        let mut matched = false;
+        for (idx, expected) in names.iter().enumerate() {
+            if name_str == *expected {
+                if values[idx].is_some() {
+                    let msg = format!("got multiple values for argument '{name_str}'");
+                    return raise_exception::<_>("TypeError", &msg);
+                }
+                values[idx] = Some(val_bits);
+                matched = true;
+                break;
+            }
+        }
+        if !matched {
+            let msg = format!("got an unexpected keyword '{name_str}'");
+            return raise_exception::<_>("TypeError", &msg);
+        }
+    }
+    for (idx, val) in values.iter_mut().enumerate() {
+        if val.is_none() {
+            if let Some(bits) = default_bits {
+                *val = Some(bits);
+                continue;
+            }
+            let name = names[idx];
+            let msg = format!("missing required argument '{name}'");
+            return raise_exception::<_>("TypeError", &msg);
+        }
+    }
+    for val in values.into_iter().flatten() {
+        out.push(val);
+    }
+    if let Some(extra) = extra_bits {
+        out.push(extra);
+    }
+    Some(out)
+}
+
+unsafe fn bind_builtin_open(args: &CallArgs) -> Option<Vec<u64>> {
+    const NAMES: [&str; 8] = [
+        "file",
+        "mode",
+        "buffering",
+        "encoding",
+        "errors",
+        "newline",
+        "closefd",
+        "opener",
+    ];
+    let mut values: [Option<u64>; 8] = [None; 8];
+    for (idx, val) in args.pos.iter().copied().enumerate() {
+        if idx >= values.len() {
+            let msg = format!(
+                "open() takes at most 8 arguments ({} given)",
+                args.pos.len()
+            );
+            return raise_exception::<_>("TypeError", &msg);
+        }
+        values[idx] = Some(val);
+    }
+    for (name_bits, val_bits) in args
+        .kw_names
+        .iter()
+        .copied()
+        .zip(args.kw_values.iter().copied())
+    {
+        let name_obj = obj_from_bits(name_bits);
+        let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
+        let mut matched = false;
+        for (idx, expected) in NAMES.iter().enumerate() {
+            if name_str == *expected {
+                if values[idx].is_some() {
+                    let msg = if idx < args.pos.len() {
+                        format!(
+                            "argument for open() given by name ('{name_str}') and position ({})",
+                            idx + 1
+                        )
+                    } else {
+                        format!("open() got multiple values for argument '{name_str}'")
+                    };
+                    return raise_exception::<_>("TypeError", &msg);
+                }
+                values[idx] = Some(val_bits);
+                matched = true;
+                break;
+            }
+        }
+        if !matched {
+            let msg = format!("open() got an unexpected keyword argument '{name_str}'");
+            return raise_exception::<_>("TypeError", &msg);
+        }
+    }
+    if values[0].is_none() {
+        return raise_exception::<_>(
+            "TypeError",
+            "open() missing required argument 'file' (pos 1)",
+        );
+    }
+    if values[1].is_none() {
+        let mode_bits = default_open_mode_bits();
+        if obj_from_bits(mode_bits).is_none() {
+            return raise_exception::<_>("MemoryError", "out of memory");
+        }
+        values[1] = Some(mode_bits);
+    }
+    if values[2].is_none() {
+        values[2] = Some(MoltObject::from_int(-1).bits());
+    }
+    if values[3].is_none() {
+        values[3] = Some(MoltObject::none().bits());
+    }
+    if values[4].is_none() {
+        values[4] = Some(MoltObject::none().bits());
+    }
+    if values[5].is_none() {
+        values[5] = Some(MoltObject::none().bits());
+    }
+    if values[6].is_none() {
+        values[6] = Some(MoltObject::from_bool(true).bits());
+    }
+    if values[7].is_none() {
+        values[7] = Some(MoltObject::none().bits());
+    }
+    let mut out = Vec::with_capacity(values.len());
+    for val in values {
+        out.push(val.unwrap());
+    }
+    Some(out)
+}
+
+unsafe fn bind_builtin_list_sort(args: &CallArgs) -> Option<Vec<u64>> {
+    if args.pos.is_empty() {
+        return raise_exception::<_>("TypeError", "missing required argument 'self'");
+    }
+    if args.pos.len() > 1 {
+        return raise_exception::<_>("TypeError", "too many positional arguments");
+    }
+    let mut key_bits = MoltObject::none().bits();
+    let mut reverse_bits = MoltObject::from_bool(false).bits();
+    let mut key_set = false;
+    let mut reverse_set = false;
+    for (name_bits, val_bits) in args
+        .kw_names
+        .iter()
+        .copied()
+        .zip(args.kw_values.iter().copied())
+    {
+        let name_obj = obj_from_bits(name_bits);
+        let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
+        match name_str.as_str() {
+            "key" => {
+                if key_set {
+                    let msg = format!("got multiple values for argument '{name_str}'");
+                    return raise_exception::<_>("TypeError", &msg);
+                }
+                key_bits = val_bits;
+                key_set = true;
+            }
+            "reverse" => {
+                if reverse_set {
+                    let msg = format!("got multiple values for argument '{name_str}'");
+                    return raise_exception::<_>("TypeError", &msg);
+                }
+                reverse_bits = val_bits;
+                reverse_set = true;
+            }
+            _ => {
+                let msg = format!("got an unexpected keyword '{name_str}'");
+                return raise_exception::<_>("TypeError", &msg);
+            }
+        }
+    }
+    Some(vec![args.pos[0], key_bits, reverse_bits])
+}
+
+unsafe fn bind_builtin_list_pop(args: &CallArgs) -> Option<Vec<u64>> {
+    if args.pos.is_empty() {
+        return raise_exception::<_>("TypeError", "missing required argument 'self'");
+    }
+    if !args.kw_names.is_empty() {
+        return raise_exception::<_>("TypeError", "keywords are not supported for this builtin");
+    }
+    if args.pos.len() > 2 {
+        return raise_exception::<_>("TypeError", "too many positional arguments");
+    }
+    let mut out = args.pos.clone();
+    if out.len() == 1 {
+        out.push(MoltObject::none().bits());
+    }
+    Some(out)
+}
+
+unsafe fn bind_builtin_list_index_range(args: &CallArgs) -> Option<Vec<u64>> {
+    if args.pos.is_empty() {
+        return raise_exception::<_>("TypeError", "missing required argument 'self'");
+    }
+    if !args.kw_names.is_empty() {
+        return raise_exception::<_>("TypeError", "keywords are not supported for this builtin");
+    }
+    if args.pos.len() < 2 {
+        return raise_exception::<_>("TypeError", "missing required argument 'value'");
+    }
+    if args.pos.len() > 4 {
+        return raise_exception::<_>("TypeError", "too many positional arguments");
+    }
+    let mut out = args.pos.clone();
+    let missing = missing_bits();
+    if out.len() == 2 {
+        out.push(missing);
+        out.push(missing);
+    } else if out.len() == 3 {
+        out.push(missing);
+    }
+    Some(out)
+}
+
+unsafe fn bind_builtin_string_find(args: &CallArgs, func_name: &str) -> Option<Vec<u64>> {
+    if args.pos.is_empty() {
+        return raise_exception::<_>("TypeError", "missing required argument 'self'");
+    }
+    let positional = args.pos.len().saturating_sub(1);
+    if positional > 3 {
+        let msg = format!(
+            "{func_name}() takes at most 3 arguments ({} given)",
+            positional
+        );
+        return raise_exception::<_>("TypeError", &msg);
+    }
+    let mut needle_bits: Option<u64> = None;
+    let mut start_bits: Option<u64> = None;
+    let mut end_bits: Option<u64> = None;
+    let mut saw_sub = false;
+    let mut saw_start = false;
+    let mut saw_end = false;
+    if positional >= 1 {
+        needle_bits = Some(args.pos[1]);
+        saw_sub = true;
+    }
+    if positional >= 2 {
+        start_bits = Some(args.pos[2]);
+        saw_start = true;
+    }
+    if positional >= 3 {
+        end_bits = Some(args.pos[3]);
+        saw_end = true;
+    }
+    for (name_bits, val_bits) in args
+        .kw_names
+        .iter()
+        .copied()
+        .zip(args.kw_values.iter().copied())
+    {
+        let name_obj = obj_from_bits(name_bits);
+        let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
+        let target = match name_str.as_str() {
+            "sub" => (&mut needle_bits, &mut saw_sub),
+            "start" => (&mut start_bits, &mut saw_start),
+            "end" => (&mut end_bits, &mut saw_end),
+            _ => {
+                let msg = format!("{func_name}() got an unexpected keyword argument '{name_str}'");
+                return raise_exception::<_>("TypeError", &msg);
+            }
+        };
+        if target.0.is_some() {
+            let msg = format!(
+                "{}() got multiple values for argument '{}'",
+                func_name, name_str
+            );
+            return raise_exception::<_>("TypeError", &msg);
+        }
+        *target.0 = Some(val_bits);
+        *target.1 = true;
+    }
+    let needle_bits = needle_bits.unwrap_or_else(|| {
+        return raise_exception::<_>("TypeError", "missing required argument 'sub'");
+    });
+    let start_bits = start_bits.unwrap_or_else(|| MoltObject::none().bits());
+    let end_bits = end_bits.unwrap_or_else(|| MoltObject::none().bits());
+    let has_start_bits = MoltObject::from_bool(saw_start).bits();
+    let has_end_bits = MoltObject::from_bool(saw_end).bits();
+    Some(vec![
+        args.pos[0],
+        needle_bits,
+        start_bits,
+        end_bits,
+        has_start_bits,
+        has_end_bits,
+    ])
+}
+
+unsafe fn bind_builtin_count(args: &CallArgs, func_name: &str) -> Option<Vec<u64>> {
+    if args.pos.is_empty() {
+        return raise_exception::<_>("TypeError", "missing required argument 'self'");
+    }
+    let positional = args.pos.len().saturating_sub(1);
+    if positional > 3 {
+        let msg = format!(
+            "{func_name}() takes at most 3 arguments ({} given)",
+            positional
+        );
+        return raise_exception::<_>("TypeError", &msg);
+    }
+    let mut needle_bits: Option<u64> = None;
+    let mut start_bits: Option<u64> = None;
+    let mut end_bits: Option<u64> = None;
+    let mut saw_sub = false;
+    let mut saw_start = false;
+    let mut saw_end = false;
+    if positional >= 1 {
+        needle_bits = Some(args.pos[1]);
+        saw_sub = true;
+    }
+    if positional >= 2 {
+        start_bits = Some(args.pos[2]);
+        saw_start = true;
+    }
+    if positional >= 3 {
+        end_bits = Some(args.pos[3]);
+        saw_end = true;
+    }
+    for (name_bits, val_bits) in args
+        .kw_names
+        .iter()
+        .copied()
+        .zip(args.kw_values.iter().copied())
+    {
+        let name_obj = obj_from_bits(name_bits);
+        let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
+        let target = match name_str.as_str() {
+            "sub" => (&mut needle_bits, &mut saw_sub),
+            "start" => (&mut start_bits, &mut saw_start),
+            "end" => (&mut end_bits, &mut saw_end),
+            _ => {
+                let msg = format!("{func_name}() got an unexpected keyword argument '{name_str}'");
+                return raise_exception::<_>("TypeError", &msg);
+            }
+        };
+        if target.0.is_some() {
+            let msg = format!(
+                "{}() got multiple values for argument '{}'",
+                func_name, name_str
+            );
+            return raise_exception::<_>("TypeError", &msg);
+        }
+        *target.0 = Some(val_bits);
+        *target.1 = true;
+    }
+    let needle_bits = needle_bits.unwrap_or_else(|| {
+        return raise_exception::<_>("TypeError", "missing required argument 'sub'");
+    });
+    let start_bits = start_bits.unwrap_or_else(|| MoltObject::none().bits());
+    let end_bits = end_bits.unwrap_or_else(|| MoltObject::none().bits());
+    let has_start_bits = MoltObject::from_bool(saw_start).bits();
+    let has_end_bits = MoltObject::from_bool(saw_end).bits();
+    Some(vec![
+        args.pos[0],
+        needle_bits,
+        start_bits,
+        end_bits,
+        has_start_bits,
+        has_end_bits,
+    ])
+}
+
+unsafe fn bind_builtin_split(args: &CallArgs, func_name: &str) -> Option<Vec<u64>> {
+    if args.pos.is_empty() {
+        return raise_exception::<_>("TypeError", "missing required argument 'self'");
+    }
+    let positional = args.pos.len().saturating_sub(1);
+    if positional > 2 {
+        let msg = format!(
+            "{func_name}() takes at most 2 arguments ({} given)",
+            positional
+        );
+        return raise_exception::<_>("TypeError", &msg);
+    }
+    let mut sep_bits: Option<u64> = None;
+    let mut maxsplit_bits: Option<u64> = None;
+    let mut saw_sep = false;
+    let mut saw_maxsplit = false;
+    if positional >= 1 {
+        sep_bits = Some(args.pos[1]);
+        saw_sep = true;
+    }
+    if positional >= 2 {
+        maxsplit_bits = Some(args.pos[2]);
+        saw_maxsplit = true;
+    }
+    for (name_bits, val_bits) in args
+        .kw_names
+        .iter()
+        .copied()
+        .zip(args.kw_values.iter().copied())
+    {
+        let name_obj = obj_from_bits(name_bits);
+        let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
+        let target = match name_str.as_str() {
+            "sep" => (&mut sep_bits, &mut saw_sep),
+            "maxsplit" => (&mut maxsplit_bits, &mut saw_maxsplit),
+            _ => {
+                let msg = format!("{func_name}() got an unexpected keyword argument '{name_str}'");
+                return raise_exception::<_>("TypeError", &msg);
+            }
+        };
+        if target.0.is_some() {
+            let msg = format!(
+                "{}() got multiple values for argument '{}'",
+                func_name, name_str
+            );
+            return raise_exception::<_>("TypeError", &msg);
+        }
+        *target.0 = Some(val_bits);
+        *target.1 = true;
+    }
+    let sep_bits = sep_bits.unwrap_or_else(|| MoltObject::none().bits());
+    let maxsplit_bits = maxsplit_bits.unwrap_or_else(|| MoltObject::from_int(-1).bits());
+    Some(vec![args.pos[0], sep_bits, maxsplit_bits])
+}
+
+unsafe fn bind_builtin_splitlines(args: &CallArgs) -> Option<Vec<u64>> {
+    if args.pos.is_empty() {
+        return raise_exception::<_>("TypeError", "missing required argument 'self'");
+    }
+    let positional = args.pos.len().saturating_sub(1);
+    if positional > 1 {
+        let msg = format!(
+            "splitlines() takes at most 1 argument ({} given)",
+            positional
+        );
+        return raise_exception::<_>("TypeError", &msg);
+    }
+    let mut keepends_bits: Option<u64> = None;
+    let mut saw_keepends = false;
+    if positional == 1 {
+        keepends_bits = Some(args.pos[1]);
+        saw_keepends = true;
+    }
+    for (name_bits, val_bits) in args
+        .kw_names
+        .iter()
+        .copied()
+        .zip(args.kw_values.iter().copied())
+    {
+        let name_obj = obj_from_bits(name_bits);
+        let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
+        if name_str != "keepends" {
+            let msg = format!("'{name_str}' is an invalid keyword argument for splitlines()");
+            return raise_exception::<_>("TypeError", &msg);
+        }
+        if saw_keepends {
+            return raise_exception::<_>(
+                "TypeError",
+                "splitlines() got multiple values for argument 'keepends'",
+            );
+        }
+        keepends_bits = Some(val_bits);
+        saw_keepends = true;
+    }
+    let keepends_bits = keepends_bits.unwrap_or_else(|| MoltObject::from_bool(false).bits());
+    Some(vec![args.pos[0], keepends_bits])
+}
+
+unsafe fn bind_builtin_set_multi(
+    args: &CallArgs,
+    method: &str,
+    owner_name: &str,
+    owner_type_id: u32,
+) -> Option<Vec<u64>> {
+    if args.pos.is_empty() {
+        return raise_exception::<_>("TypeError", "missing required argument 'self'");
+    }
+    let self_obj = obj_from_bits(args.pos[0]);
+    let mut is_owner = false;
+    if let Some(self_ptr) = self_obj.as_ptr() {
+        is_owner = object_type_id(self_ptr) == owner_type_id;
+    }
+    if !is_owner {
+        let msg = format!(
+            "descriptor '{method}' for '{owner_name}' objects doesn't apply to a '{}' object",
+            type_name(self_obj)
+        );
+        return raise_exception::<_>("TypeError", &msg);
+    }
+    if !args.kw_names.is_empty() {
+        let msg = format!(
+            "{}.{method}() takes no keyword arguments",
+            type_name(self_obj)
+        );
+        return raise_exception::<_>("TypeError", &msg);
+    }
+    let tuple_ptr = alloc_tuple(&args.pos[1..]);
+    if tuple_ptr.is_null() {
+        return None;
+    }
+    let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
+    Some(vec![args.pos[0], tuple_bits])
+}
+
+unsafe fn bind_builtin_set_single(
+    args: &CallArgs,
+    method: &str,
+    owner_name: &str,
+    owner_type_id: u32,
+) -> Option<Vec<u64>> {
+    if args.pos.is_empty() {
+        return raise_exception::<_>("TypeError", "missing required argument 'self'");
+    }
+    let self_obj = obj_from_bits(args.pos[0]);
+    let mut is_owner = false;
+    if let Some(self_ptr) = self_obj.as_ptr() {
+        is_owner = object_type_id(self_ptr) == owner_type_id;
+    }
+    if !is_owner {
+        let msg = format!(
+            "descriptor '{method}' for '{owner_name}' objects doesn't apply to a '{}' object",
+            type_name(self_obj)
+        );
+        return raise_exception::<_>("TypeError", &msg);
+    }
+    if !args.kw_names.is_empty() {
+        let msg = format!(
+            "{}.{method}() takes no keyword arguments",
+            type_name(self_obj)
+        );
+        return raise_exception::<_>("TypeError", &msg);
+    }
+    let positional = args.pos.len().saturating_sub(1);
+    if positional != 1 {
+        let msg = format!(
+            "{}.{method}() takes exactly one argument ({} given)",
+            type_name(self_obj),
+            positional
+        );
+        return raise_exception::<_>("TypeError", &msg);
+    }
+    Some(vec![args.pos[0], args.pos[1]])
+}
+
+unsafe fn bind_builtin_set_noargs(
+    args: &CallArgs,
+    method: &str,
+    owner_name: &str,
+    owner_type_id: u32,
+) -> Option<Vec<u64>> {
+    if args.pos.is_empty() {
+        return raise_exception::<_>("TypeError", "missing required argument 'self'");
+    }
+    let self_obj = obj_from_bits(args.pos[0]);
+    let mut is_owner = false;
+    if let Some(self_ptr) = self_obj.as_ptr() {
+        is_owner = object_type_id(self_ptr) == owner_type_id;
+    }
+    if !is_owner {
+        let msg = format!(
+            "descriptor '{method}' for '{owner_name}' objects doesn't apply to a '{}' object",
+            type_name(self_obj)
+        );
+        return raise_exception::<_>("TypeError", &msg);
+    }
+    if !args.kw_names.is_empty() {
+        let msg = format!(
+            "{}.{method}() takes no keyword arguments",
+            type_name(self_obj)
+        );
+        return raise_exception::<_>("TypeError", &msg);
+    }
+    let positional = args.pos.len().saturating_sub(1);
+    if positional != 0 {
+        let msg = format!(
+            "{}.{method}() takes no arguments ({} given)",
+            type_name(self_obj),
+            positional
+        );
+        return raise_exception::<_>("TypeError", &msg);
+    }
+    Some(vec![args.pos[0]])
+}
+
+unsafe fn bind_builtin_prefix_check(
+    args: &CallArgs,
+    func_name: &str,
+    needle_name: &str,
+) -> Option<Vec<u64>> {
+    if args.pos.is_empty() {
+        return raise_exception::<_>("TypeError", "missing required argument 'self'");
+    }
+    let positional = args.pos.len().saturating_sub(1);
+    if positional > 3 {
+        let msg = format!(
+            "{func_name}() takes at most 3 arguments ({} given)",
+            positional
+        );
+        return raise_exception::<_>("TypeError", &msg);
+    }
+    let mut needle_bits: Option<u64> = None;
+    let mut start_bits: Option<u64> = None;
+    let mut end_bits: Option<u64> = None;
+    let mut saw_needle = false;
+    let mut saw_start = false;
+    let mut saw_end = false;
+    if positional >= 1 {
+        needle_bits = Some(args.pos[1]);
+        saw_needle = true;
+    }
+    if positional >= 2 {
+        start_bits = Some(args.pos[2]);
+        saw_start = true;
+    }
+    if positional >= 3 {
+        end_bits = Some(args.pos[3]);
+        saw_end = true;
+    }
+    for (name_bits, val_bits) in args
+        .kw_names
+        .iter()
+        .copied()
+        .zip(args.kw_values.iter().copied())
+    {
+        let name_obj = obj_from_bits(name_bits);
+        let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
+        let target = match name_str.as_str() {
+            "start" => (&mut start_bits, &mut saw_start),
+            "end" => (&mut end_bits, &mut saw_end),
+            _ if name_str == needle_name => (&mut needle_bits, &mut saw_needle),
+            _ => {
+                let msg = format!("{func_name}() got an unexpected keyword argument '{name_str}'");
+                return raise_exception::<_>("TypeError", &msg);
+            }
+        };
+        if target.0.is_some() {
+            let msg = format!(
+                "{}() got multiple values for argument '{}'",
+                func_name, name_str
+            );
+            return raise_exception::<_>("TypeError", &msg);
+        }
+        *target.0 = Some(val_bits);
+        *target.1 = true;
+    }
+    let needle_bits = needle_bits.unwrap_or_else(|| {
+        let msg = format!("missing required argument '{needle_name}'");
+        return raise_exception::<_>("TypeError", &msg);
+    });
+    let start_bits = start_bits.unwrap_or_else(|| MoltObject::none().bits());
+    let end_bits = end_bits.unwrap_or_else(|| MoltObject::none().bits());
+    let has_start_bits = MoltObject::from_bool(saw_start).bits();
+    let has_end_bits = MoltObject::from_bool(saw_end).bits();
+    Some(vec![
+        args.pos[0],
+        needle_bits,
+        start_bits,
+        end_bits,
+        has_start_bits,
+        has_end_bits,
+    ])
+}
+
+unsafe fn bind_builtin_string_format(args: &CallArgs) -> Option<Vec<u64>> {
+    if args.pos.is_empty() {
+        return raise_exception::<_>("TypeError", "missing required argument 'self'");
+    }
+    let tuple_ptr = alloc_tuple(&args.pos[1..]);
+    if tuple_ptr.is_null() {
+        return None;
+    }
+    let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
+    let mut pairs = Vec::with_capacity(args.kw_names.len() * 2);
+    for (name_bits, val_bits) in args
+        .kw_names
+        .iter()
+        .copied()
+        .zip(args.kw_values.iter().copied())
+    {
+        let name_obj = obj_from_bits(name_bits);
+        let Some(name_ptr) = name_obj.as_ptr() else {
+            return raise_exception::<_>("TypeError", "keywords must be strings");
+        };
+        if object_type_id(name_ptr) != TYPE_ID_STRING {
+            return raise_exception::<_>("TypeError", "keywords must be strings");
+        }
+        pairs.push(name_bits);
+        pairs.push(val_bits);
+    }
+    let dict_ptr = alloc_dict_with_pairs(&pairs);
+    if dict_ptr.is_null() {
+        return None;
+    }
+    let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
+    Some(vec![args.pos[0], tuple_bits, dict_bits])
+}
+
+unsafe fn bind_builtin_memoryview_cast(args: &CallArgs) -> Option<Vec<u64>> {
+    if args.pos.is_empty() {
+        return raise_exception::<_>("TypeError", "missing required argument 'self'");
+    }
+    let provided = args.pos.len().saturating_sub(1);
+    if provided == 0 {
+        return raise_exception::<_>(
+            "TypeError",
+            "cast() missing required argument 'format' (pos 1)",
+        );
+    }
+    if provided > 2 {
+        let msg = format!("cast() takes at most 2 arguments ({provided} given)");
+        return raise_exception::<_>("TypeError", &msg);
+    }
+    let format_bits = args.pos[1];
+    let mut shape_bits: Option<u64> = None;
+    if provided == 2 {
+        shape_bits = Some(args.pos[2]);
+    }
+    for (name_bits, val_bits) in args
+        .kw_names
+        .iter()
+        .copied()
+        .zip(args.kw_values.iter().copied())
+    {
+        let name_obj = obj_from_bits(name_bits);
+        let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
+        if name_str != "shape" {
+            let msg = format!("cast() got an unexpected keyword argument '{name_str}'");
+            return raise_exception::<_>("TypeError", &msg);
+        }
+        if shape_bits.is_some() {
+            return raise_exception::<_>(
+                "TypeError",
+                "cast() got multiple values for argument 'shape'",
+            );
+        }
+        shape_bits = Some(val_bits);
+    }
+    let (shape_bits, has_shape_bits) = if let Some(bits) = shape_bits {
+        (bits, MoltObject::from_bool(true).bits())
+    } else {
+        (
+            MoltObject::none().bits(),
+            MoltObject::from_bool(false).bits(),
+        )
+    };
+    Some(vec![args.pos[0], format_bits, shape_bits, has_shape_bits])
+}
+
+unsafe fn bind_builtin_file_reconfigure(args: &CallArgs) -> Option<Vec<u64>> {
+    if args.pos.is_empty() {
+        return raise_exception::<_>("TypeError", "missing required argument 'self'");
+    }
+    if args.pos.len() > 1 {
+        return raise_exception::<_>("TypeError", "reconfigure() takes no positional arguments");
+    }
+    let missing = missing_bits();
+    let mut encoding_bits = missing;
+    let mut errors_bits = missing;
+    let mut newline_bits = missing;
+    let mut line_buffering_bits = missing;
+    let mut write_through_bits = missing;
+    for (name_bits, val_bits) in args
+        .kw_names
+        .iter()
+        .copied()
+        .zip(args.kw_values.iter().copied())
+    {
+        let name_obj = obj_from_bits(name_bits);
+        let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
+        match name_str.as_str() {
+            "encoding" => {
+                if encoding_bits != missing {
+                    let msg = format!("got multiple values for keyword argument '{name_str}'");
+                    return raise_exception::<_>("TypeError", &msg);
+                }
+                encoding_bits = val_bits;
+            }
+            "errors" => {
+                if errors_bits != missing {
+                    let msg = format!("got multiple values for keyword argument '{name_str}'");
+                    return raise_exception::<_>("TypeError", &msg);
+                }
+                errors_bits = val_bits;
+            }
+            "newline" => {
+                if newline_bits != missing {
+                    let msg = format!("got multiple values for keyword argument '{name_str}'");
+                    return raise_exception::<_>("TypeError", &msg);
+                }
+                newline_bits = val_bits;
+            }
+            "line_buffering" => {
+                if line_buffering_bits != missing {
+                    let msg = format!("got multiple values for keyword argument '{name_str}'");
+                    return raise_exception::<_>("TypeError", &msg);
+                }
+                line_buffering_bits = val_bits;
+            }
+            "write_through" => {
+                if write_through_bits != missing {
+                    let msg = format!("got multiple values for keyword argument '{name_str}'");
+                    return raise_exception::<_>("TypeError", &msg);
+                }
+                write_through_bits = val_bits;
+            }
+            _ => {
+                let msg = format!("reconfigure() got an unexpected keyword argument '{name_str}'");
+                return raise_exception::<_>("TypeError", &msg);
+            }
+        }
+    }
+    Some(vec![
+        args.pos[0],
+        encoding_bits,
+        errors_bits,
+        newline_bits,
+        line_buffering_bits,
+        write_through_bits,
+    ])
+}
+
+unsafe fn bind_builtin_text_codec(args: &CallArgs, func_name: &str) -> Option<Vec<u64>> {
+    if args.pos.is_empty() {
+        return raise_exception::<_>("TypeError", "missing required argument 'self'");
+    }
+    let positional = args.pos.len().saturating_sub(1);
+    if positional > 2 {
+        let msg = format!("{func_name}() takes at most 2 arguments ({positional} given)");
+        return raise_exception::<_>("TypeError", &msg);
+    }
+    let missing = missing_bits();
+    let mut encoding_bits = if positional >= 1 {
+        args.pos[1]
+    } else {
+        missing
+    };
+    let mut errors_bits = if positional >= 2 {
+        args.pos[2]
+    } else {
+        missing
+    };
+    for (name_bits, val_bits) in args
+        .kw_names
+        .iter()
+        .copied()
+        .zip(args.kw_values.iter().copied())
+    {
+        let name_obj = obj_from_bits(name_bits);
+        let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
+        match name_str.as_str() {
+            "encoding" => {
+                if encoding_bits != missing {
+                    let msg = format!("{func_name}() got multiple values for argument 'encoding'");
+                    return raise_exception::<_>("TypeError", &msg);
+                }
+                encoding_bits = val_bits;
+            }
+            "errors" => {
+                if errors_bits != missing {
+                    let msg = format!("{func_name}() got multiple values for argument 'errors'");
+                    return raise_exception::<_>("TypeError", &msg);
+                }
+                errors_bits = val_bits;
+            }
+            _ => {
+                let msg = format!("{func_name}() got an unexpected keyword argument '{name_str}'");
+                return raise_exception::<_>("TypeError", &msg);
+            }
+        }
+    }
+    Some(vec![args.pos[0], encoding_bits, errors_bits])
+}
+
+unsafe fn bind_builtin_pop(args: &CallArgs) -> Option<Vec<u64>> {
+    if args.pos.is_empty() {
+        return raise_exception::<_>("TypeError", "missing required argument 'self'");
+    }
+    let mut out = vec![args.pos[0]];
+    let mut key: Option<u64> = None;
+    let mut default: Option<u64> = None;
+    let mut pos_idx = 1usize;
+    while pos_idx < args.pos.len() {
+        if key.is_none() {
+            key = Some(args.pos[pos_idx]);
+        } else if default.is_none() {
+            default = Some(args.pos[pos_idx]);
+        } else {
+            return raise_exception::<_>("TypeError", "too many positional arguments");
+        }
+        pos_idx += 1;
+    }
+    for (name_bits, val_bits) in args
+        .kw_names
+        .iter()
+        .copied()
+        .zip(args.kw_values.iter().copied())
+    {
+        let name_obj = obj_from_bits(name_bits);
+        let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
+        if name_str == "key" {
+            if key.is_some() {
+                let msg = format!("got multiple values for argument '{name_str}'");
+                return raise_exception::<_>("TypeError", &msg);
+            }
+            key = Some(val_bits);
+        } else if name_str == "default" {
+            if default.is_some() {
+                let msg = format!("got multiple values for argument '{name_str}'");
+                return raise_exception::<_>("TypeError", &msg);
+            }
+            default = Some(val_bits);
+        } else {
+            let msg = format!("got an unexpected keyword '{name_str}'");
+            return raise_exception::<_>("TypeError", &msg);
+        }
+    }
+    let Some(key_bits) = key else {
+        return raise_exception::<_>("TypeError", "missing required argument 'key'");
+    };
+    let (default_bits, has_default) = if let Some(bits) = default {
+        (bits, MoltObject::from_int(1).bits())
+    } else {
+        (MoltObject::none().bits(), MoltObject::from_int(0).bits())
+    };
+    out.push(key_bits);
+    out.push(default_bits);
+    out.push(has_default);
+    Some(out)
+}

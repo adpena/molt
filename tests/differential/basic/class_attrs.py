@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for class attrs."""
+
+
 class Foo:
     y = 5
 

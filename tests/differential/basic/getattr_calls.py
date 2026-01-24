@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for getattr calls."""
+
+
 def show(label, value):
     print(label, value)
 

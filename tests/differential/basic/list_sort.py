@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for list sort."""
+
+
 def expect_error(fn):
     try:
         fn()

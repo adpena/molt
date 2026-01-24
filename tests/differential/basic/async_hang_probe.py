@@ -1,4 +1,5 @@
 # MOLT_ENV: MOLT_ASYNC_HANG_PROBE=5
+"""Purpose: differential coverage for async hang probe."""
 
 import asyncio
 

@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for stress structures pass."""
+
+
 def safe_print(obj):
     if isinstance(obj, list):
         print("[")

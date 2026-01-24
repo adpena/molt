@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for exception message."""
+
+
 def header(name: str) -> None:
     print(f"-- {name} --")
 

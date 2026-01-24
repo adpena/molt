@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for stdlib allowlist calls."""
+
 from molt.stdlib import (
     copy,
     fnmatch,

@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for try except."""
+
+
 def header(name: str) -> None:
     print(f"-- {name} --")
 

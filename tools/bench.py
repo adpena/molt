@@ -89,6 +89,66 @@ class MoltBinary:
     size_kb: float
 
 
+@dataclass(frozen=True)
+class _RunResult:
+    returncode: int
+    stdout: str = ""
+    stderr: str = ""
+
+
+def _enable_line_buffering() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(line_buffering=True)
+        except AttributeError:
+            continue
+
+
+def _run_with_pty(cmd: list[str], env: dict[str, str]) -> _RunResult:
+    import os
+    import pty
+
+    master_fd, slave_fd = pty.openpty()
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            env=env,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+        )
+    finally:
+        os.close(slave_fd)
+
+    try:
+        while True:
+            data = os.read(master_fd, 1024)
+            if not data:
+                break
+            if hasattr(sys.stdout, "buffer"):
+                sys.stdout.buffer.write(data)
+                sys.stdout.buffer.flush()
+            else:
+                sys.stdout.write(data.decode(errors="replace"))
+                sys.stdout.flush()
+    except KeyboardInterrupt:
+        proc.terminate()
+        raise
+    finally:
+        os.close(master_fd)
+
+    return _RunResult(returncode=proc.wait())
+
+
+def _run_cmd(
+    cmd: list[str], env: dict[str, str], *, capture: bool, tty: bool
+) -> _RunResult:
+    if tty and not capture and os.name == "posix":
+        return _run_with_pty(cmd, env)
+    res = subprocess.run(cmd, capture_output=capture, text=True, env=env)
+    return _RunResult(res.returncode, res.stdout or "", res.stderr or "")
+
+
 def _git_rev() -> str | None:
     try:
         res = subprocess.run(
@@ -113,6 +173,7 @@ def _prepend_pythonpath(env: dict[str, str], path: str) -> dict[str, str]:
 def _base_python_env() -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("PYTHONHASHSEED", "0")
+    env.setdefault("PYTHONUNBUFFERED", "1")
     return _prepend_pythonpath(env, "src")
 
 
@@ -268,7 +329,7 @@ def _module_available(name: str) -> bool:
 
 
 def _prepare_cython_runner(
-    script_path: Path, build_root: Path, base_env: dict[str, str]
+    script_path: Path, build_root: Path, base_env: dict[str, str], *, tty: bool
 ) -> BenchRunner | None:
     if not _module_available("pyximport"):
         return None
@@ -298,16 +359,14 @@ mod.bench()
     runner_path.write_text(runner_source)
     env = _prepend_pythonpath(base_env.copy(), str(module_dir))
     env["PYTHONWARNINGS"] = "ignore"
-    warm = subprocess.run(
-        [sys.executable, str(runner_path)], capture_output=True, text=True, env=env
-    )
+    warm = _run_cmd([sys.executable, str(runner_path)], env, capture=not tty, tty=tty)
     if warm.returncode != 0:
         return None
     return BenchRunner([sys.executable], str(runner_path), env)
 
 
 def _prepare_numba_runner(
-    script_path: Path, build_root: Path, base_env: dict[str, str]
+    script_path: Path, build_root: Path, base_env: dict[str, str], *, tty: bool
 ) -> BenchRunner | None:
     if not _module_available("numba"):
         return None
@@ -330,16 +389,14 @@ def _prepare_numba_runner(
     env = _prepend_pythonpath(base_env.copy(), str(module_dir))
     env["NUMBA_CACHE_DIR"] = str(module_dir / "cache")
     env["NUMBA_DISABLE_PERFORMANCE_WARNINGS"] = "1"
-    warm = subprocess.run(
-        [sys.executable, str(runner_path)], capture_output=True, text=True, env=env
-    )
+    warm = _run_cmd([sys.executable, str(runner_path)], env, capture=not tty, tty=tty)
     if warm.returncode != 0:
         return None
     return BenchRunner([sys.executable], str(runner_path), env)
 
 
 def _prepare_codon_runner(
-    script_path: Path, build_root: Path, base_env: dict[str, str]
+    script_path: Path, build_root: Path, base_env: dict[str, str], *, tty: bool
 ) -> BenchRunner | None:
     codon = shutil.which("codon")
     if not codon:
@@ -361,12 +418,12 @@ def _prepare_codon_runner(
             env["CODON_HOME"] = codon_home
     else:
         codon_home = env.get("CODON_HOME")
-    build = subprocess.run(
+    build = _run_cmd(
         arch_prefix
         + [codon, "build", "-release", str(script_path), "-o", str(binary_path)],
-        capture_output=True,
-        text=True,
         env=env,
+        capture=not tty,
+        tty=tty,
     )
     if build.returncode != 0:
         return None
@@ -405,7 +462,16 @@ def _pypy_command() -> list[str] | None:
 
 
 def bench_results(
-    benchmarks, samples, warmup, use_pypy, use_cython, use_numba, use_codon, super_run
+    benchmarks,
+    samples,
+    warmup,
+    use_pypy,
+    use_cython,
+    use_numba,
+    use_codon,
+    super_run,
+    *,
+    tty: bool,
 ):
     runtimes = {"CPython": [sys.executable]}
     if use_pypy:
@@ -457,7 +523,9 @@ def bench_results(
         cython_time = 0.0
         cython_ok = False
         if use_cython:
-            runner = _prepare_cython_runner(Path(script), cython_root, base_env)
+            runner = _prepare_cython_runner(
+                Path(script), cython_root, base_env, tty=tty
+            )
             if runner is not None:
                 cython_samples, cython_ok = collect_samples(
                     lambda: measure_runtime(runner.cmd, runner.script, env=runner.env),
@@ -474,7 +542,7 @@ def bench_results(
         numba_time = 0.0
         numba_ok = False
         if use_numba:
-            runner = _prepare_numba_runner(Path(script), numba_root, base_env)
+            runner = _prepare_numba_runner(Path(script), numba_root, base_env, tty=tty)
             if runner is not None:
                 numba_samples, numba_ok = collect_samples(
                     lambda: measure_runtime(runner.cmd, runner.script, env=runner.env),
@@ -491,7 +559,7 @@ def bench_results(
         codon_time = 0.0
         codon_ok = False
         if use_codon:
-            runner = _prepare_codon_runner(Path(script), codon_root, base_env)
+            runner = _prepare_codon_runner(Path(script), codon_root, base_env, tty=tty)
             if runner is not None:
                 codon_samples, codon_ok = collect_samples(
                     lambda: measure_runtime(runner.cmd, runner.script, env=runner.env),
@@ -615,6 +683,7 @@ def compare_baseline(current: dict, baseline: dict, max_regression: float) -> li
 
 
 def main():
+    _enable_line_buffering()
     parser = argparse.ArgumentParser(description="Run Molt benchmark suite.")
     parser.add_argument("--json-out", type=Path, default=None)
     parser.add_argument("--baseline", type=Path, default=None)
@@ -637,6 +706,11 @@ def main():
         action="store_true",
         help="Run all benchmarks 10x and emit mean/median/variance/range stats.",
     )
+    parser.add_argument(
+        "--tty",
+        action="store_true",
+        help="Attach subprocesses to a pseudo-TTY for immediate output.",
+    )
     args = parser.parse_args()
 
     if args.super and args.smoke:
@@ -654,6 +728,7 @@ def main():
     use_cython = not args.no_cython
     use_numba = not args.no_numba
     use_codon = not args.no_codon
+    use_tty = args.tty or os.environ.get("MOLT_TTY") == "1"
 
     warmup = args.warmup if args.warmup is not None else (0 if args.smoke else 1)
     results = bench_results(
@@ -665,6 +740,7 @@ def main():
         use_numba,
         use_codon,
         args.super,
+        tty=use_tty,
     )
 
     load_avg = None

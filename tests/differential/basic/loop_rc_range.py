@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for loop rc range."""
+
 total = 0
 for i in range(2000):
     lst = [i, i + 1]

@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for dict constructor errors."""
+
+
 def show(label, func):
     try:
         func()

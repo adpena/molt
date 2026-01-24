@@ -59,5 +59,15 @@ Molt rejects the idea that Python is a prototype language.
 
 ---
 
+## 6. Molt breaks implicit parallelism
+Molt does not allow silent shared-memory parallelism or hidden scheduling.
+
+This enables:
+- explicit concurrency boundaries
+- predictable performance under load
+- correctness-first parallel speedups via isolated runtimes/actors or safe, opt-in shared types
+
+---
+
 ## Identity statement
 **Molt is Python with explicit contracts, built for long-lived services and pipelines.**

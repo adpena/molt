@@ -91,6 +91,42 @@ def molt_cancel_current() -> None:
     cancel_current()
 
 
+def molt_future_cancel(future: Any) -> int:
+    if hasattr(future, "cancel"):
+        try:
+            future.cancel()
+        except Exception:
+            return 0
+    return 0
+
+
+def molt_future_cancel_msg(future: Any, msg: Any) -> int:
+    if hasattr(future, "cancel"):
+        try:
+            future.cancel(msg)
+        except TypeError:
+            try:
+                future.cancel()
+            except Exception:
+                return 0
+        except Exception:
+            return 0
+    return 0
+
+
+def molt_future_cancel_clear(future: Any) -> int:
+    if hasattr(future, "_cancel_message"):
+        try:
+            setattr(future, "_cancel_message", None)
+        except Exception:
+            return 0
+    return 0
+
+
+def molt_task_register_token_owned(_task: Any, _token_id: int) -> int:
+    return 0
+
+
 def molt_spawn(task: Any) -> None:
     spawn(task)
 
@@ -103,6 +139,21 @@ def molt_block_on(task: Any) -> Any:
 
 async def molt_async_sleep(_delay: float = 0.0, _result: Any | None = None) -> Any:
     return _result
+
+
+def molt_thread_submit(callable: Any, args: Any, kwargs: Any) -> Any:
+    async def _run() -> Any:
+        if args is None:
+            call_args = ()
+        else:
+            call_args = tuple(args)
+        if kwargs is None:
+            call_kwargs = {}
+        else:
+            call_kwargs = dict(kwargs)
+        return callable(*call_args, **call_kwargs)
+
+    return _run()
 
 
 def molt_chan_new(maxsize: int = 0) -> Any:

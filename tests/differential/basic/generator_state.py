@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for generator state."""
+
 import inspect
 
 

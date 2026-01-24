@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for struct layout mutation."""
+
+
 class Point:
     x: int
     y: int

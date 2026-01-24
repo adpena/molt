@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for range ops."""
+
 print(len(range(5)))
 print(range(5)[0])
 print(range(5)[-1])

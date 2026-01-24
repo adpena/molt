@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for strings."""
+
 s = "hi" + " there"
 print(s)
 print(len(s))

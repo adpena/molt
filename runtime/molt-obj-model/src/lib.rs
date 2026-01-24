@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn test_ptr_roundtrip() {
         let boxed = Box::new(123u8);
-        let ptr = Box::into_raw(boxed) as *mut u8;
+        let ptr = Box::into_raw(boxed);
         let obj = MoltObject::from_ptr(ptr);
         assert!(obj.is_ptr());
         assert_eq!(obj.as_ptr(), Some(ptr));

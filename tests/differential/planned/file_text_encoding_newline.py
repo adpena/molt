@@ -1,4 +1,6 @@
 # MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write
+"""Purpose: differential coverage for file text encoding newline."""
+
 import os
 import tempfile
 from pathlib import Path

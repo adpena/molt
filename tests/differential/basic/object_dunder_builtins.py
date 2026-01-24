@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for object dunder builtins."""
+
+
 def show(label, value):
     print(label, value)
 

@@ -1,9 +1,10 @@
+import json
 import os
 import shutil
 import subprocess
 import sys
-from pathlib import Path
 import tempfile
+from pathlib import Path
 
 
 def _resolve_python_exe(python_exe: str) -> str:
@@ -103,6 +104,12 @@ def run_molt(file_path):
 def diff_test(file_path, python_exe=sys.executable):
     print(f"Testing {file_path} against {python_exe}...")
     cp_out, cp_err, cp_ret = run_cpython(file_path, python_exe)
+    if cp_ret != 0 and (
+        "msgpack is required for parse_msgpack fallback" in cp_err
+        or "cbor2 is required for parse_cbor fallback" in cp_err
+    ):
+        print(f"[SKIP] {file_path} (missing msgpack/cbor2 in CPython env)")
+        return True
     molt_out, molt_err, molt_ret = run_molt(file_path)
 
     if molt_out is None:
@@ -122,6 +129,34 @@ def diff_test(file_path, python_exe=sys.executable):
         return False
 
 
+def run_diff(target: Path, python_exe: str) -> dict:
+    results: list[tuple[str, bool]] = []
+    if target.is_dir():
+        for file_path in sorted(target.glob("*.py")):
+            results.append((str(file_path), diff_test(str(file_path), python_exe)))
+    else:
+        results.append((str(target), diff_test(str(target), python_exe)))
+    total = len(results)
+    failed_files = [path for path, ok in results if not ok]
+    failed = len(failed_files)
+    passed = total - failed
+    return {
+        "total": total,
+        "passed": passed,
+        "failed": failed,
+        "failed_files": failed_files,
+        "python_exe": python_exe,
+    }
+
+
+def _emit_json(payload: dict, output_path: str | None, stdout: bool) -> None:
+    text = json.dumps(payload, indent=2, sort_keys=True)
+    if output_path:
+        Path(output_path).write_text(text)
+    if stdout:
+        print(text)
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -129,6 +164,15 @@ if __name__ == "__main__":
     parser.add_argument("file", nargs="?", help="Python file to test")
     parser.add_argument(
         "--python-version", help="Python version to test against (e.g. 3.13)"
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit JSON summary to stdout.",
+    )
+    parser.add_argument(
+        "--json-output",
+        help="Write JSON summary to a file.",
     )
 
     args = parser.parse_args()
@@ -139,16 +183,13 @@ if __name__ == "__main__":
 
     if args.file:
         target = Path(args.file)
-        if target.is_dir():
-            ok = True
-            for file_path in sorted(target.glob("*.py")):
-                ok = diff_test(str(file_path), python_exe) and ok
-            sys.exit(0 if ok else 1)
-        diff_test(args.file, python_exe)
-    else:
-        # Default test
-        with open("temp_test.py", "w") as f:
-            f.write("print(1 + 2)\n")
-        success = diff_test("temp_test.py", python_exe)
-        os.remove("temp_test.py")
-        sys.exit(0 if success else 1)
+        summary = run_diff(target, python_exe)
+        _emit_json(summary, args.json_output, args.json)
+        sys.exit(0 if summary["failed"] == 0 else 1)
+    # Default test
+    with open("temp_test.py", "w") as f:
+        f.write("print(1 + 2)\n")
+    summary = run_diff(Path("temp_test.py"), python_exe)
+    _emit_json(summary, args.json_output, args.json)
+    os.remove("temp_test.py")
+    sys.exit(0 if summary["failed"] == 0 else 1)

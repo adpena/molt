@@ -124,7 +124,8 @@ def _wrap_existing_token(token_id: int, owned: bool) -> CancellationToken:
     token._owned = owned
     if owned:
         molt_cancel_token_clone(token_id)
-    molt_cancel_token_drop(old_id)
+    if old_id != token_id:
+        molt_cancel_token_drop(old_id)
     return token
 
 

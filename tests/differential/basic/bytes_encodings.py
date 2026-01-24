@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for bytes encodings."""
+
 print(bytes("abc", "utf-8"))
 print(bytes("abc", "utf16"))
 print(bytes("abc", "utf-16le"))

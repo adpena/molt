@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for traceback entries."""
+
+
 def _def_line_for(func):
     code = getattr(func, "__code__", None)
     if code is None:
@@ -62,14 +65,17 @@ def wrapper():
     fn()
 
 
-def main():
-    def_line = _def_line_for(boom)
+def setitem_boom():
+    [].__setitem__(0, 1)
 
-    def report(label, exc):
+
+def main():
+    def report(label, exc, func, func_name):
+        def_line = _def_line_for(func)
         tb = exc.__traceback__
         assert not isinstance(tb, (tuple, list))
         entries = _entries_from_traceback(tb)
-        filename, lineno, name = _find_entry(entries, "boom")
+        filename, lineno, name = _find_entry(entries, func_name)
         raise_line = def_line + 1 if def_line else 0
         if raise_line:
             assert lineno == raise_line
@@ -79,13 +85,18 @@ def main():
     try:
         direct()
     except Exception as exc:
-        report("direct", exc)
+        report("direct", exc, boom, "boom")
 
     try:
         fn = wrapper
         fn()
     except Exception as exc:
-        report("indirect", exc)
+        report("indirect", exc, boom, "boom")
+
+    try:
+        setitem_boom()
+    except Exception as exc:
+        report("setitem", exc, setitem_boom, "setitem_boom")
 
 
 if __name__ == "__main__":

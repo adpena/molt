@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for class mutation init deopt."""
+
+
 class Descriptor:
     def __set__(self, inst, val):
         inst.log = val

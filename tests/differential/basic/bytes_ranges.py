@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for bytes ranges."""
+
+
 def show(label, value):
     print(label, value)
 

@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for container dunders."""
+
+
 def show(label, value):
     print(label, value)
 

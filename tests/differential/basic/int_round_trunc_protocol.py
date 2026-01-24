@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for int round trunc protocol."""
+
 import math
 
 

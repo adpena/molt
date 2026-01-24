@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for string methods loops."""
+
 words = ["molt", "runtime", "compiler"]
 
 print("-".join(words))

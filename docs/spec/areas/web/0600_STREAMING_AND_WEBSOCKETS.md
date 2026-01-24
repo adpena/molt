@@ -20,7 +20,7 @@ Non-goals (v0.1): HTTP/2, QUIC, browser-native sockets.
 All network I/O is explicit and capability-gated:
 ```
 [molt.packages.molt_net]
-capabilities = ["network:connect", "network:listen", "websocket:connect", "websocket:listen"]
+capabilities = ["net", "websocket.connect", "websocket.listen"]
 ```
 Rules:
 - Capabilities are granted by config only (no ambient network access).
@@ -62,7 +62,7 @@ Semantics:
 - The runtime exposes:
   - `ws_send(cap_id, conn_id, ptr, len) -> status`
   - `ws_recv(cap_id, conn_id, out_ptr, out_len_ptr) -> status`
-  - `ws_connect(...)` gated by `websocket:connect` and delegated via a host hook.
+  - `ws_connect(...)` gated by `websocket.connect` and delegated via a host hook.
 
 ---
 

@@ -5,6 +5,15 @@ from __future__ import annotations
 from collections.abc import ItemsView, KeysView, ValuesView
 from typing import TYPE_CHECKING, Any, Iterator, MutableMapping
 
+import builtins as _builtins
+
+
+def _load_intrinsic(name: str) -> Any | None:
+    direct = globals().get(name)
+    if direct is not None:
+        return direct
+    return getattr(_builtins, name, None)
+
 
 def _load_py_os() -> Any:
     try:
@@ -16,6 +25,9 @@ def _load_py_os() -> Any:
 
 
 _py_os = _load_py_os()
+_MOLT_PATH_EXISTS = _load_intrinsic("_molt_path_exists")
+_MOLT_PATH_UNLINK = _load_intrinsic("_molt_path_unlink")
+_MOLT_ENV_GET_RAW = _load_intrinsic("_molt_env_get_raw")
 
 __all__ = [
     "name",
@@ -26,8 +38,12 @@ __all__ = [
     "pardir",
     "extsep",
     "altsep",
+    "SEEK_SET",
+    "SEEK_CUR",
+    "SEEK_END",
     "getpid",
     "getenv",
+    "unlink",
     "environ",
     "path",
 ]
@@ -41,16 +57,34 @@ curdir = "."
 pardir = ".."
 extsep = "."
 altsep = None
+SEEK_SET = 0
+SEEK_CUR = 1
+SEEK_END = 2
 
 
 _ENV_STORE: dict[str, str] = {}
 
+if TYPE_CHECKING:
+
+    def _molt_env_get_raw(key: str, default: Any = None) -> Any:
+        return default
+
+    def _molt_getpid() -> int:
+        return 0
+
+    def _molt_path_exists(path: Any) -> bool:
+        return False
+
+    def _molt_path_unlink(path: Any) -> None:
+        return None
+
 
 def _molt_env_get(key: str, default: Any = None) -> Any:
-    try:
-        return _molt_env_get_raw(key, default)  # type: ignore[unresolved-reference]
-    except NameError:
-        pass
+    if callable(_MOLT_ENV_GET_RAW):
+        try:
+            return _MOLT_ENV_GET_RAW(key, default)
+        except Exception:
+            pass
     if _py_os is not None:
         try:
             env = getattr(_py_os, "environ", None)
@@ -249,26 +283,33 @@ class _Path:
     @staticmethod
     def exists(path: Any) -> bool:
         _require_cap("fs.read")
-        try:
-            return _molt_path_exists(path)  # type: ignore[unresolved-reference]
-        except NameError:
-            if _py_os is not None:
-                try:
-                    return _py_os.path.exists(path)
-                except Exception:
+        if callable(_MOLT_PATH_EXISTS):
+            try:
+                res = _MOLT_PATH_EXISTS(path)
+                if res is None:
                     return False
+                return res
+            except Exception:
+                pass
+        if _py_os is not None:
+            try:
+                return _py_os.path.exists(path)
+            except Exception:
+                return False
         return False
 
     @staticmethod
     def unlink(path: Any) -> None:
         _require_cap("fs.write")
-        try:
-            _molt_path_unlink(path)  # type: ignore[unresolved-reference]
-            return
-        except NameError:
-            if _py_os is not None:
-                _py_os.unlink(path)
+        if callable(_MOLT_PATH_UNLINK):
+            try:
+                _MOLT_PATH_UNLINK(path)
                 return
+            except Exception:
+                pass
+        if _py_os is not None:
+            _py_os.unlink(path)
+            return
         raise FileNotFoundError(path)
 
 
@@ -278,31 +319,20 @@ path = _Path()
 environ = _Environ()
 
 
-if TYPE_CHECKING:
-
-    def _molt_getpid() -> int:
-        return 0
-
-    def _molt_env_get_raw(key: str, default: Any = None) -> Any:
-        return default
-
-    def _molt_path_exists(path: Any) -> bool:
-        return False
-
-
-def _molt_path_unlink(path: Any) -> None:
-    return None
-
-
 def getpid() -> int:
     try:
         return _molt_getpid()  # type: ignore[unresolved-reference]
-    except NameError:
-        if _py_os is not None:
-            return _py_os.getpid()
+    except Exception:
+        pass
+    if _py_os is not None:
+        return _py_os.getpid()
     return 0
 
 
 def getenv(key: str, default: Any = None) -> Any:
     _require_cap("env.read")
     return _molt_env_get(key, default)
+
+
+def unlink(path: Any) -> None:
+    _Path.unlink(path)

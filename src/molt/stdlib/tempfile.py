@@ -20,7 +20,8 @@ def _pick_tempdir() -> str:
             # temp dir probing should require env.read or allow a fallback.
             return "/tmp"
         if val:
-            return val
+            trimmed = val.rstrip("/\\")
+            return trimmed or val
     if _os.name == "nt":
         # TODO(stdlib-compat, owner:stdlib, milestone:SL3): align Windows defaults
         # with CPython (USERPROFILE, HOMEPATH, and temp folder probing).

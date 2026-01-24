@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for async cancellation token."""
+
 import asyncio
 
 from molt import CancellationToken, cancelled, set_current_token

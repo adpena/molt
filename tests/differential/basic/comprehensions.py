@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for comprehensions."""
+
 print([x * 2 for x in range(3)])
 print(sorted({x for x in [1, 2, 2, 3]}))
 print({k: v for k, v in [("a", 1), ("b", 2), ("a", 3)]})

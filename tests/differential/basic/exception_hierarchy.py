@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for exception hierarchy."""
+
+
 def _report(label, value):
     print(f"{label}:{value}")
 
@@ -31,6 +34,33 @@ def main():
     _check_sub("BaseExceptionGroup->BaseException", BaseExceptionGroup, BaseException)
     _report("IOError_is_OSError", IOError is OSError)
     _report("EnvironmentError_is_OSError", EnvironmentError is OSError)
+    import select
+    import socket
+
+    _report("select_error_is_OSError", select.error is OSError)
+    _report("socket_error_is_OSError", socket.error is OSError)
+    _report("socket_gaierror_base", socket.gaierror.__base__ is OSError)
+    _report("socket_herror_base", socket.herror.__base__ is OSError)
+    _report("socket_timeout_is_TimeoutError", socket.timeout is TimeoutError)
+    e = BlockingIOError()
+    try:
+        _ = e.characters_written
+        _report("BlockingIOError_missing_get", False)
+    except AttributeError:
+        _report("BlockingIOError_missing_get", True)
+    try:
+        del e.characters_written
+        _report("BlockingIOError_missing_del", False)
+    except AttributeError:
+        _report("BlockingIOError_missing_del", True)
+    e = BlockingIOError("a", "b", 3)
+    _report("BlockingIOError_characters_written", e.characters_written)
+    del e.characters_written
+    try:
+        _ = e.characters_written
+        _report("BlockingIOError_deleted_get", False)
+    except AttributeError:
+        _report("BlockingIOError_deleted_get", True)
 
 
 if __name__ == "__main__":

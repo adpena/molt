@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for len dunder."""
+
+
 class HasLen:
     def __len__(self):
         return 3

@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for control flow complex."""
+
+
 def section(name):
     print(f"--- {name} ---")
 

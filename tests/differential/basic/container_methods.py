@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for container methods."""
+
 lst = [1, 2, 3]
 print(lst.reverse(), lst)
 lst.clear()

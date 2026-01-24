@@ -1,3 +1,4 @@
+"""Purpose: differential coverage for name lookup."""
 # ruff: noqa: F821
 
 

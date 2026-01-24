@@ -35,3 +35,13 @@ Molt compiles a **verified per-application subset of Python** into **small, fast
 - No GIL; concurrency via tasks/channels.
 - FFI and WASM packages are capability-gated with explicit effects.
 - Lockfile enforcement and SBOM generation for reproducible builds.
+
+## Concurrency & parallelism
+- **CPython-correct asyncio** by default: a single-threaded event loop with deterministic ordering,
+  structured cancellation, and explicit async boundaries.
+- **True parallelism is explicit**: CPU work goes through executors or isolated runtimes/actors with
+  message passing; shared mutable parallelism is opt-in, capability-gated, and limited to
+  explicitly safe types.
+- **Runtime-first implementation**: the event loop, I/O poller, and cancellation propagation live in
+  Rust so compiled binaries are self-contained; stdlib wrappers stay thin.
+- **Native + WASM parity**: identical semantics across targets, with host I/O gated by capabilities.

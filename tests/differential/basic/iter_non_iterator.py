@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for iter non iterator."""
+
+
 def show(label, value):
     print(label, value)
 

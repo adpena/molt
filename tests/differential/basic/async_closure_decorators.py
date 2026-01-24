@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for async closure decorators."""
+
 import asyncio
 
 

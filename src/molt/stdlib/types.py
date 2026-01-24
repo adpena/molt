@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+import sys as _sys
 from typing import Any, Iterable
 
-__all__ = ["SimpleNamespace", "MappingProxyType", "NotImplementedType"]
+__all__ = [
+    "SimpleNamespace",
+    "MappingProxyType",
+    "NotImplementedType",
+    "GenericAlias",
+    "ModuleType",
+]
 
 # TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): add full types helpers (TracebackType, FrameType, FunctionType, MethodType, etc).
 
 NotImplementedType = type(NotImplemented)
+GenericAlias = type(list[int])
+ModuleType = type(_sys)
 
 
 class SimpleNamespace:

@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for nested loops."""
+
 items = [1, 2, 3, 4]
 
 total = 0

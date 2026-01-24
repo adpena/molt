@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for tuple keys."""
+
 print((1, 2, 3))
 print(len((1, 2, 3)))
 print((1, 2, 3)[1])

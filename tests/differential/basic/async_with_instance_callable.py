@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for async with instance callable."""
+
 import asyncio
 
 

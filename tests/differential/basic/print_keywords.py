@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for print keywords."""
+
+
 class Sink:
     def __init__(self):
         self.parts = []

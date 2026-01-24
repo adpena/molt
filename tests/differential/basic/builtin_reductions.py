@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for builtin reductions."""
+
 print(sum([1, 2, 3]))
 print(sum((1, 2), 10))
 print(sum(range(4), 1))

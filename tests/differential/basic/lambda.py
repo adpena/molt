@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for lambda."""
+
 inc = lambda x: x + 1  # noqa: E731
 print(inc(2))
 

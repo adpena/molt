@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for shift matmul."""
+
+
 def main() -> None:
     print(1 << 2)
     print(8 >> 1)

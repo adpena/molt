@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for qualname."""
+
+
 def outer():
     def inner():
         return 1

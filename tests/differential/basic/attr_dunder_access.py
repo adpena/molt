@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for attr dunder access."""
+
 calls = []
 
 

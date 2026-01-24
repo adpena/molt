@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for list dict."""
+
 lst = [1, 2, 3]
 print(lst[0])
 lst[1] = 5
@@ -128,3 +130,50 @@ print(d3.popitem())
 print(d3)
 d3.clear()
 print(d3)
+
+d4 = {}
+print(d4.update(a=1, b=2))
+print(sorted(d4.items()))
+d4 = {}
+d4.update({"a": 1}, b=2)
+print(sorted(d4.items()))
+d4 = {}
+d4.update([("a", 1)], b=2)
+print(sorted(d4.items()))
+d4 = {}
+d4.update(**{"a": 1, "b": 2})
+print(sorted(d4.items()))
+try:
+    d4.update(1, 2)
+except TypeError as exc:
+    print("dict-update-args", type(exc).__name__, exc)
+
+d5 = {}
+print(d5.__setitem__("k", 9))
+print(d5.__getitem__("k"))
+print(d5.__delitem__("k"))
+try:
+    d5.__getitem__("missing")
+except KeyError as exc:
+    print("dict-get-miss", type(exc).__name__, exc)
+
+
+class DictSubclass(dict):
+    pass
+
+
+ds = DictSubclass.fromkeys(["a"], 1)
+print(isinstance(ds, DictSubclass))
+print(ds["a"])
+print(len(ds))
+
+
+class DictSubclassInit(dict):
+    def __init__(self, value):
+        super().__init__()
+
+
+try:
+    DictSubclassInit.fromkeys(["a"], 1)
+except TypeError as exc:
+    print("dict-fromkeys-init", type(exc).__name__)

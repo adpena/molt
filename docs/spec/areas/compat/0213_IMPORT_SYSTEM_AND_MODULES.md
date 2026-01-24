@@ -44,6 +44,7 @@ Modules may be:
 - `import x`, `import x as y`
 - `from x import y`
 - `from x import y as z`
+- `from x import *` (module scope only; honors `__all__` when present, otherwise skips underscore-prefixed names)
 
 ### 3.3 Dynamic Imports
 - `__import__` and `importlib` are supported only when the bridge policy is
@@ -80,3 +81,5 @@ Import errors must include:
 ## 7. Open Questions
 - Policy for namespace packages.
 - Editable installs and dev-mode behaviors.
+
+TODO(import-system, owner:frontend, milestone:TC3, priority:P1, status:partial): populate `__spec__` for compiled modules once ModuleSpec support lands.

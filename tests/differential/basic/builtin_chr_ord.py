@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for builtin chr ord."""
+
+
 class IndexObj:
     def __init__(self, value):
         self.value = value

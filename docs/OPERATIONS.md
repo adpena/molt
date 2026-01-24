@@ -50,6 +50,7 @@ logs/
   benchmarks/
   wasm/
   agents/
+  cpython_regrtest/
 ```
 
 ### Benchmarking rules
@@ -72,6 +73,26 @@ logs/
 - Enables async review
 - Enables regression detection
 - Enables phone-based inspection
+
+### CPython regrtest harness
+The `tools/cpython_regrtest.py` harness writes one run per directory under
+`logs/cpython_regrtest/` and emits per-run `summary.md`, `summary.json`, and
+`junit.xml`, plus a root `summary.md`. Each run also writes `diff_summary.md`
+and `type_semantics_matrix.md` so parity work stays aligned with the stdlib and
+type/semantics matrices; `--rust-coverage` adds `rust_coverage/` output
+(requires `cargo-llvm-cov`). Use `--clone` and `--uv-prepare` explicitly when
+you want networked downloads or dependency installs.
+The shim treats `MOLT_COMPAT_ERROR` results as skipped and records the reason
+in `junit.xml`; use `tools/cpython_regrtest_skip.txt` for intentional exclusions.
+When `--coverage` is enabled, the harness combines host regrtest coverage with
+Molt subprocess coverage (use a Python-based `--molt-cmd` to capture it). The
+shim forwards interpreter flags from regrtest to the Molt command to preserve
+isolation/warnings behavior.
+Regrtest runs set `MOLT_MODULE_ROOTS` and `MOLT_REGRTEST_CPYTHON_DIR` to pull
+CPython `Lib/test` sources into the static module graph without mutating host
+`PYTHONPATH`.
+Regrtest runs set `MOLT_CAPABILITIES=fs.read,env.read` by default; override with
+`--molt-capabilities` when needed.
 
 Benchmarks that cannot survive a disconnect are not acceptable.
 

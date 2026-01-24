@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for free vars basic."""
+
+
 def outer() -> int:
     x = 3
 

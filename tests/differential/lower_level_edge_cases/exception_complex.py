@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for exception complex."""
+
+
 def section(name):
     print(f"--- {name} ---")
 

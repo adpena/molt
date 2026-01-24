@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for collections deque."""
+
 import collections
 
 d = collections.deque([1, 2, 3])

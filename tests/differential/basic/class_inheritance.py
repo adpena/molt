@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for class inheritance."""
+
+
 class Base:
     kind = "base"
 

@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for bytes codec."""
+
 import molt_msgpack
 import molt_cbor
 

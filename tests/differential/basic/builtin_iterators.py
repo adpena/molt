@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for builtin iterators."""
+
 print(list(map(lambda x: x * 2, [1, 2, 3])))
 print(list(map(lambda x: x, [1, 2, 3])))
 print(list(map(lambda x, y: (x, y), [1, 2], ["a", "b", "c"])))

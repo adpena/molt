@@ -1,4 +1,5 @@
 # MOLT_ENV: MOLT_CODEC=json
+"""Purpose: differential coverage for stdlib json extended."""
 
 import json
 

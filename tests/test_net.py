@@ -97,7 +97,7 @@ def test_ws_connect_hook_runtime():
     original_caps = os.environ.get("MOLT_CAPABILITIES")
 
     try:
-        os.environ["MOLT_CAPABILITIES"] = "websocket:connect"
+        os.environ["MOLT_CAPABILITIES"] = "websocket.connect"
         lib.molt_ws_set_connect_hook(ctypes.cast(hook_fn, ctypes.c_void_p).value)
         ws = net.ws_connect("wss://example.test/echo")
         peer = net.RuntimeWebSocket(peer_handle["peer"], lib)

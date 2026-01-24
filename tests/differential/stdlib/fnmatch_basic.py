@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for fnmatch basic."""
+
 import fnmatch
 
 

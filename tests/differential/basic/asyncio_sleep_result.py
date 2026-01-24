@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for asyncio sleep result."""
+
 import asyncio
 
 

@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for listcomp scope."""
+
 i = 3
 vals = [i for i in range(i)]
 print(f"shadow_vals:{vals}")

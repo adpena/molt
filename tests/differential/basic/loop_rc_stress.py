@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for loop rc stress."""
+
 total = 0
 i = 0
 while i < 5000:

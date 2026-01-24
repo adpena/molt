@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for list dict loops."""
+
 lines = ["alpha", "beta", "gamma", "beta"]
 
 counts = {"alpha": 0, "beta": 0, "gamma": 0}

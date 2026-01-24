@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for bisect basic."""
+
 import bisect
 
 

@@ -1,5 +1,6 @@
-# MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write
-import os
+# MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write,env.read
+"""Purpose: differential coverage for file open modes."""
+
 import tempfile
 from pathlib import Path
 
@@ -16,7 +17,7 @@ def show_err(label: str, func) -> None:
 
 
 tmpdir = Path(tempfile.gettempdir())
-path = tmpdir / f"molt_open_modes_{os.getpid()}.txt"
+path = tmpdir / "molt_open_modes_fixed.txt"
 if path.exists():
     path.unlink()
 

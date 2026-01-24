@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for exception args."""
+
+
 def _report(label, fn):
     try:
         fn()

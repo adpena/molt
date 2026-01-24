@@ -1,3 +1,6 @@
+"""Purpose: differential coverage for generator decorators."""
+
+
 def wrap(fn):
     def inner(n):
         for item in fn(n):

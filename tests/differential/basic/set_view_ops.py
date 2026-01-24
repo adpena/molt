@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for set view ops."""
+
 view_src = {1: 10, 2: 20}
 
 print(f"keys_or_set:{sorted(view_src.keys() | {0})}")

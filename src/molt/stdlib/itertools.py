@@ -3,7 +3,16 @@
 from __future__ import annotations
 
 import operator
-from typing import Any, Callable, Iterable, Iterator, TypeVar, cast
+from typing import (
+    Any,
+    Callable,
+    Generic,
+    Iterable,
+    Iterator,
+    TYPE_CHECKING,
+    TypeVar,
+    cast,
+)
 
 __all__ = [
     "accumulate",
@@ -80,7 +89,9 @@ class _IsliceIter:
         while True:
             if self._stop is not None and self._idx >= self._stop:
                 raise StopIteration
-            item = next(self._iter)
+            item = next(self._iter, _SENTINEL)
+            if item is _SENTINEL:
+                raise StopIteration
             if self._idx == self._next_index:
                 self._idx += 1
                 self._next_index += self._step
@@ -188,9 +199,14 @@ class _AccumulateIter:
             if self._initial is not _SENTINEL:
                 self._total = self._initial
                 return self._total
-            self._total = next(self._iter)
+            item = next(self._iter, _SENTINEL)
+            if item is _SENTINEL:
+                raise StopIteration
+            self._total = item
             return self._total
-        item = next(self._iter)
+        item = next(self._iter, _SENTINEL)
+        if item is _SENTINEL:
+            raise StopIteration
         self._total = self._func(self._total, item)
         return self._total
 
@@ -203,7 +219,13 @@ def accumulate(
     return _AccumulateIter(iterable, func, initial)
 
 
-class _PairwiseIter:
+if TYPE_CHECKING:
+    _PairwiseIterBase = Generic[T]
+else:
+    _PairwiseIterBase = object
+
+
+class _PairwiseIter(_PairwiseIterBase):
     def __init__(self, iterable: Iterable[T]) -> None:
         self._iter = iter(iterable)
         self._started = False
@@ -214,11 +236,17 @@ class _PairwiseIter:
 
     def __next__(self):
         if not self._started:
-            self._prev = next(self._iter)
+            first = next(self._iter, _SENTINEL)
+            if first is _SENTINEL:
+                raise StopIteration
+            self._prev = cast(T, first)
             self._started = True
-        item = next(self._iter)
-        pair = (self._prev, item)
-        self._prev = item
+        item = next(self._iter, _SENTINEL)
+        if item is _SENTINEL:
+            raise StopIteration
+        item_t = cast(T, item)
+        pair = (self._prev, item_t)
+        self._prev = item_t
         return pair
 
 

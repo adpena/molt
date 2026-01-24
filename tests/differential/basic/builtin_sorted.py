@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for builtin sorted."""
+
 print(sorted([3, 1, 2]))
 print(sorted((3, 1, 2), reverse=True))
 print(sorted(["b", "a", "c"]))

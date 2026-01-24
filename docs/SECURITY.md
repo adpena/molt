@@ -12,7 +12,7 @@ The Molt runtime and compiler are written in Rust with **minimal, audited `unsaf
 
 ### B. Capability Gating (No Ambient Authority)
 Molt employs a **Capability-based Security** model. A Molt binary has zero authority to interact with the OS unless explicitly granted.
-- **Explicit Manifests**: Capabilities like `net`, `fs.read`, `env`, and `time` must be declared in build flags or capability profiles.
+- **Explicit Manifests**: Capabilities like `net`, `fs.read`, `env.read`, and `time` must be declared in build flags or capability profiles.
 - **Granular Access**: Filesystem access is path-restricted.
 - **WASM Isolation**: When targeting WASM, the sandbox enforces these boundaries via the host interface.
 

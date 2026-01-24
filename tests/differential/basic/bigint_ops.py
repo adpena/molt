@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for bigint ops."""
+
 a = 1 << 60
 b = a + 123
 literal = 123456789012345678901234567890

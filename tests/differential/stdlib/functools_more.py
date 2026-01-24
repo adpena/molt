@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for functools more."""
+
 import functools
 
 

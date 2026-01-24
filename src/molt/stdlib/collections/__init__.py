@@ -192,78 +192,106 @@ class Counter(dict):
         iterable: abc.Mapping[Any, Any] | Iterable[Any] | None = None,
         **kwargs: Any,
     ) -> None:
-        self._data: dict[Any, int] = {}
         if iterable is not None:
             if isinstance(iterable, dict):
                 for key in iterable:
-                    self._data[key] = self._data.get(key, 0) + iterable[key]
+                    dict.__setitem__(self, key, dict.get(self, key, 0) + iterable[key])
             elif hasattr(iterable, "items"):
                 mapping = cast(abc.Mapping[Any, Any], iterable)
                 for key in mapping:
-                    self._data[key] = self._data.get(key, 0) + mapping[key]
+                    dict.__setitem__(self, key, dict.get(self, key, 0) + mapping[key])
             else:
                 for item in iterable:
-                    self._data[item] = self._data.get(item, 0) + 1
+                    dict.__setitem__(self, item, dict.get(self, item, 0) + 1)
         if kwargs:
             kw_map: dict[str, Any] = kwargs
             for key in kw_map:
-                self._data[key] = self._data.get(key, 0) + kw_map[key]
+                dict.__setitem__(self, key, dict.get(self, key, 0) + kw_map[key])
 
     def __missing__(self, key: Any) -> int:
         return 0
 
     def __getitem__(self, key: Any) -> int:
-        return self._data.get(key, 0)
+        if key in self:
+            return dict.__getitem__(self, key)
+        return 0
 
     def __setitem__(self, key: Any, value: int) -> None:
-        self._data[key] = value
+        dict.__setitem__(self, key, value)
 
     def __delitem__(self, key: Any) -> None:
-        del self._data[key]
+        dict.__delitem__(self, key)
 
     def __iter__(self):
-        return iter(self._data)
+        return dict.__iter__(self)
 
     def keys(self):
-        return self._data.keys()
+        return dict.keys(self)
 
     def values(self):
-        return self._data.values()
+        return dict.values(self)
 
     def __len__(self) -> int:
-        return len(self._data)
+        return dict.__len__(self)
 
     def __contains__(self, key: Any) -> bool:
-        return key in self._data
+        return dict.__contains__(self, key)
 
     def clear(self) -> None:
-        self._data.clear()
+        keys = list(self)
+        for key in keys:
+            dict.__delitem__(self, key)
 
     def __repr__(self) -> str:
-        if not self._data:
+        if len(self) == 0:
             return "Counter()"
-        return f"Counter({self._data!r})"
+        items: list[str] = []
+        for key in self:
+            items.append(f"{key!r}: {dict.get(self, key, 0)!r}")
+        return f"Counter({{{', '.join(items)}}})"
 
     def __eq__(self, other: Any) -> bool:
-        if isinstance(other, Counter):
-            return self._data == other._data
-        if isinstance(other, dict):
-            return self._data == other
-        return False
+        if not isinstance(other, dict):
+            return False
+        if len(self) != len(other):
+            return False
+        for key in self:
+            if dict.get(self, key, 0) != dict.get(other, key, _MISSING):
+                return False
+        for key in other:
+            if key not in self:
+                return False
+        return True
 
     def pop(self, key: Any, default: Any = _MISSING) -> Any:
+        if key in self:
+            val = dict.__getitem__(self, key)
+            dict.__delitem__(self, key)
+            return val
         if default is _MISSING:
-            return self._data.pop(key)
-        return self._data.pop(key, default)
+            raise KeyError(key)
+        return default
 
     def popitem(self):
-        return self._data.popitem()
+        last_key = _MISSING
+        for key in self:
+            last_key = key
+        if last_key is _MISSING:
+            raise KeyError("popitem(): dictionary is empty")
+        val = dict.__getitem__(self, last_key)
+        dict.__delitem__(self, last_key)
+        return (last_key, val)
 
     def setdefault(self, key: Any, default: Any = None) -> Any:
-        return self._data.setdefault(key, default)
+        if key in self:
+            return dict.__getitem__(self, key)
+        dict.__setitem__(self, key, default)
+        return default
 
     def get(self, key: Any, default: int | None = None) -> int | None:
-        return self._data.get(key, default)
+        if key in self:
+            return dict.__getitem__(self, key)
+        return default
 
     def update(self, *args: Any, **kwargs: Any) -> None:
         iterable: abc.Mapping[Any, Any] | Iterable[Any] | None = None
@@ -274,18 +302,18 @@ class Counter(dict):
         if iterable is not None:
             if isinstance(iterable, dict):
                 for key in iterable:
-                    self._data[key] = self._data.get(key, 0) + iterable[key]
+                    dict.__setitem__(self, key, dict.get(self, key, 0) + iterable[key])
             elif hasattr(iterable, "items"):
                 mapping = cast(abc.Mapping[Any, Any], iterable)
                 for key in mapping:
-                    self._data[key] = self._data.get(key, 0) + mapping[key]
+                    dict.__setitem__(self, key, dict.get(self, key, 0) + mapping[key])
             else:
                 for item in iterable:
-                    self._data[item] = self._data.get(item, 0) + 1
+                    dict.__setitem__(self, item, dict.get(self, item, 0) + 1)
         if kwargs:
             kw_map: dict[str, Any] = kwargs
             for key in kw_map:
-                self._data[key] = self._data.get(key, 0) + kw_map[key]
+                dict.__setitem__(self, key, dict.get(self, key, 0) + kw_map[key])
 
     def subtract(
         self,
@@ -295,18 +323,18 @@ class Counter(dict):
         if iterable is not None:
             if isinstance(iterable, dict):
                 for key in iterable:
-                    self._data[key] = self._data.get(key, 0) - iterable[key]
+                    dict.__setitem__(self, key, dict.get(self, key, 0) - iterable[key])
             elif hasattr(iterable, "items"):
                 mapping = cast(abc.Mapping[Any, Any], iterable)
                 for key in mapping:
-                    self._data[key] = self._data.get(key, 0) - mapping[key]
+                    dict.__setitem__(self, key, dict.get(self, key, 0) - mapping[key])
             else:
                 for item in iterable:
-                    self._data[item] = self._data.get(item, 0) - 1
+                    dict.__setitem__(self, item, dict.get(self, item, 0) - 1)
         if kwargs:
             kw_map: dict[str, Any] = kwargs
             for key in kw_map:
-                self._data[key] = self._data.get(key, 0) - kw_map[key]
+                dict.__setitem__(self, key, dict.get(self, key, 0) - kw_map[key])
 
     def elements(self):
         return _CounterElementsIter(self)
@@ -316,8 +344,8 @@ class Counter(dict):
 
     def most_common(self, n: int | None = None):
         items: list[tuple[Any, int]] = []
-        for key in self._data:
-            items.append((key, self._data.get(key, 0)))
+        for key in self:
+            items.append((key, dict.get(self, key, 0)))
         items.sort(key=lambda item: item[1], reverse=True)
         if n is None:
             return items
@@ -327,8 +355,8 @@ class Counter(dict):
 
     def total(self):
         total = 0
-        for key in self._data:
-            total += self._data.get(key, 0)
+        for key in self:
+            total += dict.get(self, key, 0)
         return total
 
     def copy(self) -> "Counter":
@@ -338,14 +366,14 @@ class Counter(dict):
         if not isinstance(other, Counter):
             return NotImplemented
         result = Counter(())
-        for key in self._data:
-            count = self._data.get(key, 0) + other._data.get(key, 0)
+        for key in self:
+            count = dict.get(self, key, 0) + dict.get(other, key, 0)
             if count > 0:
                 result[key] = count
-        for key in other._data:
-            if key in self._data:
+        for key in other:
+            if key in self:
                 continue
-            count = self._data.get(key, 0) + other._data.get(key, 0)
+            count = dict.get(self, key, 0) + dict.get(other, key, 0)
             if count > 0:
                 result[key] = count
         return result
@@ -354,14 +382,14 @@ class Counter(dict):
         if not isinstance(other, Counter):
             return NotImplemented
         result = Counter(())
-        for key in self._data:
-            count = self._data.get(key, 0) - other._data.get(key, 0)
+        for key in self:
+            count = dict.get(self, key, 0) - dict.get(other, key, 0)
             if count > 0:
                 result[key] = count
-        for key in other._data:
-            if key in self._data:
+        for key in other:
+            if key in self:
                 continue
-            count = self._data.get(key, 0) - other._data.get(key, 0)
+            count = dict.get(self, key, 0) - dict.get(other, key, 0)
             if count > 0:
                 result[key] = count
         return result
@@ -372,14 +400,14 @@ class Counter(dict):
         if not isinstance(other, Counter):
             return NotImplemented
         result = Counter(())
-        for key in self._data:
-            count = max(self._data.get(key, 0), other._data.get(key, 0))
+        for key in self:
+            count = max(dict.get(self, key, 0), dict.get(other, key, 0))
             if count > 0:
                 result[key] = count
-        for key in other._data:
-            if key in self._data:
+        for key in other:
+            if key in self:
                 continue
-            count = max(self._data.get(key, 0), other._data.get(key, 0))
+            count = max(dict.get(self, key, 0), dict.get(other, key, 0))
             if count > 0:
                 result[key] = count
         return result
@@ -388,10 +416,10 @@ class Counter(dict):
         if not isinstance(other, Counter):
             return NotImplemented
         result = Counter(())
-        for key in self._data:
-            if key not in other._data:
+        for key in self:
+            if key not in other:
                 continue
-            count = min(self._data.get(key, 0), other._data.get(key, 0))
+            count = min(dict.get(self, key, 0), dict.get(other, key, 0))
             if count > 0:
                 result[key] = count
         return result
@@ -400,14 +428,18 @@ class Counter(dict):
         result = self + other
         if result is NotImplemented:
             return NotImplemented
-        self._data = result._data
+        self.clear()
+        for key, value in result.items():
+            dict.__setitem__(self, key, value)
         return self
 
     def __isub__(self, other: "Counter"):
         result = self - other
         if result is NotImplemented:
             return NotImplemented
-        self._data = result._data
+        self.clear()
+        for key, value in result.items():
+            dict.__setitem__(self, key, value)
         return self
 
     def __ior__(  # type: ignore[override]
@@ -416,69 +448,63 @@ class Counter(dict):
         result = self | other
         if result is NotImplemented:
             return NotImplemented
-        self._data = result._data
+        self.clear()
+        for key, value in result.items():
+            dict.__setitem__(self, key, value)
         return self
 
     def __iand__(self, other: "Counter"):
         result = self & other
         if result is NotImplemented:
             return NotImplemented
-        self._data = result._data
+        self.clear()
+        for key, value in result.items():
+            dict.__setitem__(self, key, value)
         return self
 
 
 class defaultdict(dict):
     def __init__(self, default_factory=None, *args: Any, **kwargs: Any) -> None:
         self.default_factory = default_factory
-        self._data: dict[Any, Any] = {}
         if len(args) > 1:
             raise TypeError("defaultdict expected at most 1 positional argument")
         if args:
-            init_arg = args[0]
-            if isinstance(init_arg, dict):
-                for key in init_arg:
-                    self._data[key] = init_arg[key]
-            elif hasattr(init_arg, "items"):
-                for key in init_arg:
-                    self._data[key] = init_arg[key]
-            else:
-                for key, val in init_arg:
-                    self._data[key] = val
+            dict.update(self, args[0])
         if kwargs:
-            for key in kwargs:
-                self._data[key] = kwargs[key]
+            dict.update(self, kwargs)
 
     def __getitem__(self, key: Any) -> Any:
-        if key in self._data:
-            return self._data[key]
-        return self.__missing__(key)
+        try:
+            return dict.__getitem__(self, key)
+        except KeyError:
+            return self.__missing__(key)
 
     def __setitem__(self, key: Any, value: Any) -> None:
-        self._data[key] = value
+        dict.__setitem__(self, key, value)
 
     def __delitem__(self, key: Any) -> None:
-        del self._data[key]
+        dict.__delitem__(self, key)
 
     def __iter__(self):
-        return iter(self._data)
+        return dict.__iter__(self)
 
     def items(self):
-        return self._data.items()
+        return dict.items(self)
 
     def keys(self):
-        return self._data.keys()
+        return dict.keys(self)
 
     def values(self):
-        return self._data.values()
+        return dict.values(self)
 
     def __len__(self) -> int:
-        return len(self._data)
+        return dict.__len__(self)
 
     def __contains__(self, key: Any) -> bool:
-        return key in self._data
+        return dict.__contains__(self, key)
 
     def get(self, key: Any, default: Any = None) -> Any:
-        return self._data.get(key, default)
+        return dict.get(self, key, default)
 
     def __missing__(self, key: Any) -> Any:
         if self.default_factory is None:
@@ -489,7 +515,7 @@ class defaultdict(dict):
             value = {}
         else:
             value = self.default_factory()
-        self[key] = value
+        dict.__setitem__(self, key, value)
         return value
 
     def __repr__(self) -> str:
@@ -499,8 +525,8 @@ class defaultdict(dict):
 class _CounterElementsIter:
     def __init__(self, counter: Counter) -> None:
         items: list[tuple[Any, int]] = []
-        for key in counter._data:
-            items.append((key, counter._data.get(key, 0)))
+        for key in counter:
+            items.append((key, dict.get(counter, key, 0)))
         self._items = items
         self._index = 0
         self._remaining = 0
@@ -550,8 +576,8 @@ class _CounterElementsIter:
 class _CounterItemsIter:
     def __init__(self, counter: Counter) -> None:
         items: list[tuple[Any, int]] = []
-        for key in counter._data:
-            items.append((key, counter._data.get(key, 0)))
+        for key in counter:
+            items.append((key, dict.get(counter, key, 0)))
         self._items = items
         self._index = 0
 
@@ -574,13 +600,13 @@ class _CounterItemsView:
         return _CounterItemsIter(self._counter)
 
     def __len__(self) -> int:
-        return len(self._counter._data)
+        return len(self._counter)
 
     def __contains__(self, item: Any) -> bool:
         if not isinstance(item, tuple) or len(item) != 2:
             return False
         key, value = item
-        return self._counter._data.get(key, 0) == value
+        return dict.get(self._counter, key, 0) == value
 
     def __repr__(self) -> str:
         return f"dict_items({list(self)!r})"

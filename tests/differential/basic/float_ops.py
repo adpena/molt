@@ -1,3 +1,5 @@
+"""Purpose: differential coverage for float ops."""
+
 print(float(), float(1), float(True))
 print(float(" 2.5 "), float(b"3.5"))
 
