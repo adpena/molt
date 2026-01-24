@@ -10,6 +10,10 @@ use crossbeam_deque::{Injector, Stealer, Worker};
 
 use crate::state::clear_worker_thread_state;
 
+pub(crate) mod channels;
+pub(crate) mod io_poller;
+pub(crate) mod sockets;
+
 use crate::{
     alloc_exception_from_class_bits, alloc_tuple, call_poll_fn, dec_ref_bits,
     exception_context_align_depth, exception_context_fallback_pop, exception_context_fallback_push,
