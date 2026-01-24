@@ -18,10 +18,10 @@ use crate::{
     runtime_state, set_task_raise_active, task_exception_depth_store, task_exception_depth_take,
     task_exception_handler_stack_store, task_exception_handler_stack_take,
     task_exception_stack_store, task_exception_stack_take, task_raise_active, thread_poll_fn_addr,
-    to_i64, with_gil, GilGuard, MoltHeader, MoltObject, ProcessTaskState, PtrSlot, ThreadTaskState,
-    ACTIVE_EXCEPTION_STACK, ASYNCGEN_REGISTRY, ASYNC_PENDING_COUNT, ASYNC_POLL_COUNT,
-    ASYNC_SLEEP_REGISTER_COUNT, ASYNC_WAKEUP_COUNT, EXCEPTION_STACK, FN_PTR_CODE,
-    HEADER_FLAG_SPAWN_RETAIN,
+    to_i64, with_gil, GilGuard, GilReleaseGuard, IoPoller, MoltHeader, MoltObject,
+    ProcessTaskState, PtrSlot, ThreadTaskState, ACTIVE_EXCEPTION_STACK, ASYNCGEN_REGISTRY,
+    ASYNC_PENDING_COUNT, ASYNC_POLL_COUNT, ASYNC_SLEEP_REGISTER_COUNT, ASYNC_WAKEUP_COUNT,
+    EXCEPTION_STACK, FN_PTR_CODE, GIL_DEPTH, HEADER_FLAG_SPAWN_RETAIN,
 };
 
 use super::cancellation::{
@@ -339,18 +339,39 @@ pub(crate) fn task_waiting_on_future(_py: &PyToken<'_>, task_ptr: *mut u8) -> Op
     waiting_map.get(&PtrSlot(task_ptr)).map(|val| val.0)
 }
 
-pub(crate) fn block_on_wait_event(
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) enum BlockOnWaitSpec {
+    Io {
+        poller: Arc<IoPoller>,
+        socket_ptr: *mut u8,
+        events: u32,
+        timeout: Option<Duration>,
+    },
+    Thread {
+        state: Arc<ThreadTaskState>,
+        timeout: Option<Duration>,
+    },
+    Process {
+        state: Arc<ProcessTaskState>,
+        timeout: Option<Duration>,
+    },
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) enum BlockOnWaitSpec {}
+
+pub(crate) fn block_on_wait_spec(
     _py: &PyToken<'_>,
     awaited_ptr: *mut u8,
     deadline: Option<Instant>,
-) -> bool {
+) -> Option<BlockOnWaitSpec> {
     if awaited_ptr.is_null() {
-        return false;
+        return None;
     }
     #[cfg(target_arch = "wasm32")]
     {
         let _ = deadline;
-        return false;
+        return None;
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -370,38 +391,39 @@ pub(crate) fn block_on_wait_event(
                     .size
                     .saturating_sub(std::mem::size_of::<MoltHeader>());
                 if payload_bytes < 2 * std::mem::size_of::<u64>() {
-                    return false;
+                    return None;
                 }
                 let payload_ptr = awaited_ptr as *mut u64;
                 let socket_bits = *payload_ptr;
                 let events_bits = *payload_ptr.add(1);
                 let socket_ptr = ptr_from_bits(socket_bits);
                 if socket_ptr.is_null() {
-                    return false;
+                    return None;
                 }
                 let events = to_i64(obj_from_bits(events_bits)).unwrap_or(0) as u32;
                 if events == 0 {
-                    return false;
+                    return None;
                 }
-                let _ = runtime_state(_py)
-                    .io_poller()
-                    .wait_blocking(socket_ptr, events, timeout);
-                return true;
+                let poller = Arc::clone(runtime_state(_py).io_poller());
+                return Some(BlockOnWaitSpec::Io {
+                    poller,
+                    socket_ptr,
+                    events,
+                    timeout,
+                });
             }
             if poll_fn == thread_poll_fn_addr() {
                 if let Some(state) = thread_task_state(_py, awaited_ptr) {
-                    state.wait_blocking(timeout);
-                    return true;
+                    return Some(BlockOnWaitSpec::Thread { state, timeout });
                 }
             }
             if poll_fn == process_poll_fn_addr() {
                 if let Some(state) = process_task_state(_py, awaited_ptr) {
-                    state.wait_blocking(timeout);
-                    return true;
+                    return Some(BlockOnWaitSpec::Process { state, timeout });
                 }
             }
         }
-        false
+        None
     }
 }
 
@@ -841,6 +863,12 @@ impl MoltScheduler {
                 let header = task_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
                 let poll_fn_addr = (*header).poll_fn;
                 if poll_fn_addr != 0 {
+                    if async_trace_enabled() {
+                        eprintln!(
+                            "molt async trace: poll_enter task=0x{:x} poll=0x{:x}",
+                            task_ptr as usize, poll_fn_addr
+                        );
+                    }
                     let _gil = GilGuard::new();
                     let _py = _gil.token();
                     let _py = &_py;
@@ -925,6 +953,12 @@ impl MoltScheduler {
                     set_current_token(_py, prev_token);
                     CURRENT_TASK.with(|cell| cell.set(prev_task));
                 }
+                if poll_fn_addr == 0 && async_trace_enabled() {
+                    eprintln!(
+                        "molt async trace: poll_skip task=0x{:x} poll=0x0",
+                        task_ptr as usize
+                    );
+                }
             }
             return;
         }
@@ -935,6 +969,12 @@ impl MoltScheduler {
                 let header = task_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
                 let poll_fn_addr = (*header).poll_fn;
                 if poll_fn_addr != 0 {
+                    if async_trace_enabled() {
+                        eprintln!(
+                            "molt async trace: poll_enter task=0x{:x} poll=0x{:x}",
+                            task_ptr as usize, poll_fn_addr
+                        );
+                    }
                     let _gil = GilGuard::new();
                     let _py = _gil.token();
                     let _py = &_py;
@@ -1017,6 +1057,12 @@ impl MoltScheduler {
                     set_current_token(_py, prev_token);
                     CURRENT_TASK.with(|cell| cell.set(prev_task));
                 }
+                if poll_fn_addr == 0 && async_trace_enabled() {
+                    eprintln!(
+                        "molt async trace: poll_skip task=0x{:x} poll=0x0",
+                        task_ptr as usize
+                    );
+                }
             }
         }
     }
@@ -1056,7 +1102,12 @@ pub unsafe extern "C" fn molt_spawn(task_bits: u64) {
             return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
         };
         if async_trace_enabled() {
-            eprintln!("molt async trace: spawn task=0x{:x}", task_ptr as usize);
+            let poll_fn =
+                (*(task_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader)).poll_fn;
+            eprintln!(
+                "molt async trace: spawn task=0x{:x} poll=0x{:x}",
+                task_ptr as usize, poll_fn
+            );
         }
         cancel_tokens(_py);
         let token = current_token_id();
@@ -1076,7 +1127,19 @@ pub unsafe extern "C" fn molt_spawn(task_bits: u64) {
 /// - `task_bits` must be a valid pointer to a Molt task with a valid header.
 #[no_mangle]
 pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
-    crate::with_gil_entry!(_py, {
+    let (
+        task_ptr,
+        poll_fn_addr,
+        prev_task,
+        prev_token,
+        caller_depth,
+        caller_handlers,
+        caller_active,
+        prev_raise,
+    ) = {
+        let _gil = GilGuard::new();
+        let _py = _gil.token();
+        let _py = &_py;
         let Some(task_ptr) = resolve_task_ptr(task_bits) else {
             return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
         };
@@ -1119,11 +1182,28 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
         BLOCK_ON_TASK.with(|cell| cell.set(task_ptr));
         let prev_raise = task_raise_active();
         set_task_raise_active(true);
-        let result = loop {
-            let mut res = {
-                let _gil = GilGuard::new();
-                call_poll_fn(_py, poll_fn_addr, task_ptr)
-            };
+        (
+            task_ptr,
+            poll_fn_addr,
+            prev_task,
+            prev_token,
+            caller_depth,
+            caller_handlers,
+            caller_active,
+            prev_raise,
+        )
+    };
+    if async_trace_enabled() {
+        let depth = GIL_DEPTH.with(|depth| depth.get());
+        eprintln!("molt async trace: block_on_gil_depth={}", depth);
+    }
+
+    let result = loop {
+        let (pending, wait_spec, deadline, res) = {
+            let _gil = GilGuard::new();
+            let _py = _gil.token();
+            let _py = &_py;
+            let mut res = call_poll_fn(_py, poll_fn_addr, task_ptr);
             if task_cancel_pending(task_ptr) {
                 task_take_cancel_pending(task_ptr);
                 res = raise_cancelled_with_message::<i64>(_py, task_ptr);
@@ -1134,23 +1214,58 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                 let deadline = runtime_state(_py)
                     .sleep_queue()
                     .take_blocking_deadline(_py, task_ptr);
-                if let Some(awaited_ptr) = task_waiting_on_future(_py, task_ptr) {
-                    if block_on_wait_event(_py, awaited_ptr, deadline) {
-                        continue;
+                let wait_spec = task_waiting_on_future(_py, task_ptr)
+                    .and_then(|awaited_ptr| block_on_wait_spec(_py, awaited_ptr, deadline));
+                (pending, wait_spec, deadline, res)
+            } else {
+                (pending, None, None, res)
+            }
+        };
+        if pending {
+            if let Some(spec) = wait_spec {
+                let _release = GilReleaseGuard::new();
+                #[cfg(not(target_arch = "wasm32"))]
+                match spec {
+                    BlockOnWaitSpec::Io {
+                        poller,
+                        socket_ptr,
+                        events,
+                        timeout,
+                    } => {
+                        let _ = poller.wait_blocking(socket_ptr, events, timeout);
+                    }
+                    BlockOnWaitSpec::Thread { state, timeout } => {
+                        state.wait_blocking(timeout);
+                    }
+                    BlockOnWaitSpec::Process { state, timeout } => {
+                        state.wait_blocking(timeout);
                     }
                 }
-                if let Some(deadline) = deadline {
-                    let now = Instant::now();
-                    if deadline > now {
-                        std::thread::sleep(deadline - now);
-                    }
-                } else {
-                    std::thread::sleep(Duration::from_micros(50));
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let _ = spec;
                 }
                 continue;
             }
-            break res;
-        };
+            if let Some(deadline) = deadline {
+                let _release = GilReleaseGuard::new();
+                let now = Instant::now();
+                if deadline > now {
+                    std::thread::sleep(deadline - now);
+                }
+            } else {
+                let _release = GilReleaseGuard::new();
+                std::thread::sleep(Duration::from_micros(50));
+            }
+            continue;
+        }
+        break res;
+    };
+
+    {
+        let _gil = GilGuard::new();
+        let _py = _gil.token();
+        let _py = &_py;
         let new_depth = exception_stack_depth();
         task_exception_depth_store(_py, task_ptr, new_depth);
         exception_context_align_depth(_py, new_depth);
@@ -1171,6 +1286,6 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
         set_task_raise_active(prev_raise);
         set_current_token(_py, prev_token);
         CURRENT_TASK.with(|cell| cell.set(prev_task));
-        result
-    })
+    }
+    result
 }

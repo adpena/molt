@@ -30,7 +30,9 @@ mod utils;
 #[allow(unused_imports)]
 pub(crate) use crate::async_rt::*;
 #[allow(unused_imports)]
-pub(crate) use crate::concurrency::{gil_assert, gil_held, with_gil, GilGuard, PyToken};
+pub(crate) use crate::concurrency::{
+    gil_assert, gil_held, with_gil, GilGuard, GilReleaseGuard, PyToken,
+};
 #[allow(unused_imports)]
 pub(crate) use crate::state::RuntimeState;
 #[allow(unused_imports)]

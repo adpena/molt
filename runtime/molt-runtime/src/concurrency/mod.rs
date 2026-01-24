@@ -1,6 +1,6 @@
 pub(crate) mod gil;
 
-pub(crate) use gil::{gil_assert, gil_held, with_gil, GilGuard, PyToken};
+pub(crate) use gil::{gil_assert, gil_held, with_gil, GilGuard, GilReleaseGuard, PyToken};
 
 #[macro_export]
 macro_rules! with_gil_entry {

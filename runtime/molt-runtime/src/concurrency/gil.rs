@@ -1,4 +1,5 @@
-use std::sync::Mutex;
+use std::cell::RefCell;
+use std::sync::{Mutex, MutexGuard};
 
 use crate::{runtime_state_for_gil, GIL_DEPTH};
 
@@ -13,7 +14,7 @@ fn molt_gil() -> &'static Mutex<()> {
 }
 
 pub(crate) struct GilGuard {
-    guard: Option<std::sync::MutexGuard<'static, ()>>,
+    _marker: (),
 }
 
 pub(crate) struct PyToken<'gil> {
@@ -27,12 +28,13 @@ impl GilGuard {
             depth.set(current + 1);
             current == 0
         });
-        let guard = if needs_lock {
-            Some(molt_gil().lock().unwrap())
-        } else {
-            None
-        };
-        Self { guard }
+        if needs_lock {
+            let guard = molt_gil().lock().unwrap();
+            GIL_GUARD.with(|slot| {
+                *slot.borrow_mut() = Some(guard);
+            });
+        }
+        Self { _marker: () }
     }
 
     pub(crate) fn token(&self) -> PyToken<'_> {
@@ -49,13 +51,50 @@ impl Drop for GilGuard {
             next == 0
         });
         if should_release {
-            self.guard.take();
+            GIL_GUARD.with(|slot| {
+                let _ = slot.borrow_mut().take();
+            });
         }
+    }
+}
+
+pub(crate) struct GilReleaseGuard {
+    depth: usize,
+}
+
+impl GilReleaseGuard {
+    pub(crate) fn new() -> Self {
+        let depth = GIL_DEPTH.with(|d| d.get());
+        if depth == 0 {
+            return Self { depth: 0 };
+        }
+        GIL_DEPTH.with(|d| d.set(0));
+        GIL_GUARD.with(|slot| {
+            let _ = slot.borrow_mut().take();
+        });
+        Self { depth }
+    }
+}
+
+impl Drop for GilReleaseGuard {
+    fn drop(&mut self) {
+        if self.depth == 0 {
+            return;
+        }
+        let guard = molt_gil().lock().unwrap();
+        GIL_GUARD.with(|slot| {
+            *slot.borrow_mut() = Some(guard);
+        });
+        GIL_DEPTH.with(|d| d.set(self.depth));
     }
 }
 
 pub(crate) fn gil_held() -> bool {
     GIL_DEPTH.with(|depth| depth.get() > 0)
+}
+
+thread_local! {
+    static GIL_GUARD: RefCell<Option<MutexGuard<'static, ()>>> = const { RefCell::new(None) };
 }
 
 #[cfg(feature = "molt_debug_gil")]
