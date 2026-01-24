@@ -7,6 +7,7 @@ use num_traits::{Signed, ToPrimitive, Zero};
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::ffi::CStr;
+use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
