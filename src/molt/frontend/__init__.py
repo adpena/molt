@@ -225,7 +225,6 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
         kwonly_params=("key", "default"),
         kw_defaults=(ast.Constant(None), _MOLT_MISSING),
     ),
-    # TODO(semantics, owner:frontend, milestone:LF1, priority:P2, status:partial): allow positional key/reverse for sorted() to match CPython; currently treated as kw-only.
     "sorted": BuiltinFuncSpec(
         "molt_sorted_builtin",
         ("iterable",),
@@ -10523,8 +10522,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.emit(MoltOp(kind="LIST_COUNT", args=[receiver, val], result=res))
                 return res
             if method == "index" and receiver.type_hint == "list":
-                # TODO(type-coverage, owner:frontend, milestone:TC1): accept
-                # keyword args for start/end (list.index(x, start=..., end=...)).
+                # TODO(type-coverage, owner:frontend, milestone:TC1, priority:P2, status:partial):
+                # accept keyword args for start/end (list.index(x, start=..., end=...)).
                 if node.keywords or len(node.args) not in (1, 2, 3):
                     raise NotImplementedError("list.index expects 1 to 3 arguments")
                 val = self.visit(node.args[0])
@@ -10746,8 +10745,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="FILE_CLOSE", args=[receiver], result=res))
                 return res
-            # TODO(stdlib-compat, owner:frontend, milestone:SL1): support
-            # file.flush via FILE_FLUSH lowering once the op is defined.
+            # TODO(stdlib-compat, owner:frontend, milestone:SL1, priority:P2, status:planned):
+            # support file.flush via FILE_FLUSH lowering once the op is defined.
             if method == "count" and receiver.type_hint == "tuple":
                 if len(node.args) != 1:
                     raise NotImplementedError("tuple.count expects 1 argument")
@@ -10774,8 +10773,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                     return res
             if method == "count":
-                # TODO(type-coverage, owner:frontend, milestone:TC1): support
-                # range-style count keyword args (start/end) once keyword binding
+                # TODO(type-coverage, owner:frontend, milestone:TC1, priority:P2, status:planned):
+                # support range-style count keyword args (start/end) once keyword binding
                 # is implemented for count.
                 if len(node.args) not in (1, 2, 3):
                     raise NotImplementedError("count expects 1-3 arguments")

@@ -35,7 +35,19 @@ ordered to avoid deadlocks and performance regressions.
   locks.
 - Lock ordering is strictly: GIL -> handle table -> pointer registry. Locks must
   never be acquired in the reverse order.
+- Runtime-internal mutexes (scheduler, async registries, object pools, caches)
+  must only be acquired while holding the GIL unless a subsystem explicitly
+  documents a GIL-free path.
 - Host I/O, sleeps, or blocking calls must not occur while holding the GIL.
+
+## 4.1 GIL-Exempt Operations (Explicit Exceptions)
+- Runtime entrypoints that mutate state must acquire a `PyToken` via
+  `with_gil`/`with_gil_entry`; any GIL-exempt entrypoints must be listed here.
+- `molt_handle_resolve` is treated as GIL-exempt for long-term performance
+  goals; it must remain read-only against runtime state and rely solely on the
+  pointer registry's sharded read locks for safety.
+- If `molt_handle_resolve` ever requires mutation or additional locks, the
+  exception must be removed and this document updated before merging.
 
 ## 5. Planned Evolution
 - Per-runtime GIL: move the GIL into `RuntimeState` so each worker thread owns a

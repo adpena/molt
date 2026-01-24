@@ -153,7 +153,7 @@ Example:
 - `molt_fetch(cap_id, req_ptr, req_len, resp_ptr_ptr, resp_len_ptr) -> i32`
 
 **v0.1 recommendation:** keep I/O out of portable modules; focus on shared logic and compute.
-TODO(wasm-parity, owner:wasm, milestone:SL1, priority:P1, status:partial): extend host imports/ABI for remaining file methods (readinto1) once implemented so wasm builds stay in lockstep with native file I/O.
+TODO(wasm-parity, owner:runtime, milestone:SL1, priority:P1, status:partial): extend host imports/ABI for remaining file methods (readinto1) once implemented so wasm builds stay in lockstep with native file I/O.
 
 ### 5.4 DB host interface (capability-gated)
 For wasm builds that need database access, the host must expose:

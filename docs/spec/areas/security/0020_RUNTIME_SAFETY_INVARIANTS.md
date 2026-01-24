@@ -60,7 +60,7 @@ entrypoints used to validate them.
   boxing or int->ptr casts in the runtime).
 - ✅ WASM harness enforces raw-pointer inputs for `molt-ptr` imports.
 - ✅ Pointer registry sharded to reduce lock contention (OPT-0003 phase 1).
-- TODO(runtime-safety, owner:runtime, milestone:RT2, priority:P2, status:planned): audit remaining pointer
+- TODO(runtime-provenance, owner:runtime, milestone:RT2, priority:P2, status:planned): audit remaining pointer
   registries/handles for explicit release on shutdown and on error paths.
 - TODO(runtime-provenance, owner:runtime, milestone:RT1, priority:P2, status:partial): benchmark sharded registry
   and evaluate lock-free alternatives once correctness is locked in

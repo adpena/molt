@@ -33,7 +33,7 @@ full teardown of global caches, and a path to auditability.
 - Builtin classes (`BuiltinClasses`) and their `__bases__`/`__mro__` tuples.
 - Interned names (`INTERN_*`) and method tables (OnceLock values).
 - Module cache, exception cache, last-exception tracking.
-- Object pools (global + TLS), parse arena, and other TLS caches.
+- Object pools (global + TLS) retain allocations until shutdown, parse arena, and other TLS caches.
 - Capability cache and hash secret storage.
 - Async registries (task exception stacks, cancel tokens, per-task maps).
 
@@ -73,6 +73,8 @@ Expose a single global pointer (fast path) to the active RuntimeState:
 - Pointer registry is reset on shutdown so NaN-boxed addresses cannot outlive
   runtime teardown; object pointer resolution consults the registry to satisfy
   strict provenance tooling.
+- Object pools now reclaim `TYPE_ID_OBJECT` allocations on decref; non-pooled
+  types deallocate immediately while pools drain during shutdown.
 - Remaining: optional allocation registry + pointer registry lock overhead optimization (OPT-0003).
 
 ## Allocation Tracking (Phase 2)

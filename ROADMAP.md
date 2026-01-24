@@ -40,16 +40,17 @@ Planned milestones:
 - TODO(async-runtime, owner:runtime, milestone:RT2, priority:P0, status:planned): Rust event loop + I/O poller with cancellation propagation and deterministic scheduling guarantees; expose as asyncio core.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P0, status:planned): full asyncio parity (tasks, task groups, streams, subprocess, executors) built on the runtime loop.
 - TODO(runtime, owner:runtime, milestone:RT2, priority:P1, status:planned): define the per-runtime GIL strategy, runtime instance ownership model, and allowed cross-thread object sharing rules (see `docs/spec/areas/runtime/0026_CONCURRENCY_AND_GIL.md`).
-- TODO(runtime, owner:runtime, milestone:RT2, priority:P1, status:planned): introduce an explicit GIL token API (e.g., `Runtime::with_gil` / `Py` token) and require it for runtime mutation paths.
+- Implemented: explicit `PyToken` GIL token API and `with_gil`/`with_gil_entry` enforcement on runtime mutation entrypoints (see `docs/spec/areas/runtime/0026_CONCURRENCY_AND_GIL.md`).
 - TODO(runtime, owner:runtime, milestone:RT3, priority:P1, status:planned): parallel runtime tier with isolated heaps/actors, explicit message passing, and capability-gated shared-memory primitives.
-- TODO(wasm-parity, owner:wasm, milestone:RT3, priority:P1, status:planned): wasm host parity for the asyncio runtime loop, poller, sockets, and subprocess I/O.
+- TODO(wasm-parity, owner:runtime, milestone:RT3, priority:P1, status:planned): wasm host parity for the asyncio runtime loop, poller, sockets, and subprocess I/O.
 
 ## Performance
 - Vector reduction kernels now cover `sum`/`prod`/`min`/`max` with trusted fast paths; next up: float reductions and typed-buffer kernels (TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): float reductions + typed-buffer kernels).
 - String kernel SIMD paths cover find/split/replace with Unicode-safe index translation; next: Unicode index caches and wider SIMD (TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): Unicode index caches + wider SIMD).
 - TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): implement sharded/lock-free handle resolution and track lock-sensitive benchmark deltas (attr access, container ops).
-- TODO(perf, owner:runtime, milestone:TL2, priority:P3, status:planned): stream print writes to avoid building intermediate output strings for large payloads.
-- TODO(perf, owner:wasm, milestone:WASM1, priority:P2, status:planned): use i32 locals for wasm pointer temporaries in the backend to trim wrap/extend churn.
+- TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): stream print writes to avoid building intermediate output strings for large payloads.
+- TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): pre-size `dict.fromkeys` using iterable length hints to reduce rehashing.
+- TODO(perf, owner:compiler, milestone:RT2, priority:P2, status:planned): use i32 locals for wasm pointer temporaries in the backend to trim wrap/extend churn.
 - TODO(wasm-host, owner:runtime, milestone:RT3, priority:P2, status:planned): unblock wasmtime execution/profiling by aligning host imports/memory/table + WASI config, then add a wasmtime harness to compare perf vs Node.
 
 ## Type Coverage
@@ -87,8 +88,8 @@ Planned milestones:
 - TODO(import-system, owner:frontend, milestone:TC3, priority:P2, status:partial): split `__main__` and importable entry modules when the entry module is imported elsewhere.
 - TODO(import-system, owner:frontend, milestone:TC3, priority:P1, status:partial): populate module `__spec__` for compiled modules.
 - TODO(stdlib-compat, owner:runtime, milestone:TC1, priority:P2, status:partial): bootstrap `sys.stdout` so print(file=None) always honors the sys stream.
-- TODO(wasm-parity, owner:wasm, milestone:TC1, priority:P2, status:partial): wasm `str_from_obj` should invoke `__str__` for non-primitive objects.
-- TODO(wasm-parity, owner:wasm, milestone:TC1, priority:P2, status:partial): wasm `string_format`/`format()` need full format-spec parsing/rendering (non-empty specs currently error).
+- TODO(wasm-parity, owner:runtime, milestone:TC1, priority:P2, status:partial): wasm `str_from_obj` should invoke `__str__` for non-primitive objects.
+- TODO(wasm-parity, owner:runtime, milestone:TC1, priority:P2, status:partial): wasm `string_format`/`format()` need full format-spec parsing/rendering (non-empty specs currently error).
 - TODO(wasm-parity, owner:runtime, milestone:SL2, priority:P2, status:partial): add a host-backed `getpid` or document the wasm placeholder semantics.
 - TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P2, status:missing): expose file handle `flush()` and wire wasm parity for file flushing.
 - TODO(tests, owner:frontend, milestone:TC2, priority:P2, status:planned): KW_NAMES error-path coverage (duplicate keywords, positional-only violations) in differential tests.
@@ -112,7 +113,7 @@ Planned milestones:
 - TODO(semantics, owner:runtime, milestone:TC3, priority:P2, status:missing): cycle collector implementation (see `docs/spec/areas/compat/0023_SEMANTIC_BEHAVIOR_MATRIX.md`).
 - Implemented: runtime lifecycle refactor moved caches/pools/async registries into `RuntimeState`, removed lazy_static globals, and added TLS guard cleanup for user threads (see `docs/spec/areas/runtime/0024_RUNTIME_STATE_LIFECYCLE.md`).
 - Implemented: host pointer args use raw pointer ABI; strict-provenance Miri stays green (pointer registry remains for NaN-boxed handles).
-- TODO(runtime-safety, owner:runtime, milestone:RT2, priority:P2, status:planned): bound or evict transient const-pointer registrations in the pointer registry.
+- TODO(runtime-provenance, owner:runtime, milestone:RT2, priority:P2, status:planned): bound or evict transient const-pointer registrations in the pointer registry.
 - TODO(semantics, owner:runtime, milestone:TC2, priority:P3, status:divergent): formalize lazy-task divergence policy (see `docs/spec/areas/compat/0023_SEMANTIC_BEHAVIOR_MATRIX.md`).
 - TODO(c-api, owner:runtime, milestone:SL3, priority:P2, status:missing): define and implement `libmolt` C API shim + `Py_LIMITED_API` target (see `docs/spec/areas/compat/0212_C_API_SYMBOL_MATRIX.md`).
 
@@ -126,7 +127,7 @@ Checklist:
 - Context manager: `__enter__`/`__exit__` semantics, close-on-exit, exception propagation, idempotent close (done).
 - Capability gating: enforce `fs.read`/`fs.write` and error surfaces per operation (done).
 - Native + WASM parity: file APIs and error messages aligned across hosts (pending: wasm host hooks for remaining file methods + open parity tests).
-  (TODO(wasm-parity, owner:wasm, milestone:SL1, priority:P1, status:partial): extend wasm host hooks for remaining file methods (readinto1) and parity coverage.)
+  (TODO(wasm-parity, owner:runtime, milestone:SL1, priority:P1, status:partial): extend wasm host hooks for remaining file methods (readinto1) and parity coverage.)
   (TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P2, status:partial): align file handle type names in error/AttributeError messages with CPython _io.* wrappers.)
 
 Test plan (sign-off):
@@ -186,6 +187,7 @@ Sign-off criteria:
 ## Parity Cluster Plan (Next)
 - 1) Async runtime core: Task/Future APIs, scheduler, contextvars, and cancellation injection into awaits/I/O. Key files: `runtime/molt-runtime/src/lib.rs`, `src/molt/stdlib/asyncio.py`, `src/molt/stdlib/contextvars.py`, `docs/spec/STATUS.md`. Outcome: asyncio loop/task parity for core patterns. Validation: new unit + differential tests; `tools/dev.py test`.
 - 2) Capability-gated async I/O: sockets/SSL/selectors/time primitives with cancellation propagation. Key files: `docs/spec/areas/web/0900_HTTP_SERVER_RUNTIME.md`, `docs/spec/areas/runtime/0505_IO_ASYNC_AND_CONNECTORS.md`, `runtime/molt-runtime/src/lib.rs`. Outcome: async I/O primitives usable by DB/HTTP stacks. Validation: I/O unit tests + fuzzed parser tests + wasm/native parity checks.
+- TODO(runtime, owner:runtime, milestone:RT2, priority:P2, status:missing): add host-level websocket connect hook for `molt_ws_connect` and wire capability enforcement for production socket usage.
 - 3) DB semantics expansion: implement `db_exec`, transactions, typed param mapping; add multirange + array lower-bound decoding. Key files: `runtime/molt-db/src/postgres.rs`, `runtime/molt-worker/src/main.rs`, `docs/spec/areas/db/0700_MOLT_DB_LAYER_VISION.md`, `docs/spec/areas/db/0701_ASYNC_PG_POOL_AND_PROTOCOL.md`, `docs/spec/areas/db/0915_MOLT_DB_IPC_CONTRACT.md`. Outcome: production-ready DB calls with explicit write gating and full type decoding. Validation: dockerized Postgres integration + cancellation tests.
 - 4) WASM DB parity: define WIT/host calls for DB access and implement wasm connectors in molt-db. Key files: `wit/molt-runtime.wit`, `runtime/molt-runtime/src/lib.rs`, `runtime/molt-db/src/lib.rs`, `docs/spec/areas/wasm/0400_WASM_PORTABLE_ABI.md`. Outcome: wasm builds can execute DB queries behind capability gates. Validation: wasm harness tests + native/wasm result parity.
 - 5) Framework-agnostic adapters: finalize `molt_db_adapter` + helper APIs for Django/Flask/FastAPI with shared payload builders. Key files: `src/molt_db_adapter/`, `docs/spec/areas/db/0702_QUERY_BUILDER_AND_DJANGO_ADAPTER.md`, `demo/`, `tests/`. Outcome: same IPC contract across frameworks with consistent error mapping. Validation: integration tests in sample Django/Flask/FastAPI apps.

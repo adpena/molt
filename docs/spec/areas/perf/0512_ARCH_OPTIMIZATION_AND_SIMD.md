@@ -42,7 +42,7 @@ Dispatch order (example):
 ### wasm32
 - Use `simd128` for byte search and reductions.
 - Provide non-SIMD fallback for runtime environments without SIMD.
-- Short-needle search kernels should use `simd128` byte masks to accelerate `find`/`count` (TODO(perf, owner:backend, milestone:RT2, priority:P2, status:planned): simd128 short-needle kernels).
+- Short-needle search kernels should use `simd128` byte masks to accelerate `find`/`count` (TODO(perf, owner:compiler, milestone:RT2, priority:P2, status:planned): simd128 short-needle kernels).
 
 ## 5. SIMD-Friendly String Strategy
 - Use `memchr`/`memmem` for fast byte scanning on ASCII.
@@ -64,4 +64,4 @@ Dispatch order (example):
 ## 8. TODOs
 - TODO(perf, owner:runtime, milestone:RT3, priority:P3, status:planned): AVX-512 or 32-bit specialization for vectorized `prod` reductions.
 - TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): cached UTF-8 index tables for repeated non-ASCII `find`/`count`.
-- TODO(perf, owner:backend, milestone:RT2, priority:P1, status:planned): wasm `simd128` kernels for string scans.
+- TODO(perf, owner:compiler, milestone:RT2, priority:P1, status:planned): wasm `simd128` kernels for string scans.

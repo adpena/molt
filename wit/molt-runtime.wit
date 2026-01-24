@@ -508,8 +508,8 @@ interface intrinsics {
     file_close: func(handle: molt-object) -> molt-object;
     file_detach: func(handle: molt-object) -> molt-object;
     file_reconfigure: func(handle: molt-object, encoding: molt-object, errors: molt-object, newline: molt-object, line_buffering: molt-object, write_through: molt-object) -> molt-object;
-    // TODO(wasm-parity, owner:wasm, milestone:SL1): add imports for remaining
-    // file methods (readinto1) once implemented.
+    // TODO(wasm-parity, owner:runtime, milestone:SL1, priority:P2, status:partial):
+    // add imports for remaining file methods (readinto1) once implemented.
     bridge_unavailable: func(msg: molt-object) -> molt-object;
     db_query: func(ptr: molt-ptr, len: u64, out: molt-ptr, cancel_token: molt-object) -> s32;
     db_exec: func(ptr: molt-ptr, len: u64, out: molt-ptr, cancel_token: molt-object) -> s32;

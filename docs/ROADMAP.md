@@ -167,6 +167,7 @@ Language feature TODOs tracked here for parity:
 - [x] Dominance-safe cleanup for non-entry temporaries (block-level cleanup gated by last-use)
 - [ ] Bytes semantics beyond literals (ops, comparisons, slicing) (TODO(type-coverage, owner:runtime, milestone:TC2, priority:P2, status:partial): bytes semantics beyond literals).
 - [ ] Bytes/bytearray find/split/replace fast paths (partial: no empty-sep/maxsplit; str methods pending) (TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:partial): bytes/bytearray fast paths).
+- [ ] Sharded/lock-free handle resolution + pointer registry lock-scope reduction (TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): reduce handle/registry lock scope and measure lock-sensitive benchmarks).
 - [ ] Biased Reference Counting (Single-thread optimization) (TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): biased RC).
 - [ ] Incremental Mark-and-Sweep GC (TODO(semantics, owner:runtime, milestone:TC3, priority:P2, status:missing): incremental mark-and-sweep GC).
 - [ ] Zero-copy String passing for WASM (TODO(wasm-parity, owner:runtime, milestone:RT3, priority:P2, status:planned): zero-copy string passing for WASM).
@@ -176,6 +177,8 @@ Language feature TODOs tracked here for parity:
 - [x] Unified Task ABI for futures/generators across native + WASM backends
 - [x] CPython fallback wrappers for channels/spawn (`molt.channel`, `molt.spawn`)
 - [ ] Task-based Concurrency (No GIL) (TODO(async-runtime, owner:runtime, milestone:RT2, priority:P1, status:partial): task-based concurrency).
+- [ ] Per-runtime GIL strategy + runtime instance ownership model (TODO(runtime, owner:runtime, milestone:RT2, priority:P1, status:planned): define per-runtime GIL strategy and runtime instance ownership model).
+- [ ] PyToken enforcement across runtime mutation entrypoints (TODO(concurrency, owner:runtime, milestone:RT2, priority:P1, status:partial): thread PyToken through runtime mutation entrypoints).
 - [ ] Process model integration for `multiprocessing`/`subprocess`/`concurrent.futures` (capability-gated spawn, IPC primitives, worker lifecycle). (TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P3, status:planned): process model integration for `multiprocessing`/`subprocess`/`concurrent.futures`.)
 - [ ] Rust Executor Integration (Tokio/Smol) (TODO(async-runtime, owner:runtime, milestone:RT2, priority:P2, status:planned): executor integration).
 - [ ] Native HTTP Package (`molt_http`) (TODO(http-runtime, owner:runtime, milestone:SL3, priority:P2, status:missing): native HTTP package).

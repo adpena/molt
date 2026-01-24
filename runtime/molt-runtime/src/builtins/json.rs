@@ -8,6 +8,7 @@ use std::io::Cursor;
 /// Dereferences raw pointers. Caller must ensure ptr is valid UTF-8 of at least len bytes.
 #[no_mangle]
 pub unsafe extern "C" fn molt_json_parse_int(ptr: *const u8, len_bits: u64) -> i64 {
+    crate::with_gil_entry!(_py, {
     let len = usize_from_bits(len_bits);
     let s = {
         let slice = std::slice::from_raw_parts(ptr, len);
@@ -15,9 +16,11 @@ pub unsafe extern "C" fn molt_json_parse_int(ptr: *const u8, len_bits: u64) -> i
     };
     let v: serde_json::Value = serde_json::from_str(s).unwrap();
     v.as_i64().unwrap_or(0)
+
+    })
 }
 
-fn value_to_object(value: serde_json::Value, arena: &mut TempArena) -> Result<MoltObject, i32> {
+fn value_to_object(_py: &PyToken<'_>, value: serde_json::Value, arena: &mut TempArena) -> Result<MoltObject, i32> {
     match value {
         serde_json::Value::Null => Ok(MoltObject::none()),
         serde_json::Value::Bool(b) => Ok(MoltObject::from_bool(b)),
@@ -31,7 +34,7 @@ fn value_to_object(value: serde_json::Value, arena: &mut TempArena) -> Result<Mo
             }
         }
         serde_json::Value::String(s) => {
-            let ptr = alloc_string(s.as_bytes());
+            let ptr = alloc_string(_py, s.as_bytes());
             if ptr.is_null() {
                 Err(2)
             } else {
@@ -43,7 +46,7 @@ fn value_to_object(value: serde_json::Value, arena: &mut TempArena) -> Result<Mo
                 return Err(2);
             }
             if items.is_empty() {
-                let ptr = alloc_list(&[]);
+                let ptr = alloc_list(_py, &[]);
                 if ptr.is_null() {
                     return Err(2);
                 }
@@ -55,13 +58,13 @@ fn value_to_object(value: serde_json::Value, arena: &mut TempArena) -> Result<Mo
                 return Err(2);
             }
             for (idx, item) in items.into_iter().enumerate() {
-                let obj = value_to_object(item, arena)?;
+                let obj = value_to_object(_py, item, arena)?;
                 unsafe {
                     *elems_ptr.add(idx) = obj.bits();
                 }
             }
             let elems = unsafe { std::slice::from_raw_parts(elems_ptr, len) };
-            let ptr = alloc_list(elems);
+            let ptr = alloc_list(_py, elems);
             if ptr.is_null() {
                 Err(2)
             } else {
@@ -73,7 +76,7 @@ fn value_to_object(value: serde_json::Value, arena: &mut TempArena) -> Result<Mo
                 return Err(2);
             }
             if map.is_empty() {
-                let ptr = alloc_dict_with_pairs(&[]);
+                let ptr = alloc_dict_with_pairs(_py, &[]);
                 if ptr.is_null() {
                     return Err(2);
                 }
@@ -85,18 +88,18 @@ fn value_to_object(value: serde_json::Value, arena: &mut TempArena) -> Result<Mo
                 return Err(2);
             }
             for (idx, (key, value)) in map.into_iter().enumerate() {
-                let key_ptr = alloc_string(key.as_bytes());
+                let key_ptr = alloc_string(_py, key.as_bytes());
                 if key_ptr.is_null() {
                     return Err(2);
                 }
-                let val_obj = value_to_object(value, arena)?;
+                let val_obj = value_to_object(_py, value, arena)?;
                 unsafe {
                     *pairs_ptr.add(idx * 2) = MoltObject::from_ptr(key_ptr).bits();
                     *pairs_ptr.add(idx * 2 + 1) = val_obj.bits();
                 }
             }
             let pairs = unsafe { std::slice::from_raw_parts(pairs_ptr, len * 2) };
-            let ptr = alloc_dict_with_pairs(pairs);
+            let ptr = alloc_dict_with_pairs(_py, pairs);
             if ptr.is_null() {
                 Err(2)
             } else {
@@ -106,7 +109,7 @@ fn value_to_object(value: serde_json::Value, arena: &mut TempArena) -> Result<Mo
     }
 }
 
-fn msgpack_value_to_object(value: rmpv::Value, arena: &mut TempArena) -> Result<MoltObject, i32> {
+fn msgpack_value_to_object(_py: &PyToken<'_>, value: rmpv::Value, arena: &mut TempArena) -> Result<MoltObject, i32> {
     match value {
         rmpv::Value::Nil => Ok(MoltObject::none()),
         rmpv::Value::Boolean(b) => Ok(MoltObject::from_bool(b)),
@@ -127,7 +130,7 @@ fn msgpack_value_to_object(value: rmpv::Value, arena: &mut TempArena) -> Result<
         rmpv::Value::F64(f) => Ok(MoltObject::from_float(f)),
         rmpv::Value::String(s) => {
             let s = s.as_str().ok_or(2)?;
-            let ptr = alloc_string(s.as_bytes());
+            let ptr = alloc_string(_py, s.as_bytes());
             if ptr.is_null() {
                 Err(2)
             } else {
@@ -135,7 +138,7 @@ fn msgpack_value_to_object(value: rmpv::Value, arena: &mut TempArena) -> Result<
             }
         }
         rmpv::Value::Binary(b) => {
-            let ptr = alloc_bytes(&b);
+            let ptr = alloc_bytes(_py, &b);
             if ptr.is_null() {
                 Err(2)
             } else {
@@ -147,7 +150,7 @@ fn msgpack_value_to_object(value: rmpv::Value, arena: &mut TempArena) -> Result<
                 return Err(2);
             }
             if items.is_empty() {
-                let ptr = alloc_list(&[]);
+                let ptr = alloc_list(_py, &[]);
                 if ptr.is_null() {
                     return Err(2);
                 }
@@ -159,13 +162,13 @@ fn msgpack_value_to_object(value: rmpv::Value, arena: &mut TempArena) -> Result<
                 return Err(2);
             }
             for (idx, item) in items.into_iter().enumerate() {
-                let obj = msgpack_value_to_object(item, arena)?;
+                let obj = msgpack_value_to_object(_py, item, arena)?;
                 unsafe {
                     *elems_ptr.add(idx) = obj.bits();
                 }
             }
             let elems = unsafe { std::slice::from_raw_parts(elems_ptr, len) };
-            let ptr = alloc_list(elems);
+            let ptr = alloc_list(_py, elems);
             if ptr.is_null() {
                 Err(2)
             } else {
@@ -177,7 +180,7 @@ fn msgpack_value_to_object(value: rmpv::Value, arena: &mut TempArena) -> Result<
                 return Err(2);
             }
             if items.is_empty() {
-                let ptr = alloc_dict_with_pairs(&[]);
+                let ptr = alloc_dict_with_pairs(_py, &[]);
                 if ptr.is_null() {
                     return Err(2);
                 }
@@ -189,15 +192,15 @@ fn msgpack_value_to_object(value: rmpv::Value, arena: &mut TempArena) -> Result<
                 return Err(2);
             }
             for (idx, (key, value)) in items.into_iter().enumerate() {
-                let key_obj = msgpack_key_to_object(key)?;
-                let val_obj = msgpack_value_to_object(value, arena)?;
+                let key_obj = msgpack_key_to_object(_py, key)?;
+                let val_obj = msgpack_value_to_object(_py, value, arena)?;
                 unsafe {
                     *pairs_ptr.add(idx * 2) = key_obj.bits();
                     *pairs_ptr.add(idx * 2 + 1) = val_obj.bits();
                 }
             }
             let pairs = unsafe { std::slice::from_raw_parts(pairs_ptr, len * 2) };
-            let ptr = alloc_dict_with_pairs(pairs);
+            let ptr = alloc_dict_with_pairs(_py, pairs);
             if ptr.is_null() {
                 Err(2)
             } else {
@@ -208,7 +211,7 @@ fn msgpack_value_to_object(value: rmpv::Value, arena: &mut TempArena) -> Result<
     }
 }
 
-fn msgpack_key_to_object(value: rmpv::Value) -> Result<MoltObject, i32> {
+fn msgpack_key_to_object(_py: &PyToken<'_>, value: rmpv::Value) -> Result<MoltObject, i32> {
     match value {
         rmpv::Value::Nil => Ok(MoltObject::none()),
         rmpv::Value::Boolean(b) => Ok(MoltObject::from_bool(b)),
@@ -226,7 +229,7 @@ fn msgpack_key_to_object(value: rmpv::Value) -> Result<MoltObject, i32> {
             }
         }
         rmpv::Value::String(s) => {
-            let ptr = alloc_string(s.as_bytes());
+            let ptr = alloc_string(_py, s.as_bytes());
             if ptr.is_null() {
                 Err(2)
             } else {
@@ -234,7 +237,7 @@ fn msgpack_key_to_object(value: rmpv::Value) -> Result<MoltObject, i32> {
             }
         }
         rmpv::Value::Binary(b) => {
-            let ptr = alloc_bytes(&b);
+            let ptr = alloc_bytes(_py, &b);
             if ptr.is_null() {
                 Err(2)
             } else {
@@ -246,7 +249,7 @@ fn msgpack_key_to_object(value: rmpv::Value) -> Result<MoltObject, i32> {
 }
 
 fn cbor_value_to_object(
-    value: serde_cbor::Value,
+    _py: &PyToken<'_>, value: serde_cbor::Value,
     arena: &mut TempArena,
 ) -> Result<MoltObject, i32> {
     match value {
@@ -260,7 +263,7 @@ fn cbor_value_to_object(
         }
         serde_cbor::Value::Float(f) => Ok(MoltObject::from_float(f)),
         serde_cbor::Value::Text(s) => {
-            let ptr = alloc_string(s.as_bytes());
+            let ptr = alloc_string(_py, s.as_bytes());
             if ptr.is_null() {
                 Err(2)
             } else {
@@ -268,7 +271,7 @@ fn cbor_value_to_object(
             }
         }
         serde_cbor::Value::Bytes(b) => {
-            let ptr = alloc_bytes(&b);
+            let ptr = alloc_bytes(_py, &b);
             if ptr.is_null() {
                 Err(2)
             } else {
@@ -280,7 +283,7 @@ fn cbor_value_to_object(
                 return Err(2);
             }
             if items.is_empty() {
-                let ptr = alloc_list(&[]);
+                let ptr = alloc_list(_py, &[]);
                 if ptr.is_null() {
                     return Err(2);
                 }
@@ -292,13 +295,13 @@ fn cbor_value_to_object(
                 return Err(2);
             }
             for (idx, item) in items.into_iter().enumerate() {
-                let obj = cbor_value_to_object(item, arena)?;
+                let obj = cbor_value_to_object(_py, item, arena)?;
                 unsafe {
                     *elems_ptr.add(idx) = obj.bits();
                 }
             }
             let elems = unsafe { std::slice::from_raw_parts(elems_ptr, len) };
-            let ptr = alloc_list(elems);
+            let ptr = alloc_list(_py, elems);
             if ptr.is_null() {
                 Err(2)
             } else {
@@ -310,7 +313,7 @@ fn cbor_value_to_object(
                 return Err(2);
             }
             if items.is_empty() {
-                let ptr = alloc_dict_with_pairs(&[]);
+                let ptr = alloc_dict_with_pairs(_py, &[]);
                 if ptr.is_null() {
                     return Err(2);
                 }
@@ -322,15 +325,15 @@ fn cbor_value_to_object(
                 return Err(2);
             }
             for (idx, (key, value)) in items.into_iter().enumerate() {
-                let key_obj = cbor_key_to_object(key)?;
-                let val_obj = cbor_value_to_object(value, arena)?;
+                let key_obj = cbor_key_to_object(_py, key)?;
+                let val_obj = cbor_value_to_object(_py, value, arena)?;
                 unsafe {
                     *pairs_ptr.add(idx * 2) = key_obj.bits();
                     *pairs_ptr.add(idx * 2 + 1) = val_obj.bits();
                 }
             }
             let pairs = unsafe { std::slice::from_raw_parts(pairs_ptr, len * 2) };
-            let ptr = alloc_dict_with_pairs(pairs);
+            let ptr = alloc_dict_with_pairs(_py, pairs);
             if ptr.is_null() {
                 Err(2)
             } else {
@@ -341,7 +344,7 @@ fn cbor_value_to_object(
     }
 }
 
-fn cbor_key_to_object(value: serde_cbor::Value) -> Result<MoltObject, i32> {
+fn cbor_key_to_object(_py: &PyToken<'_>, value: serde_cbor::Value) -> Result<MoltObject, i32> {
     match value {
         serde_cbor::Value::Null => Ok(MoltObject::none()),
         serde_cbor::Value::Bool(b) => Ok(MoltObject::from_bool(b)),
@@ -354,7 +357,7 @@ fn cbor_key_to_object(value: serde_cbor::Value) -> Result<MoltObject, i32> {
             }
         }
         serde_cbor::Value::Text(s) => {
-            let ptr = alloc_string(s.as_bytes());
+            let ptr = alloc_string(_py, s.as_bytes());
             if ptr.is_null() {
                 Err(2)
             } else {
@@ -362,7 +365,7 @@ fn cbor_key_to_object(value: serde_cbor::Value) -> Result<MoltObject, i32> {
             }
         }
         serde_cbor::Value::Bytes(b) => {
-            let ptr = alloc_bytes(&b);
+            let ptr = alloc_bytes(_py, &b);
             if ptr.is_null() {
                 Err(2)
             } else {
@@ -374,6 +377,7 @@ fn cbor_key_to_object(value: serde_cbor::Value) -> Result<MoltObject, i32> {
 }
 
 unsafe fn parse_json_scalar(
+    _py: &PyToken<'_>,
     ptr: *const u8,
     len: usize,
     arena: &mut TempArena,
@@ -381,7 +385,7 @@ unsafe fn parse_json_scalar(
     let slice = std::slice::from_raw_parts(ptr, len);
     let s = std::str::from_utf8(slice).map_err(|_| 1)?;
     let v: serde_json::Value = serde_json::from_str(s).map_err(|_| 1)?;
-    value_to_object(v, arena)
+    value_to_object(_py, v, arena)
 }
 
 /// # Safety
@@ -392,13 +396,14 @@ pub unsafe extern "C" fn molt_json_parse_scalar(
     len_bits: u64,
     out: *mut u64,
 ) -> i32 {
+    crate::with_gil_entry!(_py, {
     let len = usize_from_bits(len_bits);
     if out.is_null() {
         return 2;
     }
     let obj = PARSE_ARENA.with(|arena| {
         let mut arena = arena.borrow_mut();
-        let result = parse_json_scalar(ptr, len, &mut arena);
+        let result = parse_json_scalar(_py, ptr, len, &mut arena);
         arena.reset();
         result
     });
@@ -408,6 +413,8 @@ pub unsafe extern "C" fn molt_json_parse_scalar(
     };
     *out = obj.bits();
     0
+
+    })
 }
 
 /// # Safety
@@ -418,6 +425,7 @@ pub unsafe extern "C" fn molt_msgpack_parse_scalar(
     len_bits: u64,
     out: *mut u64,
 ) -> i32 {
+    crate::with_gil_entry!(_py, {
     let len = usize_from_bits(len_bits);
     if out.is_null() {
         return 2;
@@ -430,7 +438,7 @@ pub unsafe extern "C" fn molt_msgpack_parse_scalar(
     };
     let obj = PARSE_ARENA.with(|arena| {
         let mut arena = arena.borrow_mut();
-        let result = msgpack_value_to_object(v, &mut arena);
+        let result = msgpack_value_to_object(_py, v, &mut arena);
         arena.reset();
         result
     });
@@ -440,6 +448,8 @@ pub unsafe extern "C" fn molt_msgpack_parse_scalar(
     };
     *out = obj.bits();
     0
+
+    })
 }
 
 /// # Safety
@@ -450,6 +460,7 @@ pub unsafe extern "C" fn molt_cbor_parse_scalar(
     len_bits: u64,
     out: *mut u64,
 ) -> i32 {
+    crate::with_gil_entry!(_py, {
     let len = usize_from_bits(len_bits);
     if out.is_null() {
         return 2;
@@ -461,7 +472,7 @@ pub unsafe extern "C" fn molt_cbor_parse_scalar(
     };
     let obj = PARSE_ARENA.with(|arena| {
         let mut arena = arena.borrow_mut();
-        let result = cbor_value_to_object(v, &mut arena);
+        let result = cbor_value_to_object(_py, v, &mut arena);
         arena.reset();
         result
     });
@@ -471,45 +482,51 @@ pub unsafe extern "C" fn molt_cbor_parse_scalar(
     };
     *out = obj.bits();
     0
+
+    })
 }
 
 #[no_mangle]
 pub extern "C" fn molt_json_parse_scalar_obj(obj_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
     let obj = obj_from_bits(obj_bits);
     let Some(ptr) = obj.as_ptr() else {
-        return raise_exception::<_>("TypeError", "json.parse expects str");
+        return raise_exception::<_>(_py, "TypeError", "json.parse expects str");
     };
     unsafe {
         if object_type_id(ptr) != TYPE_ID_STRING {
-            let msg = format!("json.parse expects str, got {}", type_name(obj));
-            return raise_exception::<_>("TypeError", &msg);
+            let msg = format!("json.parse expects str, got {}", type_name(_py, obj));
+            return raise_exception::<_>(_py, "TypeError", &msg);
         }
         let len = string_len(ptr);
         let data = string_bytes(ptr);
         let obj = PARSE_ARENA.with(|arena| {
             let mut arena = arena.borrow_mut();
-            let result = parse_json_scalar(data, len, &mut arena);
+            let result = parse_json_scalar(_py, data, len, &mut arena);
             arena.reset();
             result
         });
         match obj {
             Ok(val) => val.bits(),
-            Err(_) => return raise_exception::<_>("ValueError", "invalid JSON payload"),
+            Err(_) => return raise_exception::<_>(_py, "ValueError", "invalid JSON payload"),
         }
     }
+
+    })
 }
 
 #[no_mangle]
 pub extern "C" fn molt_msgpack_parse_scalar_obj(obj_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
     let obj = obj_from_bits(obj_bits);
     let Some(ptr) = obj.as_ptr() else {
-        return raise_exception::<_>("TypeError", "msgpack.parse expects bytes");
+        return raise_exception::<_>(_py, "TypeError", "msgpack.parse expects bytes");
     };
     unsafe {
         let type_id = object_type_id(ptr);
         if type_id != TYPE_ID_BYTES && type_id != TYPE_ID_BYTEARRAY {
-            let msg = format!("msgpack.parse expects bytes, got {}", type_name(obj));
-            return raise_exception::<_>("TypeError", &msg);
+            let msg = format!("msgpack.parse expects bytes, got {}", type_name(_py, obj));
+            return raise_exception::<_>(_py, "TypeError", &msg);
         }
         let len = bytes_len(ptr);
         let data = bytes_data(ptr);
@@ -517,49 +534,54 @@ pub extern "C" fn molt_msgpack_parse_scalar_obj(obj_bits: u64) -> u64 {
         let mut cursor = Cursor::new(slice);
         let v = match rmpv::decode::read_value(&mut cursor) {
             Ok(val) => val,
-            Err(_) => return raise_exception::<_>("ValueError", "invalid msgpack payload"),
+            Err(_) => return raise_exception::<_>(_py, "ValueError", "invalid msgpack payload"),
         };
         let obj = PARSE_ARENA.with(|arena| {
             let mut arena = arena.borrow_mut();
-            let result = msgpack_value_to_object(v, &mut arena);
+            let result = msgpack_value_to_object(_py, v, &mut arena);
             arena.reset();
             result
         });
         match obj {
             Ok(val) => val.bits(),
-            Err(_) => return raise_exception::<_>("ValueError", "invalid msgpack payload"),
+            Err(_) => return raise_exception::<_>(_py, "ValueError", "invalid msgpack payload"),
         }
     }
+
+    })
 }
 
 #[no_mangle]
 pub extern "C" fn molt_cbor_parse_scalar_obj(obj_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
     let obj = obj_from_bits(obj_bits);
     let Some(ptr) = obj.as_ptr() else {
-        return raise_exception::<_>("TypeError", "cbor.parse expects bytes");
+        return raise_exception::<_>(_py, "TypeError", "cbor.parse expects bytes");
     };
     unsafe {
         let type_id = object_type_id(ptr);
         if type_id != TYPE_ID_BYTES && type_id != TYPE_ID_BYTEARRAY {
-            let msg = format!("cbor.parse expects bytes, got {}", type_name(obj));
-            return raise_exception::<_>("TypeError", &msg);
+            let msg = format!("cbor.parse expects bytes, got {}", type_name(_py, obj));
+            return raise_exception::<_>(_py, "TypeError", &msg);
         }
         let len = bytes_len(ptr);
         let data = bytes_data(ptr);
         let slice = std::slice::from_raw_parts(data, len);
         let v: serde_cbor::Value = match serde_cbor::from_slice(slice) {
             Ok(val) => val,
-            Err(_) => return raise_exception::<_>("ValueError", "invalid cbor payload"),
+            Err(_) => return raise_exception::<_>(_py, "ValueError", "invalid cbor payload"),
         };
         let obj = PARSE_ARENA.with(|arena| {
             let mut arena = arena.borrow_mut();
-            let result = cbor_value_to_object(v, &mut arena);
+            let result = cbor_value_to_object(_py, v, &mut arena);
             arena.reset();
             result
         });
         match obj {
             Ok(val) => val.bits(),
-            Err(_) => return raise_exception::<_>("ValueError", "invalid cbor payload"),
+            Err(_) => return raise_exception::<_>(_py, "ValueError", "invalid cbor payload"),
         }
     }
+
+    })
 }

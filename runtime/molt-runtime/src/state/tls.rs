@@ -1,7 +1,8 @@
 use std::cell::{Cell, RefCell};
 
 use crate::arena::TempArena;
-use crate::{FrameEntry, PtrSlot};
+use crate::builtins::frames::FrameEntry;
+use crate::PtrSlot;
 
 pub(crate) const DEFAULT_RECURSION_LIMIT: usize = 1000;
 

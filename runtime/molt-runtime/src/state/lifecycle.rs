@@ -1,15 +1,18 @@
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-
-use crate::concurrency::GilGuard;
+use crate::PyToken;
 use crate::{
     builtin_classes_shutdown, clear_exception_state, clear_exception_type_cache, dec_ref_bits,
-    default_cancel_tokens, obj_from_bits, reset_ptr_registry, MoltObject, Utf8CacheStore,
-    Utf8CountCacheStore, ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, ASYNCGEN_REGISTRY,
-    ATTR_NAME_TLS, BLOCK_ON_TASK, CONTEXT_STACK, CURRENT_TASK, CURRENT_TOKEN,
-    DEFAULT_RECURSION_LIMIT, DESCRIPTOR_CACHE_TLS, EXCEPTION_STACK, FN_PTR_CODE, FRAME_STACK,
-    GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE, GIL_DEPTH, NEXT_CANCEL_TOKEN_ID,
-    OBJECT_POOL_BUCKETS, OBJECT_POOL_TLS, PARSE_ARENA, RECURSION_DEPTH, RECURSION_LIMIT,
-    TASK_RAISE_ACTIVE, UTF8_CACHE_MAX_ENTRIES, UTF8_COUNT_CACHE_SHARDS, UTF8_COUNT_TLS,
+    default_cancel_tokens, obj_from_bits, reset_ptr_registry, MoltObject,
+    ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, ASYNCGEN_REGISTRY, BLOCK_ON_TASK,
+    CONTEXT_STACK, CURRENT_TASK, CURRENT_TOKEN, DEFAULT_RECURSION_LIMIT, EXCEPTION_STACK,
+    FN_PTR_CODE, FRAME_STACK, GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE, GIL_DEPTH,
+    NEXT_CANCEL_TOKEN_ID, OBJECT_POOL_BUCKETS, OBJECT_POOL_TLS, PARSE_ARENA, RECURSION_DEPTH,
+    RECURSION_LIMIT, TASK_RAISE_ACTIVE,
+};
+use crate::builtins::attr::clear_attr_tls_caches;
+use crate::object::utf8_cache::{
+    clear_utf8_count_tls, Utf8CacheStore, Utf8CountCacheStore, UTF8_CACHE_MAX_ENTRIES,
+    UTF8_COUNT_CACHE_SHARDS,
 };
 
 use super::{cache::clear_atomic_slots, cache::clear_method_cache, RuntimeState};
@@ -28,21 +31,23 @@ impl ThreadLocalGuard {
 
 impl Drop for ThreadLocalGuard {
     fn drop(&mut self) {
-        clear_thread_local_state();
+        crate::with_gil_entry!(_py, { clear_thread_local_state(_py); });
         clear_object_pool_tls();
     }
 }
 
 pub(crate) fn touch_tls_guard() {
+    GIL_DEPTH.with(|_| {});
     TLS_GUARD.with(|_| {});
 }
 
-pub(crate) fn runtime_teardown(state: &RuntimeState) {
+pub(crate) fn runtime_teardown(_py: &PyToken<'_>, state: &RuntimeState) {
+    crate::gil_assert();
     if state.scheduler_started.load(AtomicOrdering::Acquire) {
         state.scheduler().shutdown();
     }
     if state.sleep_queue_started.load(AtomicOrdering::Acquire) {
-        state.sleep_queue().shutdown();
+        state.sleep_queue().shutdown(_py);
     }
     #[cfg(not(target_arch = "wasm32"))]
     if state.io_poller_started.load(AtomicOrdering::Acquire) {
@@ -55,24 +60,25 @@ pub(crate) fn runtime_teardown(state: &RuntimeState) {
         }
     }
     clear_async_hang_probe(state);
-    clear_thread_local_state();
-    clear_task_state(state);
-    clear_exception_state();
-    clear_module_cache(state);
-    clear_exception_type_cache(state);
-    builtin_classes_shutdown(state);
-    clear_interned_names(state);
-    clear_method_cache(state);
-    clear_special_cache(state);
+    clear_task_state(_py, state);
+    clear_exception_state(_py);
+    clear_module_cache(_py, state);
+    clear_exception_type_cache(_py, state);
+    builtin_classes_shutdown(_py, state);
+    clear_interned_names(_py, state);
+    clear_method_cache(_py, state);
+    clear_special_cache(_py, state);
     clear_utf8_caches(state);
-    clear_code_slots(state);
+    clear_code_slots(_py, state);
     clear_object_pool(state);
     clear_asyncgen_registry();
-    clear_fn_ptr_code_map();
+    clear_fn_ptr_code_map(_py);
     reset_ptr_registry();
+    clear_thread_local_state(_py);
 }
 
-pub(crate) fn runtime_reset_for_init(state: &RuntimeState) {
+pub(crate) fn runtime_reset_for_init(_py: &PyToken<'_>, state: &RuntimeState) {
+    crate::gil_assert();
     PARSE_ARENA.with(|arena| arena.borrow_mut().reset());
     reset_object_pool(state);
 }
@@ -84,12 +90,13 @@ fn clear_asyncgen_registry() {
     }
 }
 
-fn clear_fn_ptr_code_map() {
+fn clear_fn_ptr_code_map(_py: &PyToken<'_>) {
+    crate::gil_assert();
     if let Some(map) = FN_PTR_CODE.get() {
         let mut guard = map.lock().unwrap();
         for (_key, bits) in guard.drain() {
             if bits != 0 {
-                dec_ref_bits(bits);
+                dec_ref_bits(_py, bits);
             }
         }
     }
@@ -103,12 +110,13 @@ fn clear_async_hang_probe(state: &RuntimeState) {
     }
 }
 
-fn clear_thread_local_state() {
+fn clear_thread_local_state(_py: &PyToken<'_>) {
+    crate::gil_assert();
     let _ = CONTEXT_STACK.try_with(|stack| {
         let mut stack = stack.borrow_mut();
         let old = std::mem::take(&mut *stack);
         for bits in old {
-            dec_ref_bits(bits);
+            dec_ref_bits(_py, bits);
         }
     });
     let _ = FRAME_STACK.try_with(|stack| {
@@ -116,7 +124,7 @@ fn clear_thread_local_state() {
         let old = std::mem::take(&mut *stack);
         for entry in old {
             if entry.code_bits != 0 {
-                dec_ref_bits(entry.code_bits);
+                dec_ref_bits(_py, entry.code_bits);
             }
         }
     });
@@ -125,7 +133,7 @@ fn clear_thread_local_state() {
         let old = std::mem::take(&mut *stack);
         for bits in old {
             if !obj_from_bits(bits).is_none() {
-                dec_ref_bits(bits);
+                dec_ref_bits(_py, bits);
             }
         }
     });
@@ -139,7 +147,7 @@ fn clear_thread_local_state() {
         for (_key, stack) in old {
             for bits in stack {
                 if !obj_from_bits(bits).is_none() {
-                    dec_ref_bits(bits);
+                    dec_ref_bits(_py, bits);
                 }
             }
         }
@@ -150,46 +158,38 @@ fn clear_thread_local_state() {
     });
     let _ = RECURSION_DEPTH.try_with(|depth| depth.set(0));
     let _ = RECURSION_LIMIT.try_with(|limit| limit.set(DEFAULT_RECURSION_LIMIT));
-    let _ = GIL_DEPTH.try_with(|depth| depth.set(0));
     let _ = GENERATOR_RAISE.try_with(|flag| flag.set(false));
     let _ = TASK_RAISE_ACTIVE.try_with(|flag| flag.set(false));
     let _ = BLOCK_ON_TASK.try_with(|cell| cell.set(std::ptr::null_mut()));
     let _ = CURRENT_TASK.try_with(|cell| cell.set(std::ptr::null_mut()));
     let _ = CURRENT_TOKEN.try_with(|cell| cell.set(1));
     let _ = PARSE_ARENA.try_with(|arena| arena.borrow_mut().clear());
-    let _ = ATTR_NAME_TLS.try_with(|cell| {
-        let mut entry = cell.borrow_mut();
-        if let Some(prev) = entry.take() {
-            dec_ref_bits(prev.bits);
-        }
-    });
-    let _ = DESCRIPTOR_CACHE_TLS.try_with(|cell| {
-        cell.borrow_mut().take();
-    });
-    let _ = UTF8_COUNT_TLS.try_with(|cell| {
-        cell.borrow_mut().take();
-    });
+    clear_attr_tls_caches(_py);
+    clear_utf8_count_tls();
+    let _ = GIL_DEPTH.try_with(|depth| depth.set(0));
 }
 
-fn clear_code_slots(state: &RuntimeState) {
+fn clear_code_slots(_py: &PyToken<'_>, state: &RuntimeState) {
+    crate::gil_assert();
     let Some(slots) = state.code_slots.get() else {
         return;
     };
     for slot in slots {
         let bits = slot.swap(0, AtomicOrdering::AcqRel);
         if bits != 0 {
-            dec_ref_bits(bits);
+            dec_ref_bits(_py, bits);
         }
     }
 }
 
-pub(crate) fn clear_worker_thread_state() {
-    let _gil = GilGuard::new();
-    clear_thread_local_state();
+pub(crate) fn clear_worker_thread_state(_py: &PyToken<'_>) {
+    crate::gil_assert();
+    clear_thread_local_state(_py);
     clear_object_pool_tls();
 }
 
-fn clear_task_state(state: &RuntimeState) {
+fn clear_task_state(_py: &PyToken<'_>, state: &RuntimeState) {
+    crate::gil_assert();
     let stacks = {
         let mut guard = state.task_exception_stacks.lock().unwrap();
         let old = std::mem::take(&mut *guard);
@@ -198,7 +198,7 @@ fn clear_task_state(state: &RuntimeState) {
     for stack in stacks {
         for bits in stack {
             if !obj_from_bits(bits).is_none() {
-                dec_ref_bits(bits);
+                dec_ref_bits(_py, bits);
             }
         }
     }
@@ -213,7 +213,7 @@ fn clear_task_state(state: &RuntimeState) {
     };
     for ptr in pointers {
         let bits = MoltObject::from_ptr(ptr).bits();
-        dec_ref_bits(bits);
+        dec_ref_bits(_py, bits);
     }
     let cancel_bits = {
         let mut guard = state.task_cancel_messages.lock().unwrap();
@@ -222,7 +222,7 @@ fn clear_task_state(state: &RuntimeState) {
     };
     for bits in cancel_bits {
         if bits != 0 && !obj_from_bits(bits).is_none() {
-            dec_ref_bits(bits);
+            dec_ref_bits(_py, bits);
         }
     }
     {
@@ -236,14 +236,15 @@ fn clear_task_state(state: &RuntimeState) {
     NEXT_CANCEL_TOKEN_ID.store(2, AtomicOrdering::SeqCst);
 }
 
-fn clear_module_cache(state: &RuntimeState) {
+fn clear_module_cache(_py: &PyToken<'_>, state: &RuntimeState) {
+    crate::gil_assert();
     let modules = {
         let mut guard = state.module_cache.lock().unwrap();
         let old = std::mem::take(&mut *guard);
         old.into_values().collect::<Vec<_>>()
     };
     for bits in modules {
-        dec_ref_bits(bits);
+        dec_ref_bits(_py, bits);
     }
 }
 
@@ -313,9 +314,10 @@ fn reset_object_pool(state: &RuntimeState) {
     });
 }
 
-fn clear_interned_names(state: &RuntimeState) {
+fn clear_interned_names(_py: &PyToken<'_>, state: &RuntimeState) {
+    crate::gil_assert();
     let slots = interned_name_slots(state);
-    clear_atomic_slots(&slots);
+    clear_atomic_slots(_py, &slots);
 }
 
 fn interned_name_slots(state: &RuntimeState) -> Vec<&AtomicU64> {
@@ -394,12 +396,26 @@ fn interned_name_slots(state: &RuntimeState) -> Vec<&AtomicU64> {
     ]
 }
 
-fn clear_special_cache(state: &RuntimeState) {
+fn clear_special_cache(_py: &PyToken<'_>, state: &RuntimeState) {
+    crate::gil_assert();
     let slots = vec![
         &state.special_cache.open_default_mode,
         &state.special_cache.molt_missing,
         &state.special_cache.molt_not_implemented,
         &state.special_cache.molt_ellipsis,
     ];
-    clear_atomic_slots(&slots);
+    clear_atomic_slots(_py, &slots);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clear_worker_thread_state;
+
+    #[test]
+    fn clear_worker_thread_state_keeps_gil_for_tls_cleanup() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry!(_py, {
+            clear_worker_thread_state(_py);
+        });
+    }
 }

@@ -927,8 +927,8 @@ impl WasmBackend {
         add_import("file_close", 2, &mut self.import_ids);
         add_import("file_detach", 2, &mut self.import_ids);
         add_import("file_reconfigure", 9, &mut self.import_ids);
-        // TODO(wasm-parity, owner:wasm, milestone:SL1): add imports for remaining
-        // file methods (readinto1) once implemented.
+        // TODO(wasm-parity, owner:compiler, milestone:SL1, priority:P2, status:partial):
+        // add imports for remaining file methods (readinto1) once implemented.
 
         self.func_count = import_idx;
         let reloc_enabled = should_emit_relocs();
@@ -1681,7 +1681,7 @@ impl WasmBackend {
                 || op.kind == "guarded_field_init"
         });
         if needs_field_fast {
-            // TODO(optimization, owner:backend, milestone:WASM1, priority:P2): use i32
+            // TODO(perf, owner:compiler, milestone:RT2, priority:P2, status:planned): use i32
             // locals for wasm pointer temporaries to reduce wrap/extend churn.
             for name in ["__wasm_tmp0", "__wasm_tmp1"] {
                 if let std::collections::hash_map::Entry::Vacant(entry) =

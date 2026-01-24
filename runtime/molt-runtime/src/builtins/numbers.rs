@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::mem;
+use crate::PyToken;
 
 use molt_obj_model::MoltObject;
 use num_bigint::BigInt;
@@ -50,11 +51,11 @@ pub(crate) fn bigint_to_inline(value: &BigInt) -> Option<i64> {
     }
 }
 
-pub(crate) fn int_bits_from_bigint(value: BigInt) -> u64 {
+pub(crate) fn int_bits_from_bigint(_py: &PyToken<'_>, value: BigInt) -> u64 {
     if let Some(i) = bigint_to_inline(&value) {
         return MoltObject::from_int(i).bits();
     }
-    bigint_bits(value)
+    bigint_bits(_py, value)
 }
 
 pub(crate) fn inline_int_from_i128(val: i128) -> Option<i64> {
@@ -65,16 +66,16 @@ pub(crate) fn inline_int_from_i128(val: i128) -> Option<i64> {
     }
 }
 
-pub(crate) fn int_bits_from_i64(val: i64) -> u64 {
+pub(crate) fn int_bits_from_i64(_py: &PyToken<'_>, val: i64) -> u64 {
     if let Some(inline) = inline_int_from_i128(val as i128) {
         return MoltObject::from_int(inline).bits();
     }
-    bigint_bits(BigInt::from(val))
+    bigint_bits(_py, BigInt::from(val))
 }
 
-pub(crate) fn bigint_bits(value: BigInt) -> u64 {
+pub(crate) fn bigint_bits(_py: &PyToken<'_>, value: BigInt) -> u64 {
     let total = mem::size_of::<MoltHeader>() + mem::size_of::<BigInt>();
-    let ptr = alloc_object(total, TYPE_ID_BIGINT);
+    let ptr = alloc_object(_py, total, TYPE_ID_BIGINT);
     if ptr.is_null() {
         return MoltObject::none().bits();
     }
@@ -84,11 +85,11 @@ pub(crate) fn bigint_bits(value: BigInt) -> u64 {
     MoltObject::from_ptr(ptr).bits()
 }
 
-pub(crate) fn int_bits_from_i128(val: i128) -> u64 {
+pub(crate) fn int_bits_from_i128(_py: &PyToken<'_>, val: i128) -> u64 {
     if let Some(i) = inline_int_from_i128(val) {
         MoltObject::from_int(i).bits()
     } else {
-        bigint_bits(BigInt::from(val))
+        bigint_bits(_py, BigInt::from(val))
     }
 }
 
@@ -192,7 +193,7 @@ pub(crate) fn round_float_ndigits(val: f64, ndigits: i64) -> f64 {
     round_half_even(scaled) * factor
 }
 
-pub(crate) fn index_i64_from_obj(obj_bits: u64, err: &str) -> i64 {
+pub(crate) fn index_i64_from_obj(_py: &PyToken<'_>, obj_bits: u64, err: &str) -> i64 {
     let obj = obj_from_bits(obj_bits);
     if let Some(i) = to_i64(obj) {
         return i;
@@ -200,27 +201,31 @@ pub(crate) fn index_i64_from_obj(obj_bits: u64, err: &str) -> i64 {
     if let Some(ptr) = maybe_ptr_from_bits(obj_bits) {
         unsafe {
             let index_name_bits =
-                intern_static_name(&runtime_state().interned.index_name, b"__index__");
-            if let Some(call_bits) = attr_lookup_ptr_allow_missing(ptr, index_name_bits) {
-                let res_bits = call_callable0(call_bits);
-                dec_ref_bits(call_bits);
+                intern_static_name(_py, &runtime_state(_py).interned.index_name, b"__index__");
+            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits) {
+                let res_bits = call_callable0(_py, call_bits);
+                dec_ref_bits(_py, call_bits);
                 let res_obj = obj_from_bits(res_bits);
                 if let Some(i) = to_i64(res_obj) {
                     return i;
                 }
-                let res_type = class_name_for_error(type_of_bits(res_bits));
+                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
                 if res_obj.as_ptr().is_some() {
-                    dec_ref_bits(res_bits);
+                    dec_ref_bits(_py, res_bits);
                 }
                 let msg = format!("__index__ returned non-int (type {res_type})");
-                raise_exception::<i64>("TypeError", &msg);
+                raise_exception::<i64>(_py, "TypeError", &msg);
             }
         }
     }
-    raise_exception::<i64>("TypeError", err)
+    raise_exception::<i64>(_py, "TypeError", err)
 }
 
-pub(crate) fn float_pair_from_obj(lhs: MoltObject, rhs: MoltObject) -> Option<(f64, f64)> {
+pub(crate) fn float_pair_from_obj(
+    _py: &PyToken<'_>,
+    lhs: MoltObject,
+    rhs: MoltObject,
+) -> Option<(f64, f64)> {
     if let (Some(lf), Some(rf)) = (to_f64(lhs), to_f64(rhs)) {
         return Some((lf, rf));
     }
@@ -229,6 +234,7 @@ pub(crate) fn float_pair_from_obj(lhs: MoltObject, rhs: MoltObject) -> Option<(f
             || bigint_ptr_from_bits(rhs.bits()).is_some())
     {
         return raise_exception::<Option<(f64, f64)>>(
+            _py,
             "OverflowError",
             "int too large to convert to float",
         );
@@ -259,13 +265,13 @@ pub(crate) fn compare_numbers(lhs: MoltObject, rhs: MoltObject) -> Option<Orderi
     None
 }
 
-pub(crate) fn split_maxsplit_from_obj(obj_bits: u64) -> i64 {
+pub(crate) fn split_maxsplit_from_obj(_py: &PyToken<'_>, obj_bits: u64) -> i64 {
     let obj = obj_from_bits(obj_bits);
     let msg = format!(
         "'{}' object cannot be interpreted as an integer",
-        crate::type_name(obj)
+        crate::type_name(_py, obj)
     );
-    let Some(value) = index_bigint_from_obj(obj_bits, &msg) else {
+    let Some(value) = index_bigint_from_obj(_py, obj_bits, &msg) else {
         return 0;
     };
     if value.is_negative() {
@@ -275,11 +281,11 @@ pub(crate) fn split_maxsplit_from_obj(obj_bits: u64) -> i64 {
 }
 
 pub(crate) fn index_i64_with_overflow(
-    obj_bits: u64,
+    _py: &PyToken<'_>, obj_bits: u64,
     err: &str,
     overflow_err: Option<&str>,
 ) -> Option<i64> {
-    let value = index_bigint_from_obj(obj_bits, err)?;
+    let value = index_bigint_from_obj(_py, obj_bits, err)?;
     if let Some(i) = value.to_i64() {
         return Some(i);
     }
@@ -287,13 +293,13 @@ pub(crate) fn index_i64_with_overflow(
         Some(msg) => msg.to_string(),
         None => format!(
             "cannot fit '{}' into an index-sized integer",
-            class_name_for_error(type_of_bits(obj_bits))
+            class_name_for_error(type_of_bits(_py, obj_bits))
         ),
     };
-    raise_exception::<Option<i64>>("IndexError", &msg)
+    raise_exception::<Option<i64>>(_py, "IndexError", &msg)
 }
 
-pub(crate) fn index_bigint_from_obj(obj_bits: u64, err: &str) -> Option<BigInt> {
+pub(crate) fn index_bigint_from_obj(_py: &PyToken<'_>, obj_bits: u64, err: &str) -> Option<BigInt> {
     let obj = obj_from_bits(obj_bits);
     if let Some(i) = to_i64(obj) {
         return Some(BigInt::from(i));
@@ -304,11 +310,11 @@ pub(crate) fn index_bigint_from_obj(obj_bits: u64, err: &str) -> Option<BigInt> 
     if let Some(ptr) = maybe_ptr_from_bits(obj_bits) {
         unsafe {
             let index_name_bits =
-                intern_static_name(&runtime_state().interned.index_name, b"__index__");
-            if let Some(call_bits) = attr_lookup_ptr_allow_missing(ptr, index_name_bits) {
-                let res_bits = call_callable0(call_bits);
-                dec_ref_bits(call_bits);
-                if exception_pending() {
+                intern_static_name(_py, &runtime_state(_py).interned.index_name, b"__index__");
+            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits) {
+                let res_bits = call_callable0(_py, call_bits);
+                dec_ref_bits(_py, call_bits);
+                if exception_pending(_py) {
                     return None;
                 }
                 let res_obj = obj_from_bits(res_bits);
@@ -317,23 +323,23 @@ pub(crate) fn index_bigint_from_obj(obj_bits: u64, err: &str) -> Option<BigInt> 
                 }
                 if let Some(big_ptr) = bigint_ptr_from_bits(res_bits) {
                     let big = bigint_ref(big_ptr).clone();
-                    dec_ref_bits(res_bits);
+                    dec_ref_bits(_py, res_bits);
                     return Some(big);
                 }
-                let res_type = class_name_for_error(type_of_bits(res_bits));
+                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
                 if res_obj.as_ptr().is_some() {
-                    dec_ref_bits(res_bits);
+                    dec_ref_bits(_py, res_bits);
                 }
                 let msg = format!("__index__ returned non-int (type {res_type})");
-                raise_exception::<u64>("TypeError", &msg);
+                raise_exception::<u64>(_py, "TypeError", &msg);
                 return None;
             }
-            if exception_pending() {
+            if exception_pending(_py) {
                 return None;
             }
         }
     }
-    raise_exception::<u64>("TypeError", err);
+    raise_exception::<u64>(_py, "TypeError", err);
     None
 }
 

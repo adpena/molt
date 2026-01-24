@@ -1,4 +1,5 @@
 use std::sync::atomic::Ordering as AtomicOrdering;
+use crate::{GilGuard, PyToken};
 
 use molt_obj_model::MoltObject;
 
@@ -51,7 +52,8 @@ pub(crate) struct BuiltinClasses {
 }
 
 impl BuiltinClasses {
-    fn dec_ref_all(&self) {
+    fn dec_ref_all(&self, _py: &PyToken<'_>) {
+        crate::gil_assert();
         for bits in [
             self.object,
             self.type_obj,
@@ -88,66 +90,68 @@ impl BuiltinClasses {
             self.super_type,
             self.generic_alias,
         ] {
-            dec_ref_bits(bits);
+            dec_ref_bits(_py, bits);
         }
     }
 }
 
 impl Drop for BuiltinClasses {
     fn drop(&mut self) {
-        self.dec_ref_all();
+        crate::with_gil_entry!(_py, {
+            self.dec_ref_all(_py);
+        });
     }
 }
 
-fn make_builtin_class(name: &str) -> u64 {
-    let name_ptr = alloc_string(name.as_bytes());
+fn make_builtin_class(_py: &PyToken<'_>, name: &str) -> u64 {
+    let name_ptr = alloc_string(_py, name.as_bytes());
     if name_ptr.is_null() {
         return MoltObject::none().bits();
     }
     let name_bits = MoltObject::from_ptr(name_ptr).bits();
-    let class_ptr = alloc_class_obj(name_bits);
-    dec_ref_bits(name_bits);
+    let class_ptr = alloc_class_obj(_py, name_bits);
+    dec_ref_bits(_py, name_bits);
     if class_ptr.is_null() {
         return MoltObject::none().bits();
     }
     MoltObject::from_ptr(class_ptr).bits()
 }
 
-fn build_builtin_classes() -> BuiltinClasses {
-    let object = make_builtin_class("object");
-    let type_obj = make_builtin_class("type");
-    let none_type = make_builtin_class("NoneType");
-    let not_implemented_type = make_builtin_class("NotImplementedType");
-    let ellipsis_type = make_builtin_class("ellipsis");
-    let base_exception = make_builtin_class("BaseException");
-    let exception = make_builtin_class("Exception");
-    let int = make_builtin_class("int");
-    let float = make_builtin_class("float");
-    let bool = make_builtin_class("bool");
-    let str = make_builtin_class("str");
-    let bytes = make_builtin_class("bytes");
-    let bytearray = make_builtin_class("bytearray");
-    let list = make_builtin_class("list");
-    let tuple = make_builtin_class("tuple");
-    let dict = make_builtin_class("dict");
-    let set = make_builtin_class("set");
-    let frozenset = make_builtin_class("frozenset");
-    let range = make_builtin_class("range");
-    let slice = make_builtin_class("slice");
-    let memoryview = make_builtin_class("memoryview");
-    let file = make_builtin_class("file");
-    let file_io = make_builtin_class("FileIO");
-    let buffered_reader = make_builtin_class("BufferedReader");
-    let buffered_writer = make_builtin_class("BufferedWriter");
-    let buffered_random = make_builtin_class("BufferedRandom");
-    let text_io_wrapper = make_builtin_class("TextIOWrapper");
-    let function = make_builtin_class("function");
-    let code = make_builtin_class("code");
-    let frame = make_builtin_class("frame");
-    let traceback = make_builtin_class("traceback");
-    let module = make_builtin_class("module");
-    let super_type = make_builtin_class("super");
-    let generic_alias = make_builtin_class("GenericAlias");
+fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
+    let object = make_builtin_class(_py, "object");
+    let type_obj = make_builtin_class(_py, "type");
+    let none_type = make_builtin_class(_py, "NoneType");
+    let not_implemented_type = make_builtin_class(_py, "NotImplementedType");
+    let ellipsis_type = make_builtin_class(_py, "ellipsis");
+    let base_exception = make_builtin_class(_py, "BaseException");
+    let exception = make_builtin_class(_py, "Exception");
+    let int = make_builtin_class(_py, "int");
+    let float = make_builtin_class(_py, "float");
+    let bool = make_builtin_class(_py, "bool");
+    let str = make_builtin_class(_py, "str");
+    let bytes = make_builtin_class(_py, "bytes");
+    let bytearray = make_builtin_class(_py, "bytearray");
+    let list = make_builtin_class(_py, "list");
+    let tuple = make_builtin_class(_py, "tuple");
+    let dict = make_builtin_class(_py, "dict");
+    let set = make_builtin_class(_py, "set");
+    let frozenset = make_builtin_class(_py, "frozenset");
+    let range = make_builtin_class(_py, "range");
+    let slice = make_builtin_class(_py, "slice");
+    let memoryview = make_builtin_class(_py, "memoryview");
+    let file = make_builtin_class(_py, "file");
+    let file_io = make_builtin_class(_py, "FileIO");
+    let buffered_reader = make_builtin_class(_py, "BufferedReader");
+    let buffered_writer = make_builtin_class(_py, "BufferedWriter");
+    let buffered_random = make_builtin_class(_py, "BufferedRandom");
+    let text_io_wrapper = make_builtin_class(_py, "TextIOWrapper");
+    let function = make_builtin_class(_py, "function");
+    let code = make_builtin_class(_py, "code");
+    let frame = make_builtin_class(_py, "frame");
+    let traceback = make_builtin_class(_py, "traceback");
+    let module = make_builtin_class(_py, "module");
+    let super_type = make_builtin_class(_py, "super");
+    let generic_alias = make_builtin_class(_py, "GenericAlias");
 
     let _ = molt_class_set_base(object, MoltObject::none().bits());
     let _ = molt_class_set_base(type_obj, object);
@@ -222,8 +226,8 @@ fn build_builtin_classes() -> BuiltinClasses {
     }
 }
 
-pub(crate) fn builtin_classes() -> &'static BuiltinClasses {
-    let state = runtime_state();
+pub(crate) fn builtin_classes(_py: &PyToken<'_>) -> &'static BuiltinClasses {
+    let state = runtime_state(_py);
     let ptr = state.builtin_classes.load(AtomicOrdering::Acquire);
     if !ptr.is_null() {
         return unsafe { &*ptr };
@@ -232,20 +236,22 @@ pub(crate) fn builtin_classes() -> &'static BuiltinClasses {
 }
 
 fn init_builtin_classes() -> &'static BuiltinClasses {
+    let gil = GilGuard::new();
+    let py = gil.token();
     let _guard = runtime_state_lock().lock().unwrap();
-    let state = runtime_state();
+    let state = runtime_state(&py);
     let ptr = state.builtin_classes.load(AtomicOrdering::Acquire);
     if !ptr.is_null() {
         return unsafe { &*ptr };
     }
-    let builtins = build_builtin_classes();
+    let builtins = build_builtin_classes(&py);
     let boxed = Box::new(builtins);
     let ptr = Box::into_raw(boxed);
     state.builtin_classes.store(ptr, AtomicOrdering::Release);
     unsafe { &*ptr }
 }
 
-pub(crate) fn builtin_classes_shutdown(state: &RuntimeState) {
+pub(crate) fn builtin_classes_shutdown(py: &PyToken<'_>, state: &RuntimeState) {
     let ptr = state
         .builtin_classes
         .swap(std::ptr::null_mut(), AtomicOrdering::AcqRel);
@@ -290,7 +296,7 @@ pub(crate) fn builtin_classes_shutdown(state: &RuntimeState) {
             builtins.super_type,
             builtins.generic_alias,
         ] {
-            class_break_cycles(bits);
+            class_break_cycles(&py, bits);
         }
     }
     unsafe {
@@ -298,8 +304,8 @@ pub(crate) fn builtin_classes_shutdown(state: &RuntimeState) {
     }
 }
 
-pub(crate) fn is_builtin_class_bits(bits: u64) -> bool {
-    let builtins = builtin_classes();
+pub(crate) fn is_builtin_class_bits(_py: &PyToken<'_>, bits: u64) -> bool {
+    let builtins = builtin_classes(_py);
     bits == builtins.object
         || bits == builtins.type_obj
         || bits == builtins.none_type
@@ -336,8 +342,8 @@ pub(crate) fn is_builtin_class_bits(bits: u64) -> bool {
         || bits == builtins.generic_alias
 }
 
-pub(crate) fn builtin_type_bits(tag: i64) -> Option<u64> {
-    let builtins = builtin_classes();
+pub(crate) fn builtin_type_bits(_py: &PyToken<'_>, tag: i64) -> Option<u64> {
+    let builtins = builtin_classes(_py);
     match tag {
         TYPE_TAG_INT => Some(builtins.int),
         TYPE_TAG_FLOAT => Some(builtins.float),

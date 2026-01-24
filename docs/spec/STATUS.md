@@ -139,12 +139,12 @@ README/ROADMAP in sync.
 - `print(file=None)` falls back to the host stdout when the `sys` module is not initialized, rather than always using `sys.stdout`.
   (TODO(stdlib-compat, owner:runtime, milestone:TC1, priority:P2, status:partial): ensure `sys.stdout` bootstrap for print.)
 - WASM `str_from_obj` does not invoke `__str__` for non-primitive objects, so `print()`/`str()` may show placeholders for custom types.
-  (TODO(wasm-parity, owner:wasm, milestone:TC1, priority:P2, status:partial): call `__str__` for non-primitive objects in wasm host bindings.)
+  (TODO(wasm-parity, owner:runtime, milestone:TC1, priority:P2, status:partial): call `__str__` for non-primitive objects in wasm host bindings.)
 - WASM `string_format`/`format()` only handle empty format specs; non-empty specs raise `TypeError`.
-  (TODO(wasm-parity, owner:wasm, milestone:TC1, priority:P2, status:partial): implement full format spec parsing + rendering in the wasm host.)
+  (TODO(wasm-parity, owner:runtime, milestone:TC1, priority:P2, status:partial): implement full format spec parsing + rendering in the wasm host.)
 - File I/O parity is partial: `open()` supports the full signature (mode/buffering/encoding/errors/newline/closefd/opener), fd-based `open`, and file objects now expose read/readinto/write/writelines/seek/tell/fileno/readline(s)/truncate/iteration/flush/close + core attrs. Remaining gaps include broader codec support + full error handlers (utf-8/ascii/latin-1 only), partial text-mode seek/tell cookie semantics, and Windows fileno/isatty accuracy.
   (TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P1, status:partial): finish file/open parity per ROADMAP checklist + tests, with native/wasm lockstep.)
-  (TODO(wasm-parity, owner:wasm, milestone:SL1, priority:P1, status:partial): extend wasm host hooks for remaining file methods (readinto1) and parity coverage.)
+  (TODO(wasm-parity, owner:runtime, milestone:SL1, priority:P1, status:partial): extend wasm host hooks for remaining file methods (readinto1) and parity coverage.)
   (TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P2, status:partial): align file handle type names in error/AttributeError messages with CPython _io.* wrappers.)
 - WASM `os.getpid()` currently returns a 0 placeholder.
   (TODO(wasm-parity, owner:runtime, milestone:SL2, priority:P2, status:partial): add a host-backed getpid or document the placeholder semantics.)
@@ -164,7 +164,7 @@ README/ROADMAP in sync.
 - Code objects: `__code__` exposes `co_filename`/`co_name`/`co_firstlineno`; `co_varnames`, arg counts, and
   `co_linetable` remain minimal.
   (TODO(introspection, owner:runtime, milestone:TC2, priority:P2, status:partial): fill out code object fields for parity.)
-- Runtime lifecycle: `molt_runtime_init()`/`molt_runtime_shutdown()` manage a `RuntimeState` that owns caches, pools, and async registries; TLS guard drains per-thread caches on thread exit, and scheduler/sleep workers join on shutdown.
+- Runtime lifecycle: `molt_runtime_init()`/`molt_runtime_shutdown()` manage a `RuntimeState` that owns caches, pools, and async registries; TLS guard drains per-thread caches on thread exit, scheduler/sleep workers join on shutdown, and freed TYPE_ID_OBJECT headers return to the object pool with fallback deallocation for non-pooled types.
 - Tooling: `molt clean --cargo-target` removes Cargo `target/` build artifacts when requested.
 - Process-based concurrency is unsupported: `multiprocessing`, `subprocess`, and `concurrent.futures` await capability-gated process model integration (start-method policy, IPC primitives, worker lifecycle).
   (TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P3, status:planned): process model integration for `multiprocessing`/`subprocess`/`concurrent.futures`.)
@@ -254,6 +254,8 @@ README/ROADMAP in sync.
 - WASM runs a single-threaded scheduler loop (no background workers); pending
   sleeps are handled by blocking registration in the same task loop.
   (TODO(async-runtime, owner:runtime, milestone:RT2, priority:P2, status:planned): wasm scheduler background workers.)
+- Websocket connect is blocked when no host hook is registered.
+  (TODO(runtime, owner:runtime, milestone:RT2, priority:P2, status:missing): add a host-level websocket connect hook and enforce production socket capabilities.)
 
 ## Thread Safety + GIL Notes
 - Runtime mutation is serialized by a GIL-like lock; only one host thread may
@@ -270,6 +272,14 @@ README/ROADMAP in sync.
 - TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): implement
   sharded/lock-free handle resolution and measure lock-sensitive benchmark deltas
   (attr access, container ops).
+- Runtime mutation entrypoints require a `PyToken`; only `molt_handle_resolve` is
+  GIL-exempt by contract (see `docs/spec/areas/runtime/0026_CONCURRENCY_AND_GIL.md`).
+
+## Performance Notes
+- `print` builds a single intermediate string before writing.
+  (TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): stream print writes to avoid large intermediate allocations.)
+- `dict.fromkeys` does not pre-size using iterable length hints.
+  (TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): pre-size `dict.fromkeys` to reduce rehashing.)
 
 ## Stdlib Coverage
 - Partial shims: `warnings`, `traceback`, `types`, `inspect`, `fnmatch` (`*`/`?`

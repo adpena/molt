@@ -7,6 +7,9 @@ license = "Apache-2.0"
 [lib]
 crate-type = ["staticlib", "rlib", "cdylib"]
 
+[features]
+molt_debug_gil = []
+
 [dependencies]
 molt-obj-model = { path = "../molt-obj-model" }
 serde_json = "1.0"

@@ -7,11 +7,11 @@ use std::time::Instant;
 use super::{runtime_reset_for_init, runtime_teardown, touch_tls_guard};
 
 use crate::{
-    build_utf8_count_cache, default_cancel_tokens, sleep_worker, AsyncHangProbe, BuiltinClasses,
-    CancelTokenEntry, HashSecret, InternedNames, IoPoller, MethodCache, MoltScheduler,
-    ProcessTaskState, PtrSlot, SleepQueue, ThreadPool, ThreadTaskState, Utf8CacheStore,
-    Utf8CountCacheStore, OBJECT_POOL_BUCKETS,
+    default_cancel_tokens, sleep_worker, AsyncHangProbe, BuiltinClasses, CancelTokenEntry,
+    GilGuard, HashSecret, InternedNames, IoPoller, MethodCache, MoltScheduler, ProcessTaskState,
+    PtrSlot, PyToken, SleepQueue, ThreadPool, ThreadTaskState, OBJECT_POOL_BUCKETS,
 };
+use crate::object::utf8_cache::{build_utf8_count_cache, Utf8CacheStore, Utf8CountCacheStore};
 
 pub(crate) struct SpecialCache {
     pub(crate) open_default_mode: AtomicU64,
@@ -178,7 +178,17 @@ fn runtime_state_ptr() -> Option<*mut RuntimeState> {
     }
 }
 
-pub(crate) fn runtime_state() -> &'static RuntimeState {
+pub(crate) fn runtime_state_for_gil() -> Option<&'static RuntimeState> {
+    let ptr = RUNTIME_STATE_PTR.load(AtomicOrdering::SeqCst);
+    if ptr.is_null() {
+        None
+    } else {
+        Some(unsafe { &*ptr })
+    }
+}
+
+pub(crate) fn runtime_state(_py: &PyToken<'_>) -> &'static RuntimeState {
+    let _ = _py;
     touch_tls_guard();
     if let Some(ptr) = runtime_state_ptr() {
         unsafe { &*ptr }
@@ -199,7 +209,10 @@ pub extern "C" fn molt_runtime_init() -> u64 {
     let state = Box::new(RuntimeState::new());
     let ptr = Box::into_raw(state);
     RUNTIME_STATE_PTR.store(ptr, AtomicOrdering::SeqCst);
-    runtime_reset_for_init(unsafe { &*ptr });
+    let state_ref = unsafe { &*ptr };
+    let gil = GilGuard::new();
+    let py = gil.token();
+    runtime_reset_for_init(&py, state_ref);
     1
 }
 
@@ -211,7 +224,11 @@ pub extern "C" fn molt_runtime_shutdown() -> u64 {
         return 0;
     }
     let state = unsafe { &*ptr };
-    runtime_teardown(state);
+    {
+        let gil = GilGuard::new();
+        let py = gil.token();
+        runtime_teardown(&py, state);
+    }
     RUNTIME_STATE_PTR.store(std::ptr::null_mut(), AtomicOrdering::SeqCst);
     unsafe {
         drop(Box::from_raw(ptr));

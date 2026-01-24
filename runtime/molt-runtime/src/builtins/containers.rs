@@ -22,9 +22,9 @@ use crate::{
     molt_set_issuperset, molt_set_new, molt_set_pop, molt_set_remove,
     molt_set_symmetric_difference, molt_set_symmetric_difference_update, molt_set_union_multi,
     molt_set_update_multi, molt_setitem_method, obj_from_bits, object_type_id, runtime_state,
-    seq_vec_ref, set_add_in_place, MoltObject, FUNC_DEFAULT_DICT_POP, FUNC_DEFAULT_DICT_UPDATE,
-    FUNC_DEFAULT_MISSING, FUNC_DEFAULT_NONE, TYPE_ID_DICT, TYPE_ID_DICT_ITEMS_VIEW,
-    TYPE_ID_DICT_KEYS_VIEW, TYPE_ID_FROZENSET, TYPE_ID_SET,
+    seq_vec_ref, set_add_in_place, MoltObject, PyToken, FUNC_DEFAULT_DICT_POP,
+    FUNC_DEFAULT_DICT_UPDATE, FUNC_DEFAULT_MISSING, FUNC_DEFAULT_NONE, TYPE_ID_DICT,
+    TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW, TYPE_ID_FROZENSET, TYPE_ID_SET,
 };
 
 pub(crate) fn is_set_like_type(type_id: u32) -> bool {
@@ -42,100 +42,100 @@ pub(crate) fn is_set_view_type(type_id: u32) -> bool {
     matches!(type_id, TYPE_ID_DICT_KEYS_VIEW | TYPE_ID_DICT_ITEMS_VIEW)
 }
 
-pub(crate) fn dict_method_bits(name: &str) -> Option<u64> {
+pub(crate) fn dict_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
     match name {
-        "keys" => Some(builtin_func_bits(
-            &runtime_state().method_cache.dict_keys,
+        "keys" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.dict_keys,
             fn_addr!(dict_keys_method),
             1,
         )),
-        "values" => Some(builtin_func_bits(
-            &runtime_state().method_cache.dict_values,
+        "values" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.dict_values,
             fn_addr!(dict_values_method),
             1,
         )),
-        "items" => Some(builtin_func_bits(
-            &runtime_state().method_cache.dict_items,
+        "items" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.dict_items,
             fn_addr!(dict_items_method),
             1,
         )),
-        "get" => Some(builtin_func_bits_with_default(
-            &runtime_state().method_cache.dict_get,
+        "get" => Some(builtin_func_bits_with_default(_py,
+            &runtime_state(_py).method_cache.dict_get,
             fn_addr!(dict_get_method),
             3,
             FUNC_DEFAULT_NONE,
         )),
-        "pop" => Some(builtin_func_bits_with_default(
-            &runtime_state().method_cache.dict_pop,
+        "pop" => Some(builtin_func_bits_with_default(_py,
+            &runtime_state(_py).method_cache.dict_pop,
             fn_addr!(dict_pop_method),
             4,
             FUNC_DEFAULT_DICT_POP,
         )),
-        "clear" => Some(builtin_func_bits(
-            &runtime_state().method_cache.dict_clear,
+        "clear" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.dict_clear,
             fn_addr!(dict_clear_method),
             1,
         )),
-        "copy" => Some(builtin_func_bits(
-            &runtime_state().method_cache.dict_copy,
+        "copy" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.dict_copy,
             fn_addr!(dict_copy_method),
             1,
         )),
-        "popitem" => Some(builtin_func_bits(
-            &runtime_state().method_cache.dict_popitem,
+        "popitem" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.dict_popitem,
             fn_addr!(dict_popitem_method),
             1,
         )),
-        "setdefault" => Some(builtin_func_bits_with_default(
-            &runtime_state().method_cache.dict_setdefault,
+        "setdefault" => Some(builtin_func_bits_with_default(_py,
+            &runtime_state(_py).method_cache.dict_setdefault,
             fn_addr!(dict_setdefault_method),
             3,
             FUNC_DEFAULT_NONE,
         )),
-        "update" => Some(builtin_func_bits_with_default(
-            &runtime_state().method_cache.dict_update,
+        "update" => Some(builtin_func_bits_with_default(_py,
+            &runtime_state(_py).method_cache.dict_update,
             fn_addr!(dict_update_method),
             2,
             FUNC_DEFAULT_DICT_UPDATE,
         )),
-        "fromkeys" => Some(builtin_func_bits_with_default(
-            &runtime_state().method_cache.dict_fromkeys,
+        "fromkeys" => Some(builtin_func_bits_with_default(_py,
+            &runtime_state(_py).method_cache.dict_fromkeys,
             fn_addr!(dict_fromkeys_method),
             3,
             FUNC_DEFAULT_NONE,
         )),
-        "__getitem__" => Some(builtin_func_bits(
-            &runtime_state().method_cache.dict_getitem,
+        "__getitem__" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.dict_getitem,
             fn_addr!(molt_getitem_method),
             2,
         )),
-        "__setitem__" => Some(builtin_func_bits(
-            &runtime_state().method_cache.dict_setitem,
+        "__setitem__" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.dict_setitem,
             fn_addr!(molt_setitem_method),
             3,
         )),
-        "__delitem__" => Some(builtin_func_bits(
-            &runtime_state().method_cache.dict_delitem,
+        "__delitem__" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.dict_delitem,
             fn_addr!(molt_delitem_method),
             2,
         )),
-        "__iter__" => Some(builtin_func_bits(
-            &runtime_state().method_cache.dict_iter,
+        "__iter__" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.dict_iter,
             fn_addr!(molt_iter),
             1,
         )),
-        "__len__" => Some(builtin_func_bits(
-            &runtime_state().method_cache.dict_len,
+        "__len__" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.dict_len,
             fn_addr!(molt_len),
             1,
         )),
-        "__contains__" => Some(builtin_func_bits(
-            &runtime_state().method_cache.dict_contains,
+        "__contains__" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.dict_contains,
             fn_addr!(molt_contains),
             2,
         )),
-        "__reversed__" => Some(builtin_func_bits(
-            &runtime_state().method_cache.dict_reversed,
+        "__reversed__" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.dict_reversed,
             fn_addr!(molt_reversed_builtin),
             1,
         )),
@@ -143,105 +143,105 @@ pub(crate) fn dict_method_bits(name: &str) -> Option<u64> {
     }
 }
 
-pub(crate) fn set_method_bits(name: &str) -> Option<u64> {
+pub(crate) fn set_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
     match name {
-        "add" => Some(builtin_func_bits(
-            &runtime_state().method_cache.set_add,
+        "add" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.set_add,
             fn_addr!(molt_set_add),
             2,
         )),
-        "discard" => Some(builtin_func_bits(
-            &runtime_state().method_cache.set_discard,
+        "discard" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.set_discard,
             fn_addr!(molt_set_discard),
             2,
         )),
-        "remove" => Some(builtin_func_bits(
-            &runtime_state().method_cache.set_remove,
+        "remove" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.set_remove,
             fn_addr!(molt_set_remove),
             2,
         )),
-        "pop" => Some(builtin_func_bits(
-            &runtime_state().method_cache.set_pop,
+        "pop" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.set_pop,
             fn_addr!(molt_set_pop),
             1,
         )),
-        "clear" => Some(builtin_func_bits(
-            &runtime_state().method_cache.set_clear,
+        "clear" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.set_clear,
             fn_addr!(molt_set_clear),
             1,
         )),
-        "update" => Some(builtin_func_bits(
-            &runtime_state().method_cache.set_update,
+        "update" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.set_update,
             fn_addr!(molt_set_update_multi),
             2,
         )),
-        "union" => Some(builtin_func_bits(
-            &runtime_state().method_cache.set_union,
+        "union" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.set_union,
             fn_addr!(molt_set_union_multi),
             2,
         )),
-        "intersection" => Some(builtin_func_bits(
-            &runtime_state().method_cache.set_intersection,
+        "intersection" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.set_intersection,
             fn_addr!(molt_set_intersection_multi),
             2,
         )),
-        "difference" => Some(builtin_func_bits(
-            &runtime_state().method_cache.set_difference,
+        "difference" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.set_difference,
             fn_addr!(molt_set_difference_multi),
             2,
         )),
-        "symmetric_difference" => Some(builtin_func_bits(
-            &runtime_state().method_cache.set_symdiff,
+        "symmetric_difference" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.set_symdiff,
             fn_addr!(molt_set_symmetric_difference),
             2,
         )),
-        "intersection_update" => Some(builtin_func_bits(
-            &runtime_state().method_cache.set_intersection_update,
+        "intersection_update" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.set_intersection_update,
             fn_addr!(molt_set_intersection_update_multi),
             2,
         )),
-        "difference_update" => Some(builtin_func_bits(
-            &runtime_state().method_cache.set_difference_update,
+        "difference_update" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.set_difference_update,
             fn_addr!(molt_set_difference_update_multi),
             2,
         )),
-        "symmetric_difference_update" => Some(builtin_func_bits(
-            &runtime_state().method_cache.set_symdiff_update,
+        "symmetric_difference_update" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.set_symdiff_update,
             fn_addr!(molt_set_symmetric_difference_update),
             2,
         )),
-        "isdisjoint" => Some(builtin_func_bits(
-            &runtime_state().method_cache.set_isdisjoint,
+        "isdisjoint" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.set_isdisjoint,
             fn_addr!(molt_set_isdisjoint),
             2,
         )),
-        "issubset" => Some(builtin_func_bits(
-            &runtime_state().method_cache.set_issubset,
+        "issubset" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.set_issubset,
             fn_addr!(molt_set_issubset),
             2,
         )),
-        "issuperset" => Some(builtin_func_bits(
-            &runtime_state().method_cache.set_issuperset,
+        "issuperset" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.set_issuperset,
             fn_addr!(molt_set_issuperset),
             2,
         )),
-        "copy" => Some(builtin_func_bits(
-            &runtime_state().method_cache.set_copy,
+        "copy" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.set_copy,
             fn_addr!(molt_set_copy_method),
             1,
         )),
-        "__iter__" => Some(builtin_func_bits(
-            &runtime_state().method_cache.set_iter,
+        "__iter__" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.set_iter,
             fn_addr!(molt_iter),
             1,
         )),
-        "__len__" => Some(builtin_func_bits(
-            &runtime_state().method_cache.set_len,
+        "__len__" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.set_len,
             fn_addr!(molt_len),
             1,
         )),
-        "__contains__" => Some(builtin_func_bits(
-            &runtime_state().method_cache.set_contains,
+        "__contains__" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.set_contains,
             fn_addr!(molt_contains),
             2,
         )),
@@ -249,60 +249,60 @@ pub(crate) fn set_method_bits(name: &str) -> Option<u64> {
     }
 }
 
-pub(crate) fn frozenset_method_bits(name: &str) -> Option<u64> {
+pub(crate) fn frozenset_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
     match name {
-        "union" => Some(builtin_func_bits(
-            &runtime_state().method_cache.frozenset_union,
+        "union" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.frozenset_union,
             fn_addr!(molt_frozenset_union_multi),
             2,
         )),
-        "intersection" => Some(builtin_func_bits(
-            &runtime_state().method_cache.frozenset_intersection,
+        "intersection" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.frozenset_intersection,
             fn_addr!(molt_frozenset_intersection_multi),
             2,
         )),
-        "difference" => Some(builtin_func_bits(
-            &runtime_state().method_cache.frozenset_difference,
+        "difference" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.frozenset_difference,
             fn_addr!(molt_frozenset_difference_multi),
             2,
         )),
-        "symmetric_difference" => Some(builtin_func_bits(
-            &runtime_state().method_cache.frozenset_symdiff,
+        "symmetric_difference" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.frozenset_symdiff,
             fn_addr!(molt_frozenset_symmetric_difference),
             2,
         )),
-        "isdisjoint" => Some(builtin_func_bits(
-            &runtime_state().method_cache.frozenset_isdisjoint,
+        "isdisjoint" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.frozenset_isdisjoint,
             fn_addr!(molt_frozenset_isdisjoint),
             2,
         )),
-        "issubset" => Some(builtin_func_bits(
-            &runtime_state().method_cache.frozenset_issubset,
+        "issubset" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.frozenset_issubset,
             fn_addr!(molt_frozenset_issubset),
             2,
         )),
-        "issuperset" => Some(builtin_func_bits(
-            &runtime_state().method_cache.frozenset_issuperset,
+        "issuperset" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.frozenset_issuperset,
             fn_addr!(molt_frozenset_issuperset),
             2,
         )),
-        "copy" => Some(builtin_func_bits(
-            &runtime_state().method_cache.frozenset_copy,
+        "copy" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.frozenset_copy,
             fn_addr!(molt_frozenset_copy_method),
             1,
         )),
-        "__iter__" => Some(builtin_func_bits(
-            &runtime_state().method_cache.frozenset_iter,
+        "__iter__" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.frozenset_iter,
             fn_addr!(molt_iter),
             1,
         )),
-        "__len__" => Some(builtin_func_bits(
-            &runtime_state().method_cache.frozenset_len,
+        "__len__" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.frozenset_len,
             fn_addr!(molt_len),
             1,
         )),
-        "__contains__" => Some(builtin_func_bits(
-            &runtime_state().method_cache.frozenset_contains,
+        "__contains__" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.frozenset_contains,
             fn_addr!(molt_contains),
             2,
         )),
@@ -310,127 +310,127 @@ pub(crate) fn frozenset_method_bits(name: &str) -> Option<u64> {
     }
 }
 
-pub(crate) fn list_method_bits(name: &str) -> Option<u64> {
+pub(crate) fn list_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
     match name {
-        "append" => Some(builtin_func_bits(
-            &runtime_state().method_cache.list_append,
+        "append" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.list_append,
             fn_addr!(molt_list_append),
             2,
         )),
-        "extend" => Some(builtin_func_bits(
-            &runtime_state().method_cache.list_extend,
+        "extend" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.list_extend,
             fn_addr!(molt_list_extend),
             2,
         )),
-        "insert" => Some(builtin_func_bits(
-            &runtime_state().method_cache.list_insert,
+        "insert" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.list_insert,
             fn_addr!(molt_list_insert),
             3,
         )),
-        "remove" => Some(builtin_func_bits(
-            &runtime_state().method_cache.list_remove,
+        "remove" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.list_remove,
             fn_addr!(molt_list_remove),
             2,
         )),
-        "pop" => Some(builtin_func_bits_with_default(
-            &runtime_state().method_cache.list_pop,
+        "pop" => Some(builtin_func_bits_with_default(_py,
+            &runtime_state(_py).method_cache.list_pop,
             fn_addr!(molt_list_pop),
             2,
             FUNC_DEFAULT_NONE,
         )),
-        "clear" => Some(builtin_func_bits(
-            &runtime_state().method_cache.list_clear,
+        "clear" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.list_clear,
             fn_addr!(molt_list_clear),
             1,
         )),
-        "__init__" => Some(builtin_func_bits_with_default(
-            &runtime_state().method_cache.list_init,
+        "__init__" => Some(builtin_func_bits_with_default(_py,
+            &runtime_state(_py).method_cache.list_init,
             fn_addr!(molt_list_init_method),
             2,
             FUNC_DEFAULT_MISSING,
         )),
-        "copy" => Some(builtin_func_bits(
-            &runtime_state().method_cache.list_copy,
+        "copy" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.list_copy,
             fn_addr!(molt_list_copy),
             1,
         )),
-        "reverse" => Some(builtin_func_bits(
-            &runtime_state().method_cache.list_reverse,
+        "reverse" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.list_reverse,
             fn_addr!(molt_list_reverse),
             1,
         )),
-        "count" => Some(builtin_func_bits(
-            &runtime_state().method_cache.list_count,
+        "count" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.list_count,
             fn_addr!(molt_list_count),
             2,
         )),
-        "index" => Some(builtin_func_bits(
-            &runtime_state().method_cache.list_index,
+        "index" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.list_index,
             fn_addr!(molt_list_index_range),
             4,
         )),
-        "sort" => Some(builtin_func_bits(
-            &runtime_state().method_cache.list_sort,
+        "sort" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.list_sort,
             fn_addr!(molt_list_sort),
             3,
         )),
-        "__add__" => Some(builtin_func_bits(
-            &runtime_state().method_cache.list_add,
+        "__add__" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.list_add,
             fn_addr!(molt_list_add_method),
             2,
         )),
-        "__mul__" => Some(builtin_func_bits(
-            &runtime_state().method_cache.list_mul,
+        "__mul__" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.list_mul,
             fn_addr!(molt_list_mul_method),
             2,
         )),
-        "__rmul__" => Some(builtin_func_bits(
-            &runtime_state().method_cache.list_rmul,
+        "__rmul__" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.list_rmul,
             fn_addr!(molt_list_mul_method),
             2,
         )),
-        "__iadd__" => Some(builtin_func_bits(
-            &runtime_state().method_cache.list_iadd,
+        "__iadd__" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.list_iadd,
             fn_addr!(molt_inplace_add),
             2,
         )),
-        "__imul__" => Some(builtin_func_bits(
-            &runtime_state().method_cache.list_imul,
+        "__imul__" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.list_imul,
             fn_addr!(molt_inplace_mul),
             2,
         )),
-        "__getitem__" => Some(builtin_func_bits(
-            &runtime_state().method_cache.list_getitem,
+        "__getitem__" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.list_getitem,
             fn_addr!(molt_getitem_method),
             2,
         )),
-        "__setitem__" => Some(builtin_func_bits(
-            &runtime_state().method_cache.list_setitem,
+        "__setitem__" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.list_setitem,
             fn_addr!(molt_setitem_method),
             3,
         )),
-        "__delitem__" => Some(builtin_func_bits(
-            &runtime_state().method_cache.list_delitem,
+        "__delitem__" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.list_delitem,
             fn_addr!(molt_delitem_method),
             2,
         )),
-        "__iter__" => Some(builtin_func_bits(
-            &runtime_state().method_cache.list_iter,
+        "__iter__" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.list_iter,
             fn_addr!(molt_iter),
             1,
         )),
-        "__len__" => Some(builtin_func_bits(
-            &runtime_state().method_cache.list_len,
+        "__len__" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.list_len,
             fn_addr!(molt_len),
             1,
         )),
-        "__contains__" => Some(builtin_func_bits(
-            &runtime_state().method_cache.list_contains,
+        "__contains__" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.list_contains,
             fn_addr!(molt_contains),
             2,
         )),
-        "__reversed__" => Some(builtin_func_bits(
-            &runtime_state().method_cache.list_reversed,
+        "__reversed__" => Some(builtin_func_bits(_py,
+            &runtime_state(_py).method_cache.list_reversed,
             fn_addr!(molt_reversed_builtin),
             1,
         )),
@@ -522,7 +522,7 @@ pub(crate) unsafe fn dict_view_entry(ptr: *mut u8, idx: usize) -> Option<(u64, u
     None
 }
 
-pub(crate) unsafe fn dict_view_as_set_bits(view_ptr: *mut u8, view_type: u32) -> Option<u64> {
+pub(crate) unsafe fn dict_view_as_set_bits(_py: &PyToken<'_>, view_ptr: *mut u8, view_type: u32) -> Option<u64> {
     if !is_set_view_type(view_type) {
         return None;
     }
@@ -532,21 +532,21 @@ pub(crate) unsafe fn dict_view_as_set_bits(view_ptr: *mut u8, view_type: u32) ->
     for idx in 0..len {
         if let Some((key_bits, val_bits)) = dict_view_entry(view_ptr, idx) {
             let (entry_bits, needs_drop) = if view_type == TYPE_ID_DICT_ITEMS_VIEW {
-                let tuple_ptr = alloc_tuple(&[key_bits, val_bits]);
+                let tuple_ptr = alloc_tuple(_py, &[key_bits, val_bits]);
                 if tuple_ptr.is_null() {
-                    dec_ref_bits(set_bits);
+                    dec_ref_bits(_py, set_bits);
                     return None;
                 }
                 (MoltObject::from_ptr(tuple_ptr).bits(), true)
             } else {
                 (key_bits, false)
             };
-            set_add_in_place(set_ptr, entry_bits);
+            set_add_in_place(_py, set_ptr, entry_bits);
             if needs_drop {
-                dec_ref_bits(entry_bits);
+                dec_ref_bits(_py, entry_bits);
             }
-            if exception_pending() {
-                dec_ref_bits(set_bits);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, set_bits);
                 return None;
             }
         }
