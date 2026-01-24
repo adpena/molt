@@ -6,6 +6,7 @@ use molt_obj_model::MoltObject;
 use num_bigint::BigInt;
 
 pub(crate) mod ops;
+pub(crate) mod builders;
 
 use crate::provenance::{register_ptr, release_ptr, resolve_ptr};
 use crate::{
