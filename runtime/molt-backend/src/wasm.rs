@@ -481,6 +481,7 @@ impl WasmBackend {
         add_import("async_sleep", 2, &mut self.import_ids);
         add_import("anext_default_poll", 2, &mut self.import_ids);
         add_import("asyncgen_poll", 2, &mut self.import_ids);
+        add_import("promise_poll", 2, &mut self.import_ids);
         add_import("asyncgen_new", 2, &mut self.import_ids);
         add_import("asyncgen_shutdown", 0, &mut self.import_ids);
         add_import("future_poll", 2, &mut self.import_ids);
@@ -1161,7 +1162,7 @@ impl WasmBackend {
         } else {
             256
         };
-        let table_len = (4
+        let table_len = (5
             + builtin_table_funcs.len()
             + builtin_trampoline_funcs.len()
             + ir.functions.len() * 2) as u32;
@@ -1209,6 +1210,7 @@ impl WasmBackend {
                 ("async_sleep", 1usize),
                 ("anext_default_poll", 1usize),
                 ("asyncgen_poll", 1usize),
+                ("promise_poll", 1usize),
             ] {
                 let type_idx = *user_type_map
                     .get(&arity)
@@ -1241,11 +1243,15 @@ impl WasmBackend {
         let asyncgen_poll_idx = *table_import_wrappers
             .get("asyncgen_poll")
             .unwrap_or(&self.import_ids["asyncgen_poll"]);
+        let promise_poll_idx = *table_import_wrappers
+            .get("promise_poll")
+            .unwrap_or(&self.import_ids["promise_poll"]);
         let mut table_indices = vec![
             sentinel_func_idx,
             async_sleep_idx,
             anext_default_poll_idx,
             asyncgen_poll_idx,
+            promise_poll_idx,
         ];
         let mut func_to_table_idx = HashMap::new();
         let mut func_to_index = HashMap::new();
@@ -1260,9 +1266,10 @@ impl WasmBackend {
         func_to_table_idx.insert("molt_async_sleep".to_string(), 1);
         func_to_table_idx.insert("molt_anext_default_poll".to_string(), 2);
         func_to_table_idx.insert("molt_asyncgen_poll".to_string(), 3);
+        func_to_table_idx.insert("molt_promise_poll".to_string(), 4);
 
         for (offset, (runtime_name, import_name, _)) in builtin_table_funcs.iter().enumerate() {
-            let idx = (offset + 4) as u32;
+            let idx = (offset + 5) as u32;
             let runtime_key = (*runtime_name).to_string();
             func_to_table_idx.insert(runtime_key.clone(), idx);
             if let Some(wrapper_idx) = builtin_wrapper_indices.get(&runtime_key) {
@@ -1280,20 +1287,20 @@ impl WasmBackend {
         let builtin_trampoline_start = user_func_start + user_func_count;
         let user_trampoline_start = builtin_trampoline_start + builtin_trampoline_count;
         for (i, func_ir) in ir.functions.iter().enumerate() {
-            let idx = (i + 4 + builtin_table_funcs.len()) as u32;
+            let idx = (i + 5 + builtin_table_funcs.len()) as u32;
             func_to_table_idx.insert(func_ir.name.clone(), idx);
             func_to_index.insert(func_ir.name.clone(), user_func_start + i as u32);
             table_indices.push(user_func_start + i as u32);
         }
         let mut func_to_trampoline_idx = HashMap::new();
         for (i, (name, _)) in builtin_trampoline_funcs.iter().enumerate() {
-            let idx = (i + 4 + builtin_table_funcs.len() + ir.functions.len()) as u32;
+            let idx = (i + 5 + builtin_table_funcs.len() + ir.functions.len()) as u32;
             func_to_trampoline_idx.insert(name.clone(), idx);
             table_indices.push(builtin_trampoline_start + i as u32);
         }
         for (i, func_ir) in ir.functions.iter().enumerate() {
             let idx = (i
-                + 4
+                + 5
                 + builtin_table_funcs.len()
                 + ir.functions.len()
                 + builtin_trampoline_funcs.len()) as u32;

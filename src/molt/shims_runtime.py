@@ -123,6 +123,18 @@ def molt_future_cancel_clear(future: Any) -> int:
     return 0
 
 
+def molt_promise_new() -> Any:
+    return None
+
+
+def molt_promise_set_result(_future: Any, _result: Any) -> int:
+    return 0
+
+
+def molt_promise_set_exception(_future: Any, _exc: Any) -> int:
+    return 0
+
+
 def molt_task_register_token_owned(_task: Any, _token_id: int) -> int:
     return 0
 

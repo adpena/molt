@@ -6,7 +6,7 @@ use crate::object::utf8_cache::{
 use crate::PyToken;
 use crate::{
     builtin_classes_shutdown, clear_exception_state, clear_exception_type_cache, dec_ref_bits,
-    default_cancel_tokens, obj_from_bits, reset_ptr_registry, MoltObject,
+    default_cancel_tokens, obj_from_bits, reset_ptr_registry, GilReleaseGuard, MoltObject,
     ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, ASYNCGEN_REGISTRY, BLOCK_ON_TASK,
     CONTEXT_STACK, CURRENT_TASK, CURRENT_TOKEN, DEFAULT_RECURSION_LIMIT, EXCEPTION_STACK,
     FN_PTR_CODE, FRAME_STACK, GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE, GIL_DEPTH,
@@ -45,20 +45,34 @@ pub(crate) fn touch_tls_guard() {
 
 pub(crate) fn runtime_teardown(_py: &PyToken<'_>, state: &RuntimeState) {
     crate::gil_assert();
-    if state.scheduler_started.load(AtomicOrdering::Acquire) {
-        state.scheduler().shutdown();
-    }
-    if state.sleep_queue_started.load(AtomicOrdering::Acquire) {
-        state.sleep_queue().shutdown(_py);
-    }
+    let scheduler_started = state.scheduler_started.load(AtomicOrdering::Acquire);
+    let sleep_queue_started = state.sleep_queue_started.load(AtomicOrdering::Acquire);
     #[cfg(not(target_arch = "wasm32"))]
-    if state.io_poller_started.load(AtomicOrdering::Acquire) {
-        state.io_poller().shutdown();
-    }
+    let io_poller_started = state.io_poller_started.load(AtomicOrdering::Acquire);
+    #[cfg(target_arch = "wasm32")]
+    let io_poller_started = false;
     #[cfg(not(target_arch = "wasm32"))]
-    if state.thread_pool_started.load(AtomicOrdering::Acquire) {
-        if let Some(pool) = state.thread_pool.get() {
-            pool.shutdown();
+    let thread_pool_started = state.thread_pool_started.load(AtomicOrdering::Acquire);
+    #[cfg(target_arch = "wasm32")]
+    let thread_pool_started = false;
+
+    if scheduler_started || sleep_queue_started || io_poller_started || thread_pool_started {
+        let _release = GilReleaseGuard::new();
+        if scheduler_started {
+            state.scheduler().shutdown();
+        }
+        if sleep_queue_started {
+            state.sleep_queue().shutdown(_py);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if io_poller_started {
+            state.io_poller().shutdown();
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if thread_pool_started {
+            if let Some(pool) = state.thread_pool.get() {
+                pool.shutdown();
+            }
         }
     }
     clear_async_hang_probe(state);

@@ -12,7 +12,7 @@ use crate::{
 use crate::{
     raise_exception, WASM_TABLE_BASE, WASM_TABLE_IDX_ANEXT_DEFAULT_POLL,
     WASM_TABLE_IDX_ASYNCGEN_POLL, WASM_TABLE_IDX_ASYNC_SLEEP, WASM_TABLE_IDX_IO_WAIT,
-    WASM_TABLE_IDX_PROCESS_POLL, WASM_TABLE_IDX_THREAD_POLL,
+    WASM_TABLE_IDX_PROCESS_POLL, WASM_TABLE_IDX_PROMISE_POLL, WASM_TABLE_IDX_THREAD_POLL,
 };
 
 use super::scheduler::CURRENT_TASK;
@@ -53,6 +53,19 @@ pub(crate) fn asyncgen_poll_fn_addr() -> u64 {
     #[cfg(not(target_arch = "wasm32"))]
     {
         fn_addr!(crate::molt_asyncgen_poll)
+    }
+}
+
+#[inline]
+pub(crate) fn promise_poll_fn_addr() -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        // Keep in sync with wasm table layout in runtime/molt-backend/src/wasm.rs.
+        WASM_TABLE_IDX_PROMISE_POLL
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        fn_addr!(crate::molt_promise_poll)
     }
 }
 

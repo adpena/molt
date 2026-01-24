@@ -139,6 +139,15 @@ if TYPE_CHECKING:
     def molt_future_cancel_clear(_future: Any) -> None:
         pass
 
+    def molt_promise_new() -> Any:
+        pass
+
+    def molt_promise_set_result(_future: Any, _result: Any) -> None:
+        pass
+
+    def molt_promise_set_exception(_future: Any, _exc: Any) -> None:
+        pass
+
     def molt_thread_submit(_callable: Any, _args: Any, _kwargs: Any) -> Any:
         pass
 
@@ -275,6 +284,12 @@ class Future:
         self._molt_event_owner: Event | None = None
         self._molt_event_token_id: int | None = None
         self._callbacks: list[tuple[Callable[["Future"], Any], Any | None]] = []
+        self._molt_promise: Any | None = None
+        if _molt_promise_new is not None:
+            try:
+                self._molt_promise = _molt_promise_new()
+            except Exception:
+                self._molt_promise = None
 
     def cancel(self, msg: Any | None = None) -> bool:
         if self._done:
@@ -289,6 +304,14 @@ class Future:
                 self._exception = CancelledError()
             self._cancel_message = msg
         self._done = True
+        if self._molt_promise is not None and _molt_promise_set_exception is not None:
+            exc_obj: Any = self._exception
+            if exc_obj is None:
+                exc_obj = CancelledError
+            try:
+                _molt_promise_set_exception(self._molt_promise, exc_obj)
+            except Exception:
+                pass
         self._invoke_callbacks()
         return True
 
@@ -337,6 +360,11 @@ class Future:
             raise InvalidStateError("Result is already set")
         self._result = result
         self._done = True
+        if self._molt_promise is not None and _molt_promise_set_result is not None:
+            try:
+                _molt_promise_set_result(self._molt_promise, result)
+            except Exception:
+                pass
         self._invoke_callbacks()
 
     def set_exception(self, exception: BaseException) -> None:
@@ -346,6 +374,11 @@ class Future:
         if _is_cancelled_exc(exception):
             self._cancelled = True
         self._done = True
+        if self._molt_promise is not None and _molt_promise_set_exception is not None:
+            try:
+                _molt_promise_set_exception(self._molt_promise, exception)
+            except Exception:
+                pass
         self._invoke_callbacks()
 
     def _invoke_callbacks(self) -> None:
@@ -372,6 +405,8 @@ class Future:
         return self.result()
 
     def __await__(self) -> Any:
+        if self._molt_promise is not None:
+            return self._molt_promise
         return self._wait()
 
     def __repr__(self) -> str:
@@ -453,6 +488,13 @@ _molt_future_cancel_msg: Callable[[Any, Any], None] | None = _load_intrinsic(
 )
 _molt_future_cancel_clear: Callable[[Any], None] | None = _load_intrinsic(
     "molt_future_cancel_clear"
+)
+_molt_promise_new: Callable[[], Any] | None = _load_intrinsic("molt_promise_new")
+_molt_promise_set_result: Callable[[Any, Any], None] | None = _load_intrinsic(
+    "molt_promise_set_result"
+)
+_molt_promise_set_exception: Callable[[Any, Any], None] | None = _load_intrinsic(
+    "molt_promise_set_exception"
 )
 _molt_thread_submit: Callable[[Any, Any, Any], Any] | None = _load_intrinsic(
     "molt_thread_submit"

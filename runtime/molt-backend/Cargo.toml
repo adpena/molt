@@ -6,6 +6,7 @@ license = "Apache-2.0"
 
 [dependencies]
 cranelift = "0.116"
+cranelift-codegen = { version = "0.116", features = ["arm64", "x86"] }
 cranelift-module = "0.116"
 cranelift-object = "0.116"
 cranelift-native = "0.116"

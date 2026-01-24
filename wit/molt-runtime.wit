@@ -15,6 +15,7 @@ interface intrinsics {
     async_sleep: func(obj: u64) -> u64;
     anext_default_poll: func(obj: u64) -> u64;
     asyncgen_poll: func(obj: u64) -> u64;
+    promise_poll: func(obj: u64) -> u64;
     asyncgen_new: func(obj: molt-object) -> molt-object;
     asyncgen_shutdown: func() -> u64;
     future_poll_fn: func(obj: u64) -> u64;

@@ -14,9 +14,9 @@ use crate::{
     call_poll_fn, exception_context_align_depth, exception_context_fallback_pop,
     exception_context_fallback_push, exception_stack_depth, exception_stack_set_depth,
     header_from_obj_ptr, inc_ref_bits, io_wait_poll_fn_addr, obj_from_bits, pending_bits_i64,
-    process_poll_fn_addr, profile_hit, ptr_from_bits, raise_exception, resolve_task_ptr,
-    runtime_state, set_task_raise_active, task_exception_depth_store, task_exception_depth_take,
-    task_exception_handler_stack_store, task_exception_handler_stack_take,
+    process_poll_fn_addr, profile_hit, promise_poll_fn_addr, ptr_from_bits, raise_exception,
+    resolve_task_ptr, runtime_state, set_task_raise_active, task_exception_depth_store,
+    task_exception_depth_take, task_exception_handler_stack_store, task_exception_handler_stack_take,
     task_exception_stack_store, task_exception_stack_take, task_raise_active, thread_poll_fn_addr,
     to_i64, with_gil, GilGuard, GilReleaseGuard, IoPoller, MoltHeader, MoltObject,
     ProcessTaskState, PtrSlot, ThreadTaskState, ACTIVE_EXCEPTION_STACK, ASYNCGEN_REGISTRY,
@@ -325,9 +325,13 @@ pub(crate) fn task_waiting_on_event(_py: &PyToken<'_>, task_ptr: *mut u8) -> boo
     unsafe {
         let header = header_from_obj_ptr(awaited);
         let poll_fn = (*header).poll_fn;
+        if ((*header).flags & HEADER_FLAG_SPAWN_RETAIN) != 0 {
+            return true;
+        }
         poll_fn == io_wait_poll_fn_addr()
             || poll_fn == thread_poll_fn_addr()
             || poll_fn == process_poll_fn_addr()
+            || poll_fn == promise_poll_fn_addr()
     }
 }
 
@@ -947,6 +951,10 @@ impl MoltScheduler {
                         exception_stack_set_depth(_py, caller_depth);
                         exception_context_fallback_pop();
                         clear_task_token(_py, task_ptr);
+                        let waiters = await_waiters_take(_py, task_ptr);
+                        for waiter in waiters {
+                            wake_task_ptr(_py, waiter.0);
+                        }
                         set_task_raise_active(prev_raise);
                         break;
                     }
@@ -1052,6 +1060,10 @@ impl MoltScheduler {
                         }
                     } else {
                         clear_task_token(_py, task_ptr);
+                        let waiters = await_waiters_take(_py, task_ptr);
+                        for waiter in waiters {
+                            wake_task_ptr(_py, waiter.0);
+                        }
                     }
                     set_task_raise_active(prev_raise);
                     set_current_token(_py, prev_token);

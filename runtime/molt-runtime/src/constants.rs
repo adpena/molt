@@ -16,11 +16,13 @@ pub(crate) const WASM_TABLE_IDX_ANEXT_DEFAULT_POLL: u64 = WASM_TABLE_BASE + 2;
 #[cfg(target_arch = "wasm32")]
 pub(crate) const WASM_TABLE_IDX_ASYNCGEN_POLL: u64 = WASM_TABLE_BASE + 3;
 #[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_IO_WAIT: u64 = WASM_TABLE_BASE + 4;
+pub(crate) const WASM_TABLE_IDX_PROMISE_POLL: u64 = WASM_TABLE_BASE + 4;
 #[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_THREAD_POLL: u64 = WASM_TABLE_BASE + 5;
+pub(crate) const WASM_TABLE_IDX_IO_WAIT: u64 = WASM_TABLE_BASE + 5;
 #[cfg(target_arch = "wasm32")]
-pub(crate) const WASM_TABLE_IDX_PROCESS_POLL: u64 = WASM_TABLE_BASE + 6;
+pub(crate) const WASM_TABLE_IDX_THREAD_POLL: u64 = WASM_TABLE_BASE + 6;
+#[cfg(target_arch = "wasm32")]
+pub(crate) const WASM_TABLE_IDX_PROCESS_POLL: u64 = WASM_TABLE_BASE + 7;
 
 pub(crate) const INLINE_INT_MIN_I128: i128 = -(1_i128 << 46);
 pub(crate) const INLINE_INT_MAX_I128: i128 = (1_i128 << 46) - 1;

@@ -38,6 +38,9 @@ __all__ = [
     "molt_future_cancel",
     "molt_future_cancel_msg",
     "molt_future_cancel_clear",
+    "molt_promise_new",
+    "molt_promise_set_result",
+    "molt_promise_set_exception",
     "molt_task_register_token_owned",
     "molt_spawn",
     "molt_block_on",
@@ -67,6 +70,9 @@ if _IMPL is _runtime:
     molt_future_cancel = _runtime.molt_future_cancel
     molt_future_cancel_msg = _runtime.molt_future_cancel_msg
     molt_future_cancel_clear = _runtime.molt_future_cancel_clear
+    molt_promise_new = _runtime.molt_promise_new
+    molt_promise_set_result = _runtime.molt_promise_set_result
+    molt_promise_set_exception = _runtime.molt_promise_set_exception
     molt_task_register_token_owned = _runtime.molt_task_register_token_owned
     molt_spawn = _runtime.molt_spawn
     molt_block_on = _runtime.molt_block_on
@@ -94,6 +100,9 @@ else:
     molt_future_cancel = _IMPL.molt_future_cancel
     molt_future_cancel_msg = _IMPL.molt_future_cancel_msg
     molt_future_cancel_clear = _IMPL.molt_future_cancel_clear
+    molt_promise_new = _IMPL.molt_promise_new
+    molt_promise_set_result = _IMPL.molt_promise_set_result
+    molt_promise_set_exception = _IMPL.molt_promise_set_exception
     molt_task_register_token_owned = _IMPL.molt_task_register_token_owned
     molt_spawn = _IMPL.molt_spawn
     molt_block_on = _IMPL.molt_block_on

@@ -17,10 +17,10 @@ use crate::{
     instant_from_monotonic_secs, io_wait_poll_fn_addr, is_block_on_task, maybe_ptr_from_bits,
     molt_anext, molt_exception_clear, molt_exception_kind, molt_exception_last,
     molt_float_from_obj, molt_raise, obj_from_bits, object_class_bits, object_mark_has_ptrs,
-    object_type_id, pending_bits_i64, process_poll_fn_addr, process_task_state, ptr_from_bits,
-    raise_cancelled_with_message, raise_exception, record_exception, register_task_token,
-    resolve_task_ptr, runtime_state, set_generator_raise, string_obj_to_owned,
-    task_cancel_message_clear, task_cancel_message_set, task_cancel_pending,
+    object_type_id, pending_bits_i64, process_poll_fn_addr, process_task_state,
+    promise_poll_fn_addr, ptr_from_bits, raise_cancelled_with_message, raise_exception,
+    record_exception, register_task_token, resolve_task_ptr, runtime_state, set_generator_raise,
+    string_obj_to_owned, task_cancel_message_clear, task_cancel_message_set, task_cancel_pending,
     task_exception_depth_drop, task_exception_stack_drop, task_has_token, task_last_exceptions,
     task_set_cancel_pending, task_take_cancel_pending, task_waiting_on, thread_poll_fn_addr,
     thread_task_state, to_f64, to_i64, token_id_from_bits, type_name, wake_task_ptr, MoltHeader,
@@ -1244,6 +1244,96 @@ pub extern "C" fn molt_future_new(poll_fn_addr: u64, closure_size: u64) -> u64 {
             }
         }
         obj_bits
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_promise_new() -> u64 {
+    crate::with_gil_entry!(_py, {
+        molt_future_new(promise_poll_fn_addr(), std::mem::size_of::<u64>() as u64)
+    })
+}
+
+/// # Safety
+/// - `obj_bits` must be a valid pointer to a Molt promise future.
+#[no_mangle]
+pub unsafe extern "C" fn molt_promise_poll(obj_bits: u64) -> i64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(obj_bits);
+        let Some(ptr) = obj.as_ptr() else {
+            return MoltObject::none().bits() as i64;
+        };
+        let header = header_from_obj_ptr(ptr);
+        match (*header).state {
+            0 => pending_bits_i64(),
+            1 => {
+                let payload_ptr = ptr as *mut u64;
+                let res_bits = *payload_ptr;
+                inc_ref_bits(_py, res_bits);
+                res_bits as i64
+            }
+            2 => {
+                let payload_ptr = ptr as *mut u64;
+                let exc_bits = *payload_ptr;
+                let _ = molt_raise(exc_bits);
+                MoltObject::none().bits() as i64
+            }
+            _ => MoltObject::none().bits() as i64,
+        }
+    })
+}
+
+/// # Safety
+/// - `future_bits` must be a valid pointer to a Molt promise future.
+#[no_mangle]
+pub unsafe extern "C" fn molt_promise_set_result(future_bits: u64, result_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(task_ptr) = resolve_task_ptr(future_bits) else {
+            return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
+        };
+        let header = header_from_obj_ptr(task_ptr);
+        if (*header).poll_fn != promise_poll_fn_addr() {
+            return raise_exception::<_>(_py, "TypeError", "object is not a promise");
+        }
+        if (*header).state != 0 {
+            return MoltObject::none().bits();
+        }
+        let payload_ptr = task_ptr as *mut u64;
+        *payload_ptr = result_bits;
+        inc_ref_bits(_py, result_bits);
+        (*header).state = 1;
+        let waiters = await_waiters_take(_py, task_ptr);
+        for waiter in waiters {
+            wake_task_ptr(_py, waiter.0);
+        }
+        MoltObject::none().bits()
+    })
+}
+
+/// # Safety
+/// - `future_bits` must be a valid pointer to a Molt promise future.
+#[no_mangle]
+pub unsafe extern "C" fn molt_promise_set_exception(future_bits: u64, exc_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(task_ptr) = resolve_task_ptr(future_bits) else {
+            return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
+        };
+        let header = header_from_obj_ptr(task_ptr);
+        if (*header).poll_fn != promise_poll_fn_addr() {
+            return raise_exception::<_>(_py, "TypeError", "object is not a promise");
+        }
+        if (*header).state != 0 {
+            return MoltObject::none().bits();
+        }
+        let payload_ptr = task_ptr as *mut u64;
+        *payload_ptr = exc_bits;
+        inc_ref_bits(_py, exc_bits);
+        (*header).state = 2;
+        let waiters = await_waiters_take(_py, task_ptr);
+        for waiter in waiters {
+            wake_task_ptr(_py, waiter.0);
+        }
+        MoltObject::none().bits()
     })
 }
 

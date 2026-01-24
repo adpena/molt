@@ -491,6 +491,18 @@ def molt_future_cancel_clear(future: Any) -> int:
     return 0
 
 
+def molt_promise_new() -> Any:
+    return None
+
+
+def molt_promise_set_result(_future: Any, _result: Any) -> int:
+    return 0
+
+
+def molt_promise_set_exception(_future: Any, _exc: Any) -> int:
+    return 0
+
+
 def molt_task_register_token_owned(task: Any, token_id: int) -> int:
     if _use_runtime_concurrency():
         lib = load_runtime()
@@ -1031,6 +1043,9 @@ def install() -> None:
     setattr(builtins, "molt_future_cancel", molt_future_cancel)
     setattr(builtins, "molt_future_cancel_msg", molt_future_cancel_msg)
     setattr(builtins, "molt_future_cancel_clear", molt_future_cancel_clear)
+    setattr(builtins, "molt_promise_new", molt_promise_new)
+    setattr(builtins, "molt_promise_set_result", molt_promise_set_result)
+    setattr(builtins, "molt_promise_set_exception", molt_promise_set_exception)
     setattr(builtins, "molt_task_register_token_owned", molt_task_register_token_owned)
     setattr(builtins, "molt_thread_submit", molt_thread_submit)
     setattr(builtins, "_molt_io_wait_new", molt_io_wait_new)

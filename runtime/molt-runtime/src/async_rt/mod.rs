@@ -36,7 +36,8 @@ pub(crate) use generators::*;
 
 pub(crate) use poll::{
     anext_default_poll_fn_addr, async_sleep_poll_fn_addr, asyncgen_poll_fn_addr, call_poll_fn,
-    io_wait_poll_fn_addr, poll_future_with_task_stack, process_poll_fn_addr, thread_poll_fn_addr,
+    io_wait_poll_fn_addr, poll_future_with_task_stack, process_poll_fn_addr, promise_poll_fn_addr,
+    thread_poll_fn_addr,
 };
 
 pub(crate) use task::resolve_task_ptr;
