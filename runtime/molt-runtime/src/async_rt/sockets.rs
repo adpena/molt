@@ -14,8 +14,6 @@ use std::io::ErrorKind;
 use std::ffi::{CStr, CString, OsString};
 #[cfg(not(target_arch = "wasm32"))]
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::Arc;
 #[cfg(unix)]
 use std::os::fd::BorrowedFd;
 #[cfg(not(target_arch = "wasm32"))]
@@ -3053,90 +3051,4 @@ pub extern "C" fn molt_socket_has_ipv6() -> u64 {
 #[no_mangle]
 pub extern "C" fn molt_socket_has_ipv6() -> u64 {
     MoltObject::from_bool(false).bits()
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
-pub unsafe extern "C" fn molt_thread_submit(
-    callable_bits: u64,
-    args_bits: u64,
-    kwargs_bits: u64,
-) -> u64 {
-    let future_bits = molt_future_new(thread_poll_fn_addr(), 0);
-    let Some(future_ptr) = resolve_obj_ptr(future_bits) else {
-        return MoltObject::none().bits();
-    };
-    let state = Arc::new(ThreadTaskState::new(future_ptr));
-    runtime_state()
-        .thread_tasks
-        .lock()
-        .unwrap()
-        .insert(PtrSlot(future_ptr), Arc::clone(&state));
-    inc_ref_bits(callable_bits);
-    if !obj_from_bits(args_bits).is_none() {
-        inc_ref_bits(args_bits);
-    }
-    if !obj_from_bits(kwargs_bits).is_none() {
-        inc_ref_bits(kwargs_bits);
-    }
-    runtime_state().thread_pool().submit(ThreadWorkItem {
-        task: state,
-        callable_bits,
-        args_bits,
-        kwargs_bits,
-    });
-    future_bits
-}
-
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub unsafe extern "C" fn molt_thread_submit(
-    _callable_bits: u64,
-    _args_bits: u64,
-    _kwargs_bits: u64,
-) -> u64 {
-    raise_exception::<u64>("RuntimeError", "thread submit unsupported on wasm")
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
-pub unsafe extern "C" fn molt_thread_poll(obj_bits: u64) -> i64 {
-    let obj_ptr = ptr_from_bits(obj_bits);
-    if obj_ptr.is_null() {
-        return MoltObject::none().bits() as i64;
-    }
-    let Some(state) = runtime_state()
-        .thread_tasks
-        .lock()
-        .unwrap()
-        .get(&PtrSlot(obj_ptr))
-        .cloned()
-    else {
-        return raise_exception::<i64>("RuntimeError", "thread task missing");
-    };
-    if state.done.load(AtomicOrdering::Acquire) {
-        task_take_cancel_pending(obj_ptr);
-    } else if task_cancel_pending(obj_ptr) {
-        task_take_cancel_pending(obj_ptr);
-        state.cancelled.store(true, AtomicOrdering::Release);
-        return raise_cancelled_with_message::<i64>(obj_ptr);
-    }
-    if !state.done.load(AtomicOrdering::Acquire) {
-        return pending_bits_i64();
-    }
-    if let Some(exc_bits) = state.exception.lock().unwrap().as_ref().copied() {
-        let res_bits = molt_raise(exc_bits);
-        return res_bits as i64;
-    }
-    if let Some(result_bits) = state.result.lock().unwrap().as_ref().copied() {
-        inc_ref_bits(result_bits);
-        return result_bits as i64;
-    }
-    MoltObject::none().bits() as i64
-}
-
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub unsafe extern "C" fn molt_thread_poll(_obj_bits: u64) -> i64 {
-    pending_bits_i64()
 }

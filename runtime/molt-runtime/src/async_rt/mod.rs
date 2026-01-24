@@ -12,7 +12,9 @@ use crate::state::clear_worker_thread_state;
 
 pub(crate) mod channels;
 pub(crate) mod io_poller;
+pub(crate) mod process;
 pub(crate) mod sockets;
+pub(crate) mod threads;
 
 use crate::{
     alloc_exception_from_class_bits, alloc_tuple, call_poll_fn, dec_ref_bits,
