@@ -1,8 +1,8 @@
+use crate::PyToken;
 use crate::*;
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Read, Seek, Write};
 use std::sync::{Arc, Mutex};
-use crate::PyToken;
 
 macro_rules! file_handle_require_attached {
     ($py:expr, $handle:expr) => {
@@ -13,7 +13,8 @@ macro_rules! file_handle_require_attached {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn alloc_file_handle_with_state(_py: &PyToken<'_>,
+fn alloc_file_handle_with_state(
+    _py: &PyToken<'_>,
     state: Arc<MoltFileState>,
     readable: bool,
     writable: bool,
@@ -400,7 +401,10 @@ fn dup_fd(_fd: i64) -> Option<i64> {
     None
 }
 
-pub(crate) fn path_from_bits(_py: &PyToken<'_>, file_bits: u64) -> Result<std::path::PathBuf, String> {
+pub(crate) fn path_from_bits(
+    _py: &PyToken<'_>,
+    file_bits: u64,
+) -> Result<std::path::PathBuf, String> {
     let obj = obj_from_bits(file_bits);
     if let Some(text) = string_obj_to_owned(obj) {
         return Ok(std::path::PathBuf::from(text));
@@ -565,7 +569,8 @@ fn open_arg_path(_py: &PyToken<'_>, file_bits: u64) -> Result<(std::path::PathBu
 }
 
 #[allow(clippy::too_many_arguments)]
-fn open_impl(_py: &PyToken<'_>,
+fn open_impl(
+    _py: &PyToken<'_>,
     file_bits: u64,
     mode_bits: u64,
     buffering_bits: u64,
@@ -589,7 +594,8 @@ fn open_impl(_py: &PyToken<'_>,
 
     let mode_obj = obj_from_bits(mode_bits);
     if mode_obj.is_none() {
-        return raise_exception::<_>(_py,
+        return raise_exception::<_>(
+            _py,
             "TypeError",
             "open() argument 'mode' must be str, not NoneType",
         );
@@ -616,7 +622,8 @@ fn open_impl(_py: &PyToken<'_>,
     let buffering = {
         let obj = obj_from_bits(buffering_bits);
         if obj.is_none() {
-            return raise_exception::<_>(_py,
+            return raise_exception::<_>(
+                _py,
                 "TypeError",
                 "'NoneType' object cannot be interpreted as an integer",
             );
@@ -634,7 +641,8 @@ fn open_impl(_py: &PyToken<'_>,
     let encoding = if mode_info.text {
         open_arg_encoding(_py, encoding_bits)
     } else if !obj_from_bits(encoding_bits).is_none() {
-        return raise_exception::<_>(_py,
+        return raise_exception::<_>(
+            _py,
             "ValueError",
             "binary mode doesn't take an encoding argument",
         );
@@ -647,7 +655,11 @@ fn open_impl(_py: &PyToken<'_>,
     let errors = if mode_info.text {
         open_arg_errors(_py, errors_bits)
     } else if !obj_from_bits(errors_bits).is_none() {
-        return raise_exception::<_>(_py, "ValueError", "binary mode doesn't take an errors argument");
+        return raise_exception::<_>(
+            _py,
+            "ValueError",
+            "binary mode doesn't take an errors argument",
+        );
     } else {
         None
     };
@@ -657,7 +669,11 @@ fn open_impl(_py: &PyToken<'_>,
     let newline = if mode_info.text {
         open_arg_newline(_py, newline_bits)
     } else if !obj_from_bits(newline_bits).is_none() {
-        return raise_exception::<_>(_py, "ValueError", "binary mode doesn't take a newline argument");
+        return raise_exception::<_>(
+            _py,
+            "ValueError",
+            "binary mode doesn't take a newline argument",
+        );
     } else {
         None
     };
@@ -681,7 +697,8 @@ fn open_impl(_py: &PyToken<'_>,
         match open_arg_path(_py, file_bits) {
             Ok((resolved, name_bits)) => {
                 if !closefd {
-                    return raise_exception::<_>(_py,
+                    return raise_exception::<_>(
+                        _py,
                         "ValueError",
                         "Cannot use closefd=False with file name",
                     );
@@ -831,7 +848,8 @@ fn open_impl(_py: &PyToken<'_>,
     };
     let buffer_size = if buffering == 0 { 0 } else { buffering };
     let buffer_bits = if mode_info.text {
-        let buffer_ptr = alloc_file_handle_with_state(_py,
+        let buffer_ptr = alloc_file_handle_with_state(
+            _py,
             Arc::clone(&state),
             mode_info.readable,
             mode_info.writable,
@@ -856,7 +874,8 @@ fn open_impl(_py: &PyToken<'_>,
     } else {
         0
     };
-    let ptr = alloc_file_handle_with_state(_py,
+    let ptr = alloc_file_handle_with_state(
+        _py,
         state,
         mode_info.readable,
         mode_info.writable,
@@ -887,61 +906,63 @@ fn open_impl(_py: &PyToken<'_>,
 #[no_mangle]
 pub extern "C" fn molt_file_open(path_bits: u64, mode_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    let none = MoltObject::none().bits();
-    open_impl(_py,
-        path_bits,
-        mode_bits,
-        MoltObject::from_int(-1).bits(),
-        none,
-        none,
-        none,
-        MoltObject::from_bool(true).bits(),
-        none,
-    )
-
+        let none = MoltObject::none().bits();
+        open_impl(
+            _py,
+            path_bits,
+            mode_bits,
+            MoltObject::from_int(-1).bits(),
+            none,
+            none,
+            none,
+            MoltObject::from_bool(true).bits(),
+            none,
+        )
     })
 }
 
 #[no_mangle]
 pub extern "C" fn molt_path_exists(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    if !has_capability(_py, "fs.read") {
-        return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
-    }
-    let path = match path_from_bits(_py, path_bits) {
-        Ok(path) => path,
-        Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
-    };
-    MoltObject::from_bool(std::fs::metadata(path).is_ok()).bits()
-
+        if !has_capability(_py, "fs.read") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+        }
+        let path = match path_from_bits(_py, path_bits) {
+            Ok(path) => path,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        MoltObject::from_bool(std::fs::metadata(path).is_ok()).bits()
     })
 }
 
 #[no_mangle]
 pub extern "C" fn molt_path_unlink(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    if !has_capability(_py, "fs.write") {
-        return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
-    }
-    let path = match path_from_bits(_py, path_bits) {
-        Ok(path) => path,
-        Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
-    };
-    match std::fs::remove_file(&path) {
-        Ok(()) => MoltObject::none().bits(),
-        Err(err) => {
-            let msg = err.to_string();
-            match err.kind() {
-                ErrorKind::NotFound => return raise_exception::<_>(_py, "FileNotFoundError", &msg),
-                ErrorKind::PermissionDenied => {
-                    return raise_exception::<_>(_py, "PermissionError", &msg)
+        if !has_capability(_py, "fs.write") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
+        }
+        let path = match path_from_bits(_py, path_bits) {
+            Ok(path) => path,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        match std::fs::remove_file(&path) {
+            Ok(()) => MoltObject::none().bits(),
+            Err(err) => {
+                let msg = err.to_string();
+                match err.kind() {
+                    ErrorKind::NotFound => {
+                        return raise_exception::<_>(_py, "FileNotFoundError", &msg)
+                    }
+                    ErrorKind::PermissionDenied => {
+                        return raise_exception::<_>(_py, "PermissionError", &msg)
+                    }
+                    ErrorKind::IsADirectory => {
+                        return raise_exception::<_>(_py, "IsADirectoryError", &msg)
+                    }
+                    _ => return raise_exception::<_>(_py, "OSError", &msg),
                 }
-                ErrorKind::IsADirectory => return raise_exception::<_>(_py, "IsADirectoryError", &msg),
-                _ => return raise_exception::<_>(_py, "OSError", &msg),
             }
         }
-    }
-
     })
 }
 
@@ -957,17 +978,17 @@ pub extern "C" fn molt_open_builtin(
     opener_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-    open_impl(_py,
-        file_bits,
-        mode_bits,
-        buffering_bits,
-        encoding_bits,
-        errors_bits,
-        newline_bits,
-        closefd_bits,
-        opener_bits,
-    )
-
+        open_impl(
+            _py,
+            file_bits,
+            mode_bits,
+            buffering_bits,
+            encoding_bits,
+            errors_bits,
+            newline_bits,
+            closefd_bits,
+            opener_bits,
+        )
     })
 }
 
@@ -1256,124 +1277,123 @@ pub(crate) fn file_handle_is_closed(handle: &MoltFileHandle) -> bool {
 #[no_mangle]
 pub extern "C" fn molt_file_read(handle_bits: u64, size_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    let handle_obj = obj_from_bits(handle_bits);
-    let Some(ptr) = handle_obj.as_ptr() else {
-        return raise_exception::<_>(_py, "TypeError", "expected file handle");
-    };
-    unsafe {
-        if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+        let handle_obj = obj_from_bits(handle_bits);
+        let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
-        }
-        let handle_ptr = file_handle_ptr(ptr);
-        if handle_ptr.is_null() {
-            return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
-        }
-        let handle = &mut *handle_ptr;
-        file_handle_require_attached!(_py, handle);
-        if file_handle_is_closed(handle) {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
-        }
-        if !handle.readable {
-            return raise_exception::<_>(_py, "UnsupportedOperation", "not readable");
-        }
-        let mut guard = handle.state.file.lock().unwrap();
-        let Some(file) = guard.as_mut() else {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
         };
-        let mut buf = Vec::new();
-        let size_obj = obj_from_bits(size_bits);
-        let size = if size_obj.is_none() {
-            None
-        } else {
-            match to_i64(size_obj) {
-                Some(val) if val < 0 => None,
-                Some(val) => Some(val as usize),
-                None => {
-                    let type_name = class_name_for_error(type_of_bits(_py, size_bits));
-                    let msg = format!("argument should be integer or None, not '{type_name}'");
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+                return raise_exception::<_>(_py, "TypeError", "expected file handle");
             }
-        };
-        let mut remaining = size;
-        let mut at_eof = false;
-        if let Some(pending) = handle.pending_byte.take() {
-            if let Some(rem) = remaining {
-                if rem == 0 {
-                    handle.pending_byte = Some(pending);
-                } else {
-                    buf.push(pending);
-                    remaining = Some(rem.saturating_sub(1));
-                }
+            let handle_ptr = file_handle_ptr(ptr);
+            if handle_ptr.is_null() {
+                return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
+            }
+            let handle = &mut *handle_ptr;
+            file_handle_require_attached!(_py, handle);
+            if file_handle_is_closed(handle) {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+            }
+            if !handle.readable {
+                return raise_exception::<_>(_py, "UnsupportedOperation", "not readable");
+            }
+            let mut guard = handle.state.file.lock().unwrap();
+            let Some(file) = guard.as_mut() else {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+            };
+            let mut buf = Vec::new();
+            let size_obj = obj_from_bits(size_bits);
+            let size = if size_obj.is_none() {
+                None
             } else {
-                buf.push(pending);
-            }
-        }
-        match remaining {
-            Some(0) => {}
-            Some(len) => {
-                if len > 0 {
-                    let start = buf.len();
-                    buf.resize(start + len, 0);
-                    let n = match file.read(&mut buf[start..]) {
-                        Ok(n) => n,
-                        Err(_) => return raise_exception::<_>(_py, "OSError", "read failed"),
-                    };
-                    buf.truncate(start + n);
-                    if n < len {
-                        at_eof = true;
+                match to_i64(size_obj) {
+                    Some(val) if val < 0 => None,
+                    Some(val) => Some(val as usize),
+                    None => {
+                        let type_name = class_name_for_error(type_of_bits(_py, size_bits));
+                        let msg = format!("argument should be integer or None, not '{type_name}'");
+                        return raise_exception::<_>(_py, "TypeError", &msg);
                     }
                 }
-            }
-            None => {
-                if file.read_to_end(&mut buf).is_err() {
-                    return raise_exception::<_>(_py, "OSError", "read failed");
-                }
-                at_eof = true;
-            }
-        }
-        if handle.text {
-            if handle.newline.is_none() && buf.last() == Some(&b'\r') && !at_eof {
-                handle.pending_byte = Some(b'\r');
-                buf.pop();
-            }
-            let bytes = if handle.newline.is_none() {
-                translate_universal_newlines(&buf)
-            } else {
-                buf
             };
-            let errors = handle.errors.as_deref().unwrap_or("strict");
-            if let Err(msg) = validate_error_handler(errors) {
-                return raise_exception::<_>(_py, "LookupError", &msg);
+            let mut remaining = size;
+            let mut at_eof = false;
+            if let Some(pending) = handle.pending_byte.take() {
+                if let Some(rem) = remaining {
+                    if rem == 0 {
+                        handle.pending_byte = Some(pending);
+                    } else {
+                        buf.push(pending);
+                        remaining = Some(rem.saturating_sub(1));
+                    }
+                } else {
+                    buf.push(pending);
+                }
             }
-            let encoding_label = handle.encoding.as_deref().unwrap_or("utf-8");
-            let encoding = text_encoding_kind(encoding_label);
-            let text = match decode_text_with_errors(&bytes, encoding, errors) {
-                Ok(text) => text,
-                Err(err) => {
-                    let msg = format!(
+            match remaining {
+                Some(0) => {}
+                Some(len) => {
+                    if len > 0 {
+                        let start = buf.len();
+                        buf.resize(start + len, 0);
+                        let n = match file.read(&mut buf[start..]) {
+                            Ok(n) => n,
+                            Err(_) => return raise_exception::<_>(_py, "OSError", "read failed"),
+                        };
+                        buf.truncate(start + n);
+                        if n < len {
+                            at_eof = true;
+                        }
+                    }
+                }
+                None => {
+                    if file.read_to_end(&mut buf).is_err() {
+                        return raise_exception::<_>(_py, "OSError", "read failed");
+                    }
+                    at_eof = true;
+                }
+            }
+            if handle.text {
+                if handle.newline.is_none() && buf.last() == Some(&b'\r') && !at_eof {
+                    handle.pending_byte = Some(b'\r');
+                    buf.pop();
+                }
+                let bytes = if handle.newline.is_none() {
+                    translate_universal_newlines(&buf)
+                } else {
+                    buf
+                };
+                let errors = handle.errors.as_deref().unwrap_or("strict");
+                if let Err(msg) = validate_error_handler(errors) {
+                    return raise_exception::<_>(_py, "LookupError", &msg);
+                }
+                let encoding_label = handle.encoding.as_deref().unwrap_or("utf-8");
+                let encoding = text_encoding_kind(encoding_label);
+                let text = match decode_text_with_errors(&bytes, encoding, errors) {
+                    Ok(text) => text,
+                    Err(err) => {
+                        let msg = format!(
                         "'{encoding_label}' codec can't decode byte 0x{:02x} in position {}: {}",
                         err.byte, err.pos, err.message
                     );
-                    return raise_exception::<_>(_py, "UnicodeDecodeError", &msg);
+                        return raise_exception::<_>(_py, "UnicodeDecodeError", &msg);
+                    }
+                };
+                let out_ptr = alloc_string(_py, text.as_bytes());
+                if out_ptr.is_null() {
+                    MoltObject::none().bits()
+                } else {
+                    MoltObject::from_ptr(out_ptr).bits()
                 }
-            };
-            let out_ptr = alloc_string(_py, text.as_bytes());
-            if out_ptr.is_null() {
-                MoltObject::none().bits()
             } else {
-                MoltObject::from_ptr(out_ptr).bits()
-            }
-        } else {
-            let out_ptr = alloc_bytes(_py, &buf);
-            if out_ptr.is_null() {
-                MoltObject::none().bits()
-            } else {
-                MoltObject::from_ptr(out_ptr).bits()
+                let out_ptr = alloc_bytes(_py, &buf);
+                if out_ptr.is_null() {
+                    MoltObject::none().bits()
+                } else {
+                    MoltObject::from_ptr(out_ptr).bits()
+                }
             }
         }
-    }
-
     })
 }
 
@@ -1495,159 +1515,61 @@ fn file_readline_bytes(
 #[no_mangle]
 pub extern "C" fn molt_file_readline(handle_bits: u64, size_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    let handle_obj = obj_from_bits(handle_bits);
-    let Some(ptr) = handle_obj.as_ptr() else {
-        return raise_exception::<_>(_py, "TypeError", "expected file handle");
-    };
-    unsafe {
-        if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+        let handle_obj = obj_from_bits(handle_bits);
+        let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
-        }
-        let handle_ptr = file_handle_ptr(ptr);
-        if handle_ptr.is_null() {
-            return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
-        }
-        let handle = &mut *handle_ptr;
-        file_handle_require_attached!(_py, handle);
-        if file_handle_is_closed(handle) {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
-        }
-        if !handle.readable {
-            return raise_exception::<_>(_py, "UnsupportedOperation", "not readable");
-        }
-        let size_obj = obj_from_bits(size_bits);
-        let size = if size_obj.is_none() {
-            None
-        } else {
-            match to_i64(size_obj) {
-                Some(val) if val < 0 => None,
-                Some(val) => Some(val as usize),
-                None => {
-                    let type_name = class_name_for_error(type_of_bits(_py, size_bits));
-                    let msg = format!("'{type_name}' object cannot be interpreted as an integer");
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+                return raise_exception::<_>(_py, "TypeError", "expected file handle");
             }
-        };
-        let text = handle.text;
-        let newline_owned = if text {
-            handle.newline.clone()
-        } else {
-            Some("\n".to_string())
-        };
-        let newline = newline_owned.as_deref();
-        let mut pending_byte = handle.pending_byte.take();
-        let mut guard = handle.state.file.lock().unwrap();
-        let Some(file) = guard.as_mut() else {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
-        };
-        let bytes = match file_readline_bytes(&mut pending_byte, file, newline, text, size) {
-            Ok(bytes) => bytes,
-            Err(_) => {
-                handle.pending_byte = pending_byte;
-                return raise_exception::<_>(_py, "OSError", "read failed");
+            let handle_ptr = file_handle_ptr(ptr);
+            if handle_ptr.is_null() {
+                return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
-        };
-        handle.pending_byte = pending_byte;
-        if text {
-            let errors = handle.errors.as_deref().unwrap_or("strict");
-            if let Err(msg) = validate_error_handler(errors) {
-                return raise_exception::<_>(_py, "LookupError", &msg);
+            let handle = &mut *handle_ptr;
+            file_handle_require_attached!(_py, handle);
+            if file_handle_is_closed(handle) {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             }
-            let encoding_label = handle.encoding.as_deref().unwrap_or("utf-8");
-            let encoding = text_encoding_kind(encoding_label);
-            let text = match decode_text_with_errors(&bytes, encoding, errors) {
-                Ok(text) => text,
-                Err(err) => {
-                    let msg = format!(
-                        "'{encoding_label}' codec can't decode byte 0x{:02x} in position {}: {}",
-                        err.byte, err.pos, err.message
-                    );
-                    return raise_exception::<_>(_py, "UnicodeDecodeError", &msg);
+            if !handle.readable {
+                return raise_exception::<_>(_py, "UnsupportedOperation", "not readable");
+            }
+            let size_obj = obj_from_bits(size_bits);
+            let size = if size_obj.is_none() {
+                None
+            } else {
+                match to_i64(size_obj) {
+                    Some(val) if val < 0 => None,
+                    Some(val) => Some(val as usize),
+                    None => {
+                        let type_name = class_name_for_error(type_of_bits(_py, size_bits));
+                        let msg =
+                            format!("'{type_name}' object cannot be interpreted as an integer");
+                        return raise_exception::<_>(_py, "TypeError", &msg);
+                    }
                 }
             };
-            let out_ptr = alloc_string(_py, text.as_bytes());
-            if out_ptr.is_null() {
-                MoltObject::none().bits()
+            let text = handle.text;
+            let newline_owned = if text {
+                handle.newline.clone()
             } else {
-                MoltObject::from_ptr(out_ptr).bits()
-            }
-        } else {
-            let out_ptr = alloc_bytes(_py, &bytes);
-            if out_ptr.is_null() {
-                MoltObject::none().bits()
-            } else {
-                MoltObject::from_ptr(out_ptr).bits()
-            }
-        }
-    }
-
-    })
-}
-
-#[no_mangle]
-pub extern "C" fn molt_file_readlines(handle_bits: u64, hint_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-    let handle_obj = obj_from_bits(handle_bits);
-    let Some(ptr) = handle_obj.as_ptr() else {
-        return raise_exception::<_>(_py, "TypeError", "expected file handle");
-    };
-    unsafe {
-        if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
-            return raise_exception::<_>(_py, "TypeError", "expected file handle");
-        }
-        let handle_ptr = file_handle_ptr(ptr);
-        if handle_ptr.is_null() {
-            return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
-        }
-        let handle = &mut *handle_ptr;
-        file_handle_require_attached!(_py, handle);
-        if file_handle_is_closed(handle) {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
-        }
-        if !handle.readable {
-            return raise_exception::<_>(_py, "UnsupportedOperation", "not readable");
-        }
-        let hint_obj = obj_from_bits(hint_bits);
-        let hint = if hint_obj.is_none() {
-            None
-        } else {
-            match to_i64(hint_obj) {
-                Some(val) if val <= 0 => None,
-                Some(val) => Some(val as usize),
-                None => {
-                    let type_name = class_name_for_error(type_of_bits(_py, hint_bits));
-                    let msg = format!("argument should be integer or None, not '{type_name}'");
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-            }
-        };
-        let text = handle.text;
-        let newline_owned = if text {
-            handle.newline.clone()
-        } else {
-            Some("\n".to_string())
-        };
-        let newline = newline_owned.as_deref();
-        let mut pending_byte = handle.pending_byte.take();
-        let mut guard = handle.state.file.lock().unwrap();
-        let Some(file) = guard.as_mut() else {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
-        };
-        let mut lines: Vec<u64> = Vec::new();
-        let mut total = 0usize;
-        loop {
-            let bytes = match file_readline_bytes(&mut pending_byte, file, newline, text, None) {
+                Some("\n".to_string())
+            };
+            let newline = newline_owned.as_deref();
+            let mut pending_byte = handle.pending_byte.take();
+            let mut guard = handle.state.file.lock().unwrap();
+            let Some(file) = guard.as_mut() else {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+            };
+            let bytes = match file_readline_bytes(&mut pending_byte, file, newline, text, size) {
                 Ok(bytes) => bytes,
                 Err(_) => {
                     handle.pending_byte = pending_byte;
                     return raise_exception::<_>(_py, "OSError", "read failed");
                 }
             };
-            if bytes.is_empty() {
-                break;
-            }
-            total = total.saturating_add(bytes.len());
+            handle.pending_byte = pending_byte;
             if text {
                 let errors = handle.errors.as_deref().unwrap_or("strict");
                 if let Err(msg) = validate_error_handler(errors) {
@@ -1659,184 +1581,295 @@ pub extern "C" fn molt_file_readlines(handle_bits: u64, hint_bits: u64) -> u64 {
                     Ok(text) => text,
                     Err(err) => {
                         let msg = format!(
-                            "'{encoding_label}' codec can't decode byte 0x{:02x} in position {}: {}",
-                            err.byte, err.pos, err.message
-                        );
+                        "'{encoding_label}' codec can't decode byte 0x{:02x} in position {}: {}",
+                        err.byte, err.pos, err.message
+                    );
                         return raise_exception::<_>(_py, "UnicodeDecodeError", &msg);
                     }
                 };
-                let line_ptr = alloc_string(_py, text.as_bytes());
-                if line_ptr.is_null() {
-                    return MoltObject::none().bits();
+                let out_ptr = alloc_string(_py, text.as_bytes());
+                if out_ptr.is_null() {
+                    MoltObject::none().bits()
+                } else {
+                    MoltObject::from_ptr(out_ptr).bits()
                 }
-                lines.push(MoltObject::from_ptr(line_ptr).bits());
             } else {
-                let line_ptr = alloc_bytes(_py, &bytes);
-                if line_ptr.is_null() {
-                    return MoltObject::none().bits();
-                }
-                lines.push(MoltObject::from_ptr(line_ptr).bits());
-            }
-            if let Some(limit) = hint {
-                if total >= limit {
-                    break;
+                let out_ptr = alloc_bytes(_py, &bytes);
+                if out_ptr.is_null() {
+                    MoltObject::none().bits()
+                } else {
+                    MoltObject::from_ptr(out_ptr).bits()
                 }
             }
         }
-        handle.pending_byte = pending_byte;
-        let list_ptr = alloc_list(_py, lines.as_slice());
-        if list_ptr.is_null() {
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_file_readlines(handle_bits: u64, hint_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let handle_obj = obj_from_bits(handle_bits);
+        let Some(ptr) = handle_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "expected file handle");
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+                return raise_exception::<_>(_py, "TypeError", "expected file handle");
+            }
+            let handle_ptr = file_handle_ptr(ptr);
+            if handle_ptr.is_null() {
+                return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
+            }
+            let handle = &mut *handle_ptr;
+            file_handle_require_attached!(_py, handle);
+            if file_handle_is_closed(handle) {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+            }
+            if !handle.readable {
+                return raise_exception::<_>(_py, "UnsupportedOperation", "not readable");
+            }
+            let hint_obj = obj_from_bits(hint_bits);
+            let hint = if hint_obj.is_none() {
+                None
+            } else {
+                match to_i64(hint_obj) {
+                    Some(val) if val <= 0 => None,
+                    Some(val) => Some(val as usize),
+                    None => {
+                        let type_name = class_name_for_error(type_of_bits(_py, hint_bits));
+                        let msg = format!("argument should be integer or None, not '{type_name}'");
+                        return raise_exception::<_>(_py, "TypeError", &msg);
+                    }
+                }
+            };
+            let text = handle.text;
+            let newline_owned = if text {
+                handle.newline.clone()
+            } else {
+                Some("\n".to_string())
+            };
+            let newline = newline_owned.as_deref();
+            let mut pending_byte = handle.pending_byte.take();
+            let mut guard = handle.state.file.lock().unwrap();
+            let Some(file) = guard.as_mut() else {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+            };
+            let mut lines: Vec<u64> = Vec::new();
+            let mut total = 0usize;
+            loop {
+                let bytes = match file_readline_bytes(&mut pending_byte, file, newline, text, None)
+                {
+                    Ok(bytes) => bytes,
+                    Err(_) => {
+                        handle.pending_byte = pending_byte;
+                        return raise_exception::<_>(_py, "OSError", "read failed");
+                    }
+                };
+                if bytes.is_empty() {
+                    break;
+                }
+                total = total.saturating_add(bytes.len());
+                if text {
+                    let errors = handle.errors.as_deref().unwrap_or("strict");
+                    if let Err(msg) = validate_error_handler(errors) {
+                        return raise_exception::<_>(_py, "LookupError", &msg);
+                    }
+                    let encoding_label = handle.encoding.as_deref().unwrap_or("utf-8");
+                    let encoding = text_encoding_kind(encoding_label);
+                    let text = match decode_text_with_errors(&bytes, encoding, errors) {
+                        Ok(text) => text,
+                        Err(err) => {
+                            let msg = format!(
+                            "'{encoding_label}' codec can't decode byte 0x{:02x} in position {}: {}",
+                            err.byte, err.pos, err.message
+                        );
+                            return raise_exception::<_>(_py, "UnicodeDecodeError", &msg);
+                        }
+                    };
+                    let line_ptr = alloc_string(_py, text.as_bytes());
+                    if line_ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    lines.push(MoltObject::from_ptr(line_ptr).bits());
+                } else {
+                    let line_ptr = alloc_bytes(_py, &bytes);
+                    if line_ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    lines.push(MoltObject::from_ptr(line_ptr).bits());
+                }
+                if let Some(limit) = hint {
+                    if total >= limit {
+                        break;
+                    }
+                }
+            }
+            handle.pending_byte = pending_byte;
+            let list_ptr = alloc_list(_py, lines.as_slice());
+            if list_ptr.is_null() {
+                for bits in lines {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
+            }
             for bits in lines {
                 dec_ref_bits(_py, bits);
             }
-            return MoltObject::none().bits();
+            MoltObject::from_ptr(list_ptr).bits()
         }
-        for bits in lines {
-            dec_ref_bits(_py, bits);
-        }
-        MoltObject::from_ptr(list_ptr).bits()
-    }
-
     })
 }
 
 #[no_mangle]
 pub extern "C" fn molt_file_readinto(handle_bits: u64, buffer_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    let handle_obj = obj_from_bits(handle_bits);
-    let Some(ptr) = handle_obj.as_ptr() else {
-        return raise_exception::<_>(_py, "TypeError", "expected file handle");
-    };
-    unsafe {
-        if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+        let handle_obj = obj_from_bits(handle_bits);
+        let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
-        }
-        let handle_ptr = file_handle_ptr(ptr);
-        if handle_ptr.is_null() {
-            return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
-        }
-        let handle = &mut *handle_ptr;
-        file_handle_require_attached!(_py, handle);
-        if file_handle_is_closed(handle) {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
-        }
-        if !handle.readable {
-            return raise_exception::<_>(_py, "UnsupportedOperation", "read");
-        }
-        if handle.text {
-            return raise_exception::<_>(_py, "OSError", "readinto() unsupported for text files");
-        }
-        let mut export = BufferExport {
-            ptr: 0,
-            len: 0,
-            readonly: 0,
-            stride: 0,
-            itemsize: 0,
         };
-        if molt_buffer_export(buffer_bits, &mut export) != 0 || export.readonly != 0 {
-            return raise_exception::<_>(_py,
-                "TypeError",
-                "readinto() argument must be a writable bytes-like object",
-            );
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+                return raise_exception::<_>(_py, "TypeError", "expected file handle");
+            }
+            let handle_ptr = file_handle_ptr(ptr);
+            if handle_ptr.is_null() {
+                return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
+            }
+            let handle = &mut *handle_ptr;
+            file_handle_require_attached!(_py, handle);
+            if file_handle_is_closed(handle) {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+            }
+            if !handle.readable {
+                return raise_exception::<_>(_py, "UnsupportedOperation", "read");
+            }
+            if handle.text {
+                return raise_exception::<_>(
+                    _py,
+                    "OSError",
+                    "readinto() unsupported for text files",
+                );
+            }
+            let mut export = BufferExport {
+                ptr: 0,
+                len: 0,
+                readonly: 0,
+                stride: 0,
+                itemsize: 0,
+            };
+            if molt_buffer_export(buffer_bits, &mut export) != 0 || export.readonly != 0 {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "readinto() argument must be a writable bytes-like object",
+                );
+            }
+            if export.itemsize != 1 || export.stride != 1 {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "readinto() argument must be a writable bytes-like object",
+                );
+            }
+            let len = export.len as usize;
+            if len == 0 {
+                return MoltObject::from_int(0).bits();
+            }
+            let buf = std::slice::from_raw_parts_mut(export.ptr as *mut u8, len);
+            let mut guard = handle.state.file.lock().unwrap();
+            let Some(file) = guard.as_mut() else {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+            };
+            let n = match file.read(buf) {
+                Ok(n) => n,
+                Err(_) => return raise_exception::<_>(_py, "OSError", "read failed"),
+            };
+            MoltObject::from_int(n as i64).bits()
         }
-        if export.itemsize != 1 || export.stride != 1 {
-            return raise_exception::<_>(_py,
-                "TypeError",
-                "readinto() argument must be a writable bytes-like object",
-            );
-        }
-        let len = export.len as usize;
-        if len == 0 {
-            return MoltObject::from_int(0).bits();
-        }
-        let buf = std::slice::from_raw_parts_mut(export.ptr as *mut u8, len);
-        let mut guard = handle.state.file.lock().unwrap();
-        let Some(file) = guard.as_mut() else {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
-        };
-        let n = match file.read(buf) {
-            Ok(n) => n,
-            Err(_) => return raise_exception::<_>(_py, "OSError", "read failed"),
-        };
-        MoltObject::from_int(n as i64).bits()
-    }
-
     })
 }
 
 #[no_mangle]
 pub extern "C" fn molt_file_detach(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    let handle_obj = obj_from_bits(handle_bits);
-    let Some(ptr) = handle_obj.as_ptr() else {
-        return raise_exception::<_>(_py, "TypeError", "expected file handle");
-    };
-    unsafe {
-        if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+        let handle_obj = obj_from_bits(handle_bits);
+        let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
-        }
-        let handle_ptr = file_handle_ptr(ptr);
-        if handle_ptr.is_null() {
-            return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
-        }
-        let handle = &mut *handle_ptr;
-        if handle.detached {
-            return raise_exception::<_>(_py, "ValueError", file_handle_detached_message(handle));
-        }
-        if file_handle_is_closed(handle) {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
-        }
-        if handle.text {
-            let buffer_bits = handle.buffer_bits;
-            if buffer_bits == 0 {
-                return raise_exception::<_>(_py, "ValueError", file_handle_detached_message(handle));
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+                return raise_exception::<_>(_py, "TypeError", "expected file handle");
             }
-            let buffer_obj = obj_from_bits(buffer_bits);
-            if let Some(buffer_ptr) = buffer_obj.as_ptr() {
-                if object_type_id(buffer_ptr) == TYPE_ID_FILE_HANDLE {
-                    let buffer_handle_ptr = file_handle_ptr(buffer_ptr);
-                    if !buffer_handle_ptr.is_null() {
-                        let buffer_handle = &mut *buffer_handle_ptr;
-                        buffer_handle.pending_byte = handle.pending_byte.take();
+            let handle_ptr = file_handle_ptr(ptr);
+            if handle_ptr.is_null() {
+                return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
+            }
+            let handle = &mut *handle_ptr;
+            if handle.detached {
+                return raise_exception::<_>(
+                    _py,
+                    "ValueError",
+                    file_handle_detached_message(handle),
+                );
+            }
+            if file_handle_is_closed(handle) {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+            }
+            if handle.text {
+                let buffer_bits = handle.buffer_bits;
+                if buffer_bits == 0 {
+                    return raise_exception::<_>(
+                        _py,
+                        "ValueError",
+                        file_handle_detached_message(handle),
+                    );
+                }
+                let buffer_obj = obj_from_bits(buffer_bits);
+                if let Some(buffer_ptr) = buffer_obj.as_ptr() {
+                    if object_type_id(buffer_ptr) == TYPE_ID_FILE_HANDLE {
+                        let buffer_handle_ptr = file_handle_ptr(buffer_ptr);
+                        if !buffer_handle_ptr.is_null() {
+                            let buffer_handle = &mut *buffer_handle_ptr;
+                            buffer_handle.pending_byte = handle.pending_byte.take();
+                        }
                     }
                 }
+                handle.buffer_bits = MoltObject::none().bits();
+                handle.detached = true;
+                handle.owns_fd = false;
+                return buffer_bits;
             }
-            handle.buffer_bits = MoltObject::none().bits();
+            let raw_ptr = alloc_file_handle_with_state(
+                _py,
+                Arc::clone(&handle.state),
+                handle.readable,
+                handle.writable,
+                false,
+                handle.closefd,
+                handle.owns_fd,
+                handle.line_buffering,
+                handle.write_through,
+                handle.buffer_size,
+                handle.class_bits,
+                handle.name_bits,
+                handle.mode.clone(),
+                None,
+                None,
+                None,
+                0,
+            );
+            if raw_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let raw_handle_ptr = file_handle_ptr(raw_ptr);
+            if !raw_handle_ptr.is_null() {
+                let raw_handle = &mut *raw_handle_ptr;
+                raw_handle.pending_byte = handle.pending_byte.take();
+            }
             handle.detached = true;
             handle.owns_fd = false;
-            return buffer_bits;
+            MoltObject::from_ptr(raw_ptr).bits()
         }
-        let raw_ptr = alloc_file_handle_with_state(_py,
-            Arc::clone(&handle.state),
-            handle.readable,
-            handle.writable,
-            false,
-            handle.closefd,
-            handle.owns_fd,
-            handle.line_buffering,
-            handle.write_through,
-            handle.buffer_size,
-            handle.class_bits,
-            handle.name_bits,
-            handle.mode.clone(),
-            None,
-            None,
-            None,
-            0,
-        );
-        if raw_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let raw_handle_ptr = file_handle_ptr(raw_ptr);
-        if !raw_handle_ptr.is_null() {
-            let raw_handle = &mut *raw_handle_ptr;
-            raw_handle.pending_byte = handle.pending_byte.take();
-        }
-        handle.detached = true;
-        handle.owns_fd = false;
-        MoltObject::from_ptr(raw_ptr).bits()
-    }
-
     })
 }
 
@@ -1850,548 +1883,542 @@ pub extern "C" fn molt_file_reconfigure(
     write_through_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-    let handle_obj = obj_from_bits(handle_bits);
-    let Some(ptr) = handle_obj.as_ptr() else {
-        return raise_exception::<_>(_py, "TypeError", "expected file handle");
-    };
-    unsafe {
-        if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+        let handle_obj = obj_from_bits(handle_bits);
+        let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
-        }
-        let handle_ptr = file_handle_ptr(ptr);
-        if handle_ptr.is_null() {
-            return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
-        }
-        let handle = &mut *handle_ptr;
-        file_handle_require_attached!(_py, handle);
-        if file_handle_is_closed(handle) {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
-        }
-        if !handle.text {
-            return raise_exception::<_>(_py, "UnsupportedOperation", "not a text file");
-        }
-        let mut guard = handle.state.file.lock().unwrap();
-        let Some(file) = guard.as_mut() else {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
         };
-        if file.flush().is_err() {
-            return raise_exception::<_>(_py, "OSError", "flush failed");
-        }
-        drop(guard);
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+                return raise_exception::<_>(_py, "TypeError", "expected file handle");
+            }
+            let handle_ptr = file_handle_ptr(ptr);
+            if handle_ptr.is_null() {
+                return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
+            }
+            let handle = &mut *handle_ptr;
+            file_handle_require_attached!(_py, handle);
+            if file_handle_is_closed(handle) {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+            }
+            if !handle.text {
+                return raise_exception::<_>(_py, "UnsupportedOperation", "not a text file");
+            }
+            let mut guard = handle.state.file.lock().unwrap();
+            let Some(file) = guard.as_mut() else {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+            };
+            if file.flush().is_err() {
+                return raise_exception::<_>(_py, "OSError", "flush failed");
+            }
+            drop(guard);
 
-        let missing = missing_bits(_py);
-        let mut new_encoding = handle.encoding.clone();
-        if encoding_bits != missing {
-            if let Some(encoding) = reconfigure_arg_type(_py, encoding_bits, "encoding") {
-                let (label, _kind) = match normalize_text_encoding(&encoding) {
-                    Ok(val) => val,
-                    Err(msg) => return raise_exception::<_>(_py, "LookupError", &msg),
-                };
-                new_encoding = Some(label);
+            let missing = missing_bits(_py);
+            let mut new_encoding = handle.encoding.clone();
+            if encoding_bits != missing {
+                if let Some(encoding) = reconfigure_arg_type(_py, encoding_bits, "encoding") {
+                    let (label, _kind) = match normalize_text_encoding(&encoding) {
+                        Ok(val) => val,
+                        Err(msg) => return raise_exception::<_>(_py, "LookupError", &msg),
+                    };
+                    new_encoding = Some(label);
+                }
             }
-        }
-        let mut new_errors = handle.errors.clone();
-        if errors_bits != missing {
-            if let Some(errors) = reconfigure_arg_type(_py, errors_bits, "errors") {
-                new_errors = Some(errors);
+            let mut new_errors = handle.errors.clone();
+            if errors_bits != missing {
+                if let Some(errors) = reconfigure_arg_type(_py, errors_bits, "errors") {
+                    new_errors = Some(errors);
+                }
             }
-        }
-        let mut new_newline = handle.newline.clone();
-        if newline_bits != missing {
-            new_newline = reconfigure_arg_newline(_py, newline_bits);
-        }
-        let mut new_line_buffering = handle.line_buffering;
-        if line_buffering_bits != missing {
-            let obj = obj_from_bits(line_buffering_bits);
-            if !obj.is_none() {
-                let val = match to_i64(obj) {
-                    Some(val) => val != 0,
-                    None => {
-                        let type_name = class_name_for_error(type_of_bits(_py, line_buffering_bits));
-                        let msg =
-                            format!("'{type_name}' object cannot be interpreted as an integer");
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
-                };
-                new_line_buffering = val;
+            let mut new_newline = handle.newline.clone();
+            if newline_bits != missing {
+                new_newline = reconfigure_arg_newline(_py, newline_bits);
             }
-        }
-        let mut new_write_through = handle.write_through;
-        if write_through_bits != missing {
-            let obj = obj_from_bits(write_through_bits);
-            if !obj.is_none() {
-                let val = match to_i64(obj) {
-                    Some(val) => val != 0,
-                    None => {
-                        let type_name = class_name_for_error(type_of_bits(_py, write_through_bits));
-                        let msg =
-                            format!("'{type_name}' object cannot be interpreted as an integer");
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
-                };
-                new_write_through = val;
+            let mut new_line_buffering = handle.line_buffering;
+            if line_buffering_bits != missing {
+                let obj = obj_from_bits(line_buffering_bits);
+                if !obj.is_none() {
+                    let val = match to_i64(obj) {
+                        Some(val) => val != 0,
+                        None => {
+                            let type_name =
+                                class_name_for_error(type_of_bits(_py, line_buffering_bits));
+                            let msg =
+                                format!("'{type_name}' object cannot be interpreted as an integer");
+                            return raise_exception::<_>(_py, "TypeError", &msg);
+                        }
+                    };
+                    new_line_buffering = val;
+                }
             }
-        }
+            let mut new_write_through = handle.write_through;
+            if write_through_bits != missing {
+                let obj = obj_from_bits(write_through_bits);
+                if !obj.is_none() {
+                    let val = match to_i64(obj) {
+                        Some(val) => val != 0,
+                        None => {
+                            let type_name =
+                                class_name_for_error(type_of_bits(_py, write_through_bits));
+                            let msg =
+                                format!("'{type_name}' object cannot be interpreted as an integer");
+                            return raise_exception::<_>(_py, "TypeError", &msg);
+                        }
+                    };
+                    new_write_through = val;
+                }
+            }
 
-        handle.encoding = new_encoding;
-        handle.errors = new_errors;
-        if newline_bits != missing {
-            handle.pending_byte = None;
+            handle.encoding = new_encoding;
+            handle.errors = new_errors;
+            if newline_bits != missing {
+                handle.pending_byte = None;
+            }
+            handle.newline = new_newline;
+            handle.line_buffering = new_line_buffering;
+            handle.write_through = new_write_through;
+            MoltObject::none().bits()
         }
-        handle.newline = new_newline;
-        handle.line_buffering = new_line_buffering;
-        handle.write_through = new_write_through;
-        MoltObject::none().bits()
-    }
-
     })
 }
 
 #[no_mangle]
 pub extern "C" fn molt_file_seek(handle_bits: u64, offset_bits: u64, whence_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    let handle_obj = obj_from_bits(handle_bits);
-    let Some(ptr) = handle_obj.as_ptr() else {
-        return raise_exception::<_>(_py, "TypeError", "expected file handle");
-    };
-    unsafe {
-        if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+        let handle_obj = obj_from_bits(handle_bits);
+        let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
-        }
-        let handle_ptr = file_handle_ptr(ptr);
-        if handle_ptr.is_null() {
-            return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
-        }
-        let handle = &mut *handle_ptr;
-        file_handle_require_attached!(_py, handle);
-        if file_handle_is_closed(handle) {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
-        }
-        let offset = match to_i64(obj_from_bits(offset_bits)) {
-            Some(val) => val,
-            None => {
-                let type_name = class_name_for_error(type_of_bits(_py, offset_bits));
-                let msg = format!("'{type_name}' object cannot be interpreted as an integer");
-                return raise_exception::<_>(_py, "TypeError", &msg);
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+                return raise_exception::<_>(_py, "TypeError", "expected file handle");
             }
-        };
-        let whence = match to_i64(obj_from_bits(whence_bits)) {
-            Some(val) => val,
-            None => {
-                let type_name = class_name_for_error(type_of_bits(_py, whence_bits));
-                let msg = format!("'{type_name}' object cannot be interpreted as an integer");
-                return raise_exception::<_>(_py, "TypeError", &msg);
+            let handle_ptr = file_handle_ptr(ptr);
+            if handle_ptr.is_null() {
+                return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
-        };
-        let mut guard = handle.state.file.lock().unwrap();
-        let Some(file) = guard.as_mut() else {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
-        };
-        if handle.text && whence == 0 {
-            let (pos, pending) = match text_cookie_decode(offset) {
-                Ok(val) => val,
-                Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
+            let handle = &mut *handle_ptr;
+            file_handle_require_attached!(_py, handle);
+            if file_handle_is_closed(handle) {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+            }
+            let offset = match to_i64(obj_from_bits(offset_bits)) {
+                Some(val) => val,
+                None => {
+                    let type_name = class_name_for_error(type_of_bits(_py, offset_bits));
+                    let msg = format!("'{type_name}' object cannot be interpreted as an integer");
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
             };
-            let pos = match file.seek(std::io::SeekFrom::Start(pos)) {
+            let whence = match to_i64(obj_from_bits(whence_bits)) {
+                Some(val) => val,
+                None => {
+                    let type_name = class_name_for_error(type_of_bits(_py, whence_bits));
+                    let msg = format!("'{type_name}' object cannot be interpreted as an integer");
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+            };
+            let mut guard = handle.state.file.lock().unwrap();
+            let Some(file) = guard.as_mut() else {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+            };
+            if handle.text && whence == 0 {
+                let (pos, pending) = match text_cookie_decode(offset) {
+                    Ok(val) => val,
+                    Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
+                };
+                let pos = match file.seek(std::io::SeekFrom::Start(pos)) {
+                    Ok(pos) => pos,
+                    Err(_) => return raise_exception::<_>(_py, "OSError", "seek failed"),
+                };
+                handle.pending_byte = pending;
+                let cookie = match text_cookie_encode(pos, pending) {
+                    Ok(val) => val,
+                    Err(msg) => return raise_exception::<_>(_py, "OSError", &msg),
+                };
+                return MoltObject::from_int(cookie).bits();
+            }
+            let from = match whence {
+                0 => {
+                    if offset < 0 {
+                        let msg = format!("negative seek position {offset}");
+                        return raise_exception::<_>(_py, "ValueError", &msg);
+                    }
+                    std::io::SeekFrom::Start(offset as u64)
+                }
+                1 => std::io::SeekFrom::Current(offset),
+                2 => std::io::SeekFrom::End(offset),
+                _ => return raise_exception::<_>(_py, "ValueError", "invalid whence"),
+            };
+            let pos = match file.seek(from) {
                 Ok(pos) => pos,
                 Err(_) => return raise_exception::<_>(_py, "OSError", "seek failed"),
             };
-            handle.pending_byte = pending;
-            let cookie = match text_cookie_encode(pos, pending) {
-                Ok(val) => val,
-                Err(msg) => return raise_exception::<_>(_py, "OSError", &msg),
-            };
-            return MoltObject::from_int(cookie).bits();
-        }
-        let from = match whence {
-            0 => {
-                if offset < 0 {
-                    let msg = format!("negative seek position {offset}");
-                    return raise_exception::<_>(_py, "ValueError", &msg);
-                }
-                std::io::SeekFrom::Start(offset as u64)
+            handle.pending_byte = None;
+            if handle.text {
+                let cookie = match text_cookie_encode(pos, None) {
+                    Ok(val) => val,
+                    Err(msg) => return raise_exception::<_>(_py, "OSError", &msg),
+                };
+                MoltObject::from_int(cookie).bits()
+            } else {
+                MoltObject::from_int(pos as i64).bits()
             }
-            1 => std::io::SeekFrom::Current(offset),
-            2 => std::io::SeekFrom::End(offset),
-            _ => return raise_exception::<_>(_py, "ValueError", "invalid whence"),
-        };
-        let pos = match file.seek(from) {
-            Ok(pos) => pos,
-            Err(_) => return raise_exception::<_>(_py, "OSError", "seek failed"),
-        };
-        handle.pending_byte = None;
-        if handle.text {
-            let cookie = match text_cookie_encode(pos, None) {
-                Ok(val) => val,
-                Err(msg) => return raise_exception::<_>(_py, "OSError", &msg),
-            };
-            MoltObject::from_int(cookie).bits()
-        } else {
-            MoltObject::from_int(pos as i64).bits()
         }
-    }
-
     })
 }
 
 #[no_mangle]
 pub extern "C" fn molt_file_tell(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    let handle_obj = obj_from_bits(handle_bits);
-    let Some(ptr) = handle_obj.as_ptr() else {
-        return raise_exception::<_>(_py, "TypeError", "expected file handle");
-    };
-    unsafe {
-        if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+        let handle_obj = obj_from_bits(handle_bits);
+        let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
-        }
-        let handle_ptr = file_handle_ptr(ptr);
-        if handle_ptr.is_null() {
-            return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
-        }
-        let handle = &*handle_ptr;
-        file_handle_require_attached!(_py, handle);
-        if file_handle_is_closed(handle) {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
-        }
-        let mut guard = handle.state.file.lock().unwrap();
-        let Some(file) = guard.as_mut() else {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
         };
-        let pos = match file.stream_position() {
-            Ok(pos) => pos,
-            Err(_) => return raise_exception::<_>(_py, "OSError", "tell failed"),
-        };
-        if handle.text {
-            let cookie = match text_cookie_encode(pos, handle.pending_byte) {
-                Ok(val) => val,
-                Err(msg) => return raise_exception::<_>(_py, "OSError", &msg),
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+                return raise_exception::<_>(_py, "TypeError", "expected file handle");
+            }
+            let handle_ptr = file_handle_ptr(ptr);
+            if handle_ptr.is_null() {
+                return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
+            }
+            let handle = &*handle_ptr;
+            file_handle_require_attached!(_py, handle);
+            if file_handle_is_closed(handle) {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+            }
+            let mut guard = handle.state.file.lock().unwrap();
+            let Some(file) = guard.as_mut() else {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             };
-            MoltObject::from_int(cookie).bits()
-        } else {
-            MoltObject::from_int(pos as i64).bits()
+            let pos = match file.stream_position() {
+                Ok(pos) => pos,
+                Err(_) => return raise_exception::<_>(_py, "OSError", "tell failed"),
+            };
+            if handle.text {
+                let cookie = match text_cookie_encode(pos, handle.pending_byte) {
+                    Ok(val) => val,
+                    Err(msg) => return raise_exception::<_>(_py, "OSError", &msg),
+                };
+                MoltObject::from_int(cookie).bits()
+            } else {
+                MoltObject::from_int(pos as i64).bits()
+            }
         }
-    }
-
     })
 }
 
 #[no_mangle]
 pub extern "C" fn molt_file_fileno(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    let handle_obj = obj_from_bits(handle_bits);
-    let Some(ptr) = handle_obj.as_ptr() else {
-        return raise_exception::<_>(_py, "TypeError", "expected file handle");
-    };
-    unsafe {
-        if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+        let handle_obj = obj_from_bits(handle_bits);
+        let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
-        }
-        let handle_ptr = file_handle_ptr(ptr);
-        if handle_ptr.is_null() {
-            return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
-        }
-        let handle = &*handle_ptr;
-        file_handle_require_attached!(_py, handle);
-        if file_handle_is_closed(handle) {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
-        }
-        let guard = handle.state.file.lock().unwrap();
-        let Some(file) = guard.as_ref() else {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
         };
-        #[cfg(unix)]
-        {
-            use std::os::fd::AsRawFd;
-            MoltObject::from_int(file.as_raw_fd() as i64).bits()
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+                return raise_exception::<_>(_py, "TypeError", "expected file handle");
+            }
+            let handle_ptr = file_handle_ptr(ptr);
+            if handle_ptr.is_null() {
+                return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
+            }
+            let handle = &*handle_ptr;
+            file_handle_require_attached!(_py, handle);
+            if file_handle_is_closed(handle) {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+            }
+            let guard = handle.state.file.lock().unwrap();
+            let Some(file) = guard.as_ref() else {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+            };
+            #[cfg(unix)]
+            {
+                use std::os::fd::AsRawFd;
+                MoltObject::from_int(file.as_raw_fd() as i64).bits()
+            }
+            #[cfg(windows)]
+            {
+                // TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P2, status:partial):
+                // return CRT fd on Windows instead of raw handle for fileno parity.
+                use std::os::windows::io::AsRawHandle;
+                MoltObject::from_int(file.as_raw_handle() as i64).bits()
+            }
+            #[cfg(not(any(unix, windows)))]
+            {
+                return raise_exception::<_>(
+                    _py,
+                    "OSError",
+                    "fileno is unsupported on this platform",
+                );
+            }
         }
-        #[cfg(windows)]
-        {
-            // TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P2, status:partial):
-            // return CRT fd on Windows instead of raw handle for fileno parity.
-            use std::os::windows::io::AsRawHandle;
-            MoltObject::from_int(file.as_raw_handle() as i64).bits()
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            return raise_exception::<_>(_py, "OSError", "fileno is unsupported on this platform");
-        }
-    }
-
     })
 }
 
 #[no_mangle]
 pub extern "C" fn molt_file_truncate(handle_bits: u64, size_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    let handle_obj = obj_from_bits(handle_bits);
-    let Some(ptr) = handle_obj.as_ptr() else {
-        return raise_exception::<_>(_py, "TypeError", "expected file handle");
-    };
-    unsafe {
-        if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+        let handle_obj = obj_from_bits(handle_bits);
+        let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
-        }
-        let handle_ptr = file_handle_ptr(ptr);
-        if handle_ptr.is_null() {
-            return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
-        }
-        let handle = &*handle_ptr;
-        file_handle_require_attached!(_py, handle);
-        if file_handle_is_closed(handle) {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
-        }
-        if !handle.writable {
-            return raise_exception::<_>(_py, "UnsupportedOperation", "truncate");
-        }
-        let mut guard = handle.state.file.lock().unwrap();
-        let Some(file) = guard.as_mut() else {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
         };
-        let size = if obj_from_bits(size_bits).is_none() {
-            match file.stream_position() {
-                Ok(pos) => pos,
-                Err(_) => return raise_exception::<_>(_py, "OSError", "tell failed"),
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+                return raise_exception::<_>(_py, "TypeError", "expected file handle");
             }
-        } else {
-            let val = match to_i64(obj_from_bits(size_bits)) {
-                Some(val) => val,
-                None => {
-                    let type_name = class_name_for_error(type_of_bits(_py, size_bits));
-                    let msg = format!("'{type_name}' object cannot be interpreted as an integer");
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
+            let handle_ptr = file_handle_ptr(ptr);
+            if handle_ptr.is_null() {
+                return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
+            }
+            let handle = &*handle_ptr;
+            file_handle_require_attached!(_py, handle);
+            if file_handle_is_closed(handle) {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+            }
+            if !handle.writable {
+                return raise_exception::<_>(_py, "UnsupportedOperation", "truncate");
+            }
+            let mut guard = handle.state.file.lock().unwrap();
+            let Some(file) = guard.as_mut() else {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             };
-            if val < 0 {
-                return raise_exception::<_>(_py, "OSError", "Invalid argument");
+            let size = if obj_from_bits(size_bits).is_none() {
+                match file.stream_position() {
+                    Ok(pos) => pos,
+                    Err(_) => return raise_exception::<_>(_py, "OSError", "tell failed"),
+                }
+            } else {
+                let val = match to_i64(obj_from_bits(size_bits)) {
+                    Some(val) => val,
+                    None => {
+                        let type_name = class_name_for_error(type_of_bits(_py, size_bits));
+                        let msg =
+                            format!("'{type_name}' object cannot be interpreted as an integer");
+                        return raise_exception::<_>(_py, "TypeError", &msg);
+                    }
+                };
+                if val < 0 {
+                    return raise_exception::<_>(_py, "OSError", "Invalid argument");
+                }
+                val as u64
+            };
+            if file.set_len(size).is_err() {
+                return raise_exception::<_>(_py, "OSError", "truncate failed");
             }
-            val as u64
-        };
-        if file.set_len(size).is_err() {
-            return raise_exception::<_>(_py, "OSError", "truncate failed");
+            MoltObject::from_int(size as i64).bits()
         }
-        MoltObject::from_int(size as i64).bits()
-    }
-
     })
 }
 
 #[no_mangle]
 pub extern "C" fn molt_file_readable(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    let handle_obj = obj_from_bits(handle_bits);
-    let Some(ptr) = handle_obj.as_ptr() else {
-        return raise_exception::<_>(_py, "TypeError", "expected file handle");
-    };
-    unsafe {
-        if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+        let handle_obj = obj_from_bits(handle_bits);
+        let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+                return raise_exception::<_>(_py, "TypeError", "expected file handle");
+            }
+            let handle_ptr = file_handle_ptr(ptr);
+            if handle_ptr.is_null() {
+                return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
+            }
+            let handle = &*handle_ptr;
+            file_handle_require_attached!(_py, handle);
+            if file_handle_is_closed(handle) {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+            }
+            MoltObject::from_bool(handle.readable).bits()
         }
-        let handle_ptr = file_handle_ptr(ptr);
-        if handle_ptr.is_null() {
-            return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
-        }
-        let handle = &*handle_ptr;
-        file_handle_require_attached!(_py, handle);
-        if file_handle_is_closed(handle) {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
-        }
-        MoltObject::from_bool(handle.readable).bits()
-    }
-
     })
 }
 
 #[no_mangle]
 pub extern "C" fn molt_file_writable(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    let handle_obj = obj_from_bits(handle_bits);
-    let Some(ptr) = handle_obj.as_ptr() else {
-        return raise_exception::<_>(_py, "TypeError", "expected file handle");
-    };
-    unsafe {
-        if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+        let handle_obj = obj_from_bits(handle_bits);
+        let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+                return raise_exception::<_>(_py, "TypeError", "expected file handle");
+            }
+            let handle_ptr = file_handle_ptr(ptr);
+            if handle_ptr.is_null() {
+                return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
+            }
+            let handle = &*handle_ptr;
+            file_handle_require_attached!(_py, handle);
+            if file_handle_is_closed(handle) {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+            }
+            MoltObject::from_bool(handle.writable).bits()
         }
-        let handle_ptr = file_handle_ptr(ptr);
-        if handle_ptr.is_null() {
-            return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
-        }
-        let handle = &*handle_ptr;
-        file_handle_require_attached!(_py, handle);
-        if file_handle_is_closed(handle) {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
-        }
-        MoltObject::from_bool(handle.writable).bits()
-    }
-
     })
 }
 
 #[no_mangle]
 pub extern "C" fn molt_file_seekable(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    let handle_obj = obj_from_bits(handle_bits);
-    let Some(ptr) = handle_obj.as_ptr() else {
-        return raise_exception::<_>(_py, "TypeError", "expected file handle");
-    };
-    unsafe {
-        if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+        let handle_obj = obj_from_bits(handle_bits);
+        let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
-        }
-        let handle_ptr = file_handle_ptr(ptr);
-        if handle_ptr.is_null() {
-            return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
-        }
-        let handle = &*handle_ptr;
-        file_handle_require_attached!(_py, handle);
-        if file_handle_is_closed(handle) {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
-        }
-        let mut guard = handle.state.file.lock().unwrap();
-        let Some(file) = guard.as_mut() else {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
         };
-        let seekable = file.stream_position().is_ok();
-        MoltObject::from_bool(seekable).bits()
-    }
-
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+                return raise_exception::<_>(_py, "TypeError", "expected file handle");
+            }
+            let handle_ptr = file_handle_ptr(ptr);
+            if handle_ptr.is_null() {
+                return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
+            }
+            let handle = &*handle_ptr;
+            file_handle_require_attached!(_py, handle);
+            if file_handle_is_closed(handle) {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+            }
+            let mut guard = handle.state.file.lock().unwrap();
+            let Some(file) = guard.as_mut() else {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+            };
+            let seekable = file.stream_position().is_ok();
+            MoltObject::from_bool(seekable).bits()
+        }
     })
 }
 
 #[no_mangle]
 pub extern "C" fn molt_file_isatty(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    let handle_obj = obj_from_bits(handle_bits);
-    let Some(ptr) = handle_obj.as_ptr() else {
-        return raise_exception::<_>(_py, "TypeError", "expected file handle");
-    };
-    unsafe {
-        if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+        let handle_obj = obj_from_bits(handle_bits);
+        let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
-        }
-        let handle_ptr = file_handle_ptr(ptr);
-        if handle_ptr.is_null() {
-            return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
-        }
-        let handle = &*handle_ptr;
-        file_handle_require_attached!(_py, handle);
-        if file_handle_is_closed(handle) {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
-        }
-        let guard = handle.state.file.lock().unwrap();
-        let Some(file) = guard.as_ref() else {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
         };
-        #[cfg(unix)]
-        {
-            use std::os::fd::AsRawFd;
-            let isatty = libc::isatty(file.as_raw_fd()) == 1;
-            MoltObject::from_bool(isatty).bits()
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+                return raise_exception::<_>(_py, "TypeError", "expected file handle");
+            }
+            let handle_ptr = file_handle_ptr(ptr);
+            if handle_ptr.is_null() {
+                return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
+            }
+            let handle = &*handle_ptr;
+            file_handle_require_attached!(_py, handle);
+            if file_handle_is_closed(handle) {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+            }
+            let guard = handle.state.file.lock().unwrap();
+            let Some(file) = guard.as_ref() else {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+            };
+            #[cfg(unix)]
+            {
+                use std::os::fd::AsRawFd;
+                let isatty = libc::isatty(file.as_raw_fd()) == 1;
+                MoltObject::from_bool(isatty).bits()
+            }
+            #[cfg(windows)]
+            {
+                // TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P2, status:partial):
+                // map Windows console handles to CRT fds (or call GetFileType) for accurate isatty.
+                let _ = file;
+                MoltObject::from_bool(false).bits()
+            }
+            #[cfg(not(any(unix, windows)))]
+            {
+                let _ = file;
+                MoltObject::from_bool(false).bits()
+            }
         }
-        #[cfg(windows)]
-        {
-            // TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P2, status:partial):
-            // map Windows console handles to CRT fds (or call GetFileType) for accurate isatty.
-            let _ = file;
-            MoltObject::from_bool(false).bits()
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            let _ = file;
-            MoltObject::from_bool(false).bits()
-        }
-    }
-
     })
 }
 
 #[no_mangle]
 pub extern "C" fn molt_file_iter(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    let handle_obj = obj_from_bits(handle_bits);
-    let Some(ptr) = handle_obj.as_ptr() else {
-        return raise_exception::<_>(_py, "TypeError", "expected file handle");
-    };
-    unsafe {
-        if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+        let handle_obj = obj_from_bits(handle_bits);
+        let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+                return raise_exception::<_>(_py, "TypeError", "expected file handle");
+            }
+            let handle_ptr = file_handle_ptr(ptr);
+            if handle_ptr.is_null() {
+                return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
+            }
+            let handle = &*handle_ptr;
+            file_handle_require_attached!(_py, handle);
+            if file_handle_is_closed(handle) {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+            }
         }
-        let handle_ptr = file_handle_ptr(ptr);
-        if handle_ptr.is_null() {
-            return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
-        }
-        let handle = &*handle_ptr;
-        file_handle_require_attached!(_py, handle);
-        if file_handle_is_closed(handle) {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
-        }
-    }
-    inc_ref_bits(_py, handle_bits);
-    handle_bits
-
+        inc_ref_bits(_py, handle_bits);
+        handle_bits
     })
 }
 
 #[no_mangle]
 pub extern "C" fn molt_file_next(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    let line_bits = molt_file_readline(handle_bits, MoltObject::from_int(-1).bits());
-    if exception_pending(_py) {
-        return MoltObject::none().bits();
-    }
-    let line_obj = obj_from_bits(line_bits);
-    let empty = if let Some(ptr) = line_obj.as_ptr() {
-        unsafe {
-            match object_type_id(ptr) {
-                TYPE_ID_STRING => string_len(ptr) == 0,
-                TYPE_ID_BYTES | TYPE_ID_BYTEARRAY => bytes_len(ptr) == 0,
-                _ => false,
-            }
+        let line_bits = molt_file_readline(handle_bits, MoltObject::from_int(-1).bits());
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
         }
-    } else {
-        false
-    };
-    if empty {
-        dec_ref_bits(_py, line_bits);
-        return raise_exception::<_>(_py, "StopIteration", "");
-    }
-    line_bits
-
+        let line_obj = obj_from_bits(line_bits);
+        let empty = if let Some(ptr) = line_obj.as_ptr() {
+            unsafe {
+                match object_type_id(ptr) {
+                    TYPE_ID_STRING => string_len(ptr) == 0,
+                    TYPE_ID_BYTES | TYPE_ID_BYTEARRAY => bytes_len(ptr) == 0,
+                    _ => false,
+                }
+            }
+        } else {
+            false
+        };
+        if empty {
+            dec_ref_bits(_py, line_bits);
+            return raise_exception::<_>(_py, "StopIteration", "");
+        }
+        line_bits
     })
 }
 
 #[no_mangle]
 pub extern "C" fn molt_file_enter(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    let handle_obj = obj_from_bits(handle_bits);
-    let Some(ptr) = handle_obj.as_ptr() else {
-        return raise_exception::<_>(_py, "TypeError", "expected file handle");
-    };
-    unsafe {
-        if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+        let handle_obj = obj_from_bits(handle_bits);
+        let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+                return raise_exception::<_>(_py, "TypeError", "expected file handle");
+            }
+            file_handle_enter(_py, ptr)
         }
-        file_handle_enter(_py, ptr)
-    }
-
     })
 }
 
 #[no_mangle]
 pub extern "C" fn molt_file_exit(handle_bits: u64, exc_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    let handle_obj = obj_from_bits(handle_bits);
-    let Some(ptr) = handle_obj.as_ptr() else {
-        return raise_exception::<_>(_py, "TypeError", "expected file handle");
-    };
-    unsafe {
-        if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+        let handle_obj = obj_from_bits(handle_bits);
+        let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+                return raise_exception::<_>(_py, "TypeError", "expected file handle");
+            }
+            file_handle_exit(_py, ptr, exc_bits)
         }
-        file_handle_exit(_py, ptr, exc_bits)
-    }
-
     })
 }
 
@@ -2402,205 +2429,214 @@ pub extern "C" fn molt_file_exit_method(
     exc_bits: u64,
     _tb_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
-    molt_file_exit(handle_bits, exc_bits)
-
-    })
+    crate::with_gil_entry!(_py, { molt_file_exit(handle_bits, exc_bits) })
 }
 
 #[no_mangle]
 pub extern "C" fn molt_file_write(handle_bits: u64, data_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    let handle_obj = obj_from_bits(handle_bits);
-    let Some(ptr) = handle_obj.as_ptr() else {
-        return raise_exception::<_>(_py, "TypeError", "expected file handle");
-    };
-    unsafe {
-        if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+        let handle_obj = obj_from_bits(handle_bits);
+        let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
-        }
-        let handle_ptr = file_handle_ptr(ptr);
-        if handle_ptr.is_null() {
-            return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
-        }
-        let handle = &mut *handle_ptr;
-        file_handle_require_attached!(_py, handle);
-        if file_handle_is_closed(handle) {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
-        }
-        if !handle.writable {
-            return raise_exception::<_>(_py, "UnsupportedOperation", "not writable");
-        }
-        let mut guard = handle.state.file.lock().unwrap();
-        let Some(file) = guard.as_mut() else {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
         };
-        let data_obj = obj_from_bits(data_bits);
-        let (bytes, written_len): (Vec<u8>, usize) = if handle.text {
-            let text = match string_obj_to_owned(data_obj) {
-                Some(text) => text,
-                None => {
-                    return raise_exception::<_>(_py, "TypeError", "write expects str for text mode")
-                }
-            };
-            let errors = handle.errors.as_deref().unwrap_or("strict");
-            let newline = handle.newline.as_deref();
-            if let Err(msg) = validate_error_handler(errors) {
-                return raise_exception::<_>(_py, "LookupError", &msg);
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+                return raise_exception::<_>(_py, "TypeError", "expected file handle");
             }
-            let translated = translate_write_newlines(&text, newline);
-            let encoding_label = handle.encoding.as_deref().unwrap_or("utf-8");
-            let encoding = text_encoding_kind(encoding_label);
-            let bytes = match encode_text_with_errors(&translated, encoding, errors) {
-                Ok(bytes) => bytes,
-                Err(err) => {
-                    let msg = format!(
+            let handle_ptr = file_handle_ptr(ptr);
+            if handle_ptr.is_null() {
+                return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
+            }
+            let handle = &mut *handle_ptr;
+            file_handle_require_attached!(_py, handle);
+            if file_handle_is_closed(handle) {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+            }
+            if !handle.writable {
+                return raise_exception::<_>(_py, "UnsupportedOperation", "not writable");
+            }
+            let mut guard = handle.state.file.lock().unwrap();
+            let Some(file) = guard.as_mut() else {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+            };
+            let data_obj = obj_from_bits(data_bits);
+            let (bytes, written_len): (Vec<u8>, usize) = if handle.text {
+                let text = match string_obj_to_owned(data_obj) {
+                    Some(text) => text,
+                    None => {
+                        return raise_exception::<_>(
+                            _py,
+                            "TypeError",
+                            "write expects str for text mode",
+                        )
+                    }
+                };
+                let errors = handle.errors.as_deref().unwrap_or("strict");
+                let newline = handle.newline.as_deref();
+                if let Err(msg) = validate_error_handler(errors) {
+                    return raise_exception::<_>(_py, "LookupError", &msg);
+                }
+                let translated = translate_write_newlines(&text, newline);
+                let encoding_label = handle.encoding.as_deref().unwrap_or("utf-8");
+                let encoding = text_encoding_kind(encoding_label);
+                let bytes = match encode_text_with_errors(&translated, encoding, errors) {
+                    Ok(bytes) => bytes,
+                    Err(err) => {
+                        let msg = format!(
                         "'{encoding_label}' codec can't encode character '{}' in position {}: {}",
                         err.ch, err.pos, err.message
                     );
-                    return raise_exception::<_>(_py, "UnicodeEncodeError", &msg);
+                        return raise_exception::<_>(_py, "UnicodeEncodeError", &msg);
+                    }
+                };
+                (bytes, text.chars().count())
+            } else {
+                let Some(data_ptr) = data_obj.as_ptr() else {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "write expects bytes or bytearray",
+                    );
+                };
+                let type_id = object_type_id(data_ptr);
+                if type_id != TYPE_ID_BYTES && type_id != TYPE_ID_BYTEARRAY {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "write expects bytes or bytearray",
+                    );
                 }
+                let len = bytes_len(data_ptr);
+                let raw = std::slice::from_raw_parts(bytes_data(data_ptr), len);
+                (raw.to_vec(), len)
             };
-            (bytes, text.chars().count())
-        } else {
-            let Some(data_ptr) = data_obj.as_ptr() else {
-                return raise_exception::<_>(_py, "TypeError", "write expects bytes or bytearray");
-            };
-            let type_id = object_type_id(data_ptr);
-            if type_id != TYPE_ID_BYTES && type_id != TYPE_ID_BYTEARRAY {
-                return raise_exception::<_>(_py, "TypeError", "write expects bytes or bytearray");
+            if file.write_all(&bytes).is_err() {
+                return raise_exception::<_>(_py, "OSError", "write failed");
             }
-            let len = bytes_len(data_ptr);
-            let raw = std::slice::from_raw_parts(bytes_data(data_ptr), len);
-            (raw.to_vec(), len)
-        };
-        if file.write_all(&bytes).is_err() {
-            return raise_exception::<_>(_py, "OSError", "write failed");
+            let should_flush =
+                handle.write_through || (handle.line_buffering && bytes.contains(&b'\n'));
+            if should_flush && file.flush().is_err() {
+                return raise_exception::<_>(_py, "OSError", "flush failed");
+            }
+            MoltObject::from_int(written_len as i64).bits()
         }
-        let should_flush =
-            handle.write_through || (handle.line_buffering && bytes.contains(&b'\n'));
-        if should_flush && file.flush().is_err() {
-            return raise_exception::<_>(_py, "OSError", "flush failed");
-        }
-        MoltObject::from_int(written_len as i64).bits()
-    }
-
     })
 }
 
 #[no_mangle]
 pub extern "C" fn molt_file_writelines(handle_bits: u64, lines_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    let handle_obj = obj_from_bits(handle_bits);
-    let Some(ptr) = handle_obj.as_ptr() else {
-        return raise_exception::<_>(_py, "TypeError", "expected file handle");
-    };
-    unsafe {
-        if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+        let handle_obj = obj_from_bits(handle_bits);
+        let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
-        }
-        let handle_ptr = file_handle_ptr(ptr);
-        if handle_ptr.is_null() {
-            return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
-        }
-        let handle = &mut *handle_ptr;
-        if file_handle_is_closed(handle) {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
-        }
-        if !handle.writable {
-            return raise_exception::<_>(_py, "UnsupportedOperation", "not writable");
-        }
-    }
-    let iter_bits = molt_iter(lines_bits);
-    if obj_from_bits(iter_bits).is_none() {
-        return raise_exception::<_>(_py, "TypeError", "writelines() argument must be iterable");
-    }
-    loop {
-        let pair_bits = molt_iter_next(iter_bits);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        let pair_obj = obj_from_bits(pair_bits);
-        let Some(pair_ptr) = pair_obj.as_ptr() else {
-            return MoltObject::none().bits();
         };
         unsafe {
-            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                return MoltObject::none().bits();
+            if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+                return raise_exception::<_>(_py, "TypeError", "expected file handle");
             }
-            let elems = seq_vec_ref(pair_ptr);
-            if elems.len() < 2 {
-                return MoltObject::none().bits();
+            let handle_ptr = file_handle_ptr(ptr);
+            if handle_ptr.is_null() {
+                return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
-            let done_bits = elems[1];
-            if is_truthy(obj_from_bits(done_bits)) {
-                break;
+            let handle = &mut *handle_ptr;
+            if file_handle_is_closed(handle) {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             }
-            let line_bits = elems[0];
-            let _ = molt_file_write(handle_bits, line_bits);
+            if !handle.writable {
+                return raise_exception::<_>(_py, "UnsupportedOperation", "not writable");
+            }
+        }
+        let iter_bits = molt_iter(lines_bits);
+        if obj_from_bits(iter_bits).is_none() {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "writelines() argument must be iterable",
+            );
+        }
+        loop {
+            let pair_bits = molt_iter_next(iter_bits);
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
+            let pair_obj = obj_from_bits(pair_bits);
+            let Some(pair_ptr) = pair_obj.as_ptr() else {
+                return MoltObject::none().bits();
+            };
+            unsafe {
+                if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                    return MoltObject::none().bits();
+                }
+                let elems = seq_vec_ref(pair_ptr);
+                if elems.len() < 2 {
+                    return MoltObject::none().bits();
+                }
+                let done_bits = elems[1];
+                if is_truthy(obj_from_bits(done_bits)) {
+                    break;
+                }
+                let line_bits = elems[0];
+                let _ = molt_file_write(handle_bits, line_bits);
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+            }
         }
-    }
-    MoltObject::none().bits()
-
+        MoltObject::none().bits()
     })
 }
 
 #[no_mangle]
 pub extern "C" fn molt_file_flush(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    let handle_obj = obj_from_bits(handle_bits);
-    let Some(ptr) = handle_obj.as_ptr() else {
-        return raise_exception::<_>(_py, "TypeError", "expected file handle");
-    };
-    unsafe {
-        if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+        let handle_obj = obj_from_bits(handle_bits);
+        let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
-        }
-        let handle_ptr = file_handle_ptr(ptr);
-        if handle_ptr.is_null() {
-            return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
-        }
-        let handle = &*handle_ptr;
-        file_handle_require_attached!(_py, handle);
-        if file_handle_is_closed(handle) {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
-        }
-        let mut guard = handle.state.file.lock().unwrap();
-        let Some(file) = guard.as_mut() else {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
         };
-        if file.flush().is_err() {
-            return raise_exception::<_>(_py, "OSError", "flush failed");
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+                return raise_exception::<_>(_py, "TypeError", "expected file handle");
+            }
+            let handle_ptr = file_handle_ptr(ptr);
+            if handle_ptr.is_null() {
+                return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
+            }
+            let handle = &*handle_ptr;
+            file_handle_require_attached!(_py, handle);
+            if file_handle_is_closed(handle) {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+            }
+            let mut guard = handle.state.file.lock().unwrap();
+            let Some(file) = guard.as_mut() else {
+                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+            };
+            if file.flush().is_err() {
+                return raise_exception::<_>(_py, "OSError", "flush failed");
+            }
         }
-    }
-    MoltObject::none().bits()
-
+        MoltObject::none().bits()
     })
 }
 
 #[no_mangle]
 pub extern "C" fn molt_file_close(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    let handle_obj = obj_from_bits(handle_bits);
-    let Some(ptr) = handle_obj.as_ptr() else {
-        return raise_exception::<_>(_py, "TypeError", "expected file handle");
-    };
-    unsafe {
-        if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+        let handle_obj = obj_from_bits(handle_bits);
+        let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
+                return raise_exception::<_>(_py, "TypeError", "expected file handle");
+            }
+            let handle_ptr = file_handle_ptr(ptr);
+            if handle_ptr.is_null() {
+                return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
+            }
+            let handle = &*handle_ptr;
+            file_handle_require_attached!(_py, handle);
         }
-        let handle_ptr = file_handle_ptr(ptr);
-        if handle_ptr.is_null() {
-            return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
-        }
-        let handle = &*handle_ptr;
-        file_handle_require_attached!(_py, handle);
-    }
-    file_handle_close_ptr(ptr);
-    MoltObject::none().bits()
-
+        file_handle_close_ptr(ptr);
+        MoltObject::none().bits()
     })
 }

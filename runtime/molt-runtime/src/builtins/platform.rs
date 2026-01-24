@@ -22,13 +22,11 @@ pub(crate) const SOCK_CLOEXEC_FLAG: i32 = 0;
 #[no_mangle]
 pub extern "C" fn molt_bridge_unavailable(msg_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    let msg = format_obj_str(_py, obj_from_bits(msg_bits));
-    eprintln!("Molt bridge unavailable: {msg}");
-    std::process::exit(1);
-
+        let msg = format_obj_str(_py, obj_from_bits(msg_bits));
+        eprintln!("Molt bridge unavailable: {msg}");
+        std::process::exit(1);
     })
 }
-
 
 static ERRNO_CONSTANTS_CACHE: AtomicU64 = AtomicU64::new(0);
 static SOCKET_CONSTANTS_CACHE: AtomicU64 = AtomicU64::new(0);
@@ -144,136 +142,133 @@ fn socket_constants() -> Vec<(&'static str, i64)> {
 #[no_mangle]
 pub extern "C" fn molt_errno_constants() -> u64 {
     crate::with_gil_entry!(_py, {
-    init_atomic_bits(_py, &ERRNO_CONSTANTS_CACHE, || {
-        let constants = collect_errno_constants();
-        let mut pairs = Vec::with_capacity(constants.len() * 2);
-        let mut reverse_pairs = Vec::with_capacity(constants.len() * 2);
-        let mut owned_bits = Vec::with_capacity(constants.len() * 2);
-        for (name, value) in constants {
-            let name_ptr = alloc_string(_py, name.as_bytes());
-            if name_ptr.is_null() {
+        init_atomic_bits(_py, &ERRNO_CONSTANTS_CACHE, || {
+            let constants = collect_errno_constants();
+            let mut pairs = Vec::with_capacity(constants.len() * 2);
+            let mut reverse_pairs = Vec::with_capacity(constants.len() * 2);
+            let mut owned_bits = Vec::with_capacity(constants.len() * 2);
+            for (name, value) in constants {
+                let name_ptr = alloc_string(_py, name.as_bytes());
+                if name_ptr.is_null() {
+                    for bits in owned_bits {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return MoltObject::none().bits();
+                }
+                let name_bits = MoltObject::from_ptr(name_ptr).bits();
+                let value_bits = MoltObject::from_int(value).bits();
+                pairs.push(name_bits);
+                pairs.push(value_bits);
+                reverse_pairs.push(value_bits);
+                reverse_pairs.push(name_bits);
+                owned_bits.push(name_bits);
+                owned_bits.push(value_bits);
+            }
+            let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
+            if dict_ptr.is_null() {
                 for bits in owned_bits {
                     dec_ref_bits(_py, bits);
                 }
                 return MoltObject::none().bits();
             }
-            let name_bits = MoltObject::from_ptr(name_ptr).bits();
-            let value_bits = MoltObject::from_int(value).bits();
-            pairs.push(name_bits);
-            pairs.push(value_bits);
-            reverse_pairs.push(value_bits);
-            reverse_pairs.push(name_bits);
-            owned_bits.push(name_bits);
-            owned_bits.push(value_bits);
-        }
-        let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
-        if dict_ptr.is_null() {
+            let reverse_ptr = alloc_dict_with_pairs(_py, &reverse_pairs);
+            if reverse_ptr.is_null() {
+                dec_ref_bits(_py, MoltObject::from_ptr(dict_ptr).bits());
+                for bits in owned_bits {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
+            }
+            let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
+            let reverse_bits = MoltObject::from_ptr(reverse_ptr).bits();
+            let tuple_ptr = alloc_tuple(_py, &[dict_bits, reverse_bits]);
             for bits in owned_bits {
                 dec_ref_bits(_py, bits);
             }
-            return MoltObject::none().bits();
-        }
-        let reverse_ptr = alloc_dict_with_pairs(_py, &reverse_pairs);
-        if reverse_ptr.is_null() {
-            dec_ref_bits(_py, MoltObject::from_ptr(dict_ptr).bits());
-            for bits in owned_bits {
-                dec_ref_bits(_py, bits);
+            dec_ref_bits(_py, dict_bits);
+            dec_ref_bits(_py, reverse_bits);
+            if tuple_ptr.is_null() {
+                return MoltObject::none().bits();
             }
-            return MoltObject::none().bits();
-        }
-        let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
-        let reverse_bits = MoltObject::from_ptr(reverse_ptr).bits();
-        let tuple_ptr = alloc_tuple(_py, &[dict_bits, reverse_bits]);
-        for bits in owned_bits {
-            dec_ref_bits(_py, bits);
-        }
-        dec_ref_bits(_py, dict_bits);
-        dec_ref_bits(_py, reverse_bits);
-        if tuple_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        MoltObject::from_ptr(tuple_ptr).bits()
-    })
-
+            MoltObject::from_ptr(tuple_ptr).bits()
+        })
     })
 }
 
 #[no_mangle]
 pub extern "C" fn molt_socket_constants() -> u64 {
     crate::with_gil_entry!(_py, {
-    init_atomic_bits(_py, &SOCKET_CONSTANTS_CACHE, || {
-        let constants = socket_constants();
-        let mut pairs = Vec::with_capacity(constants.len() * 2);
-        let mut owned_bits = Vec::with_capacity(constants.len() * 2);
-        for (name, value) in constants {
-            let name_ptr = alloc_string(_py, name.as_bytes());
-            if name_ptr.is_null() {
+        init_atomic_bits(_py, &SOCKET_CONSTANTS_CACHE, || {
+            let constants = socket_constants();
+            let mut pairs = Vec::with_capacity(constants.len() * 2);
+            let mut owned_bits = Vec::with_capacity(constants.len() * 2);
+            for (name, value) in constants {
+                let name_ptr = alloc_string(_py, name.as_bytes());
+                if name_ptr.is_null() {
+                    for bits in owned_bits {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return MoltObject::none().bits();
+                }
+                let name_bits = MoltObject::from_ptr(name_ptr).bits();
+                let value_bits = MoltObject::from_int(value).bits();
+                pairs.push(name_bits);
+                pairs.push(value_bits);
+                owned_bits.push(name_bits);
+                owned_bits.push(value_bits);
+            }
+            let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
+            if dict_ptr.is_null() {
                 for bits in owned_bits {
                     dec_ref_bits(_py, bits);
                 }
                 return MoltObject::none().bits();
             }
-            let name_bits = MoltObject::from_ptr(name_ptr).bits();
-            let value_bits = MoltObject::from_int(value).bits();
-            pairs.push(name_bits);
-            pairs.push(value_bits);
-            owned_bits.push(name_bits);
-            owned_bits.push(value_bits);
-        }
-        let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
-        if dict_ptr.is_null() {
+            let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
             for bits in owned_bits {
                 dec_ref_bits(_py, bits);
             }
-            return MoltObject::none().bits();
-        }
-        let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
-        for bits in owned_bits {
-            dec_ref_bits(_py, bits);
-        }
-        dict_bits
-    })
-
+            dict_bits
+        })
     })
 }
 
 #[no_mangle]
 pub extern "C" fn molt_env_get(key_bits: u64, default_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
-        Some(key) => key,
-        None => return default_bits,
-    };
-    #[cfg(target_arch = "wasm32")]
-    {
-        let Some(bytes) = wasm_env_get_bytes(&key) else {
-            return default_bits;
+        let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
+            Some(key) => key,
+            None => return default_bits,
         };
-        let Ok(val) = std::str::from_utf8(&bytes) else {
-            return default_bits;
-        };
-        let ptr = alloc_string(_py, val.as_bytes());
-        if ptr.is_null() {
-            default_bits
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        }
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        match std::env::var(key) {
-            Ok(val) => {
-                let ptr = alloc_string(_py, val.as_bytes());
-                if ptr.is_null() {
-                    default_bits
-                } else {
-                    MoltObject::from_ptr(ptr).bits()
-                }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let Some(bytes) = wasm_env_get_bytes(&key) else {
+                return default_bits;
+            };
+            let Ok(val) = std::str::from_utf8(&bytes) else {
+                return default_bits;
+            };
+            let ptr = alloc_string(_py, val.as_bytes());
+            if ptr.is_null() {
+                default_bits
+            } else {
+                MoltObject::from_ptr(ptr).bits()
             }
-            Err(_) => default_bits,
         }
-    }
-
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            match std::env::var(key) {
+                Ok(val) => {
+                    let ptr = alloc_string(_py, val.as_bytes());
+                    if ptr.is_null() {
+                        default_bits
+                    } else {
+                        MoltObject::from_ptr(ptr).bits()
+                    }
+                }
+                Err(_) => default_bits,
+            }
+        }
     })
 }
 

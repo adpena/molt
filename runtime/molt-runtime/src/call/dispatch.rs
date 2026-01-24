@@ -96,12 +96,19 @@ pub(crate) unsafe fn callable_arity(_py: &PyToken<'_>, call_bits: u64) -> Option
     }
 }
 
-pub(crate) unsafe fn call_callable2(_py: &PyToken<'_>, call_bits: u64, arg0_bits: u64, arg1_bits: u64) -> u64 {
+pub(crate) unsafe fn call_callable2(
+    _py: &PyToken<'_>,
+    call_bits: u64,
+    arg0_bits: u64,
+    arg1_bits: u64,
+) -> u64 {
     let call_obj = obj_from_bits(call_bits);
     let Some(call_ptr) = call_obj.as_ptr() else {
         return raise_not_callable(_py, call_obj);
     };
-    if let Some(bits) = call_builtin_type_if_needed(_py, call_bits, call_ptr, &[arg0_bits, arg1_bits]) {
+    if let Some(bits) =
+        call_builtin_type_if_needed(_py, call_bits, call_ptr, &[arg0_bits, arg1_bits])
+    {
         return bits;
     }
     match object_type_id(call_ptr) {
@@ -114,7 +121,9 @@ pub(crate) unsafe fn call_callable2(_py: &PyToken<'_>, call_bits: u64, arg0_bits
         TYPE_ID_BOUND_METHOD => {
             let func_bits = bound_method_func_bits(call_ptr);
             let self_bits = bound_method_self_bits(call_ptr);
-            if let Some(bits) = try_call_generator(_py, func_bits, &[self_bits, arg0_bits, arg1_bits]) {
+            if let Some(bits) =
+                try_call_generator(_py, func_bits, &[self_bits, arg0_bits, arg1_bits])
+            {
                 return bits;
             }
             call_function_obj3(_py, func_bits, self_bits, arg0_bits, arg1_bits)
@@ -148,7 +157,9 @@ pub(crate) unsafe fn call_callable3(
     }
     match object_type_id(call_ptr) {
         TYPE_ID_FUNCTION => {
-            if let Some(bits) = try_call_generator(_py, call_bits, &[arg0_bits, arg1_bits, arg2_bits]) {
+            if let Some(bits) =
+                try_call_generator(_py, call_bits, &[arg0_bits, arg1_bits, arg2_bits])
+            {
                 return bits;
             }
             call_function_obj3(_py, call_bits, arg0_bits, arg1_bits, arg2_bits)
@@ -156,14 +167,18 @@ pub(crate) unsafe fn call_callable3(
         TYPE_ID_BOUND_METHOD => {
             let func_bits = bound_method_func_bits(call_ptr);
             let self_bits = bound_method_self_bits(call_ptr);
-            if let Some(bits) =
-                try_call_generator(_py, func_bits, &[self_bits, arg0_bits, arg1_bits, arg2_bits])
-            {
+            if let Some(bits) = try_call_generator(
+                _py,
+                func_bits,
+                &[self_bits, arg0_bits, arg1_bits, arg2_bits],
+            ) {
                 return bits;
             }
             call_function_obj4(_py, func_bits, self_bits, arg0_bits, arg1_bits, arg2_bits)
         }
-        TYPE_ID_TYPE => call_class_init_with_args(_py, call_ptr, &[arg0_bits, arg1_bits, arg2_bits]),
+        TYPE_ID_TYPE => {
+            call_class_init_with_args(_py, call_ptr, &[arg0_bits, arg1_bits, arg2_bits])
+        }
         TYPE_ID_OBJECT | TYPE_ID_DATACLASS => {
             let Some(call_attr_bits) = lookup_call_attr(_py, call_ptr) else {
                 return raise_not_callable(_py, call_obj);

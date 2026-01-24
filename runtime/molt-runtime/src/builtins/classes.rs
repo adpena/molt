@@ -1,5 +1,5 @@
-use std::sync::atomic::Ordering as AtomicOrdering;
 use crate::{GilGuard, PyToken};
+use std::sync::atomic::Ordering as AtomicOrdering;
 
 use molt_obj_model::MoltObject;
 

@@ -2,9 +2,9 @@ use molt_obj_model::MoltObject;
 
 use crate::{
     class_layout_version_bits, dec_ref_bits, header_from_obj_ptr, inc_ref_bits, obj_from_bits,
-    object_class_bits, object_mark_has_ptrs, object_type_id, profile_hit, raise_exception,
-    to_i64, usize_from_bits, LAYOUT_GUARD_COUNT, LAYOUT_GUARD_FAIL, STRUCT_FIELD_STORE_COUNT,
-    TYPE_ID_OBJECT, TYPE_ID_TYPE, PyToken,
+    object_class_bits, object_mark_has_ptrs, object_type_id, profile_hit, raise_exception, to_i64,
+    usize_from_bits, PyToken, LAYOUT_GUARD_COUNT, LAYOUT_GUARD_FAIL, STRUCT_FIELD_STORE_COUNT,
+    TYPE_ID_OBJECT, TYPE_ID_TYPE,
 };
 
 pub(crate) fn resolve_obj_ptr(bits: u64) -> Option<*mut u8> {
@@ -179,7 +179,13 @@ pub unsafe extern "C" fn molt_guard_layout_ptr(
     expected_version: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        MoltObject::from_bool(guard_layout_match(_py, obj_ptr, class_bits, expected_version)).bits()
+        MoltObject::from_bool(guard_layout_match(
+            _py,
+            obj_ptr,
+            class_bits,
+            expected_version,
+        ))
+        .bits()
     })
 }
 
@@ -315,10 +321,10 @@ pub unsafe extern "C" fn molt_object_field_init(
             old_bits == 0 || obj_from_bits(old_bits).as_ptr().is_none(),
             "object_field_init used on slot with pointer contents"
         );
-    if obj_from_bits(val_bits).as_ptr().is_some() {
-        object_mark_has_ptrs(_py, obj_ptr);
-    }
-    *slot = val_bits;
-    MoltObject::none().bits()
+        if obj_from_bits(val_bits).as_ptr().is_some() {
+            object_mark_has_ptrs(_py, obj_ptr);
+        }
+        *slot = val_bits;
+        MoltObject::none().bits()
     })
 }

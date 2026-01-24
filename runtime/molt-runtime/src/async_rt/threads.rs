@@ -1,6 +1,6 @@
-use crate::*;
 use super::{await_waiters_take, wake_task_ptr};
 use crate::PyToken;
+use crate::*;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crossbeam_channel::{unbounded, Receiver, Sender};
@@ -205,7 +205,12 @@ fn thread_worker(rx: Receiver<ThreadWork>) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn call_thread_callable(_py: &PyToken<'_>, callable_bits: u64, args_bits: u64, kwargs_bits: u64) -> u64 {
+fn call_thread_callable(
+    _py: &PyToken<'_>,
+    callable_bits: u64,
+    args_bits: u64,
+    kwargs_bits: u64,
+) -> u64 {
     let args_obj = obj_from_bits(args_bits);
     let kwargs_obj = obj_from_bits(kwargs_bits);
     let has_args = !args_obj.is_none();
@@ -242,31 +247,30 @@ pub unsafe extern "C" fn molt_thread_submit(
     kwargs_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-    let future_bits = molt_future_new(thread_poll_fn_addr(), 0);
-    let Some(future_ptr) = resolve_obj_ptr(future_bits) else {
-        return MoltObject::none().bits();
-    };
-    let state = Arc::new(ThreadTaskState::new(future_ptr));
-    runtime_state(_py)
-        .thread_tasks
-        .lock()
-        .unwrap()
-        .insert(PtrSlot(future_ptr), Arc::clone(&state));
-    inc_ref_bits(_py, callable_bits);
-    if !obj_from_bits(args_bits).is_none() {
-        inc_ref_bits(_py, args_bits);
-    }
-    if !obj_from_bits(kwargs_bits).is_none() {
-        inc_ref_bits(_py, kwargs_bits);
-    }
-    runtime_state(_py).thread_pool().submit(ThreadWorkItem {
-        task: state,
-        callable_bits,
-        args_bits,
-        kwargs_bits,
-    });
-    future_bits
-
+        let future_bits = molt_future_new(thread_poll_fn_addr(), 0);
+        let Some(future_ptr) = resolve_obj_ptr(future_bits) else {
+            return MoltObject::none().bits();
+        };
+        let state = Arc::new(ThreadTaskState::new(future_ptr));
+        runtime_state(_py)
+            .thread_tasks
+            .lock()
+            .unwrap()
+            .insert(PtrSlot(future_ptr), Arc::clone(&state));
+        inc_ref_bits(_py, callable_bits);
+        if !obj_from_bits(args_bits).is_none() {
+            inc_ref_bits(_py, args_bits);
+        }
+        if !obj_from_bits(kwargs_bits).is_none() {
+            inc_ref_bits(_py, kwargs_bits);
+        }
+        runtime_state(_py).thread_pool().submit(ThreadWorkItem {
+            task: state,
+            callable_bits,
+            args_bits,
+            kwargs_bits,
+        });
+        future_bits
     })
 }
 
@@ -278,8 +282,7 @@ pub unsafe extern "C" fn molt_thread_submit(
     _kwargs_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-    raise_exception::<u64>(_py, "RuntimeError", "thread submit unsupported on wasm")
-
+        raise_exception::<u64>(_py, "RuntimeError", "thread submit unsupported on wasm")
     })
 }
 
@@ -287,47 +290,43 @@ pub unsafe extern "C" fn molt_thread_submit(
 #[no_mangle]
 pub unsafe extern "C" fn molt_thread_poll(obj_bits: u64) -> i64 {
     crate::with_gil_entry!(_py, {
-    let obj_ptr = ptr_from_bits(obj_bits);
-    if obj_ptr.is_null() {
-        return MoltObject::none().bits() as i64;
-    }
-    let Some(state) = runtime_state(_py)
-        .thread_tasks
-        .lock()
-        .unwrap()
-        .get(&PtrSlot(obj_ptr))
-        .cloned()
-    else {
-        return raise_exception::<i64>(_py, "RuntimeError", "thread task missing");
-    };
-    if state.done.load(AtomicOrdering::Acquire) {
-        task_take_cancel_pending(obj_ptr);
-    } else if task_cancel_pending(obj_ptr) {
-        task_take_cancel_pending(obj_ptr);
-        state.cancelled.store(true, AtomicOrdering::Release);
-        return raise_cancelled_with_message::<i64>(_py, obj_ptr);
-    }
-    if !state.done.load(AtomicOrdering::Acquire) {
-        return pending_bits_i64();
-    }
-    if let Some(exc_bits) = state.exception.lock().unwrap().as_ref().copied() {
-        let res_bits = molt_raise(exc_bits);
-        return res_bits as i64;
-    }
-    if let Some(result_bits) = state.result.lock().unwrap().as_ref().copied() {
-        inc_ref_bits(_py, result_bits);
-        return result_bits as i64;
-    }
-    MoltObject::none().bits() as i64
-
+        let obj_ptr = ptr_from_bits(obj_bits);
+        if obj_ptr.is_null() {
+            return MoltObject::none().bits() as i64;
+        }
+        let Some(state) = runtime_state(_py)
+            .thread_tasks
+            .lock()
+            .unwrap()
+            .get(&PtrSlot(obj_ptr))
+            .cloned()
+        else {
+            return raise_exception::<i64>(_py, "RuntimeError", "thread task missing");
+        };
+        if state.done.load(AtomicOrdering::Acquire) {
+            task_take_cancel_pending(obj_ptr);
+        } else if task_cancel_pending(obj_ptr) {
+            task_take_cancel_pending(obj_ptr);
+            state.cancelled.store(true, AtomicOrdering::Release);
+            return raise_cancelled_with_message::<i64>(_py, obj_ptr);
+        }
+        if !state.done.load(AtomicOrdering::Acquire) {
+            return pending_bits_i64();
+        }
+        if let Some(exc_bits) = state.exception.lock().unwrap().as_ref().copied() {
+            let res_bits = molt_raise(exc_bits);
+            return res_bits as i64;
+        }
+        if let Some(result_bits) = state.result.lock().unwrap().as_ref().copied() {
+            inc_ref_bits(_py, result_bits);
+            return result_bits as i64;
+        }
+        MoltObject::none().bits() as i64
     })
 }
 
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub unsafe extern "C" fn molt_thread_poll(_obj_bits: u64) -> i64 {
-    crate::with_gil_entry!(_py, {
-    pending_bits_i64()
-
-    })
+    crate::with_gil_entry!(_py, { pending_bits_i64() })
 }

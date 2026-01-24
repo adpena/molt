@@ -17,12 +17,12 @@ macro_rules! fn_addr {
 #[cfg(test)]
 pub(crate) static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-mod object;
 mod async_rt;
 mod builtins;
 mod call;
-mod constants;
 mod concurrency;
+mod constants;
+mod object;
 mod provenance;
 mod state;
 mod utils;
@@ -36,6 +36,24 @@ pub(crate) use crate::state::RuntimeState;
 #[allow(unused_imports)]
 pub(crate) use molt_obj_model::MoltObject;
 
+pub(crate) use crate::async_rt::channels::has_capability;
+pub use crate::async_rt::channels::*;
+pub use crate::async_rt::generators::*;
+pub(crate) use crate::async_rt::io_poller::IoPoller;
+pub use crate::async_rt::io_poller::*;
+pub use crate::async_rt::process::*;
+pub(crate) use crate::async_rt::scheduler::BLOCK_ON_TASK;
+pub use crate::async_rt::sockets::*;
+pub(crate) use crate::async_rt::sockets::{
+    argv_from_bits, env_from_bits, io_wait_release_socket, require_net_capability,
+    require_process_capability, require_time_wall_capability,
+};
+pub use crate::async_rt::threads::*;
+pub(crate) use crate::async_rt::{
+    anext_default_poll_fn_addr, async_sleep_poll_fn_addr, asyncgen_poll_fn_addr, call_poll_fn,
+    io_wait_poll_fn_addr, is_block_on_task, molt_block_on, poll_future_with_task_stack,
+    process_poll_fn_addr, resolve_task_ptr, thread_poll_fn_addr,
+};
 pub(crate) use crate::builtins::attr::{
     attr_error, attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, class_attr_lookup,
     class_attr_lookup_raw_mro, class_field_offset, dataclass_attr_lookup_raw, descriptor_bind,
@@ -44,6 +62,8 @@ pub(crate) use crate::builtins::attr::{
     dir_collect_from_instance, instance_bits_for_call, is_iterator_bits, module_attr_lookup,
     object_attr_lookup_raw, property_no_deleter, property_no_setter, raise_attr_name_type_error,
 };
+pub use crate::builtins::attributes::*;
+pub use crate::builtins::callable::*;
 pub(crate) use crate::builtins::classes::{
     builtin_classes, builtin_classes_shutdown, builtin_type_bits, class_name_for_error,
     is_builtin_class_bits, BuiltinClasses,
@@ -55,6 +75,12 @@ pub(crate) use crate::builtins::containers::{
     list_method_bits, set_len, set_method_bits, set_order, set_order_ptr, set_table, set_table_ptr,
     tuple_len,
 };
+pub(crate) use crate::builtins::containers_alloc::{dict_pair_from_item, DictSeqError};
+pub use crate::builtins::containers_alloc::{
+    molt_dict_from_obj, molt_dict_new, molt_frozenset_new, molt_set_new,
+};
+pub use crate::builtins::context::*;
+pub(crate) use crate::builtins::context::{context_payload_bits, context_stack_unwind};
 pub(crate) use crate::builtins::exceptions::{
     alloc_exception, alloc_exception_from_class_bits, clear_exception, clear_exception_state,
     clear_exception_type_cache, exception_args_bits, exception_args_from_iterable,
@@ -67,8 +93,7 @@ pub(crate) use crate::builtins::exceptions::{
     exception_type_bits, exception_type_bits_from_name, exception_value_bits, format_exception,
     format_exception_message, frame_stack_pop, frame_stack_push, frame_stack_set_line,
     generator_exception_stack_drop, generator_exception_stack_store,
-    generator_exception_stack_take, generator_raise_active,
-    molt_exception_clear,
+    generator_exception_stack_take, generator_raise_active, molt_exception_clear,
     molt_exception_kind, molt_exception_last, molt_raise, raise_exception,
     raise_key_error_with_key, raise_not_iterable, raise_unsupported_inplace, record_exception,
     set_generator_raise, set_task_raise_active, task_exception_depth_drop,
@@ -81,6 +106,15 @@ pub(crate) use crate::builtins::exceptions::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use crate::builtins::exceptions::{raise_os_error, raise_os_error_errno};
+pub use crate::builtins::functions::*;
+pub use crate::builtins::io::*;
+pub(crate) use crate::builtins::io::{
+    close_payload, decode_utf8_with_errors, file_handle_detached_message, file_handle_enter,
+    file_handle_exit, file_handle_is_closed, path_from_bits, DecodeFailure,
+};
+pub use crate::builtins::json::*;
+pub(crate) use crate::builtins::methods::*;
+pub use crate::builtins::modules::*;
 pub(crate) use crate::builtins::numbers::{
     bigint_bits, bigint_from_f64_trunc, bigint_ptr_from_bits, bigint_ref, bigint_to_inline,
     compare_numbers, float_pair_from_obj, index_bigint_from_obj, index_i64_from_obj,
@@ -88,6 +122,7 @@ pub(crate) use crate::builtins::numbers::{
     int_bits_from_i64, round_float_ndigits, round_half_even, split_maxsplit_from_obj, to_bigint,
     to_f64, to_i64,
 };
+pub use crate::builtins::platform::*;
 pub(crate) use crate::builtins::strings::{
     bytes_count_impl, bytes_find_impl, bytes_rfind_impl, bytes_strip_range, replace_bytes_impl,
     replace_bytes_impl_limit, replace_string_impl, rsplit_bytes_to_list_maxsplit,
@@ -96,97 +131,34 @@ pub(crate) use crate::builtins::strings::{
     split_bytes_whitespace_to_list_maxsplit, split_string_bytes_to_list_maxsplit,
     split_string_whitespace_to_list_maxsplit, splitlines_bytes_to_list, splitlines_string_to_list,
 };
+pub(crate) use crate::builtins::type_ops::{
+    class_bases_vec, class_mro_ref, class_mro_vec, isinstance_bits, issubclass_bits, type_of_bits,
+};
+pub use crate::builtins::types::*;
 #[allow(unused_imports)]
 pub(crate) use crate::call::bind::molt_callargs_push_kw;
 pub(crate) use crate::call::bind::{
     callargs_ptr, molt_call_bind, molt_callargs_expand_kwstar, molt_callargs_expand_star,
     molt_callargs_new, molt_callargs_push_pos,
 };
-pub(crate) use crate::call::lookup_call_attr;
+pub(crate) use crate::call::class_init::{
+    alloc_instance_for_class, call_builtin_type_if_needed, call_class_init_with_args,
+    function_attr_bits, raise_not_callable, try_call_generator,
+};
 pub(crate) use crate::call::dispatch::{
     call_callable0, call_callable1, call_callable2, call_callable3, callable_arity,
-};
-pub(crate) use crate::call::class_init::{
-    alloc_instance_for_class, call_builtin_type_if_needed,
-    call_class_init_with_args, function_attr_bits, raise_not_callable,
-    try_call_generator,
 };
 pub(crate) use crate::call::function::{
     call_function_obj0, call_function_obj1, call_function_obj2, call_function_obj3,
     call_function_obj4, call_function_obj_vec,
 };
+pub(crate) use crate::call::lookup_call_attr;
 pub(crate) use crate::constants::*;
-pub use crate::async_rt::channels::*;
-pub use crate::async_rt::generators::*;
-pub use crate::async_rt::io_poller::*;
-pub use crate::async_rt::process::*;
-pub use crate::async_rt::sockets::*;
-pub use crate::async_rt::threads::*;
-pub(crate) use crate::async_rt::{
-    anext_default_poll_fn_addr, async_sleep_poll_fn_addr, asyncgen_poll_fn_addr, call_poll_fn,
-    io_wait_poll_fn_addr, is_block_on_task, molt_block_on, poll_future_with_task_stack,
-    process_poll_fn_addr, resolve_task_ptr, thread_poll_fn_addr,
-};
-pub(crate) use crate::async_rt::scheduler::BLOCK_ON_TASK;
-pub use crate::builtins::context::*;
-pub use crate::builtins::attributes::*;
-pub(crate) use crate::builtins::methods::*;
-pub use crate::builtins::callable::*;
-pub use crate::builtins::functions::*;
-pub use crate::builtins::io::*;
-pub use crate::builtins::platform::*;
-pub use crate::builtins::json::*;
-pub use crate::builtins::modules::*;
-pub use crate::builtins::containers_alloc::{
-    molt_dict_from_obj, molt_dict_new, molt_frozenset_new, molt_set_new,
-};
-pub use crate::builtins::types::*;
-pub(crate) use crate::builtins::type_ops::{
-    class_bases_vec, class_mro_ref, class_mro_vec, isinstance_bits, issubclass_bits, type_of_bits,
-};
-pub use crate::object::builders::*;
-pub use crate::object::buffer2d::*;
-pub use crate::object::ops::*;
-pub use crate::object::{molt_dec_ref, molt_inc_ref, MoltHeader};
-pub(crate) use crate::object::{
-    alloc_object, alloc_object_zeroed_with_pool, bits_from_ptr, buffer2d_ptr, bytes_data, bytes_len,
-    dataclass_desc_ptr, dataclass_dict_bits, dataclass_fields_mut, dataclass_fields_ref,
-    dataclass_set_dict_bits, dec_ref_bits, file_handle_ptr, header_from_obj_ptr, inc_ref_bits,
-    init_atomic_bits, instance_dict_bits, instance_set_dict_bits, intarray_len, intarray_slice,
-    maybe_ptr_from_bits,
-    memoryview_format_bits, memoryview_itemsize, memoryview_len, memoryview_ndim, memoryview_offset,
-    memoryview_owner_bits, memoryview_ptr, memoryview_readonly, memoryview_shape,
-    memoryview_stride, memoryview_strides,
-    obj_from_bits, object_class_bits, object_mark_has_ptrs, object_payload_size,
-    object_set_class_bits, object_type_id, pending_bits_i64, ptr_from_bits, string_bytes,
-    string_len, Buffer2D, DataclassDesc, MemoryView, MemoryViewFormat, MemoryViewFormatKind,
-    MoltFileHandle, MoltFileState, PtrSlot, HEADER_FLAG_CANCEL_PENDING, HEADER_FLAG_GEN_RUNNING,
-    HEADER_FLAG_GEN_STARTED, HEADER_FLAG_SKIP_CLASS_DECREF, HEADER_FLAG_SPAWN_RETAIN,
-    OBJECT_POOL_BUCKETS, OBJECT_POOL_TLS,
-};
-pub(crate) use crate::object::type_ids::*;
-#[allow(unused_imports)]
-pub(crate) use crate::object::ops::{
-    class_break_cycles, decode_string_list, decode_value_list, dict_clear_in_place,
-    dict_clear_method, dict_copy_method, dict_del_in_place, dict_find_entry, dict_fromkeys_method,
-    dict_get_in_place, dict_get_method, dict_items_method, dict_keys_method, dict_pop_method,
-    dict_popitem_method, dict_set_in_place, dict_setdefault_method, dict_table_capacity,
-    dict_update_apply, dict_update_method, dict_update_set_in_place, dict_update_set_via_store,
-    dict_values_method, format_obj, format_obj_str, frozenset_from_iter_bits, hash_slice_bits,
-    is_truthy, list_from_iter_bits, obj_eq, set_add_in_place, set_del_in_place, set_find_entry,
-    set_replace_entries, set_table_capacity, tuple_from_isize_slice, type_name,
-    tuple_from_iter_bits, utf8_cache_remove, utf8_codepoint_count_cached,
-};
-pub(crate) use crate::object::ops::HashSecret;
 pub(crate) use crate::object::accessors::{
     object_field_get_ptr_raw, object_field_set_ptr_raw, resolve_obj_ptr,
 };
-pub(crate) use crate::object::memoryview::{
-    bytes_like_slice, bytes_like_slice_raw, memoryview_bytes_slice, memoryview_collect_bytes,
-    memoryview_format_from_bits, memoryview_format_from_str, memoryview_is_c_contiguous_view,
-    memoryview_nbytes, memoryview_nbytes_big, memoryview_read_scalar, memoryview_shape_product,
-    memoryview_write_bytes, memoryview_write_scalar,
-};
+pub use crate::object::buffer2d::*;
+pub use crate::object::builders::*;
 pub(crate) use crate::object::builders::{alloc_dict_with_pairs, PtrDropGuard};
 #[allow(unused_imports)]
 pub(crate) use crate::object::layout::{
@@ -210,31 +182,55 @@ pub(crate) use crate::object::layout::{
     slice_step_bits, slice_stop_bits, staticmethod_func_bits, super_obj_bits, super_type_bits,
     zip_iters_ptr,
 };
-pub(crate) use crate::builtins::containers_alloc::{dict_pair_from_item, DictSeqError};
-pub(crate) use crate::async_rt::channels::has_capability;
-pub(crate) use crate::async_rt::io_poller::IoPoller;
-pub(crate) use crate::async_rt::sockets::{
-    argv_from_bits, env_from_bits, io_wait_release_socket, require_net_capability,
-    require_process_capability, require_time_wall_capability,
+pub(crate) use crate::object::memoryview::{
+    bytes_like_slice, bytes_like_slice_raw, memoryview_bytes_slice, memoryview_collect_bytes,
+    memoryview_format_from_bits, memoryview_format_from_str, memoryview_is_c_contiguous_view,
+    memoryview_nbytes, memoryview_nbytes_big, memoryview_read_scalar, memoryview_shape_product,
+    memoryview_write_bytes, memoryview_write_scalar,
 };
-pub(crate) use crate::builtins::io::{
-    close_payload, file_handle_detached_message, file_handle_enter, file_handle_exit,
-    file_handle_is_closed, decode_utf8_with_errors, path_from_bits, DecodeFailure,
+pub(crate) use crate::object::ops::HashSecret;
+pub use crate::object::ops::*;
+#[allow(unused_imports)]
+pub(crate) use crate::object::ops::{
+    class_break_cycles, decode_string_list, decode_value_list, dict_clear_in_place,
+    dict_clear_method, dict_copy_method, dict_del_in_place, dict_find_entry, dict_fromkeys_method,
+    dict_get_in_place, dict_get_method, dict_items_method, dict_keys_method, dict_pop_method,
+    dict_popitem_method, dict_set_in_place, dict_setdefault_method, dict_table_capacity,
+    dict_update_apply, dict_update_method, dict_update_set_in_place, dict_update_set_via_store,
+    dict_values_method, format_obj, format_obj_str, frozenset_from_iter_bits, hash_slice_bits,
+    is_truthy, list_from_iter_bits, obj_eq, set_add_in_place, set_del_in_place, set_find_entry,
+    set_replace_entries, set_table_capacity, tuple_from_isize_slice, tuple_from_iter_bits,
+    type_name, utf8_cache_remove, utf8_codepoint_count_cached,
 };
-pub(crate) use crate::builtins::context::{context_payload_bits, context_stack_unwind};
-pub(crate) use crate::state::runtime_state::{runtime_state, runtime_state_for_gil};
+pub(crate) use crate::object::type_ids::*;
+pub(crate) use crate::object::{
+    alloc_object, alloc_object_zeroed_with_pool, bits_from_ptr, buffer2d_ptr, bytes_data,
+    bytes_len, dataclass_desc_ptr, dataclass_dict_bits, dataclass_fields_mut, dataclass_fields_ref,
+    dataclass_set_dict_bits, dec_ref_bits, file_handle_ptr, header_from_obj_ptr, inc_ref_bits,
+    init_atomic_bits, instance_dict_bits, instance_set_dict_bits, intarray_len, intarray_slice,
+    maybe_ptr_from_bits, memoryview_format_bits, memoryview_itemsize, memoryview_len,
+    memoryview_ndim, memoryview_offset, memoryview_owner_bits, memoryview_ptr, memoryview_readonly,
+    memoryview_shape, memoryview_stride, memoryview_strides, obj_from_bits, object_class_bits,
+    object_mark_has_ptrs, object_payload_size, object_set_class_bits, object_type_id,
+    pending_bits_i64, ptr_from_bits, string_bytes, string_len, Buffer2D, DataclassDesc, MemoryView,
+    MemoryViewFormat, MemoryViewFormatKind, MoltFileHandle, MoltFileState, PtrSlot,
+    HEADER_FLAG_CANCEL_PENDING, HEADER_FLAG_GEN_RUNNING, HEADER_FLAG_GEN_STARTED,
+    HEADER_FLAG_SKIP_CLASS_DECREF, HEADER_FLAG_SPAWN_RETAIN, OBJECT_POOL_BUCKETS, OBJECT_POOL_TLS,
+};
+pub use crate::object::{molt_dec_ref, molt_inc_ref, MoltHeader};
+#[allow(unused_imports)]
+pub(crate) use crate::provenance::{register_ptr, release_ptr, reset_ptr_registry, resolve_ptr};
 pub(crate) use crate::state::cache::{intern_static_name, InternedNames, MethodCache};
+pub(crate) use crate::state::runtime_state::{runtime_state, runtime_state_for_gil};
 #[allow(unused_imports)]
 pub(crate) use crate::state::{
     molt_profile_enabled, molt_profile_handle_resolve, molt_profile_struct_field_store,
-    profile_enabled, profile_hit, profile_hit_unchecked,
-    recursion_guard_enter, recursion_guard_exit, recursion_limit_get, recursion_limit_set,
-    CONTEXT_STACK, DEFAULT_RECURSION_LIMIT, FRAME_STACK, GIL_DEPTH, PARSE_ARENA, RECURSION_DEPTH,
-    RECURSION_LIMIT, REPR_DEPTH, REPR_STACK,
+    profile_enabled, profile_hit, profile_hit_unchecked, recursion_guard_enter,
+    recursion_guard_exit, recursion_limit_get, recursion_limit_set, CONTEXT_STACK,
+    DEFAULT_RECURSION_LIMIT, FRAME_STACK, GIL_DEPTH, PARSE_ARENA, RECURSION_DEPTH, RECURSION_LIMIT,
+    REPR_DEPTH, REPR_STACK,
 };
 pub(crate) use crate::utils::usize_from_bits;
-#[allow(unused_imports)]
-pub(crate) use crate::provenance::{register_ptr, release_ptr, reset_ptr_registry, resolve_ptr};
 
 #[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "env")]
@@ -423,7 +419,6 @@ extern "C" {
 // --- Thread/Process Tasks ---
 // (moved to runtime/molt-runtime/src/async_rt/threads.rs)
 
-
 // Cancel token FFI moved to runtime/molt-runtime/src/async_rt/cancellation.rs.
 
 // Spawn/block_on FFI moved to runtime/molt-runtime/src/async_rt/scheduler.rs.
@@ -432,10 +427,7 @@ extern "C" {
 
 // errno/socket/env helpers moved to runtime/molt-runtime/src/builtins/io.rs.
 
-
-
 // Class construction helpers moved to runtime/molt-runtime/src/call/class_init.rs.
-
 
 // Attribute accessors moved to builtins/attributes.rs.
 

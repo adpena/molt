@@ -72,7 +72,7 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
             func(arg0_bits) as u64
         }
     };
-    frame_stack_pop(_py, );
+    frame_stack_pop(_py);
     recursion_guard_exit();
     res
 }
@@ -130,12 +130,17 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
             func() as u64
         }
     };
-    frame_stack_pop(_py, );
+    frame_stack_pop(_py);
     recursion_guard_exit();
     res
 }
 
-pub(crate) unsafe fn call_function_obj2(_py: &PyToken<'_>, func_bits: u64, arg0_bits: u64, arg1_bits: u64) -> u64 {
+pub(crate) unsafe fn call_function_obj2(
+    _py: &PyToken<'_>,
+    func_bits: u64,
+    arg0_bits: u64,
+    arg1_bits: u64,
+) -> u64 {
     profile_hit(_py, &CALL_DISPATCH_COUNT);
     let func_obj = obj_from_bits(func_bits);
     let Some(func_ptr) = func_obj.as_ptr() else {
@@ -189,13 +194,14 @@ pub(crate) unsafe fn call_function_obj2(_py: &PyToken<'_>, func_bits: u64, arg0_
             func(arg0_bits, arg1_bits) as u64
         }
     };
-    frame_stack_pop(_py, );
+    frame_stack_pop(_py);
     recursion_guard_exit();
     res
 }
 
 pub(crate) unsafe fn call_function_obj3(
-    _py: &PyToken<'_>, func_bits: u64,
+    _py: &PyToken<'_>,
+    func_bits: u64,
     arg0_bits: u64,
     arg1_bits: u64,
     arg2_bits: u64,
@@ -255,13 +261,14 @@ pub(crate) unsafe fn call_function_obj3(
             func(arg0_bits, arg1_bits, arg2_bits) as u64
         }
     };
-    frame_stack_pop(_py, );
+    frame_stack_pop(_py);
     recursion_guard_exit();
     res
 }
 
 pub(crate) unsafe fn call_function_obj4(
-    _py: &PyToken<'_>, func_bits: u64,
+    _py: &PyToken<'_>,
+    func_bits: u64,
     arg0_bits: u64,
     arg1_bits: u64,
     arg2_bits: u64,
@@ -330,13 +337,14 @@ pub(crate) unsafe fn call_function_obj4(
             func(arg0_bits, arg1_bits, arg2_bits, arg3_bits) as u64
         }
     };
-    frame_stack_pop(_py, );
+    frame_stack_pop(_py);
     recursion_guard_exit();
     res
 }
 
 unsafe fn call_function_obj5(
-    _py: &PyToken<'_>, func_bits: u64,
+    _py: &PyToken<'_>,
+    func_bits: u64,
     arg0_bits: u64,
     arg1_bits: u64,
     arg2_bits: u64,
@@ -423,13 +431,14 @@ unsafe fn call_function_obj5(
             func(arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits) as u64
         }
     };
-    frame_stack_pop(_py, );
+    frame_stack_pop(_py);
     recursion_guard_exit();
     res
 }
 
 unsafe fn call_function_obj6(
-    _py: &PyToken<'_>, func_bits: u64,
+    _py: &PyToken<'_>,
+    func_bits: u64,
     arg0_bits: u64,
     arg1_bits: u64,
     arg2_bits: u64,
@@ -524,14 +533,15 @@ unsafe fn call_function_obj6(
             ) as u64
         }
     };
-    frame_stack_pop(_py, );
+    frame_stack_pop(_py);
     recursion_guard_exit();
     res
 }
 
 #[allow(clippy::too_many_arguments)]
 unsafe fn call_function_obj7(
-    _py: &PyToken<'_>, func_bits: u64,
+    _py: &PyToken<'_>,
+    func_bits: u64,
     arg0_bits: u64,
     arg1_bits: u64,
     arg2_bits: u64,
@@ -631,14 +641,15 @@ unsafe fn call_function_obj7(
             ) as u64
         }
     };
-    frame_stack_pop(_py, );
+    frame_stack_pop(_py);
     recursion_guard_exit();
     res
 }
 
 #[allow(clippy::too_many_arguments)]
 unsafe fn call_function_obj8(
-    _py: &PyToken<'_>, func_bits: u64,
+    _py: &PyToken<'_>,
+    func_bits: u64,
     arg0_bits: u64,
     arg1_bits: u64,
     arg2_bits: u64,
@@ -744,14 +755,15 @@ unsafe fn call_function_obj8(
             ) as u64
         }
     };
-    frame_stack_pop(_py, );
+    frame_stack_pop(_py);
     recursion_guard_exit();
     res
 }
 
 #[allow(clippy::too_many_arguments)]
 unsafe fn call_function_obj9(
-    _py: &PyToken<'_>, func_bits: u64,
+    _py: &PyToken<'_>,
+    func_bits: u64,
     arg0_bits: u64,
     arg1_bits: u64,
     arg2_bits: u64,
@@ -861,14 +873,15 @@ unsafe fn call_function_obj9(
             ) as u64
         }
     };
-    frame_stack_pop(_py, );
+    frame_stack_pop(_py);
     recursion_guard_exit();
     res
 }
 
 #[allow(clippy::too_many_arguments)]
 unsafe fn call_function_obj10(
-    _py: &PyToken<'_>, func_bits: u64,
+    _py: &PyToken<'_>,
+    func_bits: u64,
     arg0_bits: u64,
     arg1_bits: u64,
     arg2_bits: u64,
@@ -993,14 +1006,15 @@ unsafe fn call_function_obj10(
             ) as u64
         }
     };
-    frame_stack_pop(_py, );
+    frame_stack_pop(_py);
     recursion_guard_exit();
     res
 }
 
 #[allow(clippy::too_many_arguments)]
 unsafe fn call_function_obj11(
-    _py: &PyToken<'_>, func_bits: u64,
+    _py: &PyToken<'_>,
+    func_bits: u64,
     arg0_bits: u64,
     arg1_bits: u64,
     arg2_bits: u64,
@@ -1153,14 +1167,15 @@ unsafe fn call_function_obj11(
             ) as u64
         }
     };
-    frame_stack_pop(_py, );
+    frame_stack_pop(_py);
     recursion_guard_exit();
     res
 }
 
 #[allow(clippy::too_many_arguments)]
 unsafe fn call_function_obj12(
-    _py: &PyToken<'_>, func_bits: u64,
+    _py: &PyToken<'_>,
+    func_bits: u64,
     arg0_bits: u64,
     arg1_bits: u64,
     arg2_bits: u64,
@@ -1332,7 +1347,7 @@ unsafe fn call_function_obj12(
             ) as u64
         }
     };
-    frame_stack_pop(_py, );
+    frame_stack_pop(_py);
     recursion_guard_exit();
     res
 }
@@ -1376,7 +1391,7 @@ unsafe fn call_function_obj_trampoline(_py: &PyToken<'_>, func_bits: u64, args: 
             func(closure_bits, args.as_ptr() as u64, args.len() as u64) as u64
         }
     };
-    frame_stack_pop(_py, );
+    frame_stack_pop(_py);
     recursion_guard_exit();
     res
 }

@@ -141,7 +141,8 @@ pub(crate) fn type_of_bits(_py: &PyToken<'_>, val_bits: u64) -> u64 {
 fn collect_classinfo_isinstance(_py: &PyToken<'_>, class_bits: u64, out: &mut Vec<u64>) {
     let obj = obj_from_bits(class_bits);
     let Some(ptr) = obj.as_ptr() else {
-        return raise_exception::<_>(_py,
+        return raise_exception::<_>(
+            _py,
             "TypeError",
             "isinstance() arg 2 must be a type or tuple of types",
         );
@@ -156,7 +157,8 @@ fn collect_classinfo_isinstance(_py: &PyToken<'_>, class_bits: u64, out: &mut Ve
                 }
             }
             _ => {
-                return raise_exception::<_>(_py,
+                return raise_exception::<_>(
+                    _py,
                     "TypeError",
                     "isinstance() arg 2 must be a type or tuple of types",
                 )

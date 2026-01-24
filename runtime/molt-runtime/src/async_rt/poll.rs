@@ -111,7 +111,11 @@ pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr
     }
 }
 
-pub(crate) unsafe fn poll_future_with_task_stack(_py: &PyToken<'_>, task_ptr: *mut u8, poll_fn_addr: u64) -> i64 {
+pub(crate) unsafe fn poll_future_with_task_stack(
+    _py: &PyToken<'_>,
+    task_ptr: *mut u8,
+    poll_fn_addr: u64,
+) -> i64 {
     let prev_task = CURRENT_TASK.with(|cell| {
         let prev = cell.get();
         cell.set(task_ptr);

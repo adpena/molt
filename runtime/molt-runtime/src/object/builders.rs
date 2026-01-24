@@ -1,10 +1,8 @@
-use crate::*;
 use crate::PyToken;
+use crate::*;
 
 pub extern "C" fn molt_header_size() -> u64 {
-    crate::with_gil_entry!(_py, {
-        std::mem::size_of::<MoltHeader>() as u64
-    })
+    crate::with_gil_entry!(_py, { std::mem::size_of::<MoltHeader>() as u64 })
 }
 
 #[no_mangle]
@@ -109,7 +107,11 @@ pub(crate) fn alloc_dict_with_pairs(_py: &PyToken<'_>, pairs: &[u64]) -> *mut u8
     ptr
 }
 
-pub(crate) fn alloc_set_like_with_entries(_py: &PyToken<'_>, entries: &[u64], type_id: u32) -> *mut u8 {
+pub(crate) fn alloc_set_like_with_entries(
+    _py: &PyToken<'_>,
+    entries: &[u64],
+    type_id: u32,
+) -> *mut u8 {
     let total = std::mem::size_of::<MoltHeader>()
         + std::mem::size_of::<*mut Vec<u64>>()
         + std::mem::size_of::<*mut Vec<usize>>();
@@ -389,7 +391,11 @@ pub unsafe extern "C" fn molt_set_builder_finish(builder_bits: u64) -> u64 {
 
 // --- Allocation helpers ---
 
-pub(crate) fn alloc_list_with_capacity(_py: &PyToken<'_>, elems: &[u64], capacity: usize) -> *mut u8 {
+pub(crate) fn alloc_list_with_capacity(
+    _py: &PyToken<'_>,
+    elems: &[u64],
+    capacity: usize,
+) -> *mut u8 {
     let cap = capacity.max(elems.len());
     let total = std::mem::size_of::<MoltHeader>()
         + std::mem::size_of::<*mut DataclassDesc>()
@@ -420,7 +426,11 @@ pub(crate) fn alloc_list(_py: &PyToken<'_>, elems: &[u64]) -> *mut u8 {
     alloc_list_with_capacity(_py, elems, cap)
 }
 
-pub(crate) fn alloc_tuple_with_capacity(_py: &PyToken<'_>, elems: &[u64], capacity: usize) -> *mut u8 {
+pub(crate) fn alloc_tuple_with_capacity(
+    _py: &PyToken<'_>,
+    elems: &[u64],
+    capacity: usize,
+) -> *mut u8 {
     let cap = capacity.max(elems.len());
     let total = std::mem::size_of::<MoltHeader>()
         + std::mem::size_of::<*mut Vec<u64>>()
@@ -464,7 +474,12 @@ pub(crate) fn alloc_range(_py: &PyToken<'_>, start: i64, stop: i64, step: i64) -
     ptr
 }
 
-pub(crate) fn alloc_slice_obj(_py: &PyToken<'_>, start_bits: u64, stop_bits: u64, step_bits: u64) -> *mut u8 {
+pub(crate) fn alloc_slice_obj(
+    _py: &PyToken<'_>,
+    start_bits: u64,
+    stop_bits: u64,
+    step_bits: u64,
+) -> *mut u8 {
     let total = std::mem::size_of::<MoltHeader>() + 3 * std::mem::size_of::<u64>();
     let ptr = alloc_object(_py, total, TYPE_ID_SLICE);
     if ptr.is_null() {
@@ -519,7 +534,8 @@ pub(crate) fn alloc_function_obj(_py: &PyToken<'_>, fn_ptr: u64, arity: u64) -> 
     ptr
 }
 
-pub(crate) fn alloc_code_obj(_py: &PyToken<'_>,
+pub(crate) fn alloc_code_obj(
+    _py: &PyToken<'_>,
     filename_bits: u64,
     name_bits: u64,
     firstlineno: i64,
@@ -641,7 +657,12 @@ pub(crate) fn alloc_staticmethod_obj(_py: &PyToken<'_>, func_bits: u64) -> *mut 
     ptr
 }
 
-pub(crate) fn alloc_property_obj(_py: &PyToken<'_>, get_bits: u64, set_bits: u64, del_bits: u64) -> *mut u8 {
+pub(crate) fn alloc_property_obj(
+    _py: &PyToken<'_>,
+    get_bits: u64,
+    set_bits: u64,
+    del_bits: u64,
+) -> *mut u8 {
     let total = std::mem::size_of::<MoltHeader>() + 3 * std::mem::size_of::<u64>();
     let ptr = alloc_object(_py, total, TYPE_ID_PROPERTY);
     if ptr.is_null() {
@@ -673,9 +694,7 @@ pub(crate) fn alloc_super_obj(_py: &PyToken<'_>, type_bits: u64, obj_bits: u64) 
     ptr
 }
 
-
 // Context stack helpers moved to runtime/molt-runtime/src/builtins/context.rs.
-
 
 // Frame stack helpers moved to runtime/molt-runtime/src/builtins/exceptions.rs.
 
@@ -729,7 +748,11 @@ pub(crate) fn alloc_bytearray(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
     alloc_bytearray_with_capacity(_py, bytes, cap)
 }
 
-pub(crate) fn alloc_bytearray_with_capacity(_py: &PyToken<'_>, bytes: &[u8], capacity: usize) -> *mut u8 {
+pub(crate) fn alloc_bytearray_with_capacity(
+    _py: &PyToken<'_>,
+    bytes: &[u8],
+    capacity: usize,
+) -> *mut u8 {
     let cap = capacity.max(bytes.len());
     let total = std::mem::size_of::<MoltHeader>()
         + std::mem::size_of::<*mut Vec<u8>>()
@@ -780,7 +803,8 @@ pub(crate) fn alloc_intarray(_py: &PyToken<'_>, values: &[i64]) -> *mut u8 {
     ptr
 }
 
-pub(crate) fn alloc_memoryview(_py: &PyToken<'_>,
+pub(crate) fn alloc_memoryview(
+    _py: &PyToken<'_>,
     owner_bits: u64,
     offset: isize,
     len: usize,
@@ -815,7 +839,8 @@ pub(crate) fn alloc_memoryview(_py: &PyToken<'_>,
     ptr
 }
 
-pub(crate) fn alloc_memoryview_shaped(_py: &PyToken<'_>,
+pub(crate) fn alloc_memoryview_shaped(
+    _py: &PyToken<'_>,
     owner_bits: u64,
     offset: isize,
     itemsize: usize,

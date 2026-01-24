@@ -1,6 +1,6 @@
+use crate::PyToken;
 use std::cmp::Ordering;
 use std::mem;
-use crate::PyToken;
 
 use molt_obj_model::MoltObject;
 use num_bigint::BigInt;
@@ -281,7 +281,8 @@ pub(crate) fn split_maxsplit_from_obj(_py: &PyToken<'_>, obj_bits: u64) -> i64 {
 }
 
 pub(crate) fn index_i64_with_overflow(
-    _py: &PyToken<'_>, obj_bits: u64,
+    _py: &PyToken<'_>,
+    obj_bits: u64,
     err: &str,
     overflow_err: Option<&str>,
 ) -> Option<i64> {

@@ -156,8 +156,11 @@ pub(crate) unsafe fn function_name_bits(_py: &PyToken<'_>, ptr: *mut u8) -> u64 
     if dict_bits != 0 {
         if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
             if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                let qual_bits =
-                    intern_static_name(_py, &runtime_state(_py).interned.qualname_name, b"__qualname__");
+                let qual_bits = intern_static_name(
+                    _py,
+                    &runtime_state(_py).interned.qualname_name,
+                    b"__qualname__",
+                );
                 if let Some(bits) = dict_get_in_place(_py, dict_ptr, qual_bits) {
                     return bits;
                 }

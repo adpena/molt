@@ -5,14 +5,14 @@ use std::sync::{Arc, Mutex};
 use molt_obj_model::MoltObject;
 use num_bigint::BigInt;
 
-pub(crate) mod buffer2d;
 pub(crate) mod accessors;
+pub(crate) mod buffer2d;
+pub(crate) mod builders;
 pub(crate) mod layout;
 pub(crate) mod memoryview;
+pub(crate) mod ops;
 pub(crate) mod type_ids;
 pub(crate) mod utf8_cache;
-pub(crate) mod ops;
-pub(crate) mod builders;
 
 #[allow(unused_imports)]
 pub(crate) use type_ids::*;
@@ -21,33 +21,31 @@ use crate::call::bind::callargs_drop;
 use crate::provenance::{register_ptr, release_ptr, resolve_ptr};
 use crate::{
     asyncgen_gen_bits, asyncgen_pending_bits, asyncgen_registry_remove, asyncgen_running_bits,
-    bytearray_data, bytearray_len, bytearray_vec_ptr,
-    bound_method_func_bits, bound_method_self_bits, call_iter_callable_bits, call_iter_sentinel_bits,
-    callargs_ptr, classmethod_func_bits, code_filename_bits, code_linetable_bits,
-    code_name_bits, context_payload_bits, dict_order_ptr, dict_table_ptr, dict_view_dict_bits,
+    bound_method_func_bits, bound_method_self_bits, bytearray_data, bytearray_len,
+    bytearray_vec_ptr, call_iter_callable_bits, call_iter_sentinel_bits, callargs_ptr,
+    classmethod_func_bits, code_filename_bits, code_linetable_bits, code_name_bits,
+    context_payload_bits, dict_order_ptr, dict_table_ptr, dict_view_dict_bits,
     enumerate_index_bits, enumerate_target_bits, exception_args_bits, exception_cause_bits,
-    exception_class_bits, exception_context_bits, exception_kind_bits,
-    exception_msg_bits, exception_suppress_bits, exception_trace_bits, exception_value_bits,
-    generator_exception_stack_drop,
-    filter_func_bits, filter_iter_bits, function_annotate_bits, function_annotations_bits,
-    function_closure_bits, function_code_bits, function_dict_bits, generic_alias_args_bits,
-    generic_alias_origin_bits, io_wait_poll_fn_addr, io_wait_release_socket,
-    iter_target_bits, map_func_bits, map_iters_ptr, module_dict_bits, module_name_bits,
-    process_poll_fn_addr, process_task_drop, profile_hit, property_del_bits, property_get_bits,
-    property_set_bits, reversed_target_bits, runtime_state, seq_vec_ptr, set_order_ptr,
-    set_table_ptr, slice_start_bits, slice_step_bits, slice_stop_bits, staticmethod_func_bits,
-    task_cancel_message_clear, thread_poll_fn_addr, thread_task_drop, utf8_cache_remove,
-    zip_iters_ptr, ALLOC_COUNT, GEN_CLOSED_OFFSET, GEN_EXC_DEPTH_OFFSET, GEN_SEND_OFFSET,
-    GEN_THROW_OFFSET, TYPE_ID_ASYNC_GENERATOR, TYPE_ID_BIGINT, TYPE_ID_BOUND_METHOD, TYPE_ID_BUFFER2D,
-    TYPE_ID_CALLARGS, TYPE_ID_CALL_ITER, TYPE_ID_CLASSMETHOD, TYPE_ID_CODE,
-    TYPE_ID_CONTEXT_MANAGER, TYPE_ID_DATACLASS, TYPE_ID_DICT,
-    TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW, TYPE_ID_DICT_VALUES_VIEW, TYPE_ID_ENUMERATE,
-    TYPE_ID_EXCEPTION, TYPE_ID_FILE_HANDLE, TYPE_ID_FILTER, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION,
-    TYPE_ID_GENERIC_ALIAS, TYPE_ID_GENERATOR, TYPE_ID_ITER, TYPE_ID_LIST, TYPE_ID_MAP,
-    TYPE_ID_MEMORYVIEW, TYPE_ID_MODULE,
+    exception_class_bits, exception_context_bits, exception_kind_bits, exception_msg_bits,
+    exception_suppress_bits, exception_trace_bits, exception_value_bits, filter_func_bits,
+    filter_iter_bits, function_annotate_bits, function_annotations_bits, function_closure_bits,
+    function_code_bits, function_dict_bits, generator_exception_stack_drop,
+    generic_alias_args_bits, generic_alias_origin_bits, io_wait_poll_fn_addr,
+    io_wait_release_socket, iter_target_bits, map_func_bits, map_iters_ptr, module_dict_bits,
+    module_name_bits, process_poll_fn_addr, process_task_drop, profile_hit, property_del_bits,
+    property_get_bits, property_set_bits, reversed_target_bits, runtime_state, seq_vec_ptr,
+    set_order_ptr, set_table_ptr, slice_start_bits, slice_step_bits, slice_stop_bits,
+    staticmethod_func_bits, task_cancel_message_clear, thread_poll_fn_addr, thread_task_drop,
+    utf8_cache_remove, zip_iters_ptr, PyToken, ALLOC_COUNT, GEN_CLOSED_OFFSET,
+    GEN_EXC_DEPTH_OFFSET, GEN_SEND_OFFSET, GEN_THROW_OFFSET, TYPE_ID_ASYNC_GENERATOR,
+    TYPE_ID_BIGINT, TYPE_ID_BOUND_METHOD, TYPE_ID_BUFFER2D, TYPE_ID_BYTEARRAY, TYPE_ID_CALLARGS,
+    TYPE_ID_CALL_ITER, TYPE_ID_CLASSMETHOD, TYPE_ID_CODE, TYPE_ID_CONTEXT_MANAGER,
+    TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW,
+    TYPE_ID_DICT_VALUES_VIEW, TYPE_ID_ENUMERATE, TYPE_ID_EXCEPTION, TYPE_ID_FILE_HANDLE,
+    TYPE_ID_FILTER, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_GENERATOR, TYPE_ID_GENERIC_ALIAS,
+    TYPE_ID_ITER, TYPE_ID_LIST, TYPE_ID_MAP, TYPE_ID_MEMORYVIEW, TYPE_ID_MODULE,
     TYPE_ID_NOT_IMPLEMENTED, TYPE_ID_OBJECT, TYPE_ID_PROPERTY, TYPE_ID_REVERSED, TYPE_ID_SET,
-    TYPE_ID_SLICE, TYPE_ID_STATICMETHOD, TYPE_ID_STRING, TYPE_ID_BYTEARRAY, TYPE_ID_TUPLE,
-    TYPE_ID_ZIP, PyToken,
+    TYPE_ID_SLICE, TYPE_ID_STATICMETHOD, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_ZIP,
 };
 
 #[repr(C)]
@@ -265,7 +263,8 @@ fn object_pool_put(_py: &PyToken<'_>, total_size: usize, header_ptr: *mut u8) ->
     true
 }
 
-pub(crate) fn alloc_object_zeroed_with_pool(_py: &PyToken<'_>,
+pub(crate) fn alloc_object_zeroed_with_pool(
+    _py: &PyToken<'_>,
     total_size: usize,
     type_id: u32,
 ) -> *mut u8 {
@@ -573,7 +572,6 @@ pub(crate) fn bits_from_ptr(ptr: *mut u8) -> u64 {
 /// Dereferences raw pointer to increment ref count.
 #[no_mangle]
 pub unsafe extern "C" fn molt_inc_ref(ptr: *mut u8) {
-
     crate::with_gil_entry!(_py, {
         inc_ref_ptr(_py, ptr);
     })
@@ -583,7 +581,6 @@ pub unsafe extern "C" fn molt_inc_ref(ptr: *mut u8) {
 /// Dereferences raw pointer to decrement ref count. Frees memory if count reaches 0.
 #[no_mangle]
 pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
-
     crate::with_gil_entry!(_py, {
         dec_ref_ptr(_py, ptr);
     })

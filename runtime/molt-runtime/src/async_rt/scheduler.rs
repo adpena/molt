@@ -1,11 +1,11 @@
+use crate::PyToken;
 use std::cell::Cell;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
-use crate::PyToken;
 
 use crossbeam_deque::{Injector, Stealer, Worker};
 
@@ -16,11 +16,12 @@ use crate::{
     header_from_obj_ptr, inc_ref_bits, io_wait_poll_fn_addr, obj_from_bits, pending_bits_i64,
     process_poll_fn_addr, profile_hit, ptr_from_bits, raise_exception, resolve_task_ptr,
     runtime_state, set_task_raise_active, task_exception_depth_store, task_exception_depth_take,
-    task_exception_handler_stack_store, task_exception_handler_stack_take, task_exception_stack_store,
-    task_exception_stack_take, task_raise_active, thread_poll_fn_addr, to_i64, with_gil, GilGuard,
-    MoltHeader, MoltObject, ProcessTaskState, PtrSlot, ThreadTaskState, ACTIVE_EXCEPTION_STACK,
-    ASYNCGEN_REGISTRY, ASYNC_PENDING_COUNT, ASYNC_POLL_COUNT, ASYNC_SLEEP_REGISTER_COUNT,
-    ASYNC_WAKEUP_COUNT, EXCEPTION_STACK, FN_PTR_CODE, HEADER_FLAG_SPAWN_RETAIN,
+    task_exception_handler_stack_store, task_exception_handler_stack_take,
+    task_exception_stack_store, task_exception_stack_take, task_raise_active, thread_poll_fn_addr,
+    to_i64, with_gil, GilGuard, MoltHeader, MoltObject, ProcessTaskState, PtrSlot, ThreadTaskState,
+    ACTIVE_EXCEPTION_STACK, ASYNCGEN_REGISTRY, ASYNC_PENDING_COUNT, ASYNC_POLL_COUNT,
+    ASYNC_SLEEP_REGISTER_COUNT, ASYNC_WAKEUP_COUNT, EXCEPTION_STACK, FN_PTR_CODE,
+    HEADER_FLAG_SPAWN_RETAIN,
 };
 
 use super::cancellation::{
@@ -62,6 +63,15 @@ pub(crate) fn async_hang_probe(_py: &PyToken<'_>) -> Option<&'static AsyncHangPr
             Some(AsyncHangProbe::new(threshold))
         })
         .as_ref()
+}
+
+pub(crate) fn async_trace_enabled() -> bool {
+    static TRACE: OnceLock<bool> = OnceLock::new();
+    *TRACE.get_or_init(|| {
+        let value = std::env::var("MOLT_ASYNC_TRACE").unwrap_or_default();
+        let trimmed = value.trim().to_ascii_lowercase();
+        !trimmed.is_empty() && trimmed != "0" && trimmed != "false"
+    })
 }
 
 thread_local! {
@@ -130,15 +140,11 @@ pub(crate) fn fn_ptr_code_get(fn_ptr: u64) -> u64 {
     guard.get(&fn_ptr).copied().unwrap_or(0)
 }
 
-pub(crate) fn task_exception_depths(
-    _py: &PyToken<'_>,
-) -> &'static Mutex<HashMap<PtrSlot, usize>> {
+pub(crate) fn task_exception_depths(_py: &PyToken<'_>) -> &'static Mutex<HashMap<PtrSlot, usize>> {
     &runtime_state(_py).task_exception_depths
 }
 
-pub(crate) fn task_last_exceptions(
-    _py: &PyToken<'_>,
-) -> &'static Mutex<HashMap<PtrSlot, PtrSlot>> {
+pub(crate) fn task_last_exceptions(_py: &PyToken<'_>) -> &'static Mutex<HashMap<PtrSlot, PtrSlot>> {
     &runtime_state(_py).task_last_exceptions
 }
 
@@ -157,13 +163,15 @@ pub(crate) fn current_task_key() -> Option<PtrSlot> {
     })
 }
 
-pub(crate) fn await_waiter_register(
-    _py: &PyToken<'_>,
-    waiter_ptr: *mut u8,
-    awaited_ptr: *mut u8,
-) {
+pub(crate) fn await_waiter_register(_py: &PyToken<'_>, waiter_ptr: *mut u8, awaited_ptr: *mut u8) {
     if waiter_ptr.is_null() || awaited_ptr.is_null() {
         return;
+    }
+    if async_trace_enabled() {
+        eprintln!(
+            "molt async trace: await_register waiter=0x{:x} awaited=0x{:x}",
+            waiter_ptr as usize, awaited_ptr as usize
+        );
     }
     let waiter_key = PtrSlot(waiter_ptr);
     let awaited_key = PtrSlot(awaited_ptr);
@@ -191,6 +199,12 @@ pub(crate) fn await_waiter_clear(_py: &PyToken<'_>, waiter_ptr: *mut u8) {
     if waiter_ptr.is_null() {
         return;
     }
+    if async_trace_enabled() {
+        eprintln!(
+            "molt async trace: await_clear waiter=0x{:x}",
+            waiter_ptr as usize
+        );
+    }
     let waiter_key = PtrSlot(waiter_ptr);
     let mut waiting_map = task_waiting_on(_py).lock().unwrap();
     let awaited_key = waiting_map.remove(&waiter_key);
@@ -209,10 +223,7 @@ pub(crate) fn await_waiter_clear(_py: &PyToken<'_>, waiter_ptr: *mut u8) {
     }
 }
 
-pub(crate) fn await_waiters_take(
-    _py: &PyToken<'_>,
-    awaited_ptr: *mut u8,
-) -> Vec<PtrSlot> {
+pub(crate) fn await_waiters_take(_py: &PyToken<'_>, awaited_ptr: *mut u8) -> Vec<PtrSlot> {
     if awaited_ptr.is_null() {
         return Vec::new();
     }
@@ -320,10 +331,7 @@ pub(crate) fn task_waiting_on_event(_py: &PyToken<'_>, task_ptr: *mut u8) -> boo
     }
 }
 
-pub(crate) fn task_waiting_on_future(
-    _py: &PyToken<'_>,
-    task_ptr: *mut u8,
-) -> Option<*mut u8> {
+pub(crate) fn task_waiting_on_future(_py: &PyToken<'_>, task_ptr: *mut u8) -> Option<*mut u8> {
     if task_ptr.is_null() {
         return None;
     }
@@ -397,12 +405,7 @@ pub(crate) fn block_on_wait_event(
     }
 }
 
-pub(crate) fn record_async_poll(
-    _py: &PyToken<'_>,
-    task_ptr: *mut u8,
-    pending: bool,
-    site: &str,
-) {
+pub(crate) fn record_async_poll(_py: &PyToken<'_>, task_ptr: *mut u8, pending: bool, site: &str) {
     profile_hit(_py, &ASYNC_POLL_COUNT);
     if pending {
         profile_hit(_py, &ASYNC_PENDING_COUNT);
@@ -545,6 +548,15 @@ impl SleepQueue {
             task_ptr: PtrSlot(task_ptr),
             gen,
         });
+        if async_trace_enabled() {
+            let delay = deadline.saturating_duration_since(Instant::now());
+            eprintln!(
+                "molt async trace: sleep_register task=0x{:x} delay_ms={} gen={}",
+                task_ptr as usize,
+                delay.as_secs_f64() * 1000.0,
+                gen
+            );
+        }
         self.cv.notify_one();
     }
 
@@ -560,6 +572,14 @@ impl SleepQueue {
         }
         profile_hit(_py, &ASYNC_SLEEP_REGISTER_COUNT);
         guard.blocking.insert(PtrSlot(task_ptr), deadline);
+        if async_trace_enabled() {
+            let delay = deadline.saturating_duration_since(Instant::now());
+            eprintln!(
+                "molt async trace: sleep_register_blocking task=0x{:x} delay_ms={}",
+                task_ptr as usize,
+                delay.as_secs_f64() * 1000.0
+            );
+        }
     }
 
     pub(crate) fn cancel_task(&self, _py: &PyToken<'_>, task_ptr: *mut u8) {
@@ -654,6 +674,12 @@ pub(crate) fn sleep_worker(queue: Arc<SleepQueue>) {
         let gil = GilGuard::new();
         let py = gil.token();
         profile_hit(&py, &ASYNC_WAKEUP_COUNT);
+        if async_trace_enabled() {
+            eprintln!(
+                "molt async trace: sleep_wakeup task=0x{:x}",
+                task_ptr as usize
+            );
+        }
         runtime_state(&py).scheduler().enqueue(MoltTask {
             future_ptr: task_ptr,
         });
@@ -954,9 +980,16 @@ impl MoltScheduler {
                     exception_stack_set_depth(_py, caller_depth);
                     exception_context_fallback_pop();
                     if pending {
-                        if !task_waiting_on_event(_py, task_ptr)
-                            && !runtime_state(_py).sleep_queue().is_scheduled(_py, task_ptr)
-                        {
+                        let waiting_on_event = task_waiting_on_event(_py, task_ptr);
+                        let scheduled =
+                            runtime_state(_py).sleep_queue().is_scheduled(_py, task_ptr);
+                        if async_trace_enabled() {
+                            eprintln!(
+                                "molt async trace: poll_pending task=0x{:x} waiting_on_event={} scheduled={}",
+                                task_ptr as usize, waiting_on_event, scheduled
+                            );
+                        }
+                        if !waiting_on_event && !scheduled {
                             injector.push(task);
                         }
                     } else {
@@ -1001,21 +1034,20 @@ pub(crate) fn is_block_on_task(task_ptr: *mut u8) -> bool {
 #[no_mangle]
 pub unsafe extern "C" fn molt_spawn(task_bits: u64) {
     crate::with_gil_entry!(_py, {
-    let Some(task_ptr) = resolve_task_ptr(task_bits) else {
-        return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
-    };
-    cancel_tokens(_py);
-    let token = current_token_id();
-    register_task_token(_py, task_ptr, token);
-    let header = task_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
-    if ((*header).flags & HEADER_FLAG_SPAWN_RETAIN) == 0 {
-        (*header).flags |= HEADER_FLAG_SPAWN_RETAIN;
-        inc_ref_bits(_py, MoltObject::from_ptr(task_ptr).bits());
-    }
-    runtime_state(_py).scheduler().enqueue(MoltTask {
-        future_ptr: task_ptr,
-    });
-
+        let Some(task_ptr) = resolve_task_ptr(task_bits) else {
+            return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
+        };
+        cancel_tokens(_py);
+        let token = current_token_id();
+        register_task_token(_py, task_ptr, token);
+        let header = task_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
+        if ((*header).flags & HEADER_FLAG_SPAWN_RETAIN) == 0 {
+            (*header).flags |= HEADER_FLAG_SPAWN_RETAIN;
+            inc_ref_bits(_py, MoltObject::from_ptr(task_ptr).bits());
+        }
+        runtime_state(_py).scheduler().enqueue(MoltTask {
+            future_ptr: task_ptr,
+        });
     })
 }
 
@@ -1024,96 +1056,97 @@ pub unsafe extern "C" fn molt_spawn(task_bits: u64) {
 #[no_mangle]
 pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
     crate::with_gil_entry!(_py, {
-    let Some(task_ptr) = resolve_task_ptr(task_bits) else {
-        return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
-    };
-    cancel_tokens(_py);
-    let header = task_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
-    let poll_fn_addr = (*header).poll_fn;
-    if poll_fn_addr == 0 {
-        return 0;
-    }
-    let prev_task = CURRENT_TASK.with(|cell| {
-        let prev = cell.get();
-        cell.set(task_ptr);
-        prev
-    });
-    let token = ensure_task_token(_py, task_ptr, current_token_id());
-    let prev_token = set_current_token(_py, token);
-    let caller_depth = exception_stack_depth();
-    let caller_handlers = EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
-    let caller_active =
-        ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
-    let caller_context = caller_active
-        .last()
-        .copied()
-        .unwrap_or(MoltObject::none().bits());
-    exception_context_fallback_push(caller_context);
-    let task_handlers = task_exception_handler_stack_take(_py, task_ptr);
-    EXCEPTION_STACK.with(|stack| {
-        *stack.borrow_mut() = task_handlers;
-    });
-    let task_active = task_exception_stack_take(_py, task_ptr);
-    ACTIVE_EXCEPTION_STACK.with(|stack| {
-        *stack.borrow_mut() = task_active;
-    });
-    let task_depth = task_exception_depth_take(_py, task_ptr);
-    exception_stack_set_depth(_py, task_depth);
-    BLOCK_ON_TASK.with(|cell| cell.set(task_ptr));
-    let prev_raise = task_raise_active();
-    set_task_raise_active(true);
-    let result = loop {
-        let mut res = {
-            let _gil = GilGuard::new();
-            call_poll_fn(_py, poll_fn_addr, task_ptr)
+        let Some(task_ptr) = resolve_task_ptr(task_bits) else {
+            return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
         };
-        if task_cancel_pending(task_ptr) {
-            task_take_cancel_pending(task_ptr);
-            res = raise_cancelled_with_message::<i64>(_py, task_ptr);
+        cancel_tokens(_py);
+        let header = task_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
+        let poll_fn_addr = (*header).poll_fn;
+        if poll_fn_addr == 0 {
+            return 0;
         }
-        let pending = res == pending_bits_i64();
-        record_async_poll(_py, task_ptr, pending, "block_on");
-        if pending {
-            let deadline = runtime_state(_py)
-                .sleep_queue()
-                .take_blocking_deadline(_py, task_ptr);
-            if let Some(awaited_ptr) = task_waiting_on_future(_py, task_ptr) {
-                if block_on_wait_event(_py, awaited_ptr, deadline) {
-                    continue;
-                }
+        let prev_task = CURRENT_TASK.with(|cell| {
+            let prev = cell.get();
+            cell.set(task_ptr);
+            prev
+        });
+        let token = ensure_task_token(_py, task_ptr, current_token_id());
+        let prev_token = set_current_token(_py, token);
+        let caller_depth = exception_stack_depth();
+        let caller_handlers =
+            EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
+        let caller_active =
+            ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
+        let caller_context = caller_active
+            .last()
+            .copied()
+            .unwrap_or(MoltObject::none().bits());
+        exception_context_fallback_push(caller_context);
+        let task_handlers = task_exception_handler_stack_take(_py, task_ptr);
+        EXCEPTION_STACK.with(|stack| {
+            *stack.borrow_mut() = task_handlers;
+        });
+        let task_active = task_exception_stack_take(_py, task_ptr);
+        ACTIVE_EXCEPTION_STACK.with(|stack| {
+            *stack.borrow_mut() = task_active;
+        });
+        let task_depth = task_exception_depth_take(_py, task_ptr);
+        exception_stack_set_depth(_py, task_depth);
+        BLOCK_ON_TASK.with(|cell| cell.set(task_ptr));
+        let prev_raise = task_raise_active();
+        set_task_raise_active(true);
+        let result = loop {
+            let mut res = {
+                let _gil = GilGuard::new();
+                call_poll_fn(_py, poll_fn_addr, task_ptr)
+            };
+            if task_cancel_pending(task_ptr) {
+                task_take_cancel_pending(task_ptr);
+                res = raise_cancelled_with_message::<i64>(_py, task_ptr);
             }
-            if let Some(deadline) = deadline {
-                let now = Instant::now();
-                if deadline > now {
-                    std::thread::sleep(deadline - now);
+            let pending = res == pending_bits_i64();
+            record_async_poll(_py, task_ptr, pending, "block_on");
+            if pending {
+                let deadline = runtime_state(_py)
+                    .sleep_queue()
+                    .take_blocking_deadline(_py, task_ptr);
+                if let Some(awaited_ptr) = task_waiting_on_future(_py, task_ptr) {
+                    if block_on_wait_event(_py, awaited_ptr, deadline) {
+                        continue;
+                    }
                 }
-            } else {
-                std::thread::sleep(Duration::from_micros(50));
+                if let Some(deadline) = deadline {
+                    let now = Instant::now();
+                    if deadline > now {
+                        std::thread::sleep(deadline - now);
+                    }
+                } else {
+                    std::thread::sleep(Duration::from_micros(50));
+                }
+                continue;
             }
-            continue;
-        }
-        break res;
-    };
-    let new_depth = exception_stack_depth();
-    task_exception_depth_store(_py, task_ptr, new_depth);
-    exception_context_align_depth(_py, new_depth);
-    let task_handlers = EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
-    task_exception_handler_stack_store(_py, task_ptr, task_handlers);
-    let task_active = ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
-    task_exception_stack_store(_py, task_ptr, task_active);
-    ACTIVE_EXCEPTION_STACK.with(|stack| {
-        *stack.borrow_mut() = caller_active;
-    });
-    EXCEPTION_STACK.with(|stack| {
-        *stack.borrow_mut() = caller_handlers;
-    });
-    exception_stack_set_depth(_py, caller_depth);
-    exception_context_fallback_pop();
-    BLOCK_ON_TASK.with(|cell| cell.set(std::ptr::null_mut()));
-    set_task_raise_active(prev_raise);
-    set_current_token(_py, prev_token);
-    CURRENT_TASK.with(|cell| cell.set(prev_task));
-    result
-
+            break res;
+        };
+        let new_depth = exception_stack_depth();
+        task_exception_depth_store(_py, task_ptr, new_depth);
+        exception_context_align_depth(_py, new_depth);
+        let task_handlers = EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
+        task_exception_handler_stack_store(_py, task_ptr, task_handlers);
+        let task_active =
+            ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
+        task_exception_stack_store(_py, task_ptr, task_active);
+        ACTIVE_EXCEPTION_STACK.with(|stack| {
+            *stack.borrow_mut() = caller_active;
+        });
+        EXCEPTION_STACK.with(|stack| {
+            *stack.borrow_mut() = caller_handlers;
+        });
+        exception_stack_set_depth(_py, caller_depth);
+        exception_context_fallback_pop();
+        BLOCK_ON_TASK.with(|cell| cell.set(std::ptr::null_mut()));
+        set_task_raise_active(prev_raise);
+        set_current_token(_py, prev_token);
+        CURRENT_TASK.with(|cell| cell.set(prev_task));
+        result
     })
 }

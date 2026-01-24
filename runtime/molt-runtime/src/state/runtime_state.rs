@@ -6,12 +6,12 @@ use std::time::Instant;
 
 use super::{runtime_reset_for_init, runtime_teardown, touch_tls_guard};
 
+use crate::object::utf8_cache::{build_utf8_count_cache, Utf8CacheStore, Utf8CountCacheStore};
 use crate::{
     default_cancel_tokens, sleep_worker, AsyncHangProbe, BuiltinClasses, CancelTokenEntry,
     GilGuard, HashSecret, InternedNames, IoPoller, MethodCache, MoltScheduler, ProcessTaskState,
     PtrSlot, PyToken, SleepQueue, ThreadPool, ThreadTaskState, OBJECT_POOL_BUCKETS,
 };
-use crate::object::utf8_cache::{build_utf8_count_cache, Utf8CacheStore, Utf8CountCacheStore};
 
 pub(crate) struct SpecialCache {
     pub(crate) open_default_mode: AtomicU64,

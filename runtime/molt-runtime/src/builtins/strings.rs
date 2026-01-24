@@ -1,10 +1,10 @@
+use crate::PyToken;
 use memchr::{memchr, memmem};
 use molt_obj_model::MoltObject;
-use crate::PyToken;
 
 use crate::{
     alloc_bytes, alloc_list_with_capacity, alloc_string, dec_ref_bits, inc_ref_bits, obj_from_bits,
-    object_type_id, seq_vec, string_bytes, utf8_codepoint_count_cached, usize_from_bits,
+    object_type_id, seq_vec, string_bytes, usize_from_bits, utf8_codepoint_count_cached,
     MAX_SMALL_LIST, TYPE_ID_STRING,
 };
 
@@ -406,7 +406,8 @@ pub(crate) fn replace_string_impl(
         }
         let hay_str = unsafe { std::str::from_utf8_unchecked(hay_bytes) };
         let replacement_str = unsafe { std::str::from_utf8_unchecked(replacement_bytes) };
-        let codepoints = utf8_codepoint_count_cached(_py, hay_bytes, Some(hay_ptr as usize)) as usize;
+        let codepoints =
+            utf8_codepoint_count_cached(_py, hay_bytes, Some(hay_ptr as usize)) as usize;
         let mut out =
             String::with_capacity(hay_str.len() + replacement_str.len() * (codepoints + 1));
         out.push_str(replacement_str);
@@ -469,7 +470,8 @@ fn split_cache_store(cache: &mut Vec<SplitTokenCacheEntry>, bits: u64, len: usiz
     cache.push(SplitTokenCacheEntry { bits, len });
 }
 
-fn split_string_push_part(_py: &PyToken<'_>,
+fn split_string_push_part(
+    _py: &PyToken<'_>,
     cache: &mut Vec<SplitTokenCacheEntry>,
     list_ptr: *mut u8,
     list_bits: u64,
@@ -544,7 +546,8 @@ fn split_string_bytes_to_list(_py: &PyToken<'_>, hay: &[u8], needle: &[u8]) -> O
 }
 
 pub(crate) fn split_string_bytes_to_list_maxsplit(
-    _py: &PyToken<'_>, hay: &[u8],
+    _py: &PyToken<'_>,
+    hay: &[u8],
     needle: &[u8],
     maxsplit: i64,
 ) -> Option<u64> {
@@ -681,7 +684,7 @@ where
 {
     if needle.len() == 1 {
         let count = memchr::memchr_iter(needle[0], hay).count();
-        let list_ptr = alloc_list_empty_with_capacity(_py,  count + 1);
+        let list_ptr = alloc_list_empty_with_capacity(_py, count + 1);
         if list_ptr.is_null() {
             return None;
         }
@@ -715,7 +718,7 @@ where
     for idx in finder.find_iter(hay) {
         indices.push(idx);
     }
-    let list_ptr = alloc_list_empty_with_capacity(_py,  indices.len() + 1);
+    let list_ptr = alloc_list_empty_with_capacity(_py, indices.len() + 1);
     if list_ptr.is_null() {
         return None;
     }
@@ -834,7 +837,8 @@ where
 }
 
 pub(crate) fn rsplit_bytes_to_list_maxsplit<F>(
-    _py: &PyToken<'_>, hay: &[u8],
+    _py: &PyToken<'_>,
+    hay: &[u8],
     needle: &[u8],
     maxsplit: i64,
     mut alloc: F,
@@ -933,7 +937,8 @@ where
 }
 
 pub(crate) fn split_bytes_whitespace_to_list_maxsplit<F>(
-    _py: &PyToken<'_>, hay: &[u8],
+    _py: &PyToken<'_>,
+    hay: &[u8],
     maxsplit: i64,
     mut alloc: F,
 ) -> Option<u64>
@@ -1016,7 +1021,8 @@ where
 }
 
 pub(crate) fn rsplit_bytes_whitespace_to_list_maxsplit<F>(
-    _py: &PyToken<'_>, hay: &[u8],
+    _py: &PyToken<'_>,
+    hay: &[u8],
     maxsplit: i64,
     mut alloc: F,
 ) -> Option<u64>
@@ -1100,7 +1106,12 @@ fn is_linebreak_byte(byte: u8) -> bool {
     matches!(byte, b'\n' | b'\r')
 }
 
-pub(crate) fn splitlines_bytes_to_list<F>(_py: &PyToken<'_>, hay: &[u8], keepends: bool, mut alloc: F) -> Option<u64>
+pub(crate) fn splitlines_bytes_to_list<F>(
+    _py: &PyToken<'_>,
+    hay: &[u8],
+    keepends: bool,
+    mut alloc: F,
+) -> Option<u64>
 where
     F: FnMut(&[u8]) -> *mut u8,
 {
@@ -1174,7 +1185,11 @@ fn split_string_whitespace_to_list(_py: &PyToken<'_>, hay: &[u8]) -> Option<u64>
     Some(list_bits)
 }
 
-pub(crate) fn split_string_whitespace_to_list_maxsplit(_py: &PyToken<'_>, hay: &str, maxsplit: i64) -> Option<u64> {
+pub(crate) fn split_string_whitespace_to_list_maxsplit(
+    _py: &PyToken<'_>,
+    hay: &str,
+    maxsplit: i64,
+) -> Option<u64> {
     if maxsplit < 0 {
         return split_string_whitespace_to_list(_py, hay.as_bytes());
     }
@@ -1267,7 +1282,11 @@ pub(crate) fn split_string_whitespace_to_list_maxsplit(_py: &PyToken<'_>, hay: &
     Some(list_bits)
 }
 
-pub(crate) fn rsplit_string_whitespace_to_list_maxsplit(_py: &PyToken<'_>, hay: &str, maxsplit: i64) -> Option<u64> {
+pub(crate) fn rsplit_string_whitespace_to_list_maxsplit(
+    _py: &PyToken<'_>,
+    hay: &str,
+    maxsplit: i64,
+) -> Option<u64> {
     if maxsplit < 0 {
         return split_string_whitespace_to_list(_py, hay.as_bytes());
     }
@@ -1400,7 +1419,11 @@ fn is_linebreak_char(ch: char) -> bool {
     )
 }
 
-pub(crate) fn splitlines_string_to_list(_py: &PyToken<'_>, hay_str: &str, keepends: bool) -> Option<u64> {
+pub(crate) fn splitlines_string_to_list(
+    _py: &PyToken<'_>,
+    hay_str: &str,
+    keepends: bool,
+) -> Option<u64> {
     let list_ptr = alloc_list_empty_with_capacity(_py, 4);
     if list_ptr.is_null() {
         return None;
@@ -1467,24 +1490,23 @@ pub unsafe extern "C" fn molt_string_from_bytes(
     out: *mut u64,
 ) -> i32 {
     crate::with_gil_entry!(_py, {
-    let len = usize_from_bits(len_bits);
-    if out.is_null() {
-        return 2;
-    }
-    if ptr.is_null() && len != 0 {
-        return 1;
-    }
-    let slice = std::slice::from_raw_parts(ptr, len);
-    if std::str::from_utf8(slice).is_err() {
-        return 1;
-    }
-    let obj_ptr = alloc_string(_py, slice);
-    if obj_ptr.is_null() {
-        return 2;
-    }
-    *out = MoltObject::from_ptr(obj_ptr).bits();
-    0
-
+        let len = usize_from_bits(len_bits);
+        if out.is_null() {
+            return 2;
+        }
+        if ptr.is_null() && len != 0 {
+            return 1;
+        }
+        let slice = std::slice::from_raw_parts(ptr, len);
+        if std::str::from_utf8(slice).is_err() {
+            return 1;
+        }
+        let obj_ptr = alloc_string(_py, slice);
+        if obj_ptr.is_null() {
+            return 2;
+        }
+        *out = MoltObject::from_ptr(obj_ptr).bits();
+        0
     })
 }
 
@@ -1497,20 +1519,19 @@ pub unsafe extern "C" fn molt_bytes_from_bytes(
     out: *mut u64,
 ) -> i32 {
     crate::with_gil_entry!(_py, {
-    let len = usize_from_bits(len_bits);
-    if out.is_null() {
-        return 2;
-    }
-    if ptr.is_null() && len != 0 {
-        return 1;
-    }
-    let slice = std::slice::from_raw_parts(ptr, len);
-    let obj_ptr = alloc_bytes(_py, slice);
-    if obj_ptr.is_null() {
-        return 2;
-    }
-    *out = MoltObject::from_ptr(obj_ptr).bits();
-    0
-
+        let len = usize_from_bits(len_bits);
+        if out.is_null() {
+            return 2;
+        }
+        if ptr.is_null() && len != 0 {
+            return 1;
+        }
+        let slice = std::slice::from_raw_parts(ptr, len);
+        let obj_ptr = alloc_bytes(_py, slice);
+        if obj_ptr.is_null() {
+            return 2;
+        }
+        *out = MoltObject::from_ptr(obj_ptr).bits();
+        0
     })
 }

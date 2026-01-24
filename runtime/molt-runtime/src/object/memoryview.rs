@@ -316,7 +316,8 @@ pub(crate) unsafe fn memoryview_collect_bytes(ptr: *mut u8) -> Option<Vec<u8>> {
 }
 
 pub(crate) unsafe fn memoryview_read_scalar(
-    _py: &PyToken<'_>, data: &[u8],
+    _py: &PyToken<'_>,
+    data: &[u8],
     offset: isize,
     fmt: MemoryViewFormat,
 ) -> Option<u64> {
@@ -395,7 +396,8 @@ pub(crate) unsafe fn memoryview_read_scalar(
 }
 
 pub(crate) unsafe fn memoryview_write_scalar(
-    _py: &PyToken<'_>, data: &mut [u8],
+    _py: &PyToken<'_>,
+    data: &mut [u8],
     offset: isize,
     fmt: MemoryViewFormat,
     val_bits: u64,
@@ -411,14 +413,16 @@ pub(crate) unsafe fn memoryview_write_scalar(
         MemoryViewFormatKind::Char => {
             let val_obj = obj_from_bits(val_bits);
             let Some(ptr) = val_obj.as_ptr() else {
-                crate::raise_exception::<u64>(_py,
+                crate::raise_exception::<u64>(
+                    _py,
                     "TypeError",
                     &format!("memoryview: invalid type for format '{}'", fmt.code as char),
                 );
                 return None;
             };
             if object_type_id(ptr) != TYPE_ID_BYTES {
-                crate::raise_exception::<u64>(_py,
+                crate::raise_exception::<u64>(
+                    _py,
                     "TypeError",
                     &format!("memoryview: invalid type for format '{}'", fmt.code as char),
                 );
@@ -426,7 +430,8 @@ pub(crate) unsafe fn memoryview_write_scalar(
             }
             let bytes = bytes_like_slice_raw(ptr).unwrap_or(&[]);
             if bytes.len() != 1 {
-                crate::raise_exception::<u64>(_py,
+                crate::raise_exception::<u64>(
+                    _py,
                     "ValueError",
                     &format!(
                         "memoryview: invalid value for format '{}'",
@@ -439,12 +444,17 @@ pub(crate) unsafe fn memoryview_write_scalar(
             Some(())
         }
         MemoryViewFormatKind::Bool => {
-            data[offset] = if is_truthy(obj_from_bits(val_bits)) { 1 } else { 0 };
+            data[offset] = if is_truthy(obj_from_bits(val_bits)) {
+                1
+            } else {
+                0
+            };
             Some(())
         }
         MemoryViewFormatKind::Float => {
             let Some(val) = to_f64(obj_from_bits(val_bits)) else {
-                crate::raise_exception::<u64>(_py,
+                crate::raise_exception::<u64>(
+                    _py,
                     "TypeError",
                     &format!("memoryview: invalid type for format '{}'", fmt.code as char),
                 );
@@ -473,7 +483,8 @@ pub(crate) unsafe fn memoryview_write_scalar(
                 (BigInt::from(0u8), (BigInt::from(1u64) << bits) - 1)
             };
             if value < min || value > max {
-                crate::raise_exception::<u64>(_py,
+                crate::raise_exception::<u64>(
+                    _py,
                     "ValueError",
                     &format!(
                         "memoryview: invalid value for format '{}'",

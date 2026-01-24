@@ -1,4 +1,8 @@
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use crate::builtins::attr::clear_attr_tls_caches;
+use crate::object::utf8_cache::{
+    clear_utf8_count_tls, Utf8CacheStore, Utf8CountCacheStore, UTF8_CACHE_MAX_ENTRIES,
+    UTF8_COUNT_CACHE_SHARDS,
+};
 use crate::PyToken;
 use crate::{
     builtin_classes_shutdown, clear_exception_state, clear_exception_type_cache, dec_ref_bits,
@@ -9,11 +13,7 @@ use crate::{
     NEXT_CANCEL_TOKEN_ID, OBJECT_POOL_BUCKETS, OBJECT_POOL_TLS, PARSE_ARENA, RECURSION_DEPTH,
     RECURSION_LIMIT, TASK_RAISE_ACTIVE,
 };
-use crate::builtins::attr::clear_attr_tls_caches;
-use crate::object::utf8_cache::{
-    clear_utf8_count_tls, Utf8CacheStore, Utf8CountCacheStore, UTF8_CACHE_MAX_ENTRIES,
-    UTF8_COUNT_CACHE_SHARDS,
-};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 use super::{cache::clear_atomic_slots, cache::clear_method_cache, RuntimeState};
 
@@ -31,7 +31,9 @@ impl ThreadLocalGuard {
 
 impl Drop for ThreadLocalGuard {
     fn drop(&mut self) {
-        crate::with_gil_entry!(_py, { clear_thread_local_state(_py); });
+        crate::with_gil_entry!(_py, {
+            clear_thread_local_state(_py);
+        });
         clear_object_pool_tls();
     }
 }

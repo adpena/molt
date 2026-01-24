@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use crate::PyToken;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 use super::RuntimeState;
 use crate::{alloc_string, dec_ref_bits, init_atomic_bits, MoltObject};

@@ -77,7 +77,6 @@ where
     f(token)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::{gil_held, GilGuard};

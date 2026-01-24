@@ -1,31 +1,24 @@
-Checkpoint: 2026-01-19T12:43:45Z
-Git: acff6bae470a3112a63f421bba352a51184a0d5d (dirty)
+Checkpoint: 2026-01-24T20:24:18Z
+Git: af2e937884b15112580c183ec29dd13c72d40da8 (dirty)
 
 Summary
-- Added utf-8/ascii/latin-1 text encoding support and basic text-mode seek/tell cookies in file I/O.
-- Updated wasm file import coverage (WIT + backend + harness stubs) and parity docs for remaining gaps.
+- Hardened async sleep zero-delay behavior to yield once without depending on monotonic deadlines.
+- Added async trace instrumentation hooks for scheduler/sleep/awaiter paths.
 
 Files touched (uncommitted)
 - CHECKPOINT.md
 - docs/AGENT_LOCKS.md
-- docs/spec/STATUS.md
-- docs/spec/areas/compat/0014_TYPE_COVERAGE_MATRIX.md
-- docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md
-- docs/spec/areas/compat/0023_SEMANTIC_BEHAVIOR_MATRIX.md
-- docs/spec/areas/wasm/0400_WASM_PORTABLE_ABI.md
-- ROADMAP.md
-- runtime/molt-backend/src/wasm.rs
-- runtime/molt-runtime/src/lib.rs
-- tests/wasm_harness.py
-- wit/molt-runtime.wit
+- runtime/molt-runtime/src/async_rt/generators.rs
+- runtime/molt-runtime/src/async_rt/mod.rs
+- runtime/molt-runtime/src/async_rt/scheduler.rs
 - Large pre-existing dirty tree remains; see `git status -sb` for full list.
 
 Docs/spec updates needed?
 - None this turn (STATUS/0014/0015/0023/0400/ROADMAP updated).
 
 Tests
-- `cargo test -p molt-runtime`
-- `uv run --python 3.12 ./tools/dev.py test`
+- `uv sync --python 3.12`
+- `uv run --python 3.12 python3 -m molt.cli run --compiled tests/benchmarks/bench_async_await.py` (timed out after 180s; likely compile + bench)
 
 Benchmarks
 - Not run.

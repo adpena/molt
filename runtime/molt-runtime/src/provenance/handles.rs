@@ -1,9 +1,7 @@
 //! Handle-resolution entrypoints that bridge NaN-boxed object handles to
 //! runtime pointers. This is the ABI surface for resolve paths.
 
-use crate::{
-    object::accessors::resolve_obj_ptr, profile_hit_unchecked, HANDLE_RESOLVE_COUNT,
-};
+use crate::{object::accessors::resolve_obj_ptr, profile_hit_unchecked, HANDLE_RESOLVE_COUNT};
 
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
@@ -26,7 +24,9 @@ pub extern "C" fn molt_handle_resolve(bits: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::molt_handle_resolve;
-    use crate::{alloc_object_zeroed_with_pool, object::dec_ref_ptr, MoltHeader, MoltObject, TYPE_ID_OBJECT};
+    use crate::{
+        alloc_object_zeroed_with_pool, object::dec_ref_ptr, MoltHeader, MoltObject, TYPE_ID_OBJECT,
+    };
 
     #[test]
     fn handle_resolve_is_gil_free_for_pointer_bits() {

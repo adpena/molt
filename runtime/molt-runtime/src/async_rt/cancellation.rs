@@ -1,15 +1,15 @@
+use crate::PyToken;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Mutex;
-use crate::PyToken;
 
 use crate::{
     alloc_exception_from_class_bits, alloc_tuple, dec_ref_bits, exception_type_bits_from_name,
-    header_from_obj_ptr, obj_from_bits, raise_exception, record_exception,
-    runtime_state, task_exception_depth_drop, task_exception_handler_stack_drop,
-    task_exception_stack_drop, task_last_exception_drop, ExceptionSentinel, MoltHeader, MoltObject,
-    PtrSlot, HEADER_FLAG_CANCEL_PENDING, HEADER_FLAG_SPAWN_RETAIN,
+    header_from_obj_ptr, obj_from_bits, raise_exception, record_exception, runtime_state,
+    task_exception_depth_drop, task_exception_handler_stack_drop, task_exception_stack_drop,
+    task_last_exception_drop, ExceptionSentinel, MoltHeader, MoltObject, PtrSlot,
+    HEADER_FLAG_CANCEL_PENDING, HEADER_FLAG_SPAWN_RETAIN,
 };
 
 use super::scheduler::{await_waiter_clear, wake_task_ptr, CURRENT_TASK};
@@ -47,9 +47,7 @@ pub(crate) fn task_tokens(_py: &PyToken<'_>) -> &'static Mutex<HashMap<PtrSlot, 
     &runtime_state(_py).task_tokens
 }
 
-pub(crate) fn task_cancel_messages(
-    _py: &PyToken<'_>,
-) -> &'static Mutex<HashMap<PtrSlot, u64>> {
+pub(crate) fn task_cancel_messages(_py: &PyToken<'_>) -> &'static Mutex<HashMap<PtrSlot, u64>> {
     &runtime_state(_py).task_cancel_messages
 }
 
@@ -58,10 +56,7 @@ pub(crate) fn task_has_token(_py: &PyToken<'_>, task_ptr: *mut u8) -> bool {
     map.contains_key(&PtrSlot(task_ptr))
 }
 
-pub(crate) fn task_cancel_message_args(
-    _py: &PyToken<'_>,
-    task_ptr: *mut u8,
-) -> Option<u64> {
+pub(crate) fn task_cancel_message_args(_py: &PyToken<'_>, task_ptr: *mut u8) -> Option<u64> {
     if task_ptr.is_null() {
         return None;
     }
@@ -221,7 +216,10 @@ pub(crate) fn task_take_cancel_pending(task_ptr: *mut u8) -> bool {
     }
 }
 
-pub(crate) fn raise_cancelled_with_message<T: ExceptionSentinel>(_py: &PyToken<'_>, task_ptr: *mut u8) -> T {
+pub(crate) fn raise_cancelled_with_message<T: ExceptionSentinel>(
+    _py: &PyToken<'_>,
+    task_ptr: *mut u8,
+) -> T {
     if let Some(args_bits) = task_cancel_message_args(_py, task_ptr) {
         let class_bits = exception_type_bits_from_name(_py, "CancelledError");
         let ptr = alloc_exception_from_class_bits(_py, class_bits, args_bits);
@@ -276,26 +274,29 @@ pub(crate) fn token_is_cancelled(_py: &PyToken<'_>, id: u64) -> bool {
 #[no_mangle]
 pub unsafe extern "C" fn molt_cancel_token_new(parent_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    cancel_tokens(_py);
-    let parent_id = match token_id_from_bits(parent_bits) {
-        Some(0) => current_token_id(),
-        Some(id) => id,
-        None => {
-            return raise_exception::<_>(_py, "TypeError", "cancel token parent must be int or None")
-        }
-    };
-    let id = NEXT_CANCEL_TOKEN_ID.fetch_add(1, AtomicOrdering::Relaxed);
-    let mut map = cancel_tokens(_py).lock().unwrap();
-    map.insert(
-        id,
-        CancelTokenEntry {
-            parent: parent_id,
-            cancelled: false,
-            refs: 1,
-        },
-    );
-    MoltObject::from_int(id as i64).bits()
-
+        cancel_tokens(_py);
+        let parent_id = match token_id_from_bits(parent_bits) {
+            Some(0) => current_token_id(),
+            Some(id) => id,
+            None => {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "cancel token parent must be int or None",
+                )
+            }
+        };
+        let id = NEXT_CANCEL_TOKEN_ID.fetch_add(1, AtomicOrdering::Relaxed);
+        let mut map = cancel_tokens(_py).lock().unwrap();
+        map.insert(
+            id,
+            CancelTokenEntry {
+                parent: parent_id,
+                cancelled: false,
+                refs: 1,
+            },
+        );
+        MoltObject::from_int(id as i64).bits()
     })
 }
 
@@ -304,13 +305,12 @@ pub unsafe extern "C" fn molt_cancel_token_new(parent_bits: u64) -> u64 {
 #[no_mangle]
 pub unsafe extern "C" fn molt_cancel_token_clone(token_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    let id = match token_id_from_bits(token_bits) {
-        Some(id) => id,
-        None => return raise_exception::<_>(_py, "TypeError", "cancel token id must be int"),
-    };
-    retain_token(_py, id);
-    MoltObject::none().bits()
-
+        let id = match token_id_from_bits(token_bits) {
+            Some(id) => id,
+            None => return raise_exception::<_>(_py, "TypeError", "cancel token id must be int"),
+        };
+        retain_token(_py, id);
+        MoltObject::none().bits()
     })
 }
 
@@ -319,13 +319,12 @@ pub unsafe extern "C" fn molt_cancel_token_clone(token_bits: u64) -> u64 {
 #[no_mangle]
 pub unsafe extern "C" fn molt_cancel_token_drop(token_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    let id = match token_id_from_bits(token_bits) {
-        Some(id) => id,
-        None => return raise_exception::<_>(_py, "TypeError", "cancel token id must be int"),
-    };
-    release_token(_py, id);
-    MoltObject::none().bits()
-
+        let id = match token_id_from_bits(token_bits) {
+            Some(id) => id,
+            None => return raise_exception::<_>(_py, "TypeError", "cancel token id must be int"),
+        };
+        release_token(_py, id);
+        MoltObject::none().bits()
     })
 }
 
@@ -334,18 +333,17 @@ pub unsafe extern "C" fn molt_cancel_token_drop(token_bits: u64) -> u64 {
 #[no_mangle]
 pub unsafe extern "C" fn molt_cancel_token_cancel(token_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    let id = match token_id_from_bits(token_bits) {
-        Some(id) => id,
-        None => return raise_exception::<_>(_py, "TypeError", "cancel token id must be int"),
-    };
-    let mut map = cancel_tokens(_py).lock().unwrap();
-    if let Some(entry) = map.get_mut(&id) {
-        entry.cancelled = true;
-    }
-    drop(map);
-    wake_tasks_for_cancelled_tokens(_py);
-    MoltObject::none().bits()
-
+        let id = match token_id_from_bits(token_bits) {
+            Some(id) => id,
+            None => return raise_exception::<_>(_py, "TypeError", "cancel token id must be int"),
+        };
+        let mut map = cancel_tokens(_py).lock().unwrap();
+        if let Some(entry) = map.get_mut(&id) {
+            entry.cancelled = true;
+        }
+        drop(map);
+        wake_tasks_for_cancelled_tokens(_py);
+        MoltObject::none().bits()
     })
 }
 
@@ -354,12 +352,11 @@ pub unsafe extern "C" fn molt_cancel_token_cancel(token_bits: u64) -> u64 {
 #[no_mangle]
 pub unsafe extern "C" fn molt_cancel_token_is_cancelled(token_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    let id = match token_id_from_bits(token_bits) {
-        Some(id) => id,
-        None => return raise_exception::<_>(_py, "TypeError", "cancel token id must be int"),
-    };
-    MoltObject::from_bool(token_is_cancelled(_py, id)).bits()
-
+        let id = match token_id_from_bits(token_bits) {
+            Some(id) => id,
+            None => return raise_exception::<_>(_py, "TypeError", "cancel token id must be int"),
+        };
+        MoltObject::from_bool(token_is_cancelled(_py, id)).bits()
     })
 }
 
@@ -368,20 +365,19 @@ pub unsafe extern "C" fn molt_cancel_token_is_cancelled(token_bits: u64) -> u64 
 #[no_mangle]
 pub unsafe extern "C" fn molt_cancel_token_set_current(token_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-    let id = match token_id_from_bits(token_bits) {
-        Some(0) => 1,
-        Some(id) => id,
-        None => return raise_exception::<_>(_py, "TypeError", "cancel token id must be int"),
-    };
-    let prev = set_current_token(_py, id);
-    CURRENT_TASK.with(|cell| {
-        let task = cell.get();
-        if !task.is_null() {
-            register_task_token(_py, task, id);
-        }
-    });
-    MoltObject::from_int(prev as i64).bits()
-
+        let id = match token_id_from_bits(token_bits) {
+            Some(0) => 1,
+            Some(id) => id,
+            None => return raise_exception::<_>(_py, "TypeError", "cancel token id must be int"),
+        };
+        let prev = set_current_token(_py, id);
+        CURRENT_TASK.with(|cell| {
+            let task = cell.get();
+            if !task.is_null() {
+                register_task_token(_py, task, id);
+            }
+        });
+        MoltObject::from_int(prev as i64).bits()
     })
 }
 
@@ -390,9 +386,8 @@ pub unsafe extern "C" fn molt_cancel_token_set_current(token_bits: u64) -> u64 {
 #[no_mangle]
 pub unsafe extern "C" fn molt_cancel_token_get_current() -> u64 {
     crate::with_gil_entry!(_py, {
-    cancel_tokens(_py);
-    MoltObject::from_int(current_token_id() as i64).bits()
-
+        cancel_tokens(_py);
+        MoltObject::from_int(current_token_id() as i64).bits()
     })
 }
 
@@ -401,9 +396,8 @@ pub unsafe extern "C" fn molt_cancel_token_get_current() -> u64 {
 #[no_mangle]
 pub unsafe extern "C" fn molt_cancelled() -> u64 {
     crate::with_gil_entry!(_py, {
-    cancel_tokens(_py);
-    MoltObject::from_bool(token_is_cancelled(_py, current_token_id())).bits()
-
+        cancel_tokens(_py);
+        MoltObject::from_bool(token_is_cancelled(_py, current_token_id())).bits()
     })
 }
 
@@ -412,15 +406,14 @@ pub unsafe extern "C" fn molt_cancelled() -> u64 {
 #[no_mangle]
 pub unsafe extern "C" fn molt_cancel_current() -> u64 {
     crate::with_gil_entry!(_py, {
-    cancel_tokens(_py);
-    let id = current_token_id();
-    let mut map = cancel_tokens(_py).lock().unwrap();
-    if let Some(entry) = map.get_mut(&id) {
-        entry.cancelled = true;
-    }
-    drop(map);
-    wake_tasks_for_cancelled_tokens(_py);
-    MoltObject::none().bits()
-
+        cancel_tokens(_py);
+        let id = current_token_id();
+        let mut map = cancel_tokens(_py).lock().unwrap();
+        if let Some(entry) = map.get_mut(&id) {
+            entry.cancelled = true;
+        }
+        drop(map);
+        wake_tasks_for_cancelled_tokens(_py);
+        MoltObject::none().bits()
     })
 }
