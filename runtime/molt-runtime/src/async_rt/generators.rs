@@ -1466,11 +1466,11 @@ pub unsafe extern "C" fn molt_sleep_register(task_ptr: *mut u8, future_ptr: *mut
             if async_trace_enabled() {
                 let delay = deadline.saturating_duration_since(Instant::now());
                 eprintln!(
-                "molt async trace: sleep_register_request task=0x{:x} deadline_secs={} delay_ms={}",
-                task_ptr as usize,
-                deadline_secs,
-                delay.as_secs_f64() * 1000.0
-            );
+                    "molt async trace: sleep_register_request task=0x{:x} deadline_secs={} delay_ms={}",
+                    task_ptr as usize,
+                    deadline_secs,
+                    delay.as_secs_f64() * 1000.0
+                );
             }
             1
         }
