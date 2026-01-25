@@ -23,6 +23,9 @@ interface intrinsics {
     future_cancel: func(obj: u64) -> u64;
     future_cancel_msg: func(obj: u64, msg: u64) -> u64;
     future_cancel_clear: func(obj: u64) -> u64;
+    promise_new: func() -> u64;
+    promise_set_result: func(obj: u64, result: u64) -> u64;
+    promise_set_exception: func(obj: u64, exc: u64) -> u64;
     io_wait: func(obj: molt-object) -> molt-object;
     io_wait_new: func(socket: molt-object, events: molt-object, timeout: molt-object) -> molt-object;
     thread_submit: func(callable: molt-object, args: molt-object, kwargs: molt-object) -> molt-object;

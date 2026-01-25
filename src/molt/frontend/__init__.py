@@ -12163,6 +12163,40 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="FUTURE_CANCEL_CLEAR", args=[future], result=res))
                 return res
+            elif func_id == "molt_promise_new":
+                if node.keywords or node.args:
+                    raise NotImplementedError("molt_promise_new expects no arguments")
+                res = MoltValue(self.next_var(), type_hint="Future")
+                self.emit(MoltOp(kind="PROMISE_NEW", args=[], result=res))
+                return res
+            elif func_id == "molt_promise_set_result":
+                if node.keywords or len(node.args) != 2:
+                    raise NotImplementedError(
+                        "molt_promise_set_result expects 2 arguments"
+                    )
+                future = self.visit(node.args[0])
+                result = self.visit(node.args[1])
+                if future is None or result is None:
+                    raise NotImplementedError("Unsupported promise set result")
+                res = MoltValue(self.next_var(), type_hint="None")
+                self.emit(
+                    MoltOp(kind="PROMISE_SET_RESULT", args=[future, result], result=res)
+                )
+                return res
+            elif func_id == "molt_promise_set_exception":
+                if node.keywords or len(node.args) != 2:
+                    raise NotImplementedError(
+                        "molt_promise_set_exception expects 2 arguments"
+                    )
+                future = self.visit(node.args[0])
+                exc = self.visit(node.args[1])
+                if future is None or exc is None:
+                    raise NotImplementedError("Unsupported promise set exception")
+                res = MoltValue(self.next_var(), type_hint="None")
+                self.emit(
+                    MoltOp(kind="PROMISE_SET_EXCEPTION", args=[future, exc], result=res)
+                )
+                return res
             elif func_id == "molt_task_register_token_owned":
                 if node.keywords or len(node.args) != 2:
                     raise NotImplementedError(
@@ -21647,6 +21681,29 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     {
                         "kind": "future_cancel_clear",
                         "args": [op.args[0].name],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "PROMISE_NEW":
+                json_ops.append(
+                    {
+                        "kind": "promise_new",
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "PROMISE_SET_RESULT":
+                json_ops.append(
+                    {
+                        "kind": "promise_set_result",
+                        "args": [op.args[0].name, op.args[1].name],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "PROMISE_SET_EXCEPTION":
+                json_ops.append(
+                    {
+                        "kind": "promise_set_exception",
+                        "args": [op.args[0].name, op.args[1].name],
                         "out": op.result.name,
                     }
                 )

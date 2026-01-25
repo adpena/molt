@@ -488,6 +488,9 @@ impl WasmBackend {
         add_import("future_cancel", 2, &mut self.import_ids);
         add_import("future_cancel_msg", 3, &mut self.import_ids);
         add_import("future_cancel_clear", 2, &mut self.import_ids);
+        add_import("promise_new", 0, &mut self.import_ids);
+        add_import("promise_set_result", 3, &mut self.import_ids);
+        add_import("promise_set_exception", 3, &mut self.import_ids);
         add_import("io_wait", 2, &mut self.import_ids);
         add_import("io_wait_new", 5, &mut self.import_ids);
         add_import("thread_submit", 5, &mut self.import_ids);
@@ -5670,6 +5673,28 @@ impl WasmBackend {
                         let future = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(future));
                         emit_call(func, reloc_enabled, import_ids["future_cancel_clear"]);
+                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                    }
+                    "promise_new" => {
+                        emit_call(func, reloc_enabled, import_ids["promise_new"]);
+                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                    }
+                    "promise_set_result" => {
+                        let args = op.args.as_ref().unwrap();
+                        let future = locals[&args[0]];
+                        let result = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(future));
+                        func.instruction(&Instruction::LocalGet(result));
+                        emit_call(func, reloc_enabled, import_ids["promise_set_result"]);
+                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                    }
+                    "promise_set_exception" => {
+                        let args = op.args.as_ref().unwrap();
+                        let future = locals[&args[0]];
+                        let exc = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(future));
+                        func.instruction(&Instruction::LocalGet(exc));
+                        emit_call(func, reloc_enabled, import_ids["promise_set_exception"]);
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                     }
                     "thread_submit" => {

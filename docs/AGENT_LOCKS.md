@@ -10,6 +10,9 @@ This file coordinates parallel agent work to prevent file collisions.
 ## Active locks
 codex-79872 -> runtime/molt-runtime/src/async_rt/
 codex-79872 -> runtime/molt-runtime/src/state/
+codex-79872 -> runtime/molt-backend/
+codex-79872 -> wit/molt-runtime.wit
+codex-79872 -> src/molt/frontend/__init__.py
 codex-79872 -> src/molt/stdlib/asyncio.py
 codex-79872 -> src/molt/stdlib/contextvars.py
 codex-79872 -> src/molt/stdlib/weakref.py
