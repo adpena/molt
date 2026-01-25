@@ -1,6 +1,7 @@
 use crate::PyToken;
 use std::sync::atomic::Ordering as AtomicOrdering;
-use std::time::Instant;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use molt_obj_model::MoltObject;
 
@@ -37,6 +38,18 @@ use crate::{
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{is_block_on_task, process_task_state, thread_task_state};
+
+fn promise_trace_enabled() -> bool {
+    static TRACE: OnceLock<bool> = OnceLock::new();
+    *TRACE.get_or_init(|| matches!(std::env::var("MOLT_TRACE_PROMISE").ok().as_deref(), Some("1")))
+}
+
+fn sleep_trace_enabled() -> bool {
+    static TRACE: OnceLock<bool> = OnceLock::new();
+    *TRACE.get_or_init(|| matches!(std::env::var("MOLT_TRACE_SLEEP").ok().as_deref(), Some("1")))
+}
+
+const ASYNC_SLEEP_YIELD_SECS: f64 = 0.000_001;
 
 unsafe fn generator_slot_ptr(ptr: *mut u8, offset: usize) -> *mut u64 {
     ptr.add(offset) as *mut u64
@@ -113,6 +126,31 @@ unsafe fn generator_set_running(_py: &PyToken<'_>, ptr: *mut u8, running: bool) 
 pub(crate) unsafe fn generator_started(ptr: *mut u8) -> bool {
     let header = header_from_obj_ptr(ptr);
     ((*header).flags & HEADER_FLAG_GEN_STARTED) != 0
+}
+
+fn resolve_sleep_target(_py: &PyToken<'_>, future_ptr: *mut u8) -> *mut u8 {
+    if future_ptr.is_null() {
+        return future_ptr;
+    }
+    let mut cursor = future_ptr;
+    for _ in 0..16 {
+        let poll_fn = unsafe { (*header_from_obj_ptr(cursor)).poll_fn };
+        if poll_fn == async_sleep_poll_fn_addr() || poll_fn == io_wait_poll_fn_addr() {
+            return cursor;
+        }
+        let next = {
+            let waiting_map = task_waiting_on(_py).lock().unwrap();
+            waiting_map.get(&PtrSlot(cursor)).map(|val| val.0)
+        };
+        let Some(next_ptr) = next else {
+            return future_ptr;
+        };
+        if next_ptr.is_null() || next_ptr == cursor {
+            return future_ptr;
+        }
+        cursor = next_ptr;
+    }
+    future_ptr
 }
 
 unsafe fn generator_set_started(_py: &PyToken<'_>, ptr: *mut u8) {
@@ -1113,6 +1151,15 @@ pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
                 return 0;
             }
             let res = crate::poll_future_with_task_stack(_py, ptr, poll_fn_addr);
+            if promise_trace_enabled() && poll_fn_addr == promise_poll_fn_addr() {
+                let state = (*header).state;
+                eprintln!(
+                    "molt async trace: promise_poll task=0x{:x} state={} res=0x{:x}",
+                    ptr as usize,
+                    state,
+                    res as u64
+                );
+            }
             if task_cancel_pending(ptr) {
                 task_take_cancel_pending(ptr);
                 return raise_cancelled_with_message::<i64>(_py, ptr);
@@ -1122,10 +1169,11 @@ pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
                 if !current_task.is_null() && ptr != current_task {
                     await_waiter_register(_py, current_task, ptr);
                     let current_header = header_from_obj_ptr(current_task);
-                    let spawned = ((*current_header).flags & HEADER_FLAG_SPAWN_RETAIN) != 0;
-                    let block_on = ((*current_header).flags & HEADER_FLAG_BLOCK_ON) != 0;
-                    if spawned || block_on {
-                        let _ = sleep_register_impl(_py, current_task, ptr);
+                    let is_block_on = ((*current_header).flags & HEADER_FLAG_BLOCK_ON) != 0;
+                    let is_spawned = ((*current_header).flags & HEADER_FLAG_SPAWN_RETAIN) != 0;
+                    if is_block_on || is_spawned {
+                        let sleep_target = resolve_sleep_target(_py, ptr);
+                        let _ = sleep_register_impl(_py, current_task, sleep_target);
                     }
                 }
             } else if !current_task.is_null() {
@@ -1194,6 +1242,12 @@ fn cancel_future_task(_py: &PyToken<'_>, task_ptr: *mut u8, msg_bits: Option<u64
     if task_ptr.is_null() {
         return;
     }
+    if async_trace_enabled() {
+        eprintln!(
+            "molt async trace: cancel_future task=0x{:x}",
+            task_ptr as usize
+        );
+    }
     match msg_bits {
         Some(bits) => task_cancel_message_set(_py, task_ptr, bits),
         None => task_cancel_message_clear(_py, task_ptr),
@@ -1225,6 +1279,20 @@ fn cancel_future_task(_py: &PyToken<'_>, task_ptr: *mut u8, msg_bits: Option<u64
         }
     }
     let waiters = await_waiters_take(_py, task_ptr);
+    if async_trace_enabled() {
+        eprintln!(
+            "molt async trace: cancel_future_waiters task=0x{:x} count={}",
+            task_ptr as usize,
+            waiters.len()
+        );
+        for waiter in &waiters {
+            eprintln!(
+                "molt async trace: cancel_future_wake waiter=0x{:x} task=0x{:x}",
+                waiter.0 as usize,
+                task_ptr as usize
+            );
+        }
+    }
     for waiter in waiters {
         wake_task_ptr(_py, waiter.0);
     }
@@ -1235,14 +1303,14 @@ fn sleep_register_impl(
     task_ptr: *mut u8,
     future_ptr: *mut u8,
 ) -> bool {
-    if async_trace_enabled() {
+    if async_trace_enabled() || sleep_trace_enabled() {
         eprintln!(
             "molt async trace: sleep_register_impl_enter task=0x{:x} future=0x{:x}",
             task_ptr as usize, future_ptr as usize
         );
     }
     if future_ptr.is_null() {
-        if async_trace_enabled() {
+        if async_trace_enabled() || sleep_trace_enabled() {
             eprintln!("molt async trace: sleep_register_impl_fail future_null");
         }
         return false;
@@ -1258,7 +1326,7 @@ fn sleep_register_impl(
             .unwrap_or(std::ptr::null_mut());
     }
     if resolved_task.is_null() {
-        if async_trace_enabled() {
+        if async_trace_enabled() || sleep_trace_enabled() {
             eprintln!(
                 "molt async trace: sleep_register_impl_fail task_null task=0x{:x} future=0x{:x}",
                 task_ptr as usize, future_ptr as usize
@@ -1270,7 +1338,7 @@ fn sleep_register_impl(
     let header = unsafe { header_from_obj_ptr(future_ptr) };
     let poll_fn = unsafe { (*header).poll_fn };
     if poll_fn != async_sleep_poll_fn_addr() && poll_fn != io_wait_poll_fn_addr() {
-        if async_trace_enabled() {
+        if async_trace_enabled() || sleep_trace_enabled() {
             eprintln!(
                 "molt async trace: sleep_register_impl_fail poll_fn=0x{:x}",
                 poll_fn
@@ -1279,7 +1347,7 @@ fn sleep_register_impl(
         return false;
     }
     if unsafe { (*header).state == 0 } {
-        if async_trace_enabled() {
+        if async_trace_enabled() || sleep_trace_enabled() {
             eprintln!("molt async trace: sleep_register_impl_fail state=0");
         }
         return false;
@@ -1302,13 +1370,13 @@ fn sleep_register_impl(
         obj_from_bits(unsafe { *payload_ptr.add(2) })
     };
     let Some(deadline_secs) = to_f64(deadline_obj) else {
-        if async_trace_enabled() {
+        if async_trace_enabled() || sleep_trace_enabled() {
             eprintln!("molt async trace: sleep_register_impl_fail deadline_nan");
         }
         return false;
     };
-    if !deadline_secs.is_finite() || deadline_secs <= 0.0 {
-        if async_trace_enabled() {
+    if !deadline_secs.is_finite() {
+        if async_trace_enabled() || sleep_trace_enabled() {
             eprintln!(
                 "molt async trace: sleep_register_impl_fail deadline_secs={}",
                 deadline_secs
@@ -1316,12 +1384,89 @@ fn sleep_register_impl(
         }
         return false;
     }
+    if deadline_secs <= 0.0 {
+        if async_trace_enabled() || sleep_trace_enabled() {
+            eprintln!(
+                "molt async trace: sleep_register_immediate task=0x{:x} deadline_secs={}",
+                task_ptr as usize,
+                deadline_secs
+            );
+        }
+        if poll_fn == async_sleep_poll_fn_addr() {
+            let deadline = Instant::now()
+                + Duration::from_secs_f64(ASYNC_SLEEP_YIELD_SECS.max(0.0));
+            let task_header = unsafe { header_from_obj_ptr(task_ptr) };
+            if unsafe { ((*task_header).flags & HEADER_FLAG_BLOCK_ON) != 0 } {
+                runtime_state(_py)
+                    .sleep_queue()
+                    .register_blocking(_py, task_ptr, deadline);
+                return true;
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                runtime_state(_py)
+                    .sleep_queue()
+                    .register_blocking(_py, task_ptr, deadline);
+                return true;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                if is_block_on_task(task_ptr) {
+                    runtime_state(_py)
+                        .sleep_queue()
+                        .register_blocking(_py, task_ptr, deadline);
+                } else {
+                    runtime_state(_py)
+                        .sleep_queue()
+                        .register_scheduler(_py, task_ptr, deadline);
+                }
+                return true;
+            }
+        }
+        wake_task_ptr(_py, task_ptr);
+        return true;
+    }
     let deadline = instant_from_monotonic_secs(_py, deadline_secs);
     if deadline <= Instant::now() {
-        if async_trace_enabled() {
-            eprintln!("molt async trace: sleep_register_impl_fail deadline_elapsed");
+        if async_trace_enabled() || sleep_trace_enabled() {
+            eprintln!(
+                "molt async trace: sleep_register_immediate_elapsed task=0x{:x}",
+                task_ptr as usize
+            );
         }
-        return false;
+        if poll_fn == async_sleep_poll_fn_addr() {
+            let deadline = Instant::now()
+                + Duration::from_secs_f64(ASYNC_SLEEP_YIELD_SECS.max(0.0));
+            let task_header = unsafe { header_from_obj_ptr(task_ptr) };
+            if unsafe { ((*task_header).flags & HEADER_FLAG_BLOCK_ON) != 0 } {
+                runtime_state(_py)
+                    .sleep_queue()
+                    .register_blocking(_py, task_ptr, deadline);
+                return true;
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                runtime_state(_py)
+                    .sleep_queue()
+                    .register_blocking(_py, task_ptr, deadline);
+                return true;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                if is_block_on_task(task_ptr) {
+                    runtime_state(_py)
+                        .sleep_queue()
+                        .register_blocking(_py, task_ptr, deadline);
+                } else {
+                    runtime_state(_py)
+                        .sleep_queue()
+                        .register_scheduler(_py, task_ptr, deadline);
+                }
+                return true;
+            }
+        }
+        wake_task_ptr(_py, task_ptr);
+        return true;
     }
     let task_header = unsafe { header_from_obj_ptr(task_ptr) };
     if unsafe { ((*task_header).flags & HEADER_FLAG_BLOCK_ON) != 0 } {
@@ -1424,7 +1569,11 @@ pub extern "C" fn molt_future_new(poll_fn_addr: u64, closure_size: u64) -> u64 {
 #[no_mangle]
 pub extern "C" fn molt_promise_new() -> u64 {
     crate::with_gil_entry!(_py, {
-        molt_future_new(promise_poll_fn_addr(), std::mem::size_of::<u64>() as u64)
+        let obj_bits = molt_future_new(promise_poll_fn_addr(), std::mem::size_of::<u64>() as u64);
+        if promise_trace_enabled() {
+            eprintln!("molt async trace: promise_new bits=0x{:x}", obj_bits);
+        }
+        obj_bits
     })
 }
 
@@ -1462,21 +1611,55 @@ pub unsafe extern "C" fn molt_promise_poll(obj_bits: u64) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn molt_promise_set_result(future_bits: u64, result_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        if async_trace_enabled() || promise_trace_enabled() {
+            eprintln!(
+                "molt async trace: promise_set_result_enter bits=0x{:x}",
+                future_bits
+            );
+        }
         let Some(task_ptr) = resolve_task_ptr(future_bits) else {
+            if async_trace_enabled() || promise_trace_enabled() {
+                eprintln!("molt async trace: promise_set_result_fail reason=resolve");
+            }
             return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
         };
         let header = header_from_obj_ptr(task_ptr);
         if (*header).poll_fn != promise_poll_fn_addr() {
+            if async_trace_enabled() || promise_trace_enabled() {
+                eprintln!(
+                    "molt async trace: promise_set_result_fail reason=poll_fn poll=0x{:x}",
+                    (*header).poll_fn
+                );
+            }
             return raise_exception::<_>(_py, "TypeError", "object is not a promise");
         }
         if (*header).state != 0 {
+            if async_trace_enabled() || promise_trace_enabled() {
+                eprintln!(
+                    "molt async trace: promise_set_result_skip state={}",
+                    (*header).state
+                );
+            }
             return MoltObject::none().bits();
         }
         let payload_ptr = task_ptr as *mut u64;
         *payload_ptr = result_bits;
         inc_ref_bits(_py, result_bits);
         (*header).state = 1;
+        if async_trace_enabled() || promise_trace_enabled() {
+            eprintln!(
+                "molt async trace: promise_set_result task=0x{:x}",
+                task_ptr as usize
+            );
+        }
         let waiters = await_waiters_take(_py, task_ptr);
+        if async_trace_enabled() || promise_trace_enabled() {
+            eprintln!(
+                "molt async trace: promise_wake task=0x{:x} waiters={}",
+                task_ptr as usize,
+                waiters.len()
+            );
+        }
         for waiter in waiters {
             wake_task_ptr(_py, waiter.0);
         }
@@ -1503,7 +1686,20 @@ pub unsafe extern "C" fn molt_promise_set_exception(future_bits: u64, exc_bits: 
         *payload_ptr = exc_bits;
         inc_ref_bits(_py, exc_bits);
         (*header).state = 2;
+        if async_trace_enabled() || promise_trace_enabled() {
+            eprintln!(
+                "molt async trace: promise_set_exception task=0x{:x}",
+                task_ptr as usize
+            );
+        }
         let waiters = await_waiters_take(_py, task_ptr);
+        if async_trace_enabled() || promise_trace_enabled() {
+            eprintln!(
+                "molt async trace: promise_wake task=0x{:x} waiters={}",
+                task_ptr as usize,
+                waiters.len()
+            );
+        }
         for waiter in waiters {
             wake_task_ptr(_py, waiter.0);
         }
@@ -1567,21 +1763,22 @@ pub unsafe extern "C" fn molt_async_sleep(obj_bits: u64) -> i64 {
                 0.0
             };
             let immediate = delay_secs <= 0.0;
+            let schedule_secs = if immediate {
+                ASYNC_SLEEP_YIELD_SECS
+            } else {
+                delay_secs
+            };
             if payload_len >= 1 {
-                let deadline = if immediate {
-                    -1.0
-                } else {
-                    crate::monotonic_now_secs(_py) + delay_secs
-                };
+                let deadline = crate::monotonic_now_secs(_py) + schedule_secs;
                 *payload_ptr = MoltObject::from_float(deadline).bits();
             }
             (*header).state = 1;
-            if async_trace_enabled() {
-                eprintln!(
-                    "molt async trace: async_sleep_init task=0x{:x} delay={} immediate={}",
-                    task_ptr as usize, delay_secs, immediate
-                );
-            }
+    if async_trace_enabled() || sleep_trace_enabled() {
+        eprintln!(
+            "molt async trace: async_sleep_init task=0x{:x} delay={} immediate={}",
+            task_ptr as usize, delay_secs, immediate
+        );
+    }
             return pending_bits_i64();
         }
 
@@ -1602,7 +1799,7 @@ pub unsafe extern "C" fn molt_async_sleep(obj_bits: u64) -> i64 {
             MoltObject::none().bits()
         };
         inc_ref_bits(_py, result_bits);
-        if async_trace_enabled() {
+        if async_trace_enabled() || sleep_trace_enabled() {
             eprintln!(
                 "molt async trace: async_sleep_ready task=0x{:x}",
                 task_ptr as usize
@@ -1673,7 +1870,18 @@ pub unsafe extern "C" fn molt_anext_default_poll(obj_bits: u64) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn molt_sleep_register(task_ptr: *mut u8, future_ptr: *mut u8) -> u64 {
     crate::with_gil_entry!(_py, {
-        if sleep_register_impl(_py, task_ptr, future_ptr) {
+        if task_ptr.is_null() || future_ptr.is_null() {
+            return 0;
+        }
+        let header = header_from_obj_ptr(task_ptr);
+        let flags = (*header).flags;
+        let is_block_on = (flags & HEADER_FLAG_BLOCK_ON) != 0;
+        let is_spawned = (flags & HEADER_FLAG_SPAWN_RETAIN) != 0;
+        if !is_block_on && !is_spawned {
+            return 0;
+        }
+        let sleep_target = resolve_sleep_target(_py, future_ptr);
+        if sleep_register_impl(_py, task_ptr, sleep_target) {
             1
         } else {
             0

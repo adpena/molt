@@ -318,11 +318,14 @@ demo = [
 dev = [
     { name = "cbor2" },
     { name = "coverage" },
+    { name = "cython" },
     { name = "django" },
     { name = "msgpack" },
+    { name = "numba", marker = "python_full_version < '3.13'" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "ruff" },
+    { name = "setuptools" },
     { name = "stdlib-list" },
     { name = "ty" },
 ]
@@ -352,11 +355,14 @@ demo = [
 dev = [
     { name = "cbor2", specifier = ">=5.8.0" },
     { name = "coverage", specifier = ">=7.13.1" },
+    { name = "cython", specifier = ">=3.2.3" },
     { name = "django", specifier = ">=5.0" },
     { name = "msgpack", specifier = ">=1.1.2" },
+    { name = "numba", marker = "python_full_version < '3.13'", specifier = ">=0.63.1" },
     { name = "pre-commit", specifier = ">=4.5.1" },
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "ruff", specifier = ">=0.14.10" },
+    { name = "setuptools", specifier = ">=80.9.0" },
     { name = "stdlib-list", specifier = ">=0.12.0" },
     { name = "ty", specifier = ">=0.0.8" },
 ]

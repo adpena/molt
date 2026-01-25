@@ -289,6 +289,13 @@ class Future:
             self._molt_promise = molt_promise_new()
         except Exception:
             self._molt_promise = None
+        if _DEBUG_ASYNCIO_PROMISE:
+            _debug_write(
+                "asyncio_promise_new ok={ok} promise={promise}".format(
+                    ok=self._molt_promise is not None,
+                    promise=self._molt_promise,
+                )
+            )
 
     def cancel(self, msg: Any | None = None) -> bool:
         if self._done:
@@ -363,7 +370,8 @@ class Future:
             try:
                 molt_promise_set_result(self._molt_promise, result)
             except Exception:
-                pass
+                if _DEBUG_ASYNCIO_PROMISE:
+                    _debug_write("asyncio_promise_set_result_error")
         self._invoke_callbacks()
 
     def set_exception(self, exception: BaseException) -> None:
@@ -377,7 +385,8 @@ class Future:
             try:
                 molt_promise_set_exception(self._molt_promise, exception)
             except Exception:
-                pass
+                if _DEBUG_ASYNCIO_PROMISE:
+                    _debug_write("asyncio_promise_set_exception_error")
         self._invoke_callbacks()
 
     def _invoke_callbacks(self) -> None:
@@ -405,7 +414,11 @@ class Future:
 
     def __await__(self) -> Any:
         if self._molt_promise is not None:
+            if _DEBUG_ASYNCIO_PROMISE:
+                _debug_write("asyncio_promise_await")
             return self._molt_promise
+        if _DEBUG_ASYNCIO_PROMISE:
+            _debug_write("asyncio_promise_fallback_wait")
         return self._wait()
 
     def __repr__(self) -> str:
@@ -450,6 +463,26 @@ def _debug_tasks_enabled() -> bool:
 
 
 _DEBUG_TASKS = _debug_tasks_enabled()
+
+
+def _debug_asyncio_promise_enabled() -> bool:
+    try:
+        return _os.getenv("MOLT_DEBUG_ASYNCIO_PROMISE") == "1"
+    except Exception:
+        return False
+
+
+_DEBUG_ASYNCIO_PROMISE = _debug_asyncio_promise_enabled()
+
+
+def _debug_asyncio_condition_enabled() -> bool:
+    try:
+        return _os.getenv("MOLT_DEBUG_ASYNCIO_CONDITION") == "1"
+    except Exception:
+        return False
+
+
+_DEBUG_ASYNCIO_CONDITION = _debug_asyncio_condition_enabled()
 
 _UNSET = object()
 _PENDING = 0x7FFD_0000_0000_0000

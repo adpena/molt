@@ -136,6 +136,7 @@ def _baseline_summary(native_bench: dict[str, Any]) -> str:
     cython_available = any(entry.get("cython_ok") for entry in native_bench.values())
     numba_available = any(entry.get("numba_ok") for entry in native_bench.values())
     codon_available = any(entry.get("codon_ok") for entry in native_bench.values())
+    depyler_available = any(entry.get("depyler_ok") for entry in native_bench.values())
 
     parts: list[str] = []
 
@@ -173,6 +174,17 @@ def _baseline_summary(native_bench: dict[str, Any]) -> str:
         )
         if codon_missing:
             parts.append(f"Codon skipped for {_format_name_list(codon_missing)}")
+
+    if not depyler_available:
+        parts.append("Depyler baseline unavailable")
+    else:
+        depyler_missing = sorted(
+            _display_name(name)
+            for name, entry in native_bench.items()
+            if not entry.get("depyler_ok")
+        )
+        if depyler_missing:
+            parts.append(f"Depyler skipped for {_format_name_list(depyler_missing)}")
 
     if not parts:
         return "none"
@@ -272,6 +284,8 @@ def _render_report(
     names, native_bench, wasm_bench = _collect_benchmarks(native, wasm)
 
     native_ok = sum(1 for entry in native_bench.values() if entry.get("molt_ok"))
+    depyler_ok = sum(1 for entry in native_bench.values() if entry.get("depyler_ok"))
+    codon_ok = sum(1 for entry in native_bench.values() if entry.get("codon_ok"))
     wasm_ok = sum(1 for entry in wasm_bench.values() if entry.get("molt_wasm_ok"))
 
     native_speedups = [
@@ -285,11 +299,30 @@ def _render_report(
     regressions = []
     wasm_slowest = []
 
+    molt_ok_names = sorted(
+        name for name, entry in native_bench.items() if entry.get("molt_ok")
+    )
+    depyler_ok_names = sorted(
+        name for name, entry in native_bench.items() if entry.get("depyler_ok")
+    )
+    codon_ok_names = sorted(
+        name for name, entry in native_bench.items() if entry.get("codon_ok")
+    )
+    molt_only = sorted(set(molt_ok_names) - set(depyler_ok_names))
+    depyler_only = sorted(set(depyler_ok_names) - set(molt_ok_names))
+    both_ok = sorted(set(molt_ok_names) & set(depyler_ok_names))
+    codon_only = sorted(set(codon_ok_names) - set(molt_ok_names))
+    molt_only_codon = sorted(set(molt_ok_names) - set(codon_ok_names))
+    both_ok_codon = sorted(set(molt_ok_names) & set(codon_ok_names))
+    depyler_comparisons: list[tuple[str, float, float, float]] = []
+    codon_comparisons: list[tuple[str, float, float, float]] = []
     for name in names:
         n_entry = native_bench.get(name, {})
         w_entry = wasm_bench.get(name, {})
 
         molt_time = n_entry.get("molt_time_s")
+        depyler_time = n_entry.get("depyler_time_s")
+        codon_time = n_entry.get("codon_time_s")
         cpython_time = n_entry.get("cpython_time_s")
         speedup = n_entry.get("molt_speedup")
 
@@ -308,8 +341,29 @@ def _render_report(
         if speedup is not None and speedup < 1.0:
             regressions.append((name, speedup, molt_time, cpython_time))
 
+        if (
+            n_entry.get("molt_ok")
+            and n_entry.get("depyler_ok")
+            and molt_time is not None
+            and depyler_time is not None
+            and depyler_time > 0
+        ):
+            ratio = molt_time / depyler_time
+            depyler_comparisons.append((name, molt_time, depyler_time, ratio))
+        if (
+            n_entry.get("molt_ok")
+            and n_entry.get("codon_ok")
+            and molt_time is not None
+            and codon_time is not None
+            and codon_time > 0
+        ):
+            ratio = molt_time / codon_time
+            codon_comparisons.append((name, molt_time, codon_time, ratio))
+
     regressions.sort(key=lambda item: item[1])
     wasm_slowest.sort(key=lambda item: item[3], reverse=True)
+    depyler_comparisons.sort(key=lambda item: item[3], reverse=True)
+    codon_comparisons.sort(key=lambda item: item[3], reverse=True)
 
     missing_native = sorted(set(wasm_bench) - set(native_bench))
     missing_wasm = sorted(set(native_bench) - set(wasm_bench))
@@ -352,6 +406,9 @@ def _render_report(
         f"- Benchmarks: {len(names)} total; native ok {native_ok}/{len(native_bench)}; "
         f"wasm ok {wasm_ok}/{len(wasm_bench)}."
     )
+    if native_bench:
+        lines.append(f"- Depyler ok {depyler_ok}/{len(native_bench)}.")
+        lines.append(f"- Codon ok {codon_ok}/{len(native_bench)}.")
     lines.append(
         "- Median native speedup vs CPython: "
         f"{_format_ratio(_median(native_speedups))}."
@@ -363,10 +420,58 @@ def _render_report(
         f"- Median wasm/native ratio: {_format_ratio(_median(wasm_native_ratios))}."
     )
     lines.append(f"- Native regressions (< 1.0x): {len(regressions)}.")
+    if molt_only:
+        lines.append(f"- Molt ok, Depyler failed: {_format_name_list(molt_only)}.")
+    if depyler_only:
+        lines.append(f"- Depyler ok, Molt failed: {_format_name_list(depyler_only)}.")
     if missing_native:
         lines.append(f"- Missing native entries: {', '.join(missing_native)}.")
     if missing_wasm:
         lines.append(f"- Missing wasm entries: {', '.join(missing_wasm)}.")
+    lines.append("")
+
+    lines.append("## Molt & Depyler OK")
+    if both_ok:
+        lines.append(f"- Benchmarks OK in both: {len(both_ok)}.")
+        lines.append(f"- {_format_name_list(both_ok)}.")
+    else:
+        lines.append("- Benchmarks OK in both: 0.")
+    lines.append("")
+
+    lines.append("## Depyler Only")
+    if depyler_only:
+        lines.append(f"- Benchmarks OK only in Depyler: {len(depyler_only)}.")
+        lines.append(f"- {_format_name_list(depyler_only)}.")
+    else:
+        lines.append("- Benchmarks OK only in Depyler: 0.")
+    lines.append("")
+
+    lines.append("## Molt & Codon OK")
+    if both_ok_codon:
+        lines.append(f"- Benchmarks OK in both: {len(both_ok_codon)}.")
+        lines.append(f"- {_format_name_list(both_ok_codon)}.")
+    else:
+        lines.append("- Benchmarks OK in both: 0.")
+    lines.append("")
+
+    lines.append("## Codon Only")
+    if codon_only:
+        lines.append(f"- Benchmarks OK only in Codon: {len(codon_only)}.")
+        lines.append(f"- {_format_name_list(codon_only)}.")
+    else:
+        lines.append("- Benchmarks OK only in Codon: 0.")
+    lines.append("")
+
+    lines.append("## Molt Only")
+    if not molt_only and not molt_only_codon:
+        lines.append("- Benchmarks OK only in Molt: 0.")
+    else:
+        if molt_only:
+            lines.append(f"- vs Depyler: {len(molt_only)}.")
+            lines.append(f"- {_format_name_list(molt_only)}.")
+        if molt_only_codon:
+            lines.append(f"- vs Codon: {len(molt_only_codon)}.")
+            lines.append(f"- {_format_name_list(molt_only_codon)}.")
     lines.append("")
 
     lines.append("## Regressions (Native < 1.0x)")
@@ -394,18 +499,45 @@ def _render_report(
         lines.append("| - | - | - | - |")
     lines.append("")
 
+    lines.append("## Molt vs Depyler (Both OK)")
+    lines.append("| Benchmark | Molt s | Depyler s | Molt/Depyler |")
+    lines.append("| --- | --- | --- | --- |")
+    for name, molt_time, depyler_time, ratio in depyler_comparisons[:10]:
+        lines.append(
+            f"| {name} | {_format_time(molt_time)} | {_format_time(depyler_time)} | "
+            f"{_format_ratio(ratio)} |"
+        )
+    if not depyler_comparisons:
+        lines.append("| - | - | - | - |")
+    lines.append("")
+
+    lines.append("## Molt vs Codon (Both OK)")
+    lines.append("| Benchmark | Molt s | Codon s | Molt/Codon |")
+    lines.append("| --- | --- | --- | --- |")
+    for name, molt_time, codon_time, ratio in codon_comparisons[:10]:
+        lines.append(
+            f"| {name} | {_format_time(molt_time)} | {_format_time(codon_time)} | "
+            f"{_format_ratio(ratio)} |"
+        )
+    if not codon_comparisons:
+        lines.append("| - | - | - | - |")
+    lines.append("")
+
     lines.append("## Combined Table")
     lines.append(
-        "| Benchmark | Native OK | CPython s | Molt s | Speedup | "
-        "WASM OK | WASM s | WASM/Native | WASM/CPython |"
+        "| Benchmark | Native OK | Depyler OK | CPython s | Molt s | Depyler s | "
+        "Molt/Depyler | Speedup | WASM OK | WASM s | WASM/Native | WASM/CPython |"
     )
-    lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+    lines.append(
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
+    )
     for name in names:
         n_entry = native_bench.get(name, {})
         w_entry = wasm_bench.get(name, {})
 
         cpython_time = n_entry.get("cpython_time_s")
         molt_time = n_entry.get("molt_time_s")
+        depyler_time = n_entry.get("depyler_time_s")
         speedup = n_entry.get("molt_speedup")
 
         wasm_time = w_entry.get("molt_wasm_time_s")
@@ -413,13 +545,16 @@ def _render_report(
         wasm_speedup = _safe_div(cpython_time, wasm_time)
 
         native_ok_label = "yes" if n_entry.get("molt_ok") else "no"
+        depyler_ok_label = "yes" if n_entry.get("depyler_ok") else "no"
         wasm_ok_label = "yes" if w_entry.get("molt_wasm_ok") else "no"
+        depyler_ratio = _safe_div(molt_time, depyler_time)
 
         lines.append(
             "| "
-            f"{name} | {native_ok_label} | {_format_time(cpython_time)} | "
-            f"{_format_time(molt_time)} | {_format_ratio(speedup)} | "
-            f"{wasm_ok_label} | {_format_time(wasm_time)} | "
+            f"{name} | {native_ok_label} | {depyler_ok_label} | "
+            f"{_format_time(cpython_time)} | {_format_time(molt_time)} | "
+            f"{_format_time(depyler_time)} | {_format_ratio(depyler_ratio)} | "
+            f"{_format_ratio(speedup)} | {wasm_ok_label} | {_format_time(wasm_time)} | "
             f"{_format_ratio(wasm_native_ratio)} | {_format_ratio(wasm_speedup)} |"
         )
 

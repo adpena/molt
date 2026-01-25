@@ -28,6 +28,19 @@ uv run python3 tools/bench.py --warmup 2
 uv run python3 tools/bench.py --compare cpython
 ```
 
+## Native Baselines (Optional)
+
+`tools/bench.py` can compare Molt against optional native baselines using the
+same benchmark scripts (no Depyler-specific tests):
+
+- **PyPy**: auto-probed via `uv run --python pypy@3.11` (skipped if unavailable).
+- **Cython/Numba**: install with `uv sync --group bench --python 3.12` (also included in the `dev` group).
+- **Codon**: install `codon` and ensure it is on PATH.
+- **Depyler**: install via `cargo install depyler`.
+
+Disable any baseline with `--no-pypy`, `--no-cython`, `--no-numba`, `--no-codon`,
+or `--no-depyler`.
+
 ## Combined Native + WASM Report
 
 After writing `bench/results/bench.json` and `bench/results/bench_wasm.json` (or
