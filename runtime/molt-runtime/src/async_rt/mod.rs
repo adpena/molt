@@ -23,7 +23,7 @@ pub(crate) use cancellation::{
 #[allow(unused_imports)]
 pub(crate) use scheduler::{
     async_trace_enabled, asyncgen_registry, await_waiter_clear, await_waiter_register,
-    await_waiters_take, block_on_wait_spec, current_task_key, current_task_ptr, fn_ptr_code_get,
+    await_waiters, await_waiters_take, block_on_wait_spec, current_task_key, current_task_ptr, fn_ptr_code_get,
     fn_ptr_code_set, instant_from_monotonic_secs, molt_block_on, molt_spawn,
     monotonic_now_nanos, monotonic_now_secs, record_async_poll,
     task_exception_depths, task_exception_handler_stacks,
