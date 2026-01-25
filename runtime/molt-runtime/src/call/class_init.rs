@@ -367,7 +367,7 @@ pub(crate) unsafe fn try_call_generator(
             b"__molt_is_generator__",
         ),
     )
-    .is_some_and(|bits| is_truthy(obj_from_bits(bits)));
+    .is_some_and(|bits| is_truthy(_py, obj_from_bits(bits)));
     if !is_gen {
         return None;
     }

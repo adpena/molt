@@ -12,17 +12,25 @@ use crossbeam_deque::{Injector, Stealer, Worker};
 use crate::state::clear_worker_thread_state;
 use crate::{
     call_poll_fn, exception_context_align_depth, exception_context_fallback_pop,
-    exception_context_fallback_push, exception_stack_depth, exception_stack_set_depth,
-    header_from_obj_ptr, inc_ref_bits, io_wait_poll_fn_addr, obj_from_bits, pending_bits_i64,
+    exception_context_fallback_push, exception_pending, exception_stack_depth,
+    exception_stack_set_depth, header_from_obj_ptr, inc_ref_bits, dec_ref_bits,
+    io_wait_poll_fn_addr, maybe_ptr_from_bits, molt_exception_last, obj_from_bits,
+    pending_bits_i64,
     process_poll_fn_addr, profile_hit, promise_poll_fn_addr, ptr_from_bits, raise_exception,
-    resolve_task_ptr, runtime_state, set_task_raise_active, task_exception_depth_store,
+    record_exception, resolve_task_ptr, runtime_state, set_task_raise_active,
+    task_exception_depth_store,
     task_exception_depth_take, task_exception_handler_stack_store, task_exception_handler_stack_take,
     task_exception_stack_store, task_exception_stack_take, task_raise_active, thread_poll_fn_addr,
-    to_i64, with_gil, GilGuard, GilReleaseGuard, IoPoller, MoltHeader, MoltObject,
-    ProcessTaskState, PtrSlot, ThreadTaskState, ACTIVE_EXCEPTION_STACK, ASYNCGEN_REGISTRY,
-    ASYNC_PENDING_COUNT, ASYNC_POLL_COUNT, ASYNC_SLEEP_REGISTER_COUNT, ASYNC_WAKEUP_COUNT,
-    EXCEPTION_STACK, FN_PTR_CODE, GIL_DEPTH, HEADER_FLAG_SPAWN_RETAIN,
+    to_i64, with_gil, GilGuard, GilReleaseGuard, MoltHeader, MoltObject,
+    PtrSlot, ACTIVE_EXCEPTION_STACK, ASYNCGEN_REGISTRY, ASYNC_PENDING_COUNT, ASYNC_POLL_COUNT,
+    ASYNC_SLEEP_REGISTER_COUNT, ASYNC_WAKEUP_COUNT,
+    EXCEPTION_STACK, FN_PTR_CODE, GIL_DEPTH, HEADER_FLAG_BLOCK_ON, HEADER_FLAG_SPAWN_RETAIN,
 };
+
+#[cfg(not(target_arch = "wasm32"))]
+use crate::IoPoller;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::{ProcessTaskState, ThreadTaskState};
 
 use super::cancellation::{
     cancel_tokens, clear_task_token, current_token_id, ensure_task_token,
@@ -71,6 +79,19 @@ pub(crate) fn async_trace_enabled() -> bool {
         let value = std::env::var("MOLT_ASYNC_TRACE").unwrap_or_default();
         let trimmed = value.trim().to_ascii_lowercase();
         !trimmed.is_empty() && trimmed != "0" && trimmed != "false"
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn async_worker_threads() -> usize {
+    static THREADS: OnceLock<usize> = OnceLock::new();
+    *THREADS.get_or_init(|| {
+        let max_threads = num_cpus::get().max(1);
+        let parsed = std::env::var("MOLT_ASYNC_THREADS")
+            .ok()
+            .and_then(|val| val.trim().parse::<usize>().ok())
+            .filter(|val| *val > 0);
+        parsed.unwrap_or(1).min(max_threads)
     })
 }
 
@@ -706,6 +727,12 @@ pub(crate) fn sleep_worker(queue: Arc<SleepQueue>) {
                 task_ptr as usize
             );
         }
+        unsafe {
+            let header = header_from_obj_ptr(task_ptr);
+            if ((*header).flags & HEADER_FLAG_BLOCK_ON) != 0 {
+                continue;
+            }
+        }
         runtime_state(&py).scheduler().enqueue(MoltTask {
             future_ptr: task_ptr,
         });
@@ -751,7 +778,7 @@ impl MoltScheduler {
         #[cfg(target_arch = "wasm32")]
         let num_threads = 0usize;
         #[cfg(not(target_arch = "wasm32"))]
-        let num_threads = num_cpus::get().max(1);
+        let num_threads = async_worker_threads();
         let injector = Arc::new(Injector::new());
         let mut workers = Vec::new();
         let mut stealers = Vec::new();
@@ -1095,6 +1122,12 @@ pub(crate) fn wake_task_ptr(_py: &PyToken<'_>, task_ptr: *mut u8) {
     }
     let sleep_queue = runtime_state(_py).sleep_queue();
     sleep_queue.cancel_task(_py, task_ptr);
+    unsafe {
+        let header = header_from_obj_ptr(task_ptr);
+        if ((*header).flags & HEADER_FLAG_BLOCK_ON) != 0 {
+            return;
+        }
+    }
     runtime_state(_py).scheduler().enqueue(MoltTask {
         future_ptr: task_ptr,
     });
@@ -1191,6 +1224,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
         });
         let task_depth = task_exception_depth_take(_py, task_ptr);
         exception_stack_set_depth(_py, task_depth);
+        (*header).flags |= HEADER_FLAG_BLOCK_ON;
         BLOCK_ON_TASK.with(|cell| cell.set(task_ptr));
         let prev_raise = task_raise_active();
         set_task_raise_active(true);
@@ -1294,6 +1328,23 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
         });
         exception_stack_set_depth(_py, caller_depth);
         exception_context_fallback_pop();
+        if exception_pending(_py) {
+            let exc_bits = molt_exception_last();
+            if let Some(exc_ptr) = maybe_ptr_from_bits(exc_bits) {
+                let restore_task = CURRENT_TASK.with(|cell| {
+                    let restore = cell.get();
+                    cell.set(prev_task);
+                    restore
+                });
+                record_exception(_py, exc_ptr);
+                CURRENT_TASK.with(|cell| cell.set(restore_task));
+            }
+            if !obj_from_bits(exc_bits).is_none() {
+                dec_ref_bits(_py, exc_bits);
+            }
+        }
+        let header = header_from_obj_ptr(task_ptr);
+        (*header).flags &= !HEADER_FLAG_BLOCK_ON;
         BLOCK_ON_TASK.with(|cell| cell.set(std::ptr::null_mut()));
         set_task_raise_active(prev_raise);
         set_current_token(_py, prev_token);

@@ -1445,7 +1445,7 @@ pub unsafe extern "C" fn molt_set_attr_generic(
             if attr_name == "__annotate__" {
                 let val_obj = obj_from_bits(val_bits);
                 if !val_obj.is_none() {
-                    let callable_ok = is_truthy(obj_from_bits(molt_is_callable(val_bits)));
+                    let callable_ok = is_truthy(_py, obj_from_bits(molt_is_callable(val_bits)));
                     if !callable_ok {
                         return raise_exception::<_>(
                             _py,
@@ -1596,7 +1596,7 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                 return MoltObject::none().bits() as i64;
             }
             if name == "__suppress_context__" {
-                let suppress = is_truthy(obj_from_bits(val_bits));
+                let suppress = is_truthy(_py, obj_from_bits(val_bits));
                 let suppress_bits = MoltObject::from_bool(suppress).bits();
                 unsafe {
                     let slot = obj_ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64;
@@ -1709,7 +1709,7 @@ pub unsafe extern "C" fn molt_set_attr_generic(
             if attr_name == "__annotate__" {
                 let val_obj = obj_from_bits(val_bits);
                 if !val_obj.is_none() {
-                    let callable_ok = is_truthy(obj_from_bits(molt_is_callable(val_bits)));
+                    let callable_ok = is_truthy(_py, obj_from_bits(molt_is_callable(val_bits)));
                     if !callable_ok {
                         return raise_exception::<_>(
                             _py,

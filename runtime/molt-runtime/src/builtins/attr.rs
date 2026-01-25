@@ -245,7 +245,7 @@ pub(crate) unsafe fn module_attr_lookup(
         let mut cache = false;
         if complete_name_bits != 0 {
             if let Some(complete_bits) = dict_get_in_place(_py, dict_ptr, complete_name_bits) {
-                cache = is_truthy(obj_from_bits(complete_bits));
+                cache = is_truthy(_py, obj_from_bits(complete_bits));
             }
             dec_ref_bits(_py, complete_name_bits);
         }

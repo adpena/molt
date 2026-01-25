@@ -181,7 +181,7 @@ pub unsafe extern "C" fn molt_callargs_expand_star(builder_bits: u64, iterable_b
                 return MoltObject::none().bits();
             }
             let done_bits = elems[1];
-            if is_truthy(obj_from_bits(done_bits)) {
+            if is_truthy(_py, obj_from_bits(done_bits)) {
                 break;
             }
             let val_bits = elems[0];
@@ -254,7 +254,7 @@ pub unsafe extern "C" fn molt_callargs_expand_kwstar(builder_bits: u64, mapping_
                 return MoltObject::none().bits();
             }
             let done_bits = elems[1];
-            if is_truthy(obj_from_bits(done_bits)) {
+            if is_truthy(_py, obj_from_bits(done_bits)) {
                 break;
             }
             let key_bits = elems[0];
@@ -778,7 +778,7 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                     b"__molt_is_generator__",
                 ),
             )
-            .is_some_and(|bits| is_truthy(obj_from_bits(bits)));
+            .is_some_and(|bits| is_truthy(_py, obj_from_bits(bits)));
             if is_gen {
                 let size_bits = function_attr_bits(
                     _py,

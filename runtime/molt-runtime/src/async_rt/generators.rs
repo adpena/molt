@@ -9,28 +9,34 @@ use crate::object::accessors::resolve_obj_ptr;
 use crate::{
     alloc_exception, alloc_object, alloc_tuple, async_sleep_poll_fn_addr, async_trace_enabled,
     asyncgen_poll_fn_addr, asyncgen_registry, await_waiter_clear, await_waiter_register,
-    await_waiters_take, call_poll_fn, class_name_for_error, clear_exception, current_task_ptr,
-    dec_ref_bits, exception_context_align_depth, exception_context_fallback_pop,
+    await_waiters_take, call_poll_fn, class_name_for_error, clear_exception,
+    clear_exception_state, current_task_ptr, dec_ref_bits, exception_context_align_depth,
+    exception_context_fallback_pop,
     exception_context_fallback_push, exception_pending, exception_stack_depth,
     exception_stack_set_depth, fn_ptr_code_get, generator_exception_stack_store,
     generator_exception_stack_take, generator_raise_active, header_from_obj_ptr, inc_ref_bits,
-    instant_from_monotonic_secs, io_wait_poll_fn_addr, is_block_on_task, maybe_ptr_from_bits,
+    instant_from_monotonic_secs, io_wait_poll_fn_addr, maybe_ptr_from_bits,
     molt_anext, molt_exception_clear, molt_exception_kind, molt_exception_last,
+    molt_exception_set_last,
     molt_float_from_obj, molt_raise, obj_from_bits, object_class_bits, object_mark_has_ptrs,
-    object_type_id, pending_bits_i64, process_poll_fn_addr, process_task_state,
+    object_type_id, pending_bits_i64, process_poll_fn_addr,
     promise_poll_fn_addr, ptr_from_bits, raise_cancelled_with_message, raise_exception,
-    record_exception, register_task_token, resolve_task_ptr, runtime_state, set_generator_raise,
+    register_task_token, resolve_task_ptr, runtime_state, set_generator_raise,
     string_obj_to_owned, task_cancel_message_clear, task_cancel_message_set, task_cancel_pending,
     task_exception_depth_drop, task_exception_stack_drop, task_has_token, task_last_exceptions,
     task_set_cancel_pending, task_take_cancel_pending, task_waiting_on, thread_poll_fn_addr,
-    thread_task_state, to_f64, to_i64, token_id_from_bits, type_name, wake_task_ptr, MoltHeader,
+    to_f64, to_i64, token_id_from_bits, type_name, wake_task_ptr, MoltHeader,
     PtrSlot, ACTIVE_EXCEPTION_STACK, ASYNCGEN_CONTROL_SIZE, ASYNCGEN_GEN_OFFSET,
     ASYNCGEN_OP_ACLOSE, ASYNCGEN_OP_ANEXT, ASYNCGEN_OP_ASEND, ASYNCGEN_OP_ATHROW,
     ASYNCGEN_PENDING_OFFSET, ASYNCGEN_RUNNING_OFFSET, GEN_CLOSED_OFFSET, GEN_CONTROL_SIZE,
-    GEN_EXC_DEPTH_OFFSET, GEN_SEND_OFFSET, GEN_THROW_OFFSET, HEADER_FLAG_GEN_RUNNING,
-    HEADER_FLAG_GEN_STARTED, HEADER_FLAG_SPAWN_RETAIN, TASK_KIND_FUTURE, TASK_KIND_GENERATOR,
+    GEN_EXC_DEPTH_OFFSET, GEN_SEND_OFFSET, GEN_THROW_OFFSET, HEADER_FLAG_BLOCK_ON,
+    HEADER_FLAG_GEN_RUNNING, HEADER_FLAG_GEN_STARTED, HEADER_FLAG_SPAWN_RETAIN, TASK_KIND_FUTURE,
+    TASK_KIND_GENERATOR,
     TYPE_ID_ASYNC_GENERATOR, TYPE_ID_EXCEPTION, TYPE_ID_GENERATOR, TYPE_ID_OBJECT, TYPE_ID_TUPLE,
 };
+
+#[cfg(not(target_arch = "wasm32"))]
+use crate::{is_block_on_task, process_task_state, thread_task_state};
 
 unsafe fn generator_slot_ptr(ptr: *mut u8, offset: usize) -> *mut u64 {
     ptr.add(offset) as *mut u64
@@ -815,6 +821,13 @@ pub extern "C" fn molt_asyncgen_aclose(asyncgen_bits: u64) -> u64 {
 #[no_mangle]
 pub extern "C" fn molt_asyncgen_shutdown() -> u64 {
     crate::with_gil_entry!(_py, {
+        let prior_exc_bits = if exception_pending(_py) {
+            let exc_bits = molt_exception_last();
+            molt_exception_clear();
+            Some(exc_bits)
+        } else {
+            None
+        };
         let gens = asyncgen_registry_take(_py);
         for gen_bits in gens {
             let future_bits = molt_asyncgen_aclose(gen_bits);
@@ -830,6 +843,10 @@ pub extern "C" fn molt_asyncgen_shutdown() -> u64 {
                 dec_ref_bits(_py, future_bits);
             }
             dec_ref_bits(_py, gen_bits);
+        }
+        if let Some(exc_bits) = prior_exc_bits {
+            let _ = molt_exception_set_last(exc_bits);
+            dec_ref_bits(_py, exc_bits);
         }
         MoltObject::none().bits()
     })
@@ -1001,8 +1018,8 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
             }
             dec_ref_bits(_py, res_bits);
             if op == ASYNCGEN_OP_ACLOSE {
-                generator_set_closed(_py, gen_ptr, true);
                 if done {
+                    generator_set_closed(_py, gen_ptr, true);
                     return MoltObject::none().bits() as i64;
                 }
                 if !obj_from_bits(arg_bits).is_none() {
@@ -1099,7 +1116,12 @@ pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
             let current_task = current_task_ptr();
             if res == pending_bits_i64() {
                 if !current_task.is_null() && ptr != current_task {
-                    await_waiter_register(_py, current_task, ptr);
+                    let current_header = header_from_obj_ptr(current_task);
+                    let spawned = ((*current_header).flags & HEADER_FLAG_SPAWN_RETAIN) != 0;
+                    let block_on = ((*current_header).flags & HEADER_FLAG_BLOCK_ON) != 0;
+                    if spawned || block_on {
+                        await_waiter_register(_py, current_task, ptr);
+                    }
                 }
             } else if !current_task.is_null() {
                 await_waiter_clear(_py, current_task);
@@ -1117,7 +1139,11 @@ pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
                     guard.get(&PtrSlot(ptr)).copied()
                 };
                 if let Some(exc_ptr) = awaited_exception {
-                    record_exception(_py, exc_ptr.0);
+                    let exc_bits = MoltObject::from_ptr(exc_ptr.0).bits();
+                    inc_ref_bits(_py, exc_bits);
+                    let raised = molt_raise(exc_bits);
+                    dec_ref_bits(_py, exc_bits);
+                    return raised as i64;
                 } else {
                     let prev_task = crate::CURRENT_TASK.with(|cell| {
                         let prev = cell.get();
@@ -1130,11 +1156,23 @@ pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
                         MoltObject::none().bits()
                     };
                     crate::CURRENT_TASK.with(|cell| cell.set(prev_task));
-                    if let Some(exc_ptr) = maybe_ptr_from_bits(exc_bits) {
-                        record_exception(_py, exc_ptr);
-                    }
-                    if !obj_from_bits(exc_bits).is_none() {
+                    if obj_from_bits(exc_bits).is_none() {
+                        let global_exc = {
+                            let guard = runtime_state(_py).last_exception.lock().unwrap();
+                            guard.map(|ptr| ptr.0)
+                        };
+                        if let Some(exc_ptr) = global_exc {
+                            let exc_bits = MoltObject::from_ptr(exc_ptr).bits();
+                            inc_ref_bits(_py, exc_bits);
+                            let raised = molt_raise(exc_bits);
+                            dec_ref_bits(_py, exc_bits);
+                            clear_exception_state(_py);
+                            return raised as i64;
+                        }
+                    } else {
+                        let raised = molt_raise(exc_bits);
                         dec_ref_bits(_py, exc_bits);
+                        return raised as i64;
                     }
                 }
             }
@@ -1259,10 +1297,10 @@ pub extern "C" fn molt_promise_new() -> u64 {
 #[no_mangle]
 pub unsafe extern "C" fn molt_promise_poll(obj_bits: u64) -> i64 {
     crate::with_gil_entry!(_py, {
-        let obj = obj_from_bits(obj_bits);
-        let Some(ptr) = obj.as_ptr() else {
+        let ptr = ptr_from_bits(obj_bits);
+        if ptr.is_null() {
             return MoltObject::none().bits() as i64;
-        };
+        }
         let header = header_from_obj_ptr(ptr);
         match (*header).state {
             0 => pending_bits_i64(),
@@ -1534,6 +1572,13 @@ pub unsafe extern "C" fn molt_sleep_register(task_ptr: *mut u8, future_ptr: *mut
         let deadline = instant_from_monotonic_secs(_py, deadline_secs);
         if deadline <= Instant::now() {
             return 0;
+        }
+        let task_header = header_from_obj_ptr(task_ptr);
+        if ((*task_header).flags & HEADER_FLAG_BLOCK_ON) != 0 {
+            runtime_state(_py)
+                .sleep_queue()
+                .register_blocking(_py, task_ptr, deadline);
+            return 1;
         }
         #[cfg(target_arch = "wasm32")]
         {

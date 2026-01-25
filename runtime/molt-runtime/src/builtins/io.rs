@@ -681,7 +681,7 @@ fn open_impl(
         return MoltObject::none().bits();
     }
 
-    let closefd = is_truthy(obj_from_bits(closefd_bits));
+    let closefd = is_truthy(_py, obj_from_bits(closefd_bits));
     let opener_obj = obj_from_bits(opener_bits);
     let opener_is_none = opener_obj.is_none();
 
@@ -734,7 +734,7 @@ fn open_impl(
     } else if let Some(path) = path {
         let flags = file_mode_to_flags(&mode_info);
         if !opener_is_none {
-            if !is_truthy(obj_from_bits(molt_is_callable(opener_bits))) {
+            if !is_truthy(_py, obj_from_bits(molt_is_callable(opener_bits))) {
                 let type_name = class_name_for_error(type_of_bits(_py, opener_bits));
                 let msg = format!("'{type_name}' object is not callable");
                 return raise_exception::<_>(_py, "TypeError", &msg);
@@ -2572,7 +2572,7 @@ pub extern "C" fn molt_file_writelines(handle_bits: u64, lines_bits: u64) -> u64
                     return MoltObject::none().bits();
                 }
                 let done_bits = elems[1];
-                if is_truthy(obj_from_bits(done_bits)) {
+                if is_truthy(_py, obj_from_bits(done_bits)) {
                     break;
                 }
                 let line_bits = elems[0];

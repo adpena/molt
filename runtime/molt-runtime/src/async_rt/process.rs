@@ -1,4 +1,6 @@
-use super::{await_waiters_take, process_task_state, wake_task_ptr};
+use super::{await_waiters_take, wake_task_ptr};
+#[cfg(not(target_arch = "wasm32"))]
+use super::process_task_state;
 use crate::*;
 
 #[cfg(not(target_arch = "wasm32"))]

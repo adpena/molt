@@ -444,7 +444,7 @@ pub(crate) unsafe fn memoryview_write_scalar(
             Some(())
         }
         MemoryViewFormatKind::Bool => {
-            data[offset] = if is_truthy(obj_from_bits(val_bits)) {
+            data[offset] = if is_truthy(_py, obj_from_bits(val_bits)) {
                 1
             } else {
                 0

@@ -895,6 +895,7 @@ impl WasmBackend {
         add_import("context_closing", 2, &mut self.import_ids);
         add_import("exception_push", 0, &mut self.import_ids);
         add_import("exception_pop", 0, &mut self.import_ids);
+        add_import("exception_stack_clear", 0, &mut self.import_ids);
         add_import("exception_last", 0, &mut self.import_ids);
         add_import("exception_active", 0, &mut self.import_ids);
         add_import("exception_new", 3, &mut self.import_ids);
@@ -5495,6 +5496,10 @@ impl WasmBackend {
                     }
                     "exception_pop" => {
                         emit_call(func, reloc_enabled, import_ids["exception_pop"]);
+                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                    }
+                    "exception_stack_clear" => {
+                        emit_call(func, reloc_enabled, import_ids["exception_stack_clear"]);
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                     }
                     "exception_last" => {

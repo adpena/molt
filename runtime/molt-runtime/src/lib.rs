@@ -41,21 +41,29 @@ pub(crate) use molt_obj_model::MoltObject;
 pub(crate) use crate::async_rt::channels::has_capability;
 pub use crate::async_rt::channels::*;
 pub use crate::async_rt::generators::*;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use crate::async_rt::io_poller::IoPoller;
+#[cfg(not(target_arch = "wasm32"))]
 pub use crate::async_rt::io_poller::*;
 pub use crate::async_rt::process::*;
 pub(crate) use crate::async_rt::scheduler::BLOCK_ON_TASK;
 pub use crate::async_rt::sockets::*;
 pub(crate) use crate::async_rt::sockets::{
-    argv_from_bits, env_from_bits, io_wait_release_socket, require_net_capability,
-    require_process_capability, require_time_wall_capability,
+    io_wait_release_socket,
+};
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use crate::async_rt::sockets::{
+    argv_from_bits, env_from_bits, require_net_capability, require_process_capability,
+    require_time_wall_capability,
 };
 pub use crate::async_rt::threads::*;
 pub(crate) use crate::async_rt::{
     anext_default_poll_fn_addr, async_sleep_poll_fn_addr, asyncgen_poll_fn_addr, call_poll_fn,
-    io_wait_poll_fn_addr, is_block_on_task, molt_block_on, poll_future_with_task_stack,
-    process_poll_fn_addr, resolve_task_ptr, thread_poll_fn_addr,
+    io_wait_poll_fn_addr, molt_block_on, poll_future_with_task_stack, process_poll_fn_addr,
+    resolve_task_ptr, thread_poll_fn_addr,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use crate::async_rt::is_block_on_task;
 pub(crate) use crate::builtins::attr::{
     attr_error, attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, class_attr_lookup,
     class_attr_lookup_raw_mro, class_field_offset, dataclass_attr_lookup_raw, descriptor_bind,
@@ -96,7 +104,8 @@ pub(crate) use crate::builtins::exceptions::{
     format_exception_message, frame_stack_pop, frame_stack_push, frame_stack_set_line,
     generator_exception_stack_drop, generator_exception_stack_store,
     generator_exception_stack_take, generator_raise_active, molt_exception_clear,
-    molt_exception_kind, molt_exception_last, molt_raise, raise_exception,
+    molt_exception_kind, molt_exception_last, molt_exception_set_last, molt_raise,
+    raise_exception,
     raise_key_error_with_key, raise_not_iterable, raise_unsupported_inplace, record_exception,
     set_generator_raise, set_task_raise_active, task_exception_depth_drop,
     task_exception_depth_store, task_exception_depth_take, task_exception_handler_stack_drop,
@@ -216,8 +225,9 @@ pub(crate) use crate::object::{
     object_mark_has_ptrs, object_payload_size, object_set_class_bits, object_type_id,
     pending_bits_i64, ptr_from_bits, string_bytes, string_len, Buffer2D, DataclassDesc, MemoryView,
     MemoryViewFormat, MemoryViewFormatKind, MoltFileHandle, MoltFileState, PtrSlot,
-    HEADER_FLAG_CANCEL_PENDING, HEADER_FLAG_GEN_RUNNING, HEADER_FLAG_GEN_STARTED,
-    HEADER_FLAG_SKIP_CLASS_DECREF, HEADER_FLAG_SPAWN_RETAIN, OBJECT_POOL_BUCKETS, OBJECT_POOL_TLS,
+    HEADER_FLAG_BLOCK_ON, HEADER_FLAG_CANCEL_PENDING, HEADER_FLAG_GEN_RUNNING,
+    HEADER_FLAG_GEN_STARTED, HEADER_FLAG_SKIP_CLASS_DECREF, HEADER_FLAG_SPAWN_RETAIN,
+    OBJECT_POOL_BUCKETS, OBJECT_POOL_TLS,
 };
 pub use crate::object::{molt_dec_ref, molt_inc_ref, MoltHeader};
 #[allow(unused_imports)]

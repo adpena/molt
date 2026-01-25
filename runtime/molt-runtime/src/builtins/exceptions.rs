@@ -369,11 +369,7 @@ pub(crate) unsafe fn exception_dict_bits(ptr: *mut u8) -> u64 {
 pub(crate) fn exception_pending(_py: &PyToken<'_>) -> bool {
     if let Some(task_key) = current_task_key() {
         let guard = task_last_exceptions(_py).lock().unwrap();
-        if guard.contains_key(&task_key) {
-            return true;
-        }
-        drop(guard);
-        return runtime_state(_py).last_exception.lock().unwrap().is_some();
+        return guard.contains_key(&task_key);
     }
     runtime_state(_py).last_exception.lock().unwrap().is_some()
 }
@@ -731,6 +727,37 @@ pub(crate) fn record_exception(_py: &PyToken<'_>, ptr: *mut u8) {
         let mut guard = runtime_state(_py).last_exception.lock().unwrap();
         *guard = Some(PtrSlot(ptr));
     }
+    if std::env::var("MOLT_DEBUG_EXCEPTIONS").as_deref() == Ok("1") {
+        let kind_bits = unsafe { exception_kind_bits(ptr) };
+        let kind = string_obj_to_owned(obj_from_bits(kind_bits)).unwrap_or_else(|| {
+            "<unknown>".to_string()
+        });
+        let msg = {
+            let args_bits = unsafe { exception_args_bits(ptr) };
+            let args_obj = obj_from_bits(args_bits);
+            let mut out = String::new();
+            if let Some(args_ptr) = args_obj.as_ptr() {
+                unsafe {
+                    if object_type_id(args_ptr) == TYPE_ID_TUPLE {
+                        let elems = seq_vec_ref(args_ptr);
+                        if let Some(&first) = elems.first() {
+                            out = format_obj_str(_py, obj_from_bits(first));
+                        }
+                    }
+                }
+            }
+            out
+        };
+        let task = task_key.map(|slot| slot.0 as usize).unwrap_or(0);
+        if msg.is_empty() {
+            eprintln!("molt exc record task=0x{:x} kind={}", task, kind);
+        } else {
+            eprintln!(
+                "molt exc record task=0x{:x} kind={} msg={}",
+                task, kind, msg
+            );
+        }
+    }
     let new_bits = MoltObject::from_ptr(ptr).bits();
     if !same_ptr {
         inc_ref_bits(_py, new_bits);
@@ -1038,7 +1065,7 @@ pub(crate) fn exception_args_from_iterable(_py: &PyToken<'_>, bits: u64) -> u64 
             if pair.len() < 2 {
                 return MoltObject::none().bits();
             }
-            if is_truthy(obj_from_bits(pair[1])) {
+            if is_truthy(_py, obj_from_bits(pair[1])) {
                 break;
             }
             elems.push(pair[0]);
@@ -1122,7 +1149,11 @@ fn oserror_subclass_for_errno(errno: i64) -> Option<&'static str> {
     if errno == libc::ECHILD as i64 {
         return Some("ChildProcessError");
     }
-    if errno == libc::EPIPE as i64 || errno == libc::ESHUTDOWN as i64 {
+    if errno == libc::EPIPE as i64 {
+        return Some("BrokenPipeError");
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if errno == libc::ESHUTDOWN as i64 {
         return Some("BrokenPipeError");
     }
     if errno == libc::ECONNABORTED as i64 {
@@ -2131,14 +2162,6 @@ pub extern "C" fn molt_exception_last() -> u64 {
                 inc_ref_bits(_py, bits);
                 return bits;
             }
-            drop(guard);
-            let guard = runtime_state(_py).last_exception.lock().unwrap();
-            if let Some(ptr) = *guard {
-                let bits = MoltObject::from_ptr(ptr.0).bits();
-                inc_ref_bits(_py, bits);
-                return bits;
-            }
-            return MoltObject::none().bits();
         }
         let guard = runtime_state(_py).last_exception.lock().unwrap();
         if let Some(ptr) = *guard {
@@ -2192,6 +2215,14 @@ pub extern "C" fn molt_exception_push() -> u64 {
 pub extern "C" fn molt_exception_pop() -> u64 {
     crate::with_gil_entry!(_py, {
         exception_stack_pop(_py);
+        MoltObject::none().bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_exception_stack_clear() -> u64 {
+    crate::with_gil_entry!(_py, {
+        exception_stack_set_depth(_py, 0);
         MoltObject::none().bits()
     })
 }

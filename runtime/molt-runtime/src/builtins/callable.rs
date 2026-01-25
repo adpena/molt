@@ -45,7 +45,7 @@ pub extern "C" fn molt_function_is_generator(func_bits: u64) -> u64 {
             let Some(bits) = function_attr_bits(_py, ptr, name_bits) else {
                 return MoltObject::from_bool(false).bits();
             };
-            MoltObject::from_bool(is_truthy(obj_from_bits(bits))).bits()
+            MoltObject::from_bool(is_truthy(_py, obj_from_bits(bits))).bits()
         }
     })
 }
@@ -69,7 +69,7 @@ pub extern "C" fn molt_function_is_coroutine(func_bits: u64) -> u64 {
             let Some(bits) = function_attr_bits(_py, ptr, name_bits) else {
                 return MoltObject::from_bool(false).bits();
             };
-            MoltObject::from_bool(is_truthy(obj_from_bits(bits))).bits()
+            MoltObject::from_bool(is_truthy(_py, obj_from_bits(bits))).bits()
         }
     })
 }

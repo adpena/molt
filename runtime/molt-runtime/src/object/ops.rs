@@ -273,21 +273,21 @@ pub extern "C" fn molt_slice_eq(slice_bits: u64, other_bits: u64) -> u64 {
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
-            if !is_truthy(obj_from_bits(start_eq)) {
+            if !is_truthy(_py, obj_from_bits(start_eq)) {
                 return MoltObject::from_bool(false).bits();
             }
             let stop_eq = molt_eq(slice_stop_bits(slice_ptr), slice_stop_bits(other_ptr));
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
-            if !is_truthy(obj_from_bits(stop_eq)) {
+            if !is_truthy(_py, obj_from_bits(stop_eq)) {
                 return MoltObject::from_bool(false).bits();
             }
             let step_eq = molt_eq(slice_step_bits(slice_ptr), slice_step_bits(other_ptr));
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
-            if !is_truthy(obj_from_bits(step_eq)) {
+            if !is_truthy(_py, obj_from_bits(step_eq)) {
                 return MoltObject::from_bool(false).bits();
             }
             MoltObject::from_bool(true).bits()
@@ -2429,7 +2429,7 @@ fn rich_compare_bool(
                 if is_not_implemented_bits(_py, res_bits) {
                     dec_ref_bits(_py, res_bits);
                 } else {
-                    let truthy = is_truthy(obj_from_bits(res_bits));
+                    let truthy = is_truthy(_py, obj_from_bits(res_bits));
                     dec_ref_bits(_py, res_bits);
                     return if truthy {
                         CompareBoolOutcome::True
@@ -2454,7 +2454,7 @@ fn rich_compare_bool(
                 if is_not_implemented_bits(_py, res_bits) {
                     dec_ref_bits(_py, res_bits);
                 } else {
-                    let truthy = is_truthy(obj_from_bits(res_bits));
+                    let truthy = is_truthy(_py, obj_from_bits(res_bits));
                     dec_ref_bits(_py, res_bits);
                     return if truthy {
                         CompareBoolOutcome::True
@@ -2629,7 +2629,7 @@ pub extern "C" fn molt_ne(a: u64, b: u64) -> u64 {
                             saw_explicit = true;
                         }
                     } else {
-                        let truthy = is_truthy(obj_from_bits(res_bits));
+                        let truthy = is_truthy(_py, obj_from_bits(res_bits));
                         dec_ref_bits(_py, res_bits);
                         return MoltObject::from_bool(truthy).bits();
                     }
@@ -2653,7 +2653,7 @@ pub extern "C" fn molt_ne(a: u64, b: u64) -> u64 {
                             saw_explicit = true;
                         }
                     } else {
-                        let truthy = is_truthy(obj_from_bits(res_bits));
+                        let truthy = is_truthy(_py, obj_from_bits(res_bits));
                         dec_ref_bits(_py, res_bits);
                         return MoltObject::from_bool(truthy).bits();
                     }
@@ -3282,7 +3282,7 @@ pub extern "C" fn molt_guard_type(val_bits: u64, expected_bits: u64) -> u64 {
 #[no_mangle]
 pub extern "C" fn molt_is_truthy(val: u64) -> i64 {
     crate::with_gil_entry!(_py, {
-        if is_truthy(obj_from_bits(val)) {
+        if is_truthy(_py, obj_from_bits(val)) {
             1
         } else {
             0
@@ -3293,7 +3293,7 @@ pub extern "C" fn molt_is_truthy(val: u64) -> i64 {
 #[no_mangle]
 pub extern "C" fn molt_not(val: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        MoltObject::from_bool(!is_truthy(obj_from_bits(val))).bits()
+        MoltObject::from_bool(!is_truthy(_py, obj_from_bits(val))).bits()
     })
 }
 
@@ -4922,7 +4922,7 @@ fn collect_iterable_values(_py: &PyToken<'_>, bits: u64, err_msg: &str) -> Optio
                 return None;
             }
             let done_bits = elems[1];
-            if is_truthy(obj_from_bits(done_bits)) {
+            if is_truthy(_py, obj_from_bits(done_bits)) {
                 break;
             }
             out.push(elems[0]);
@@ -5652,7 +5652,7 @@ pub extern "C" fn molt_next_builtin(iter_bits: u64, default_bits: u64) -> u64 {
             }
             let val_bits = elems[0];
             let done_bits = elems[1];
-            if is_truthy(obj_from_bits(done_bits)) {
+            if is_truthy(_py, obj_from_bits(done_bits)) {
                 if default_bits != missing {
                     inc_ref_bits(_py, default_bits);
                     return default_bits;
@@ -5694,10 +5694,10 @@ pub extern "C" fn molt_any_builtin(iter_bits: u64) -> u64 {
                 }
                 let val_bits = elems[0];
                 let done_bits = elems[1];
-                if is_truthy(obj_from_bits(done_bits)) {
+                if is_truthy(_py, obj_from_bits(done_bits)) {
                     return MoltObject::from_bool(false).bits();
                 }
-                if is_truthy(obj_from_bits(val_bits)) {
+                if is_truthy(_py, obj_from_bits(val_bits)) {
                     return MoltObject::from_bool(true).bits();
                 }
             }
@@ -5728,10 +5728,10 @@ pub extern "C" fn molt_all_builtin(iter_bits: u64) -> u64 {
                 }
                 let val_bits = elems[0];
                 let done_bits = elems[1];
-                if is_truthy(obj_from_bits(done_bits)) {
+                if is_truthy(_py, obj_from_bits(done_bits)) {
                     return MoltObject::from_bool(true).bits();
                 }
-                if !is_truthy(obj_from_bits(val_bits)) {
+                if !is_truthy(_py, obj_from_bits(val_bits)) {
                     return MoltObject::from_bool(false).bits();
                 }
             }
@@ -5914,7 +5914,7 @@ fn molt_minmax_builtin(
             }
             let val_bits = elems[0];
             let done_bits = elems[1];
-            if is_truthy(obj_from_bits(done_bits)) {
+            if is_truthy(_py, obj_from_bits(done_bits)) {
                 if has_default {
                     inc_ref_bits(_py, default_bits);
                     return default_bits;
@@ -5946,7 +5946,7 @@ fn molt_minmax_builtin(
                 }
                 let val_bits = elems[0];
                 let done_bits = elems[1];
-                if is_truthy(obj_from_bits(done_bits)) {
+                if is_truthy(_py, obj_from_bits(done_bits)) {
                     if use_key {
                         dec_ref_bits(_py, best_key_bits);
                     }
@@ -6284,7 +6284,7 @@ pub extern "C" fn molt_sorted_builtin(iter_bits: u64, key_bits: u64, reverse_bit
             return raise_not_iterable(_py, iter_bits);
         }
         let use_key = !obj_from_bits(key_bits).is_none();
-        let reverse = is_truthy(obj_from_bits(reverse_bits));
+        let reverse = is_truthy(_py, obj_from_bits(reverse_bits));
         let mut items: Vec<SortItem> = Vec::new();
         loop {
             let pair_bits = molt_iter_next(iter_obj);
@@ -6317,7 +6317,7 @@ pub extern "C" fn molt_sorted_builtin(iter_bits: u64, key_bits: u64, reverse_bit
                 }
                 let val_bits = elems[0];
                 let done_bits = elems[1];
-                if is_truthy(obj_from_bits(done_bits)) {
+                if is_truthy(_py, obj_from_bits(done_bits)) {
                     break;
                 }
                 let key_val_bits = if use_key {
@@ -6456,7 +6456,7 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
                 }
                 let val_bits = elems[0];
                 let done_bits = elems[1];
-                if is_truthy(obj_from_bits(done_bits)) {
+                if is_truthy(_py, obj_from_bits(done_bits)) {
                     if !total_owned {
                         inc_ref_bits(_py, total_bits);
                     }
@@ -6869,7 +6869,7 @@ pub extern "C" fn molt_print_builtin(
             }
             output.push_str(&end);
 
-            let do_flush = is_truthy(obj_from_bits(flush_bits));
+            let do_flush = is_truthy(_py, obj_from_bits(flush_bits));
 
             if obj_from_bits(resolved_file_bits).is_none() && !sys_found {
                 print!("{output}");
@@ -7883,7 +7883,7 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
                         return MoltObject::none().bits();
                     }
                     let done_bits = pair_elems[1];
-                    if is_truthy(obj_from_bits(done_bits)) {
+                    if is_truthy(_py, obj_from_bits(done_bits)) {
                         break;
                     }
                     let elem_bits = pair_elems[0];
@@ -9922,7 +9922,7 @@ pub extern "C" fn molt_bytearray_count_slice(
 pub extern "C" fn molt_bytes_splitlines(hay_bits: u64, keepends_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let hay = obj_from_bits(hay_bits);
-        let keepends = is_truthy(obj_from_bits(keepends_bits));
+        let keepends = is_truthy(_py, obj_from_bits(keepends_bits));
         let Some(hay_ptr) = hay.as_ptr() else {
             return MoltObject::none().bits();
         };
@@ -9942,7 +9942,7 @@ pub extern "C" fn molt_bytes_splitlines(hay_bits: u64, keepends_bits: u64) -> u6
 pub extern "C" fn molt_bytearray_splitlines(hay_bits: u64, keepends_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let hay = obj_from_bits(hay_bits);
-        let keepends = is_truthy(obj_from_bits(keepends_bits));
+        let keepends = is_truthy(_py, obj_from_bits(keepends_bits));
         let Some(hay_ptr) = hay.as_ptr() else {
             return MoltObject::none().bits();
         };
@@ -9963,7 +9963,7 @@ pub extern "C" fn molt_bytearray_splitlines(hay_bits: u64, keepends_bits: u64) -
 pub extern "C" fn molt_string_splitlines(hay_bits: u64, keepends_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let hay = obj_from_bits(hay_bits);
-        let keepends = is_truthy(obj_from_bits(keepends_bits));
+        let keepends = is_truthy(_py, obj_from_bits(keepends_bits));
         let Some(hay_ptr) = hay.as_ptr() else {
             return MoltObject::none().bits();
         };
@@ -12132,7 +12132,7 @@ fn bytes_collect_from_iter(
                 return None;
             }
             let done_bits = elems[1];
-            if is_truthy(obj_from_bits(done_bits)) {
+            if is_truthy(_py, obj_from_bits(done_bits)) {
                 break;
             }
             let val_bits = elems[0];
@@ -12584,7 +12584,7 @@ pub extern "C" fn molt_memoryview_cast(
                 Some(val) => val,
                 None => return MoltObject::none().bits(),
             };
-            let has_shape = is_truthy(obj_from_bits(has_shape_bits));
+            let has_shape = is_truthy(_py, obj_from_bits(has_shape_bits));
             let shape = if has_shape {
                 let shape_obj = obj_from_bits(shape_bits);
                 let shape_ptr = match shape_obj.as_ptr() {
@@ -13165,6 +13165,15 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                         i += len;
                     }
                     if i < 0 || i >= len {
+                        if std::env::var("MOLT_DEBUG_INDEX").as_deref() == Ok("1") {
+                            let task = crate::current_task_key()
+                                .map(|slot| slot.0 as usize)
+                                .unwrap_or(0);
+                            eprintln!(
+                                "molt index oob task=0x{:x} type=list len={} idx={}",
+                                task, len, i
+                            );
+                        }
                         return raise_exception::<_>(_py, "IndexError", "list index out of range");
                     }
                     let elems = seq_vec_ref(ptr);
@@ -13221,6 +13230,15 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                         i += len;
                     }
                     if i < 0 || i >= len {
+                        if std::env::var("MOLT_DEBUG_INDEX").as_deref() == Ok("1") {
+                            let task = crate::current_task_key()
+                                .map(|slot| slot.0 as usize)
+                                .unwrap_or(0);
+                            eprintln!(
+                                "molt index oob task=0x{:x} type=tuple len={} idx={}",
+                                task, len, i
+                            );
+                        }
                         return raise_exception::<_>(_py, "IndexError", "tuple index out of range");
                     }
                     let elems = seq_vec_ref(ptr);
@@ -14024,7 +14042,7 @@ unsafe fn eq_bool_from_bits(_py: &PyToken<'_>, lhs_bits: u64, rhs_bits: u64) -> 
     if exception_pending(_py) {
         return None;
     }
-    Some(is_truthy(obj_from_bits(res_bits)))
+    Some(is_truthy(_py, obj_from_bits(res_bits)))
 }
 
 #[no_mangle]
@@ -14333,7 +14351,7 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                             return MoltObject::none().bits();
                         }
                         if !is_not_implemented_bits(_py, res_bits) {
-                            let truthy = is_truthy(obj_from_bits(res_bits));
+                            let truthy = is_truthy(_py, obj_from_bits(res_bits));
                             dec_ref_bits(_py, res_bits);
                             return MoltObject::from_bool(truthy).bits();
                         }
@@ -14371,7 +14389,7 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                         }
                         let val_bits = elems[0];
                         let done_bits = elems[1];
-                        if is_truthy(obj_from_bits(done_bits)) {
+                        if is_truthy(_py, obj_from_bits(done_bits)) {
                             return MoltObject::from_bool(false).bits();
                         }
                         if obj_eq(_py, obj_from_bits(val_bits), item) {
@@ -14598,7 +14616,7 @@ pub(crate) extern "C" fn dict_fromkeys_method(
                     return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
                 }
                 let done_bits = elems[1];
-                if is_truthy(obj_from_bits(done_bits)) {
+                if is_truthy(_py, obj_from_bits(done_bits)) {
                     break;
                 }
                 let key_bits = elems[0];
@@ -14685,7 +14703,7 @@ pub(crate) unsafe fn dict_update_apply(
                     return MoltObject::none().bits();
                 }
                 let done_bits = elems[1];
-                if is_truthy(obj_from_bits(done_bits)) {
+                if is_truthy(_py, obj_from_bits(done_bits)) {
                     break;
                 }
                 let item_bits = elems[0];
@@ -14759,7 +14777,7 @@ pub(crate) unsafe fn dict_update_apply(
                         return MoltObject::none().bits();
                     }
                     let done_bits = elems[1];
-                    if is_truthy(obj_from_bits(done_bits)) {
+                    if is_truthy(_py, obj_from_bits(done_bits)) {
                         break;
                     }
                     let key_bits = elems[0];
@@ -14804,7 +14822,7 @@ pub(crate) unsafe fn dict_update_apply(
             return MoltObject::none().bits();
         }
         let done_bits = elems[1];
-        if is_truthy(obj_from_bits(done_bits)) {
+        if is_truthy(_py, obj_from_bits(done_bits)) {
             break;
         }
         let item_bits = elems[0];
@@ -15165,7 +15183,7 @@ pub extern "C" fn molt_dict_update_kwstar(dict_bits: u64, mapping_bits: u64) -> 
                     return MoltObject::none().bits();
                 }
                 let done_bits = elems[1];
-                if is_truthy(obj_from_bits(done_bits)) {
+                if is_truthy(_py, obj_from_bits(done_bits)) {
                     break;
                 }
                 let key_bits = elems[0];
@@ -15344,7 +15362,7 @@ unsafe fn set_from_iter_bits(_py: &PyToken<'_>, other_bits: u64) -> Option<u64> 
             return None;
         }
         let done_bits = pair_elems[1];
-        if is_truthy(obj_from_bits(done_bits)) {
+        if is_truthy(_py, obj_from_bits(done_bits)) {
             break;
         }
         let val_bits = pair_elems[0];
@@ -15422,7 +15440,7 @@ pub(crate) unsafe fn frozenset_from_iter_bits(_py: &PyToken<'_>, other_bits: u64
             return None;
         }
         let done_bits = pair_elems[1];
-        if is_truthy(obj_from_bits(done_bits)) {
+        if is_truthy(_py, obj_from_bits(done_bits)) {
             break;
         }
         let val_bits = pair_elems[0];
@@ -15469,7 +15487,7 @@ pub extern "C" fn molt_set_update(set_bits: u64, other_bits: u64) -> u64 {
                             return MoltObject::none().bits();
                         }
                         let done_bits = pair_elems[1];
-                        if is_truthy(obj_from_bits(done_bits)) {
+                        if is_truthy(_py, obj_from_bits(done_bits)) {
                             break;
                         }
                         let val_bits = pair_elems[0];
@@ -15576,7 +15594,7 @@ pub extern "C" fn molt_set_difference_update(set_bits: u64, other_bits: u64) -> 
                             return MoltObject::none().bits();
                         }
                         let done_bits = pair_elems[1];
-                        if is_truthy(obj_from_bits(done_bits)) {
+                        if is_truthy(_py, obj_from_bits(done_bits)) {
                             break;
                         }
                         let val_bits = pair_elems[0];
@@ -16091,7 +16109,7 @@ pub extern "C" fn molt_set_issuperset(set_bits: u64, other_bits: u64) -> u64 {
 #[no_mangle]
 pub extern "C" fn molt_enumerate(iterable_bits: u64, start_bits: u64, has_start_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let has_start = is_truthy(obj_from_bits(has_start_bits));
+        let has_start = is_truthy(_py, obj_from_bits(has_start_bits));
         let iter_bits = molt_iter(iterable_bits);
         if obj_from_bits(iter_bits).is_none() {
             return raise_not_iterable(_py, iterable_bits);
@@ -16237,7 +16255,7 @@ pub extern "C" fn molt_iter_checked(iter_bits: u64) -> u64 {
 #[no_mangle]
 pub extern "C" fn molt_iter_sentinel(callable_bits: u64, sentinel_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let callable_ok = is_truthy(obj_from_bits(molt_is_callable(callable_bits)));
+        let callable_ok = is_truthy(_py, obj_from_bits(molt_is_callable(callable_bits)));
         if !callable_ok {
             return raise_exception::<_>(_py, "TypeError", "iter(v, w): v must be callable");
         }
@@ -16306,7 +16324,7 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                     }
                     let val_bits = elems[0];
                     let done_bits = elems[1];
-                    if is_truthy(obj_from_bits(done_bits)) {
+                    if is_truthy(_py, obj_from_bits(done_bits)) {
                         return pair_bits;
                     }
                     let idx_bits = enumerate_index_bits(ptr);
@@ -16385,7 +16403,7 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                         }
                         let val_bits = elems[0];
                         let done_bits = elems[1];
-                        if is_truthy(obj_from_bits(done_bits)) {
+                        if is_truthy(_py, obj_from_bits(done_bits)) {
                             return generator_done_tuple(_py, MoltObject::none().bits());
                         }
                         vals.push(val_bits);
@@ -16441,18 +16459,18 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                         }
                         let val_bits = elems[0];
                         let done_bits = elems[1];
-                        if is_truthy(obj_from_bits(done_bits)) {
+                        if is_truthy(_py, obj_from_bits(done_bits)) {
                             return generator_done_tuple(_py, MoltObject::none().bits());
                         }
                         let keep = if obj_from_bits(func_bits).is_none() {
-                            is_truthy(obj_from_bits(val_bits))
+                            is_truthy(_py, obj_from_bits(val_bits))
                         } else {
                             let pred_bits = call_callable1(_py, func_bits, val_bits);
                             if exception_pending(_py) {
                                 dec_ref_bits(_py, pred_bits);
                                 return MoltObject::none().bits();
                             }
-                            let keep = is_truthy(obj_from_bits(pred_bits));
+                            let keep = is_truthy(_py, obj_from_bits(pred_bits));
                             dec_ref_bits(_py, pred_bits);
                             keep
                         };
@@ -16499,7 +16517,7 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                         }
                         let val_bits = elems[0];
                         let done_bits = elems[1];
-                        if is_truthy(obj_from_bits(done_bits)) {
+                        if is_truthy(_py, obj_from_bits(done_bits)) {
                             return generator_done_tuple(_py, MoltObject::none().bits());
                         }
                         vals.push(val_bits);
@@ -17156,7 +17174,7 @@ pub extern "C" fn molt_list_extend(list_bits: u64, other_bits: u64) -> u64 {
                         return MoltObject::none().bits();
                     }
                     let done_bits = pair_elems[1];
-                    if is_truthy(obj_from_bits(done_bits)) {
+                    if is_truthy(_py, obj_from_bits(done_bits)) {
                         break;
                     }
                     let val_bits = pair_elems[0];
@@ -17360,7 +17378,7 @@ pub extern "C" fn molt_list_sort(list_bits: u64, key_bits: u64, reverse_bits: u6
                     return MoltObject::none().bits();
                 }
                 let use_key = !obj_from_bits(key_bits).is_none();
-                let reverse = is_truthy(obj_from_bits(reverse_bits));
+                let reverse = is_truthy(_py, obj_from_bits(reverse_bits));
                 let elems = seq_vec_ref(list_ptr);
                 let mut items: Vec<SortItem> = Vec::with_capacity(elems.len());
                 for &val_bits in elems.iter() {
@@ -19335,7 +19353,7 @@ pub(crate) fn tuple_from_isize_slice(_py: &PyToken<'_>, values: &[isize]) -> u64
     }
 }
 
-pub(crate) fn is_truthy(obj: MoltObject) -> bool {
+pub(crate) fn is_truthy(_py: &PyToken<'_>, obj: MoltObject) -> bool {
     if obj.is_none() {
         return false;
     }
@@ -19371,9 +19389,6 @@ pub(crate) fn is_truthy(obj: MoltObject) -> bool {
             }
             if type_id == TYPE_ID_DICT {
                 return dict_len(ptr) > 0;
-            }
-            if type_id == TYPE_ID_OBJECT {
-                return true;
             }
             if type_id == TYPE_ID_SET {
                 return set_len(ptr) > 0;
@@ -19422,13 +19437,102 @@ pub(crate) fn is_truthy(obj: MoltObject) -> bool {
             if type_id == TYPE_ID_SLICE {
                 return true;
             }
-            if type_id == TYPE_ID_DATACLASS {
-                return true;
-            }
             if type_id == TYPE_ID_CONTEXT_MANAGER {
                 return true;
             }
             if type_id == TYPE_ID_FILE_HANDLE {
+                return true;
+            }
+            if type_id == TYPE_ID_OBJECT || type_id == TYPE_ID_DATACLASS {
+                if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__bool__") {
+                    let call_bits = attr_lookup_ptr_allow_missing(_py, ptr, name_bits);
+                    dec_ref_bits(_py, name_bits);
+                    if let Some(call_bits) = call_bits {
+                        let res_bits = call_callable0(_py, call_bits);
+                        dec_ref_bits(_py, call_bits);
+                        if exception_pending(_py) {
+                            dec_ref_bits(_py, res_bits);
+                            return false;
+                        }
+                        let res_obj = obj_from_bits(res_bits);
+                        if let Some(b) = res_obj.as_bool() {
+                            dec_ref_bits(_py, res_bits);
+                            return b;
+                        }
+                        let res_type = class_name_for_error(type_of_bits(_py, res_bits));
+                        dec_ref_bits(_py, res_bits);
+                        let msg = format!(
+                            "__bool__ should return bool, returned {res_type}"
+                        );
+                        let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+                        return false;
+                    }
+                }
+                if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__len__") {
+                    let call_bits = attr_lookup_ptr_allow_missing(_py, ptr, name_bits);
+                    dec_ref_bits(_py, name_bits);
+                    if let Some(call_bits) = call_bits {
+                        let res_bits = call_callable0(_py, call_bits);
+                        dec_ref_bits(_py, call_bits);
+                        if exception_pending(_py) {
+                            dec_ref_bits(_py, res_bits);
+                            return false;
+                        }
+                        let res_obj = obj_from_bits(res_bits);
+                        if let Some(i) = to_i64(res_obj) {
+                            dec_ref_bits(_py, res_bits);
+                            if i < 0 {
+                                let _ = raise_exception::<u64>(
+                                    _py,
+                                    "ValueError",
+                                    "__len__() should return >= 0",
+                                );
+                                return false;
+                            }
+                            return i != 0;
+                        }
+                        if let Some(big_ptr) = bigint_ptr_from_bits(res_bits) {
+                            let big = bigint_ref(big_ptr);
+                            if big.is_negative() {
+                                let _ = raise_exception::<u64>(
+                                    _py,
+                                    "ValueError",
+                                    "__len__() should return >= 0",
+                                );
+                                dec_ref_bits(_py, res_bits);
+                                return false;
+                            }
+                            let Some(len) = big.to_usize() else {
+                                let _ = raise_exception::<u64>(
+                                    _py,
+                                    "OverflowError",
+                                    "cannot fit 'int' into an index-sized integer",
+                                );
+                                dec_ref_bits(_py, res_bits);
+                                return false;
+                            };
+                            if len > i64::MAX as usize {
+                                let _ = raise_exception::<u64>(
+                                    _py,
+                                    "OverflowError",
+                                    "cannot fit 'int' into an index-sized integer",
+                                );
+                                dec_ref_bits(_py, res_bits);
+                                return false;
+                            }
+                            dec_ref_bits(_py, res_bits);
+                            return len != 0;
+                        }
+                        let res_type = class_name_for_error(type_of_bits(_py, res_bits));
+                        dec_ref_bits(_py, res_bits);
+                        let msg = format!(
+                            "'{}' object cannot be interpreted as an integer",
+                            res_type
+                        );
+                        let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+                        return false;
+                    }
+                }
                 return true;
             }
             return true;

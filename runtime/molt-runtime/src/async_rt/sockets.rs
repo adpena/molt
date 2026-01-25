@@ -281,7 +281,6 @@ pub(crate) fn socket_ref_dec(_py: &PyToken<'_>, socket_ptr: *mut u8) {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) enum SendData {
     Borrowed(*const u8, usize),
     Owned(Vec<u8>),
@@ -309,7 +308,9 @@ pub(crate) fn io_wait_release_socket(_py: &PyToken<'_>, future_ptr: *mut u8) {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn io_wait_release_socket(_py: &PyToken<'_>, _future_ptr: *mut u8) {}
+
 pub(crate) fn send_data_from_bits(bits: u64) -> Result<SendData, String> {
     let obj = obj_from_bits(bits);
     let Some(ptr) = obj.as_ptr() else {

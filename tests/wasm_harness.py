@@ -546,6 +546,7 @@ let asyncgenAthrowMethodIdx = null;
 let asyncgenAcloseMethodIdx = null;
 const asyncgenMethodBits = new Map();
 let asyncgenPollIdx = null;
+let promisePollIdx = null;
 const tableFuncCache = new Map();
 const getObj = (val) => heap.get(val & POINTER_MASK);
 const getAsyncGenerator = (val) => {
@@ -5753,6 +5754,125 @@ BASE_IMPORTS = """\
     }
     const addr = ptrAddr(ptrBits);
     cancelPending.delete(addr.toString());
+    return boxNone();
+  },
+  promise_new: () => {
+    if (!memory || !table) return boxNone();
+    let pollIdx = promisePollIdx;
+    if (pollIdx === null) {
+      pollIdx = getOrAddTableFunc(baseImports.promise_poll, 1);
+      if (pollIdx === null) return boxNone();
+      promisePollIdx = pollIdx;
+    }
+    return baseImports.task_new(BigInt(pollIdx), 8n, TASK_KIND_FUTURE);
+  },
+  promise_poll: (objBits) => {
+    const ptrBits = objBits;
+    if (!isPtr(ptrBits) || heap.has(ptrBits & POINTER_MASK) || !memory) return boxNone();
+    const addr = ptrAddr(ptrBits);
+    const view = memView();
+    const state = Number(view.getBigInt64(addr - HEADER_STATE_OFFSET, true));
+    if (state === 0) return boxPending();
+    const payload = view.getBigInt64(addr + 0, true);
+    if (state === 1) return payload;
+    if (state === 2) {
+      raiseException(payload);
+      return boxNone();
+    }
+    return boxNone();
+  },
+  promise_set_result: (futureBits, resultBits) => {
+    const ptrBits = futureBits;
+    if (!isPtr(ptrBits) || heap.has(ptrBits & POINTER_MASK) || !memory) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'object is not awaitable' })),
+      );
+      raiseException(exc);
+      return boxNone();
+    }
+    const addr = ptrAddr(ptrBits);
+    const view = memView();
+    let pollIdx = promisePollIdx;
+    if (pollIdx === null) {
+      pollIdx = getOrAddTableFunc(baseImports.promise_poll, 1);
+      if (pollIdx === null) return boxNone();
+      promisePollIdx = pollIdx;
+    }
+    const headerPoll = view.getUint32(addr - HEADER_POLL_FN_OFFSET, true);
+    if (headerPoll !== pollIdx) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'object is not a promise' })),
+      );
+      raiseException(exc);
+      return boxNone();
+    }
+    const state = Number(view.getBigInt64(addr - HEADER_STATE_OFFSET, true));
+    if (state !== 0) return boxNone();
+    view.setBigInt64(addr + 0, resultBits, true);
+    view.setBigInt64(addr - HEADER_STATE_OFFSET, 1n, true);
+    const toWake = [];
+    for (const [taskAddr, awaitedBits] of taskWaitingOn.entries()) {
+      if (awaitedBits === ptrBits) {
+        toWake.push(taskAddr);
+      }
+    }
+    for (const taskAddr of toWake) {
+      taskWaitingOn.delete(taskAddr);
+      const key = taskAddr.toString();
+      if (!runnableTasks.has(key)) {
+        runnableTasks.add(key);
+        runnableQueue.push(taskAddr);
+      }
+    }
+    return boxNone();
+  },
+  promise_set_exception: (futureBits, excBits) => {
+    const ptrBits = futureBits;
+    if (!isPtr(ptrBits) || heap.has(ptrBits & POINTER_MASK) || !memory) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'object is not awaitable' })),
+      );
+      raiseException(exc);
+      return boxNone();
+    }
+    const addr = ptrAddr(ptrBits);
+    const view = memView();
+    let pollIdx = promisePollIdx;
+    if (pollIdx === null) {
+      pollIdx = getOrAddTableFunc(baseImports.promise_poll, 1);
+      if (pollIdx === null) return boxNone();
+      promisePollIdx = pollIdx;
+    }
+    const headerPoll = view.getUint32(addr - HEADER_POLL_FN_OFFSET, true);
+    if (headerPoll !== pollIdx) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'object is not a promise' })),
+      );
+      raiseException(exc);
+      return boxNone();
+    }
+    const state = Number(view.getBigInt64(addr - HEADER_STATE_OFFSET, true));
+    if (state !== 0) return boxNone();
+    view.setBigInt64(addr + 0, excBits, true);
+    view.setBigInt64(addr - HEADER_STATE_OFFSET, 2n, true);
+    const toWake = [];
+    for (const [taskAddr, awaitedBits] of taskWaitingOn.entries()) {
+      if (awaitedBits === ptrBits) {
+        toWake.push(taskAddr);
+      }
+    }
+    for (const taskAddr of toWake) {
+      taskWaitingOn.delete(taskAddr);
+      const key = taskAddr.toString();
+      if (!runnableTasks.has(key)) {
+        runnableTasks.add(key);
+        runnableQueue.push(taskAddr);
+      }
+    }
     return boxNone();
   },
   sleep_register: (taskPtr, futurePtr) => {

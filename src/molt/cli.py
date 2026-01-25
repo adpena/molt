@@ -746,19 +746,27 @@ def _parse_capabilities(
     return expanded, profiles, source, errors
 
 
+def _runtime_source_paths(project_root: Path) -> list[Path]:
+    return [
+        project_root / "runtime/molt-runtime/src",
+        project_root / "runtime/molt-runtime/Cargo.toml",
+        project_root / "runtime/molt-runtime/build.rs",
+        project_root / "runtime/molt-obj-model/src",
+        project_root / "runtime/molt-obj-model/Cargo.toml",
+        project_root / "runtime/molt-obj-model/build.rs",
+        project_root / "Cargo.toml",
+        project_root / "Cargo.lock",
+    ]
+
+
 def _ensure_runtime_lib(
     runtime_lib: Path,
     target_triple: str | None,
     json_output: bool,
     profile: BuildProfile,
+    project_root: Path,
 ) -> bool:
-    sources = [
-        Path("runtime/molt-runtime/src"),
-        Path("runtime/molt-runtime/Cargo.toml"),
-        Path("runtime/molt-obj-model/src"),
-        Path("runtime/molt-obj-model/Cargo.toml"),
-    ]
-    latest_src = _latest_mtime(sources)
+    latest_src = _latest_mtime(_runtime_source_paths(project_root))
     lib_mtime = runtime_lib.stat().st_mtime if runtime_lib.exists() else 0.0
     if lib_mtime >= latest_src:
         return True
@@ -767,7 +775,7 @@ def _ensure_runtime_lib(
         cmd.append("--release")
     if target_triple:
         cmd.extend(["--target", target_triple])
-    build = subprocess.run(cmd)
+    build = subprocess.run(cmd, cwd=project_root)
     if build.returncode != 0:
         if not json_output:
             print("Runtime build failed", file=sys.stderr)
@@ -789,13 +797,7 @@ def _ensure_runtime_wasm(
     profile: BuildProfile,
 ) -> bool:
     root = Path(__file__).resolve().parents[2]
-    sources = [
-        root / "runtime/molt-runtime/src",
-        root / "runtime/molt-runtime/Cargo.toml",
-        root / "runtime/molt-obj-model/src",
-        root / "runtime/molt-obj-model/Cargo.toml",
-    ]
-    latest_src = _latest_mtime(sources)
+    latest_src = _latest_mtime(_runtime_source_paths(root))
     wasm_mtime = runtime_wasm.stat().st_mtime if runtime_wasm.exists() else 0.0
     if wasm_mtime >= latest_src:
         return True
@@ -1597,6 +1599,37 @@ def build(
             )
         except OSError as exc:
             return _fail(f"Failed to write IR: {exc}", json_output, command="build")
+    runtime_lib: Path | None = None
+    if is_wasm:
+        root = Path(__file__).resolve().parents[2]
+        runtime_wasm = root / "wasm" / "molt_runtime.wasm"
+        if not _ensure_runtime_wasm(
+            runtime_wasm,
+            reloc=False,
+            json_output=json_output,
+            profile=profile,
+        ):
+            return _fail("Runtime wasm build failed", json_output, command="build")
+    elif emit_mode == "bin":
+        profile_dir = _cargo_profile_dir(profile)
+        if target_triple:
+            runtime_lib = (
+                project_root
+                / "target"
+                / target_triple
+                / profile_dir
+                / "libmolt_runtime.a"
+            )
+        else:
+            runtime_lib = project_root / "target" / profile_dir / "libmolt_runtime.a"
+        if not _ensure_runtime_lib(
+            runtime_lib,
+            target_triple,
+            json_output,
+            profile,
+            project_root,
+        ):
+            return _fail("Runtime build failed", json_output, command="build")
     cache_hit = False
     cache_key = None
     cache_path: Path | None = None
@@ -1965,13 +1998,18 @@ int main(int argc, char** argv) {
         return _fail("Binary output unavailable", json_output, command="build")
     if output_binary.parent != Path("."):
         output_binary.parent.mkdir(parents=True, exist_ok=True)
-    profile_dir = _cargo_profile_dir(profile)
-    if target_triple:
-        runtime_lib = Path("target") / target_triple / profile_dir / "libmolt_runtime.a"
-    else:
-        runtime_lib = Path("target") / profile_dir / "libmolt_runtime.a"
-    if not _ensure_runtime_lib(runtime_lib, target_triple, json_output, profile):
-        return _fail("Runtime build failed", json_output, command="build")
+    if runtime_lib is None:
+        profile_dir = _cargo_profile_dir(profile)
+        if target_triple:
+            runtime_lib = (
+                project_root
+                / "target"
+                / target_triple
+                / profile_dir
+                / "libmolt_runtime.a"
+            )
+        else:
+            runtime_lib = project_root / "target" / profile_dir / "libmolt_runtime.a"
 
     cc = os.environ.get("CC", "clang")
     link_cmd = shlex.split(cc)

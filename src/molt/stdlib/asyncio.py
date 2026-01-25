@@ -2051,7 +2051,8 @@ class _EventLoop:
         _RUNNING_LOOP = self
         self._running = True
         self._stopping = False
-        self._ensure_ready_runner()
+        if self._ready:
+            self._ensure_ready_runner()
         result: Any = None
         try:
             if isinstance(awaitable, Future):
@@ -2315,15 +2316,21 @@ class Runner:
     def run(self, coro: Any) -> Any:
         if self._loop is None:
             self.__enter__()
-        assert self._loop is not None
-        if self._loop.is_running():
+        loop = self.get_loop()
+        if loop.is_running():
             raise RuntimeError("Runner loop is already running")
-        result = self._loop.run_until_complete(coro)
-        _cancel_all_tasks(self._loop)
         try:
-            molt_asyncgen_shutdown()  # type: ignore[name-defined]
-        except Exception:
-            pass
+            result = loop.run_until_complete(coro)
+        except BaseException:
+            _cancel_all_tasks(loop)
+            shutdown = globals().get("molt_asyncgen_shutdown")
+            if shutdown is not None:
+                shutdown()
+            raise
+        _cancel_all_tasks(loop)
+        shutdown = globals().get("molt_asyncgen_shutdown")
+        if shutdown is not None:
+            shutdown()
         return result
 
     def close(self) -> None:
@@ -2331,10 +2338,9 @@ class Runner:
             return
         if not self._loop.is_closed():
             _cancel_all_tasks(self._loop)
-            try:
-                molt_asyncgen_shutdown()  # type: ignore[name-defined]
-            except Exception:
-                pass
+            shutdown = globals().get("molt_asyncgen_shutdown")
+            if shutdown is not None:
+                shutdown()
             self._loop.close()
         set_event_loop(None)
 
@@ -2342,8 +2348,24 @@ class Runner:
 def run(awaitable: Any) -> Any:
     if _RUNNING_LOOP is not None:
         raise RuntimeError("asyncio.run() cannot be called from a running event loop")
-    with Runner() as runner:
-        return runner.run(awaitable)
+    runner = Runner()
+    exc: BaseException | None = None
+    result: Any = None
+    runner.__enter__()
+    try:
+        try:
+            result = runner.run(awaitable)
+        except BaseException as err:
+            exc = err
+    finally:
+        try:
+            runner.close()
+        except BaseException as close_exc:
+            if exc is None:
+                exc = close_exc
+    if exc is not None:
+        raise exc
+    return result
 
 
 async def sleep(delay: float = 0.0, result: Any | None = None) -> Any:

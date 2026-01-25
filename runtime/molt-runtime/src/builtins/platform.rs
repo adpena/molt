@@ -32,7 +32,7 @@ static ERRNO_CONSTANTS_CACHE: AtomicU64 = AtomicU64::new(0);
 static SOCKET_CONSTANTS_CACHE: AtomicU64 = AtomicU64::new(0);
 
 fn base_errno_constants() -> Vec<(&'static str, i64)> {
-    vec![
+    let mut out = vec![
         ("EACCES", libc::EACCES as i64),
         ("EAGAIN", libc::EAGAIN as i64),
         ("EALREADY", libc::EALREADY as i64),
@@ -51,8 +51,10 @@ fn base_errno_constants() -> Vec<(&'static str, i64)> {
         ("ESRCH", libc::ESRCH as i64),
         ("ETIMEDOUT", libc::ETIMEDOUT as i64),
         ("EWOULDBLOCK", libc::EWOULDBLOCK as i64),
-        ("ESHUTDOWN", libc::ESHUTDOWN as i64),
-    ]
+    ];
+    #[cfg(not(target_arch = "wasm32"))]
+    out.push(("ESHUTDOWN", libc::ESHUTDOWN as i64));
+    out
 }
 
 fn collect_errno_constants() -> Vec<(&'static str, i64)> {
@@ -70,6 +72,12 @@ fn collect_errno_constants() -> Vec<(&'static str, i64)> {
 }
 
 fn socket_constants() -> Vec<(&'static str, i64)> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        return Vec::new();
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
     let mut out = vec![
         ("AF_INET", libc::AF_INET as i64),
         ("AF_INET6", libc::AF_INET6 as i64),
@@ -137,6 +145,7 @@ fn socket_constants() -> Vec<(&'static str, i64)> {
     out.push(("EAI_SERVICE", libc::EAI_SERVICE as i64));
     out.push(("EAI_SOCKTYPE", libc::EAI_SOCKTYPE as i64));
     out
+    }
 }
 
 #[no_mangle]

@@ -8,10 +8,11 @@ use super::{runtime_reset_for_init, runtime_teardown, touch_tls_guard};
 
 use crate::object::utf8_cache::{build_utf8_count_cache, Utf8CacheStore, Utf8CountCacheStore};
 use crate::{
-    default_cancel_tokens, sleep_worker, AsyncHangProbe, BuiltinClasses, CancelTokenEntry,
-    GilGuard, HashSecret, InternedNames, IoPoller, MethodCache, MoltScheduler, ProcessTaskState,
-    PtrSlot, PyToken, SleepQueue, ThreadPool, ThreadTaskState, OBJECT_POOL_BUCKETS,
+    default_cancel_tokens, AsyncHangProbe, BuiltinClasses, CancelTokenEntry, GilGuard, HashSecret,
+    InternedNames, MethodCache, MoltScheduler, PtrSlot, PyToken, SleepQueue, OBJECT_POOL_BUCKETS,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use crate::{sleep_worker, IoPoller, ProcessTaskState, ThreadPool, ThreadTaskState};
 
 pub(crate) struct SpecialCache {
     pub(crate) open_default_mode: AtomicU64,
@@ -70,7 +71,9 @@ pub(crate) struct RuntimeState {
     pub(crate) thread_pool_started: AtomicBool,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) thread_pool: OnceLock<ThreadPool>,
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) thread_tasks: Mutex<HashMap<PtrSlot, Arc<ThreadTaskState>>>,
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) process_tasks: Mutex<HashMap<PtrSlot, Arc<ProcessTaskState>>>,
     pub(crate) code_slots: OnceLock<Vec<AtomicU64>>,
     pub(crate) gil: Mutex<()>,
@@ -118,7 +121,9 @@ impl RuntimeState {
             thread_pool_started: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
             thread_pool: OnceLock::new(),
+            #[cfg(not(target_arch = "wasm32"))]
             thread_tasks: Mutex::new(HashMap::new()),
+            #[cfg(not(target_arch = "wasm32"))]
             process_tasks: Mutex::new(HashMap::new()),
             code_slots: OnceLock::new(),
             gil: Mutex::new(()),

@@ -316,7 +316,7 @@ pub extern "C" fn molt_module_set_attr(module_bits: u64, attr_bits: u64, val_bit
             if obj_eq(_py, obj_from_bits(attr_bits), obj_from_bits(annotate_bits)) {
                 let val_obj = obj_from_bits(val_bits);
                 if !val_obj.is_none() {
-                    let callable_ok = is_truthy(obj_from_bits(molt_is_callable(val_bits)));
+                    let callable_ok = is_truthy(_py, obj_from_bits(molt_is_callable(val_bits)));
                     if !callable_ok {
                         return raise_exception::<_>(
                             _py,
@@ -389,7 +389,7 @@ pub extern "C" fn molt_module_import_star(src_bits: u64, dst_bits: u64) -> u64 {
                         return MoltObject::none().bits();
                     }
                     let done_bits = elems[1];
-                    if is_truthy(obj_from_bits(done_bits)) {
+                    if is_truthy(_py, obj_from_bits(done_bits)) {
                         break;
                     }
                     let name_bits = elems[0];

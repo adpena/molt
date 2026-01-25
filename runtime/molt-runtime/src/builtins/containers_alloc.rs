@@ -78,7 +78,7 @@ pub(crate) fn dict_pair_from_item(
                 return Err(DictSeqError::Exception);
             }
             let done_bits = pair_elems[1];
-            if is_truthy(obj_from_bits(done_bits)) {
+            if is_truthy(_py, obj_from_bits(done_bits)) {
                 break;
             }
             elems.push(pair_elems[0]);

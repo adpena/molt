@@ -19,6 +19,9 @@ ordered to avoid deadlocks and performance regressions.
 - Runtime execution is serialized within a process: a single GIL-like lock
   guards runtime mutation and Python-visible execution for the global
   `RuntimeState` singleton.
+- The async scheduler runs with a single worker thread by default to preserve
+  deterministic asyncio ordering; set `MOLT_ASYNC_THREADS` (>1) to opt in to
+  parallel scheduling.
 - The GIL is re-entrant per thread via a TLS depth counter; nested runtime calls
   must not deadlock.
 - Runtime state and object headers are not thread-safe; `Value`/object headers

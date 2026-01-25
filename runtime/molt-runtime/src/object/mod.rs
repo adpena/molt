@@ -32,10 +32,10 @@ use crate::{
     function_code_bits, function_dict_bits, generator_exception_stack_drop,
     generic_alias_args_bits, generic_alias_origin_bits, io_wait_poll_fn_addr,
     io_wait_release_socket, iter_target_bits, map_func_bits, map_iters_ptr, module_dict_bits,
-    module_name_bits, process_poll_fn_addr, process_task_drop, profile_hit, property_del_bits,
+    module_name_bits, process_poll_fn_addr, profile_hit, property_del_bits,
     property_get_bits, property_set_bits, reversed_target_bits, runtime_state, seq_vec_ptr,
     set_order_ptr, set_table_ptr, slice_start_bits, slice_step_bits, slice_stop_bits,
-    staticmethod_func_bits, task_cancel_message_clear, thread_poll_fn_addr, thread_task_drop,
+    staticmethod_func_bits, task_cancel_message_clear, thread_poll_fn_addr,
     utf8_cache_remove, zip_iters_ptr, PyToken, ALLOC_COUNT, GEN_CLOSED_OFFSET,
     GEN_EXC_DEPTH_OFFSET, GEN_SEND_OFFSET, GEN_THROW_OFFSET, TYPE_ID_ASYNC_GENERATOR,
     TYPE_ID_BIGINT, TYPE_ID_BOUND_METHOD, TYPE_ID_BUFFER2D, TYPE_ID_BYTEARRAY, TYPE_ID_CALLARGS,
@@ -47,6 +47,9 @@ use crate::{
     TYPE_ID_NOT_IMPLEMENTED, TYPE_ID_OBJECT, TYPE_ID_PROPERTY, TYPE_ID_REVERSED, TYPE_ID_SET,
     TYPE_ID_SLICE, TYPE_ID_STATICMETHOD, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_ZIP,
 };
+
+#[cfg(not(target_arch = "wasm32"))]
+use crate::{process_task_drop, thread_task_drop};
 
 #[repr(C)]
 pub struct MoltHeader {
@@ -153,6 +156,7 @@ pub(crate) const HEADER_FLAG_GEN_RUNNING: u64 = 1 << 2;
 pub(crate) const HEADER_FLAG_GEN_STARTED: u64 = 1 << 3;
 pub(crate) const HEADER_FLAG_SPAWN_RETAIN: u64 = 1 << 4;
 pub(crate) const HEADER_FLAG_CANCEL_PENDING: u64 = 1 << 5;
+pub(crate) const HEADER_FLAG_BLOCK_ON: u64 = 1 << 6;
 
 thread_local! {
     pub(crate) static OBJECT_POOL_TLS: RefCell<Vec<Vec<PtrSlot>>> =
@@ -945,8 +949,10 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             TYPE_ID_OBJECT => {
                 let poll_fn = header.poll_fn;
                 if poll_fn == thread_poll_fn_addr() {
+                    #[cfg(not(target_arch = "wasm32"))]
                     thread_task_drop(py, ptr);
                 } else if poll_fn == process_poll_fn_addr() {
+                    #[cfg(not(target_arch = "wasm32"))]
                     process_task_drop(py, ptr);
                 } else if poll_fn == io_wait_poll_fn_addr() {
                     io_wait_release_socket(py, ptr);

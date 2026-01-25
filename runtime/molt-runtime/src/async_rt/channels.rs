@@ -8,6 +8,8 @@ use crate::{
     alloc_bytes, bits_from_ptr, obj_from_bits, pending_bits_i64, ptr_from_bits, raise_exception,
     release_ptr, runtime_state, to_i64, usize_from_bits, MoltObject, PyToken,
 };
+#[cfg(target_arch = "wasm32")]
+use crate::{molt_db_exec_host, molt_db_query_host};
 
 // --- Channels ---
 
