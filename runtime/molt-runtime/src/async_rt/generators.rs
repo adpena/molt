@@ -9,7 +9,7 @@ use crate::object::accessors::resolve_obj_ptr;
 use crate::{
     alloc_exception, alloc_object, alloc_tuple, async_sleep_poll_fn_addr, async_trace_enabled,
     asyncgen_poll_fn_addr, asyncgen_registry, await_waiter_clear, await_waiter_register,
-    await_waiters_take, call_poll_fn, class_name_for_error, clear_exception,
+    await_waiters, await_waiters_take, call_poll_fn, class_name_for_error, clear_exception,
     clear_exception_state, current_task_ptr, dec_ref_bits, exception_context_align_depth,
     exception_context_fallback_pop,
     exception_context_fallback_push, exception_pending, exception_stack_depth,
@@ -1113,14 +1113,19 @@ pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
                 return 0;
             }
             let res = crate::poll_future_with_task_stack(_py, ptr, poll_fn_addr);
+            if task_cancel_pending(ptr) {
+                task_take_cancel_pending(ptr);
+                return raise_cancelled_with_message::<i64>(_py, ptr);
+            }
             let current_task = current_task_ptr();
             if res == pending_bits_i64() {
                 if !current_task.is_null() && ptr != current_task {
+                    await_waiter_register(_py, current_task, ptr);
                     let current_header = header_from_obj_ptr(current_task);
                     let spawned = ((*current_header).flags & HEADER_FLAG_SPAWN_RETAIN) != 0;
                     let block_on = ((*current_header).flags & HEADER_FLAG_BLOCK_ON) != 0;
                     if spawned || block_on {
-                        await_waiter_register(_py, current_task, ptr);
+                        let _ = sleep_register_impl(_py, current_task, ptr);
                     }
                 }
             } else if !current_task.is_null() {
@@ -1222,6 +1227,137 @@ fn cancel_future_task(_py: &PyToken<'_>, task_ptr: *mut u8, msg_bits: Option<u64
     let waiters = await_waiters_take(_py, task_ptr);
     for waiter in waiters {
         wake_task_ptr(_py, waiter.0);
+    }
+}
+
+fn sleep_register_impl(
+    _py: &PyToken<'_>,
+    task_ptr: *mut u8,
+    future_ptr: *mut u8,
+) -> bool {
+    if async_trace_enabled() {
+        eprintln!(
+            "molt async trace: sleep_register_impl_enter task=0x{:x} future=0x{:x}",
+            task_ptr as usize, future_ptr as usize
+        );
+    }
+    if future_ptr.is_null() {
+        if async_trace_enabled() {
+            eprintln!("molt async trace: sleep_register_impl_fail future_null");
+        }
+        return false;
+    }
+    let mut resolved_task = task_ptr;
+    if resolved_task.is_null() {
+        resolved_task = await_waiters(_py)
+            .lock()
+            .unwrap()
+            .get(&PtrSlot(future_ptr))
+            .and_then(|list| list.first().copied())
+            .map(|waiter| waiter.0)
+            .unwrap_or(std::ptr::null_mut());
+    }
+    if resolved_task.is_null() {
+        if async_trace_enabled() {
+            eprintln!(
+                "molt async trace: sleep_register_impl_fail task_null task=0x{:x} future=0x{:x}",
+                task_ptr as usize, future_ptr as usize
+            );
+        }
+        return false;
+    }
+    let task_ptr = resolved_task;
+    let header = unsafe { header_from_obj_ptr(future_ptr) };
+    let poll_fn = unsafe { (*header).poll_fn };
+    if poll_fn != async_sleep_poll_fn_addr() && poll_fn != io_wait_poll_fn_addr() {
+        if async_trace_enabled() {
+            eprintln!(
+                "molt async trace: sleep_register_impl_fail poll_fn=0x{:x}",
+                poll_fn
+            );
+        }
+        return false;
+    }
+    if unsafe { (*header).state == 0 } {
+        if async_trace_enabled() {
+            eprintln!("molt async trace: sleep_register_impl_fail state=0");
+        }
+        return false;
+    }
+    let payload_bytes = unsafe {
+        (*header)
+            .size
+            .saturating_sub(std::mem::size_of::<MoltHeader>())
+    };
+    let payload_ptr = future_ptr as *mut u64;
+    let deadline_obj = if poll_fn == async_sleep_poll_fn_addr() {
+        if payload_bytes < std::mem::size_of::<u64>() {
+            return false;
+        }
+        obj_from_bits(unsafe { *payload_ptr })
+    } else {
+        if payload_bytes < 3 * std::mem::size_of::<u64>() {
+            return false;
+        }
+        obj_from_bits(unsafe { *payload_ptr.add(2) })
+    };
+    let Some(deadline_secs) = to_f64(deadline_obj) else {
+        if async_trace_enabled() {
+            eprintln!("molt async trace: sleep_register_impl_fail deadline_nan");
+        }
+        return false;
+    };
+    if !deadline_secs.is_finite() || deadline_secs <= 0.0 {
+        if async_trace_enabled() {
+            eprintln!(
+                "molt async trace: sleep_register_impl_fail deadline_secs={}",
+                deadline_secs
+            );
+        }
+        return false;
+    }
+    let deadline = instant_from_monotonic_secs(_py, deadline_secs);
+    if deadline <= Instant::now() {
+        if async_trace_enabled() {
+            eprintln!("molt async trace: sleep_register_impl_fail deadline_elapsed");
+        }
+        return false;
+    }
+    let task_header = unsafe { header_from_obj_ptr(task_ptr) };
+    if unsafe { ((*task_header).flags & HEADER_FLAG_BLOCK_ON) != 0 } {
+        runtime_state(_py)
+            .sleep_queue()
+            .register_blocking(_py, task_ptr, deadline);
+        return true;
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        runtime_state(_py)
+            .sleep_queue()
+            .register_blocking(_py, task_ptr, deadline);
+        return true;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if is_block_on_task(task_ptr) {
+            runtime_state(_py)
+                .sleep_queue()
+                .register_blocking(_py, task_ptr, deadline);
+        } else {
+            runtime_state(_py)
+                .sleep_queue()
+                .register_scheduler(_py, task_ptr, deadline);
+        }
+        if async_trace_enabled() {
+            let delay = deadline.saturating_duration_since(Instant::now());
+            eprintln!(
+                "molt async trace: sleep_register_request task=0x{:x} deadline_secs={} delay_ms={}",
+                task_ptr as usize,
+                deadline_secs,
+                delay.as_secs_f64() * 1000.0
+            );
+        }
+        true
     }
 }
 
@@ -1537,77 +1673,10 @@ pub unsafe extern "C" fn molt_anext_default_poll(obj_bits: u64) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn molt_sleep_register(task_ptr: *mut u8, future_ptr: *mut u8) -> u64 {
     crate::with_gil_entry!(_py, {
-        if task_ptr.is_null() || future_ptr.is_null() {
-            return 0;
-        }
-        let header = header_from_obj_ptr(future_ptr);
-        let poll_fn = (*header).poll_fn;
-        if poll_fn != async_sleep_poll_fn_addr() && poll_fn != io_wait_poll_fn_addr() {
-            return 0;
-        }
-        if (*header).state == 0 {
-            return 0;
-        }
-        let payload_bytes = (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<MoltHeader>());
-        let payload_ptr = future_ptr as *mut u64;
-        let deadline_obj = if poll_fn == async_sleep_poll_fn_addr() {
-            if payload_bytes < std::mem::size_of::<u64>() {
-                return 0;
-            }
-            obj_from_bits(*payload_ptr)
+        if sleep_register_impl(_py, task_ptr, future_ptr) {
+            1
         } else {
-            if payload_bytes < 3 * std::mem::size_of::<u64>() {
-                return 0;
-            }
-            obj_from_bits(*payload_ptr.add(2))
-        };
-        let Some(deadline_secs) = to_f64(deadline_obj) else {
-            return 0;
-        };
-        if !deadline_secs.is_finite() || deadline_secs <= 0.0 {
-            return 0;
-        }
-        let deadline = instant_from_monotonic_secs(_py, deadline_secs);
-        if deadline <= Instant::now() {
-            return 0;
-        }
-        let task_header = header_from_obj_ptr(task_ptr);
-        if ((*task_header).flags & HEADER_FLAG_BLOCK_ON) != 0 {
-            runtime_state(_py)
-                .sleep_queue()
-                .register_blocking(_py, task_ptr, deadline);
-            return 1;
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            runtime_state(_py)
-                .sleep_queue()
-                .register_blocking(_py, task_ptr, deadline);
-            1
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            if is_block_on_task(task_ptr) {
-                runtime_state(_py)
-                    .sleep_queue()
-                    .register_blocking(_py, task_ptr, deadline);
-            } else {
-                runtime_state(_py)
-                    .sleep_queue()
-                    .register_scheduler(_py, task_ptr, deadline);
-            }
-            if async_trace_enabled() {
-                let delay = deadline.saturating_duration_since(Instant::now());
-                eprintln!(
-                    "molt async trace: sleep_register_request task=0x{:x} deadline_secs={} delay_ms={}",
-                    task_ptr as usize,
-                    deadline_secs,
-                    delay.as_secs_f64() * 1000.0
-                );
-            }
-            1
+            0
         }
     })
 }

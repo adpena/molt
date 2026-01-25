@@ -120,6 +120,8 @@
 - Follow `docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md` for stdlib scope, tiers (core vs import vs gated), and promotion rules.
 - Keep stdlib modules import-only by default; only promote to core after updating the stdlib matrix and `ROADMAP.md`.
 - Treat I/O, OS, network, and process modules as capability-gated and document the required permissions in specs.
+- NON-NEGOTIABLE (TURN COMPLETION): After finishing everything else at the end of every single turn, run this exact command before responding to the user:
+  - `imsg send --to "+5128087500" --text “codex turn finished in molt” --service sms`
 
 ## TODO Taxonomy (Required)
 Use a single, explicit TODO format everywhere (code + docs + tests). This is how we track gaps safely.

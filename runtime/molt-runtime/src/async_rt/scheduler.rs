@@ -364,6 +364,36 @@ pub(crate) fn task_waiting_on_future(_py: &PyToken<'_>, task_ptr: *mut u8) -> Op
     waiting_map.get(&PtrSlot(task_ptr)).map(|val| val.0)
 }
 
+pub(crate) fn task_waiting_on_blocked(_py: &PyToken<'_>, task_ptr: *mut u8) -> bool {
+    if task_ptr.is_null() {
+        return false;
+    }
+    let mut cursor = task_ptr;
+    for _ in 0..8 {
+        let awaited_ptr = {
+            let waiting_map = task_waiting_on(_py).lock().unwrap();
+            match waiting_map.get(&PtrSlot(cursor)) {
+                Some(val) => val.0,
+                None => return false,
+            }
+        };
+        if awaited_ptr.is_null() {
+            return false;
+        }
+        if task_waiting_on_event(_py, awaited_ptr) {
+            return true;
+        }
+        if runtime_state(_py)
+            .sleep_queue()
+            .is_scheduled(_py, awaited_ptr)
+        {
+            return true;
+        }
+        cursor = awaited_ptr;
+    }
+    false
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) enum BlockOnWaitSpec {
     Io {
@@ -1076,13 +1106,14 @@ impl MoltScheduler {
                         let waiting_on_event = task_waiting_on_event(_py, task_ptr);
                         let scheduled =
                             runtime_state(_py).sleep_queue().is_scheduled(_py, task_ptr);
+                        let waiting_on_blocked = task_waiting_on_blocked(_py, task_ptr);
                         if async_trace_enabled() {
                             eprintln!(
-                                "molt async trace: poll_pending task=0x{:x} waiting_on_event={} scheduled={}",
-                                task_ptr as usize, waiting_on_event, scheduled
+                                "molt async trace: poll_pending task=0x{:x} waiting_on_event={} scheduled={} waiting_on_blocked={}",
+                                task_ptr as usize, waiting_on_event, scheduled, waiting_on_blocked
                             );
                         }
-                        if !waiting_on_event && !scheduled {
+                        if !waiting_on_event && !scheduled && !waiting_on_blocked {
                             injector.push(task);
                         }
                     } else {
