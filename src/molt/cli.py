@@ -525,6 +525,102 @@ def _latest_mtime(paths: list[Path]) -> float:
     return latest
 
 
+def _rustc_version() -> str | None:
+    try:
+        result = subprocess.run(
+            ["rustc", "-Vv"], capture_output=True, text=True, check=False
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
+def _runtime_fingerprint_path(
+    project_root: Path,
+    artifact: Path,
+    profile: BuildProfile,
+    target_triple: str | None,
+) -> Path:
+    target = (target_triple or "native").replace(os.sep, "_").replace(":", "_")
+    root = project_root / "target" / "runtime_fingerprints"
+    return root / f"{artifact.name}.{profile}.{target}.fingerprint"
+
+
+def _hash_runtime_file(path: Path, root: Path, hasher: Any) -> None:
+    try:
+        rel_path = path.relative_to(root)
+        rel_bytes = str(rel_path).encode("utf-8")
+    except ValueError:
+        rel_bytes = str(path).encode("utf-8")
+    hasher.update(rel_bytes)
+    hasher.update(b"\0")
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(65536)
+            if not chunk:
+                break
+            hasher.update(chunk)
+    hasher.update(b"\0")
+
+
+def _runtime_fingerprint(
+    project_root: Path,
+    *,
+    profile: BuildProfile,
+    target_triple: str | None,
+    rustflags: str,
+) -> dict[str, str | None] | None:
+    hasher = hashlib.sha256()
+    meta = f"profile:{profile}\ntarget:{target_triple or 'native'}\n"
+    meta += f"rustflags:{rustflags}\n"
+    hasher.update(meta.encode("utf-8"))
+    rustc_info = _rustc_version()
+    try:
+        for path in sorted(_runtime_source_paths(project_root), key=lambda p: str(p)):
+            if path.is_dir():
+                for item in sorted(path.rglob("*"), key=lambda p: str(p)):
+                    if item.is_file():
+                        _hash_runtime_file(item, project_root, hasher)
+            elif path.exists():
+                _hash_runtime_file(path, project_root, hasher)
+    except OSError:
+        return None
+    return {"hash": hasher.hexdigest(), "rustc": rustc_info}
+
+
+def _read_runtime_fingerprint(path: Path) -> dict[str, str | None] | None:
+    try:
+        text = path.read_text().strip()
+    except OSError:
+        return None
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return {"hash": text, "rustc": None}
+    if not isinstance(data, dict):
+        return None
+    hash_value = data.get("hash")
+    if not isinstance(hash_value, str) or not hash_value:
+        return None
+    rustc_value = data.get("rustc")
+    if rustc_value is not None and not isinstance(rustc_value, str):
+        rustc_value = None
+    return {"hash": hash_value, "rustc": rustc_value}
+
+
+def _write_runtime_fingerprint(path: Path, fingerprint: dict[str, str | None]) -> None:
+    payload = {
+        "version": 1,
+        "hash": fingerprint.get("hash"),
+        "rustc": fingerprint.get("rustc"),
+    }
+    path.write_text(json.dumps(payload, indent=2) + "\n")
+
+
 def _check_lockfiles(
     project_root: Path,
     json_output: bool,
@@ -766,10 +862,34 @@ def _ensure_runtime_lib(
     profile: BuildProfile,
     project_root: Path,
 ) -> bool:
-    latest_src = _latest_mtime(_runtime_source_paths(project_root))
-    lib_mtime = runtime_lib.stat().st_mtime if runtime_lib.exists() else 0.0
-    if lib_mtime >= latest_src:
+    rustflags = os.environ.get("RUSTFLAGS", "")
+    fingerprint = _runtime_fingerprint(
+        project_root,
+        profile=profile,
+        target_triple=target_triple,
+        rustflags=rustflags,
+    )
+    fingerprint_path = _runtime_fingerprint_path(
+        project_root, runtime_lib, profile, target_triple
+    )
+    stored_fingerprint = (
+        _read_runtime_fingerprint(fingerprint_path)
+        if fingerprint_path.exists()
+        else None
+    )
+    needs_build = not runtime_lib.exists()
+    if not needs_build:
+        if fingerprint is None or stored_fingerprint is None:
+            needs_build = True
+        elif stored_fingerprint.get("hash") != fingerprint.get("hash"):
+            needs_build = True
+        elif fingerprint.get("rustc"):
+            stored_rustc = stored_fingerprint.get("rustc")
+            needs_build = stored_rustc is None or stored_rustc != fingerprint["rustc"]
+    if not needs_build:
         return True
+    if not json_output:
+        print("Runtime sources changed; rebuilding runtime...")
     cmd = ["cargo", "build", "-p", "molt-runtime"]
     if profile == "release":
         cmd.append("--release")
@@ -780,6 +900,16 @@ def _ensure_runtime_lib(
         if not json_output:
             print("Runtime build failed", file=sys.stderr)
         return False
+    if fingerprint is not None:
+        try:
+            fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
+            _write_runtime_fingerprint(fingerprint_path, fingerprint)
+        except OSError:
+            if not json_output:
+                print(
+                    "Warning: failed to write runtime fingerprint metadata.",
+                    file=sys.stderr,
+                )
     return True
 
 
@@ -797,10 +927,6 @@ def _ensure_runtime_wasm(
     profile: BuildProfile,
 ) -> bool:
     root = Path(__file__).resolve().parents[2]
-    latest_src = _latest_mtime(_runtime_source_paths(root))
-    wasm_mtime = runtime_wasm.stat().st_mtime if runtime_wasm.exists() else 0.0
-    if wasm_mtime >= latest_src:
-        return True
     env = os.environ.copy()
     flags = "-C link-arg=--import-memory -C link-arg=--import-table"
     if reloc:
@@ -810,6 +936,34 @@ def _ensure_runtime_wasm(
         )
     else:
         flags = f"{flags} -C link-arg=--growable-table"
+    rustflags = f"{env.get('RUSTFLAGS', '')} {flags}".strip()
+    fingerprint = _runtime_fingerprint(
+        root,
+        profile=profile,
+        target_triple="wasm32-wasip1",
+        rustflags=rustflags,
+    )
+    fingerprint_path = _runtime_fingerprint_path(
+        root, runtime_wasm, profile, "wasm32-wasip1"
+    )
+    stored_fingerprint = (
+        _read_runtime_fingerprint(fingerprint_path)
+        if fingerprint_path.exists()
+        else None
+    )
+    needs_build = not runtime_wasm.exists()
+    if not needs_build:
+        if fingerprint is None or stored_fingerprint is None:
+            needs_build = True
+        elif stored_fingerprint.get("hash") != fingerprint.get("hash"):
+            needs_build = True
+        elif fingerprint.get("rustc"):
+            stored_rustc = stored_fingerprint.get("rustc")
+            needs_build = stored_rustc is None or stored_rustc != fingerprint["rustc"]
+    if not needs_build:
+        return True
+    if not json_output:
+        print("Runtime sources changed; rebuilding runtime...")
     _append_rustflags(env, flags)
     cmd = [
         "cargo",
@@ -839,6 +993,16 @@ def _ensure_runtime_wasm(
         return False
     runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, runtime_wasm)
+    if fingerprint is not None:
+        try:
+            fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
+            _write_runtime_fingerprint(fingerprint_path, fingerprint)
+        except OSError:
+            if not json_output:
+                print(
+                    "Warning: failed to write runtime fingerprint metadata.",
+                    file=sys.stderr,
+                )
     return True
 
 

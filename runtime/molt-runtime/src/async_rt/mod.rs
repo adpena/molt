@@ -10,6 +10,22 @@ pub(crate) mod sockets;
 pub(crate) mod task;
 pub(crate) mod threads;
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static SPAWN_RETAIN_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn spawned_task_inc() {
+    SPAWN_RETAIN_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn spawned_task_dec() {
+    SPAWN_RETAIN_COUNT.fetch_sub(1, Ordering::Relaxed);
+}
+
+pub(crate) fn spawned_task_count() -> usize {
+    SPAWN_RETAIN_COUNT.load(Ordering::Relaxed)
+}
+
 #[allow(unused_imports)]
 pub(crate) use cancellation::{
     cancel_tokens, clear_task_token, current_token_id, default_cancel_tokens, ensure_task_token,

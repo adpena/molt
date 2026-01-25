@@ -157,6 +157,10 @@ pub(crate) const HEADER_FLAG_GEN_STARTED: u64 = 1 << 3;
 pub(crate) const HEADER_FLAG_SPAWN_RETAIN: u64 = 1 << 4;
 pub(crate) const HEADER_FLAG_CANCEL_PENDING: u64 = 1 << 5;
 pub(crate) const HEADER_FLAG_BLOCK_ON: u64 = 1 << 6;
+pub(crate) const HEADER_FLAG_TASK_QUEUED: u64 = 1 << 7;
+pub(crate) const HEADER_FLAG_TASK_RUNNING: u64 = 1 << 8;
+pub(crate) const HEADER_FLAG_TASK_WAKE_PENDING: u64 = 1 << 9;
+pub(crate) const HEADER_FLAG_TASK_DONE: u64 = 1 << 10;
 
 thread_local! {
     pub(crate) static OBJECT_POOL_TLS: RefCell<Vec<Vec<PtrSlot>>> =

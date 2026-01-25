@@ -20,7 +20,7 @@ codex-79872 -> src/molt/stdlib/asyncio.py
 codex-79872 -> src/molt/shims_cpython.py
 codex-79872 -> tests/differential/basic/
 codex-79872 -> src/molt/concurrency.py
-codex-62005 -> tools/bench.py
-codex-62005 -> tools/bench_wasm.py
-codex-62005 -> docs/benchmarks/
-codex-62005 -> README.md
+codex-79872 -> src/molt/frontend/__init__.py
+codex-79872 -> .github/workflows/
+codex-79872 -> tools/bench_report.py
+codex-79872 -> compiler/

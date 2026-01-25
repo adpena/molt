@@ -227,6 +227,8 @@ pub(crate) use crate::object::{
     MemoryViewFormat, MemoryViewFormatKind, MoltFileHandle, MoltFileState, PtrSlot,
     HEADER_FLAG_BLOCK_ON, HEADER_FLAG_CANCEL_PENDING, HEADER_FLAG_GEN_RUNNING,
     HEADER_FLAG_GEN_STARTED, HEADER_FLAG_SKIP_CLASS_DECREF, HEADER_FLAG_SPAWN_RETAIN,
+    HEADER_FLAG_TASK_DONE, HEADER_FLAG_TASK_QUEUED, HEADER_FLAG_TASK_RUNNING,
+    HEADER_FLAG_TASK_WAKE_PENDING,
     OBJECT_POOL_BUCKETS, OBJECT_POOL_TLS,
 };
 pub use crate::object::{molt_dec_ref, molt_inc_ref, MoltHeader};

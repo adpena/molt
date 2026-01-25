@@ -9,10 +9,11 @@ use crate::{
     header_from_obj_ptr, obj_from_bits, raise_exception, record_exception, runtime_state,
     task_exception_depth_drop, task_exception_handler_stack_drop, task_exception_stack_drop,
     task_last_exception_drop, ExceptionSentinel, MoltHeader, MoltObject, PtrSlot,
-    HEADER_FLAG_CANCEL_PENDING, HEADER_FLAG_SPAWN_RETAIN,
+    HEADER_FLAG_BLOCK_ON, HEADER_FLAG_CANCEL_PENDING, HEADER_FLAG_SPAWN_RETAIN,
 };
 
 use super::scheduler::{await_waiter_clear, wake_task_ptr, CURRENT_TASK};
+use super::spawned_task_dec;
 
 pub(crate) struct CancelTokenEntry {
     pub(crate) parent: u64,
@@ -172,6 +173,7 @@ pub(crate) fn clear_task_token(_py: &PyToken<'_>, task_ptr: *mut u8) {
             if ((*header).flags & HEADER_FLAG_SPAWN_RETAIN) != 0 {
                 (*header).flags &= !HEADER_FLAG_SPAWN_RETAIN;
                 dec_ref_bits(_py, MoltObject::from_ptr(task_ptr).bits());
+                spawned_task_dec();
             }
         }
     }
@@ -241,7 +243,14 @@ pub(crate) fn wake_tasks_for_cancelled_tokens(_py: &PyToken<'_>) {
     }
     for (task_ptr, token_id) in entries {
         if token_is_cancelled(_py, token_id) {
-            wake_task_ptr(_py, task_ptr.0);
+            let should_wake = unsafe {
+                let header = header_from_obj_ptr(task_ptr.0);
+                ((*header).flags & HEADER_FLAG_SPAWN_RETAIN) != 0
+                    || ((*header).flags & HEADER_FLAG_BLOCK_ON) != 0
+            };
+            if should_wake {
+                wake_task_ptr(_py, task_ptr.0);
+            }
         }
     }
     // TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): add a token->tasks index to avoid full scans on cancellation.
