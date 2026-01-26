@@ -88,6 +88,8 @@ pub(crate) fn runtime_teardown(_py: &PyToken<'_>, state: &RuntimeState) {
     clear_code_slots(_py, state);
     clear_object_pool(state);
     clear_asyncgen_registry();
+    clear_asyncgen_hooks(_py, state);
+    clear_asyncgen_locals(_py, state);
     clear_fn_ptr_code_map(_py);
     reset_ptr_registry();
     clear_thread_local_state(_py);
@@ -103,6 +105,31 @@ fn clear_asyncgen_registry() {
     if let Some(registry) = ASYNCGEN_REGISTRY.get() {
         let mut guard = registry.lock().unwrap();
         guard.clear();
+    }
+}
+
+fn clear_asyncgen_hooks(_py: &PyToken<'_>, state: &RuntimeState) {
+    crate::gil_assert();
+    let mut guard = state.asyncgen_hooks.lock().unwrap();
+    if guard.firstiter != 0 {
+        dec_ref_bits(_py, guard.firstiter);
+    }
+    if guard.finalizer != 0 {
+        dec_ref_bits(_py, guard.finalizer);
+    }
+    guard.firstiter = MoltObject::none().bits();
+    guard.finalizer = MoltObject::none().bits();
+}
+
+fn clear_asyncgen_locals(_py: &PyToken<'_>, state: &RuntimeState) {
+    crate::gil_assert();
+    let mut guard = state.asyncgen_locals.lock().unwrap();
+    for (_, entry) in guard.drain() {
+        for bits in entry.names {
+            if bits != 0 {
+                dec_ref_bits(_py, bits);
+            }
+        }
     }
 }
 

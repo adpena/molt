@@ -1,4 +1,7 @@
 use crate::PyToken;
+use crate::builtins::exceptions::{
+    molt_exception_init, molt_exception_new_bound, molt_exceptiongroup_init,
+};
 use crate::*;
 
 unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
@@ -30,6 +33,19 @@ pub(crate) unsafe fn alloc_instance_for_class(_py: &PyToken<'_>, class_ptr: *mut
     MoltObject::from_ptr(obj_ptr).bits()
 }
 
+pub(crate) unsafe fn alloc_instance_for_class_no_pool(_py: &PyToken<'_>, class_ptr: *mut u8) -> u64 {
+    let class_bits = MoltObject::from_ptr(class_ptr).bits();
+    let size = class_layout_size(_py, class_ptr);
+    let total_size = size + std::mem::size_of::<MoltHeader>();
+    let obj_ptr = alloc_object_zeroed(_py, total_size, TYPE_ID_OBJECT);
+    if obj_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    object_set_class_bits(_py, obj_ptr, class_bits);
+    inc_ref_bits(_py, class_bits);
+    MoltObject::from_ptr(obj_ptr).bits()
+}
+
 pub(crate) unsafe fn call_class_init_with_args(
     _py: &PyToken<'_>,
     class_ptr: *mut u8,
@@ -42,15 +58,41 @@ pub(crate) unsafe fn call_class_init_with_args(
             intern_static_name(_py, &runtime_state(_py).interned.new_name, b"__new__");
         let inst_bits =
             if let Some(new_bits) = class_attr_lookup_raw_mro(_py, class_ptr, new_name_bits) {
-                let builder_bits = molt_callargs_new(args.len() as u64 + 1, 0);
-                if builder_bits == 0 {
-                    return MoltObject::none().bits();
+                let mut tuple_new = false;
+                if let Some(new_ptr) = obj_from_bits(new_bits).as_ptr() {
+                    if object_type_id(new_ptr) == TYPE_ID_FUNCTION
+                        && function_fn_ptr(new_ptr) == fn_addr!(molt_exception_new_bound)
+                    {
+                        tuple_new = true;
+                    }
                 }
-                let _ = molt_callargs_push_pos(builder_bits, class_bits);
-                for &arg in args {
-                    let _ = molt_callargs_push_pos(builder_bits, arg);
-                }
-                let inst_bits = molt_call_bind(new_bits, builder_bits);
+                let inst_bits = if tuple_new {
+                    let args_ptr = alloc_tuple(_py, args);
+                    if args_ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    let args_bits = MoltObject::from_ptr(args_ptr).bits();
+                    let builder_bits = molt_callargs_new(2, 0);
+                    if builder_bits == 0 {
+                        dec_ref_bits(_py, args_bits);
+                        return MoltObject::none().bits();
+                    }
+                    let _ = molt_callargs_push_pos(builder_bits, class_bits);
+                    let _ = molt_callargs_push_pos(builder_bits, args_bits);
+                    let inst_bits = molt_call_bind(new_bits, builder_bits);
+                    dec_ref_bits(_py, args_bits);
+                    inst_bits
+                } else {
+                    let builder_bits = molt_callargs_new(args.len() as u64 + 1, 0);
+                    if builder_bits == 0 {
+                        return MoltObject::none().bits();
+                    }
+                    let _ = molt_callargs_push_pos(builder_bits, class_bits);
+                    for &arg in args {
+                        let _ = molt_callargs_push_pos(builder_bits, arg);
+                    }
+                    molt_call_bind(new_bits, builder_bits)
+                };
                 if exception_pending(_py) {
                     return MoltObject::none().bits();
                 }
@@ -81,15 +123,43 @@ pub(crate) unsafe fn call_class_init_with_args(
         else {
             return inst_bits;
         };
-        let pos_capacity = args.len() as u64;
-        let builder_bits = molt_callargs_new(pos_capacity, 0);
-        if builder_bits == 0 {
-            return inst_bits;
+        let mut tuple_init = false;
+        if let Some(init_ptr) = obj_from_bits(init_bits).as_ptr() {
+            if object_type_id(init_ptr) == TYPE_ID_FUNCTION {
+                let fn_ptr = function_fn_ptr(init_ptr);
+                if fn_ptr == fn_addr!(molt_exception_init)
+                    || fn_ptr == fn_addr!(molt_exceptiongroup_init)
+                {
+                    tuple_init = true;
+                }
+            }
         }
-        for &arg in args {
-            let _ = molt_callargs_push_pos(builder_bits, arg);
+        if tuple_init {
+            let args_ptr = alloc_tuple(_py, args);
+            if args_ptr.is_null() {
+                return inst_bits;
+            }
+            let args_bits = MoltObject::from_ptr(args_ptr).bits();
+            let builder_bits = molt_callargs_new(2, 0);
+            if builder_bits == 0 {
+                dec_ref_bits(_py, args_bits);
+                return inst_bits;
+            }
+            let _ = molt_callargs_push_pos(builder_bits, inst_bits);
+            let _ = molt_callargs_push_pos(builder_bits, args_bits);
+            let _ = molt_call_bind(init_bits, builder_bits);
+            dec_ref_bits(_py, args_bits);
+        } else {
+            let pos_capacity = args.len() as u64;
+            let builder_bits = molt_callargs_new(pos_capacity, 0);
+            if builder_bits == 0 {
+                return inst_bits;
+            }
+            for &arg in args {
+                let _ = molt_callargs_push_pos(builder_bits, arg);
+            }
+            let _ = molt_call_bind(init_bits, builder_bits);
         }
-        let _ = molt_call_bind(init_bits, builder_bits);
         return inst_bits;
     }
     if class_bits == builtins.slice {

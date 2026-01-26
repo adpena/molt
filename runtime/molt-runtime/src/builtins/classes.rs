@@ -5,11 +5,12 @@ use molt_obj_model::MoltObject;
 
 use crate::state::runtime_state::runtime_state_lock;
 use crate::{
-    alloc_class_obj, alloc_string, class_break_cycles, class_name_bits, dec_ref_bits,
-    molt_class_set_base, obj_from_bits, object_type_id, runtime_state, string_obj_to_owned,
-    RuntimeState, BUILTIN_TAG_BASE_EXCEPTION, BUILTIN_TAG_EXCEPTION, BUILTIN_TAG_OBJECT,
-    BUILTIN_TAG_TYPE, TYPE_ID_TYPE, TYPE_TAG_BOOL, TYPE_TAG_BYTEARRAY, TYPE_TAG_BYTES,
-    TYPE_TAG_DICT, TYPE_TAG_FLOAT, TYPE_TAG_FROZENSET, TYPE_TAG_INT, TYPE_TAG_LIST,
+    alloc_class_obj, alloc_string, alloc_tuple, class_break_cycles, class_name_bits, dec_ref_bits,
+    inc_ref_bits, molt_class_set_base, obj_from_bits, object_set_class_bits, object_type_id,
+    runtime_state,
+    string_obj_to_owned, RuntimeState, BUILTIN_TAG_BASE_EXCEPTION, BUILTIN_TAG_EXCEPTION,
+    BUILTIN_TAG_OBJECT, BUILTIN_TAG_TYPE, TYPE_ID_TYPE, TYPE_TAG_BOOL, TYPE_TAG_BYTEARRAY,
+    TYPE_TAG_BYTES, TYPE_TAG_DICT, TYPE_TAG_FLOAT, TYPE_TAG_FROZENSET, TYPE_TAG_INT, TYPE_TAG_LIST,
     TYPE_TAG_MEMORYVIEW, TYPE_TAG_NONE, TYPE_TAG_RANGE, TYPE_TAG_SET, TYPE_TAG_SLICE, TYPE_TAG_STR,
     TYPE_TAG_TUPLE,
 };
@@ -22,6 +23,8 @@ pub(crate) struct BuiltinClasses {
     pub(crate) ellipsis_type: u64,
     pub(crate) base_exception: u64,
     pub(crate) exception: u64,
+    pub(crate) base_exception_group: u64,
+    pub(crate) exception_group: u64,
     pub(crate) int: u64,
     pub(crate) float: u64,
     pub(crate) bool: u64,
@@ -43,6 +46,7 @@ pub(crate) struct BuiltinClasses {
     pub(crate) buffered_random: u64,
     pub(crate) text_io_wrapper: u64,
     pub(crate) function: u64,
+    pub(crate) builtin_function_or_method: u64,
     pub(crate) code: u64,
     pub(crate) frame: u64,
     pub(crate) traceback: u64,
@@ -62,6 +66,8 @@ impl BuiltinClasses {
             self.ellipsis_type,
             self.base_exception,
             self.exception,
+            self.base_exception_group,
+            self.exception_group,
             self.int,
             self.float,
             self.bool,
@@ -83,6 +89,7 @@ impl BuiltinClasses {
             self.buffered_random,
             self.text_io_wrapper,
             self.function,
+            self.builtin_function_or_method,
             self.code,
             self.frame,
             self.traceback,
@@ -125,6 +132,8 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
     let ellipsis_type = make_builtin_class(_py, "ellipsis");
     let base_exception = make_builtin_class(_py, "BaseException");
     let exception = make_builtin_class(_py, "Exception");
+    let base_exception_group = make_builtin_class(_py, "BaseExceptionGroup");
+    let exception_group = make_builtin_class(_py, "ExceptionGroup");
     let int = make_builtin_class(_py, "int");
     let float = make_builtin_class(_py, "float");
     let bool = make_builtin_class(_py, "bool");
@@ -146,12 +155,67 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
     let buffered_random = make_builtin_class(_py, "BufferedRandom");
     let text_io_wrapper = make_builtin_class(_py, "TextIOWrapper");
     let function = make_builtin_class(_py, "function");
+    let builtin_function_or_method = make_builtin_class(_py, "builtin_function_or_method");
     let code = make_builtin_class(_py, "code");
     let frame = make_builtin_class(_py, "frame");
     let traceback = make_builtin_class(_py, "traceback");
     let module = make_builtin_class(_py, "module");
     let super_type = make_builtin_class(_py, "super");
     let generic_alias = make_builtin_class(_py, "GenericAlias");
+
+    unsafe {
+        for bits in [
+            object,
+            none_type,
+            not_implemented_type,
+            ellipsis_type,
+            base_exception,
+            exception,
+            base_exception_group,
+            exception_group,
+            int,
+            float,
+            bool,
+            str,
+            bytes,
+            bytearray,
+            list,
+            tuple,
+            dict,
+            set,
+            frozenset,
+            range,
+            slice,
+            memoryview,
+            file,
+            file_io,
+            buffered_reader,
+            buffered_writer,
+            buffered_random,
+            text_io_wrapper,
+            function,
+            builtin_function_or_method,
+            code,
+            frame,
+            traceback,
+            module,
+            super_type,
+            generic_alias,
+        ] {
+            if let Some(ptr) = obj_from_bits(bits).as_ptr() {
+                if object_type_id(ptr) == TYPE_ID_TYPE {
+                    object_set_class_bits(_py, ptr, type_obj);
+                    inc_ref_bits(_py, type_obj);
+                }
+            }
+        }
+        if let Some(ptr) = obj_from_bits(type_obj).as_ptr() {
+            if object_type_id(ptr) == TYPE_ID_TYPE {
+                object_set_class_bits(_py, ptr, type_obj);
+                inc_ref_bits(_py, type_obj);
+            }
+        }
+    }
 
     let _ = molt_class_set_base(object, MoltObject::none().bits());
     let _ = molt_class_set_base(type_obj, object);
@@ -160,6 +224,13 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
     let _ = molt_class_set_base(ellipsis_type, object);
     let _ = molt_class_set_base(base_exception, object);
     let _ = molt_class_set_base(exception, base_exception);
+    let _ = molt_class_set_base(base_exception_group, base_exception);
+    let exception_group_bases = alloc_tuple(_py, &[base_exception_group, exception]);
+    if !exception_group_bases.is_null() {
+        let bases_bits = MoltObject::from_ptr(exception_group_bases).bits();
+        let _ = molt_class_set_base(exception_group, bases_bits);
+        dec_ref_bits(_py, bases_bits);
+    }
     let _ = molt_class_set_base(int, object);
     let _ = molt_class_set_base(float, object);
     let _ = molt_class_set_base(bool, int);
@@ -181,6 +252,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
     let _ = molt_class_set_base(buffered_random, file);
     let _ = molt_class_set_base(text_io_wrapper, file);
     let _ = molt_class_set_base(function, object);
+    let _ = molt_class_set_base(builtin_function_or_method, object);
     let _ = molt_class_set_base(code, object);
     let _ = molt_class_set_base(frame, object);
     let _ = molt_class_set_base(traceback, object);
@@ -196,6 +268,8 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
         ellipsis_type,
         base_exception,
         exception,
+        base_exception_group,
+        exception_group,
         int,
         float,
         bool,
@@ -217,6 +291,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
         buffered_random,
         text_io_wrapper,
         function,
+        builtin_function_or_method,
         code,
         frame,
         traceback,
@@ -289,6 +364,7 @@ pub(crate) fn builtin_classes_shutdown(py: &PyToken<'_>, state: &RuntimeState) {
             builtins.buffered_random,
             builtins.text_io_wrapper,
             builtins.function,
+            builtins.builtin_function_or_method,
             builtins.code,
             builtins.frame,
             builtins.traceback,
@@ -313,6 +389,8 @@ pub(crate) fn is_builtin_class_bits(_py: &PyToken<'_>, bits: u64) -> bool {
         || bits == builtins.ellipsis_type
         || bits == builtins.base_exception
         || bits == builtins.exception
+        || bits == builtins.base_exception_group
+        || bits == builtins.exception_group
         || bits == builtins.int
         || bits == builtins.float
         || bits == builtins.bool
@@ -334,6 +412,7 @@ pub(crate) fn is_builtin_class_bits(_py: &PyToken<'_>, bits: u64) -> bool {
         || bits == builtins.buffered_random
         || bits == builtins.text_io_wrapper
         || bits == builtins.function
+        || bits == builtins.builtin_function_or_method
         || bits == builtins.code
         || bits == builtins.frame
         || bits == builtins.traceback

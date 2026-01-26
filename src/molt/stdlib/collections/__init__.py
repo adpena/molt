@@ -2,14 +2,31 @@
 
 from __future__ import annotations
 
-from types import NotImplementedType
-from typing import Any, Iterable, Iterator, cast
+from typing import TYPE_CHECKING, Any, Iterable, Iterator, cast
 
 import collections.abc as abc
+import builtins as _builtins
+import keyword as _keyword
+import operator as _operator
 
-__all__ = ["abc", "Counter", "defaultdict", "deque"]
+__all__ = ["abc", "Counter", "defaultdict", "deque", "namedtuple"]
 
 _MISSING = object()
+
+if TYPE_CHECKING:
+    from types import NotImplementedType
+
+
+def _load_intrinsic(name: str) -> Any | None:
+    direct = globals().get(name)
+    if direct is not None:
+        return direct
+    return getattr(_builtins, name, None)
+
+
+_MOLT_CLASS_NEW = _load_intrinsic("_molt_class_new")
+_MOLT_CLASS_SET_BASE = _load_intrinsic("_molt_class_set_base")
+_MOLT_CLASS_APPLY_SET_NAME = _load_intrinsic("_molt_class_apply_set_name")
 
 
 class _DequeIter:
@@ -184,6 +201,157 @@ class deque:
 
     def __reversed__(self) -> Iterator[Any]:
         return reversed(self._data)
+
+
+def namedtuple(
+    typename: Any,
+    field_names: Any,
+    *,
+    rename: bool = False,
+    defaults: Iterable[Any] | None = None,
+    module: str | None = None,
+):
+    typename = str(typename)
+    if isinstance(field_names, str):
+        field_names = field_names.replace(",", " ").split()
+    else:
+        field_names = [str(name) for name in field_names]
+
+    if not typename.isidentifier() or _keyword.iskeyword(typename):
+        raise ValueError(
+            f"Type names and field names must be valid identifiers: {typename!r}"
+        )
+
+    seen: set[str] = set()
+    normalized: list[str] = []
+    for idx, name in enumerate(field_names):
+        invalid = (
+            (not name.isidentifier())
+            or _keyword.iskeyword(name)
+            or name.startswith("_")
+            or name in seen
+        )
+        if invalid:
+            if rename:
+                name = f"_{idx}"
+            else:
+                if name in seen:
+                    raise ValueError(f"Encountered duplicate field name: {name!r}")
+                if name.startswith("_"):
+                    raise ValueError(
+                        f"Field names cannot start with an underscore: {name!r}"
+                    )
+                raise ValueError(
+                    f"Type names and field names must be valid identifiers: {name!r}"
+                )
+        if name in seen:
+            raise ValueError(f"Encountered duplicate field name: {name!r}")
+        seen.add(name)
+        normalized.append(name)
+
+    field_names = normalized
+    field_tuple = tuple(field_names)
+    num_fields = len(field_tuple)
+    field_index = {name: idx for idx, name in enumerate(field_tuple)}
+
+    defaults_tuple: tuple[Any, ...] | None = None
+    if defaults is not None:
+        defaults_tuple = tuple(defaults)
+        if len(defaults_tuple) > num_fields:
+            raise TypeError("Got more default values than field names")
+    field_defaults: dict[str, Any] = {}
+    if defaults_tuple:
+        for name, value in zip(field_tuple[-len(defaults_tuple) :], defaults_tuple):
+            field_defaults[name] = value
+
+    if module is None:
+        try:
+            import sys as _sys
+
+            module = _sys._getframe(1).f_globals.get("__name__", "__main__")
+        except Exception:
+            module = "__main__"
+
+    if not callable(_MOLT_CLASS_NEW) or not callable(_MOLT_CLASS_SET_BASE):
+        raise NotImplementedError("namedtuple requires Molt runtime support")
+
+    def __new__(cls, *args: Any, **kwargs: Any) -> Any:
+        if len(args) > num_fields:
+            raise TypeError(f"Expected {num_fields} arguments, got {len(args)}")
+        values = [_MISSING] * num_fields
+        for idx, value in enumerate(args):
+            values[idx] = value
+        for name, value in kwargs.items():
+            idx = field_index.get(name)
+            if idx is None:
+                raise TypeError(f"Got unexpected field names: {[name]!r}")
+            if values[idx] is not _MISSING:
+                raise TypeError(f"Got multiple values for field name: {name!r}")
+            values[idx] = value
+        if defaults_tuple:
+            start = num_fields - len(defaults_tuple)
+            for idx, default in enumerate(defaults_tuple, start=start):
+                if values[idx] is _MISSING:
+                    values[idx] = default
+        missing = [
+            field_tuple[i] for i, value in enumerate(values) if value is _MISSING
+        ]
+        if missing:
+            raise TypeError(
+                f"Expected {num_fields} arguments, got {num_fields - len(missing)}"
+            )
+        return tuple.__new__(cls, tuple(values))
+
+    if defaults_tuple:
+        __new__.__defaults__ = defaults_tuple
+
+    def _make(cls, iterable: Iterable[Any]) -> Any:
+        items = tuple(iterable)
+        if len(items) != num_fields:
+            raise TypeError(f"Expected {num_fields} arguments, got {len(items)}")
+        return cls(*items)
+
+    def _replace(self, **kwds: Any) -> Any:
+        unexpected = [name for name in kwds if name not in field_index]
+        if unexpected:
+            raise TypeError(f"Got unexpected field names: {unexpected!r}")
+        values = [kwds.get(name, getattr(self, name)) for name in field_tuple]
+        return type(self)(*values)
+
+    def _asdict(self) -> dict[str, Any]:
+        return {name: value for name, value in zip(field_tuple, self)}
+
+    def __getnewargs__(self) -> tuple[Any, ...]:
+        return tuple(self)
+
+    def __repr__(self) -> str:
+        if not field_tuple:
+            return f"{typename}()"
+        items = ", ".join(f"{name}={getattr(self, name)!r}" for name in field_tuple)
+        return f"{typename}({items})"
+
+    cls = _MOLT_CLASS_NEW(typename)
+    base_res = _MOLT_CLASS_SET_BASE(cls, tuple)
+    if base_res is not None:
+        cls = base_res
+    setattr(cls, "__slots__", ())
+    setattr(cls, "__doc__", f"{typename}({', '.join(field_tuple)})")
+    setattr(cls, "__module__", module)
+    setattr(cls, "__qualname__", typename)
+    setattr(cls, "_fields", field_tuple)
+    setattr(cls, "_field_defaults", field_defaults)
+    setattr(cls, "__match_args__", field_tuple)
+    setattr(cls, "__new__", __new__)
+    setattr(cls, "_make", classmethod(_make))
+    setattr(cls, "_replace", _replace)
+    setattr(cls, "_asdict", _asdict)
+    setattr(cls, "__getnewargs__", __getnewargs__)
+    setattr(cls, "__repr__", __repr__)
+    for idx, name in enumerate(field_tuple):
+        setattr(cls, name, property(_operator.itemgetter(idx)))
+    if callable(_MOLT_CLASS_APPLY_SET_NAME):
+        _MOLT_CLASS_APPLY_SET_NAME(cls)
+    return cls
 
 
 class Counter(dict):

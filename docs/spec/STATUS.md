@@ -156,9 +156,10 @@ README/ROADMAP in sync.
 - Differential tests: core-language basic now includes pattern matching, async generator finalization, and `while`-`else` probes; failures are expected until the features are implemented.
 - Augmented assignment: slice targets (`seq[a:b] += ...`) are not supported yet.
   (TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:missing): augassign slice targets.)
-- Exceptions: `try/except/else/finally` + `raise`/reraise; `__traceback__` now returns traceback objects
-  (`tb_frame`/`tb_lineno`/`tb_next`) with frame objects carrying `f_code`/`f_lineno` (see `docs/spec/areas/compat/0014_TYPE_COVERAGE_MATRIX.md`).
-  Builtin exception hierarchy now matches CPython (BaseExceptionGroup, OSError/Warning trees, ExceptionGroup MRO).
+- Exceptions: `try/except/else/finally` + `raise`/reraise + `except*` (ExceptionGroup matching/splitting/combining); `__traceback__` now returns
+  traceback objects (`tb_frame`/`tb_lineno`/`tb_next`) with frame objects carrying `f_code`/`f_lineno` (see
+  `docs/spec/areas/compat/0014_TYPE_COVERAGE_MATRIX.md`). Builtin exception hierarchy now matches CPython (BaseExceptionGroup,
+  OSError/Warning trees, ExceptionGroup MRO).
   (TODO(introspection, owner:runtime, milestone:TC2, priority:P1, status:partial): expand frame objects to full CPython parity fields.)
   (TODO(semantics, owner:runtime, milestone:TC2, priority:P1, status:partial): exception `__init__` + subclass attribute parity (UnicodeError fields, ExceptionGroup tree).)
 - Code objects: `__code__` exposes `co_filename`/`co_name`/`co_firstlineno`; `co_varnames`, arg counts, and
@@ -195,6 +196,7 @@ README/ROADMAP in sync.
   transport/protocol adapters remain pending. Event-loop semantics target a single-threaded, deterministic scheduler;
   true parallelism is explicit via executors or isolated runtimes.
   (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): asyncio loop/task APIs + task groups + I/O adapters + executor semantics.)
+  (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): logging shim; asyncio.log currently uses a no-op logger fallback.)
   (TODO(async-runtime, owner:runtime, milestone:RT3, priority:P1, status:planned): parallel runtime tier with isolated heaps/actors and explicit message passing; shared-memory parallelism only via opt-in safe types.)
 - C API: no `libmolt` C-extension surface yet; `docs/spec/areas/compat/0212_C_API_SYMBOL_MATRIX.md` is target-only
   (TODO(c-api, owner:runtime, milestone:SL3, priority:P2, status:missing): define and implement the initial C API shim).
@@ -289,6 +291,7 @@ README/ROADMAP in sync.
   `socket` (runtime-backed, capability-gated; advanced options + wasm parity pending), `select` (selectors-backed for sockets only),
   `selectors` (io_wait-backed readiness), `asyncio`, `contextvars`, `contextlib`, `threading`,
   `functools`, `itertools`, `operator`, `bisect`, `heapq`, `collections`.
+  Supported shim: `keyword` (`kwlist`/`softkwlist`, `iskeyword`, `issoftkeyword`).
   (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): advance partial shims to parity per matrix.)
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): complete socket/select/selectors parity (poll/epoll/select objects, fd inheritance, error mapping, cancellation) and align with asyncio adapters.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): unittest/test/doctest stubs exist for regrtest (support: captured_output/captured_stdout/captured_stderr, warnings_helper.check_warnings, cpython_only, requires, swap_attr/swap_item, import_helper.import_module/import_fresh_module, os_helper.temp_dir/unlink); doctest is blocked on eval/exec/compile gating and full unittest parity is pending.

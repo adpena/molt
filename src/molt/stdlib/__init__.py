@@ -22,6 +22,7 @@ __all__ = [
     "itertools",
     "heapq",
     "json",
+    "keyword",
     "os",
     "operator",
     "pathlib",

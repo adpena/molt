@@ -3,6 +3,7 @@ pub(crate) mod lifecycle;
 pub(crate) mod metrics;
 pub(crate) mod recursion;
 pub(crate) mod runtime_state;
+pub(crate) mod traceback;
 pub(crate) mod tls;
 
 pub(crate) use lifecycle::{
@@ -16,7 +17,8 @@ pub(crate) use recursion::{
     recursion_guard_enter, recursion_guard_exit, recursion_limit_get, recursion_limit_set,
 };
 pub(crate) use runtime_state::RuntimeState;
+pub(crate) use traceback::{traceback_suppress_enter, traceback_suppress_exit, traceback_suppressed};
 pub(crate) use tls::{
     CONTEXT_STACK, DEFAULT_RECURSION_LIMIT, FRAME_STACK, GIL_DEPTH, PARSE_ARENA, RECURSION_DEPTH,
-    RECURSION_LIMIT, REPR_DEPTH, REPR_STACK,
+    RECURSION_LIMIT, REPR_DEPTH, REPR_STACK, TRACEBACK_SUPPRESS,
 };

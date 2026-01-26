@@ -61,6 +61,7 @@ Planned milestones:
 - Implemented: C3 MRO + multiple inheritance for attribute lookup + `super()` resolution + data descriptor precedence.
 - Implemented: reflection builtins (`type`, `isinstance`, `issubclass`, `object`) for base chains (no metaclasses).
 - Implemented: BaseException root + exception chaining (`__cause__`, `__context__`, `__suppress_context__`) + `__traceback__` objects with line markers + StopIteration.value propagation.
+- Implemented: ExceptionGroup/except* semantics (match/split/derive/combine) with BaseExceptionGroup hierarchy + try/except* lowering (native + wasm).
 - TODO(semantics, owner:runtime, milestone:TC2, priority:P1, status:partial): tighten exception `__init__` + subclass attribute parity (OSError errno/filename, UnicodeError fields, ExceptionGroup tree).
 - TODO(semantics, owner:runtime, milestone:TC2, priority:P1, status:partial): split dict subclass storage from instance `__dict__` (currently stores mapping data under `__molt_dict_data__`) to match CPython attribute/mapping separation.
 - TODO(introspection, owner:runtime, milestone:TC2, priority:P1, status:partial): expand frame/traceback objects to CPython parity (`f_back`, `f_globals`, `f_locals`, live `f_lasti`/`f_lineno`).

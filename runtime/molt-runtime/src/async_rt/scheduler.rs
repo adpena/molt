@@ -164,6 +164,14 @@ pub(crate) fn fn_ptr_code_set(_py: &PyToken<'_>, fn_ptr: u64, code_bits: u64) {
     }
 }
 
+#[no_mangle]
+pub extern "C" fn molt_fn_ptr_code_set(fn_ptr: u64, code_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        fn_ptr_code_set(_py, fn_ptr, code_bits);
+        MoltObject::none().bits()
+    })
+}
+
 pub(crate) fn fn_ptr_code_get(fn_ptr: u64) -> u64 {
     if fn_ptr == 0 {
         return 0;
@@ -1350,6 +1358,7 @@ pub(crate) fn wake_task_ptr(_py: &PyToken<'_>, task_ptr: *mut u8) {
     sleep_queue.cancel_task(_py, task_ptr);
     let mut should_enqueue = false;
     let mut should_return = false;
+    let mut inline_only = false;
     {
         let _guard = task_queue_lock().lock().unwrap();
         unsafe {
@@ -1358,6 +1367,8 @@ pub(crate) fn wake_task_ptr(_py: &PyToken<'_>, task_ptr: *mut u8) {
             let block_on = ((*header).flags & HEADER_FLAG_BLOCK_ON) != 0;
             let running = ((*header).flags & HEADER_FLAG_TASK_RUNNING) != 0;
             let queued = ((*header).flags & HEADER_FLAG_TASK_QUEUED) != 0;
+            let spawned = ((*header).flags & HEADER_FLAG_SPAWN_RETAIN) != 0;
+            inline_only = !spawned && !block_on;
             if async_trace_enabled() {
                 eprintln!(
                     "molt async trace: wake_task task=0x{:x} done={} block_on={} running={} queued={}",
@@ -1378,13 +1389,25 @@ pub(crate) fn wake_task_ptr(_py: &PyToken<'_>, task_ptr: *mut u8) {
             if !should_return && queued {
                 should_return = true;
             }
-            if !should_return {
+            if !should_return && !inline_only {
                 (*header).flags |= HEADER_FLAG_TASK_QUEUED;
                 should_enqueue = true;
             }
         }
     }
     if should_return {
+        return;
+    }
+    if inline_only {
+        let waiters = await_waiters(_py)
+            .lock()
+            .unwrap()
+            .get(&PtrSlot(task_ptr))
+            .cloned()
+            .unwrap_or_default();
+        for waiter in waiters {
+            wake_task_ptr(_py, waiter.0);
+        }
         return;
     }
     if should_enqueue {
