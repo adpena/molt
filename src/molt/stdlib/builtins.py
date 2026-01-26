@@ -21,6 +21,8 @@ if TYPE_CHECKING:
     _molt_getargv: Callable[[], list[str]]
     _molt_getrecursionlimit: Callable[[], int]
     _molt_setrecursionlimit: Callable[[int], None]
+    _molt_sys_version_info: Callable[[], tuple[int, int, int, str, int]]
+    _molt_sys_version: Callable[[], str]
     _molt_exception_last: Callable[[], Optional[BaseException]]
     _molt_exception_active: Callable[[], Optional[BaseException]]
     _molt_asyncgen_hooks_get: Callable[[], object]
@@ -327,6 +329,11 @@ _molt_setrecursionlimit = cast(
     Callable[[int], None],
     _load_intrinsic("_molt_setrecursionlimit"),
 )
+_molt_sys_version_info = cast(
+    Callable[[], tuple[int, int, int, str, int]],
+    _load_intrinsic("_molt_sys_version_info"),
+)
+_molt_sys_version = cast(Callable[[], str], _load_intrinsic("_molt_sys_version"))
 _molt_exception_last = cast(
     Callable[[], Optional[BaseException]],
     _load_intrinsic("_molt_exception_last"),

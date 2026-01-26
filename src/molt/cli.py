@@ -1729,6 +1729,22 @@ def build(
             known_classes[class_name] = gen.classes[class_name]
 
     entry_init = SimpleTIRGenerator.module_init_symbol(entry_module)
+    py_version = sys.version_info
+    version_release = py_version.releaselevel
+    version_serial = py_version.serial
+    version_suffix = ""
+    if version_release == "alpha":
+        version_suffix = f"a{version_serial}"
+    elif version_release == "beta":
+        version_suffix = f"b{version_serial}"
+    elif version_release == "candidate":
+        version_suffix = f"rc{version_serial}"
+    elif version_release != "final":
+        version_suffix = f"{version_release}{version_serial}"
+    version_str = (
+        f"{py_version.major}.{py_version.minor}.{py_version.micro}"
+        f"{version_suffix} (molt)"
+    )
     entry_ops = [
         {
             "kind": "call",
@@ -1754,6 +1770,22 @@ def build(
         {"kind": "ret_void"},
     ]
     entry_ops.insert(1, {"kind": "code_slots_init", "value": len(global_code_ids)})
+    version_ops = [
+        {"kind": "const", "value": py_version.major, "out": "v3"},
+        {"kind": "const", "value": py_version.minor, "out": "v4"},
+        {"kind": "const", "value": py_version.micro, "out": "v5"},
+        {"kind": "const_str", "s_value": version_release, "out": "v6"},
+        {"kind": "const", "value": version_serial, "out": "v7"},
+        {"kind": "const_str", "s_value": version_str, "out": "v8"},
+        {
+            "kind": "call",
+            "s_value": "molt_sys_set_version_info",
+            "args": ["v3", "v4", "v5", "v6", "v7", "v8"],
+            "out": "v9",
+            "value": _register_global_code_id("molt_sys_set_version_info"),
+        },
+    ]
+    entry_ops[2:2] = version_ops
     functions.append({"name": "molt_main", "params": [], "ops": entry_ops})
     ir = {"functions": functions}
     if emit_ir_path is not None:

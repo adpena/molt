@@ -460,6 +460,11 @@ impl WasmBackend {
             std::iter::repeat_n(ValType::I64, 8),
             std::iter::once(ValType::I64),
         );
+        // Type 29: (i64, i64, i64, i64, i64, i64) -> i64 (sys_set_version_info)
+        self.types.function(
+            std::iter::repeat_n(ValType::I64, 6),
+            std::iter::once(ValType::I64),
+        );
 
         let mut import_idx = 0;
         let mut add_import = |name: &str, ty: u32, ids: &mut HashMap<String, u32>| {
@@ -472,6 +477,7 @@ impl WasmBackend {
         // Host Imports (aligned with wit/molt-runtime.wit)
         add_import("runtime_init", 0, &mut self.import_ids);
         add_import("runtime_shutdown", 0, &mut self.import_ids);
+        add_import("sys_set_version_info", 29, &mut self.import_ids);
         add_import("print_obj", 1, &mut self.import_ids);
         add_import("print_newline", 8, &mut self.import_ids);
         add_import("alloc", 2, &mut self.import_ids);
@@ -695,6 +701,8 @@ impl WasmBackend {
         add_import("divmod_builtin", 3, &mut self.import_ids);
         add_import("open_builtin", 28, &mut self.import_ids);
         add_import("getargv", 0, &mut self.import_ids);
+        add_import("sys_version_info", 0, &mut self.import_ids);
+        add_import("sys_version", 0, &mut self.import_ids);
         add_import("getrecursionlimit", 0, &mut self.import_ids);
         add_import("setrecursionlimit", 2, &mut self.import_ids);
         add_import("recursion_guard_enter", 0, &mut self.import_ids);
@@ -1062,7 +1070,7 @@ impl WasmBackend {
             .import("env", "memory", EntityType::Memory(memory_ty));
         self.exports.export("molt_memory", ExportKind::Memory, 0);
 
-        let builtin_table_funcs: [(&str, &str, usize); 87] = [
+        let builtin_table_funcs: [(&str, &str, usize); 89] = [
             ("molt_missing", "missing", 0),
             ("molt_repr_builtin", "repr_builtin", 1),
             ("molt_format_builtin", "format_builtin", 2),
@@ -1105,6 +1113,8 @@ impl WasmBackend {
             ("molt_divmod_builtin", "divmod_builtin", 2),
             ("molt_open_builtin", "open_builtin", 8),
             ("molt_getargv", "getargv", 0),
+            ("molt_sys_version_info", "sys_version_info", 0),
+            ("molt_sys_version", "sys_version", 0),
             ("molt_env_get", "env_get", 2),
             ("molt_errno_constants", "errno_constants", 0),
             ("molt_socket_constants", "socket_constants", 0),
@@ -1282,6 +1292,10 @@ impl WasmBackend {
         func_to_index.insert(
             "molt_runtime_shutdown".to_string(),
             self.import_ids["runtime_shutdown"],
+        );
+        func_to_index.insert(
+            "molt_sys_set_version_info".to_string(),
+            self.import_ids["sys_set_version_info"],
         );
         func_to_table_idx.insert("molt_async_sleep".to_string(), 1);
         func_to_table_idx.insert("molt_anext_default_poll".to_string(), 2);

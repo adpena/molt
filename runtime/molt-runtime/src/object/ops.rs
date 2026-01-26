@@ -2,6 +2,7 @@ use crate::object::utf8_cache::{
     Utf8CountCache, Utf8CountCacheEntry, Utf8IndexCache, UTF8_CACHE_BLOCK, UTF8_CACHE_MIN_LEN,
     UTF8_COUNT_CACHE_SHARDS, UTF8_COUNT_PREFIX_MIN_LEN, UTF8_COUNT_TLS,
 };
+use crate::state::runtime_state::PythonVersionInfo;
 use crate::*;
 use getrandom::getrandom;
 use memchr::{memchr, memmem};
@@ -5285,6 +5286,178 @@ pub extern "C" fn molt_getargv() -> u64 {
             dec_ref_bits(_py, bits);
         }
         MoltObject::from_ptr(list_ptr).bits()
+    })
+}
+
+fn default_sys_version_info() -> PythonVersionInfo {
+    PythonVersionInfo {
+        major: 3,
+        minor: 14,
+        micro: 0,
+        releaselevel: "final".to_string(),
+        serial: 0,
+    }
+}
+
+fn format_sys_version(info: &PythonVersionInfo) -> String {
+    let base = format!("{}.{}.{}", info.major, info.minor, info.micro);
+    let suffix = match info.releaselevel.as_str() {
+        "alpha" => format!("a{}", info.serial),
+        "beta" => format!("b{}", info.serial),
+        "candidate" => format!("rc{}", info.serial),
+        "final" => String::new(),
+        other => format!("{other}{}", info.serial),
+    };
+    if suffix.is_empty() {
+        format!("{base} (molt)")
+    } else {
+        format!("{base}{suffix} (molt)")
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_sys_set_version_info(
+    major_bits: u64,
+    minor_bits: u64,
+    micro_bits: u64,
+    releaselevel_bits: u64,
+    serial_bits: u64,
+    version_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let major = index_i64_from_obj(_py, major_bits, "major must be int");
+        let minor = index_i64_from_obj(_py, minor_bits, "minor must be int");
+        let micro = index_i64_from_obj(_py, micro_bits, "micro must be int");
+        let serial = index_i64_from_obj(_py, serial_bits, "serial must be int");
+        if major < 0 || minor < 0 || micro < 0 || serial < 0 {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "sys.version_info must be non-negative integers",
+            );
+        }
+
+        let Some(release_ptr) = obj_from_bits(releaselevel_bits).as_ptr() else {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "sys.version_info releaselevel must be str",
+            );
+        };
+        unsafe {
+            if object_type_id(release_ptr) != TYPE_ID_STRING {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "sys.version_info releaselevel must be str",
+                );
+            }
+        }
+        let release_bytes = unsafe {
+            std::slice::from_raw_parts(string_bytes(release_ptr), string_len(release_ptr))
+        };
+        let releaselevel = String::from_utf8_lossy(release_bytes).into_owned();
+
+        let Some(version_ptr) = obj_from_bits(version_bits).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "sys.version must be str");
+        };
+        unsafe {
+            if object_type_id(version_ptr) != TYPE_ID_STRING {
+                return raise_exception::<_>(_py, "TypeError", "sys.version must be str");
+            }
+        }
+        let version_bytes = unsafe {
+            std::slice::from_raw_parts(string_bytes(version_ptr), string_len(version_ptr))
+        };
+        let mut version = String::from_utf8_lossy(version_bytes).into_owned();
+
+        let info = PythonVersionInfo {
+            major,
+            minor,
+            micro,
+            releaselevel,
+            serial,
+        };
+        if version.is_empty() {
+            version = format_sys_version(&info);
+        }
+
+        let state = runtime_state(_py);
+        if let Some(existing) = state.sys_version_info.get() {
+            if existing.major != info.major
+                || existing.minor != info.minor
+                || existing.micro != info.micro
+                || existing.serial != info.serial
+                || existing.releaselevel != info.releaselevel
+            {
+                return raise_exception::<_>(
+                    _py,
+                    "RuntimeError",
+                    "sys.version_info already set",
+                );
+            }
+        } else {
+            let _ = state.sys_version_info.set(info);
+        }
+
+        if let Some(existing) = state.sys_version.get() {
+            if existing != &version {
+                return raise_exception::<_>(_py, "RuntimeError", "sys.version already set");
+            }
+        } else {
+            let _ = state.sys_version.set(version);
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_sys_version_info() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let info = runtime_state(_py)
+            .sys_version_info
+            .get_or_init(default_sys_version_info);
+        let release_ptr = alloc_string(_py, info.releaselevel.as_bytes());
+        if release_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let release_bits = MoltObject::from_ptr(release_ptr).bits();
+        let elems = [
+            MoltObject::from_int(info.major).bits(),
+            MoltObject::from_int(info.minor).bits(),
+            MoltObject::from_int(info.micro).bits(),
+            release_bits,
+            MoltObject::from_int(info.serial).bits(),
+        ];
+        let tuple_ptr = alloc_tuple(_py, &elems);
+        if tuple_ptr.is_null() {
+            dec_ref_bits(_py, release_bits);
+            return MoltObject::none().bits();
+        }
+        for bits in elems {
+            dec_ref_bits(_py, bits);
+        }
+        MoltObject::from_ptr(tuple_ptr).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_sys_version() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let state = runtime_state(_py);
+        let version = if let Some(existing) = state.sys_version.get() {
+            existing.clone()
+        } else {
+            let info = state.sys_version_info.get_or_init(default_sys_version_info);
+            let computed = format_sys_version(info);
+            let _ = state.sys_version.set(computed.clone());
+            computed
+        };
+        let ptr = alloc_string(_py, version.as_bytes());
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
     })
 }
 

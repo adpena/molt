@@ -28,3 +28,4 @@ codex-19854 -> Cargo.lock
 codex-19854 -> docs/spec/STATUS.md
 codex-19854 -> docs/ROADMAP.md
 codex-19854 -> docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md
+codex-19854 -> wit/molt-runtime.wit

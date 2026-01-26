@@ -61,6 +61,8 @@ _MOLT_EXCEPTION_ACTIVE = _load_intrinsic("_molt_exception_active")
 _MOLT_EXCEPTION_LAST = _load_intrinsic("_molt_exception_last")
 _MOLT_ASYNCGEN_HOOKS_GET = _load_intrinsic("_molt_asyncgen_hooks_get")
 _MOLT_ASYNCGEN_HOOKS_SET = _load_intrinsic("_molt_asyncgen_hooks_set")
+_MOLT_SYS_VERSION_INFO = _load_intrinsic("_molt_sys_version_info")
+_MOLT_SYS_VERSION = _load_intrinsic("_molt_sys_version")
 
 if callable(_MOLT_GETARGV):
     argv = list(_MOLT_GETARGV())
@@ -73,8 +75,22 @@ _existing_modules = globals().get("modules")
 
 if _py_sys is not None:
     platform = getattr(_py_sys, "platform", "molt")
-    version = getattr(_py_sys, "version", "3.14.0 (molt)")
-    version_info = getattr(_py_sys, "version_info", (3, 14, 0, "final", 0))
+    version = None
+    version_info = None
+    if callable(_MOLT_SYS_VERSION_INFO):
+        try:
+            version_info = _MOLT_SYS_VERSION_INFO()
+        except Exception:
+            version_info = None
+    if callable(_MOLT_SYS_VERSION):
+        try:
+            version = _MOLT_SYS_VERSION()
+        except Exception:
+            version = None
+    if version is None:
+        version = getattr(_py_sys, "version", "3.14.0 (molt)")
+    if version_info is None:
+        version_info = getattr(_py_sys, "version_info", (3, 14, 0, "final", 0))
     path = list(getattr(_py_sys, "path", []))
     modules = getattr(_py_sys, "modules", _existing_modules or {})
     stdin = getattr(_py_sys, "stdin", None)
@@ -84,8 +100,22 @@ if _py_sys is not None:
     _fs_encoding = getattr(_py_sys, "getfilesystemencoding", lambda: "utf-8")()
 else:
     platform = "molt"
-    version = "3.14.0 (molt)"
-    version_info = (3, 14, 0, "final", 0)
+    version = None
+    version_info = None
+    if callable(_MOLT_SYS_VERSION_INFO):
+        try:
+            version_info = _MOLT_SYS_VERSION_INFO()
+        except Exception:
+            version_info = None
+    if callable(_MOLT_SYS_VERSION):
+        try:
+            version = _MOLT_SYS_VERSION()
+        except Exception:
+            version = None
+    if version is None:
+        version = "3.14.0 (molt)"
+    if version_info is None:
+        version_info = (3, 14, 0, "final", 0)
     path = []
     if _existing_modules is None:
         modules: dict[str, Any] = {}

@@ -6,6 +6,16 @@ interface intrinsics {
 
     runtime_init: func() -> u64;
     runtime_shutdown: func() -> u64;
+    sys_set_version_info: func(
+        major: molt-object,
+        minor: molt-object,
+        micro: molt-object,
+        releaselevel: molt-object,
+        serial: molt-object,
+        version: molt-object
+    ) -> molt-object;
+    sys_version_info: func() -> molt-object;
+    sys_version: func() -> molt-object;
     print_obj: func(val: molt-object);
     print_newline: func();
     alloc: func(size: u64) -> u64;

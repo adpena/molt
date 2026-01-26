@@ -33,6 +33,14 @@ pub(crate) struct AsyncGenHooks {
     pub(crate) finalizer: u64,
 }
 
+pub(crate) struct PythonVersionInfo {
+    pub(crate) major: i64,
+    pub(crate) minor: i64,
+    pub(crate) micro: i64,
+    pub(crate) releaselevel: String,
+    pub(crate) serial: i64,
+}
+
 impl SpecialCache {
     fn new() -> Self {
         Self {
@@ -53,6 +61,8 @@ pub(crate) struct RuntimeState {
     pub(crate) module_cache: Mutex<HashMap<String, u64>>,
     pub(crate) exception_type_cache: Mutex<HashMap<String, u64>>,
     pub(crate) argv: Mutex<Vec<String>>,
+    pub(crate) sys_version_info: OnceLock<PythonVersionInfo>,
+    pub(crate) sys_version: OnceLock<String>,
     pub(crate) object_pool: Mutex<Vec<Vec<PtrSlot>>>,
     pub(crate) hash_secret: OnceLock<HashSecret>,
     pub(crate) profile_enabled: OnceLock<bool>,
@@ -105,6 +115,8 @@ impl RuntimeState {
             module_cache: Mutex::new(HashMap::new()),
             exception_type_cache: Mutex::new(HashMap::new()),
             argv: Mutex::new(Vec::new()),
+            sys_version_info: OnceLock::new(),
+            sys_version: OnceLock::new(),
             object_pool: Mutex::new(vec![Vec::new(); OBJECT_POOL_BUCKETS]),
             hash_secret: OnceLock::new(),
             profile_enabled: OnceLock::new(),

@@ -20,6 +20,11 @@
 - **Fallbacks:** non-allowlisted module-level calls raise a compiler error unless `--fallback=bridge` is enabled, in which case a bridge warning is emitted.
 - **Warnings control:** set `MOLT_COMPAT_WARNINGS=0` to suppress bridge warnings during compilation.
 
+## 0.2 Submodule Policy
+- **Explicit tracking:** submodules are listed explicitly in this matrix (or noted under the parent) before they are considered importable.
+- **Deterministic registration:** submodules must be created as module objects, registered in `sys.modules`, and attached to their parent package; avoid dynamic attribute-based imports.
+- **Capability parity:** submodules that touch I/O/OS/process boundaries inherit the same capability gates as their parent module.
+
 ## 1. Policy: Core vs Import vs Gated
 - **Core (always available):** builtins and compiler/runtime intrinsics only.
 - **Core-adjacent (import required, fast path):** modules with compiler/runtime intrinsics for hot paths.
@@ -71,7 +76,7 @@
 | csv | Stdlib | Planned | P3 | SL3 | stdlib | Deterministic CSV parsing. |
 | io | Capability-gated | Partial | P2 | SL3 | stdlib | Native `open` supports full signature + fd-based open; file objects expose core methods/attrs (read/readinto/write/writelines/seek/tell/fileno/readline(s)/truncate/iteration/flush/close). `io.UnsupportedOperation` exported. utf-8/ascii/latin-1 text encoding only, text-mode seek/tell cookies partial, and Windows fileno/isatty parity still pending. (TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P2, status:partial): io pending parity) |
 | os | Capability-gated | Partial | P2 | SL3 | stdlib | Minimal shim: env access gated via `env.read`/`env.write`; path helpers plus `exists`/`unlink`. |
-| sys | Capability-gated | Partial | P2 | SL3 | stdlib | Minimal shim: argv/version/path/modules (synced from runtime module cache) + recursion limits; `sys.exc_info()` reads the active exception context; compiled argv now sourced from runtime; host info gated via `env.read` (argv encoding parity TODO, `sys._getframe` TODO). |
+| sys | Capability-gated | Partial | P2 | SL3 | stdlib | Minimal shim: argv/version/version_info/path/modules (synced from runtime module cache) + recursion limits; `sys.version` + `sys.version_info` are stamped by the toolchain intrinsic; `sys.exc_info()` reads the active exception context; compiled argv now sourced from runtime; host info gated via `env.read` (argv encoding parity TODO, `sys._getframe` TODO). |
 | errno | Stdlib | Partial | P2 | SL2 | stdlib | Core errno constants + errorcode mapping (expand to full CPython table). |
 | stat | Stdlib | Planned | P3 | SL3 | stdlib | Stat constants; import-only allowlist stub. |
 | signal | Capability-gated | Planned | P3 | SL3 | stdlib/runtime | Signal handling; gated by `process.signal`. |
