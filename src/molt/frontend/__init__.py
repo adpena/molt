@@ -285,6 +285,8 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
     "_molt_getrecursionlimit": BuiltinFuncSpec("molt_getrecursionlimit", ()),
     "_molt_setrecursionlimit": BuiltinFuncSpec("molt_setrecursionlimit", ("limit",)),
     "_molt_getargv": BuiltinFuncSpec("molt_getargv", ()),
+    "_molt_sys_version_info": BuiltinFuncSpec("molt_sys_version_info", ()),
+    "_molt_sys_version": BuiltinFuncSpec("molt_sys_version", ()),
     "_molt_exception_last": BuiltinFuncSpec("molt_exception_last", ()),
     "_molt_exception_active": BuiltinFuncSpec("molt_exception_active", ()),
     "_molt_asyncgen_hooks_get": BuiltinFuncSpec("molt_asyncgen_hooks_get", ()),

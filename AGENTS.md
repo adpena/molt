@@ -53,6 +53,12 @@
 - Rust: format with `cargo fmt` and keep clippy clean (`cargo clippy -- -D warnings`).
 - Tests follow `test_*.py` naming; keep test modules in `tests/` or subdirectories like `tests/differential/`.
 
+## Stdlib Submodule Policy
+- Treat stdlib submodules (e.g., `asyncio.locks`) as first-class entries in the compatibility matrix.
+- Register submodules explicitly (create module objects, add to `sys.modules`, and attach on the parent package) instead of relying on dynamic attribute lookups.
+- Keep submodules deterministic and capability-gated where they touch host I/O, OS, or process boundaries.
+- Update `docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md` when submodule coverage changes.
+
 ## Runtime Locking & Unsafe Policy
 - Runtime mutation requires the GIL token; do not bypass it.
 - Unsafe code must live in provenance/object modules; other runtime modules should be safe Rust.
