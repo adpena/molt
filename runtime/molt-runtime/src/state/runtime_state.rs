@@ -9,7 +9,8 @@ use super::{runtime_reset_for_init, runtime_teardown, touch_tls_guard};
 use crate::object::utf8_cache::{build_utf8_count_cache, Utf8CacheStore, Utf8CountCacheStore};
 use crate::{
     default_cancel_tokens, AsyncHangProbe, BuiltinClasses, CancelTokenEntry, GilGuard, HashSecret,
-    InternedNames, MethodCache, MoltScheduler, PtrSlot, PyToken, SleepQueue, OBJECT_POOL_BUCKETS,
+    InternedNames, MethodCache, MoltObject, MoltScheduler, PtrSlot, PyToken, SleepQueue,
+    OBJECT_POOL_BUCKETS,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{sleep_worker, IoPoller, ProcessTaskState, ThreadPool, ThreadTaskState};
@@ -19,6 +20,17 @@ pub(crate) struct SpecialCache {
     pub(crate) molt_missing: AtomicU64,
     pub(crate) molt_not_implemented: AtomicU64,
     pub(crate) molt_ellipsis: AtomicU64,
+}
+
+#[derive(Clone)]
+pub(crate) struct AsyncGenLocalsEntry {
+    pub(crate) names: Vec<u64>,
+    pub(crate) offsets: Vec<usize>,
+}
+
+pub(crate) struct AsyncGenHooks {
+    pub(crate) firstiter: u64,
+    pub(crate) finalizer: u64,
 }
 
 impl SpecialCache {
@@ -67,6 +79,8 @@ pub(crate) struct RuntimeState {
     pub(crate) task_last_exceptions: Mutex<HashMap<PtrSlot, PtrSlot>>,
     pub(crate) await_waiters: Mutex<HashMap<PtrSlot, Vec<PtrSlot>>>,
     pub(crate) task_waiting_on: Mutex<HashMap<PtrSlot, PtrSlot>>,
+    pub(crate) asyncgen_hooks: Mutex<AsyncGenHooks>,
+    pub(crate) asyncgen_locals: Mutex<HashMap<u64, AsyncGenLocalsEntry>>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) thread_pool_started: AtomicBool,
     #[cfg(not(target_arch = "wasm32"))]
@@ -117,6 +131,11 @@ impl RuntimeState {
             task_last_exceptions: Mutex::new(HashMap::new()),
             await_waiters: Mutex::new(HashMap::new()),
             task_waiting_on: Mutex::new(HashMap::new()),
+            asyncgen_hooks: Mutex::new(AsyncGenHooks {
+                firstiter: MoltObject::none().bits(),
+                finalizer: MoltObject::none().bits(),
+            }),
+            asyncgen_locals: Mutex::new(HashMap::new()),
             #[cfg(not(target_arch = "wasm32"))]
             thread_pool_started: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]

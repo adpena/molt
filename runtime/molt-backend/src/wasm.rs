@@ -483,6 +483,10 @@ impl WasmBackend {
         add_import("asyncgen_poll", 2, &mut self.import_ids);
         add_import("promise_poll", 2, &mut self.import_ids);
         add_import("asyncgen_new", 2, &mut self.import_ids);
+        add_import("asyncgen_hooks_get", 0, &mut self.import_ids);
+        add_import("asyncgen_hooks_set", 3, &mut self.import_ids);
+        add_import("asyncgen_locals", 2, &mut self.import_ids);
+        add_import("asyncgen_locals_register", 5, &mut self.import_ids);
         add_import("asyncgen_shutdown", 0, &mut self.import_ids);
         add_import("future_poll", 2, &mut self.import_ids);
         add_import("future_cancel", 2, &mut self.import_ids);
@@ -653,6 +657,7 @@ impl WasmBackend {
         add_import("function_closure_bits", 2, &mut self.import_ids);
         add_import("function_is_generator", 2, &mut self.import_ids);
         add_import("function_is_coroutine", 2, &mut self.import_ids);
+        add_import("function_set_builtin", 2, &mut self.import_ids);
         add_import("call_arity_error", 3, &mut self.import_ids);
         add_import("missing", 0, &mut self.import_ids);
         add_import("not_implemented", 0, &mut self.import_ids);
@@ -699,6 +704,7 @@ impl WasmBackend {
         add_import("trace_exit", 0, &mut self.import_ids);
         add_import("code_slots_init", 2, &mut self.import_ids);
         add_import("code_slot_set", 3, &mut self.import_ids);
+        add_import("fn_ptr_code_set", 3, &mut self.import_ids);
         add_import("code_new", 7, &mut self.import_ids);
         add_import("round_builtin", 3, &mut self.import_ids);
         add_import("enumerate_builtin", 3, &mut self.import_ids);
@@ -718,6 +724,7 @@ impl WasmBackend {
         add_import("dir_builtin", 2, &mut self.import_ids);
         add_import("vars_builtin", 2, &mut self.import_ids);
         add_import("anext_builtin", 3, &mut self.import_ids);
+        add_import("func_new_builtin", 5, &mut self.import_ids);
         add_import("print_builtin", 12, &mut self.import_ids);
         add_import("super_builtin", 3, &mut self.import_ids);
         add_import("callargs_new", 3, &mut self.import_ids);
@@ -900,6 +907,8 @@ impl WasmBackend {
         add_import("exception_active", 0, &mut self.import_ids);
         add_import("exception_new", 3, &mut self.import_ids);
         add_import("exception_new_from_class", 3, &mut self.import_ids);
+        add_import("exceptiongroup_match", 3, &mut self.import_ids);
+        add_import("exceptiongroup_combine", 2, &mut self.import_ids);
         add_import("exception_clear", 0, &mut self.import_ids);
         add_import("exception_pending", 0, &mut self.import_ids);
         add_import("exception_kind", 2, &mut self.import_ids);
@@ -1053,7 +1062,7 @@ impl WasmBackend {
             .import("env", "memory", EntityType::Memory(memory_ty));
         self.exports.export("molt_memory", ExportKind::Memory, 0);
 
-        let builtin_table_funcs: [(&str, &str, usize); 80] = [
+        let builtin_table_funcs: [(&str, &str, usize); 87] = [
             ("molt_missing", "missing", 0),
             ("molt_repr_builtin", "repr_builtin", 1),
             ("molt_format_builtin", "format_builtin", 2),
@@ -1110,6 +1119,13 @@ impl WasmBackend {
             ("molt_setrecursionlimit", "setrecursionlimit", 1),
             ("molt_exception_last", "exception_last", 0),
             ("molt_exception_active", "exception_active", 0),
+            ("molt_asyncgen_hooks_get", "asyncgen_hooks_get", 0),
+            ("molt_asyncgen_hooks_set", "asyncgen_hooks_set", 2),
+            ("molt_asyncgen_locals", "asyncgen_locals", 1),
+            ("molt_module_new", "module_new", 1),
+            ("molt_function_set_builtin", "function_set_builtin", 1),
+            ("molt_exceptiongroup_match", "exceptiongroup_match", 3),
+            ("molt_exceptiongroup_combine", "exceptiongroup_combine", 2),
             ("molt_iter_checked", "iter", 1),
             ("molt_aiter", "aiter", 1),
             ("molt_io_wait_new", "io_wait_new", 3),
@@ -5160,6 +5176,30 @@ impl WasmBackend {
                         emit_call(func, reloc_enabled, import_ids["code_slot_set"]);
                         func.instruction(&Instruction::Drop);
                     }
+                    "fn_ptr_code_set" => {
+                        let args = op.args.as_ref().unwrap();
+                        let code_bits = locals[&args[0]];
+                        let func_name = op.s_value.as_ref().unwrap();
+                        let table_slot = func_map[func_name];
+                        let table_idx = table_base + table_slot;
+                        emit_table_index_i64(func, reloc_enabled, table_idx);
+                        func.instruction(&Instruction::LocalGet(code_bits));
+                        emit_call(func, reloc_enabled, import_ids["fn_ptr_code_set"]);
+                        func.instruction(&Instruction::Drop);
+                    }
+                    "asyncgen_locals_register" => {
+                        let args = op.args.as_ref().unwrap();
+                        let names_bits = locals[&args[0]];
+                        let offsets_bits = locals[&args[1]];
+                        let func_name = op.s_value.as_ref().unwrap();
+                        let table_slot = func_map[func_name];
+                        let table_idx = table_base + table_slot;
+                        emit_table_index_i64(func, reloc_enabled, table_idx);
+                        func.instruction(&Instruction::LocalGet(names_bits));
+                        func.instruction(&Instruction::LocalGet(offsets_bits));
+                        emit_call(func, reloc_enabled, import_ids["asyncgen_locals_register"]);
+                        func.instruction(&Instruction::Drop);
+                    }
                     "code_slots_init" => {
                         let count = op.value.unwrap_or(0);
                         func.instruction(&Instruction::I64Const(count));
@@ -5182,7 +5222,7 @@ impl WasmBackend {
                         emit_table_index_i64(func, reloc_enabled, table_idx);
                         emit_table_index_i64(func, reloc_enabled, tramp_idx);
                         func.instruction(&Instruction::I64Const(arity));
-                        emit_call(func, reloc_enabled, import_ids["func_new"]);
+                        emit_call(func, reloc_enabled, import_ids["func_new_builtin"]);
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
@@ -5522,6 +5562,22 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(class_bits));
                         func.instruction(&Instruction::LocalGet(args_bits));
                         emit_call(func, reloc_enabled, import_ids["exception_new_from_class"]);
+                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                    }
+                    "exceptiongroup_match" => {
+                        let args = op.args.as_ref().unwrap();
+                        let exc = locals[&args[0]];
+                        let matcher = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(exc));
+                        func.instruction(&Instruction::LocalGet(matcher));
+                        emit_call(func, reloc_enabled, import_ids["exceptiongroup_match"]);
+                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                    }
+                    "exceptiongroup_combine" => {
+                        let args = op.args.as_ref().unwrap();
+                        let items = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(items));
+                        emit_call(func, reloc_enabled, import_ids["exceptiongroup_combine"]);
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                     }
                     "exception_clear" => {

@@ -287,6 +287,20 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
     "_molt_getargv": BuiltinFuncSpec("molt_getargv", ()),
     "_molt_exception_last": BuiltinFuncSpec("molt_exception_last", ()),
     "_molt_exception_active": BuiltinFuncSpec("molt_exception_active", ()),
+    "_molt_asyncgen_hooks_get": BuiltinFuncSpec("molt_asyncgen_hooks_get", ()),
+    "_molt_asyncgen_hooks_set": BuiltinFuncSpec(
+        "molt_asyncgen_hooks_set", ("firstiter", "finalizer")
+    ),
+    "_molt_asyncgen_locals": BuiltinFuncSpec("molt_asyncgen_locals", ("asyncgen",)),
+    "_molt_module_new": BuiltinFuncSpec("molt_module_new", ("name",)),
+    "_molt_function_set_builtin": BuiltinFuncSpec(
+        "molt_function_set_builtin", ("func",)
+    ),
+    "_molt_class_new": BuiltinFuncSpec("molt_class_new", ("name",)),
+    "_molt_class_set_base": BuiltinFuncSpec("molt_class_set_base", ("cls", "base")),
+    "_molt_class_apply_set_name": BuiltinFuncSpec(
+        "molt_class_apply_set_name", ("cls",)
+    ),
     "_molt_getpid": BuiltinFuncSpec("molt_getpid", ()),
     "_molt_time_monotonic": BuiltinFuncSpec("molt_time_monotonic", ()),
     "_molt_time_monotonic_ns": BuiltinFuncSpec("molt_time_monotonic_ns", ()),
@@ -647,6 +661,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.imported_modules: dict[str, str] = {}
         self.global_imported_modules: dict[str, str] = {}
         self.async_locals: dict[str, int] = {}
+        self.async_internal_locals: set[str] = set()
+        self.async_public_locals: set[str] = set()
         self.async_locals_base: int = 0
         self.async_closure_offset: int | None = None
         self.async_local_hints: dict[str, str] = {}
@@ -684,6 +700,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.module_annotation_exec_name: str | None = None
         self.module_annotation_exec_counter = 0
         self.module_annotation_emitted = False
+        self.module_annotations_conditional = False
         self.class_annotation_items: list[tuple[str, ast.expr, int]] = []
         self.class_annotation_exec_map: MoltValue | None = None
         self.class_annotation_exec_name: str | None = None
@@ -1375,6 +1392,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.imported_names = dict(self.global_imported_names)
         self.imported_modules = dict(self.global_imported_modules)
         self.async_locals = {}
+        self.async_internal_locals = set()
+        self.async_public_locals = set()
         self.async_locals_base = 0
         self.async_closure_offset = None
         self.async_local_hints = {}
@@ -1646,6 +1665,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 for stmt in node.finalbody:
                     self.visit(stmt)
 
+            def visit_TryStar(self, node: ast.TryStar) -> None:
+                for stmt in node.body:
+                    self.visit(stmt)
+                for handler in node.handlers:
+                    self.visit(handler)
+                for stmt in node.orelse:
+                    self.visit(stmt)
+                for stmt in node.finalbody:
+                    self.visit(stmt)
+
             def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
                 if node.name:
                     record(node.name)
@@ -1851,6 +1880,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "unbound_check_names": self.unbound_check_names,
             "exact_locals": self.exact_locals,
             "async_locals": self.async_locals,
+            "async_internal_locals": self.async_internal_locals,
+            "async_public_locals": self.async_public_locals,
             "async_locals_base": self.async_locals_base,
             "async_closure_offset": self.async_closure_offset,
             "async_local_hints": self.async_local_hints,
@@ -1892,6 +1923,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.unbound_check_names = state["unbound_check_names"]
         self.exact_locals = state["exact_locals"]
         self.async_locals = state["async_locals"]
+        self.async_internal_locals = state["async_internal_locals"]
+        self.async_public_locals = state["async_public_locals"]
         self.async_locals_base = state["async_locals_base"]
         self.async_closure_offset = state["async_closure_offset"]
         self.async_local_hints = state["async_local_hints"]
@@ -2235,7 +2268,25 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.async_locals[name] = (
                 self.async_locals_base + len(self.async_locals) * 8
             )
+            if self.async_public_locals:
+                if name not in self.async_public_locals:
+                    self.async_internal_locals.add(name)
+                else:
+                    self.async_internal_locals.discard(name)
+            else:
+                self.async_internal_locals.add(name)
         return self.async_locals[name]
+
+    def _async_locals_public_entries(self) -> list[tuple[str, int]]:
+        if not self.async_locals:
+            return []
+        entries = [
+            (name, offset)
+            for name, offset in self.async_locals.items()
+            if name not in self.async_internal_locals
+        ]
+        entries.sort(key=lambda item: item[1])
+        return entries
 
     def _init_scope_async_locals(self, arg_nodes: list[ast.arg]) -> None:
         if not self.scope_assigned:
@@ -2494,20 +2545,94 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return cast(ast.expr, Rewriter().visit(expr))
 
     def _emit_module_annotations_dict(self) -> MoltValue:
-        if self.module_annotations is not None:
-            return self.module_annotations
-        existing = self.locals.get("__annotations__")
-        if existing is not None and existing.type_hint == "dict":
-            self.module_annotations = existing
-            return existing
+        if self.control_flow_depth > 0:
+            self.module_annotations_conditional = True
+        if not self.module_annotations_conditional:
+            if self.module_annotations is not None:
+                return self.module_annotations
+            existing = self.locals.get("__annotations__")
+            if existing is not None and existing.type_hint == "dict":
+                self.module_annotations = existing
+                return existing
+            ann = MoltValue(self.next_var(), type_hint="dict")
+            self.emit(MoltOp(kind="DICT_NEW", args=[], result=ann))
+            self._emit_module_attr_set("__annotations__", ann)
+            if self.current_func_name == "molt_main":
+                self.globals["__annotations__"] = ann
+            self.locals["__annotations__"] = ann
+            self.module_annotations = ann
+            return ann
+        return self._emit_module_annotations_dict_dynamic()
+
+    def _emit_module_annotations_dict_dynamic(self) -> MoltValue:
+        module_dict = self._emit_globals_dict()
+        key_val = MoltValue(self.next_var(), type_hint="str")
+        self.emit(MoltOp(kind="CONST_STR", args=["__annotations__"], result=key_val))
+        default_val = MoltValue(self.next_var(), type_hint="None")
+        self.emit(MoltOp(kind="CONST_NONE", args=[], result=default_val))
+        existing = MoltValue(self.next_var(), type_hint="Any")
+        self.emit(
+            MoltOp(
+                kind="DICT_GET",
+                args=[module_dict, key_val, default_val],
+                result=existing,
+            )
+        )
+        is_none = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="IS", args=[existing, default_val], result=is_none))
+        use_phi = self.enable_phi and not self.is_async()
+        if use_phi:
+            self.emit(MoltOp(kind="IF", args=[is_none], result=MoltValue("none")))
+            ann = MoltValue(self.next_var(), type_hint="dict")
+            self.emit(MoltOp(kind="DICT_NEW", args=[], result=ann))
+            self.emit(
+                MoltOp(
+                    kind="STORE_INDEX",
+                    args=[module_dict, key_val, ann],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            merged = MoltValue(self.next_var(), type_hint="dict")
+            self.emit(MoltOp(kind="PHI", args=[ann, existing], result=merged))
+            return merged
+
+        placeholder = MoltValue(self.next_var(), type_hint="None")
+        self.emit(MoltOp(kind="CONST_NONE", args=[], result=placeholder))
+        cell = MoltValue(self.next_var(), type_hint="list")
+        self.emit(MoltOp(kind="LIST_NEW", args=[placeholder], result=cell))
+        idx = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[0], result=idx))
+        self.emit(MoltOp(kind="IF", args=[is_none], result=MoltValue("none")))
         ann = MoltValue(self.next_var(), type_hint="dict")
         self.emit(MoltOp(kind="DICT_NEW", args=[], result=ann))
-        self._emit_module_attr_set("__annotations__", ann)
-        if self.current_func_name == "molt_main":
-            self.globals["__annotations__"] = ann
-        self.locals["__annotations__"] = ann
-        self.module_annotations = ann
-        return ann
+        self.emit(
+            MoltOp(
+                kind="STORE_INDEX",
+                args=[module_dict, key_val, ann],
+                result=MoltValue("none"),
+            )
+        )
+        self.emit(
+            MoltOp(
+                kind="STORE_INDEX",
+                args=[cell, idx, ann],
+                result=MoltValue("none"),
+            )
+        )
+        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+        self.emit(
+            MoltOp(
+                kind="STORE_INDEX",
+                args=[cell, idx, existing],
+                result=MoltValue("none"),
+            )
+        )
+        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        merged = MoltValue(self.next_var(), type_hint="dict")
+        self.emit(MoltOp(kind="INDEX", args=[cell, idx], result=merged))
+        return merged
 
     def _annotation_items_for_function(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef
@@ -2806,6 +2931,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         is_generator: bool = False,
         is_async_generator: bool = False,
         bind_kind: int | None = None,
+        poll_fn_symbol: str | None = None,
     ) -> None:
         def set_attr(attr: str, value: MoltValue) -> None:
             self.emit(
@@ -2980,6 +3106,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     args=[code_val],
                     result=MoltValue("none"),
                     metadata={"code_id": code_id},
+                )
+            )
+        if poll_fn_symbol is not None:
+            self.emit(
+                MoltOp(
+                    kind="FN_PTR_CODE_SET",
+                    args=[poll_fn_symbol, code_val],
+                    result=MoltValue("none"),
                 )
             )
 
@@ -3169,6 +3303,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             init_symbol = self.module_init_symbol(module_name)
             init_res = MoltValue(self.next_var(), type_hint="Any")
             self.emit(MoltOp(kind="CALL", args=[init_symbol], result=init_res))
+            self._emit_raise_if_pending(clear_handlers=True)
         elif module_name in self.stdlib_allowlist:
             stub_val = MoltValue(self.next_var(), type_hint="module")
             self.emit(MoltOp(kind="MODULE_NEW", args=[name_val], result=stub_val))
@@ -7823,25 +7958,26 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
             if module_namedexpr_targets:
                 self.module_global_mutations.update(module_namedexpr_targets)
-        if self.current_func_name != "molt_main":
-            free_vars = self._collect_free_vars_comprehension(node)
-            if free_vars:
+        free_vars = self._collect_free_vars_comprehension(node)
+        if self.current_func_name == "molt_main":
+            bound = set(self.locals) | set(self.boxed_locals)
+            free_vars = [name for name in free_vars if name in bound]
+        if free_vars:
+            if self.current_func_name != "molt_main":
                 self.unbound_check_names.update(free_vars)
-                for name in free_vars:
-                    self._box_local(name)
-                for name in free_vars:
-                    hint = self.boxed_local_hints.get(name)
-                    if hint is None:
-                        value = self.locals.get(name)
-                        if value is not None and value.type_hint:
-                            hint = value.type_hint
-                    free_var_hints[name] = hint or "Any"
-                closure_items = [self.boxed_locals[name] for name in free_vars]
-                closure_val = MoltValue(self.next_var(), type_hint="tuple")
-                self.emit(
-                    MoltOp(kind="TUPLE_NEW", args=closure_items, result=closure_val)
-                )
-                has_closure = True
+            for name in free_vars:
+                self._box_local(name)
+            for name in free_vars:
+                hint = self.boxed_local_hints.get(name)
+                if hint is None:
+                    value = self.locals.get(name)
+                    if value is not None and value.type_hint:
+                        hint = value.type_hint
+                free_var_hints[name] = hint or "Any"
+            closure_items = [self.boxed_locals[name] for name in free_vars]
+            closure_val = MoltValue(self.next_var(), type_hint="tuple")
+            self.emit(MoltOp(kind="TUPLE_NEW", args=closure_items, result=closure_val))
+            has_closure = True
         prev_state = self._capture_function_state()
         prev_async_context = self.async_context
         self.start_function(
@@ -8139,22 +8275,36 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
         base_vals: list[MoltValue] = []
         base_names: list[str] = []
+        base_name_lookup: list[str | None] = []
+        has_explicit_bases = bool(node.bases)
         if node.bases:
-            if node.keywords:
-                raise NotImplementedError("Class keywords are not supported")
             for base_expr in node.bases:
-                base_name = base_expr_name(base_expr)
-                if base_name is None:
-                    raise NotImplementedError("Unsupported base class expression")
                 base_val = self.visit(base_expr)
                 if base_val is None:
                     raise NotImplementedError("Base class must be defined before use")
                 base_vals.append(base_val)
-                base_names.append(base_name)
-        elif node.keywords:
-            raise NotImplementedError("Class keywords are not supported")
+                base_name = base_expr_name(base_expr)
+                base_name_lookup.append(base_name)
+                if base_name is not None:
+                    base_names.append(base_name)
 
-        if not base_vals:
+        dynamic_build = False
+        if node.keywords:
+            dynamic_build = True
+        for base_name in base_name_lookup:
+            if base_name is None:
+                dynamic_build = True
+                continue
+            base_info = self.classes.get(base_name)
+            if base_info is None and base_name not in BUILTIN_TYPE_TAGS:
+                dynamic_build = True
+                continue
+            if base_info and "__mro_entries__" in base_info.get("methods", {}):
+                dynamic_build = True
+        if not has_explicit_bases:
+            base_names = ["object"]
+
+        if not base_vals and not dynamic_build:
             tag_val = MoltValue(self.next_var(), type_hint="int")
             self.emit(
                 MoltOp(kind="CONST", args=[BUILTIN_TYPE_TAGS["object"]], result=tag_val)
@@ -8172,7 +8322,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             dup = next(name for name in base_names if base_names.count(name) > 1)
             raise NotImplementedError(f"Duplicate base class {dup}")
 
-        dynamic = len(base_names) > 1
+        dynamic = dynamic_build or len(base_names) > 1
         if any(
             name not in self.classes and name not in BUILTIN_TYPE_TAGS
             for name in base_names
@@ -9060,6 +9210,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.del_targets = self._collect_deleted_names(item.body)
                 self.scope_assigned = assigned - self.nonlocal_decls - self.global_decls
                 self.unbound_check_names = set(self.scope_assigned)
+                self.async_public_locals = set(self.scope_assigned) | {
+                    arg.arg for arg in arg_nodes
+                }
+                self.async_internal_locals = set()
                 self.in_generator = True
                 if has_closure:
                     self.async_closure_offset = GEN_CONTROL_SIZE
@@ -9146,6 +9300,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                     self.emit(MoltOp(kind="ret", args=[pair], result=MoltValue("none")))
                 self._spill_async_temporaries()
+                asyncgen_public_locals = self._async_locals_public_entries()
                 closure_size = self.async_locals_base + len(self.async_locals) * 8
                 self.resume_function(prev_func)
                 self._restore_function_state(prev_state)
@@ -9195,6 +9350,31 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     kw_default_exprs=item.args.kw_defaults,
                     docstring=ast.get_docstring(item),
                     is_async_generator=True,
+                    poll_fn_symbol=poll_symbol,
+                )
+                names_vals: list[MoltValue] = []
+                offsets_vals: list[MoltValue] = []
+                for local_name, offset in asyncgen_public_locals:
+                    name_val = MoltValue(self.next_var(), type_hint="str")
+                    self.emit(
+                        MoltOp(kind="CONST_STR", args=[local_name], result=name_val)
+                    )
+                    offset_val = MoltValue(self.next_var(), type_hint="int")
+                    self.emit(MoltOp(kind="CONST", args=[offset], result=offset_val))
+                    names_vals.append(name_val)
+                    offsets_vals.append(offset_val)
+                names_tuple = MoltValue(self.next_var(), type_hint="tuple")
+                self.emit(MoltOp(kind="TUPLE_NEW", args=names_vals, result=names_tuple))
+                offsets_tuple = MoltValue(self.next_var(), type_hint="tuple")
+                self.emit(
+                    MoltOp(kind="TUPLE_NEW", args=offsets_vals, result=offsets_tuple)
+                )
+                self.emit(
+                    MoltOp(
+                        kind="ASYNCGEN_LOCALS_REGISTER",
+                        args=[poll_symbol, names_tuple, offsets_tuple],
+                        result=MoltValue("none"),
+                    )
                 )
                 if func_spill is not None:
                     func_val = self._reload_async_value(func_spill, func_val.type_hint)
@@ -9637,6 +9817,425 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
         self.classes[node.name]["layout_version"] = layout_version
 
+        name_val = MoltValue(self.next_var(), type_hint="str")
+        self.emit(MoltOp(kind="CONST_STR", args=[node.name], result=name_val))
+        qualname = self._qualname_for_def(node.name)
+        qualname_val = MoltValue(self.next_var(), type_hint="str")
+        self.emit(MoltOp(kind="CONST_STR", args=[qualname], result=qualname_val))
+        module_name = (
+            "__main__"
+            if self.entry_module and self.module_name == self.entry_module
+            else self.module_name
+        )
+        module_val = MoltValue(self.next_var(), type_hint="str")
+        self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=module_val))
+
+        dynamic_namespace: MoltValue | None = None
+        dynamic_bases_list: MoltValue | None = None
+        dynamic_bases_tuple: MoltValue | None = None
+        dynamic_meta: MoltValue | None = None
+        dynamic_kw_pairs: list[tuple[str, MoltValue]] = []
+        if dynamic_build:
+            meta_expr = None
+            for kw in node.keywords:
+                if kw.arg is None:
+                    raise NotImplementedError("Class **kwargs are not supported")
+                if kw.arg == "metaclass":
+                    if meta_expr is not None:
+                        raise NotImplementedError("Duplicate metaclass keyword")
+                    meta_expr = kw.value
+                else:
+                    kw_val = self.visit(kw.value)
+                    if kw_val is None:
+                        raise NotImplementedError("Unsupported class keyword value")
+                    dynamic_kw_pairs.append((kw.arg, kw_val))
+
+            if has_explicit_bases:
+                bases_tuple = MoltValue(self.next_var(), type_hint="tuple")
+                self.emit(MoltOp(kind="TUPLE_NEW", args=base_vals, result=bases_tuple))
+                bases_list = MoltValue(self.next_var(), type_hint="list")
+                self.emit(MoltOp(kind="LIST_NEW", args=[], result=bases_list))
+                none_val = MoltValue(self.next_var(), type_hint="None")
+                self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
+                mro_entries_name = MoltValue(self.next_var(), type_hint="str")
+                self.emit(
+                    MoltOp(
+                        kind="CONST_STR",
+                        args=["__mro_entries__"],
+                        result=mro_entries_name,
+                    )
+                )
+                for base_val in base_vals:
+                    prepare_attr = MoltValue(self.next_var(), type_hint="Any")
+                    self.emit(
+                        MoltOp(
+                            kind="GETATTR_NAME_DEFAULT",
+                            args=[base_val, mro_entries_name, none_val],
+                            result=prepare_attr,
+                        )
+                    )
+                    is_missing = MoltValue(self.next_var(), type_hint="bool")
+                    self.emit(
+                        MoltOp(
+                            kind="IS", args=[prepare_attr, none_val], result=is_missing
+                        )
+                    )
+                    self.emit(
+                        MoltOp(kind="IF", args=[is_missing], result=MoltValue("none"))
+                    )
+                    self.emit(
+                        MoltOp(
+                            kind="LIST_APPEND",
+                            args=[bases_list, base_val],
+                            result=MoltValue("none"),
+                        )
+                    )
+                    self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+                    callargs = MoltValue(self.next_var(), type_hint="callargs")
+                    self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
+                    self.emit(
+                        MoltOp(
+                            kind="CALLARGS_PUSH_POS",
+                            args=[callargs, bases_tuple],
+                            result=MoltValue("none"),
+                        )
+                    )
+                    entries = MoltValue(self.next_var(), type_hint="Any")
+                    self.emit(
+                        MoltOp(
+                            kind="CALL_BIND",
+                            args=[prepare_attr, callargs],
+                            result=entries,
+                        )
+                    )
+                    self.emit(
+                        MoltOp(
+                            kind="LIST_EXTEND",
+                            args=[bases_list, entries],
+                            result=MoltValue("none"),
+                        )
+                    )
+                    self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+                expanded_tuple = MoltValue(self.next_var(), type_hint="tuple")
+                self.emit(
+                    MoltOp(
+                        kind="TUPLE_FROM_LIST", args=[bases_list], result=expanded_tuple
+                    )
+                )
+                dynamic_bases_list = bases_list
+                dynamic_bases_tuple = expanded_tuple
+            else:
+                bases_list = MoltValue(self.next_var(), type_hint="list")
+                self.emit(MoltOp(kind="LIST_NEW", args=[], result=bases_list))
+                empty_tuple = MoltValue(self.next_var(), type_hint="tuple")
+                self.emit(MoltOp(kind="TUPLE_NEW", args=[], result=empty_tuple))
+                dynamic_bases_list = bases_list
+                dynamic_bases_tuple = empty_tuple
+
+            explicit_meta = None
+            if meta_expr is not None:
+                meta_val = self.visit(meta_expr)
+                if meta_val is None:
+                    raise NotImplementedError("Unsupported metaclass expression")
+                explicit_meta = meta_val
+
+            if dynamic_bases_list is None or dynamic_bases_tuple is None:
+                raise NotImplementedError("Unsupported class bases")
+
+            meta_cell = MoltValue(self.next_var(), type_hint="list")
+            zero_val = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[0], result=zero_val))
+            if explicit_meta is not None:
+                self.emit(
+                    MoltOp(kind="LIST_NEW", args=[explicit_meta], result=meta_cell)
+                )
+                iter_obj = self._emit_iter_new(dynamic_bases_list)
+                one_val = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="CONST", args=[1], result=one_val))
+                self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
+                pair = self._emit_iter_next_checked(iter_obj)
+                done = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(MoltOp(kind="INDEX", args=[pair, one_val], result=done))
+                self.emit(
+                    MoltOp(
+                        kind="LOOP_BREAK_IF_TRUE",
+                        args=[done],
+                        result=MoltValue("none"),
+                    )
+                )
+                base_val = MoltValue(self.next_var(), type_hint="Any")
+                self.emit(MoltOp(kind="INDEX", args=[pair, zero_val], result=base_val))
+                current_meta = MoltValue(self.next_var(), type_hint="type")
+                self.emit(
+                    MoltOp(
+                        kind="INDEX", args=[meta_cell, zero_val], result=current_meta
+                    )
+                )
+                base_meta = MoltValue(self.next_var(), type_hint="type")
+                self.emit(MoltOp(kind="TYPE_OF", args=[base_val], result=base_meta))
+                same_meta = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(
+                    MoltOp(kind="IS", args=[current_meta, base_meta], result=same_meta)
+                )
+                self.emit(MoltOp(kind="IF", args=[same_meta], result=MoltValue("none")))
+                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+                is_sub = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(
+                    MoltOp(
+                        kind="ISSUBCLASS", args=[current_meta, base_meta], result=is_sub
+                    )
+                )
+                self.emit(MoltOp(kind="IF", args=[is_sub], result=MoltValue("none")))
+                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+                is_super = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(
+                    MoltOp(
+                        kind="ISSUBCLASS",
+                        args=[base_meta, current_meta],
+                        result=is_super,
+                    )
+                )
+                self.emit(MoltOp(kind="IF", args=[is_super], result=MoltValue("none")))
+                self.emit(
+                    MoltOp(
+                        kind="STORE_INDEX",
+                        args=[meta_cell, zero_val, base_meta],
+                        result=MoltValue("none"),
+                    )
+                )
+                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+                exc_val = self._emit_exception_new(
+                    "TypeError",
+                    "metaclass conflict: the metaclass of a derived class must be a (non-strict) subclass of the metaclasses of all its bases",
+                )
+                self.emit(
+                    MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none"))
+                )
+                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+                self.emit(
+                    MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
+                )
+                self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+            else:
+                none_meta = MoltValue(self.next_var(), type_hint="None")
+                self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_meta))
+                self.emit(MoltOp(kind="LIST_NEW", args=[none_meta], result=meta_cell))
+                iter_obj = self._emit_iter_new(dynamic_bases_list)
+                one_val = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="CONST", args=[1], result=one_val))
+                pair = self._emit_iter_next_checked(iter_obj)
+                done = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(MoltOp(kind="INDEX", args=[pair, one_val], result=done))
+                self.emit(MoltOp(kind="IF", args=[done], result=MoltValue("none")))
+                tag_val = MoltValue(self.next_var(), type_hint="int")
+                self.emit(
+                    MoltOp(
+                        kind="CONST", args=[BUILTIN_TYPE_TAGS["type"]], result=tag_val
+                    )
+                )
+                meta_val = MoltValue(self.next_var(), type_hint="type")
+                self.emit(MoltOp(kind="BUILTIN_TYPE", args=[tag_val], result=meta_val))
+                self.emit(
+                    MoltOp(
+                        kind="STORE_INDEX",
+                        args=[meta_cell, zero_val, meta_val],
+                        result=MoltValue("none"),
+                    )
+                )
+                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+                first_base = MoltValue(self.next_var(), type_hint="Any")
+                self.emit(
+                    MoltOp(kind="INDEX", args=[pair, zero_val], result=first_base)
+                )
+                meta_val = MoltValue(self.next_var(), type_hint="type")
+                self.emit(MoltOp(kind="TYPE_OF", args=[first_base], result=meta_val))
+                self.emit(
+                    MoltOp(
+                        kind="STORE_INDEX",
+                        args=[meta_cell, zero_val, meta_val],
+                        result=MoltValue("none"),
+                    )
+                )
+                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+                self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
+                pair = self._emit_iter_next_checked(iter_obj)
+                done = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(MoltOp(kind="INDEX", args=[pair, one_val], result=done))
+                self.emit(
+                    MoltOp(
+                        kind="LOOP_BREAK_IF_TRUE",
+                        args=[done],
+                        result=MoltValue("none"),
+                    )
+                )
+                base_val = MoltValue(self.next_var(), type_hint="Any")
+                self.emit(MoltOp(kind="INDEX", args=[pair, zero_val], result=base_val))
+                current_meta = MoltValue(self.next_var(), type_hint="type")
+                self.emit(
+                    MoltOp(
+                        kind="INDEX", args=[meta_cell, zero_val], result=current_meta
+                    )
+                )
+                base_meta = MoltValue(self.next_var(), type_hint="type")
+                self.emit(MoltOp(kind="TYPE_OF", args=[base_val], result=base_meta))
+                same_meta = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(
+                    MoltOp(kind="IS", args=[current_meta, base_meta], result=same_meta)
+                )
+                self.emit(MoltOp(kind="IF", args=[same_meta], result=MoltValue("none")))
+                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+                is_sub = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(
+                    MoltOp(
+                        kind="ISSUBCLASS", args=[current_meta, base_meta], result=is_sub
+                    )
+                )
+                self.emit(MoltOp(kind="IF", args=[is_sub], result=MoltValue("none")))
+                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+                is_super = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(
+                    MoltOp(
+                        kind="ISSUBCLASS",
+                        args=[base_meta, current_meta],
+                        result=is_super,
+                    )
+                )
+                self.emit(MoltOp(kind="IF", args=[is_super], result=MoltValue("none")))
+                self.emit(
+                    MoltOp(
+                        kind="STORE_INDEX",
+                        args=[meta_cell, zero_val, base_meta],
+                        result=MoltValue("none"),
+                    )
+                )
+                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+                exc_val = self._emit_exception_new(
+                    "TypeError",
+                    "metaclass conflict: the metaclass of a derived class must be a (non-strict) subclass of the metaclasses of all its bases",
+                )
+                self.emit(
+                    MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none"))
+                )
+                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+                self.emit(
+                    MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
+                )
+                self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+
+            dynamic_meta = MoltValue(self.next_var(), type_hint="type")
+            self.emit(
+                MoltOp(kind="INDEX", args=[meta_cell, zero_val], result=dynamic_meta)
+            )
+
+            if dynamic_meta is None or dynamic_bases_tuple is None:
+                raise NotImplementedError("Unsupported class metaclass setup")
+            none_val = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
+            prepare_name = MoltValue(self.next_var(), type_hint="str")
+            self.emit(
+                MoltOp(kind="CONST_STR", args=["__prepare__"], result=prepare_name)
+            )
+            prepare_attr = MoltValue(self.next_var(), type_hint="Any")
+            self.emit(
+                MoltOp(
+                    kind="GETATTR_NAME_DEFAULT",
+                    args=[dynamic_meta, prepare_name, none_val],
+                    result=prepare_attr,
+                )
+            )
+            is_missing = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(
+                MoltOp(kind="IS", args=[prepare_attr, none_val], result=is_missing)
+            )
+            namespace_cell = MoltValue(self.next_var(), type_hint="list")
+            self.emit(MoltOp(kind="LIST_NEW", args=[none_val], result=namespace_cell))
+            zero_val = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[0], result=zero_val))
+            self.emit(MoltOp(kind="IF", args=[is_missing], result=MoltValue("none")))
+            namespace_val = MoltValue(self.next_var(), type_hint="dict")
+            self.emit(MoltOp(kind="DICT_NEW", args=[], result=namespace_val))
+            self.emit(
+                MoltOp(
+                    kind="STORE_INDEX",
+                    args=[namespace_cell, zero_val, namespace_val],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+            callargs = MoltValue(self.next_var(), type_hint="callargs")
+            self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
+            self.emit(
+                MoltOp(
+                    kind="CALLARGS_PUSH_POS",
+                    args=[callargs, name_val],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(
+                MoltOp(
+                    kind="CALLARGS_PUSH_POS",
+                    args=[callargs, dynamic_bases_tuple],
+                    result=MoltValue("none"),
+                )
+            )
+            for kw_name, kw_val in dynamic_kw_pairs:
+                key_val = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=[kw_name], result=key_val))
+                self.emit(
+                    MoltOp(
+                        kind="CALLARGS_PUSH_KW",
+                        args=[callargs, key_val, kw_val],
+                        result=MoltValue("none"),
+                    )
+                )
+            namespace_val = MoltValue(self.next_var(), type_hint="Any")
+            self.emit(
+                MoltOp(
+                    kind="CALL_BIND",
+                    args=[prepare_attr, callargs],
+                    result=namespace_val,
+                )
+            )
+            self.emit(
+                MoltOp(
+                    kind="STORE_INDEX",
+                    args=[namespace_cell, zero_val, namespace_val],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+
+            namespace_val = MoltValue(self.next_var(), type_hint="Any")
+            self.emit(
+                MoltOp(
+                    kind="INDEX", args=[namespace_cell, zero_val], result=namespace_val
+                )
+            )
+
+            key_val = MoltValue(self.next_var(), type_hint="str")
+            self.emit(MoltOp(kind="CONST_STR", args=["__module__"], result=key_val))
+            self.emit(
+                MoltOp(
+                    kind="STORE_INDEX",
+                    args=[namespace_val, key_val, module_val],
+                    result=MoltValue("none"),
+                )
+            )
+            key_val = MoltValue(self.next_var(), type_hint="str")
+            self.emit(MoltOp(kind="CONST_STR", args=["__qualname__"], result=key_val))
+            self.emit(
+                MoltOp(
+                    kind="STORE_INDEX",
+                    args=[namespace_val, key_val, qualname_val],
+                    result=MoltValue("none"),
+                )
+            )
+            dynamic_namespace = namespace_val
+
         class_scope: dict[str, MoltValue] = {
             name: info["attr"] for name, info in methods.items()
         }
@@ -9649,6 +10248,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     if method_info is not None:
                         class_scope[item.name] = method_info["attr"]
                         self.locals[item.name] = method_info["attr"]
+                        if dynamic_namespace is not None:
+                            key_val = MoltValue(self.next_var(), type_hint="str")
+                            self.emit(
+                                MoltOp(
+                                    kind="CONST_STR", args=[item.name], result=key_val
+                                )
+                            )
+                            self.emit(
+                                MoltOp(
+                                    kind="STORE_INDEX",
+                                    args=[
+                                        dynamic_namespace,
+                                        key_val,
+                                        method_info["attr"],
+                                    ],
+                                    result=MoltValue("none"),
+                                )
+                            )
                     continue
                 if isinstance(item, ast.Expr):
                     if isinstance(item.value, ast.Constant) and isinstance(
@@ -9666,6 +10283,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         if isinstance(target, ast.Name):
                             class_attr_values[target.id] = val
                             self.locals[target.id] = val
+                            if dynamic_namespace is not None:
+                                key_val = MoltValue(self.next_var(), type_hint="str")
+                                self.emit(
+                                    MoltOp(
+                                        kind="CONST_STR",
+                                        args=[target.id],
+                                        result=key_val,
+                                    )
+                                )
+                                self.emit(
+                                    MoltOp(
+                                        kind="STORE_INDEX",
+                                        args=[dynamic_namespace, key_val, val],
+                                        result=MoltValue("none"),
+                                    )
+                                )
                     continue
                 if isinstance(item, ast.AnnAssign) and isinstance(
                     item.target, ast.Name
@@ -9689,63 +10322,139 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         raise NotImplementedError("Unsupported class body assignment")
                     class_attr_values[item.target.id] = val
                     self.locals[item.target.id] = val
+                    if dynamic_namespace is not None:
+                        key_val = MoltValue(self.next_var(), type_hint="str")
+                        self.emit(
+                            MoltOp(
+                                kind="CONST_STR", args=[item.target.id], result=key_val
+                            )
+                        )
+                        self.emit(
+                            MoltOp(
+                                kind="STORE_INDEX",
+                                args=[dynamic_namespace, key_val, val],
+                                result=MoltValue("none"),
+                            )
+                        )
         finally:
             self.locals = saved_locals
 
-        name_val = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="CONST_STR", args=[node.name], result=name_val))
-        class_val = MoltValue(self.next_var(), type_hint="type")
-        self.emit(MoltOp(kind="CLASS_NEW", args=[name_val], result=class_val))
-        if base_vals:
-            if len(base_vals) == 1:
-                bases_arg = base_vals[0]
-            else:
-                bases_arg = MoltValue(self.next_var(), type_hint="tuple")
-                self.emit(MoltOp(kind="TUPLE_NEW", args=base_vals, result=bases_arg))
+        if (
+            self.future_annotations
+            and dynamic_namespace is not None
+            and class_annotation_items
+            and "__annotations__" not in class_attr_values
+        ):
+            ann_items: list[MoltValue] = []
+            for name, val in class_annotation_items:
+                key_val = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=[name], result=key_val))
+                ann_items.extend([key_val, val])
+            ann_dict = MoltValue(self.next_var(), type_hint="dict")
+            self.emit(MoltOp(kind="DICT_NEW", args=ann_items, result=ann_dict))
+            key_val = MoltValue(self.next_var(), type_hint="str")
+            self.emit(
+                MoltOp(kind="CONST_STR", args=["__annotations__"], result=key_val)
+            )
             self.emit(
                 MoltOp(
-                    kind="CLASS_SET_BASE",
-                    args=[class_val, bases_arg],
+                    kind="STORE_INDEX",
+                    args=[dynamic_namespace, key_val, ann_dict],
                     result=MoltValue("none"),
                 )
             )
+
+        if dynamic_build:
+            if (
+                dynamic_meta is None
+                or dynamic_bases_tuple is None
+                or dynamic_namespace is None
+            ):
+                raise NotImplementedError("Unsupported dynamic class build")
+            callargs = MoltValue(self.next_var(), type_hint="callargs")
+            self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
+            self.emit(
+                MoltOp(
+                    kind="CALLARGS_PUSH_POS",
+                    args=[callargs, name_val],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(
+                MoltOp(
+                    kind="CALLARGS_PUSH_POS",
+                    args=[callargs, dynamic_bases_tuple],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(
+                MoltOp(
+                    kind="CALLARGS_PUSH_POS",
+                    args=[callargs, dynamic_namespace],
+                    result=MoltValue("none"),
+                )
+            )
+            for kw_name, kw_val in dynamic_kw_pairs:
+                key_val = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=[kw_name], result=key_val))
+                self.emit(
+                    MoltOp(
+                        kind="CALLARGS_PUSH_KW",
+                        args=[callargs, key_val, kw_val],
+                        result=MoltValue("none"),
+                    )
+                )
+            class_val = MoltValue(self.next_var(), type_hint="type")
+            self.emit(
+                MoltOp(
+                    kind="CALL_BIND", args=[dynamic_meta, callargs], result=class_val
+                )
+            )
+        else:
+            class_val = MoltValue(self.next_var(), type_hint="type")
+            self.emit(MoltOp(kind="CLASS_NEW", args=[name_val], result=class_val))
+            if base_vals:
+                if len(base_vals) == 1:
+                    bases_arg = base_vals[0]
+                else:
+                    bases_arg = MoltValue(self.next_var(), type_hint="tuple")
+                    self.emit(
+                        MoltOp(kind="TUPLE_NEW", args=base_vals, result=bases_arg)
+                    )
+                self.emit(
+                    MoltOp(
+                        kind="CLASS_SET_BASE",
+                        args=[class_val, bases_arg],
+                        result=MoltValue("none"),
+                    )
+                )
+            self.emit(
+                MoltOp(
+                    kind="SETATTR_GENERIC_OBJ",
+                    args=[class_val, "__name__", name_val],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(
+                MoltOp(
+                    kind="SETATTR_GENERIC_OBJ",
+                    args=[class_val, "__qualname__", qualname_val],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(
+                MoltOp(
+                    kind="SETATTR_GENERIC_OBJ",
+                    args=[class_val, "__module__", module_val],
+                    result=MoltValue("none"),
+                )
+            )
+
         if self.current_func_name == "molt_main":
             self.globals[node.name] = class_val
             self._emit_module_attr_set(node.name, class_val)
         else:
             self._store_local_value(node.name, class_val)
-
-        qualname = self._qualname_for_def(node.name)
-        qualname_val = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="CONST_STR", args=[qualname], result=qualname_val))
-        module_name = (
-            "__main__"
-            if self.entry_module and self.module_name == self.entry_module
-            else self.module_name
-        )
-        module_val = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=module_val))
-        self.emit(
-            MoltOp(
-                kind="SETATTR_GENERIC_OBJ",
-                args=[class_val, "__name__", name_val],
-                result=MoltValue("none"),
-            )
-        )
-        self.emit(
-            MoltOp(
-                kind="SETATTR_GENERIC_OBJ",
-                args=[class_val, "__qualname__", qualname_val],
-                result=MoltValue("none"),
-            )
-        )
-        self.emit(
-            MoltOp(
-                kind="SETATTR_GENERIC_OBJ",
-                args=[class_val, "__module__", module_val],
-                result=MoltValue("none"),
-            )
-        )
 
         class_info = self.classes[node.name]
         if (
@@ -9786,19 +10495,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
         )
 
-        for attr_name, val in class_attr_values.items():
-            self.emit(
-                MoltOp(
-                    kind="SETATTR_GENERIC_OBJ",
-                    args=[class_val, attr_name, val],
-                    result=MoltValue("none"),
+        if not dynamic_build:
+            for attr_name, val in class_attr_values.items():
+                self.emit(
+                    MoltOp(
+                        kind="SETATTR_GENERIC_OBJ",
+                        args=[class_val, attr_name, val],
+                        result=MoltValue("none"),
+                    )
                 )
-            )
 
         if (
             self.future_annotations
             and class_annotation_items
             and "__annotations__" not in class_attr_values
+            and not dynamic_build
         ):
             ann_items: list[MoltValue] = []
             for name, val in class_annotation_items:
@@ -9840,14 +10551,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             )
 
-        for method_name, method_info in methods.items():
-            self.emit(
-                MoltOp(
-                    kind="SETATTR_GENERIC_OBJ",
-                    args=[class_val, method_name, method_info["attr"]],
-                    result=MoltValue("none"),
+        if not dynamic_build:
+            for method_name, method_info in methods.items():
+                self.emit(
+                    MoltOp(
+                        kind="SETATTR_GENERIC_OBJ",
+                        args=[class_val, method_name, method_info["attr"]],
+                        result=MoltValue("none"),
+                    )
                 )
-            )
 
         self.emit(
             MoltOp(
@@ -9856,6 +10568,43 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 result=MoltValue("none"),
             )
         )
+        if not dynamic_build and base_vals:
+            none_val = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
+            init_name = MoltValue(self.next_var(), type_hint="str")
+            self.emit(
+                MoltOp(kind="CONST_STR", args=["__init_subclass__"], result=init_name)
+            )
+            for base_val in base_vals:
+                init_attr = MoltValue(self.next_var(), type_hint="Any")
+                self.emit(
+                    MoltOp(
+                        kind="GETATTR_NAME_DEFAULT",
+                        args=[base_val, init_name, none_val],
+                        result=init_attr,
+                    )
+                )
+                missing = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(MoltOp(kind="IS", args=[init_attr, none_val], result=missing))
+                self.emit(MoltOp(kind="IF", args=[missing], result=MoltValue("none")))
+                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+                callargs = MoltValue(self.next_var(), type_hint="callargs")
+                self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
+                self.emit(
+                    MoltOp(
+                        kind="CALLARGS_PUSH_POS",
+                        args=[callargs, class_val],
+                        result=MoltValue("none"),
+                    )
+                )
+                self.emit(
+                    MoltOp(
+                        kind="CALL_BIND",
+                        args=[init_attr, callargs],
+                        result=MoltValue("none"),
+                    )
+                )
+                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         layout_version = self.classes[node.name].get("layout_version", 0)
         layout_val = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[layout_version], result=layout_val))
@@ -11590,6 +12339,31 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 and target_info.type_hint == "Func:asyncio__sleep"
             ):
                 return self._emit_asyncio_sleep(node.args, node.keywords)
+            if func_id in {"BaseExceptionGroup", "ExceptionGroup"}:
+                if node.keywords:
+                    self._bridge_fallback(
+                        node,
+                        f"{func_id} with keywords",
+                        impact="medium",
+                        alternative=f"{func_id} with positional arguments only",
+                        detail="keywords are not supported for exception constructors",
+                    )
+                    return None
+                args: list[MoltValue] = []
+                for arg in node.args:
+                    arg_val = self.visit(arg)
+                    if arg_val is None:
+                        self._bridge_fallback(
+                            node,
+                            f"{func_id} with unsupported arg expression",
+                            impact="medium",
+                            alternative=f"{func_id} with simple literals",
+                            detail="argument expression could not be lowered",
+                        )
+                        return None
+                    args.append(arg_val)
+                class_val = self._emit_exception_class(func_id)
+                return self._emit_exception_new_from_class(class_val, args)
             if func_id in {
                 "BaseException",
                 "Exception",
@@ -16771,6 +17545,409 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.block_terminated = prior_terminated
         return None
 
+    def visit_TryStar(self, node: ast.TryStar) -> None:
+        if not node.handlers and not node.finalbody:
+            self._bridge_fallback(
+                node,
+                "try* without except",
+                impact="high",
+                alternative="add an except* handler or a finally block",
+                detail="try* without except*/finally is not supported yet",
+            )
+            return None
+        if node.orelse and not node.handlers:
+            self._bridge_fallback(
+                node,
+                "try*/finally with else",
+                impact="high",
+                alternative="move the else body into the try*",
+                detail="try*/else requires an except* handler",
+            )
+            return None
+        if not self.is_async():
+            assigned = self._collect_assigned_names([node])
+            for name in sorted(assigned):
+                self._box_local(name)
+        prior_terminated = self.block_terminated
+        self.block_terminated = False
+        self.control_flow_depth += 1
+
+        ctx_mark = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONTEXT_DEPTH", args=[], result=ctx_mark))
+        ctx_mark_offset = None
+        if self.is_async():
+            ctx_name = f"__ctx_star_{len(self.async_locals)}"
+            ctx_mark_offset = self._async_local_offset(ctx_name)
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", ctx_mark_offset, ctx_mark],
+                    result=MoltValue("none"),
+                )
+            )
+        scope = TryScope(
+            ctx_mark=ctx_mark,
+            finalbody=node.finalbody,
+            ctx_mark_offset=ctx_mark_offset,
+        )
+        self.try_scopes.append(scope)
+
+        self.emit(MoltOp(kind="EXCEPTION_PUSH", args=[], result=MoltValue("none")))
+        try_end_label = self.next_label()
+        self.try_end_labels.append(try_end_label)
+        self.emit(MoltOp(kind="TRY_START", args=[], result=MoltValue("none")))
+        self._visit_block(node.body)
+        self.emit(
+            MoltOp(
+                kind="LABEL",
+                args=[try_end_label],
+                result=MoltValue("none"),
+            )
+        )
+        self.emit(MoltOp(kind="TRY_END", args=[], result=MoltValue("none")))
+        self.try_end_labels.pop()
+        prior_suppress = self.try_suppress_depth
+        self.try_suppress_depth = len(self.try_end_labels)
+
+        exc_val = MoltValue(self.next_var(), type_hint="exception")
+        self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=exc_val))
+        none_val = MoltValue(self.next_var(), type_hint="None")
+        self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
+        is_none = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="IS", args=[exc_val, none_val], result=is_none))
+        pending = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="NOT", args=[is_none], result=pending))
+
+        self.emit(MoltOp(kind="IF", args=[pending], result=MoltValue("none")))
+        ctx_arg = self._ctx_mark_arg(scope)
+        self.emit(
+            MoltOp(
+                kind="CONTEXT_UNWIND_TO",
+                args=[ctx_arg, exc_val],
+                result=MoltValue("none"),
+            )
+        )
+        self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
+
+        rest_cell = MoltValue(self.next_var(), type_hint="list")
+        self.emit(MoltOp(kind="LIST_NEW", args=[exc_val], result=rest_cell))
+        raised_list = MoltValue(self.next_var(), type_hint="list")
+        self.emit(MoltOp(kind="LIST_NEW", args=[], result=raised_list))
+        rest_slot = None
+        raised_slot = None
+        if self.is_async():
+            rest_slot = self._async_local_offset(
+                f"__try_star_rest_{len(self.async_locals)}"
+            )
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", rest_slot, rest_cell],
+                    result=MoltValue("none"),
+                )
+            )
+            raised_slot = self._async_local_offset(
+                f"__try_star_raised_{len(self.async_locals)}"
+            )
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", raised_slot, raised_list],
+                    result=MoltValue("none"),
+                )
+            )
+
+        zero = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[0], result=zero))
+        one = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[1], result=one))
+
+        def load_rest_cell() -> MoltValue:
+            if rest_slot is None or not self.is_async():
+                return rest_cell
+            res = MoltValue(self.next_var(), type_hint="list")
+            self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", rest_slot], result=res))
+            return res
+
+        def load_rest_value() -> MoltValue:
+            cell = load_rest_cell()
+            res = MoltValue(self.next_var(), type_hint="exception")
+            self.emit(MoltOp(kind="INDEX", args=[cell, zero], result=res))
+            return res
+
+        def store_rest_value(value: MoltValue) -> None:
+            cell = load_rest_cell()
+            self.emit(
+                MoltOp(
+                    kind="STORE_INDEX",
+                    args=[cell, zero, value],
+                    result=MoltValue("none"),
+                )
+            )
+
+        def load_raised() -> MoltValue:
+            if raised_slot is None or not self.is_async():
+                return raised_list
+            res = MoltValue(self.next_var(), type_hint="list")
+            self.emit(
+                MoltOp(kind="LOAD_CLOSURE", args=["self", raised_slot], result=res)
+            )
+            return res
+
+        for handler in node.handlers:
+            rest_cur = load_rest_value()
+            rest_is_none = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="IS", args=[rest_cur, none_val], result=rest_is_none))
+            has_rest = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="NOT", args=[rest_is_none], result=has_rest))
+            self.emit(MoltOp(kind="IF", args=[has_rest], result=MoltValue("none")))
+            if handler.type is None:
+                class_val = self._emit_exception_class("BaseException")
+            else:
+                class_val = self.visit(handler.type)
+            if class_val is None:
+                self._bridge_fallback(
+                    handler,
+                    "except* (unsupported handler)",
+                    alternative="use a lowered exception name or tuple",
+                    detail="handler expression could not be lowered",
+                )
+            else:
+                pair = MoltValue(self.next_var(), type_hint="tuple")
+                self.emit(
+                    MoltOp(
+                        kind="EXCEPTIONGROUP_MATCH",
+                        args=[rest_cur, class_val],
+                        result=pair,
+                    )
+                )
+                match_val = MoltValue(self.next_var(), type_hint="exception")
+                self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=match_val))
+                new_rest = MoltValue(self.next_var(), type_hint="exception")
+                self.emit(MoltOp(kind="INDEX", args=[pair, one], result=new_rest))
+                store_rest_value(new_rest)
+                match_is_none = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(
+                    MoltOp(kind="IS", args=[match_val, none_val], result=match_is_none)
+                )
+                has_match = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(MoltOp(kind="NOT", args=[match_is_none], result=has_match))
+                self.emit(MoltOp(kind="IF", args=[has_match], result=MoltValue("none")))
+                exc_slot_offset = None
+                if self.is_async():
+                    exc_slot_name = f"__exc_star_{len(self.async_locals)}"
+                    exc_slot_offset = self._async_local_offset(exc_slot_name)
+                    self.emit(
+                        MoltOp(
+                            kind="STORE_CLOSURE",
+                            args=["self", exc_slot_offset, match_val],
+                            result=MoltValue("none"),
+                        )
+                    )
+                if handler.name:
+                    self._store_local_value(handler.name, match_val)
+                exc_entry = ActiveException(value=match_val, slot=exc_slot_offset)
+                self.active_exceptions.append(exc_entry)
+                self.emit(
+                    MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none"))
+                )
+                self.emit(
+                    MoltOp(
+                        kind="EXCEPTION_CONTEXT_SET",
+                        args=[match_val],
+                        result=MoltValue("none"),
+                    )
+                )
+                self._emit_guarded_body(handler.body, exc_entry)
+                self.active_exceptions.pop()
+                raised_exc = MoltValue(self.next_var(), type_hint="exception")
+                self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=raised_exc))
+                raised_is_none = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(
+                    MoltOp(
+                        kind="IS",
+                        args=[raised_exc, none_val],
+                        result=raised_is_none,
+                    )
+                )
+                has_raised = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(MoltOp(kind="NOT", args=[raised_is_none], result=has_raised))
+                self.emit(
+                    MoltOp(kind="IF", args=[has_raised], result=MoltValue("none"))
+                )
+                raised_target = load_raised()
+                self.emit(
+                    MoltOp(
+                        kind="LIST_APPEND",
+                        args=[raised_target, raised_exc],
+                        result=MoltValue("none"),
+                    )
+                )
+                self.emit(
+                    MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none"))
+                )
+                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+
+        rest_final = load_rest_value()
+        raised_final = load_raised()
+        raised_len = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="LEN", args=[raised_final], result=raised_len))
+        len_is_zero = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="EQ", args=[raised_len, zero], result=len_is_zero))
+        self.emit(MoltOp(kind="IF", args=[len_is_zero], result=MoltValue("none")))
+        rest_is_none = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="IS", args=[rest_final, none_val], result=rest_is_none))
+        self.emit(MoltOp(kind="IF", args=[rest_is_none], result=MoltValue("none")))
+        self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
+        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+        self.emit(
+            MoltOp(
+                kind="EXCEPTION_SET_LAST",
+                args=[rest_final],
+                result=MoltValue("none"),
+            )
+        )
+        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+        rest_is_none_raised = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(
+            MoltOp(kind="IS", args=[rest_final, none_val], result=rest_is_none_raised)
+        )
+        self.emit(
+            MoltOp(
+                kind="IF",
+                args=[rest_is_none_raised],
+                result=MoltValue("none"),
+            )
+        )
+        len_is_one = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="EQ", args=[raised_len, one], result=len_is_one))
+        self.emit(MoltOp(kind="IF", args=[len_is_one], result=MoltValue("none")))
+        only_exc = MoltValue(self.next_var(), type_hint="exception")
+        self.emit(MoltOp(kind="INDEX", args=[raised_final, zero], result=only_exc))
+        self.emit(
+            MoltOp(
+                kind="EXCEPTION_SET_LAST",
+                args=[only_exc],
+                result=MoltValue("none"),
+            )
+        )
+        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+        combined = MoltValue(self.next_var(), type_hint="exception")
+        self.emit(
+            MoltOp(
+                kind="EXCEPTIONGROUP_COMBINE",
+                args=[raised_final],
+                result=combined,
+            )
+        )
+        self.emit(
+            MoltOp(
+                kind="EXCEPTION_SET_LAST",
+                args=[combined],
+                result=MoltValue("none"),
+            )
+        )
+        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+        self.emit(
+            MoltOp(
+                kind="LIST_APPEND",
+                args=[raised_final, rest_final],
+                result=MoltValue("none"),
+            )
+        )
+        combined = MoltValue(self.next_var(), type_hint="exception")
+        self.emit(
+            MoltOp(
+                kind="EXCEPTIONGROUP_COMBINE",
+                args=[raised_final],
+                result=combined,
+            )
+        )
+        self.emit(
+            MoltOp(
+                kind="EXCEPTION_SET_LAST",
+                args=[combined],
+                result=MoltValue("none"),
+            )
+        )
+        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+
+        if node.finalbody:
+            final_exc = MoltValue(self.next_var(), type_hint="exception")
+            self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=final_exc))
+            final_slot = None
+            if self.is_async():
+                final_slot = self._async_local_offset(
+                    f"__final_star_{len(self.async_locals)}"
+                )
+                self.emit(
+                    MoltOp(
+                        kind="STORE_CLOSURE",
+                        args=["self", final_slot, final_exc],
+                        result=MoltValue("none"),
+                    )
+                )
+            final_entry = ActiveException(value=final_exc, slot=final_slot)
+            self.active_exceptions.append(final_entry)
+            self.emit(
+                MoltOp(
+                    kind="EXCEPTION_CONTEXT_SET",
+                    args=[final_exc],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
+            self._emit_finalbody(node.finalbody, final_entry)
+            exc_after = MoltValue(self.next_var(), type_hint="exception")
+            self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=exc_after))
+            none_after = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_after))
+            is_none_after = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(
+                MoltOp(kind="IS", args=[exc_after, none_after], result=is_none_after)
+            )
+            self.emit(MoltOp(kind="IF", args=[is_none_after], result=MoltValue("none")))
+            restored_exc = self._active_exception_value(final_entry)
+            is_restore_none = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(
+                MoltOp(
+                    kind="IS", args=[restored_exc, none_after], result=is_restore_none
+                )
+            )
+            self.emit(
+                MoltOp(kind="IF", args=[is_restore_none], result=MoltValue("none"))
+            )
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+            self.emit(
+                MoltOp(
+                    kind="EXCEPTION_SET_LAST",
+                    args=[restored_exc],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            self.active_exceptions.pop()
+
+        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+        if node.orelse:
+            self._emit_guarded_body(node.orelse, None)
+        if node.finalbody:
+            self._emit_finalbody(node.finalbody, None)
+        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        self.try_suppress_depth = prior_suppress
+        self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
+        self._emit_raise_if_pending(emit_exit=True)
+        self.try_scopes.pop()
+        self.control_flow_depth -= 1
+        self.block_terminated = prior_terminated
+        return None
+
     def visit_BoolOp(self, node: ast.BoolOp) -> Any:
         if not node.values:
             raise NotImplementedError("Empty bool op is not supported")
@@ -17366,6 +18543,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.del_targets = self._collect_deleted_names(node.body)
             self.scope_assigned = assigned - self.nonlocal_decls - self.global_decls
             self.unbound_check_names = set(self.scope_assigned)
+            self.async_public_locals = set(self.scope_assigned) | {
+                arg.arg for arg in arg_nodes
+            }
+            self.async_internal_locals = set()
             self.in_generator = True
             if has_closure:
                 self.async_closure_offset = GEN_CONTROL_SIZE
@@ -17439,6 +18620,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.emit(MoltOp(kind="TUPLE_NEW", args=[none_val, done], result=pair))
                 self.emit(MoltOp(kind="ret", args=[pair], result=MoltValue("none")))
             self._spill_async_temporaries()
+            asyncgen_public_locals = self._async_locals_public_entries()
             closure_size = self.async_locals_base + len(self.async_locals) * 8
             self.resume_function(prev_func)
             self._restore_function_state(prev_state)
@@ -17484,6 +18666,27 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 kw_default_exprs=node.args.kw_defaults,
                 docstring=ast.get_docstring(node),
                 is_async_generator=True,
+                poll_fn_symbol=poll_func_name,
+            )
+            names_vals: list[MoltValue] = []
+            offsets_vals: list[MoltValue] = []
+            for local_name, offset in asyncgen_public_locals:
+                name_val = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=[local_name], result=name_val))
+                offset_val = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="CONST", args=[offset], result=offset_val))
+                names_vals.append(name_val)
+                offsets_vals.append(offset_val)
+            names_tuple = MoltValue(self.next_var(), type_hint="tuple")
+            self.emit(MoltOp(kind="TUPLE_NEW", args=names_vals, result=names_tuple))
+            offsets_tuple = MoltValue(self.next_var(), type_hint="tuple")
+            self.emit(MoltOp(kind="TUPLE_NEW", args=offsets_vals, result=offsets_tuple))
+            self.emit(
+                MoltOp(
+                    kind="ASYNCGEN_LOCALS_REGISTER",
+                    args=[poll_func_name, names_tuple, offsets_tuple],
+                    result=MoltValue("none"),
+                )
             )
             if func_spill is not None:
                 func_val = self._reload_async_value(func_spill, func_val.type_hint)
@@ -19707,6 +20910,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "args": [op.args[0].name],
                     }
                 )
+            elif op.kind == "FN_PTR_CODE_SET":
+                func_name, code_val = op.args
+                json_ops.append(
+                    {
+                        "kind": "fn_ptr_code_set",
+                        "s_value": func_name,
+                        "args": [code_val.name],
+                    }
+                )
+            elif op.kind == "ASYNCGEN_LOCALS_REGISTER":
+                func_name, names_tuple, offsets_tuple = op.args
+                json_ops.append(
+                    {
+                        "kind": "asyncgen_locals_register",
+                        "s_value": func_name,
+                        "args": [names_tuple.name, offsets_tuple.name],
+                    }
+                )
             elif op.kind == "CODE_SLOTS_INIT":
                 json_ops.append(
                     {
@@ -19990,6 +21211,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     {
                         "kind": "exception_new_from_class",
                         "args": [op.args[0].name, op.args[1].name],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "EXCEPTIONGROUP_MATCH":
+                json_ops.append(
+                    {
+                        "kind": "exceptiongroup_match",
+                        "args": [op.args[0].name, op.args[1].name],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "EXCEPTIONGROUP_COMBINE":
+                json_ops.append(
+                    {
+                        "kind": "exceptiongroup_combine",
+                        "args": [op.args[0].name],
                         "out": op.result.name,
                     }
                 )

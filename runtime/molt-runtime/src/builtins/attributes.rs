@@ -548,8 +548,14 @@ pub(crate) unsafe fn attr_lookup_ptr(
         if let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits)) {
             if name == "__class__" {
                 let builtins = builtin_classes(_py);
-                inc_ref_bits(_py, builtins.type_obj);
-                return Some(builtins.type_obj);
+                let class_bits = object_class_bits(obj_ptr);
+                let res_bits = if class_bits != 0 {
+                    class_bits
+                } else {
+                    builtins.type_obj
+                };
+                inc_ref_bits(_py, res_bits);
+                return Some(res_bits);
             }
             if name == "__dict__" {
                 let dict_bits = class_dict_bits(obj_ptr);
@@ -732,6 +738,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
         if let Some(raw_ptr) = target_ptr {
             if object_type_id(raw_ptr) == TYPE_ID_TYPE {
                 owner_ptr = raw_ptr;
+                instance_ptr = Some(raw_ptr);
             } else {
                 instance_ptr = Some(raw_ptr);
             }
@@ -1119,19 +1126,30 @@ pub(crate) unsafe fn attr_lookup_ptr(
                             Some(obj_ptr),
                             getattribute_bits,
                         ) {
+                            let getattr_bits = intern_static_name(
+                                _py,
+                                &runtime_state(_py).interned.getattr_name,
+                                b"__getattr__",
+                            );
+                            let getattr_candidate = !obj_eq(
+                                _py,
+                                obj_from_bits(attr_bits),
+                                obj_from_bits(getattr_bits),
+                            ) && class_attr_lookup_raw_mro(_py, class_ptr, getattr_bits).is_some();
+                            if getattr_candidate {
+                                traceback_suppress_enter();
+                            }
                             exception_stack_push();
                             let res_bits = call_callable1(_py, call_bits, attr_bits);
+                            if getattr_candidate {
+                                traceback_suppress_exit();
+                            }
                             if exception_pending(_py) {
                                 let exc_bits = molt_exception_last();
                                 let kind_bits = molt_exception_kind(exc_bits);
                                 let kind = string_obj_to_owned(obj_from_bits(kind_bits));
                                 dec_ref_bits(_py, kind_bits);
                                 if kind.as_deref() == Some("AttributeError") {
-                                    let getattr_bits = intern_static_name(
-                                        _py,
-                                        &runtime_state(_py).interned.getattr_name,
-                                        b"__getattr__",
-                                    );
                                     if !obj_eq(
                                         _py,
                                         obj_from_bits(attr_bits),

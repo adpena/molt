@@ -15,6 +15,7 @@ import threading
 import time
 import socket as _socket
 import select as _select
+import types as _types
 from pathlib import Path
 from typing import Any, cast
 
@@ -1012,6 +1013,58 @@ def molt_io_wait_new(sock: Any, events: int, timeout: float | None) -> Any:
     return fut
 
 
+def _molt_class_new(name: str) -> type:
+    if not isinstance(name, str):
+        raise TypeError("class name must be str")
+    return type(name, (), {})
+
+
+def _molt_class_set_base(cls: type, base: object) -> type | None:
+    if not isinstance(cls, type):
+        raise TypeError("class must be a type object")
+    if base is None:
+        bases = ()
+    elif isinstance(base, tuple):
+        bases = base
+    else:
+        bases = (base,)
+    for entry in bases:
+        if not isinstance(entry, type):
+            raise TypeError("base must be a type object or tuple of types")
+    if not bases:
+        bases = (object,)
+    bases = cast(tuple[type, ...], bases)
+    if cls.__bases__ == bases:
+        return None
+    try:
+        cls.__bases__ = bases
+        return None
+    except TypeError:
+        namespace = {
+            key: value
+            for key, value in cls.__dict__.items()
+            if key not in {"__dict__", "__weakref__"}
+        }
+        return type(cls.__name__, bases, namespace)
+
+
+def _molt_class_apply_set_name(cls: type) -> None:
+    if not isinstance(cls, type):
+        raise TypeError("class must be a type object")
+    for name, value in cls.__dict__.items():
+        set_name = getattr(value, "__set_name__", None)
+        if set_name is None:
+            continue
+        set_name(cls, name)
+    return None
+
+
+def _molt_module_new(name: str) -> _types.ModuleType:
+    if not isinstance(name, str):
+        raise TypeError("module name must be str")
+    return _types.ModuleType(name)
+
+
 def install() -> None:
     import builtins
 
@@ -1048,6 +1101,10 @@ def install() -> None:
     setattr(builtins, "molt_promise_set_exception", molt_promise_set_exception)
     setattr(builtins, "molt_task_register_token_owned", molt_task_register_token_owned)
     setattr(builtins, "molt_thread_submit", molt_thread_submit)
+    setattr(builtins, "_molt_class_new", _molt_class_new)
+    setattr(builtins, "_molt_class_set_base", _molt_class_set_base)
+    setattr(builtins, "_molt_class_apply_set_name", _molt_class_apply_set_name)
+    setattr(builtins, "_molt_module_new", _molt_module_new)
     setattr(builtins, "_molt_io_wait_new", molt_io_wait_new)
     setattr(builtins, "_molt_socket_new", molt_socket_new)
     setattr(builtins, "_molt_socket_close", molt_socket_close)

@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
+import builtins as _builtins
+
 __all__ = [
+    "AGEN_CLOSED",
+    "AGEN_CREATED",
+    "AGEN_RUNNING",
+    "AGEN_SUSPENDED",
     "GEN_CLOSED",
     "GEN_CREATED",
     "GEN_RUNNING",
@@ -13,6 +19,8 @@ __all__ = [
     "Signature",
     "cleandoc",
     "getdoc",
+    "getasyncgenlocals",
+    "getasyncgenstate",
     "getgeneratorstate",
     "isclass",
     "isfunction",
@@ -29,6 +37,21 @@ GEN_CREATED = "GEN_CREATED"
 GEN_RUNNING = "GEN_RUNNING"
 GEN_SUSPENDED = "GEN_SUSPENDED"
 GEN_CLOSED = "GEN_CLOSED"
+
+AGEN_CREATED = "AGEN_CREATED"
+AGEN_RUNNING = "AGEN_RUNNING"
+AGEN_SUSPENDED = "AGEN_SUSPENDED"
+AGEN_CLOSED = "AGEN_CLOSED"
+
+
+def _load_intrinsic(name: str) -> Any | None:
+    direct = globals().get(name)
+    if direct is not None:
+        return direct
+    return getattr(_builtins, name, None)
+
+
+_MOLT_ASYNCGEN_LOCALS = _load_intrinsic("_molt_asyncgen_locals")
 
 
 class _Empty:
@@ -196,6 +219,29 @@ def getgeneratorstate(gen: Any) -> str:
     if lasti == -1:
         return GEN_CREATED
     return GEN_SUSPENDED
+
+
+def getasyncgenstate(agen: Any) -> str:
+    if getattr(agen, "ag_running", False):
+        return AGEN_RUNNING
+    frame = getattr(agen, "ag_frame", None)
+    if frame is None:
+        return AGEN_CLOSED
+    lasti = getattr(frame, "f_lasti", -1)
+    if lasti == -1:
+        return AGEN_CREATED
+    return AGEN_SUSPENDED
+
+
+def getasyncgenlocals(agen: Any) -> dict[str, Any]:
+    if callable(_MOLT_ASYNCGEN_LOCALS):
+        return _MOLT_ASYNCGEN_LOCALS(agen)
+    if not hasattr(agen, "ag_frame"):
+        raise TypeError("expected async generator")
+    frame = getattr(agen, "ag_frame", None)
+    if frame is None:
+        return {}
+    return getattr(frame, "f_locals", {}) or {}
 
 
 def _signature_from_molt(obj: Any) -> Signature | None:

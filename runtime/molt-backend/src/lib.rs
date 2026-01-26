@@ -5700,9 +5700,11 @@ impl SimpleBackend {
                         .declare_function("molt_thread_submit", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    builder
+                    let call = builder
                         .ins()
                         .call(local_callee, &[*callable, *call_args, *call_kwargs]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
                 }
                 "task_register_token_owned" => {
                     let args = op.args.as_ref().unwrap();
@@ -5894,7 +5896,7 @@ impl SimpleBackend {
                     sig.returns.push(AbiParam::new(types::I64));
                     let callee = self
                         .module
-                        .declare_function("molt_func_new", Linkage::Import, &sig)
+                        .declare_function("molt_func_new_builtin", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
@@ -6072,6 +6074,75 @@ impl SimpleBackend {
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let _ = builder.ins().call(local_callee, &[code_id_val, *code_bits]);
+                }
+                "fn_ptr_code_set" => {
+                    let args = op.args.as_ref().unwrap();
+                    let code_bits = vars.get(&args[0]).expect("code bits not found");
+                    let func_name = op.s_value.as_ref().expect("fn_ptr_code_set expects symbol");
+                    let mut func_sig = self.module.make_signature();
+                    if func_name.ends_with("_poll") {
+                        func_sig.params.push(AbiParam::new(types::I64));
+                    } else {
+                        let arity = op.value.unwrap_or(0);
+                        for _ in 0..arity {
+                            func_sig.params.push(AbiParam::new(types::I64));
+                        }
+                    }
+                    func_sig.returns.push(AbiParam::new(types::I64));
+                    let func_id = self
+                        .module
+                        .declare_function(func_name, Linkage::Export, &func_sig)
+                        .unwrap();
+                    let func_ref = self.module.declare_func_in_func(func_id, builder.func);
+                    let func_addr = builder.ins().func_addr(types::I64, func_ref);
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_fn_ptr_code_set", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let _ = builder.ins().call(local_callee, &[func_addr, *code_bits]);
+                }
+                "asyncgen_locals_register" => {
+                    let args = op.args.as_ref().unwrap();
+                    let names_bits = vars.get(&args[0]).expect("names tuple not found");
+                    let offsets_bits = vars.get(&args[1]).expect("offsets tuple not found");
+                    let func_name = op
+                        .s_value
+                        .as_ref()
+                        .expect("asyncgen_locals_register expects symbol");
+                    let mut func_sig = self.module.make_signature();
+                    if func_name.ends_with("_poll") {
+                        func_sig.params.push(AbiParam::new(types::I64));
+                    } else {
+                        let arity = op.value.unwrap_or(0);
+                        for _ in 0..arity {
+                            func_sig.params.push(AbiParam::new(types::I64));
+                        }
+                    }
+                    func_sig.returns.push(AbiParam::new(types::I64));
+                    let func_id = self
+                        .module
+                        .declare_function(func_name, Linkage::Export, &func_sig)
+                        .unwrap();
+                    let func_ref = self.module.declare_func_in_func(func_id, builder.func);
+                    let func_addr = builder.ins().func_addr(types::I64, func_ref);
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_asyncgen_locals_register", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let _ = builder
+                        .ins()
+                        .call(local_callee, &[func_addr, *names_bits, *offsets_bits]);
                 }
                 "code_slots_init" => {
                     let count = op.value.unwrap_or(0);
@@ -7977,6 +8048,38 @@ impl SimpleBackend {
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*class_bits, *args_bits]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "exceptiongroup_match" => {
+                    let args = op.args.as_ref().unwrap();
+                    let exc = vars.get(&args[0]).expect("Exception not found");
+                    let matcher = vars.get(&args[1]).expect("Matcher not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_exceptiongroup_match", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*exc, *matcher]);
+                    let res = builder.inst_results(call)[0];
+                    vars.insert(op.out.unwrap(), res);
+                }
+                "exceptiongroup_combine" => {
+                    let args = op.args.as_ref().unwrap();
+                    let items = vars.get(&args[0]).expect("Exception list not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_exceptiongroup_combine", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*items]);
                     let res = builder.inst_results(call)[0];
                     vars.insert(op.out.unwrap(), res);
                 }

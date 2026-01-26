@@ -197,6 +197,12 @@ pub(crate) fn string_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_string_format_method),
             3,
         )),
+        "isidentifier" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.str_isidentifier,
+            fn_addr!(molt_string_isidentifier),
+            1,
+        )),
         "upper" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.str_upper,
@@ -574,6 +580,9 @@ pub(crate) fn builtin_class_method_bits(
     if class_bits == builtins.base_exception || class_bits == builtins.exception {
         return exception_method_bits(_py, name);
     }
+    if class_bits == builtins.base_exception_group || class_bits == builtins.exception_group {
+        return exception_group_method_bits(_py, name);
+    }
     if class_bits == builtins.dict {
         return dict_method_bits(_py, name);
     }
@@ -625,6 +634,12 @@ pub(crate) fn object_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             _py,
             &runtime_state(_py).method_cache.object_init,
             fn_addr!(molt_object_init),
+            1,
+        )),
+        "__init_subclass__" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.object_init_subclass,
+            fn_addr!(molt_object_init_subclass),
             1,
         )),
         "__setattr__" => Some(builtin_func_bits(

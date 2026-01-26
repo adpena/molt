@@ -23,6 +23,14 @@ if TYPE_CHECKING:
     _molt_setrecursionlimit: Callable[[int], None]
     _molt_exception_last: Callable[[], Optional[BaseException]]
     _molt_exception_active: Callable[[], Optional[BaseException]]
+    _molt_asyncgen_hooks_get: Callable[[], object]
+    _molt_asyncgen_hooks_set: Callable[[object, object], object]
+    _molt_asyncgen_locals: Callable[[object], object]
+    _molt_module_new: Callable[[object], object]
+    _molt_function_set_builtin: Callable[[object], object]
+    _molt_class_new: Callable[[object], object]
+    _molt_class_set_base: Callable[[object, object], object]
+    _molt_class_apply_set_name: Callable[[object], object]
     _molt_getpid: Callable[[], int]
     _molt_env_get_raw: Callable[..., object]
     _molt_errno_constants: Callable[[], tuple[dict[str, int], dict[int, str]]]
@@ -326,6 +334,32 @@ _molt_exception_last = cast(
 _molt_exception_active = cast(
     Callable[[], Optional[BaseException]],
     _load_intrinsic("_molt_exception_active"),
+)
+_molt_asyncgen_hooks_get = cast(
+    Callable[[], object],
+    _load_intrinsic("_molt_asyncgen_hooks_get"),
+)
+_molt_asyncgen_hooks_set = cast(
+    Callable[[object, object], object],
+    _load_intrinsic("_molt_asyncgen_hooks_set"),
+)
+_molt_asyncgen_locals = cast(
+    Callable[[object], object],
+    _load_intrinsic("_molt_asyncgen_locals"),
+)
+_molt_module_new = cast(Callable[[object], object], _load_intrinsic("_molt_module_new"))
+_molt_function_set_builtin = cast(
+    Callable[[object], object],
+    _load_intrinsic("_molt_function_set_builtin"),
+)
+_molt_class_new = cast(Callable[[object], object], _load_intrinsic("_molt_class_new"))
+_molt_class_set_base = cast(
+    Callable[[object, object], object],
+    _load_intrinsic("_molt_class_set_base"),
+)
+_molt_class_apply_set_name = cast(
+    Callable[[object], object],
+    _load_intrinsic("_molt_class_apply_set_name"),
 )
 _molt_getpid = cast(Callable[[], int], _load_intrinsic("_molt_getpid"))
 _molt_env_get_raw = cast(Callable[..., object], _load_intrinsic("_molt_env_get_raw"))

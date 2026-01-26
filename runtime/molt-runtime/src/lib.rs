@@ -96,8 +96,9 @@ pub(crate) use crate::builtins::exceptions::{
     clear_exception_type_cache, exception_args_bits, exception_args_from_iterable,
     exception_cause_bits, exception_class_bits, exception_context_align_depth,
     exception_context_bits, exception_context_fallback_pop, exception_context_fallback_push,
-    exception_dict_bits, exception_kind_bits, exception_message_from_args, exception_method_bits,
-    exception_msg_bits, exception_pending, exception_set_stop_iteration_value,
+    exception_dict_bits, exception_group_method_bits, exception_kind_bits,
+    exception_message_from_args, exception_method_bits, exception_msg_bits, exception_pending,
+    exception_set_stop_iteration_value,
     exception_stack_depth, exception_stack_pop, exception_stack_push, exception_stack_set_depth,
     exception_store_args_and_message, exception_suppress_bits, exception_trace_bits,
     exception_type_bits, exception_type_bits_from_name, exception_value_bits, format_exception,
@@ -153,8 +154,8 @@ pub(crate) use crate::call::bind::{
     molt_callargs_new, molt_callargs_push_pos,
 };
 pub(crate) use crate::call::class_init::{
-    alloc_instance_for_class, call_builtin_type_if_needed, call_class_init_with_args,
-    function_attr_bits, raise_not_callable, try_call_generator,
+    alloc_instance_for_class, alloc_instance_for_class_no_pool, call_builtin_type_if_needed,
+    call_class_init_with_args, function_attr_bits, raise_not_callable, try_call_generator,
 };
 pub(crate) use crate::call::dispatch::{
     call_callable0, call_callable1, call_callable2, call_callable3, callable_arity,
@@ -215,7 +216,8 @@ pub(crate) use crate::object::ops::{
 };
 pub(crate) use crate::object::type_ids::*;
 pub(crate) use crate::object::{
-    alloc_object, alloc_object_zeroed_with_pool, bits_from_ptr, buffer2d_ptr, bytes_data,
+    alloc_object, alloc_object_zeroed, alloc_object_zeroed_with_pool, bits_from_ptr, buffer2d_ptr,
+    bytes_data,
     bytes_len, dataclass_desc_ptr, dataclass_dict_bits, dataclass_fields_mut, dataclass_fields_ref,
     dataclass_set_dict_bits, dec_ref_bits, file_handle_ptr, header_from_obj_ptr, inc_ref_bits,
     init_atomic_bits, instance_dict_bits, instance_set_dict_bits, intarray_len, intarray_slice,
@@ -229,6 +231,7 @@ pub(crate) use crate::object::{
     HEADER_FLAG_GEN_STARTED, HEADER_FLAG_SKIP_CLASS_DECREF, HEADER_FLAG_SPAWN_RETAIN,
     HEADER_FLAG_TASK_DONE, HEADER_FLAG_TASK_QUEUED, HEADER_FLAG_TASK_RUNNING,
     HEADER_FLAG_TASK_WAKE_PENDING,
+    HEADER_FLAG_TRACEBACK_SUPPRESSED,
     OBJECT_POOL_BUCKETS, OBJECT_POOL_TLS,
 };
 pub use crate::object::{molt_dec_ref, molt_inc_ref, MoltHeader};
@@ -240,9 +243,10 @@ pub(crate) use crate::state::runtime_state::{runtime_state, runtime_state_for_gi
 pub(crate) use crate::state::{
     molt_profile_enabled, molt_profile_handle_resolve, molt_profile_struct_field_store,
     profile_enabled, profile_hit, profile_hit_unchecked, recursion_guard_enter,
-    recursion_guard_exit, recursion_limit_get, recursion_limit_set, CONTEXT_STACK,
-    DEFAULT_RECURSION_LIMIT, FRAME_STACK, GIL_DEPTH, PARSE_ARENA, RECURSION_DEPTH, RECURSION_LIMIT,
-    REPR_DEPTH, REPR_STACK,
+    recursion_guard_exit, recursion_limit_get, recursion_limit_set, traceback_suppress_enter,
+    traceback_suppress_exit, traceback_suppressed, CONTEXT_STACK, DEFAULT_RECURSION_LIMIT,
+    FRAME_STACK, GIL_DEPTH, PARSE_ARENA, RECURSION_DEPTH, RECURSION_LIMIT, REPR_DEPTH, REPR_STACK,
+    TRACEBACK_SUPPRESS,
 };
 pub(crate) use crate::utils::usize_from_bits;
 

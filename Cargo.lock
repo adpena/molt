@@ -1299,6 +1299,7 @@ dependencies = [
  "serde_json",
  "simdutf",
  "socket2 0.5.10",
+ "unicode-ident",
 ]
 
 [[package]]

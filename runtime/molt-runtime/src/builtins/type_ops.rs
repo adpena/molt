@@ -99,10 +99,24 @@ pub(crate) fn type_of_bits(_py: &PyToken<'_>, val_bits: u64) -> u64 {
                         exception_type_bits(_py, exception_kind_bits(ptr))
                     }
                 }
-                TYPE_ID_FUNCTION => builtins.function,
+                TYPE_ID_FUNCTION => {
+                    let class_bits = object_class_bits(ptr);
+                    if class_bits != 0 {
+                        class_bits
+                    } else {
+                        builtins.function
+                    }
+                }
                 TYPE_ID_CODE => builtins.code,
                 TYPE_ID_MODULE => builtins.module,
-                TYPE_ID_TYPE => builtins.type_obj,
+                TYPE_ID_TYPE => {
+                    let class_bits = object_class_bits(ptr);
+                    if class_bits != 0 {
+                        class_bits
+                    } else {
+                        builtins.type_obj
+                    }
+                }
                 TYPE_ID_GENERIC_ALIAS => builtins.generic_alias,
                 TYPE_ID_SUPER => builtins.super_type,
                 TYPE_ID_DATACLASS => {

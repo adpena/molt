@@ -2,8 +2,9 @@ use molt_obj_model::MoltObject;
 
 use crate::{
     alloc_bound_method_obj, alloc_code_obj, alloc_function_obj, dec_ref_bits,
-    function_set_closure_bits, function_set_trampoline_ptr, inc_ref_bits, obj_from_bits,
-    object_type_id, raise_exception, to_i64, TYPE_ID_FUNCTION, TYPE_ID_STRING, TYPE_ID_TUPLE,
+    builtin_classes, function_set_closure_bits, function_set_trampoline_ptr, inc_ref_bits,
+    obj_from_bits, object_class_bits, object_set_class_bits, object_type_id, raise_exception,
+    to_i64, TYPE_ID_FUNCTION, TYPE_ID_STRING, TYPE_ID_TUPLE,
 };
 
 #[no_mangle]
@@ -18,6 +19,23 @@ pub extern "C" fn molt_func_new(fn_ptr: u64, trampoline_ptr: u64, arity: u64) ->
             }
             MoltObject::from_ptr(ptr).bits()
         }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_func_new_builtin(fn_ptr: u64, trampoline_ptr: u64, arity: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let ptr = alloc_function_obj(_py, fn_ptr, arity);
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        unsafe {
+            function_set_trampoline_ptr(ptr, trampoline_ptr);
+            let builtin_bits = builtin_classes(_py).builtin_function_or_method;
+            object_set_class_bits(_py, ptr, builtin_bits);
+            inc_ref_bits(_py, builtin_bits);
+        }
+        MoltObject::from_ptr(ptr).bits()
     })
 }
 
@@ -38,6 +56,30 @@ pub extern "C" fn molt_func_new_closure(
             function_set_trampoline_ptr(ptr, trampoline_ptr);
         }
         MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_function_set_builtin(func_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(func_ptr) = obj_from_bits(func_bits).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "expected function");
+        };
+        unsafe {
+            if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
+                return raise_exception::<_>(_py, "TypeError", "expected function");
+            }
+            let builtin_bits = builtin_classes(_py).builtin_function_or_method;
+            let old_bits = object_class_bits(func_ptr);
+            if old_bits != builtin_bits {
+                if old_bits != 0 {
+                    dec_ref_bits(_py, old_bits);
+                }
+                object_set_class_bits(_py, func_ptr, builtin_bits);
+                inc_ref_bits(_py, builtin_bits);
+            }
+        }
+        MoltObject::none().bits()
     })
 }
 

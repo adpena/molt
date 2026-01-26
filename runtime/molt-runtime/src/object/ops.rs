@@ -16,6 +16,7 @@ use std::ffi::CStr;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, OnceLock};
+use unicode_ident::{is_xid_continue, is_xid_start};
 
 fn slice_bounds_from_args(
     _py: &PyToken<'_>,
@@ -3316,12 +3317,21 @@ pub extern "C" fn molt_profile_dump() {
         let layout_guard = LAYOUT_GUARD_COUNT.load(AtomicOrdering::Relaxed);
         let layout_guard_fail = LAYOUT_GUARD_FAIL.load(AtomicOrdering::Relaxed);
         let allocs = ALLOC_COUNT.load(AtomicOrdering::Relaxed);
+        let alloc_objects = ALLOC_OBJECT_COUNT.load(AtomicOrdering::Relaxed);
+        let alloc_exceptions = ALLOC_EXCEPTION_COUNT.load(AtomicOrdering::Relaxed);
+        let alloc_dicts = ALLOC_DICT_COUNT.load(AtomicOrdering::Relaxed);
+        let alloc_tuples = ALLOC_TUPLE_COUNT.load(AtomicOrdering::Relaxed);
+        let alloc_strings = ALLOC_STRING_COUNT.load(AtomicOrdering::Relaxed);
+        let alloc_callargs = ALLOC_CALLARGS_COUNT.load(AtomicOrdering::Relaxed);
+        let tb_builds = TRACEBACK_BUILD_COUNT.load(AtomicOrdering::Relaxed);
+        let tb_frames = TRACEBACK_BUILD_FRAMES.load(AtomicOrdering::Relaxed);
+        let tb_suppressed = TRACEBACK_SUPPRESS_COUNT.load(AtomicOrdering::Relaxed);
         let async_polls = ASYNC_POLL_COUNT.load(AtomicOrdering::Relaxed);
         let async_pending = ASYNC_PENDING_COUNT.load(AtomicOrdering::Relaxed);
         let async_wakeups = ASYNC_WAKEUP_COUNT.load(AtomicOrdering::Relaxed);
         let async_sleep_reg = ASYNC_SLEEP_REGISTER_COUNT.load(AtomicOrdering::Relaxed);
         eprintln!(
-        "molt_profile call_dispatch={} string_count_cache_hit={} string_count_cache_miss={} struct_field_store={} attr_lookup={} handle_resolve={} layout_guard={} layout_guard_fail={} alloc_count={} async_polls={} async_pending={} async_wakeups={} async_sleep_register={}",
+        "molt_profile call_dispatch={} string_count_cache_hit={} string_count_cache_miss={} struct_field_store={} attr_lookup={} handle_resolve={} layout_guard={} layout_guard_fail={} alloc_count={} alloc_object={} alloc_exception={} alloc_dict={} alloc_tuple={} alloc_string={} alloc_callargs={} tb_builds={} tb_frames={} tb_suppressed={} async_polls={} async_pending={} async_wakeups={} async_sleep_register={}",
         call_dispatch,
         cache_hit,
         cache_miss,
@@ -3331,6 +3341,15 @@ pub extern "C" fn molt_profile_dump() {
         layout_guard,
         layout_guard_fail,
         allocs,
+        alloc_objects,
+        alloc_exceptions,
+        alloc_dicts,
+        alloc_tuples,
+        alloc_strings,
+        alloc_callargs,
+        tb_builds,
+        tb_frames,
+        tb_suppressed,
         async_polls,
         async_pending,
         async_wakeups,
@@ -6562,6 +6581,11 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
 
 #[no_mangle]
 pub extern "C" fn molt_object_init(_self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::none().bits() })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_object_init_subclass(_cls_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, { MoltObject::none().bits() })
 }
 
@@ -10288,6 +10312,39 @@ pub extern "C" fn molt_string_upper(hay_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_string_isidentifier(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let hay = obj_from_bits(hay_bits);
+        let Some(hay_ptr) = hay.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(hay_ptr) != TYPE_ID_STRING {
+                return MoltObject::none().bits();
+            }
+            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
+                return MoltObject::from_bool(false).bits();
+            };
+            let mut chars = hay_str.chars();
+            let Some(first) = chars.next() else {
+                return MoltObject::from_bool(false).bits();
+            };
+            if !(first == '_' || is_xid_start(first)) {
+                return MoltObject::from_bool(false).bits();
+            }
+            for ch in chars {
+                if ch == '_' || is_xid_continue(ch) {
+                    continue;
+                }
+                return MoltObject::from_bool(false).bits();
+            }
+            MoltObject::from_bool(true).bits()
         }
     })
 }
@@ -19584,7 +19641,9 @@ pub(crate) fn type_name(_py: &PyToken<'_>, obj: MoltObject) -> Cow<'static, str>
                 TYPE_ID_FILE_HANDLE => {
                     Cow::Owned(class_name_for_error(type_of_bits(_py, obj.bits())))
                 }
-                TYPE_ID_FUNCTION => Cow::Borrowed("function"),
+                TYPE_ID_FUNCTION => {
+                    Cow::Owned(class_name_for_error(type_of_bits(_py, obj.bits())))
+                }
                 TYPE_ID_BOUND_METHOD => Cow::Borrowed("method"),
                 TYPE_ID_CODE => Cow::Borrowed("code"),
                 TYPE_ID_MODULE => Cow::Borrowed("module"),

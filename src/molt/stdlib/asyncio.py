@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator
+from dataclasses import dataclass
 import builtins as _builtins
 from collections import deque as _deque
 import heapq as _heapq
 import inspect as _inspect
+import logging as _logging
 import os as _os
 import sys as _sys
 import time as _time
+import traceback as _traceback
 import errno as _errno
 import socket as _socket
 import types as _types
@@ -18,13 +21,17 @@ import contextvars as _contextvars
 
 from molt.concurrency import CancellationToken, spawn
 
+_VERSION_INFO = getattr(_sys, "version_info", (3, 14, 0, "final", 0))
 _IS_WINDOWS = _os.name == "nt"
-_EXPOSE_EVENT_LOOP = _IS_WINDOWS
+_EXPOSE_EVENT_LOOP = _VERSION_INFO >= (3, 13)
 _EXPOSE_WINDOWS_POLICIES = _IS_WINDOWS
-_EXPOSE_QUEUE_SHUTDOWN = False
+_EXPOSE_QUEUE_SHUTDOWN = _VERSION_INFO >= (3, 13)
+_EXPOSE_GRAPH = _VERSION_INFO >= (3, 14)
 
 _BASE_ALL = [
+    "AbstractEventLoop",
     "AbstractEventLoopPolicy",
+    "AbstractServer",
     "BaseEventLoop",
     "CancelledError",
     "Condition",
@@ -71,7 +78,6 @@ _BASE_ALL = [
     "get_event_loop",
     "get_event_loop_policy",
     "get_running_loop",
-    "get_child_watcher",
     "isfuture",
     "iscoroutine",
     "iscoroutinefunction",
@@ -84,7 +90,6 @@ _BASE_ALL = [
     "start_unix_server",
     "set_event_loop_policy",
     "set_event_loop",
-    "set_child_watcher",
     "shield",
     "sleep",
     "subprocess",
@@ -101,6 +106,16 @@ if _EXPOSE_EVENT_LOOP:
     __all__.append("EventLoop")
 if _EXPOSE_QUEUE_SHUTDOWN:
     __all__.append("QueueShutDown")
+if _EXPOSE_GRAPH:
+    __all__.extend(
+        [
+            "capture_call_graph",
+            "format_call_graph",
+            "print_call_graph",
+            "future_add_to_awaited_by",
+            "future_discard_from_awaited_by",
+        ]
+    )
 if _EXPOSE_WINDOWS_POLICIES:
     __all__.extend(
         [
@@ -113,98 +128,47 @@ if _EXPOSE_WINDOWS_POLICIES:
 if TYPE_CHECKING:
 
     def molt_async_sleep(_delay: float = 0.0, _result: Any | None = None) -> Any:
-        pass
+        raise NotImplementedError
 
     def molt_block_on(awaitable: Any) -> Any:
-        pass
+        raise NotImplementedError
 
     def molt_asyncgen_shutdown() -> None:
-        pass
+        raise NotImplementedError
 
     def molt_cancel_token_set_current(_token_id: int) -> int:
-        pass
-
-    def molt_cancel_token_get_current() -> int:
-        pass
-
-    def molt_task_register_token_owned(_task: Any, _token_id: int) -> None:
-        pass
-
-    def molt_future_cancel(_future: Any) -> None:
-        pass
-
-    def molt_future_cancel_msg(_future: Any, _msg: Any) -> None:
-        pass
-
-    def molt_future_cancel_clear(_future: Any) -> None:
-        pass
+        raise NotImplementedError
 
     def molt_promise_new() -> Any:
-        pass
+        raise NotImplementedError
 
-    def molt_promise_set_result(_future: Any, _result: Any) -> None:
-        pass
+    def molt_promise_set_exception(_promise: Any, _exc: Any) -> None:
+        raise NotImplementedError
 
-    def molt_promise_set_exception(_future: Any, _exc: Any) -> None:
-        pass
+    def molt_promise_set_result(_promise: Any, _value: Any) -> None:
+        raise NotImplementedError
 
-    def molt_thread_submit(_callable: Any, _args: Any, _kwargs: Any) -> Any:
-        pass
+    def molt_cancel_token_get_current() -> int:
+        raise NotImplementedError
 
-    def molt_io_wait_new(_sock: Any, _events: int, _timeout: float | None) -> Any:
-        pass
+    def molt_task_register_token_owned(_task: Any, _token_id: int) -> None:
+        raise NotImplementedError
 
-    def molt_process_spawn(
-        _args: Any,
-        _env: Any,
-        _cwd: Any,
-        _stdin: Any,
-        _stdout: Any,
-        _stderr: Any,
-    ) -> Any:
-        pass
+    def molt_future_cancel(_future: Any) -> None:
+        raise NotImplementedError
 
-    def molt_process_wait_future(_proc: Any) -> Any:
-        pass
+    def molt_thread_submit(_func: Any, _args: Any, _kwargs: Any) -> Any:
+        raise NotImplementedError
 
-    def molt_process_pid(_proc: Any) -> int:
-        pass
 
-    def molt_process_returncode(_proc: Any) -> int | None:
-        pass
-
-    def molt_process_kill(_proc: Any) -> None:
-        pass
-
-    def molt_process_terminate(_proc: Any) -> None:
-        pass
-
-    def molt_process_stdin(_proc: Any) -> Any:
-        pass
-
-    def molt_process_stdout(_proc: Any) -> Any:
-        pass
-
-    def molt_process_stderr(_proc: Any) -> Any:
-        pass
-
-    def molt_process_drop(_proc: Any) -> None:
-        pass
-
-    def molt_stream_new(_capacity: int) -> Any:
-        pass
-
-    def molt_stream_recv(_handle: Any) -> Any:
-        pass
-
-    def molt_stream_send_obj(_handle: Any, _data: Any) -> int:
-        pass
-
-    def molt_stream_close(_handle: Any) -> None:
-        pass
-
-    def molt_stream_drop(_handle: Any) -> None:
-        pass
+def _mark_builtin(fn: Any) -> None:
+    func = _molt_function_set_builtin
+    if func is None:
+        return None
+    try:
+        func(fn)
+    except Exception:
+        return None
 
 
 _builtin_cancelled = getattr(_builtins, "CancelledError", None)
@@ -283,6 +247,8 @@ class Future:
         self._cancel_message: Any | None = None
         self._molt_event_owner: Event | None = None
         self._molt_event_token_id: int | None = None
+        if _EXPOSE_GRAPH:
+            self._asyncio_awaited_by: set["Future"] | None = None
         self._callbacks: list[tuple[Callable[["Future"], Any], Any | None]] = []
         self._molt_promise: Any | None = None
         try:
@@ -413,13 +379,25 @@ class Future:
         return self.result()
 
     def __await__(self) -> Any:
-        if self._molt_promise is not None:
-            if _DEBUG_ASYNCIO_PROMISE:
-                _debug_write("asyncio_promise_await")
-            return self._molt_promise
-        if _DEBUG_ASYNCIO_PROMISE:
-            _debug_write("asyncio_promise_fallback_wait")
-        return self._wait()
+        async def _wrapped() -> Any:
+            waiter = None
+            if _EXPOSE_GRAPH:
+                waiter = _TASKS.get(_current_token_id())
+                if isinstance(waiter, Future):
+                    future_add_to_awaited_by(self, waiter)
+            try:
+                if self._molt_promise is not None:
+                    if _DEBUG_ASYNCIO_PROMISE:
+                        _debug_write("asyncio_promise_await")
+                    return await self._molt_promise
+                if _DEBUG_ASYNCIO_PROMISE:
+                    _debug_write("asyncio_promise_fallback_wait")
+                return await self._wait()
+            finally:
+                if _EXPOSE_GRAPH and isinstance(waiter, Future):
+                    future_discard_from_awaited_by(self, waiter)
+
+        return _wrapped().__await__()
 
     def __repr__(self) -> str:
         if self._cancelled:
@@ -429,6 +407,19 @@ class Future:
         else:
             state = "pending"
         return f"<Future {state}>"
+
+
+def future_add_to_awaited_by(fut: Any, waiter: Any) -> None:
+    if isinstance(fut, Future) and isinstance(waiter, Future):
+        if fut._asyncio_awaited_by is None:
+            fut._asyncio_awaited_by = set()
+        fut._asyncio_awaited_by.add(waiter)
+
+
+def future_discard_from_awaited_by(fut: Any, waiter: Any) -> None:
+    if isinstance(fut, Future) and isinstance(waiter, Future):
+        if fut._asyncio_awaited_by is not None:
+            fut._asyncio_awaited_by.discard(waiter)
 
 
 _TASKS: dict[int, "Task"] = {}
@@ -515,6 +506,10 @@ def _load_intrinsic(name: str) -> Any | None:
 
 
 _molt_io_wait_new = _load_intrinsic("_molt_io_wait_new")
+_molt_module_new = _load_intrinsic("_molt_module_new")
+_molt_function_set_builtin: Callable[[Any], Any] | None = _load_intrinsic(
+    "_molt_function_set_builtin"
+)
 _molt_future_cancel_msg: Callable[[Any, Any], None] | None = _load_intrinsic(
     "molt_future_cancel_msg"
 )
@@ -877,6 +872,30 @@ class Task(Future):
         else:
             state = "pending"
         return f"<Task {self._name} {state}>"
+
+    def __await__(self) -> Any:
+        if self._done:
+            return self._wait().__await__()
+        waiter = Future()
+
+        def _transfer(done: Future) -> None:
+            if waiter.done():
+                return
+            try:
+                if hasattr(done, "cancelled") and done.cancelled():
+                    waiter.cancel()
+                    return
+                exc = done.exception()
+                if exc is not None:
+                    waiter.set_exception(exc)
+                    return
+                waiter.set_result(done.result())
+            except BaseException as exc:
+                if not waiter.done():
+                    waiter.set_exception(exc)
+
+        self.add_done_callback(lambda _fut: _transfer(_fut))
+        return waiter.__await__()
 
 
 class Event:
@@ -1383,7 +1402,33 @@ class StreamWriter:
         return None
 
 
-class Server:
+class AbstractServer:
+    def close(self) -> None:
+        raise NotImplementedError
+
+    async def wait_closed(self) -> None:
+        raise NotImplementedError
+
+    def is_serving(self) -> bool:
+        raise NotImplementedError
+
+    async def start_serving(self) -> None:
+        raise NotImplementedError
+
+    async def serve_forever(self) -> None:
+        raise NotImplementedError
+
+    def get_loop(self) -> "EventLoop":
+        raise NotImplementedError
+
+    def close_clients(self) -> None:
+        raise NotImplementedError
+
+    def abort_clients(self) -> None:
+        raise NotImplementedError
+
+
+class Server(AbstractServer):
     def __init__(self, sock: _socket.socket, callback: Any) -> None:
         self._sock = sock
         self._callback = callback
@@ -1726,7 +1771,232 @@ class TimerHandle(Handle):
                 pass
 
 
-class _EventLoop:
+class AbstractEventLoop:
+    def run_forever(self) -> None:
+        raise NotImplementedError
+
+    def run_until_complete(self, future: Any) -> Any:
+        raise NotImplementedError
+
+    def stop(self) -> None:
+        raise NotImplementedError
+
+    def is_running(self) -> bool:
+        raise NotImplementedError
+
+    def is_closed(self) -> bool:
+        raise NotImplementedError
+
+    def close(self) -> None:
+        raise NotImplementedError
+
+    async def shutdown_asyncgens(self) -> None:
+        raise NotImplementedError
+
+    async def shutdown_default_executor(self) -> None:
+        raise NotImplementedError
+
+    def create_task(
+        self, coro: Any, *, name: str | None = None, context: Any | None = None
+    ) -> Task:
+        raise NotImplementedError
+
+    def set_task_factory(self, factory: Callable[..., Task] | None) -> None:
+        raise NotImplementedError
+
+    def get_task_factory(self) -> Callable[..., Task] | None:
+        raise NotImplementedError
+
+    def create_future(self) -> Future:
+        raise NotImplementedError
+
+    def call_soon(
+        self, callback: Callable[..., Any], /, *args: Any, context: Any | None = None
+    ) -> Handle:
+        raise NotImplementedError
+
+    def call_soon_threadsafe(
+        self, callback: Callable[..., Any], /, *args: Any, context: Any | None = None
+    ) -> Handle:
+        raise NotImplementedError
+
+    def call_later(
+        self,
+        delay: float,
+        callback: Callable[..., Any],
+        /,
+        *args: Any,
+        context: Any | None = None,
+    ) -> TimerHandle:
+        raise NotImplementedError
+
+    def call_at(
+        self,
+        when: float,
+        callback: Callable[..., Any],
+        /,
+        *args: Any,
+        context: Any | None = None,
+    ) -> TimerHandle:
+        raise NotImplementedError
+
+    def time(self) -> float:
+        raise NotImplementedError
+
+    def call_exception_handler(self, context: dict[str, Any]) -> None:
+        raise NotImplementedError
+
+    def default_exception_handler(self, context: dict[str, Any]) -> None:
+        raise NotImplementedError
+
+    def set_exception_handler(
+        self, handler: Callable[["AbstractEventLoop", dict[str, Any]], Any] | None
+    ) -> None:
+        raise NotImplementedError
+
+    def get_exception_handler(
+        self,
+    ) -> Callable[["AbstractEventLoop", dict[str, Any]], Any] | None:
+        raise NotImplementedError
+
+    def get_debug(self) -> bool:
+        raise NotImplementedError
+
+    def set_debug(self, enabled: bool) -> None:
+        raise NotImplementedError
+
+    def add_signal_handler(
+        self, sig: int, callback: Callable[..., Any], /, *args: Any
+    ) -> None:
+        raise NotImplementedError
+
+    def remove_signal_handler(self, sig: int) -> bool:
+        raise NotImplementedError
+
+    def add_reader(self, fd: int, callback: Callable[..., Any], /, *args: Any) -> None:
+        raise NotImplementedError
+
+    def remove_reader(self, fd: int) -> bool:
+        raise NotImplementedError
+
+    def add_writer(self, fd: int, callback: Callable[..., Any], /, *args: Any) -> None:
+        raise NotImplementedError
+
+    def remove_writer(self, fd: int) -> bool:
+        raise NotImplementedError
+
+    async def create_connection(
+        self,
+        protocol_factory: Callable[[], Protocol] | None,
+        host: str | None = None,
+        port: int | None = None,
+        /,
+        **kwargs: Any,
+    ) -> tuple[Transport, Protocol]:
+        raise NotImplementedError
+
+    async def create_server(
+        self,
+        protocol_factory: Callable[[], Protocol],
+        host: str | None = None,
+        port: int | None = None,
+        /,
+        **kwargs: Any,
+    ) -> AbstractServer:
+        raise NotImplementedError
+
+    async def create_datagram_endpoint(
+        self,
+        protocol_factory: Callable[[], DatagramProtocol],
+        local_addr: Any | None = None,
+        remote_addr: Any | None = None,
+        /,
+        **kwargs: Any,
+    ) -> tuple[DatagramTransport, DatagramProtocol]:
+        raise NotImplementedError
+
+    async def connect_accepted_socket(
+        self,
+        protocol_factory: Callable[[], Protocol],
+        sock: _socket.socket,
+        /,
+        **kwargs,
+    ) -> tuple[Transport, Protocol]:
+        raise NotImplementedError
+
+    async def create_unix_connection(
+        self,
+        protocol_factory: Callable[[], Protocol],
+        path: str | None = None,
+        /,
+        **kwargs: Any,
+    ) -> tuple[Transport, Protocol]:
+        raise NotImplementedError
+
+    async def create_unix_server(
+        self,
+        protocol_factory: Callable[[], Protocol],
+        path: str | None = None,
+        /,
+        **kwargs: Any,
+    ) -> AbstractServer:
+        raise NotImplementedError
+
+    async def create_subprocess_shell(self, protocol_factory: Any, cmd: Any, **kwargs):
+        raise NotImplementedError
+
+    async def create_subprocess_exec(self, protocol_factory: Any, *args: Any, **kwargs):
+        raise NotImplementedError
+
+    async def start_tls(
+        self, transport: Transport, protocol: Protocol, sslcontext: Any
+    ):
+        raise NotImplementedError
+
+    async def sendfile(self, transport: Transport, file: Any, **kwargs: Any) -> Any:
+        raise NotImplementedError
+
+    def set_default_executor(self, executor: Any) -> None:
+        raise NotImplementedError
+
+    def run_in_executor(self, executor: Any, func: Any, *args: Any) -> Future:
+        raise NotImplementedError
+
+    async def getaddrinfo(self, host: Any, port: Any, **kwargs: Any) -> Any:
+        raise NotImplementedError
+
+    async def getnameinfo(self, sockaddr: Any, flags: int) -> Any:
+        raise NotImplementedError
+
+    async def sock_recv(self, sock: Any, n: int) -> bytes:
+        raise NotImplementedError
+
+    async def sock_recv_into(self, sock: Any, buf: Any) -> int:
+        raise NotImplementedError
+
+    async def sock_recvfrom(self, sock: Any, bufsize: int) -> tuple[Any, Any]:
+        raise NotImplementedError
+
+    async def sock_recvfrom_into(self, sock: Any, buf: Any) -> tuple[int, Any]:
+        raise NotImplementedError
+
+    async def sock_sendall(self, sock: Any, data: bytes) -> None:
+        raise NotImplementedError
+
+    async def sock_sendto(self, sock: Any, data: bytes, addr: Any) -> int:
+        raise NotImplementedError
+
+    async def sock_connect(self, sock: Any, address: Any) -> None:
+        raise NotImplementedError
+
+    async def sock_accept(self, sock: Any) -> tuple[Any, Any]:
+        raise NotImplementedError
+
+    async def sock_sendfile(self, sock: Any, file: Any, offset: int = 0, count=None):
+        raise NotImplementedError
+
+
+class _EventLoop(AbstractEventLoop):
     def __init__(self, selector: Any | None = None) -> None:
         self._readers: dict[int, tuple[Any, tuple[Any, ...], Task]] = {}
         self._writers: dict[int, tuple[Any, tuple[Any, ...], Task]] = {}
@@ -1749,9 +2019,22 @@ class _EventLoop:
     def create_task(
         self, coro: Any, *, name: str | None = None, context: Any | None = None
     ) -> Task:
-        if self._task_factory is not None:
-            return self._task_factory(self, coro, name=name, context=context)
-        return Task(coro, loop=self, name=name, context=context)
+        if self._task_factory is None:
+            return Task(coro, loop=self, name=name, context=context)
+        if context is None:
+            task = self._task_factory(self, coro)
+        else:
+            task = self._task_factory(self, coro, context=context)
+        if name is not None:
+            try:
+                setter = getattr(task, "set_name", None)
+                if callable(setter):
+                    setter(name)
+                else:
+                    setattr(task, "_name", name)
+            except Exception:
+                pass
+        return task
 
     def _ensure_ready_runner(self) -> None:
         if self._ready_task is not None and not self._ready_task.done():
@@ -1904,11 +2187,8 @@ class _EventLoop:
         if executor is not None:
             # TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:missing): support custom executors in asyncio run_in_executor.
             raise NotImplementedError("custom executors not supported")
-        if _molt_thread_submit is None:
-            # TODO(runtime, owner:runtime, milestone:RT2, priority:P0, status:missing): wire thread_submit intrinsic for asyncio run_in_executor.
-            raise NotImplementedError("thread submit unavailable")
-        future = _molt_thread_submit(func, args, {})
-        return ensure_future(future)
+        future = molt_thread_submit(func, args, {})
+        return future
 
     def add_reader(self, fd: Any, callback: Any, *args: Any) -> None:
         if _molt_io_wait_new is None:
@@ -2074,7 +2354,7 @@ class _EventLoop:
             pass
         return True
 
-    def run_until_complete(self, awaitable: Any) -> Any:
+    def run_until_complete(self, future: Any) -> Any:
         if self._closed:
             raise RuntimeError("Event loop is closed")
         if self._running:
@@ -2088,8 +2368,8 @@ class _EventLoop:
             self._ensure_ready_runner()
         result: Any = None
         try:
-            if isinstance(awaitable, Future):
-                fut = awaitable
+            if isinstance(future, Future):
+                fut = future
                 if isinstance(fut, Task) and not getattr(fut, "_runner_spawned", True):
                     prev_token_id = _swap_current_token(fut._token)
                     try:
@@ -2108,7 +2388,7 @@ class _EventLoop:
                 else:
                     result = molt_block_on(fut._wait())
             else:
-                fut = Task(awaitable, loop=self, _spawn_runner=False)
+                fut = Task(future, loop=self, _spawn_runner=False)
                 prev_token_id = _swap_current_token(fut._token)
                 try:
                     runner = fut._runner()
@@ -2144,17 +2424,15 @@ class _ProactorEventLoop(_EventLoop):
 
 
 class AbstractEventLoopPolicy:
-    # TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:missing): define full AbstractEventLoopPolicy API surface.
+    """Base class for event loop policies."""
+
     def get_event_loop(self) -> EventLoop:
-        # TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:missing): implement AbstractEventLoopPolicy.get_event_loop.
         raise NotImplementedError("get_event_loop not implemented")
 
     def set_event_loop(self, loop: EventLoop | None) -> None:
-        # TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:missing): implement AbstractEventLoopPolicy.set_event_loop.
         raise NotImplementedError("set_event_loop not implemented")
 
     def new_event_loop(self) -> EventLoop:
-        # TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:missing): implement AbstractEventLoopPolicy.new_event_loop.
         raise NotImplementedError("new_event_loop not implemented")
 
 
@@ -2227,35 +2505,12 @@ class SubprocessTransport(Transport):
     pass
 
 
-class AbstractChildWatcher:
-    pass
-
-
-class FastChildWatcher(AbstractChildWatcher):
-    pass
-
-
-class SafeChildWatcher(AbstractChildWatcher):
-    pass
-
-
-class ThreadedChildWatcher(AbstractChildWatcher):
-    pass
-
-
-class PidfdChildWatcher(AbstractChildWatcher):
-    pass
-
-
 _EVENT_LOOP_POLICY: AbstractEventLoopPolicy = DefaultEventLoopPolicy()
 _EVENT_LOOP: EventLoop | None = None
 _RUNNING_LOOP: EventLoop | None = None
-_CHILD_WATCHER: AbstractChildWatcher | None = None
 
 
-def _get_running_loop() -> EventLoop:
-    if _RUNNING_LOOP is None:
-        raise RuntimeError("no running event loop")
+def _get_running_loop() -> EventLoop | None:
     return _RUNNING_LOOP
 
 
@@ -2265,7 +2520,10 @@ def _set_running_loop(loop: EventLoop | None) -> None:
 
 
 def get_running_loop() -> EventLoop:
-    return _get_running_loop()
+    loop = _get_running_loop()
+    if loop is None:
+        raise RuntimeError("no running event loop")
+    return loop
 
 
 def get_event_loop_policy() -> AbstractEventLoopPolicy:
@@ -2289,28 +2547,6 @@ def set_event_loop(loop: EventLoop | None) -> None:
 
 def new_event_loop() -> EventLoop:
     return _EVENT_LOOP_POLICY.new_event_loop()
-
-
-def get_child_watcher() -> AbstractChildWatcher:
-    global _CHILD_WATCHER
-    if _IS_WINDOWS:
-        raise RuntimeError("child watchers are not supported on Windows")
-    if _CHILD_WATCHER is None:
-        _CHILD_WATCHER = SafeChildWatcher()
-    return _CHILD_WATCHER
-
-
-def set_child_watcher(watcher: AbstractChildWatcher | None) -> None:
-    global _CHILD_WATCHER
-    if _IS_WINDOWS:
-        if watcher is not None:
-            raise RuntimeError("child watchers are not supported on Windows")
-        _CHILD_WATCHER = None
-        return
-    if watcher is None:
-        _CHILD_WATCHER = SafeChildWatcher()
-    else:
-        _CHILD_WATCHER = watcher
 
 
 def _cancel_all_tasks(loop: EventLoop) -> None:
@@ -2713,6 +2949,8 @@ def wrap_future(fut: Any, *, loop: EventLoop | None = None) -> Future:
 
 
 def current_task(loop: EventLoop | None = None) -> Task | None:
+    if loop is None:
+        loop = get_running_loop()
     task = _TASKS.get(_current_token_id())
     if (
         loop is not None
@@ -2728,8 +2966,182 @@ def all_tasks(loop: EventLoop | None = None) -> set[Task]:
         task for task in _TASKS.values() if isinstance(task, Task) and not task.done()
     }
     if loop is None:
-        return tasks
+        loop = get_running_loop()
     return {task for task in tasks if getattr(task, "_loop", None) is loop}
+
+
+@dataclass(frozen=True, slots=True)
+class FrameCallGraphEntry:
+    frame: _types.FrameType
+
+
+@dataclass(frozen=True, slots=True)
+class FutureCallGraph:
+    future: Future
+    call_stack: tuple[FrameCallGraphEntry, ...]
+    awaited_by: tuple["FutureCallGraph", ...]
+
+
+def _build_graph_for_future(
+    future: Future,
+    *,
+    limit: int | None = None,
+) -> FutureCallGraph:
+    if not isinstance(future, Future):
+        raise TypeError(
+            f"{future!r} object does not appear to be compatible with asyncio.Future"
+        )
+    coro = None
+    get_coro = getattr(future, "get_coro", None)
+    if get_coro is not None and limit != 0:
+        coro = get_coro()
+    stack: list[FrameCallGraphEntry] = []
+    awaited_by: list[FutureCallGraph] = []
+    while coro is not None:
+        if hasattr(coro, "cr_await"):
+            stack.append(FrameCallGraphEntry(coro.cr_frame))
+            coro = coro.cr_await
+        elif hasattr(coro, "ag_await"):
+            stack.append(FrameCallGraphEntry(coro.ag_frame))
+            coro = coro.ag_await
+        else:
+            break
+    if future._asyncio_awaited_by:
+        for parent in future._asyncio_awaited_by:
+            awaited_by.append(_build_graph_for_future(parent, limit=limit))
+    if limit is not None:
+        if limit > 0:
+            stack = stack[:limit]
+        elif limit < 0:
+            stack = stack[limit:]
+    stack.reverse()
+    return FutureCallGraph(future, tuple(stack), tuple(awaited_by))
+
+
+def capture_call_graph(
+    future: Future | None = None,
+    /,
+    *,
+    depth: int = 1,
+    limit: int | None = None,
+) -> FutureCallGraph | None:
+    loop = _get_running_loop()
+    if future is not None:
+        if loop is None or future is not current_task(loop=loop):
+            return _build_graph_for_future(future, limit=limit)
+    else:
+        if loop is None:
+            raise RuntimeError(
+                "capture_call_graph() is called outside of a running event loop "
+                "and no *future* to introspect was provided"
+            )
+        future = current_task(loop=loop)
+    if future is None:
+        return None
+    if not isinstance(future, Future):
+        raise TypeError(
+            f"{future!r} object does not appear to be compatible with asyncio.Future"
+        )
+    call_stack: list[FrameCallGraphEntry] = []
+    if limit == 0:
+        frame = None
+    else:
+        frame = getattr(_sys, "_getframe", lambda _d: None)(depth)
+    try:
+        while frame is not None:
+            gen = getattr(frame, "f_generator", None)
+            is_async = gen is not None
+            call_stack.append(FrameCallGraphEntry(frame))
+            if is_async:
+                back = frame.f_back
+                if back is not None and getattr(back, "f_generator", None) is None:
+                    break
+            frame = frame.f_back
+    finally:
+        frame = None
+    awaited_by = []
+    if future._asyncio_awaited_by:
+        for parent in future._asyncio_awaited_by:
+            awaited_by.append(_build_graph_for_future(parent, limit=limit))
+    if limit is not None:
+        trim = limit * -1
+        if trim > 0:
+            call_stack = call_stack[:trim]
+        elif trim < 0:
+            call_stack = call_stack[trim:]
+    return FutureCallGraph(future, tuple(call_stack), tuple(awaited_by))
+
+
+def format_call_graph(
+    future: Future | None = None,
+    /,
+    *,
+    depth: int = 1,
+    limit: int | None = None,
+) -> str:
+    def render_level(st: FutureCallGraph, buf: list[str], level: int) -> None:
+        def add_line(line: str) -> None:
+            buf.append(level * "    " + line)
+
+        if isinstance(st.future, Task):
+            add_line(f"* Task(name={st.future.get_name()!r}, id={id(st.future):#x})")
+        else:
+            add_line(f"* Future(id={id(st.future):#x})")
+        if st.call_stack:
+            add_line("  + Call stack:")
+            for ste in st.call_stack:
+                frame = ste.frame
+                gen = getattr(frame, "f_generator", None)
+                if gen is None:
+                    add_line(
+                        f"  |   File {frame.f_code.co_filename!r},"
+                        f" line {frame.f_lineno}, in"
+                        f" {frame.f_code.co_qualname}()"
+                    )
+                else:
+                    try:
+                        frame = gen.cr_frame
+                        code = gen.cr_code
+                        tag = "async"
+                    except AttributeError:
+                        try:
+                            frame = gen.ag_frame
+                            code = gen.ag_code
+                            tag = "async generator"
+                        except AttributeError:
+                            frame = gen.gi_frame
+                            code = gen.gi_code
+                            tag = "generator"
+                    add_line(
+                        f"  |   File {frame.f_code.co_filename!r},"
+                        f" line {frame.f_lineno}, in"
+                        f" {tag} {code.co_qualname}()"
+                    )
+        if st.awaited_by:
+            add_line("  + Awaited by:")
+            for fut in st.awaited_by:
+                render_level(fut, buf, level + 1)
+
+    graph = capture_call_graph(future, depth=depth + 1, limit=limit)
+    if graph is None:
+        return ""
+    buf: list[str] = []
+    try:
+        render_level(graph, buf, 0)
+    finally:
+        graph = None
+    return "\n".join(buf)
+
+
+def print_call_graph(
+    future: Future | None = None,
+    /,
+    *,
+    file: Any | None = None,
+    depth: int = 1,
+    limit: int | None = None,
+) -> None:
+    print(format_call_graph(future, depth=depth, limit=limit), file=file)
 
 
 async def wait(
@@ -2768,6 +3180,8 @@ async def wait(
 
     timeout_val = float(timeout)
     if timeout_val <= 0.0:
+        if pending:
+            await sleep(0.0)
         update_done()
         return done, pending
 
@@ -3021,16 +3435,18 @@ class Queue:
     async def join(self) -> None:
         await self._finished.wait()
 
-    def shutdown(self) -> None:
-        self._shutdown = True
-        while self._getters:
-            getter = self._getters.popleft()
-            if not getter.done():
-                getter.set_exception(_QueueShutDown())
-        while self._putters:
-            putter = self._putters.popleft()
-            if not putter.done():
-                putter.set_exception(_QueueShutDown())
+    if _EXPOSE_QUEUE_SHUTDOWN:
+
+        def shutdown(self) -> None:
+            self._shutdown = True
+            while self._getters:
+                getter = self._getters.popleft()
+                if not getter.done():
+                    getter.set_exception(_QueueShutDown())
+            while self._putters:
+                putter = self._putters.popleft()
+                if not putter.done():
+                    putter.set_exception(_QueueShutDown())
 
 
 class PriorityQueue(Queue):
@@ -3056,15 +3472,73 @@ class LifoQueue(Queue):
 
 
 def _module(name: str, attrs: dict[str, Any]) -> _types.ModuleType:
-    mod = _types.ModuleType(name)
-    mod.__dict__.update(attrs)
+    if callable(_molt_module_new):
+        mod = _molt_module_new(name)  # type: ignore[misc]
+    else:
+        mod = _types.ModuleType(name)
+    mod_dict = getattr(mod, "__dict__", None)
+    if isinstance(mod_dict, dict):
+        mod_dict.update(attrs)
+    else:
+        for key, val in attrs.items():
+            try:
+                setattr(mod, key, val)
+            except Exception:
+                pass
+    try:
+        mod.__name__ = name
+        mod.__package__ = name.rpartition(".")[0]
+    except Exception:
+        pass
+    try:
+        _sys.modules[name] = mod
+    except Exception:
+        pass
     return mod
+
+
+def _format_callback_source(
+    callback: Any, args: tuple[Any, ...], *, debug: bool = False
+) -> str:
+    name = getattr(callback, "__qualname__", None) or getattr(
+        callback, "__name__", None
+    )
+    if name is None:
+        name = repr(callback)
+    if args:
+        args_repr = ", ".join(repr(arg) for arg in args)
+        return f"{name}({args_repr})"
+    return f"{name}()"
+
+
+def _extract_stack(limit: int | None = None) -> list[Any]:
+    return _traceback.extract_stack(limit=limit)
+
+
+class FlowControlMixin:
+    def __init__(self) -> None:
+        self._paused = False
+
+    def pause_writing(self) -> None:
+        self._paused = True
+
+    def resume_writing(self) -> None:
+        self._paused = False
+
+
+_coroutine = getattr(_types, "coroutine", None)
+if _coroutine is None:
+
+    def _coroutine(func: Any) -> Any:
+        return func
 
 
 events = _module(
     "asyncio.events",
     {
+        "AbstractEventLoop": AbstractEventLoop,
         "AbstractEventLoopPolicy": AbstractEventLoopPolicy,
+        "AbstractServer": AbstractServer,
         "BaseEventLoop": BaseEventLoop,
         "DefaultEventLoopPolicy": DefaultEventLoopPolicy,
         "Handle": Handle,
@@ -3084,20 +3558,314 @@ base_events = _module(
     "asyncio.base_events",
     {
         "BaseEventLoop": BaseEventLoop,
+        "AbstractServer": AbstractServer,
         "SelectorEventLoop": SelectorEventLoop,
         "Handle": Handle,
         "TimerHandle": TimerHandle,
+        "Server": Server,
     },
 )
 
-futures = _module(
-    "asyncio.futures",
+constants = _module(
+    "asyncio.constants",
+    {
+        "LOG_THRESHOLD_FOR_CONNLOST_WRITES": 5,
+        "ACCEPT_RETRY_DELAY": 1,
+        "SLOW_CALLBACK_DURATION": 0.1,
+        "DEFAULT_LIMIT": 2**16,
+    },
+)
+
+coroutines = _module(
+    "asyncio.coroutines",
+    {
+        "iscoroutine": iscoroutine,
+        "iscoroutinefunction": iscoroutinefunction,
+        "coroutine": _coroutine,
+    },
+)
+
+exceptions = _module(
+    "asyncio.exceptions",
+    {
+        "CancelledError": CancelledError,
+        "InvalidStateError": InvalidStateError,
+        "TimeoutError": TimeoutError,
+        "SendfileNotAvailableError": SendfileNotAvailableError,
+        "IncompleteReadError": IncompleteReadError,
+        "LimitOverrunError": LimitOverrunError,
+        "QueueEmpty": QueueEmpty,
+        "QueueFull": QueueFull,
+        "BrokenBarrierError": BrokenBarrierError,
+    },
+)
+if _EXPOSE_QUEUE_SHUTDOWN:
+    try:
+        setattr(exceptions, "QueueShutDown", _QueueShutDown)
+    except Exception:
+        pass
+
+format_helpers = _module(
+    "asyncio.format_helpers",
+    {
+        "_format_callback_source": _format_callback_source,
+        "extract_stack": _extract_stack,
+    },
+)
+
+
+def _queues_attrs() -> dict[str, Any]:
+    attrs = {
+        "Queue": Queue,
+        "PriorityQueue": PriorityQueue,
+        "LifoQueue": LifoQueue,
+        "QueueEmpty": QueueEmpty,
+        "QueueFull": QueueFull,
+    }
+    if _EXPOSE_QUEUE_SHUTDOWN:
+        attrs["QueueShutDown"] = _QueueShutDown
+    return attrs
+
+
+def _make_log_module() -> _types.ModuleType:
+    class _NoopLogger:
+        # TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): replace no-op asyncio logger with full logging integration once logging shim lands.
+        def log(self, *args: Any, **kwargs: Any) -> None:
+            return None
+
+        def debug(self, *args: Any, **kwargs: Any) -> None:
+            return None
+
+        def info(self, *args: Any, **kwargs: Any) -> None:
+            return None
+
+        def warning(self, *args: Any, **kwargs: Any) -> None:
+            return None
+
+        def error(self, *args: Any, **kwargs: Any) -> None:
+            return None
+
+        def exception(self, *args: Any, **kwargs: Any) -> None:
+            return None
+
+        def critical(self, *args: Any, **kwargs: Any) -> None:
+            return None
+
+    try:
+        logger = _logging.getLogger("asyncio")
+    except Exception:
+        logger = _NoopLogger()
+    return _module(
+        "asyncio.log",
+        {
+            "logger": logger,
+        },
+    )
+
+
+def _make_mixins_module() -> _types.ModuleType:
+    return _module(
+        "asyncio.mixins",
+        {
+            "FlowControlMixin": FlowControlMixin,
+        },
+    )
+
+
+def _make_locks_module() -> _types.ModuleType:
+    return _module(
+        "asyncio.locks",
+        {
+            "Lock": Lock,
+            "Event": Event,
+            "Condition": Condition,
+            "Semaphore": Semaphore,
+            "BoundedSemaphore": BoundedSemaphore,
+            "Barrier": Barrier,
+            "BrokenBarrierError": BrokenBarrierError,
+        },
+    )
+
+
+def _make_queues_module() -> _types.ModuleType:
+    return _module("asyncio.queues", _queues_attrs())
+
+
+try:
+    log = _make_log_module()
+except Exception:
+    log = None
+try:
+    mixins = _make_mixins_module()
+except Exception:
+    mixins = None
+try:
+    locks = _make_locks_module()
+except Exception:
+    locks = None
+try:
+    queues = _make_queues_module()
+except Exception:
+    queues = None
+
+if log is None:
+    try:
+        del log
+    except Exception:
+        pass
+if mixins is None:
+    try:
+        del mixins
+    except Exception:
+        pass
+if locks is None:
+    try:
+        del locks
+    except Exception:
+        pass
+if queues is None:
+    try:
+        del queues
+    except Exception:
+        pass
+
+
+def __getattr__(name: str) -> Any:
+    if name == "log":
+        mod = _make_log_module()
+    elif name == "mixins":
+        mod = _make_mixins_module()
+    elif name == "locks":
+        mod = _make_locks_module()
+    elif name == "queues":
+        mod = _make_queues_module()
+    else:
+        raise AttributeError(f"module 'asyncio' has no attribute '{name}'")
+    globals()[name] = mod
+    return mod
+
+
+protocols = _module(
+    "asyncio.protocols",
+    {
+        "BaseProtocol": BaseProtocol,
+        "Protocol": Protocol,
+        "BufferedProtocol": BufferedProtocol,
+        "DatagramProtocol": DatagramProtocol,
+        "StreamReaderProtocol": StreamReaderProtocol,
+        "SubprocessProtocol": SubprocessProtocol,
+    },
+)
+
+transports = _module(
+    "asyncio.transports",
+    {
+        "Transport": Transport,
+        "DatagramTransport": DatagramTransport,
+        "SubprocessTransport": SubprocessTransport,
+    },
+)
+
+runners = _module(
+    "asyncio.runners",
+    {
+        "Runner": Runner,
+        "run": run,
+    },
+)
+
+taskgroups = _module(
+    "asyncio.taskgroups",
+    {
+        "TaskGroup": TaskGroup,
+    },
+)
+
+threads = _module(
+    "asyncio.threads",
+    {
+        "to_thread": to_thread,
+    },
+)
+
+timeouts = _module(
+    "asyncio.timeouts",
+    {
+        "timeout": timeout,
+        "timeout_at": timeout_at,
+        "TimeoutError": TimeoutError,
+    },
+)
+
+base_futures = _module(
+    "asyncio.base_futures",
     {
         "Future": Future,
         "CancelledError": CancelledError,
         "InvalidStateError": InvalidStateError,
     },
 )
+
+base_tasks = _module(
+    "asyncio.base_tasks",
+    {
+        "Task": Task,
+        "current_task": current_task,
+        "all_tasks": all_tasks,
+    },
+)
+
+base_subprocess = _module(
+    "asyncio.base_subprocess",
+    {
+        "Process": Process,
+    },
+)
+
+selector_events = _module(
+    "asyncio.selector_events",
+    {
+        "BaseSelectorEventLoop": SelectorEventLoop,
+        "SelectorEventLoop": SelectorEventLoop,
+        "DefaultEventLoopPolicy": DefaultEventLoopPolicy,
+    },
+)
+if _EXPOSE_EVENT_LOOP:
+    try:
+        setattr(selector_events, "EventLoop", SelectorEventLoop)
+    except Exception:
+        pass
+
+sslproto = _module("asyncio.sslproto", {})
+
+subprocess = _module(
+    "asyncio.subprocess",
+    {
+        "PIPE": _PROC_STDIO_PIPE,
+        "STDOUT": _SubprocessConstants.STDOUT,
+        "DEVNULL": _PROC_STDIO_DEVNULL,
+        "Process": Process,
+        "SubprocessProtocol": SubprocessProtocol,
+        "SubprocessTransport": SubprocessTransport,
+        "create_subprocess_exec": create_subprocess_exec,
+        "create_subprocess_shell": create_subprocess_shell,
+    },
+)
+
+_futures_attrs: dict[str, Any] = {
+    "Future": Future,
+    "CancelledError": CancelledError,
+    "InvalidStateError": InvalidStateError,
+    "wrap_future": wrap_future,
+}
+if _EXPOSE_GRAPH:
+    _futures_attrs.update(
+        {
+            "future_add_to_awaited_by": future_add_to_awaited_by,
+            "future_discard_from_awaited_by": future_discard_from_awaited_by,
+        }
+    )
+futures = _module("asyncio.futures", _futures_attrs)
 
 tasks = _module(
     "asyncio.tasks",
@@ -3106,10 +3874,13 @@ tasks = _module(
         "TaskGroup": TaskGroup,
         "all_tasks": all_tasks,
         "as_completed": as_completed,
+        "create_eager_task_factory": create_eager_task_factory,
         "create_task": create_task,
         "current_task": current_task,
+        "eager_task_factory": eager_task_factory,
         "ensure_future": ensure_future,
         "gather": gather,
+        "run_coroutine_threadsafe": run_coroutine_threadsafe,
         "shield": shield,
         "sleep": sleep,
         "wait": wait,
@@ -3131,25 +3902,79 @@ streams = _module(
 
 trsock = _module("asyncio.trsock", {})
 
-unix_events = _module(
-    "asyncio.unix_events",
-    {
-        "AbstractChildWatcher": AbstractChildWatcher,
-        "FastChildWatcher": FastChildWatcher,
-        "PidfdChildWatcher": PidfdChildWatcher,
-        "SafeChildWatcher": SafeChildWatcher,
-        "ThreadedChildWatcher": ThreadedChildWatcher,
-        "get_child_watcher": get_child_watcher,
-        "open_unix_connection": open_unix_connection,
-        "set_child_watcher": set_child_watcher,
-        "start_unix_server": start_unix_server,
-    },
-)
+if not _IS_WINDOWS:
+    unix_events = _module(
+        "asyncio.unix_events",
+        {
+            "SelectorEventLoop": SelectorEventLoop,
+        },
+    )
+    if _EXPOSE_EVENT_LOOP:
+        try:
+            setattr(unix_events, "EventLoop", SelectorEventLoop)
+        except Exception:
+            pass
+
+if _IS_WINDOWS:
+    windows_events = _module(
+        "asyncio.windows_events",
+        {
+            "SelectorEventLoop": SelectorEventLoop,
+            "ProactorEventLoop": _ProactorEventLoop,
+            "DefaultEventLoopPolicy": _WindowsProactorEventLoopPolicy,
+            "WindowsSelectorEventLoopPolicy": _WindowsSelectorEventLoopPolicy,
+            "WindowsProactorEventLoopPolicy": _WindowsProactorEventLoopPolicy,
+        },
+    )
+    if _EXPOSE_EVENT_LOOP:
+        try:
+            setattr(windows_events, "EventLoop", _ProactorEventLoop)
+        except Exception:
+            pass
+    windows_utils = _module("asyncio.windows_utils", {})
 
 staggered = _module("asyncio.staggered", {})
+
+if _EXPOSE_GRAPH:
+    graph = _module(
+        "asyncio.graph",
+        {
+            "capture_call_graph": capture_call_graph,
+            "format_call_graph": format_call_graph,
+            "print_call_graph": print_call_graph,
+            "FrameCallGraphEntry": FrameCallGraphEntry,
+            "FutureCallGraph": FutureCallGraph,
+        },
+    )
 
 if not _EXPOSE_EVENT_LOOP:
     try:
         del EventLoop
     except Exception:
         pass
+
+if not _EXPOSE_GRAPH:
+    for _name in (
+        "capture_call_graph",
+        "format_call_graph",
+        "print_call_graph",
+        "FrameCallGraphEntry",
+        "FutureCallGraph",
+        "future_add_to_awaited_by",
+        "future_discard_from_awaited_by",
+    ):
+        try:
+            del globals()[_name]
+        except Exception:
+            pass
+
+_builtin_targets = [
+    _get_running_loop,
+    _set_running_loop,
+    get_running_loop,
+    get_event_loop,
+]
+if _EXPOSE_GRAPH:
+    _builtin_targets.extend([future_add_to_awaited_by, future_discard_from_awaited_by])
+for _fn in _builtin_targets:
+    _mark_builtin(_fn)
