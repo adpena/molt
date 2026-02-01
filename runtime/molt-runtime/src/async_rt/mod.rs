@@ -1,7 +1,6 @@
 pub(crate) mod cancellation;
 pub(crate) mod channels;
 pub(crate) mod generators;
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod io_poller;
 pub(crate) mod poll;
 pub(crate) mod process;
@@ -39,19 +38,19 @@ pub(crate) use cancellation::{
 #[allow(unused_imports)]
 pub(crate) use scheduler::{
     async_trace_enabled, asyncgen_registry, await_waiter_clear, await_waiter_register,
-    await_waiters, await_waiters_take, block_on_wait_spec, current_task_key, current_task_ptr, fn_ptr_code_get,
-    fn_ptr_code_set, instant_from_monotonic_secs, molt_block_on, molt_spawn,
-    monotonic_now_nanos, monotonic_now_secs, record_async_poll,
-    task_exception_depths, task_exception_handler_stacks,
-    task_exception_stacks, task_last_exceptions, task_waiting_on, task_waiting_on_future,
-    wake_task_ptr, AsyncHangProbe, MoltScheduler, MoltTask, SleepQueue, CURRENT_TASK,
+    await_waiters, await_waiters_take, block_on_wait_spec, current_task_key, current_task_ptr,
+    fn_ptr_code_get, fn_ptr_code_set, instant_from_monotonic_secs, molt_block_on, molt_spawn,
+    monotonic_now_nanos, monotonic_now_secs, record_async_poll, task_exception_depths,
+    task_exception_handler_stacks, task_exception_stacks, task_last_exceptions, task_mark_done,
+    task_waiting_on, task_waiting_on_future, wake_task_ptr, AsyncHangProbe, MoltScheduler,
+    MoltTask, SleepQueue, CURRENT_TASK,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use scheduler::{
-    is_block_on_task, process_task_drop, process_task_state, sleep_worker, thread_task_drop,
-    thread_task_state,
+    is_block_on_task, sleep_worker, thread_task_drop, thread_task_state,
 };
+pub(crate) use scheduler::{process_task_drop, process_task_state};
 
 #[allow(unused_imports)]
 pub(crate) use generators::*;

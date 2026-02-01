@@ -1,44 +1,47 @@
 const fs = require('fs');
+const net = require('net');
+const dgram = require('dgram');
+const dns = require('dns');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
+let UndiciWebSocket = null;
+try {
+  ({ WebSocket: UndiciWebSocket } = require('undici'));
+} catch {
+  UndiciWebSocket = null;
+}
 const { WASI } = require('wasi');
+const {
+  Worker,
+  MessageChannel,
+  receiveMessageOnPort,
+  isMainThread,
+  parentPort,
+  workerData,
+} = require('worker_threads');
 
-const wasmArg = process.argv[2];
-const wasmEnvPath = process.env.MOLT_WASM_PATH;
-const localWasm = path.join(__dirname, 'output.wasm');
-const tempWasm = path.join(os.tmpdir(), 'output.wasm');
-const wasmPath =
-  wasmArg || wasmEnvPath || (fs.existsSync(localWasm) ? localWasm : tempWasm);
-const wasmBuffer = fs.readFileSync(wasmPath);
-const linkedEnvPath = process.env.MOLT_WASM_LINKED_PATH;
-const defaultLinkedPath = path.join(__dirname, 'output_linked.wasm');
-const siblingLinkedPath = (() => {
-  if (!wasmPath) return null;
-  const parsed = path.parse(wasmPath);
-  const ext = parsed.ext || '.wasm';
-  const candidate = path.join(parsed.dir, `${parsed.name}_linked${ext}`);
-  return fs.existsSync(candidate) ? candidate : null;
-})();
-let linkedPath =
-  linkedEnvPath ||
-  siblingLinkedPath ||
-  (fs.existsSync(defaultLinkedPath) ? defaultLinkedPath : null);
-let linkedBuffer = linkedPath && fs.existsSync(linkedPath) ? fs.readFileSync(linkedPath) : null;
-const runtimePath =
-  process.env.MOLT_RUNTIME_WASM || path.join(__dirname, 'wasm', 'molt_runtime.wasm');
-const runtimeBuffer = fs.readFileSync(runtimePath);
-const witPath = path.join(__dirname, 'wit', 'molt-runtime.wit');
-const witSource = fs.readFileSync(witPath, 'utf8');
+const IS_DB_WORKER = !isMainThread && workerData && workerData.kind === 'molt_db_host';
+const IS_SOCKET_WORKER = !isMainThread && workerData && workerData.kind === 'molt_socket_host';
 
-const wasmEnv = { ...process.env };
+let wasmPath = null;
+let wasmBuffer = null;
+let linkedPath = null;
+let linkedBuffer = null;
+let runtimePath = null;
+let runtimeBuffer = null;
+let witSource = null;
+let wasmEnv = null;
+let wasi = null;
 const callIndirectDebug = process.env.MOLT_WASM_CALL_INDIRECT_DEBUG === '1';
+const getWebSocketCtor = () => globalThis.WebSocket || UndiciWebSocket || null;
 
-const ensureWasmLocaleEnv = () => {
+const ensureWasmLocaleEnv = (env) => {
+  if (!env) return;
   if (
-    wasmEnv.MOLT_WASM_LOCALE_DECIMAL ||
-    wasmEnv.MOLT_WASM_LOCALE_THOUSANDS ||
-    wasmEnv.MOLT_WASM_LOCALE_GROUPING
+    env.MOLT_WASM_LOCALE_DECIMAL ||
+    env.MOLT_WASM_LOCALE_THOUSANDS ||
+    env.MOLT_WASM_LOCALE_GROUPING
   ) {
     return;
   }
@@ -63,24 +66,56 @@ const ensureWasmLocaleEnv = () => {
       lastInteger = part.value;
     }
   }
-  wasmEnv.MOLT_WASM_LOCALE_DECIMAL = decimal;
+  env.MOLT_WASM_LOCALE_DECIMAL = decimal;
   if (group) {
-    wasmEnv.MOLT_WASM_LOCALE_THOUSANDS = group;
+    env.MOLT_WASM_LOCALE_THOUSANDS = group;
     if (lastInteger) {
-      wasmEnv.MOLT_WASM_LOCALE_GROUPING = String(lastInteger.length);
+      env.MOLT_WASM_LOCALE_GROUPING = String(lastInteger.length);
     }
   }
 };
 
-ensureWasmLocaleEnv();
+const initWasmAssets = () => {
+  const wasmArg = process.argv[2];
+  const wasmEnvPath = process.env.MOLT_WASM_PATH;
+  const localWasm = path.join(__dirname, 'output.wasm');
+  const tempWasm = path.join(os.tmpdir(), 'output.wasm');
+  wasmPath =
+    wasmArg || wasmEnvPath || (fs.existsSync(localWasm) ? localWasm : tempWasm);
+  if (!wasmPath || !fs.existsSync(wasmPath)) {
+    throw new Error('WASM path not found (arg, MOLT_WASM_PATH, ./output.wasm, or temp output.wasm)');
+  }
+  wasmBuffer = fs.readFileSync(wasmPath);
+  const linkedEnvPath = process.env.MOLT_WASM_LINKED_PATH;
+  const defaultLinkedPath = path.join(__dirname, 'output_linked.wasm');
+  const siblingLinkedPath = (() => {
+    if (!wasmPath) return null;
+    const parsed = path.parse(wasmPath);
+    const ext = parsed.ext || '.wasm';
+    const candidate = path.join(parsed.dir, `${parsed.name}_linked${ext}`);
+    return fs.existsSync(candidate) ? candidate : null;
+  })();
+  linkedPath =
+    linkedEnvPath ||
+    siblingLinkedPath ||
+    (fs.existsSync(defaultLinkedPath) ? defaultLinkedPath : null);
+  linkedBuffer = linkedPath && fs.existsSync(linkedPath) ? fs.readFileSync(linkedPath) : null;
+  runtimePath =
+    process.env.MOLT_RUNTIME_WASM || path.join(__dirname, 'wasm', 'molt_runtime.wasm');
+  runtimeBuffer = fs.readFileSync(runtimePath);
+  const witPath = path.join(__dirname, 'wit', 'molt-runtime.wit');
+  witSource = fs.readFileSync(witPath, 'utf8');
 
-const wasi = new WASI({
-  version: 'preview1',
-  env: wasmEnv,
-  preopens: {
-    '.': '.',
-  },
-});
+  wasmEnv = { ...process.env };
+  ensureWasmLocaleEnv(wasmEnv);
+  wasi = new WASI({
+    version: 'preview1',
+    env: wasmEnv,
+    preopens: {
+      '.': '.',
+    },
+  });
+};
 
 let runtimeInstance = null;
 let wasmMemory = null;
@@ -98,6 +133,35 @@ const INT_MASK = (1n << 47n) - 1n;
 
 const MAX_DB_FRAME_SIZE = 64 * 1024 * 1024;
 const CANCEL_POLL_MS = 10;
+const ERRNO = (os.constants && os.constants.errno) || {};
+const errnoValue = (name, fallback) =>
+  Number.isInteger(ERRNO[name]) ? ERRNO[name] : fallback;
+const ENOSYS = errnoValue('ENOSYS', 38);
+const EINVAL = errnoValue('EINVAL', 22);
+const ENOMEM = errnoValue('ENOMEM', 12);
+const EBADF = errnoValue('EBADF', 9);
+const ENOENT = errnoValue('ENOENT', 2);
+const EPIPE = errnoValue('EPIPE', 32);
+const EWOULDBLOCK = errnoValue('EWOULDBLOCK', errnoValue('EAGAIN', 11));
+const EINPROGRESS = errnoValue('EINPROGRESS', 115);
+const ETIMEDOUT = errnoValue('ETIMEDOUT', 110);
+const ENOTCONN = errnoValue('ENOTCONN', 107);
+const ENOTSOCK = errnoValue('ENOTSOCK', 88);
+const EAFNOSUPPORT = errnoValue('EAFNOSUPPORT', 97);
+const EADDRINUSE = errnoValue('EADDRINUSE', 98);
+const ECONNRESET = errnoValue('ECONNRESET', 104);
+const ECONNREFUSED = errnoValue('ECONNREFUSED', 111);
+const ENOPROTOOPT = errnoValue('ENOPROTOOPT', 92);
+const IO_EVENT_READ = 1;
+const IO_EVENT_WRITE = 1 << 1;
+const IO_EVENT_ERROR = 1 << 2;
+const PROCESS_STDIO_INHERIT = 0;
+const PROCESS_STDIO_PIPE = 1;
+const PROCESS_STDIO_DEVNULL = 2;
+const PROCESS_STDIO_STDIN = 0;
+const PROCESS_STDIO_STDOUT = 1;
+const PROCESS_STDIO_STDERR = 2;
+const WS_BUFFER_MAX = Number.parseInt(process.env.MOLT_WASM_WS_BUFFER_MAX || '1048576', 10);
 
 let wasmHeaderSize = null;
 
@@ -141,9 +205,21 @@ const readBytes = (ptr, len) => {
   return Buffer.from(new Uint8Array(wasmMemory.buffer, addr, len));
 };
 
+const readUtf8 = (ptr, len) => readBytes(ptr, len).toString('utf8');
+
 const writeU64 = (addr, value) => {
   const view = new DataView(wasmMemory.buffer);
   view.setBigUint64(addr, BigInt(value), true);
+};
+
+const writeU32 = (addr, value) => {
+  const view = new DataView(wasmMemory.buffer);
+  view.setUint32(addr, Number(value) >>> 0, true);
+};
+
+const writeI32 = (addr, value) => {
+  const view = new DataView(wasmMemory.buffer);
+  view.setInt32(addr, Number(value) | 0, true);
 };
 
 const allocTempBytes = (bytes) => {
@@ -481,124 +557,266 @@ const resolveTimeoutMs = () => {
   return 250;
 };
 
-class DbWorkerClient {
-  constructor(cmd) {
-    this.proc = spawn(cmd[0], cmd.slice(1), {
-      stdio: ['pipe', 'pipe', 'inherit'],
-      env: process.env,
-    });
-    this.stdin = this.proc.stdin;
-    this.stdout = this.proc.stdout;
-    this.buffer = Buffer.alloc(0);
-    this.pending = new Map();
-    this.nextId = 1;
-    this.proc.stdout.on('data', (chunk) => this._onData(chunk));
-    this.proc.on('exit', (code, signal) => {
-      const reason = code !== null ? `exit ${code}` : `signal ${signal}`;
-      this._failAll(`molt-worker ${reason}`);
-    });
-    this.proc.on('error', (err) => {
-      this._failAll(`molt-worker error: ${err.message}`);
-    });
-  }
+const dbHostWorkerMain = () => {
+  if (!parentPort) return;
+  const cmd = workerData && Array.isArray(workerData.cmd) ? workerData.cmd : null;
+  let responsePort = null;
+  let child = null;
+  let buffer = Buffer.alloc(0);
+  const pendingErrors = [];
 
-  send(entry, payload, timeoutMs, streamHandle, tokenId) {
-    const requestId = this.nextId++;
-    const pending = {
-      requestId,
-      streamHandle,
-      tokenId: tokenId !== undefined && tokenId !== null ? BigInt(tokenId) : null,
-      cancelTimer: null,
-      cancelSent: false,
-    };
-    this.pending.set(requestId, pending);
-    const message = {
-      request_id: requestId,
-      entry,
-      timeout_ms: timeoutMs,
-      codec: 'msgpack',
-      payload_b64: Buffer.from(payload).toString('base64'),
-    };
+  const notifyError = (message) => {
+    if (responsePort) {
+      responsePort.postMessage({ type: 'error', message });
+    } else {
+      pendingErrors.push(message);
+    }
+  };
+
+  const handleFrame = (frame) => {
+    let response;
     try {
-      writeFrame(this.stdin, Buffer.from(JSON.stringify(message)));
+      response = decodeWorkerFrame(frame);
     } catch (err) {
-      this.pending.delete(requestId);
-      sendStreamError(streamHandle, `db host send failed: ${err.message}`);
+      notifyError(`worker response decode failed: ${err.message}`);
       return;
     }
-    this._startCancelPoll(pending);
-  }
+    if (responsePort) {
+      responsePort.postMessage({ type: 'response', response });
+    }
+  };
 
-  _startCancelPoll(pending) {
-    if (!pending.tokenId || pending.tokenId === 0n) return;
-    pending.cancelTimer = setInterval(() => {
-      if (pending.cancelSent || !runtimeInstance) return;
-      try {
-        const tokenBits = boxInt(pending.tokenId);
-        const cancelled = runtimeInstance.exports.molt_cancel_token_is_cancelled(tokenBits);
-        if (typeof cancelled === 'bigint' && isBoolBits(cancelled) && unboxBool(cancelled)) {
-          pending.cancelSent = true;
-          clearInterval(pending.cancelTimer);
-          this._sendCancel(pending.requestId);
-        }
-      } catch (err) {
-        pending.cancelSent = true;
-        clearInterval(pending.cancelTimer);
-        this._sendCancel(pending.requestId);
+  const handleChunk = (chunk) => {
+    buffer = Buffer.concat([buffer, chunk]);
+    while (buffer.length >= 4) {
+      const size = buffer.readUInt32LE(0);
+      if (size > MAX_DB_FRAME_SIZE) {
+        notifyError(`worker frame too large: ${size}`);
+        buffer = Buffer.alloc(0);
+        return;
       }
-    }, CANCEL_POLL_MS);
-  }
+      if (buffer.length < 4 + size) {
+        return;
+      }
+      const frame = buffer.slice(4, 4 + size);
+      buffer = buffer.slice(4 + size);
+      handleFrame(frame);
+    }
+  };
 
-  _sendCancel(targetId) {
+  const dropChild = () => {
+    child = null;
+    buffer = Buffer.alloc(0);
+  };
+
+  const ensureChild = () => {
+    if (child) return true;
+    if (!cmd || cmd.length === 0) {
+      notifyError('molt-worker not configured');
+      return false;
+    }
+    try {
+      child = spawn(cmd[0], cmd.slice(1), {
+        stdio: ['pipe', 'pipe', 'inherit'],
+        env: process.env,
+      });
+    } catch (err) {
+      notifyError(`molt-worker spawn failed: ${err.message}`);
+      return false;
+    }
+    if (!child.stdin || !child.stdout) {
+      notifyError('molt-worker missing stdio pipes');
+      dropChild();
+      return false;
+    }
+    child.stdout.on('data', handleChunk);
+    child.on('exit', (code, signal) => {
+      const reason = code !== null ? `exit ${code}` : `signal ${signal}`;
+      notifyError(`molt-worker ${reason}`);
+      dropChild();
+    });
+    child.on('error', (err) => {
+      notifyError(`molt-worker error: ${err.message}`);
+      dropChild();
+    });
+    return true;
+  };
+
+  const sendRequest = (msg) => {
+    if (!ensureChild()) return;
+    const payload_b64 =
+      msg.payload_b64 || (Buffer.isBuffer(msg.payload) ? msg.payload.toString('base64') : '');
+    const message = {
+      request_id: msg.requestId,
+      entry: msg.entry,
+      timeout_ms: msg.timeoutMs,
+      codec: 'msgpack',
+      payload_b64,
+    };
+    try {
+      writeFrame(child.stdin, Buffer.from(JSON.stringify(message)));
+    } catch (err) {
+      notifyError(`db host send failed: ${err.message}`);
+    }
+  };
+
+  const sendCancel = (targetId) => {
+    if (!ensureChild()) return;
     const cancelPayload = Buffer.from(JSON.stringify({ request_id: targetId }));
     const message = {
-      request_id: this.nextId++,
+      request_id: 0,
       entry: '__cancel__',
       timeout_ms: 0,
       codec: 'json',
       payload_b64: cancelPayload.toString('base64'),
     };
     try {
-      writeFrame(this.stdin, Buffer.from(JSON.stringify(message)));
+      writeFrame(child.stdin, Buffer.from(JSON.stringify(message)));
     } catch (err) {
       // Best effort.
     }
-  }
+  };
 
-  _onData(chunk) {
-    this.buffer = Buffer.concat([this.buffer, chunk]);
-    while (this.buffer.length >= 4) {
-      const size = this.buffer.readUInt32LE(0);
-      if (size > MAX_DB_FRAME_SIZE) {
-        this._failAll(`worker frame too large: ${size}`);
-        return;
+  parentPort.on('message', (msg) => {
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.type === 'init' && msg.port) {
+      responsePort = msg.port;
+      if (pendingErrors.length) {
+        for (const message of pendingErrors.splice(0)) {
+          responsePort.postMessage({ type: 'error', message });
+        }
       }
-      if (this.buffer.length < 4 + size) {
-        return;
-      }
-      const frame = this.buffer.slice(4, 4 + size);
-      this.buffer = this.buffer.slice(4 + size);
-      this._handleFrame(frame);
+      return;
     }
+    if (msg.type === 'request') {
+      sendRequest(msg);
+      return;
+    }
+    if (msg.type === 'cancel') {
+      sendCancel(msg.targetId);
+    }
+  });
+};
+
+if (IS_DB_WORKER) {
+  dbHostWorkerMain();
+}
+
+class DbWorkerClient {
+  constructor(cmd) {
+    this.worker = new Worker(__filename, { workerData: { kind: 'molt_db_host', cmd } });
+    const channel = new MessageChannel();
+    this.port = channel.port1;
+    this.pending = new Map();
+    this.nextId = 1;
+    this.lastCancelCheck = 0;
+    this.dead = false;
+    this.worker.postMessage({ type: 'init', port: channel.port2 }, [channel.port2]);
+    this.worker.on('error', (err) => {
+      this.dead = true;
+      this._failAll(`molt-worker error: ${err.message}`);
+    });
+    this.worker.on('exit', (code, signal) => {
+      const reason = code !== null ? `exit ${code}` : `signal ${signal}`;
+      this.dead = true;
+      this._failAll(`molt-worker ${reason}`);
+    });
   }
 
-  _handleFrame(frame) {
-    let response;
+  send(entry, payload, timeoutMs, streamHandle, tokenId) {
+    if (this.dead || !this.worker) {
+      throw new Error('db host worker unavailable');
+    }
+    const requestId = this.nextId++;
+    const pending = {
+      requestId,
+      streamHandle,
+      tokenId: tokenId !== undefined && tokenId !== null ? BigInt(tokenId) : 0n,
+      cancelSent: false,
+    };
+    this.pending.set(requestId, pending);
+    const message = {
+      type: 'request',
+      requestId,
+      entry,
+      timeoutMs,
+      payload_b64: Buffer.from(payload).toString('base64'),
+    };
     try {
-      response = decodeWorkerFrame(frame);
+      this.worker.postMessage(message);
     } catch (err) {
-      this._failAll(`worker response decode failed: ${err.message}`);
+      this.pending.delete(requestId);
+      sendStreamError(streamHandle, `db host send failed: ${err.message}`);
+    }
+  }
+
+  poll() {
+    this._drainResponses();
+    this._pollCancels();
+  }
+
+  _drainResponses() {
+    while (true) {
+      const result = receiveMessageOnPort(this.port);
+      if (!result) break;
+      const msg = result.message;
+      if (!msg || typeof msg !== 'object') continue;
+      if (msg.type === 'error') {
+        this._failAll(msg.message || 'db host error');
+        continue;
+      }
+      if (msg.type !== 'response') {
+        continue;
+      }
+      const response = msg.response;
+      if (!response) {
+        continue;
+      }
+      const pending = this.pending.get(response.requestId);
+      if (!pending) {
+        continue;
+      }
+      this.pending.delete(response.requestId);
+      this._deliverResponse(pending.streamHandle, response);
+    }
+  }
+
+  _pollCancels() {
+    if (!runtimeInstance || !runtimeInstance.exports.molt_cancel_token_is_cancelled) {
       return;
     }
-    const pending = this.pending.get(response.requestId);
-    if (!pending) {
+    const now = Date.now();
+    if (now - this.lastCancelCheck < CANCEL_POLL_MS) {
       return;
     }
-    this.pending.delete(response.requestId);
-    if (pending.cancelTimer) {
-      clearInterval(pending.cancelTimer);
+    this.lastCancelCheck = now;
+    for (const pending of this.pending.values()) {
+      if (!pending.tokenId || pending.tokenId === 0n || pending.cancelSent) {
+        continue;
+      }
+      let cancelled = false;
+      try {
+        const tokenBits = boxInt(pending.tokenId);
+        const result = runtimeInstance.exports.molt_cancel_token_is_cancelled(tokenBits);
+        if (typeof result === 'bigint' && isBoolBits(result) && unboxBool(result)) {
+          cancelled = true;
+        }
+      } catch (err) {
+        cancelled = true;
+      }
+      if (cancelled) {
+        pending.cancelSent = true;
+        this._sendCancel(pending.requestId);
+      }
     }
-    this._deliverResponse(pending.streamHandle, response);
+  }
+
+  _sendCancel(targetId) {
+    try {
+      this.worker.postMessage({ type: 'cancel', targetId });
+    } catch (err) {
+      // Best effort.
+    }
   }
 
   _deliverResponse(streamHandle, response) {
@@ -630,9 +848,6 @@ class DbWorkerClient {
 
   _failAll(message) {
     for (const pending of this.pending.values()) {
-      if (pending.cancelTimer) {
-        clearInterval(pending.cancelTimer);
-      }
       sendStreamError(pending.streamHandle, message);
     }
     this.pending.clear();
@@ -642,7 +857,7 @@ class DbWorkerClient {
 let dbWorkerClient = null;
 
 const getDbWorkerClient = () => {
-  if (dbWorkerClient) return dbWorkerClient;
+  if (dbWorkerClient && !dbWorkerClient.dead) return dbWorkerClient;
   const cmd = resolveWorkerCmd();
   if (!cmd) {
     throw new Error(
@@ -691,6 +906,2164 @@ const dbQueryHost = (reqPtr, reqLen, outPtr, tokenId) =>
   handleDbHost('db_query', reqPtr, reqLen, outPtr, tokenId);
 const dbExecHost = (reqPtr, reqLen, outPtr, tokenId) =>
   handleDbHost('db_exec', reqPtr, reqLen, outPtr, tokenId);
+const dbHostPoll = () => {
+  if (!dbWorkerClient) return 0;
+  try {
+    dbWorkerClient.poll();
+  } catch (err) {
+    dbWorkerClient._failAll(`db host poll failed: ${err.message}`);
+  }
+  return 0;
+};
+
+const SOCKET_SAB_HEADER_SIZE = 32;
+const SOCKET_SAB_DATA_OFFSET = SOCKET_SAB_HEADER_SIZE;
+const SOCKET_RPC_TIMEOUT_MS = 30000;
+const AF_INET = 2;
+const AF_INET6 = 10;
+const AF_UNIX = 1;
+const SOCK_STREAM = 1;
+const SOCK_DGRAM = 2;
+const SOL_SOCKET = 1;
+const SO_SNDBUF = 7;
+const SO_RCVBUF = 8;
+const SO_BROADCAST = 6;
+const SO_LINGER = 13;
+const SO_REUSEADDR = 2;
+const SO_REUSEPORT = 15;
+const SO_ERROR = 4;
+const SO_KEEPALIVE = 9;
+const IPPROTO_TCP = 6;
+const IPPROTO_UDP = 17;
+const TCP_NODELAY = 1;
+const SHUT_RD = 0;
+const SHUT_WR = 1;
+const MSG_PEEK = 2;
+
+const writeBytes = (ptr, bytes) => {
+  if (!wasmMemory) return false;
+  const addr = Number(ptr);
+  if (!Number.isFinite(addr) || addr === 0) return false;
+  new Uint8Array(wasmMemory.buffer, addr, bytes.length).set(bytes);
+  return true;
+};
+
+const ipv6ToString = (bytes) => {
+  const parts = [];
+  for (let i = 0; i < 16; i += 2) {
+    parts.push(((bytes[i] << 8) | bytes[i + 1]).toString(16));
+  }
+  let bestStart = -1;
+  let bestLen = 0;
+  let curStart = -1;
+  let curLen = 0;
+  for (let i = 0; i <= parts.length; i += 1) {
+    if (i < parts.length && parts[i] === '0') {
+      if (curStart === -1) curStart = i;
+      curLen += 1;
+    } else {
+      if (curLen > bestLen) {
+        bestLen = curLen;
+        bestStart = curStart;
+      }
+      curStart = -1;
+      curLen = 0;
+    }
+  }
+  if (bestLen > 1) {
+    parts.splice(bestStart, bestLen, '');
+    if (bestStart === 0) parts.unshift('');
+    if (bestStart + bestLen === 8) parts.push('');
+  }
+  return parts.join(':').replace(/:{3,}/, '::');
+};
+
+const parseIPv4 = (text) => {
+  const parts = text.split('.');
+  if (parts.length !== 4) return null;
+  const bytes = new Uint8Array(4);
+  for (let i = 0; i < 4; i += 1) {
+    const val = Number.parseInt(parts[i], 10);
+    if (!Number.isFinite(val) || val < 0 || val > 255) return null;
+    bytes[i] = val;
+  }
+  return bytes;
+};
+
+const parseIPv6 = (text) => {
+  const zoneIndex = text.indexOf('%');
+  let zone = null;
+  if (zoneIndex >= 0) {
+    zone = text.slice(zoneIndex + 1);
+    text = text.slice(0, zoneIndex);
+  }
+  if (text === '::') {
+    return { bytes: new Uint8Array(16), scopeId: zone ? Number.parseInt(zone, 10) || 0 : 0 };
+  }
+  const parts = text.split('::');
+  if (parts.length > 2) return null;
+  const head = parts[0] ? parts[0].split(':').filter(Boolean) : [];
+  const tail = parts[1] ? parts[1].split(':').filter(Boolean) : [];
+  let hasV4 = false;
+  if (tail.length && tail[tail.length - 1].includes('.')) {
+    const v4 = parseIPv4(tail[tail.length - 1]);
+    if (!v4) return null;
+    tail.pop();
+    tail.push(((v4[0] << 8) | v4[1]).toString(16));
+    tail.push(((v4[2] << 8) | v4[3]).toString(16));
+    hasV4 = true;
+  } else if (head.length && head[head.length - 1].includes('.')) {
+    const v4 = parseIPv4(head[head.length - 1]);
+    if (!v4) return null;
+    head.pop();
+    head.push(((v4[0] << 8) | v4[1]).toString(16));
+    head.push(((v4[2] << 8) | v4[3]).toString(16));
+    hasV4 = true;
+  }
+  const total = head.length + tail.length;
+  const missing = 8 - total;
+  if (missing < 0) return null;
+  const groups = [...head, ...Array(missing).fill('0'), ...tail];
+  if (groups.length !== 8) return null;
+  const bytes = new Uint8Array(16);
+  for (let i = 0; i < 8; i += 1) {
+    const val = Number.parseInt(groups[i], 16);
+    if (!Number.isFinite(val) || val < 0 || val > 0xffff) return null;
+    bytes[i * 2] = (val >> 8) & 0xff;
+    bytes[i * 2 + 1] = val & 0xff;
+  }
+  return { bytes, scopeId: zone ? Number.parseInt(zone, 10) || 0 : 0, hasV4 };
+};
+
+const decodeSockaddr = (bytes) => {
+  if (!bytes || bytes.length < 4) {
+    throw new Error('invalid sockaddr');
+  }
+  const family = bytes.readUInt16LE(0);
+  const port = bytes.readUInt16LE(2);
+  if (family === AF_INET) {
+    if (bytes.length < 8) {
+      throw new Error('invalid IPv4 sockaddr');
+    }
+    const host = `${bytes[4]}.${bytes[5]}.${bytes[6]}.${bytes[7]}`;
+    return { family, host, port };
+  }
+  if (family === AF_INET6) {
+    if (bytes.length < 28) {
+      throw new Error('invalid IPv6 sockaddr');
+    }
+    const flowinfo = bytes.readUInt32LE(4);
+    const scopeId = bytes.readUInt32LE(8);
+    const host = ipv6ToString(bytes.subarray(12, 28));
+    return { family, host, port, flowinfo, scopeId };
+  }
+  if (family === AF_UNIX) {
+    throw new Error('AF_UNIX unsupported');
+  }
+  throw new Error('unsupported address family');
+};
+
+const encodeSockaddr = (addr) => {
+  if (!addr) return Buffer.alloc(0);
+  const family = addr.family || 0;
+  const port = addr.port || 0;
+  if (family === AF_INET) {
+    const bytes = Buffer.alloc(8);
+    bytes.writeUInt16LE(AF_INET, 0);
+    bytes.writeUInt16LE(port, 2);
+    const ip = parseIPv4(addr.host || addr.address || '0.0.0.0');
+    if (!ip) {
+      throw new Error('invalid IPv4 address');
+    }
+    bytes.set(ip, 4);
+    return bytes;
+  }
+  if (family === AF_INET6) {
+    const bytes = Buffer.alloc(28);
+    bytes.writeUInt16LE(AF_INET6, 0);
+    bytes.writeUInt16LE(port, 2);
+    bytes.writeUInt32LE(addr.flowinfo || 0, 4);
+    bytes.writeUInt32LE(addr.scopeId || addr.scopeid || 0, 8);
+    const parsed = parseIPv6(addr.host || addr.address || '::');
+    if (!parsed) {
+      throw new Error('invalid IPv6 address');
+    }
+    bytes.set(parsed.bytes, 12);
+    return bytes;
+  }
+  throw new Error('unsupported address family');
+};
+
+const mapSocketError = (err) => {
+  if (!err) return EINVAL;
+  if (typeof err.errno === 'number') {
+    return Math.abs(err.errno) || EINVAL;
+  }
+  if (err.code && ERRNO[err.code]) {
+    return ERRNO[err.code];
+  }
+  switch (err.code) {
+    case 'EAGAIN':
+    case 'EWOULDBLOCK':
+      return EWOULDBLOCK;
+    case 'EINPROGRESS':
+      return EINPROGRESS;
+    case 'ECONNRESET':
+      return ECONNRESET;
+    case 'ECONNREFUSED':
+      return ECONNREFUSED;
+    case 'ETIMEDOUT':
+      return ETIMEDOUT;
+    case 'ENOTCONN':
+      return ENOTCONN;
+    case 'EPIPE':
+      return EPIPE;
+    default:
+      return EINVAL;
+  }
+};
+
+const writeHandleParts = (view, index, value) => {
+  const v = BigInt(value);
+  const lo = Number(v & 0xffffffffn);
+  const hi = Number((v >> 32n) & 0xffffffffn);
+  view[index] = lo | 0;
+  view[index + 1] = hi | 0;
+};
+
+const readHandleParts = (view, index) => {
+  const lo = BigInt(view[index] >>> 0);
+  const hi = BigInt(view[index + 1] >>> 0);
+  let value = (hi << 32n) | lo;
+  if (value & 0x8000000000000000n) {
+    value -= 1n << 64n;
+  }
+  return value;
+};
+
+const socketWorkerMain = () => {
+  if (!parentPort) return;
+  let nextHandle = 1n;
+  const sockets = new Map();
+  const detached = new Map();
+  let serviceCache = null;
+
+  const allocHandle = (entry) => {
+    const handle = nextHandle;
+    nextHandle += 1n;
+    sockets.set(handle.toString(), entry);
+    return handle;
+  };
+
+  const getEntry = (handle) => sockets.get(handle.toString()) || null;
+
+  const removeEntry = (handle) => {
+    const key = handle.toString();
+    const entry = sockets.get(key);
+    if (!entry) return null;
+    sockets.delete(key);
+    return entry;
+  };
+
+  const removeDetached = (handle) => {
+    const key = handle.toString();
+    const entry = detached.get(key);
+    if (!entry) return null;
+    detached.delete(key);
+    return entry;
+  };
+
+  const loadServiceCache = () => {
+    if (serviceCache) return serviceCache;
+    const byName = new Map();
+    const byPort = new Map();
+    const paths = [];
+    if (process.platform === 'win32') {
+      const root = process.env.SystemRoot || 'C:\\\\Windows';
+      paths.push(path.join(root, 'System32', 'drivers', 'etc', 'services'));
+    } else {
+      paths.push('/etc/services');
+    }
+    for (const filePath of paths) {
+      try {
+        const raw = fs.readFileSync(filePath, 'utf8');
+        for (const line of raw.split(/\r?\n/)) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith('#')) continue;
+          const parts = trimmed.split(/\s+/);
+          if (parts.length < 2) continue;
+          const name = parts[0].toLowerCase();
+          const portProto = parts[1].split('/');
+          if (portProto.length !== 2) continue;
+          const port = Number.parseInt(portProto[0], 10);
+          if (!Number.isFinite(port)) continue;
+          const proto = portProto[1].toLowerCase();
+          const aliases = parts.slice(2).map((alias) => alias.toLowerCase());
+          const allNames = [name, ...aliases];
+          for (const svc of allNames) {
+            if (!byName.has(svc)) byName.set(svc, new Map());
+            const protoMap = byName.get(svc);
+            if (!protoMap.has(proto)) {
+              protoMap.set(proto, port);
+            }
+            if (!protoMap.has('')) {
+              protoMap.set('', port);
+            }
+          }
+          const portKey = `${port}`;
+          if (!byPort.has(portKey)) byPort.set(portKey, new Map());
+          const portMap = byPort.get(portKey);
+          if (!portMap.has(proto)) {
+            portMap.set(proto, name);
+          }
+          if (!portMap.has('')) {
+            portMap.set('', name);
+          }
+        }
+      } catch (err) {
+        // Best-effort only.
+      }
+    }
+    serviceCache = { byName, byPort };
+    return serviceCache;
+  };
+
+  const lookupServicePort = (name, proto) => {
+    const cache = loadServiceCache();
+    const key = name.toLowerCase();
+    const protoKey = (proto || '').toLowerCase();
+    const entry = cache.byName.get(key);
+    if (!entry) return null;
+    if (protoKey && entry.has(protoKey)) return entry.get(protoKey);
+    if (entry.has('')) return entry.get('');
+    return null;
+  };
+
+  const lookupServiceName = (port, proto) => {
+    const cache = loadServiceCache();
+    const portKey = `${port}`;
+    const protoKey = (proto || '').toLowerCase();
+    const entry = cache.byPort.get(portKey);
+    if (!entry) return null;
+    if (protoKey && entry.has(protoKey)) return entry.get(protoKey);
+    if (entry.has('')) return entry.get('');
+    return null;
+  };
+
+  const notifyWaiters = (entry) => {
+    if (!entry.waiters.length) return;
+    const readyMask = pollReady(entry, IO_EVENT_READ | IO_EVENT_WRITE | IO_EVENT_ERROR);
+    if (readyMask === 0) return;
+    const waiters = entry.waiters.splice(0);
+    for (const waiter of waiters) {
+      if (waiter.timer) clearTimeout(waiter.timer);
+      waiter.resolve(readyMask);
+    }
+  };
+
+  const pollReady = (entry, events) => {
+    let ready = 0;
+    if (entry.error) {
+      ready |= IO_EVENT_ERROR;
+    }
+    if ((events & IO_EVENT_READ) !== 0) {
+      if (entry.kind === 'server') {
+        if (entry.acceptQueue.length) ready |= IO_EVENT_READ;
+      } else if (entry.kind === 'udp') {
+        if (entry.recvQueue.length || entry.ended) ready |= IO_EVENT_READ;
+      } else if (entry.readQueue.length || entry.ended) {
+        ready |= IO_EVENT_READ;
+      }
+    }
+    if ((events & IO_EVENT_WRITE) !== 0) {
+      if (entry.kind === 'udp') {
+        if (!entry.closed) ready |= IO_EVENT_WRITE;
+      } else if (entry.kind === 'tcp') {
+        if (entry.connected && !entry.backpressure) ready |= IO_EVENT_WRITE;
+        if (entry.connectError) ready |= IO_EVENT_ERROR;
+      } else if (entry.kind === 'server' && entry.listening) {
+        ready |= IO_EVENT_WRITE;
+      }
+    }
+    return ready;
+  };
+
+  const attachTcpHandlers = (entry) => {
+    const socket = entry.socket;
+    socket.on('data', (chunk) => {
+      if (entry.closed) return;
+      entry.readQueue.push(Buffer.from(chunk));
+      notifyWaiters(entry);
+    });
+    socket.on('end', () => {
+      entry.ended = true;
+      notifyWaiters(entry);
+    });
+    socket.on('close', () => {
+      entry.closed = true;
+      notifyWaiters(entry);
+    });
+    socket.on('error', (err) => {
+      entry.error = mapSocketError(err);
+      entry.connectError = entry.error;
+      notifyWaiters(entry);
+    });
+    socket.on('connect', () => {
+      entry.connected = true;
+      entry.connectPending = false;
+      notifyWaiters(entry);
+    });
+    socket.on('drain', () => {
+      entry.backpressure = false;
+      notifyWaiters(entry);
+    });
+  };
+
+  const attachUdpHandlers = (entry) => {
+    const socket = entry.socket;
+    socket.on('message', (msg, rinfo) => {
+      entry.recvQueue.push({
+        data: Buffer.from(msg),
+        addr: {
+          family: rinfo.family === 'IPv6' ? AF_INET6 : AF_INET,
+          host: rinfo.address,
+          port: rinfo.port,
+          scopeId: rinfo.scopeid || 0,
+        },
+      });
+      notifyWaiters(entry);
+    });
+    socket.on('listening', () => {
+      entry.listening = true;
+      notifyWaiters(entry);
+    });
+    socket.on('close', () => {
+      entry.closed = true;
+      notifyWaiters(entry);
+    });
+    socket.on('error', (err) => {
+      entry.error = mapSocketError(err);
+      notifyWaiters(entry);
+    });
+  };
+
+  const attachServerHandlers = (entry) => {
+    const server = entry.server;
+    server.on('connection', (sock) => {
+      const child = {
+        kind: 'tcp',
+        socket: sock,
+        refCount: 1,
+        readQueue: [],
+        recvQueue: [],
+        acceptQueue: [],
+        waiters: [],
+        ended: false,
+        closed: false,
+        error: null,
+        backpressure: false,
+        connected: true,
+        connectPending: false,
+        connectError: null,
+        listening: true,
+      };
+      attachTcpHandlers(child);
+      const handle = allocHandle(child);
+      let addrBytes = Buffer.alloc(0);
+      try {
+        addrBytes = encodeSockaddr({
+          family: sock.remoteFamily === 'IPv6' ? AF_INET6 : AF_INET,
+          host: sock.remoteAddress,
+          port: sock.remotePort || 0,
+          scopeId: sock.remoteScopeid || 0,
+        });
+      } catch (err) {
+        addrBytes = Buffer.alloc(0);
+      }
+      entry.acceptQueue.push({ handle, addr: addrBytes });
+      notifyWaiters(entry);
+    });
+    server.on('listening', () => {
+      entry.listening = true;
+      notifyWaiters(entry);
+    });
+    server.on('close', () => {
+      entry.closed = true;
+      notifyWaiters(entry);
+    });
+    server.on('error', (err) => {
+      entry.error = mapSocketError(err);
+      notifyWaiters(entry);
+    });
+  };
+
+  const readFromQueue = (queue, size, peek) => {
+    if (!queue.length) return Buffer.alloc(0);
+    let remaining = size;
+    const chunks = [];
+    if (peek) {
+      for (const chunk of queue) {
+        if (remaining <= 0) break;
+        if (chunk.length <= remaining) {
+          chunks.push(chunk);
+          remaining -= chunk.length;
+        } else {
+          chunks.push(chunk.subarray(0, remaining));
+          remaining = 0;
+        }
+      }
+      return Buffer.concat(chunks);
+    }
+    const newQueue = [];
+    for (const chunk of queue) {
+      if (remaining <= 0) {
+        newQueue.push(chunk);
+        continue;
+      }
+      if (chunk.length <= remaining) {
+        chunks.push(chunk);
+        remaining -= chunk.length;
+      } else {
+        chunks.push(chunk.subarray(0, remaining));
+        newQueue.push(chunk.subarray(remaining));
+        remaining = 0;
+      }
+    }
+    queue.splice(0, queue.length, ...newQueue);
+    return Buffer.concat(chunks);
+  };
+
+  const awaitReady = (entry, events, timeoutMs) =>
+    new Promise((resolve) => {
+      const ready = pollReady(entry, events);
+      if (ready) {
+        resolve(ready);
+        return;
+      }
+      const waiter = { events, resolve, timer: null };
+      if (timeoutMs >= 0) {
+        waiter.timer = setTimeout(() => {
+          const idx = entry.waiters.indexOf(waiter);
+          if (idx >= 0) entry.waiters.splice(idx, 1);
+          resolve(0);
+        }, timeoutMs);
+      }
+      entry.waiters.push(waiter);
+    });
+
+  const handleSocketOp = async (op, request, bufferView) => {
+    switch (op) {
+      case 'new': {
+        const { family, sockType, proto, fileno } = request;
+        const maybeHandle = typeof fileno === 'number' ? fileno : -1;
+        if (maybeHandle >= 0) {
+          const existing = removeDetached(BigInt(maybeHandle));
+          if (existing) {
+            sockets.set(String(maybeHandle), existing);
+            return { status: 0, handle1: BigInt(maybeHandle) };
+          }
+          return { status: -EBADF };
+        }
+        if (family !== AF_INET && family !== AF_INET6) {
+          return { status: -EAFNOSUPPORT };
+        }
+        if (sockType !== SOCK_STREAM && sockType !== SOCK_DGRAM) {
+          return { status: -EAFNOSUPPORT };
+        }
+        if (sockType === SOCK_DGRAM) {
+          const type = family === AF_INET6 ? 'udp6' : 'udp4';
+          const socket = dgram.createSocket({ type });
+          const entry = {
+            kind: 'udp',
+            socket,
+            refCount: 1,
+            recvQueue: [],
+            readQueue: [],
+            acceptQueue: [],
+            waiters: [],
+            ended: false,
+            closed: false,
+            error: null,
+            listening: false,
+            connected: false,
+            connectPending: false,
+            connectError: null,
+            backpressure: false,
+            sockopts: new Map(),
+            reuseAddr: false,
+            reusePort: false,
+            broadcast: false,
+            recvBuf: null,
+            sendBuf: null,
+          };
+          attachUdpHandlers(entry);
+          const handle = allocHandle(entry);
+          return { status: 0, handle1: handle };
+        }
+        let socket;
+        try {
+          if (fileno !== undefined && fileno !== null && fileno >= 0) {
+            socket = new net.Socket({ fd: fileno, readable: true, writable: true });
+          } else {
+            socket = new net.Socket({ allowHalfOpen: true });
+          }
+        } catch (err) {
+          return { status: -mapSocketError(err) };
+        }
+        const entry = {
+          kind: 'tcp',
+          socket,
+          refCount: 1,
+          readQueue: [],
+          recvQueue: [],
+          acceptQueue: [],
+          waiters: [],
+          ended: false,
+          closed: false,
+          error: null,
+          backpressure: false,
+          connected: false,
+          connectPending: false,
+          connectError: null,
+          listening: false,
+          bindAddr: null,
+          noDelay: false,
+          keepAlive: false,
+          sockopts: new Map(),
+          reuseAddr: false,
+          reusePort: false,
+          broadcast: false,
+          recvBuf: null,
+          sendBuf: null,
+        };
+        attachTcpHandlers(entry);
+        const handle = allocHandle(entry);
+        return { status: 0, handle1: handle };
+      }
+      case 'close': {
+        const { handle } = request;
+        const entry = removeEntry(handle);
+        if (!entry) return { status: -EBADF };
+        entry.refCount -= 1;
+        if (entry.refCount > 0) return { status: 0 };
+        if (entry.kind === 'server') {
+          entry.server.close();
+        } else if (entry.socket) {
+          entry.socket.destroy();
+        }
+        entry.closed = true;
+        return { status: 0 };
+      }
+      case 'clone': {
+        const { handle } = request;
+        const entry = getEntry(handle);
+        if (!entry) return { status: -EBADF };
+        entry.refCount += 1;
+        const dupHandle = allocHandle(entry);
+        return { status: 0, handle1: dupHandle };
+      }
+      case 'bind': {
+        const { handle, addr } = request;
+        const entry = getEntry(handle);
+        if (!entry) return { status: -EBADF };
+        let decoded;
+        try {
+          decoded = decodeSockaddr(addr);
+        } catch (err) {
+          return { status: -EAFNOSUPPORT };
+        }
+        if (entry.kind === 'udp') {
+          try {
+            await new Promise((resolve, reject) => {
+              entry.socket.once('error', reject);
+              entry.socket.bind(decoded.port, decoded.host, () => {
+                entry.socket.removeListener('error', reject);
+                resolve();
+              });
+            });
+            return { status: 0 };
+          } catch (err) {
+            return { status: -mapSocketError(err) };
+          }
+        }
+        entry.bindAddr = decoded;
+        return { status: 0 };
+      }
+      case 'listen': {
+        const { handle, backlog } = request;
+        const entry = getEntry(handle);
+        if (!entry) return { status: -EBADF };
+        if (entry.kind === 'udp') {
+          return { status: -EINVAL };
+        }
+        if (entry.kind !== 'server') {
+          const server = net.createServer({ allowHalfOpen: true });
+          if (entry.socket) {
+            try {
+              entry.socket.destroy();
+            } catch (err) {
+              // Best-effort cleanup.
+            }
+            entry.socket = null;
+          }
+          entry.kind = 'server';
+          entry.server = server;
+          if (!entry.sockopts) entry.sockopts = new Map();
+          attachServerHandlers(entry);
+        }
+        const addr = entry.bindAddr || { host: '0.0.0.0', port: 0, family: AF_INET };
+        try {
+          await new Promise((resolve, reject) => {
+            entry.server.once('error', reject);
+            entry.server.listen(
+              {
+                port: addr.port,
+                host: addr.host,
+                backlog: backlog || 128,
+              },
+              () => {
+                entry.server.removeListener('error', reject);
+                resolve();
+              },
+            );
+          });
+          return { status: 0 };
+        } catch (err) {
+          return { status: -mapSocketError(err) };
+        }
+      }
+      case 'accept': {
+        const { handle } = request;
+        const entry = getEntry(handle);
+        if (!entry) return { status: -EBADF };
+        if (entry.kind !== 'server') return { status: -ENOTSOCK };
+        if (!entry.acceptQueue.length) {
+          return { status: -EWOULDBLOCK };
+        }
+        const next = entry.acceptQueue.shift();
+        return { status: 0, handle1: next.handle, data: next.addr };
+      }
+      case 'connect': {
+        const { handle, addr } = request;
+        const entry = getEntry(handle);
+        if (!entry) return { status: -EBADF };
+        let decoded;
+        try {
+          decoded = decodeSockaddr(addr);
+        } catch (err) {
+          return { status: -EAFNOSUPPORT };
+        }
+        if (entry.kind === 'udp') {
+          try {
+            entry.socket.connect(decoded.port, decoded.host);
+            entry.connected = true;
+            return { status: 0 };
+          } catch (err) {
+            return { status: -mapSocketError(err) };
+          }
+        }
+        if (entry.connected) return { status: 0 };
+        if (entry.connectPending) return { status: -EINPROGRESS };
+        entry.connectPending = true;
+        entry.connectError = null;
+        try {
+          entry.socket.connect({
+            host: decoded.host,
+            port: decoded.port,
+            localAddress: entry.bindAddr ? entry.bindAddr.host : undefined,
+            localPort: entry.bindAddr ? entry.bindAddr.port : undefined,
+          });
+        } catch (err) {
+          entry.connectPending = false;
+          entry.connectError = mapSocketError(err);
+          return { status: -entry.connectError };
+        }
+        return { status: -EINPROGRESS };
+      }
+      case 'connect_ex': {
+        const { handle } = request;
+        const entry = getEntry(handle);
+        if (!entry) return { status: -EBADF };
+        if (entry.connectError) return { status: -entry.connectError };
+        if (entry.connectPending) return { status: -EINPROGRESS };
+        if (entry.connected) return { status: 0 };
+        return { status: -ENOTCONN };
+      }
+      case 'recv': {
+        const { handle, size, flags } = request;
+        const entry = getEntry(handle);
+        if (!entry) return { status: -EBADF };
+        const peek = (flags & MSG_PEEK) !== 0;
+        if (entry.kind === 'udp') {
+          if (!entry.recvQueue.length) {
+            return entry.closed ? { status: 0 } : { status: -EWOULDBLOCK };
+          }
+          const packet = entry.recvQueue[0];
+          const data = packet.data.subarray(0, size);
+          if (!peek) {
+            if (data.length === packet.data.length) {
+              entry.recvQueue.shift();
+            } else {
+              entry.recvQueue[0] = {
+                data: packet.data.subarray(data.length),
+                addr: packet.addr,
+              };
+            }
+          }
+          return { status: data.length, data };
+        }
+        if (!entry.readQueue.length) {
+          if (entry.ended) return { status: 0 };
+          return { status: -EWOULDBLOCK };
+        }
+        const data = readFromQueue(entry.readQueue, size, peek);
+        return { status: data.length, data };
+      }
+      case 'send': {
+        const { handle, payload, flags } = request;
+        const entry = getEntry(handle);
+        if (!entry) return { status: -EBADF };
+        if (entry.kind === 'udp') {
+          if (!entry.connected) return { status: -ENOTCONN };
+          try {
+            entry.socket.send(payload);
+            return { status: payload.length };
+          } catch (err) {
+            return { status: -mapSocketError(err) };
+          }
+        }
+        if (entry.backpressure) return { status: -EWOULDBLOCK };
+        try {
+          const ok = entry.socket.write(payload);
+          if (!ok) entry.backpressure = true;
+          return { status: payload.length };
+        } catch (err) {
+          return { status: -mapSocketError(err) };
+        }
+      }
+      case 'sendto': {
+        const { handle, payload, addr } = request;
+        const entry = getEntry(handle);
+        if (!entry) return { status: -EBADF };
+        let decoded;
+        try {
+          decoded = decodeSockaddr(addr);
+        } catch (err) {
+          return { status: -EAFNOSUPPORT };
+        }
+        if (entry.kind !== 'udp') {
+          return { status: -EINVAL };
+        }
+        try {
+          await new Promise((resolve, reject) => {
+            entry.socket.send(payload, decoded.port, decoded.host, (err) => {
+              if (err) reject(err);
+              else resolve();
+            });
+          });
+          return { status: payload.length };
+        } catch (err) {
+          return { status: -mapSocketError(err) };
+        }
+      }
+      case 'recvfrom': {
+        const { handle, size, flags } = request;
+        const entry = getEntry(handle);
+        if (!entry) return { status: -EBADF };
+        const peek = (flags & MSG_PEEK) !== 0;
+        if (entry.kind === 'udp') {
+          if (!entry.recvQueue.length) {
+            return entry.closed ? { status: 0 } : { status: -EWOULDBLOCK };
+          }
+          const packet = entry.recvQueue[0];
+          const data = packet.data.subarray(0, size);
+          if (!peek) {
+            if (data.length === packet.data.length) {
+              entry.recvQueue.shift();
+            } else {
+              entry.recvQueue[0] = {
+                data: packet.data.subarray(data.length),
+                addr: packet.addr,
+              };
+            }
+          }
+          let addrBytes = Buffer.alloc(0);
+          try {
+            addrBytes = encodeSockaddr(packet.addr);
+          } catch (err) {
+            addrBytes = Buffer.alloc(0);
+          }
+          return { status: data.length, data, extra: addrBytes };
+        }
+        if (!entry.readQueue.length) {
+          if (entry.ended) return { status: 0, extra: Buffer.alloc(0) };
+          return { status: -EWOULDBLOCK };
+        }
+        const data = readFromQueue(entry.readQueue, size, peek);
+        let addrBytes = Buffer.alloc(0);
+        try {
+          addrBytes = encodeSockaddr({
+            family: entry.socket.remoteFamily === 'IPv6' ? AF_INET6 : AF_INET,
+            host: entry.socket.remoteAddress,
+            port: entry.socket.remotePort || 0,
+            scopeId: entry.socket.remoteScopeid || 0,
+          });
+        } catch (err) {
+          addrBytes = Buffer.alloc(0);
+        }
+        return { status: data.length, data, extra: addrBytes };
+      }
+      case 'shutdown': {
+        const { handle, how } = request;
+        const entry = getEntry(handle);
+        if (!entry) return { status: -EBADF };
+        if (entry.kind === 'udp') return { status: 0 };
+        try {
+          if (how === SHUT_RD) {
+            entry.socket.pause();
+          } else if (how === SHUT_WR) {
+            entry.socket.end();
+          } else {
+            entry.socket.destroy();
+          }
+          return { status: 0 };
+        } catch (err) {
+          return { status: -mapSocketError(err) };
+        }
+      }
+      case 'getsockname': {
+        const { handle } = request;
+        const entry = getEntry(handle);
+        if (!entry) return { status: -EBADF };
+        try {
+          let info = null;
+          if (entry.kind === 'server') {
+            info = entry.server.address();
+          } else if (entry.kind === 'udp') {
+            info = entry.socket.address();
+          } else {
+            info = entry.socket.address();
+          }
+          if (!info) return { status: -ENOTCONN };
+          const addr = {
+            family: info.family === 'IPv6' || info.family === 6 ? AF_INET6 : AF_INET,
+            host: info.address,
+            port: info.port,
+            scopeId: info.scopeid || 0,
+          };
+          return { status: 0, data: encodeSockaddr(addr) };
+        } catch (err) {
+          return { status: -mapSocketError(err) };
+        }
+      }
+      case 'getpeername': {
+        const { handle } = request;
+        const entry = getEntry(handle);
+        if (!entry) return { status: -EBADF };
+        if (entry.kind === 'udp') {
+          if (!entry.connected || !entry.socket.remoteAddress) {
+            return { status: -ENOTCONN };
+          }
+          try {
+            const info = entry.socket.remoteAddress();
+            const addr = {
+              family: info.family === 'IPv6' ? AF_INET6 : AF_INET,
+              host: info.address,
+              port: info.port,
+              scopeId: info.scopeid || 0,
+            };
+            return { status: 0, data: encodeSockaddr(addr) };
+          } catch (err) {
+            return { status: -mapSocketError(err) };
+          }
+        }
+        if (!entry.socket.remoteAddress) {
+          return { status: -ENOTCONN };
+        }
+        try {
+          const addr = {
+            family: entry.socket.remoteFamily === 'IPv6' ? AF_INET6 : AF_INET,
+            host: entry.socket.remoteAddress,
+            port: entry.socket.remotePort || 0,
+            scopeId: entry.socket.remoteScopeid || 0,
+          };
+          return { status: 0, data: encodeSockaddr(addr) };
+        } catch (err) {
+          return { status: -mapSocketError(err) };
+        }
+      }
+      case 'setsockopt': {
+        const { handle, level, optname, value } = request;
+        const entry = getEntry(handle);
+        if (!entry) return { status: -EBADF };
+        const raw = Buffer.from(value || []);
+        if (!entry.sockopts) entry.sockopts = new Map();
+        entry.sockopts.set(`${level}:${optname}`, raw);
+        const val = raw.length >= 4 ? raw.readInt32LE(0) : 0;
+        if (level === SOL_SOCKET && optname === SO_KEEPALIVE && entry.kind === 'tcp') {
+          entry.socket.setKeepAlive(val !== 0);
+          entry.keepAlive = val !== 0;
+        } else if (level === IPPROTO_TCP && optname === TCP_NODELAY && entry.kind === 'tcp') {
+          entry.socket.setNoDelay(val !== 0);
+          entry.noDelay = val !== 0;
+        } else if (level === SOL_SOCKET && optname === SO_REUSEADDR) {
+          entry.reuseAddr = val !== 0;
+        } else if (level === SOL_SOCKET && optname === SO_REUSEPORT) {
+          entry.reusePort = val !== 0;
+        } else if (level === SOL_SOCKET && optname === SO_BROADCAST && entry.kind === 'udp') {
+          entry.socket.setBroadcast(val !== 0);
+          entry.broadcast = val !== 0;
+        } else if (level === SOL_SOCKET && optname === SO_RCVBUF && entry.kind === 'udp') {
+          try {
+            entry.socket.setRecvBufferSize(val);
+            entry.recvBuf = entry.socket.getRecvBufferSize();
+            const buf = Buffer.alloc(4);
+            buf.writeInt32LE(entry.recvBuf, 0);
+            entry.sockopts.set(`${level}:${optname}`, buf);
+          } catch (err) {
+            return { status: -mapSocketError(err) };
+          }
+        } else if (level === SOL_SOCKET && optname === SO_SNDBUF && entry.kind === 'udp') {
+          try {
+            entry.socket.setSendBufferSize(val);
+            entry.sendBuf = entry.socket.getSendBufferSize();
+            const buf = Buffer.alloc(4);
+            buf.writeInt32LE(entry.sendBuf, 0);
+            entry.sockopts.set(`${level}:${optname}`, buf);
+          } catch (err) {
+            return { status: -mapSocketError(err) };
+          }
+        } else if (level === SOL_SOCKET && optname === SO_LINGER) {
+          // Stored in sockopts as raw bytes for parity; Node does not expose linger.
+        }
+        return { status: 0 };
+      }
+      case 'getsockopt': {
+        const { handle, level, optname } = request;
+        const entry = getEntry(handle);
+        if (!entry) return { status: -EBADF };
+        if (entry.sockopts) {
+          const stored = entry.sockopts.get(`${level}:${optname}`);
+          if (stored) {
+            return { status: 0, data: Buffer.from(stored) };
+          }
+        }
+        let val = 0;
+        if (level === SOL_SOCKET && optname === SO_ERROR) {
+          val = entry.connectError || entry.error || 0;
+        } else if (level === SOL_SOCKET && optname === SO_KEEPALIVE && entry.kind === 'tcp') {
+          val = entry.keepAlive ? 1 : 0;
+        } else if (level === IPPROTO_TCP && optname === TCP_NODELAY && entry.kind === 'tcp') {
+          val = entry.noDelay ? 1 : 0;
+        } else if (level === SOL_SOCKET && optname === SO_REUSEADDR) {
+          val = entry.reuseAddr ? 1 : 0;
+        } else if (level === SOL_SOCKET && optname === SO_REUSEPORT) {
+          val = entry.reusePort ? 1 : 0;
+        } else if (level === SOL_SOCKET && optname === SO_BROADCAST && entry.kind === 'udp') {
+          val = entry.broadcast ? 1 : 0;
+        } else if (level === SOL_SOCKET && optname === SO_RCVBUF && entry.kind === 'udp') {
+          val = entry.recvBuf !== null ? entry.recvBuf : entry.socket.getRecvBufferSize();
+        } else if (level === SOL_SOCKET && optname === SO_SNDBUF && entry.kind === 'udp') {
+          val = entry.sendBuf !== null ? entry.sendBuf : entry.socket.getSendBufferSize();
+        } else {
+          return { status: -ENOPROTOOPT };
+        }
+        const buf = Buffer.alloc(4);
+        buf.writeInt32LE(val, 0);
+        return { status: 0, data: buf };
+      }
+      case 'detach': {
+        const { handle } = request;
+        const entry = removeEntry(handle);
+        if (!entry) return { status: -EBADF };
+        entry.refCount -= 1;
+        const detachedHandle = BigInt(handle);
+        entry.refCount += 1;
+        detached.set(detachedHandle.toString(), entry);
+        return { status: 0, handle1: detachedHandle };
+      }
+      case 'socketpair': {
+        const { family, sockType } = request;
+        if (family !== AF_INET && family !== AF_INET6) {
+          return { status: -EAFNOSUPPORT };
+        }
+        if (sockType !== SOCK_STREAM) {
+          return { status: -EAFNOSUPPORT };
+        }
+        const host = family === AF_INET6 ? '::1' : '127.0.0.1';
+        const server = net.createServer({ allowHalfOpen: true });
+        try {
+          await new Promise((resolve, reject) => {
+            server.once('error', reject);
+            server.listen({ host, port: 0 }, () => {
+              server.removeListener('error', reject);
+              resolve();
+            });
+          });
+        } catch (err) {
+          return { status: -mapSocketError(err) };
+        }
+        const address = server.address();
+        if (!address) {
+          server.close();
+          return { status: -EINVAL };
+        }
+        const clientSock = new net.Socket({ allowHalfOpen: true });
+        const clientEntry = {
+          kind: 'tcp',
+          socket: clientSock,
+          refCount: 1,
+          readQueue: [],
+          recvQueue: [],
+          acceptQueue: [],
+          waiters: [],
+          ended: false,
+          closed: false,
+          error: null,
+          backpressure: false,
+          connected: false,
+          connectPending: true,
+          connectError: null,
+          listening: false,
+          noDelay: false,
+          keepAlive: false,
+          sockopts: new Map(),
+          reuseAddr: false,
+          reusePort: false,
+          broadcast: false,
+          recvBuf: null,
+          sendBuf: null,
+        };
+        attachTcpHandlers(clientEntry);
+        const leftHandle = allocHandle(clientEntry);
+        const acceptedPromise = new Promise((resolve, reject) => {
+          server.once('connection', resolve);
+          server.once('error', reject);
+        });
+        clientSock.connect({ host: address.address, port: address.port });
+        let serverSock;
+        try {
+          serverSock = await acceptedPromise;
+        } catch (err) {
+          server.close();
+          return { status: -mapSocketError(err) };
+        }
+        server.close();
+        const serverEntry = {
+          kind: 'tcp',
+          socket: serverSock,
+          refCount: 1,
+          readQueue: [],
+          recvQueue: [],
+          acceptQueue: [],
+          waiters: [],
+          ended: false,
+          closed: false,
+          error: null,
+          backpressure: false,
+          connected: true,
+          connectPending: false,
+          connectError: null,
+          listening: false,
+          noDelay: false,
+          keepAlive: false,
+          sockopts: new Map(),
+          reuseAddr: false,
+          reusePort: false,
+          broadcast: false,
+          recvBuf: null,
+          sendBuf: null,
+        };
+        attachTcpHandlers(serverEntry);
+        const rightHandle = allocHandle(serverEntry);
+        return { status: 0, handle1: leftHandle, handle2: rightHandle };
+      }
+      case 'getaddrinfo': {
+        const {
+          hostBytes,
+          serviceBytes,
+          family,
+          sockType,
+          proto,
+          flags,
+        } = request;
+        const host = hostBytes && hostBytes.length ? hostBytes.toString('utf8') : null;
+        const service = serviceBytes && serviceBytes.length ? serviceBytes.toString('utf8') : null;
+        let port = 0;
+        if (service) {
+          if (/^\d+$/.test(service)) {
+            port = Number.parseInt(service, 10);
+          } else {
+            let protoName = '';
+            if (proto === IPPROTO_TCP) protoName = 'tcp';
+            if (proto === 17) protoName = 'udp';
+            if (!protoName) {
+              if (sockType === SOCK_DGRAM) protoName = 'udp';
+              if (sockType === SOCK_STREAM) protoName = 'tcp';
+            }
+            const svcPort = lookupServicePort(service, protoName);
+            if (svcPort === null || svcPort === undefined) {
+              return { status: -ENOENT };
+            }
+            port = svcPort;
+          }
+        }
+        try {
+          let entries = [];
+          if (host && net.isIP(host)) {
+            entries = [
+              {
+                address: host,
+                family: net.isIP(host),
+              },
+            ];
+          } else {
+            entries = await dns.promises.lookup(host || '0.0.0.0', {
+              all: true,
+              family: family === AF_INET6 ? 6 : family === AF_INET ? 4 : 0,
+            });
+          }
+          const payload = [];
+          const count = Buffer.alloc(4);
+          count.writeUInt32LE(entries.length, 0);
+          payload.push(count);
+          for (const entry of entries) {
+            const fam = entry.family === 6 ? AF_INET6 : AF_INET;
+            const canon = Buffer.alloc(0);
+            const addrBytes = encodeSockaddr({
+              family: fam,
+              host: entry.address,
+              port,
+            });
+            const header = Buffer.alloc(12);
+            header.writeInt32LE(fam, 0);
+            header.writeInt32LE(sockType, 4);
+            header.writeInt32LE(proto, 8);
+            const canonLen = Buffer.alloc(4);
+            canonLen.writeUInt32LE(canon.length, 0);
+            const addrLen = Buffer.alloc(4);
+            addrLen.writeUInt32LE(addrBytes.length, 0);
+            payload.push(header, canonLen, canon, addrLen, addrBytes);
+          }
+          return { status: 0, data: Buffer.concat(payload) };
+        } catch (err) {
+          return { status: -ENOENT };
+        }
+      }
+      case 'gethostname': {
+        try {
+          const name = os.hostname();
+          return { status: 0, data: Buffer.from(name, 'utf8') };
+        } catch (err) {
+          return { status: -mapSocketError(err) };
+        }
+      }
+      case 'getservbyname': {
+        const { nameBytes, protoBytes } = request;
+        const name = nameBytes ? nameBytes.toString('utf8') : '';
+        if (!name) return { status: -EINVAL };
+        const proto = protoBytes && protoBytes.length ? protoBytes.toString('utf8') : '';
+        const port = lookupServicePort(name, proto);
+        if (port === null || port === undefined) {
+          return { status: -ENOENT };
+        }
+        return { status: port };
+      }
+      case 'getservbyport': {
+        const { port, protoBytes } = request;
+        const proto = protoBytes && protoBytes.length ? protoBytes.toString('utf8') : '';
+        const name = lookupServiceName(port, proto);
+        if (!name) {
+          return { status: -ENOENT };
+        }
+        return { status: 0, data: Buffer.from(name, 'utf8') };
+      }
+      case 'poll': {
+        const { handle, events } = request;
+        const entry = getEntry(handle);
+        if (!entry) return { status: -EBADF };
+        const mask = pollReady(entry, events);
+        return { status: mask };
+      }
+      case 'wait': {
+        const { handle, events, timeoutMs } = request;
+        const entry = getEntry(handle);
+        if (!entry) return { status: -EBADF };
+        const ready = await awaitReady(entry, events, timeoutMs);
+        if (ready === 0) {
+          return { status: -ETIMEDOUT };
+        }
+        return { status: 0 };
+      }
+      case 'has_ipv6': {
+        try {
+          const test = net.createServer();
+          await new Promise((resolve, reject) => {
+            test.once('error', reject);
+            test.listen({ host: '::1', port: 0 }, () => {
+              test.close(() => resolve());
+            });
+          });
+          return { status: 1 };
+        } catch (err) {
+          return { status: 0 };
+        }
+      }
+      default:
+        return { status: -ENOSYS };
+    }
+  };
+
+  parentPort.on('message', async (msg) => {
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.type !== 'request' || !msg.sab) return;
+    const sab = msg.sab;
+    const header = new Int32Array(sab, 0, SOCKET_SAB_HEADER_SIZE / 4);
+    const dataView = new Uint8Array(sab, SOCKET_SAB_DATA_OFFSET);
+    const respond = (result) => {
+      const status = result && typeof result.status === 'number' ? result.status : -EINVAL;
+      header[1] = status | 0;
+      let dataTotalLen = 0;
+      let dataCopyLen = 0;
+      if (result && result.data) {
+        const bytes = Buffer.from(result.data);
+        dataTotalLen = bytes.length;
+        dataCopyLen = Math.min(bytes.length, dataView.length);
+        dataView.set(bytes.subarray(0, dataCopyLen), 0);
+      }
+      let extraTotalLen = 0;
+      if (result && result.extra) {
+        const bytes = Buffer.from(result.extra);
+        extraTotalLen = bytes.length;
+        const offset = dataCopyLen;
+        const extraCopyLen = Math.min(bytes.length, dataView.length - offset);
+        dataView.set(bytes.subarray(0, extraCopyLen), offset);
+      }
+      header[2] = dataTotalLen;
+      header[7] = extraTotalLen;
+      if (result && result.handle1 !== undefined && result.handle1 !== null) {
+        writeHandleParts(header, 3, result.handle1);
+      } else {
+        writeHandleParts(header, 3, 0n);
+      }
+      if (result && result.handle2 !== undefined && result.handle2 !== null) {
+        writeHandleParts(header, 5, result.handle2);
+      }
+      Atomics.store(header, 0, 1);
+      Atomics.notify(header, 0, 1);
+    };
+    try {
+      const result = await handleSocketOp(msg.op, msg.request || {}, dataView);
+      respond(result || { status: 0 });
+    } catch (err) {
+      respond({ status: -mapSocketError(err) });
+    }
+  });
+};
+
+if (IS_SOCKET_WORKER) {
+  socketWorkerMain();
+}
+
+class SocketWorkerClient {
+  constructor() {
+    this.worker = new Worker(__filename, { workerData: { kind: 'molt_socket_host' } });
+    this.dead = false;
+    this.worker.on('error', () => {
+      this.dead = true;
+    });
+    this.worker.on('exit', () => {
+      this.dead = true;
+    });
+  }
+
+  call(op, request, dataCap, timeoutMs) {
+    if (this.dead) {
+      throw new Error('socket host worker unavailable');
+    }
+    const cap = dataCap || 0;
+    const sab = new SharedArrayBuffer(SOCKET_SAB_HEADER_SIZE + cap);
+    const header = new Int32Array(sab, 0, SOCKET_SAB_HEADER_SIZE / 4);
+    this.worker.postMessage({
+      type: 'request',
+      op,
+      request,
+      sab,
+    });
+    let waitTimeout;
+    if (typeof timeoutMs === 'number') {
+      waitTimeout = timeoutMs < 0 ? undefined : timeoutMs + 1000;
+    } else {
+      waitTimeout = SOCKET_RPC_TIMEOUT_MS;
+    }
+    const waitRes = Atomics.wait(header, 0, 0, waitTimeout);
+    if (waitRes === 'timed-out') {
+      throw new Error(`socket host ${op} timed out`);
+    }
+    const status = header[1] | 0;
+    const dataLen = header[2] >>> 0;
+    const extraLen = header[7] >>> 0;
+    const dataView = new Uint8Array(sab, SOCKET_SAB_DATA_OFFSET);
+    const dataCopyLen = Math.min(dataLen, dataView.length);
+    const data = dataCopyLen ? Buffer.from(dataView.subarray(0, dataCopyLen)) : Buffer.alloc(0);
+    const extraCopyLen = Math.min(extraLen, dataView.length - dataCopyLen);
+    const extra = extraCopyLen
+      ? Buffer.from(dataView.subarray(dataCopyLen, dataCopyLen + extraCopyLen))
+      : Buffer.alloc(0);
+    const handle1 = readHandleParts(header, 3);
+    const handle2 = readHandleParts(header, 5);
+    return { status, data, extra, dataLen, extraLen, handle1, handle2 };
+  }
+}
+
+let socketWorkerClient = null;
+
+const getSocketWorkerClient = () => {
+  if (socketWorkerClient && !socketWorkerClient.dead) return socketWorkerClient;
+  socketWorkerClient = new SocketWorkerClient();
+  return socketWorkerClient;
+};
+
+const socketCall = (op, request, dataCap, timeoutMs) => {
+  try {
+    const client = getSocketWorkerClient();
+    return client.call(op, request, dataCap, timeoutMs);
+  } catch (err) {
+    return {
+      status: -ENOSYS,
+      data: Buffer.alloc(0),
+      extra: Buffer.alloc(0),
+      dataLen: 0,
+      extraLen: 0,
+      handle1: 0n,
+      handle2: 0n,
+    };
+  }
+};
+
+const socketHostNew = (family, sockType, proto, fileno) => {
+  const raw = typeof fileno === 'bigint' ? Number(fileno) : fileno;
+  const res = socketCall('new', { family, sockType, proto, fileno: raw }, 0);
+  if (res.status < 0) return BigInt(res.status);
+  return res.handle1;
+};
+
+const socketHostClose = (handle) => {
+  const res = socketCall('close', { handle: Number(handle) }, 0);
+  return res.status;
+};
+
+const socketHostClone = (handle) => {
+  const res = socketCall('clone', { handle: Number(handle) }, 0);
+  if (res.status < 0) return BigInt(res.status);
+  return res.handle1;
+};
+
+const socketHostBind = (handle, addrPtr, addrLen) => {
+  if (!wasmMemory) return -ENOSYS;
+  const addr = readBytes(addrPtr, addrLen);
+  const res = socketCall('bind', { handle: Number(handle), addr }, 0);
+  return res.status;
+};
+
+const socketHostListen = (handle, backlog) => {
+  const res = socketCall('listen', { handle: Number(handle), backlog }, 0);
+  return res.status;
+};
+
+const socketHostAccept = (handle, addrPtr, addrCap, outLenPtr) => {
+  if (!wasmMemory) return -BigInt(ENOSYS);
+  const res = socketCall('accept', { handle: Number(handle) }, addrCap);
+  if (res.status < 0) {
+    if (outLenPtr) writeU32(Number(outLenPtr), 0);
+    return BigInt(res.status);
+  }
+  const addrLen = res.dataLen || 0;
+  if (addrLen > addrCap) {
+    if (outLenPtr) writeU32(Number(outLenPtr), addrLen);
+    return -BigInt(ENOMEM);
+  }
+  if (!writeBytes(addrPtr, res.data)) {
+    return -BigInt(EINVAL);
+  }
+  if (outLenPtr) writeU32(Number(outLenPtr), addrLen);
+  return res.handle1;
+};
+
+const socketHostConnect = (handle, addrPtr, addrLen) => {
+  if (!wasmMemory) return -ENOSYS;
+  const addr = readBytes(addrPtr, addrLen);
+  const res = socketCall('connect', { handle: Number(handle), addr }, 0);
+  return res.status;
+};
+
+const socketHostConnectEx = (handle) => {
+  const res = socketCall('connect_ex', { handle: Number(handle) }, 0);
+  return res.status;
+};
+
+const socketHostRecv = (handle, bufPtr, bufLen, flags) => {
+  if (!wasmMemory) return -ENOSYS;
+  const res = socketCall('recv', { handle: Number(handle), size: bufLen, flags }, bufLen);
+  if (res.status >= 0) {
+    if (!writeBytes(bufPtr, res.data)) return -EINVAL;
+  }
+  return res.status;
+};
+
+const socketHostSend = (handle, bufPtr, bufLen, flags) => {
+  if (!wasmMemory) return -ENOSYS;
+  const payload = readBytes(bufPtr, bufLen);
+  const res = socketCall('send', { handle: Number(handle), payload, flags }, 0);
+  return res.status;
+};
+
+const socketHostSendTo = (handle, bufPtr, bufLen, flags, addrPtr, addrLen) => {
+  if (!wasmMemory) return -ENOSYS;
+  const payload = readBytes(bufPtr, bufLen);
+  const addr = readBytes(addrPtr, addrLen);
+  const res = socketCall('sendto', { handle: Number(handle), payload, flags, addr }, 0);
+  return res.status;
+};
+
+const socketHostRecvFrom = (handle, bufPtr, bufLen, flags, addrPtr, addrCap, outLenPtr) => {
+  if (!wasmMemory) return -ENOSYS;
+  const res = socketCall(
+    'recvfrom',
+    { handle: Number(handle), size: bufLen, flags },
+    bufLen + addrCap,
+  );
+  if (res.status >= 0) {
+    if (!writeBytes(bufPtr, res.data)) return -EINVAL;
+    const addrLen = res.extraLen || 0;
+    if (addrLen > addrCap) {
+      if (outLenPtr) writeU32(Number(outLenPtr), addrLen);
+      return -ENOMEM;
+    }
+    if (!writeBytes(addrPtr, res.extra)) return -EINVAL;
+    if (outLenPtr) writeU32(Number(outLenPtr), addrLen);
+  }
+  return res.status;
+};
+
+const socketHostShutdown = (handle, how) => {
+  const res = socketCall('shutdown', { handle: Number(handle), how }, 0);
+  return res.status;
+};
+
+const socketHostGetsockname = (handle, addrPtr, addrCap, outLenPtr) => {
+  if (!wasmMemory) return -ENOSYS;
+  const res = socketCall('getsockname', { handle: Number(handle) }, addrCap);
+  if (res.status < 0) return res.status;
+  const addrLen = res.dataLen || 0;
+  if (addrLen > addrCap) {
+    if (outLenPtr) writeU32(Number(outLenPtr), addrLen);
+    return -ENOMEM;
+  }
+  if (!writeBytes(addrPtr, res.data)) return -EINVAL;
+  if (outLenPtr) writeU32(Number(outLenPtr), addrLen);
+  return 0;
+};
+
+const socketHostGetpeername = (handle, addrPtr, addrCap, outLenPtr) => {
+  if (!wasmMemory) return -ENOSYS;
+  const res = socketCall('getpeername', { handle: Number(handle) }, addrCap);
+  if (res.status < 0) return res.status;
+  const addrLen = res.dataLen || 0;
+  if (addrLen > addrCap) {
+    if (outLenPtr) writeU32(Number(outLenPtr), addrLen);
+    return -ENOMEM;
+  }
+  if (!writeBytes(addrPtr, res.data)) return -EINVAL;
+  if (outLenPtr) writeU32(Number(outLenPtr), addrLen);
+  return 0;
+};
+
+const socketHostSetsockopt = (handle, level, optname, valPtr, valLen) => {
+  if (!wasmMemory) return -ENOSYS;
+  const value = readBytes(valPtr, valLen);
+  const res = socketCall('setsockopt', { handle: Number(handle), level, optname, value }, 0);
+  return res.status;
+};
+
+const socketHostGetsockopt = (handle, level, optname, valPtr, valLen, outLenPtr) => {
+  if (!wasmMemory) return -ENOSYS;
+  const res = socketCall('getsockopt', { handle: Number(handle), level, optname }, valLen);
+  if (res.status < 0) return res.status;
+  const dataLen = res.dataLen || 0;
+  if (dataLen > valLen) {
+    if (outLenPtr) writeU32(Number(outLenPtr), dataLen);
+    return -ENOMEM;
+  }
+  if (!writeBytes(valPtr, res.data)) return -EINVAL;
+  if (outLenPtr) writeU32(Number(outLenPtr), dataLen);
+  return 0;
+};
+
+const socketHostDetach = (handle) => {
+  const res = socketCall('detach', { handle: Number(handle) }, 0);
+  if (res.status < 0) return BigInt(res.status);
+  return res.handle1;
+};
+
+const socketHostSocketpair = (family, sockType, proto, outLeftPtr, outRightPtr) => {
+  if (!wasmMemory) return -ENOSYS;
+  const res = socketCall('socketpair', { family, sockType, proto }, 0);
+  if (res.status < 0) return res.status;
+  writeU64(Number(outLeftPtr), res.handle1);
+  writeU64(Number(outRightPtr), res.handle2);
+  return 0;
+};
+
+const socketHostGetaddrinfo = (
+  hostPtr,
+  hostLen,
+  servPtr,
+  servLen,
+  family,
+  sockType,
+  proto,
+  flags,
+  outPtr,
+  outCap,
+  outLenPtr,
+) => {
+  if (!wasmMemory) return -ENOSYS;
+  const hostBytes = hostLen ? readBytes(hostPtr, hostLen) : Buffer.alloc(0);
+  const serviceBytes = servLen ? readBytes(servPtr, servLen) : Buffer.alloc(0);
+  const res = socketCall(
+    'getaddrinfo',
+    { hostBytes, serviceBytes, family, sockType, proto, flags },
+    outCap,
+  );
+  if (res.status < 0) return res.status;
+  const dataLen = res.dataLen || 0;
+  if (dataLen > outCap) {
+    if (outLenPtr) writeU32(Number(outLenPtr), dataLen);
+    return -ENOMEM;
+  }
+  if (!writeBytes(outPtr, res.data)) return -EINVAL;
+  if (outLenPtr) writeU32(Number(outLenPtr), dataLen);
+  return 0;
+};
+
+const socketHostGethostname = (bufPtr, bufCap, outLenPtr) => {
+  if (!wasmMemory) return -ENOSYS;
+  const res = socketCall('gethostname', {}, bufCap);
+  if (res.status < 0) return res.status;
+  const dataLen = res.dataLen || 0;
+  if (dataLen > bufCap) {
+    if (outLenPtr) writeU32(Number(outLenPtr), dataLen);
+    return -ENOMEM;
+  }
+  if (!writeBytes(bufPtr, res.data)) return -EINVAL;
+  if (outLenPtr) writeU32(Number(outLenPtr), dataLen);
+  return 0;
+};
+
+const socketHostGetservbyname = (namePtr, nameLen, protoPtr, protoLen) => {
+  if (!wasmMemory) return -ENOSYS;
+  const nameBytes = readBytes(namePtr, nameLen);
+  const protoBytes = protoLen ? readBytes(protoPtr, protoLen) : Buffer.alloc(0);
+  const res = socketCall('getservbyname', { nameBytes, protoBytes }, 0);
+  return res.status;
+};
+
+const socketHostGetservbyport = (port, protoPtr, protoLen, bufPtr, bufCap, outLenPtr) => {
+  if (!wasmMemory) return -ENOSYS;
+  const protoBytes = protoLen ? readBytes(protoPtr, protoLen) : Buffer.alloc(0);
+  const res = socketCall('getservbyport', { port, protoBytes }, bufCap);
+  if (res.status < 0) return res.status;
+  const dataLen = res.dataLen || 0;
+  if (dataLen > bufCap) {
+    if (outLenPtr) writeU32(Number(outLenPtr), dataLen);
+    return -ENOMEM;
+  }
+  if (!writeBytes(bufPtr, res.data)) return -EINVAL;
+  if (outLenPtr) writeU32(Number(outLenPtr), dataLen);
+  return 0;
+};
+
+const socketHostPoll = (handle, events) => {
+  const res = socketCall('poll', { handle: Number(handle), events }, 0);
+  return res.status;
+};
+
+const socketHostWait = (handle, events, timeoutMs) => {
+  const res = socketCall('wait', { handle: Number(handle), events, timeoutMs }, 0, timeoutMs);
+  return res.status;
+};
+
+const socketHasIpv6Host = () => {
+  const res = socketCall('has_ipv6', {}, 0);
+  return res.status;
+};
+
+const wsHandles = new Map();
+let nextWsHandle = 1;
+
+const allocWsHandle = () => {
+  let handle = nextWsHandle;
+  while (wsHandles.has(handle)) {
+    handle += 1;
+  }
+  nextWsHandle = handle + 1;
+  return handle;
+};
+
+const wsEntryForHandle = (handle) => wsHandles.get(Number(handle)) || null;
+
+const wsNormalizeData = (data) => {
+  if (data instanceof ArrayBuffer) {
+    return new Uint8Array(data);
+  }
+  if (ArrayBuffer.isView(data)) {
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  }
+  if (Buffer.isBuffer(data)) {
+    return new Uint8Array(data);
+  }
+  if (typeof data === 'string') {
+    return new Uint8Array(Buffer.from(data, 'utf8'));
+  }
+  return new Uint8Array(0);
+};
+
+const wsAttachHandlers = (entry) => {
+  const ws = entry.ws;
+  const handleMessage = (event) => {
+    const payload = event && event.data !== undefined ? event.data : event;
+    const bytes = wsNormalizeData(payload);
+    if (bytes.length) {
+      entry.queue.push(bytes);
+    }
+  };
+  const handleOpen = () => {
+    entry.state = 'open';
+  };
+  const handleError = () => {
+    entry.state = 'error';
+    entry.error = ECONNRESET;
+  };
+  const handleClose = () => {
+    entry.state = 'closed';
+  };
+  if (typeof ws.addEventListener === 'function') {
+    ws.addEventListener('open', handleOpen);
+    ws.addEventListener('message', handleMessage);
+    ws.addEventListener('error', handleError);
+    ws.addEventListener('close', handleClose);
+  } else if (typeof ws.on === 'function') {
+    ws.on('open', handleOpen);
+    ws.on('message', handleMessage);
+    ws.on('error', handleError);
+    ws.on('close', handleClose);
+  } else {
+    ws.onopen = handleOpen;
+    ws.onmessage = handleMessage;
+    ws.onerror = handleError;
+    ws.onclose = handleClose;
+  }
+};
+
+const wsHostConnect = (urlPtr, urlLen, outHandlePtr) => {
+  if (!wasmMemory) return -ENOSYS;
+  if (!outHandlePtr) return -EINVAL;
+  const ctor = getWebSocketCtor();
+  if (!ctor) return -ENOSYS;
+  const url = readUtf8(urlPtr, Number(urlLen));
+  if (!url) return -EINVAL;
+  let ws;
+  try {
+    ws = new ctor(url);
+  } catch (err) {
+    return -ECONNREFUSED;
+  }
+  const handle = allocWsHandle();
+  const entry = { handle, ws, state: 'connecting', queue: [], error: 0 };
+  wsHandles.set(handle, entry);
+  try {
+    ws.binaryType = 'arraybuffer';
+  } catch {
+    // ignore
+  }
+  wsAttachHandlers(entry);
+  writeU64(Number(outHandlePtr), BigInt(handle));
+  return 0;
+};
+
+const wsHostSend = (handle, dataPtr, len) => {
+  const entry = wsEntryForHandle(handle);
+  if (!entry) return -EBADF;
+  if (entry.state === 'error') return -(entry.error || ECONNRESET);
+  if (entry.state !== 'open') return -EWOULDBLOCK;
+  const buffered = entry.ws && typeof entry.ws.bufferedAmount === 'number' ? entry.ws.bufferedAmount : 0;
+  if (buffered > WS_BUFFER_MAX) return -EWOULDBLOCK;
+  const payload = readBytes(dataPtr, Number(len));
+  try {
+    entry.ws.send(payload);
+    return 0;
+  } catch (err) {
+    entry.state = 'error';
+    entry.error = EPIPE;
+    return -EPIPE;
+  }
+};
+
+const wsHostRecv = (handle, bufPtr, bufCap, outLenPtr) => {
+  if (!wasmMemory) return -ENOSYS;
+  const entry = wsEntryForHandle(handle);
+  if (!entry) return -EBADF;
+  const cap = Number(bufCap);
+  if (entry.queue.length) {
+    const payload = entry.queue.shift();
+    const size = payload.length;
+    if (outLenPtr) writeU32(Number(outLenPtr), size);
+    if (size > cap) return -ENOMEM;
+    if (!writeBytes(bufPtr, Buffer.from(payload))) return -EINVAL;
+    return 0;
+  }
+  if (entry.state === 'closed') {
+    if (outLenPtr) writeU32(Number(outLenPtr), 0);
+    return 0;
+  }
+  if (entry.state === 'error') {
+    return -(entry.error || ECONNRESET);
+  }
+  return -EWOULDBLOCK;
+};
+
+const wsHostClose = (handle) => {
+  const entry = wsEntryForHandle(handle);
+  if (!entry) return -EBADF;
+  wsHandles.delete(Number(handle));
+  try {
+    if (entry.ws && entry.state !== 'closed') {
+      entry.ws.close();
+    }
+  } catch {
+    // ignore
+  }
+  entry.state = 'closed';
+  return 0;
+};
+
+const processHandles = new Map();
+let nextProcessHandle = 1;
+
+const allocProcessHandle = () => {
+  let handle = nextProcessHandle;
+  while (processHandles.has(handle)) {
+    handle += 1;
+  }
+  nextProcessHandle = handle + 1;
+  return handle;
+};
+
+const readU32LE = (buf, offset) => {
+  if (offset + 4 > buf.length) {
+    throw new Error('unexpected EOF');
+  }
+  return buf.readUInt32LE(offset);
+};
+
+const decodeStringList = (buf) => {
+  let offset = 0;
+  const count = readU32LE(buf, offset);
+  offset += 4;
+  const out = [];
+  for (let i = 0; i < count; i += 1) {
+    const len = readU32LE(buf, offset);
+    offset += 4;
+    const end = offset + len;
+    if (end > buf.length) throw new Error('unexpected EOF');
+    out.push(buf.slice(offset, end).toString('utf8'));
+    offset = end;
+  }
+  return out;
+};
+
+const decodeEnv = (buf) => {
+  if (!buf || buf.length === 0) return { mode: 0, entries: [] };
+  let offset = 0;
+  const mode = buf.readUInt8(offset);
+  offset += 1;
+  const count = readU32LE(buf, offset);
+  offset += 4;
+  const entries = [];
+  for (let i = 0; i < count; i += 1) {
+    const keyLen = readU32LE(buf, offset);
+    offset += 4;
+    const keyEnd = offset + keyLen;
+    if (keyEnd > buf.length) throw new Error('unexpected EOF');
+    const key = buf.slice(offset, keyEnd).toString('utf8');
+    offset = keyEnd;
+    const valLen = readU32LE(buf, offset);
+    offset += 4;
+    const valEnd = offset + valLen;
+    if (valEnd > buf.length) throw new Error('unexpected EOF');
+    const value = buf.slice(offset, valEnd).toString('utf8');
+    offset = valEnd;
+    entries.push([key, value]);
+  }
+  return { mode, entries };
+};
+
+const processStdioMode = (mode) => {
+  if (mode === PROCESS_STDIO_PIPE) return 'pipe';
+  if (mode === PROCESS_STDIO_DEVNULL) return 'ignore';
+  return 'inherit';
+};
+
+const processEntryForHandle = (handle) => processHandles.get(Number(handle)) || null;
+
+const flushProcessQueue = (entry, which) => {
+  if (!runtimeInstance) return;
+  const queue = which === 'stdout' ? entry.pendingOut : entry.pendingErr;
+  const streamBits = which === 'stdout' ? entry.stdoutStream : entry.stderrStream;
+  if (!streamBits) return;
+  while (queue.length) {
+    const chunk = queue[0];
+    const ok = sendStreamFrame(streamBits, chunk);
+    if (!ok) {
+      return;
+    }
+    queue.shift();
+  }
+};
+
+const closeProcessStream = (streamBits) => {
+  if (!runtimeInstance || !streamBits) return;
+  try {
+    runtimeInstance.exports.molt_stream_close(streamBits);
+  } catch {
+    // ignore
+  }
+};
+
+const notifyProcessExit = (entry, exitCode) => {
+  if (!runtimeInstance) return;
+  const notify = runtimeInstance.exports.molt_process_host_notify;
+  if (typeof notify === 'function') {
+    try {
+      notify(BigInt(entry.handle), exitCode | 0);
+    } catch {
+      // ignore
+    }
+  }
+};
+
+const processHostSpawn = (
+  argsPtr,
+  argsLen,
+  envPtr,
+  envLen,
+  cwdPtr,
+  cwdLen,
+  stdinMode,
+  stdoutMode,
+  stderrMode,
+  outHandlePtr,
+) => {
+  if (!wasmMemory) return -ENOSYS;
+  if (!outHandlePtr) return -EINVAL;
+  let args;
+  try {
+    args = decodeStringList(readBytes(argsPtr, argsLen));
+  } catch {
+    return -EINVAL;
+  }
+  if (!args.length) return -EINVAL;
+  let env = null;
+  if (envPtr && envLen) {
+    try {
+      const decoded = decodeEnv(readBytes(envPtr, envLen));
+      if (decoded.mode === 1) {
+        env = {};
+      } else if (decoded.mode === 2) {
+        env = { ...process.env };
+      }
+      if (env !== null) {
+        for (const [key, value] of decoded.entries) {
+          env[key] = value;
+        }
+      }
+    } catch {
+      return -EINVAL;
+    }
+  }
+  const cwd = cwdPtr && cwdLen ? readUtf8(cwdPtr, cwdLen) : undefined;
+  const stdio = [
+    processStdioMode(stdinMode),
+    processStdioMode(stdoutMode),
+    processStdioMode(stderrMode),
+  ];
+  let child;
+  try {
+    child = spawn(args[0], args.slice(1), { env: env || undefined, cwd, stdio });
+  } catch {
+    return -ENOENT;
+  }
+  const handle = Number.isFinite(child.pid) ? child.pid : allocProcessHandle();
+  const entry = {
+    handle,
+    child,
+    stdin: child.stdin || null,
+    stdout: child.stdout || null,
+    stderr: child.stderr || null,
+    stdoutStream: 0n,
+    stderrStream: 0n,
+    pendingOut: [],
+    pendingErr: [],
+    exitCode: null,
+  };
+  processHandles.set(handle, entry);
+
+  if (entry.stdout) {
+    entry.stdout.on('data', (chunk) => {
+      if (!chunk || !chunk.length) return;
+      if (entry.stdoutStream) {
+        if (!sendStreamFrame(entry.stdoutStream, Buffer.from(chunk))) {
+          entry.pendingOut.push(Buffer.from(chunk));
+        }
+      } else {
+        entry.pendingOut.push(Buffer.from(chunk));
+      }
+    });
+    entry.stdout.on('end', () => {
+      flushProcessQueue(entry, 'stdout');
+      closeProcessStream(entry.stdoutStream);
+    });
+  }
+  if (entry.stderr) {
+    entry.stderr.on('data', (chunk) => {
+      if (!chunk || !chunk.length) return;
+      if (entry.stderrStream) {
+        if (!sendStreamFrame(entry.stderrStream, Buffer.from(chunk))) {
+          entry.pendingErr.push(Buffer.from(chunk));
+        }
+      } else {
+        entry.pendingErr.push(Buffer.from(chunk));
+      }
+    });
+    entry.stderr.on('end', () => {
+      flushProcessQueue(entry, 'stderr');
+      closeProcessStream(entry.stderrStream);
+    });
+  }
+  child.on('exit', (code, signal) => {
+    let exitCode = typeof code === 'number' ? code : null;
+    if (exitCode === null && signal) {
+      const sig = os.constants.signals && os.constants.signals[signal];
+      exitCode = Number.isFinite(sig) ? -sig : -1;
+    }
+    if (exitCode === null) exitCode = -1;
+    entry.exitCode = exitCode;
+    notifyProcessExit(entry, exitCode);
+    flushProcessQueue(entry, 'stdout');
+    flushProcessQueue(entry, 'stderr');
+    closeProcessStream(entry.stdoutStream);
+    closeProcessStream(entry.stderrStream);
+  });
+  child.on('error', () => {
+    entry.exitCode = -1;
+    notifyProcessExit(entry, -1);
+  });
+  writeU64(Number(outHandlePtr), BigInt(handle));
+  return 0;
+};
+
+const processHostWait = (handle, _timeoutMs, outCodePtr) => {
+  if (!wasmMemory) return -ENOSYS;
+  const entry = processEntryForHandle(handle);
+  if (!entry) return -EBADF;
+  if (entry.exitCode === null || entry.exitCode === undefined) {
+    return -EWOULDBLOCK;
+  }
+  if (outCodePtr) writeI32(Number(outCodePtr), entry.exitCode | 0);
+  return 0;
+};
+
+const processHostKill = (handle) => {
+  const entry = processEntryForHandle(handle);
+  if (!entry) return -EBADF;
+  try {
+    entry.child.kill('SIGKILL');
+    return 0;
+  } catch {
+    return -EINVAL;
+  }
+};
+
+const processHostTerminate = (handle) => {
+  const entry = processEntryForHandle(handle);
+  if (!entry) return -EBADF;
+  try {
+    entry.child.kill('SIGTERM');
+    return 0;
+  } catch {
+    return -EINVAL;
+  }
+};
+
+const processHostWrite = (handle, dataPtr, len) => {
+  const entry = processEntryForHandle(handle);
+  if (!entry) return -EBADF;
+  if (!entry.stdin || entry.stdin.destroyed) return -EPIPE;
+  const payload = readBytes(dataPtr, Number(len));
+  if (!payload.length) return 0;
+  try {
+    const ok = entry.stdin.write(payload);
+    return ok ? 0 : -EWOULDBLOCK;
+  } catch {
+    return -EPIPE;
+  }
+};
+
+const processHostCloseStdin = (handle) => {
+  const entry = processEntryForHandle(handle);
+  if (!entry) return -EBADF;
+  if (!entry.stdin) return 0;
+  try {
+    entry.stdin.end();
+    return 0;
+  } catch {
+    return -EINVAL;
+  }
+};
+
+const processHostStdio = (handle, which, outStreamPtr) => {
+  if (!runtimeInstance || !wasmMemory) return -ENOSYS;
+  const entry = processEntryForHandle(handle);
+  if (!entry || !outStreamPtr) return -EBADF;
+  if (which === PROCESS_STDIO_STDOUT) {
+    if (!entry.stdoutStream) {
+      const streamBits = runtimeInstance.exports.molt_stream_new(0n);
+      entry.stdoutStream = streamBits;
+    }
+    writeU64(Number(outStreamPtr), BigInt(entry.stdoutStream));
+    flushProcessQueue(entry, 'stdout');
+    return 0;
+  }
+  if (which === PROCESS_STDIO_STDERR) {
+    if (!entry.stderrStream) {
+      const streamBits = runtimeInstance.exports.molt_stream_new(0n);
+      entry.stderrStream = streamBits;
+    }
+    writeU64(Number(outStreamPtr), BigInt(entry.stderrStream));
+    flushProcessQueue(entry, 'stderr');
+    return 0;
+  }
+  return -EINVAL;
+};
+
+const processHostPoll = () => {
+  for (const entry of processHandles.values()) {
+    flushProcessQueue(entry, 'stdout');
+    flushProcessQueue(entry, 'stderr');
+  }
+  return 0;
+};
 
 const readVarUint = (bytes, offset) => {
   let result = 0;
@@ -786,18 +3159,11 @@ const parseWasmImports = (buffer) => {
   return { memory, table, funcImports };
 };
 
-const outputImports = parseWasmImports(wasmBuffer);
-const runtimeImportsDesc = parseWasmImports(runtimeBuffer);
-const inputHasRuntimeImports = outputImports.funcImports.some(
-  (entry) => entry.module === 'molt_runtime'
-);
-if (!inputHasRuntimeImports && !linkedBuffer) {
-  linkedPath = wasmPath;
-  linkedBuffer = wasmBuffer;
-}
-const runtimeCallIndirectNames = runtimeImportsDesc.funcImports
-  .filter((entry) => entry.module === 'env' && entry.name.startsWith('molt_call_indirect'))
-  .map((entry) => entry.name);
+let outputImports = null;
+let runtimeImportsDesc = null;
+let inputHasRuntimeImports = false;
+let runtimeCallIndirectNames = [];
+let canDirectLink = false;
 
 const mergeLimits = (left, right, label) => {
   if (!left && !right) {
@@ -841,9 +3207,6 @@ const makeTable = (limits) => {
   }
   return new WebAssembly.Table(desc);
 };
-
-const canDirectLink =
-  outputImports.memory && outputImports.table && runtimeImportsDesc.memory;
 
 const parseWitFunctions = (source) => {
   const funcSigs = new Map();
@@ -991,6 +3354,47 @@ const runDirectLink = async () => {
     __indirect_function_table: table,
     molt_db_query_host: dbQueryHost,
     molt_db_exec_host: dbExecHost,
+    molt_db_host_poll: dbHostPoll,
+    molt_getpid_host: () =>
+      BigInt(typeof process !== 'undefined' && process.pid ? process.pid : 0),
+    molt_socket_new_host: socketHostNew,
+    molt_socket_close_host: socketHostClose,
+    molt_socket_clone_host: socketHostClone,
+    molt_socket_bind_host: socketHostBind,
+    molt_socket_listen_host: socketHostListen,
+    molt_socket_accept_host: socketHostAccept,
+    molt_socket_connect_host: socketHostConnect,
+    molt_socket_connect_ex_host: socketHostConnectEx,
+    molt_socket_recv_host: socketHostRecv,
+    molt_socket_send_host: socketHostSend,
+    molt_socket_sendto_host: socketHostSendTo,
+    molt_socket_recvfrom_host: socketHostRecvFrom,
+    molt_socket_shutdown_host: socketHostShutdown,
+    molt_socket_getsockname_host: socketHostGetsockname,
+    molt_socket_getpeername_host: socketHostGetpeername,
+    molt_socket_setsockopt_host: socketHostSetsockopt,
+    molt_socket_getsockopt_host: socketHostGetsockopt,
+    molt_socket_detach_host: socketHostDetach,
+    molt_socket_socketpair_host: socketHostSocketpair,
+    molt_socket_getaddrinfo_host: socketHostGetaddrinfo,
+    molt_socket_gethostname_host: socketHostGethostname,
+    molt_socket_getservbyname_host: socketHostGetservbyname,
+    molt_socket_getservbyport_host: socketHostGetservbyport,
+    molt_socket_poll_host: socketHostPoll,
+    molt_socket_wait_host: socketHostWait,
+    molt_socket_has_ipv6_host: socketHasIpv6Host,
+    molt_ws_connect_host: wsHostConnect,
+    molt_ws_send_host: wsHostSend,
+    molt_ws_recv_host: wsHostRecv,
+    molt_ws_close_host: wsHostClose,
+    molt_process_spawn_host: processHostSpawn,
+    molt_process_wait_host: processHostWait,
+    molt_process_kill_host: processHostKill,
+    molt_process_terminate_host: processHostTerminate,
+    molt_process_write_host: processHostWrite,
+    molt_process_close_stdin_host: processHostCloseStdin,
+    molt_process_stdio_host: processHostStdio,
+    molt_process_host_poll: processHostPoll,
   };
   for (const name of runtimeCallIndirectNames) {
     env[name] = (...args) => {
@@ -1069,6 +3473,13 @@ const runLinked = async () => {
   const linkedCallIndirectNames = linkedImports.funcImports
     .filter((entry) => entry.module === 'env' && entry.name.startsWith('molt_call_indirect'))
     .map((entry) => entry.name);
+  if (linkedCallIndirectNames.length) {
+    throw new Error(
+      `Linked wasm still imports ${linkedCallIndirectNames.join(
+        ', '
+      )}; JS call_indirect stubs removed.`,
+    );
+  }
 
   const importObject = {
     wasi_snapshot_preview1: wasi.wasiImport,
@@ -1089,37 +3500,47 @@ const runLinked = async () => {
   }
   importObject.env.molt_db_query_host = dbQueryHost;
   importObject.env.molt_db_exec_host = dbExecHost;
-  const linkedCallIndirectFns = {};
-  if (linkedCallIndirectNames.length) {
-    if (!importObject.env) {
-      importObject.env = {};
-    }
-    for (const name of linkedCallIndirectNames) {
-      importObject.env[name] = (...args) => {
-        if (callIndirectDebug) {
-          const rawIdx = args[0];
-          const idx = typeof rawIdx === 'bigint' ? Number(rawIdx) : Number(rawIdx);
-          const entry = table ? table.get(idx) : null;
-          const state = entry ? 'set' : 'null';
-          const entryName = entry && entry.name ? entry.name : 'unknown';
-          const entryLen = entry && typeof entry.length === 'number' ? entry.length : 'unknown';
-          const envGet =
-            runtimeInstance && runtimeInstance.exports
-              ? runtimeInstance.exports.molt_env_get
-              : null;
-          const isEnvGet = entry && envGet ? entry === envGet : false;
-          console.error(
-            `[molt wasm] ${name} idx=${idx} entry=${state} name=${entryName} len=${entryLen} env_get=${isEnvGet}`
-          );
-        }
-        const fn = linkedCallIndirectFns[name];
-        if (!fn) {
-          throw new Error(`${name} used before linked instantiation`);
-        }
-        return fn(...args);
-      };
-    }
-  }
+  importObject.env.molt_db_host_poll = dbHostPoll;
+  importObject.env.molt_getpid_host = () =>
+    BigInt(typeof process !== 'undefined' && process.pid ? process.pid : 0);
+  importObject.env.molt_socket_new_host = socketHostNew;
+  importObject.env.molt_socket_close_host = socketHostClose;
+  importObject.env.molt_socket_clone_host = socketHostClone;
+  importObject.env.molt_socket_bind_host = socketHostBind;
+  importObject.env.molt_socket_listen_host = socketHostListen;
+  importObject.env.molt_socket_accept_host = socketHostAccept;
+  importObject.env.molt_socket_connect_host = socketHostConnect;
+  importObject.env.molt_socket_connect_ex_host = socketHostConnectEx;
+  importObject.env.molt_socket_recv_host = socketHostRecv;
+  importObject.env.molt_socket_send_host = socketHostSend;
+  importObject.env.molt_socket_sendto_host = socketHostSendTo;
+  importObject.env.molt_socket_recvfrom_host = socketHostRecvFrom;
+  importObject.env.molt_socket_shutdown_host = socketHostShutdown;
+  importObject.env.molt_socket_getsockname_host = socketHostGetsockname;
+  importObject.env.molt_socket_getpeername_host = socketHostGetpeername;
+  importObject.env.molt_socket_setsockopt_host = socketHostSetsockopt;
+  importObject.env.molt_socket_getsockopt_host = socketHostGetsockopt;
+  importObject.env.molt_socket_detach_host = socketHostDetach;
+  importObject.env.molt_socket_socketpair_host = socketHostSocketpair;
+  importObject.env.molt_socket_getaddrinfo_host = socketHostGetaddrinfo;
+  importObject.env.molt_socket_gethostname_host = socketHostGethostname;
+  importObject.env.molt_socket_getservbyname_host = socketHostGetservbyname;
+  importObject.env.molt_socket_getservbyport_host = socketHostGetservbyport;
+  importObject.env.molt_socket_poll_host = socketHostPoll;
+  importObject.env.molt_socket_wait_host = socketHostWait;
+  importObject.env.molt_socket_has_ipv6_host = socketHasIpv6Host;
+  importObject.env.molt_ws_connect_host = wsHostConnect;
+  importObject.env.molt_ws_send_host = wsHostSend;
+  importObject.env.molt_ws_recv_host = wsHostRecv;
+  importObject.env.molt_ws_close_host = wsHostClose;
+  importObject.env.molt_process_spawn_host = processHostSpawn;
+  importObject.env.molt_process_wait_host = processHostWait;
+  importObject.env.molt_process_kill_host = processHostKill;
+  importObject.env.molt_process_terminate_host = processHostTerminate;
+  importObject.env.molt_process_write_host = processHostWrite;
+  importObject.env.molt_process_close_stdin_host = processHostCloseStdin;
+  importObject.env.molt_process_stdio_host = processHostStdio;
+  importObject.env.molt_process_host_poll = processHostPoll;
 
   const linkedModule = await WebAssembly.instantiate(linkedBuffer, importObject);
   const { molt_main } = linkedModule.instance.exports;
@@ -1134,26 +3555,38 @@ const runLinked = async () => {
     wasi.initialize({ exports: { memory: linkedMemory } });
     setWasmMemory(linkedMemory);
   }
-  if (linkedCallIndirectNames.length) {
-    for (const name of linkedCallIndirectNames) {
-      const fn = linkedModule.instance.exports[name];
-      if (typeof fn !== 'function') {
-        throw new Error(`linked wasm missing ${name} export`);
-      }
-      linkedCallIndirectFns[name] = fn;
-    }
-  }
   molt_main();
 };
 
-const preferLinkedEnv = process.env.MOLT_WASM_PREFER_LINKED;
-const preferLinked =
-  preferLinkedEnv === undefined ||
-  !['0', 'false', 'no', 'off'].includes(preferLinkedEnv.toLowerCase());
-const useLinked =
-  process.env.MOLT_WASM_LINKED === '1' || (preferLinked && linkedBuffer);
-const runner = useLinked ? runLinked : runDirectLink;
-runner().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+const runMain = async () => {
+  initWasmAssets();
+  outputImports = parseWasmImports(wasmBuffer);
+  runtimeImportsDesc = parseWasmImports(runtimeBuffer);
+  inputHasRuntimeImports = outputImports.funcImports.some(
+    (entry) => entry.module === 'molt_runtime'
+  );
+  if (!inputHasRuntimeImports && !linkedBuffer) {
+    linkedPath = wasmPath;
+    linkedBuffer = wasmBuffer;
+  }
+  runtimeCallIndirectNames = runtimeImportsDesc.funcImports
+    .filter((entry) => entry.module === 'env' && entry.name.startsWith('molt_call_indirect'))
+    .map((entry) => entry.name);
+  canDirectLink = outputImports.memory && outputImports.table && runtimeImportsDesc.memory;
+
+  const preferLinkedEnv = process.env.MOLT_WASM_PREFER_LINKED;
+  const preferLinked =
+    preferLinkedEnv === undefined ||
+    !['0', 'false', 'no', 'off'].includes(preferLinkedEnv.toLowerCase());
+  const useLinked =
+    process.env.MOLT_WASM_LINKED === '1' || (preferLinked && linkedBuffer);
+  const runner = useLinked ? runLinked : runDirectLink;
+  await runner();
+};
+
+if (!IS_DB_WORKER && !IS_SOCKET_WORKER) {
+  runMain().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

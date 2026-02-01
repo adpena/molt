@@ -7,11 +7,16 @@ class Box:
         return self._x
 
 
-box = Box(1)
-i = 0
-total = 0
-while i < 500_000:
-    total += box.x
-    i += 1
+def main() -> None:
+    container = Box(1)
+    i = 0
+    total = 0
+    while i < 500_000:
+        total += container.x
+        i += 1
 
-print(total)
+    print(total)
+
+
+if __name__ == "__main__":
+    main()

@@ -49,6 +49,10 @@ __all__ = [
     "molt_chan_new",
     "molt_chan_send",
     "molt_chan_recv",
+    "molt_chan_try_send",
+    "molt_chan_try_recv",
+    "molt_chan_send_blocking",
+    "molt_chan_recv_blocking",
     "molt_chan_drop",
 ]
 
@@ -81,6 +85,10 @@ if _IMPL is _runtime:
     molt_chan_new = _runtime.molt_chan_new
     molt_chan_send = _runtime.molt_chan_send
     molt_chan_recv = _runtime.molt_chan_recv
+    molt_chan_try_send = _runtime.molt_chan_try_send
+    molt_chan_try_recv = _runtime.molt_chan_try_recv
+    molt_chan_send_blocking = _runtime.molt_chan_send_blocking
+    molt_chan_recv_blocking = _runtime.molt_chan_recv_blocking
     molt_chan_drop = _runtime.molt_chan_drop
 else:
     install = _IMPL.install
@@ -111,4 +119,8 @@ else:
     molt_chan_new = _IMPL.molt_chan_new
     molt_chan_send = _IMPL.molt_chan_send
     molt_chan_recv = _IMPL.molt_chan_recv
+    molt_chan_try_send = _IMPL.molt_chan_try_send
+    molt_chan_try_recv = _IMPL.molt_chan_try_recv
+    molt_chan_send_blocking = _IMPL.molt_chan_send_blocking
+    molt_chan_recv_blocking = _IMPL.molt_chan_recv_blocking
     molt_chan_drop = _IMPL.molt_chan_drop

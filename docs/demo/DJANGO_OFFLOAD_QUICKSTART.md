@@ -20,7 +20,7 @@ export MOLT_DB_POSTGRES_DSN="postgres://user:pass@localhost:5432/dbname"
 3. Start Django:
 ```
 cd demo/django_app
-python3 manage.py runserver
+uv run --python 3.12 python3 manage.py runserver
 ```
 
 4. Hit endpoints:
@@ -32,7 +32,7 @@ python3 manage.py runserver
 
 5. Perf harness:
 ```
-python3 bench/scripts/run_stack.sh
+bench/scripts/run_stack.sh
 ```
 Artifacts land in `bench/results/` (k6 JSON + markdown summary).
 Worker metrics land in `/tmp/molt_demo_metrics.jsonl` unless `MOLT_DEMO_METRICS_PATH` is set.
@@ -40,7 +40,7 @@ Set `MOLT_FAKE_DB_DELAY_MS` to simulate base DB latency,
 `MOLT_FAKE_DB_DECODE_US_PER_ROW` to simulate per-row decode cost, and
 `MOLT_FAKE_DB_CPU_ITERS` to simulate per-row CPU work.
 Set `MOLT_DEMO_DB_PATH` to enable SQLite-backed reads for `/baseline` and `/offload`;
-seed it with `python3 -m demoapp.db_seed --path "$MOLT_DEMO_DB_PATH"` (or let
+seed it with `uv run --python 3.12 python3 -m demoapp.db_seed --path "$MOLT_DEMO_DB_PATH"` (or let
 `bench/scripts/run_stack.sh` seed automatically). The worker reads
 `MOLT_DB_SQLITE_PATH` (defaults to `MOLT_DEMO_DB_PATH` in the bench script). Use
 `MOLT_DB_SQLITE_READWRITE=1` to open the worker connection read-write (default is

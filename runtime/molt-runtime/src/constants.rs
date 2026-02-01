@@ -1,8 +1,5 @@
-use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicU64;
-use std::sync::{Mutex, OnceLock};
 
-use crate::object::PtrSlot;
 
 // Keep in sync with MOLT_BIND_KIND_OPEN in src/molt/frontend/__init__.py.
 pub(crate) const BIND_KIND_OPEN: i64 = 1;
@@ -41,6 +38,7 @@ pub(crate) const GEN_SEND_OFFSET: usize = 0;
 pub(crate) const GEN_THROW_OFFSET: usize = 8;
 pub(crate) const GEN_CLOSED_OFFSET: usize = 16;
 pub(crate) const GEN_EXC_DEPTH_OFFSET: usize = 24;
+pub(crate) const GEN_YIELD_FROM_OFFSET: usize = 32;
 pub(crate) const GEN_CONTROL_SIZE: usize = 48;
 
 pub(crate) const ASYNCGEN_GEN_OFFSET: usize = 0;
@@ -76,6 +74,3 @@ pub(crate) static ASYNC_POLL_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static ASYNC_PENDING_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static ASYNC_WAKEUP_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static ASYNC_SLEEP_REGISTER_COUNT: AtomicU64 = AtomicU64::new(0);
-
-pub(crate) static ASYNCGEN_REGISTRY: OnceLock<Mutex<HashSet<PtrSlot>>> = OnceLock::new();
-pub(crate) static FN_PTR_CODE: OnceLock<Mutex<HashMap<u64, u64>>> = OnceLock::new();

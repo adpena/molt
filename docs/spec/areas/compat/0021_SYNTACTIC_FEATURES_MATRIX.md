@@ -45,11 +45,11 @@
 - [ ] Date formatting (needs datetime)
 
 ### 1.5 Type Hinting Syntax
-**Status:** Supported (Ignored/Stored)
+**Status:** Partial (PEP 695 syntax partially lowered)
 - [x] Function annotations (`def f(x: int) -> int:`)
 - [x] Variable annotations (`x: int = 1`)
-- [ ] `type` alias statement (`type Point = tuple[int, int]`) (3.12)
-- [ ] Generic classes (`class A[T]:`) (3.12)
+- [x] `type` alias statement (`type Point = tuple[int, int]`) (3.12; partial metadata)
+- [x] Generic classes (`class A[T]:`) (3.12; partial metadata)
 - [ ] ParamSpec/TypeVarTuple syntax
 
 ### 1.6 Decorators

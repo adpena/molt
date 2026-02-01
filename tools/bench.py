@@ -29,6 +29,8 @@ BENCHMARKS = [
     "tests/benchmarks/bench_descriptor_property.py",
     "tests/benchmarks/bench_dict_ops.py",
     "tests/benchmarks/bench_dict_views.py",
+    "tests/benchmarks/bench_counter_words.py",
+    "tests/benchmarks/bench_etl_orders.py",
     "tests/benchmarks/bench_list_ops.py",
     "tests/benchmarks/bench_list_slice.py",
     "tests/benchmarks/bench_tuple_index.py",
@@ -62,6 +64,7 @@ BENCHMARKS = [
     "tests/benchmarks/bench_str_endswith.py",
     "tests/benchmarks/bench_memoryview_tobytes.py",
     "tests/benchmarks/bench_parse_msgpack.py",
+    "tests/benchmarks/bench_json_roundtrip.py",
 ]
 
 SMOKE_BENCHMARKS = [
@@ -71,6 +74,27 @@ SMOKE_BENCHMARKS = [
 
 MOLT_ARGS_BY_BENCH = {
     "tests/benchmarks/bench_sum_list_hints.py": ["--type-hints", "trust"],
+}
+
+DEPYLER_SKIP_BENCHMARKS: dict[str, str] = {
+    "tests/benchmarks/bench_dict_ops.py": "depyler dict typing not stabilized",
+    "tests/benchmarks/bench_dict_views.py": "depyler dict typing not stabilized",
+    "tests/benchmarks/bench_counter_words.py": "Counter not available in depyler runtime",
+    "tests/benchmarks/bench_etl_orders.py": "string parsing + dataclass unsupported in depyler",
+    "tests/benchmarks/bench_csv_parse.py": "string parsing not supported in depyler",
+    "tests/benchmarks/bench_csv_parse_wide.py": "string parsing not supported in depyler",
+    "tests/benchmarks/bench_tuple_index.py": "tuple indexing inference unstable in depyler",
+    "tests/benchmarks/bench_channel_throughput.py": "requires Molt channel intrinsics",
+    "tests/benchmarks/bench_ptr_registry.py": "requires Molt pointer registry intrinsics",
+    "tests/benchmarks/bench_matrix_math.py": "requires molt_buffer runtime module",
+    "tests/benchmarks/bench_parse_msgpack.py": "requires molt_msgpack runtime module",
+    "tests/benchmarks/bench_memoryview_tobytes.py": "requires memoryview cast/tobytes support",
+    "tests/benchmarks/bench_bytes_find.py": "bytes find not available in depyler runtime",
+    "tests/benchmarks/bench_bytes_find_only.py": "bytes find not available in depyler runtime",
+    "tests/benchmarks/bench_bytes_replace.py": "bytes replace not available in depyler runtime",
+    "tests/benchmarks/bench_bytearray_find.py": "bytearray find not available in depyler runtime",
+    "tests/benchmarks/bench_bytearray_replace.py": "bytearray replace not available in depyler runtime",
+    "tests/benchmarks/bench_json_roundtrip.py": "heterogeneous dict/json payload not supported",
 }
 
 
@@ -656,26 +680,30 @@ def bench_results(
         depyler_size = 0.0
         depyler_samples: list[float] = []
         if use_depyler:
-            depyler_runner = prepare_depyler_binary(script, env=base_env, tty=tty)
-            if depyler_runner is not None:
-                try:
-                    depyler_samples, depyler_ok = collect_samples(
-                        lambda: measure_depyler_run(
-                            depyler_runner.path, env=base_env, label=name
-                        ),
-                        samples,
-                        warmup=warmup,
-                    )
-                    if depyler_ok:
-                        depyler_time = statistics.mean(depyler_samples)
-                        if super_run:
-                            stats["depyler"] = summarize_samples(depyler_samples)
-                    depyler_build = depyler_runner.build_s
-                    depyler_size = depyler_runner.size_kb
-                finally:
-                    depyler_runner.temp_dir.cleanup()
+            skip_reason = DEPYLER_SKIP_BENCHMARKS.get(script)
+            if skip_reason:
+                print(f"Skipping Depyler for {name}: {skip_reason}.", file=sys.stderr)
             else:
-                print(f"Depyler build/run failed for {name}.", file=sys.stderr)
+                depyler_runner = prepare_depyler_binary(script, env=base_env, tty=tty)
+                if depyler_runner is not None:
+                    try:
+                        depyler_samples, depyler_ok = collect_samples(
+                            lambda: measure_depyler_run(
+                                depyler_runner.path, env=base_env, label=name
+                            ),
+                            samples,
+                            warmup=warmup,
+                        )
+                        if depyler_ok:
+                            depyler_time = statistics.mean(depyler_samples)
+                            if super_run:
+                                stats["depyler"] = summarize_samples(depyler_samples)
+                        depyler_build = depyler_runner.build_s
+                        depyler_size = depyler_runner.size_kb
+                    finally:
+                        depyler_runner.temp_dir.cleanup()
+                else:
+                    print(f"Depyler build/run failed for {name}.", file=sys.stderr)
 
         molt_time, molt_size, molt_build = 0.0, 0.0, 0.0
         molt_args = MOLT_ARGS_BY_BENCH.get(script, [])

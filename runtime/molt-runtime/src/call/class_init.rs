@@ -1,7 +1,7 @@
-use crate::PyToken;
 use crate::builtins::exceptions::{
     molt_exception_init, molt_exception_new_bound, molt_exceptiongroup_init,
 };
+use crate::PyToken;
 use crate::*;
 
 unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
@@ -33,7 +33,10 @@ pub(crate) unsafe fn alloc_instance_for_class(_py: &PyToken<'_>, class_ptr: *mut
     MoltObject::from_ptr(obj_ptr).bits()
 }
 
-pub(crate) unsafe fn alloc_instance_for_class_no_pool(_py: &PyToken<'_>, class_ptr: *mut u8) -> u64 {
+pub(crate) unsafe fn alloc_instance_for_class_no_pool(
+    _py: &PyToken<'_>,
+    class_ptr: *mut u8,
+) -> u64 {
     let class_bits = MoltObject::from_ptr(class_ptr).bits();
     let size = class_layout_size(_py, class_ptr);
     let total_size = size + std::mem::size_of::<MoltHeader>();
@@ -53,6 +56,28 @@ pub(crate) unsafe fn call_class_init_with_args(
 ) -> u64 {
     let class_bits = MoltObject::from_ptr(class_ptr).bits();
     let builtins = builtin_classes(_py);
+    if class_bits == builtins.none_type {
+        if !args.is_empty() {
+            return raise_exception::<_>(_py, "TypeError", "NoneType takes no arguments");
+        }
+        return MoltObject::none().bits();
+    }
+    if class_bits == builtins.not_implemented_type {
+        if !args.is_empty() {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "NotImplementedType takes no arguments",
+            );
+        }
+        return not_implemented_bits(_py);
+    }
+    if class_bits == builtins.ellipsis_type {
+        if !args.is_empty() {
+            return raise_exception::<_>(_py, "TypeError", "ellipsis takes no arguments");
+        }
+        return ellipsis_bits(_py);
+    }
     if issubclass_bits(class_bits, builtins.base_exception) {
         let new_name_bits =
             intern_static_name(_py, &runtime_state(_py).interned.new_name, b"__new__");
@@ -242,6 +267,37 @@ pub(crate) unsafe fn call_class_init_with_args(
             }
         }
     }
+    if class_bits == builtins.module {
+        match args.len() {
+            0 => {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "module() missing required argument 'name' (pos 1)",
+                );
+            }
+            1 => return molt_module_new(args[0]),
+            2 => {
+                let mod_bits = molt_module_new(args[0]);
+                if obj_from_bits(mod_bits).is_none() {
+                    return mod_bits;
+                }
+                let Some(doc_name_bits) = attr_name_bits_from_bytes(_py, b"__doc__") else {
+                    return mod_bits;
+                };
+                let _ = molt_module_set_attr(mod_bits, doc_name_bits, args[1]);
+                dec_ref_bits(_py, doc_name_bits);
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                return mod_bits;
+            }
+            _ => {
+                let msg = format!("module expected at most 2 arguments, got {}", args.len());
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            }
+        }
+    }
     if class_bits == builtins.set {
         match args.len() {
             0 => return molt_set_new(0),
@@ -378,7 +434,44 @@ pub(crate) unsafe fn call_class_init_with_args(
             }
         }
     }
-    let inst_bits = alloc_instance_for_class(_py, class_ptr);
+    let class_bits = MoltObject::from_ptr(class_ptr).bits();
+    let new_name_bits = intern_static_name(_py, &runtime_state(_py).interned.new_name, b"__new__");
+    let mut default_new = false;
+    let inst_bits = if let Some(new_bits) = class_attr_lookup_raw_mro(_py, class_ptr, new_name_bits)
+    {
+        if let Some(new_ptr) = obj_from_bits(new_bits).as_ptr() {
+            let new_func_bits = if object_type_id(new_ptr) == TYPE_ID_BOUND_METHOD {
+                bound_method_func_bits(new_ptr)
+            } else {
+                new_bits
+            };
+            if let Some(new_func_ptr) = obj_from_bits(new_func_bits).as_ptr() {
+                if object_type_id(new_func_ptr) == TYPE_ID_FUNCTION
+                    && function_fn_ptr(new_func_ptr) == fn_addr!(molt_object_new_bound)
+                {
+                    default_new = true;
+                }
+            }
+        }
+        let builder_bits = molt_callargs_new(args.len() as u64 + 1, 0);
+        if builder_bits == 0 {
+            return MoltObject::none().bits();
+        }
+        let _ = molt_callargs_push_pos(builder_bits, class_bits);
+        for &arg in args {
+            let _ = molt_callargs_push_pos(builder_bits, arg);
+        }
+        let inst_bits = molt_call_bind(new_bits, builder_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        if !isinstance_bits(_py, inst_bits, class_bits) {
+            return inst_bits;
+        }
+        inst_bits
+    } else {
+        alloc_instance_for_class(_py, class_ptr)
+    };
     let Some(inst_ptr) = obj_from_bits(inst_bits).as_ptr() else {
         return inst_bits;
     };
@@ -389,8 +482,25 @@ pub(crate) unsafe fn call_class_init_with_args(
     else {
         return inst_bits;
     };
-    let pos_capacity = args.len() as u64;
-    let builder_bits = molt_callargs_new(pos_capacity, 0);
+    if default_new && !args.is_empty() {
+        if let Some(init_ptr) = obj_from_bits(init_bits).as_ptr() {
+            let init_func_bits = if object_type_id(init_ptr) == TYPE_ID_BOUND_METHOD {
+                bound_method_func_bits(init_ptr)
+            } else {
+                init_bits
+            };
+            if let Some(init_func_ptr) = obj_from_bits(init_func_bits).as_ptr() {
+                if object_type_id(init_func_ptr) == TYPE_ID_FUNCTION
+                    && function_fn_ptr(init_func_ptr) == fn_addr!(molt_object_init)
+                {
+                    let class_name = class_name_for_error(class_bits);
+                    let msg = format!("{class_name}() takes no arguments");
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+            }
+        }
+    }
+    let builder_bits = molt_callargs_new(args.len() as u64, 0);
     if builder_bits == 0 {
         return inst_bits;
     }
@@ -403,7 +513,7 @@ pub(crate) unsafe fn call_class_init_with_args(
 
 pub(crate) fn raise_not_callable(_py: &PyToken<'_>, obj: MoltObject) -> u64 {
     let msg = format!("'{}' object is not callable", type_name(_py, obj));
-    return raise_exception::<_>(_py, "TypeError", &msg);
+    raise_exception::<_>(_py, "TypeError", &msg)
 }
 
 pub(crate) unsafe fn call_builtin_type_if_needed(

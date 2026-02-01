@@ -5,6 +5,27 @@ use crate::{
     runtime_state, to_i64, type_of_bits, MoltHeader, MoltObject, PyToken, CONTEXT_STACK,
     TYPE_ID_CONTEXT_MANAGER, TYPE_ID_FILE_HANDLE,
 };
+use std::sync::OnceLock;
+
+fn context_debug_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("MOLT_DEBUG_CONTEXT_STACK")
+            .ok()
+            .map(|val| !val.is_empty() && val != "0")
+            .unwrap_or(false)
+    })
+}
+
+fn context_debug_log(msg: &str) {
+    if context_debug_enabled() {
+        eprintln!("[molt-context] {msg}");
+    }
+}
+
+fn context_stack_len() -> usize {
+    CONTEXT_STACK.with(|stack| stack.borrow().len())
+}
 
 unsafe fn context_enter_fn(ptr: *mut u8) -> *const () {
     *(ptr as *const *const ())
@@ -71,6 +92,13 @@ fn context_stack_push(_py: &PyToken<'_>, ctx_bits: u64) {
         stack.borrow_mut().push(ctx_bits);
     });
     inc_ref_bits(_py, ctx_bits);
+    if context_debug_enabled() {
+        context_debug_log(&format!(
+            "push depth={} ctx_bits={}",
+            context_stack_len(),
+            ctx_bits
+        ));
+    }
 }
 
 fn context_stack_pop(_py: &PyToken<'_>, expected_bits: u64) {
@@ -86,8 +114,17 @@ fn context_stack_pop(_py: &PyToken<'_>, expected_bits: u64) {
         Ok(bits)
     });
     match result {
-        Ok(bits) => dec_ref_bits(_py, bits),
-        Err(msg) => return raise_exception::<_>(_py, "RuntimeError", msg),
+        Ok(bits) => {
+            dec_ref_bits(_py, bits);
+            if context_debug_enabled() {
+                context_debug_log(&format!(
+                    "pop depth={} ctx_bits={}",
+                    context_stack_len(),
+                    expected_bits
+                ));
+            }
+        }
+        Err(msg) => raise_exception::<_>(_py, "RuntimeError", msg),
     }
 }
 
@@ -148,12 +185,19 @@ fn context_stack_unwind_to(_py: &PyToken<'_>, depth: usize, exc_bits: u64) {
     });
     match contexts {
         Ok(contexts) => {
+            if context_debug_enabled() {
+                context_debug_log(&format!(
+                    "unwind depth={} remaining={}",
+                    depth,
+                    context_stack_len()
+                ));
+            }
             for bits in contexts.into_iter().rev() {
                 unsafe { context_exit_unchecked(_py, bits, exc_bits) };
                 dec_ref_bits(_py, bits);
             }
         }
-        Err(msg) => return raise_exception::<_>(_py, "RuntimeError", msg),
+        Err(msg) => raise_exception::<_>(_py, "RuntimeError", msg),
     }
 }
 
@@ -273,9 +317,8 @@ pub extern "C" fn molt_context_exit(ctx_bits: u64, exc_bits: u64) -> u64 {
                     exit_fn(context_payload_bits(ptr), exc_bits)
                 }
                 TYPE_ID_FILE_HANDLE => {
-                    let res = file_handle_exit(_py, ptr, exc_bits);
                     context_stack_pop(_py, ctx_bits);
-                    res
+                    file_handle_exit(_py, ptr, exc_bits)
                 }
                 _ => {
                     let exit_name_bits = intern_static_name(
@@ -303,9 +346,9 @@ pub extern "C" fn molt_context_exit(ctx_bits: u64, exc_bits: u64) -> u64 {
                             .unwrap_or(none_bits);
                         (type_of_bits(_py, exc_bits), exc_bits, tb_bits)
                     };
+                    context_stack_pop(_py, ctx_bits);
                     let res = call_callable3(_py, exit_bits, exc_type_bits, exc_val_bits, tb_bits);
                     dec_ref_bits(_py, exit_bits);
-                    context_stack_pop(_py, ctx_bits);
                     res
                 }
             }

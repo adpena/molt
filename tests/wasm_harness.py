@@ -79,6 +79,7 @@ const unboxIntLike = (val) => {
   if (isTag(val, TAG_INT)) return unboxInt(val);
   return (val & 1n) === 1n ? 1n : 0n;
 };
+const boxComplex = (re, im) => boxPtr({ type: 'complex', re, im });
 const getBigIntValue = (val) => {
   if (isIntLike(val)) return unboxIntLike(val);
   const obj = getObj(val);
@@ -125,6 +126,7 @@ const indexFromBitsWithOverflow = (bits, errMsg, overflowErr) => {
 const BUILTIN_TYPE_TAGS = new Map([
   [1, 'int'],
   [2, 'float'],
+  [19, 'complex'],
   [3, 'bool'],
   [4, 'NoneType'],
   [5, 'str'],
@@ -232,6 +234,33 @@ const memView = () => {
     memViewCache = new DataView(buf);
   }
   return memViewCache;
+};
+const readMemoryBytes = (ptr, len) => {
+  if (!memory) return null;
+  const addr = expectPtrAddr(ptr, 'read_memory_bytes');
+  const size = Number(len);
+  if (!Number.isFinite(addr) || addr === 0 || !Number.isFinite(size) || size < 0) {
+    return null;
+  }
+  return new Uint8Array(memory.buffer.slice(addr, addr + size));
+};
+const boxBytes = (data) => {
+  const bytes = data instanceof Uint8Array ? data : Uint8Array.from(data);
+  return boxPtr({ type: 'bytes', data: Uint8Array.from(bytes) });
+};
+const streamGet = (handle) => {
+  const obj = getObj(handle);
+  if (obj && obj.type === 'stream') return obj;
+  return null;
+};
+const streamCreate = (_capacity = 0n) => {
+  const handle = boxPtr({ type: 'stream', queue: [], closed: false });
+  return { handle, obj: streamGet(handle) };
+};
+const streamRelease = (handle) => {
+  const id = handle & POINTER_MASK;
+  const obj = heap.get(id);
+  if (obj && obj.type === 'stream') heap.delete(id);
 };
 const HOST_TABLE_FLAG = 0x80000000;
 const HOST_TABLE_MASK = 0x7fffffff;
@@ -549,6 +578,11 @@ let asyncgenPollIdx = null;
 let promisePollIdx = null;
 const tableFuncCache = new Map();
 const getObj = (val) => heap.get(val & POINTER_MASK);
+const getComplex = (val) => {
+  const obj = getObj(val);
+  if (obj && obj.type === 'complex') return obj;
+  return null;
+};
 const getAsyncGenerator = (val) => {
   const obj = getObj(val);
   return obj && obj.type === 'asyncgen' ? obj : null;
@@ -853,6 +887,48 @@ const numberFromVal = (val) => {
   if (isFloat(val)) return bitsToFloat(val);
   return null;
 };
+const complexFromValStrict = (val) => {
+  const obj = getObj(val);
+  if (obj && obj.type === 'complex') return { re: obj.re, im: obj.im };
+  if (isFloat(val)) return { re: bitsToFloat(val), im: 0 };
+  if (isIntLike(val)) return { re: Number(unboxIntLike(val)), im: 0 };
+  if (obj && obj.type === 'bigint') {
+    const num = Number(obj.value);
+    if (!Number.isFinite(num)) return { overflow: true };
+    return { re: num, im: 0 };
+  }
+  return null;
+};
+const complexFromValLossy = (val) => {
+  const obj = getObj(val);
+  if (obj && obj.type === 'complex') return { re: obj.re, im: obj.im };
+  if (isFloat(val)) return { re: bitsToFloat(val), im: 0 };
+  if (isIntLike(val)) return { re: Number(unboxIntLike(val)), im: 0 };
+  if (obj && obj.type === 'bigint') {
+    const num = Number(obj.value);
+    if (!Number.isFinite(num)) return null;
+    return { re: num, im: 0 };
+  }
+  return null;
+};
+const complexPow = (base, exp) => {
+  if (base.re === 0 && base.im === 0) {
+    if (exp.re === 0 && exp.im === 0) {
+      return { re: 1, im: 0 };
+    }
+    if (exp.im !== 0 || exp.re < 0) {
+      return null;
+    }
+    return { re: 0, im: 0 };
+  }
+  const r = Math.hypot(base.re, base.im);
+  const theta = Math.atan2(base.im, base.re);
+  const logR = Math.log(r);
+  const u = exp.re * logR - exp.im * theta;
+  const v = exp.im * logR + exp.re * theta;
+  const expU = Math.exp(u);
+  return { re: expU * Math.cos(v), im: expU * Math.sin(v) };
+};
 const typeName = (val) => {
   if (isTag(val, TAG_NONE)) return 'NoneType';
   if (isTag(val, TAG_BOOL)) return 'bool';
@@ -883,6 +959,7 @@ const typeName = (val) => {
     if (obj.type === 'dict_keys') return 'dict_keys';
     if (obj.type === 'dict_values') return 'dict_values';
     if (obj.type === 'dict_items') return 'dict_items';
+    if (obj.type === 'complex') return 'complex';
     if (obj.type === 'module') return 'module';
     if (obj.type === 'function') return 'function';
     if (obj.type === 'map') return 'map';
@@ -1642,6 +1719,610 @@ const formatFloat = (val) => {
   if (!Number.isFinite(val)) return val < 0 ? '-inf' : 'inf';
   if (Number.isInteger(val)) return val.toFixed(1);
   return val.toString();
+};
+const formatComplexFloat = (val) => {
+  const text = formatFloat(val);
+  return text.endsWith('.0') ? text.slice(0, -2) : text;
+};
+const formatComplex = (re, im) => {
+  const reZero = re === 0 && !Object.is(re, -0);
+  const reText = formatComplexFloat(re);
+  if (reZero) {
+    return `${formatComplexFloat(im)}j`;
+  }
+  const sign = im < 0 || Object.is(im, -0) ? '-' : '+';
+  const imText = formatComplexFloat(Math.abs(im));
+  return `(${reText}${sign}${imText}j)`;
+};
+const stringChars = (text) => Array.from(text);
+const stringLength = (text) => stringChars(text).length;
+const truncateString = (text, count) => stringChars(text).slice(0, count).join('');
+const applyGrouping = (text, group, sep) => {
+  let out = '';
+  let count = 0;
+  for (let i = text.length - 1; i >= 0; i -= 1) {
+    out = text[i] + out;
+    count += 1;
+    if (count % group === 0 && i !== 0) {
+      out = sep + out;
+    }
+  }
+  return out;
+};
+const applyAlignment = (prefix, body, spec, defaultAlign) => {
+  const text = `${prefix}${body}`;
+  if (spec.width === null || spec.width === undefined) {
+    return text;
+  }
+  const len = stringLength(text);
+  if (len >= spec.width) {
+    return text;
+  }
+  const padLen = spec.width - len;
+  const align = spec.align ?? defaultAlign;
+  const fill = spec.fill ?? ' ';
+  if (align === '=') {
+    const padding = fill.repeat(padLen);
+    return `${prefix}${padding}${body}`;
+  }
+  const padding = fill.repeat(padLen);
+  if (align === '<') return `${text}${padding}`;
+  if (align === '>') return `${padding}${text}`;
+  if (align === '^') {
+    const left = Math.floor(padLen / 2);
+    const right = padLen - left;
+    return `${fill.repeat(left)}${text}${fill.repeat(right)}`;
+  }
+  return text;
+};
+const parseFormatSpec = (spec) => {
+  if (spec.length === 0) {
+    return {
+      fill: ' ',
+      align: null,
+      sign: null,
+      alternate: false,
+      width: null,
+      grouping: null,
+      precision: null,
+      type: null,
+    };
+  }
+  let fill = ' ';
+  let align = null;
+  let sign = null;
+  let alternate = false;
+  let width = null;
+  let grouping = null;
+  let precision = null;
+  let type = null;
+  let idx = 0;
+  const isAlign = (ch) => ch === '<' || ch === '>' || ch === '^' || ch === '=';
+  const c1 = spec[idx];
+  const c2 = spec[idx + 1];
+  if (c1 && c2 && isAlign(c2)) {
+    fill = c1;
+    align = c2;
+    idx += 2;
+  } else if (c1 && isAlign(c1)) {
+    align = c1;
+    idx += 1;
+  }
+  const signChar = spec[idx];
+  if (signChar === '+' || signChar === '-' || signChar === ' ') {
+    sign = signChar;
+    idx += 1;
+  }
+  if (spec[idx] === '#') {
+    alternate = true;
+    idx += 1;
+  }
+  if (align === null && spec[idx] === '0') {
+    fill = '0';
+    align = '=';
+    idx += 1;
+  }
+  let widthText = '';
+  while (idx < spec.length && spec[idx] >= '0' && spec[idx] <= '9') {
+    widthText += spec[idx];
+    idx += 1;
+  }
+  if (widthText.length) {
+    width = Number(widthText);
+    if (!Number.isFinite(width)) {
+      throw new Error('ValueError: Invalid format width');
+    }
+  }
+  if (spec[idx] === ',' || spec[idx] === '_') {
+    grouping = spec[idx];
+    idx += 1;
+  }
+  if (spec[idx] === '.') {
+    idx += 1;
+    let precText = '';
+    while (idx < spec.length && spec[idx] >= '0' && spec[idx] <= '9') {
+      precText += spec[idx];
+      idx += 1;
+    }
+    if (!precText.length) {
+      throw new Error('ValueError: Invalid format precision');
+    }
+    precision = Number(precText);
+    if (!Number.isFinite(precision)) {
+      throw new Error('ValueError: Invalid format precision');
+    }
+  }
+  const remaining = spec.slice(idx);
+  if (remaining.length > 1) {
+    throw new Error('ValueError: Invalid format spec');
+  }
+  if (remaining.length === 1) {
+    type = remaining;
+  }
+  return {
+    fill,
+    align,
+    sign,
+    alternate,
+    width,
+    grouping,
+    precision,
+    type,
+  };
+};
+const formatStringWithSpec = (text, spec) => {
+  let out = text;
+  if (spec.precision !== null && spec.precision !== undefined) {
+    out = truncateString(out, spec.precision);
+  }
+  return applyAlignment('', out, spec, '<');
+};
+const trimFloatTrailing = (text, alternate) => {
+  if (alternate) return text;
+  const expPos = text.search(/[eE]/);
+  let mantissa = text;
+  let exp = '';
+  if (expPos >= 0) {
+    mantissa = text.slice(0, expPos);
+    exp = text.slice(expPos);
+  }
+  let end = mantissa.length;
+  const dot = mantissa.indexOf('.');
+  if (dot >= 0) {
+    while (end > dot + 1 && mantissa[end - 1] === '0') {
+      end -= 1;
+    }
+    if (end === dot + 1) {
+      end = dot;
+    }
+  }
+  return `${mantissa.slice(0, end)}${exp}`;
+};
+const normalizeExponent = (text, upper) => {
+  const expPos = text.indexOf('e') >= 0 ? text.indexOf('e') : text.indexOf('E');
+  if (expPos < 0) return text;
+  const expChar = text[expPos];
+  const mantissa = text.slice(0, expPos);
+  const expText = text.slice(expPos + 1);
+  const expVal = Number.parseInt(expText, 10);
+  const expNum = Number.isNaN(expVal) ? 0 : expVal;
+  const sign = expNum < 0 ? '-' : '+';
+  const expAbs = Math.abs(expNum);
+  const expOut = upper ? 'E' : expChar;
+  return `${mantissa}${expOut}${sign}${expAbs.toString().padStart(2, '0')}`;
+};
+const normalizeScientific = (formatted) => {
+  const normalized = formatted.toLowerCase();
+  const expPos = normalized.indexOf('e');
+  if (expPos < 0) return normalized;
+  let mantissa = normalized.slice(0, expPos);
+  if (mantissa.includes('.')) {
+    while (mantissa.endsWith('0')) {
+      mantissa = mantissa.slice(0, -1);
+    }
+    if (mantissa.endsWith('.')) {
+      mantissa = mantissa.slice(0, -1);
+    }
+  }
+  const expVal = Number.parseInt(normalized.slice(expPos + 1), 10);
+  const expNum = Number.isNaN(expVal) ? 0 : expVal;
+  const sign = expNum < 0 ? '-' : '+';
+  const expAbs = Math.abs(expNum);
+  return `${mantissa}e${sign}${expAbs.toString().padStart(2, '0')}`;
+};
+const formatFloatScientific = (val) => {
+  const raw = val.toString();
+  if (raw.includes('e') || raw.includes('E')) {
+    return normalizeScientific(raw);
+  }
+  let digits = raw.startsWith('-') ? raw.slice(1) : raw;
+  const digitsOnly = digits.replace('.', '');
+  let sigDigits = digitsOnly.replace(/^0+/, '').length;
+  if (sigDigits < 1) sigDigits = 1;
+  const precision = Math.max(sigDigits - 1, 0);
+  const formatted = val.toExponential(precision);
+  return normalizeScientific(formatted);
+};
+const formatFloatDefault = (val) => {
+  if (Number.isNaN(val)) return 'nan';
+  if (!Number.isFinite(val)) return val < 0 ? '-inf' : 'inf';
+  const abs = Math.abs(val);
+  if (abs !== 0 && (abs < 1e-4 || abs >= 1e16)) {
+    return formatFloatScientific(val);
+  }
+  if (Number.isInteger(val)) {
+    if (Object.is(val, -0)) return '-0.0';
+    return val.toFixed(1);
+  }
+  return val.toString();
+};
+const formatComplexFloatDefault = (val) => {
+  const text = formatFloatDefault(val);
+  return text.endsWith('.0') ? text.slice(0, -2) : text;
+};
+const formatFloatWithSpec = (valBits, spec) => {
+  let val = null;
+  if (isFloat(valBits)) {
+    val = bitsToFloat(valBits);
+  } else if (isTag(valBits, TAG_INT) || isTag(valBits, TAG_BOOL)) {
+    val = Number(unboxIntLike(valBits));
+  }
+  if (val === null) {
+    throw new Error('TypeError: format requires float');
+  }
+  const useDefault = spec.type === null && spec.precision === null;
+  const ty = spec.type ?? 'g';
+  const upper = ty === 'F' || ty === 'E' || ty === 'G';
+  if (Number.isNaN(val)) {
+    const text = upper ? 'NAN' : 'nan';
+    const prefix = val < 0 ? '-' : '';
+    return applyAlignment(prefix, text, spec, '>');
+  }
+  if (!Number.isFinite(val)) {
+    const text = upper ? 'INF' : 'inf';
+    const prefix = val < 0 ? '-' : '';
+    return applyAlignment(prefix, text, spec, '>');
+  }
+  const negative = val < 0 || Object.is(val, -0);
+  let prefix = '';
+  if (negative) {
+    prefix = '-';
+  } else if (spec.sign === '+' || spec.sign === ' ') {
+    prefix = spec.sign;
+  }
+  const absVal = Math.abs(val);
+  const prec = spec.precision ?? 6;
+  let body = '';
+  if (useDefault) {
+    body = formatFloatDefault(absVal);
+  } else {
+    if (ty === 'f' || ty === 'F') {
+      body = absVal.toFixed(prec);
+    } else if (ty === 'e' || ty === 'E') {
+      body = absVal.toExponential(prec);
+    } else if (ty === 'g' || ty === 'G') {
+      const digits = prec === 0 ? 1 : prec;
+      if (absVal === 0) {
+        body = '0';
+      } else {
+        const exp = Math.floor(Math.log10(absVal));
+        if (exp < -4 || exp >= digits) {
+          const text = absVal.toExponential(digits - 1);
+          body = trimFloatTrailing(text, spec.alternate);
+        } else {
+          const frac = Math.max(digits - 1 - exp, 0);
+          const text = absVal.toFixed(frac);
+          body = trimFloatTrailing(text, spec.alternate);
+        }
+      }
+    } else if (ty === '%') {
+      body = (absVal * 100).toFixed(prec);
+    } else {
+      throw new Error('ValueError: unsupported float format type');
+    }
+  }
+  body = normalizeExponent(body, upper);
+  if (upper) {
+    body = body.replace('e', 'E');
+  }
+  if (
+    spec.alternate &&
+    !body.includes('.') &&
+    !body.includes('e') &&
+    !body.includes('E')
+  ) {
+    body += '.';
+  }
+  if (spec.grouping) {
+    if (!body.includes('e') && !body.includes('E')) {
+      const parts = body.split('.', 2);
+      const grouped = applyGrouping(parts[0], 3, spec.grouping);
+      body = parts.length > 1 ? `${grouped}.${parts[1]}` : grouped;
+    }
+  }
+  if (ty === '%') {
+    body += '%';
+  }
+  return applyAlignment(prefix, body, spec, '>');
+};
+const applyGroupingToFloatText = (text, sep) => {
+  if (text.includes('e') || text.includes('E')) {
+    return text;
+  }
+  const parts = text.split('.', 2);
+  const grouped = applyGrouping(parts[0], 3, sep);
+  return parts.length > 1 ? `${grouped}.${parts[1]}` : grouped;
+};
+const formatComplexWithSpec = (value, spec) => {
+  let ty = spec.type;
+  let grouping = spec.grouping;
+  if (ty === 'n') {
+    if (grouping) {
+      const msg =
+        grouping === ','
+          ? "Cannot specify ',' with 'n'."
+          : "Cannot specify '_' with 'n'.";
+      throw new Error(`ValueError: ${msg}`);
+    }
+    ty = 'g';
+    grouping = null;
+  }
+  if (ty && !['e', 'E', 'f', 'F', 'g', 'G'].includes(ty)) {
+    throw new Error(
+      `ValueError: Unknown format code '${ty}' for object of type 'complex'`,
+    );
+  }
+  if (spec.fill === '0') {
+    throw new Error(
+      'ValueError: Zero padding is not allowed in complex format specifier',
+    );
+  }
+  if (spec.align === '=') {
+    throw new Error(
+      "ValueError: '=' alignment flag is not allowed in complex format specifier",
+    );
+  }
+  const re = value.re;
+  const im = value.im;
+  const reIsZero = re === 0 && !Object.is(re, -0);
+  const imIsNegative = im < 0 || Object.is(im, -0);
+  const imSign = imIsNegative ? '-' : '+';
+  const useDefault = spec.type === null && spec.precision === null;
+  let realText = '';
+  let imagText = '';
+  if (useDefault) {
+    realText = formatComplexFloatDefault(Math.abs(re));
+    imagText = formatComplexFloatDefault(Math.abs(im));
+    if (grouping) {
+      realText = applyGroupingToFloatText(realText, grouping);
+      imagText = applyGroupingToFloatText(imagText, grouping);
+    }
+  } else {
+    const realSpec = {
+      fill: spec.fill,
+      align: null,
+      sign: spec.sign,
+      alternate: spec.alternate,
+      width: null,
+      grouping,
+      precision: spec.precision,
+      type: ty,
+    };
+    const imagSpec = {
+      fill: spec.fill,
+      align: null,
+      sign: null,
+      alternate: spec.alternate,
+      width: null,
+      grouping,
+      precision: spec.precision,
+      type: ty,
+    };
+    realText = formatFloatWithSpec(boxFloat(re), realSpec);
+    imagText = formatFloatWithSpec(boxFloat(Math.abs(im)), imagSpec);
+  }
+  const includeReal = ty !== null || !reIsZero;
+  let body = '';
+  if (includeReal) {
+    let reTextOut = realText;
+    if (useDefault) {
+      let prefix = '';
+      if (re < 0 || Object.is(re, -0)) {
+        prefix = '-';
+      } else if (spec.sign === '+' || spec.sign === ' ') {
+        prefix = spec.sign;
+      }
+      reTextOut = `${prefix}${realText}`;
+    }
+    const combined = `${reTextOut}${imSign}${imagText}j`;
+    body = ty === null ? `(${combined})` : combined;
+  } else {
+    let prefix = '';
+    if (imIsNegative) {
+      prefix = '-';
+    } else if (spec.sign === '+' || spec.sign === ' ') {
+      prefix = spec.sign;
+    }
+    body = `${prefix}${imagText}j`;
+  }
+  return applyAlignment('', body, spec, '>');
+};
+const formatObjStr = (val) => {
+  const strBits = baseImports.str_from_obj(val);
+  const text = getStrObj(strBits);
+  return text === null ? '' : text;
+};
+const formatIntWithSpec = (valBits, spec) => {
+  if (spec.precision !== null && spec.precision !== undefined) {
+    throw new Error('ValueError: precision not allowed in integer format');
+  }
+  const ty = spec.type ?? 'd';
+  let value = getBigIntValue(valBits);
+  if (value === null) {
+    throw new Error('TypeError: format requires int');
+  }
+  if (ty === 'c') {
+    if (value < 0n) {
+      throw new Error('ValueError: format c requires non-negative int');
+    }
+    if (value > 0x10ffffn) {
+      throw new Error('ValueError: format c out of range');
+    }
+    const ch = String.fromCodePoint(Number(value));
+    return formatStringWithSpec(ch, spec);
+  }
+  let base = 10;
+  if (ty === 'b') base = 2;
+  else if (ty === 'o') base = 8;
+  else if (ty === 'x' || ty === 'X') base = 16;
+  else if (ty === 'd' || ty === 'n') base = 10;
+  else {
+    throw new Error('ValueError: unsupported int format type');
+  }
+  let negative = value < 0n;
+  if (negative) value = -value;
+  let digits = value.toString(base);
+  if (ty === 'X') {
+    digits = digits.toUpperCase();
+  }
+  if (spec.grouping) {
+    const group = base === 2 || base === 16 ? 4 : base === 8 ? 3 : 3;
+    digits = applyGrouping(digits, group, spec.grouping);
+  }
+  let prefix = '';
+  if (negative) {
+    prefix = '-';
+  } else if (spec.sign === '+' || spec.sign === ' ') {
+    prefix = spec.sign;
+  }
+  if (spec.alternate) {
+    if (ty === 'b') prefix += '0b';
+    else if (ty === 'o') prefix += '0o';
+    else if (ty === 'x') prefix += '0x';
+    else if (ty === 'X') prefix += '0X';
+  }
+  return applyAlignment(prefix, digits, spec, '>');
+};
+const formatWithSpec = (valBits, spec) => {
+  const obj = getObj(valBits);
+  if (obj && obj.type === 'complex') {
+    return formatComplexWithSpec(obj, spec);
+  }
+  if (spec.type === 'n') {
+    if (spec.grouping) {
+      const msg =
+        spec.grouping === ','
+          ? "Cannot specify ',' with 'n'."
+          : "Cannot specify '_' with 'n'.";
+      throw new Error(`ValueError: ${msg}`);
+    }
+    const normalized = {
+      fill: spec.fill,
+      align: spec.align,
+      sign: spec.sign,
+      alternate: spec.alternate,
+      width: spec.width,
+      grouping: null,
+      precision: spec.precision,
+      type: null,
+    };
+    if (isFloat(valBits)) {
+      normalized.type = 'g';
+      return formatFloatWithSpec(valBits, normalized);
+    }
+    normalized.type = 'd';
+    return formatIntWithSpec(valBits, normalized);
+  }
+  if (spec.type === 's') {
+    return formatStringWithSpec(formatObjStr(valBits), spec);
+  }
+  if (spec.type && ['d', 'b', 'o', 'x', 'X', 'c'].includes(spec.type)) {
+    return formatIntWithSpec(valBits, spec);
+  }
+  if (spec.type && ['f', 'F', 'e', 'E', 'g', 'G', '%'].includes(spec.type)) {
+    return formatFloatWithSpec(valBits, spec);
+  }
+  if (spec.type) {
+    throw new Error('ValueError: unsupported format type');
+  }
+  if (isFloat(valBits)) {
+    return formatFloatWithSpec(valBits, spec);
+  }
+  if (isTag(valBits, TAG_BOOL)) {
+    return formatStringWithSpec(formatObjStr(valBits), spec);
+  }
+  if (isTag(valBits, TAG_INT) || (obj && obj.type === 'bigint')) {
+    return formatIntWithSpec(valBits, spec);
+  }
+  return formatStringWithSpec(formatObjStr(valBits), spec);
+};
+const parseFloatLiteral = (text) => {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  const lowered = trimmed.toLowerCase();
+  if (lowered === 'nan' || lowered === '+nan' || lowered === '-nan') {
+    return NaN;
+  }
+  if (
+    lowered === 'inf' ||
+    lowered === '+inf' ||
+    lowered === 'infinity' ||
+    lowered === '+infinity'
+  ) {
+    return Infinity;
+  }
+  if (lowered === '-inf' || lowered === '-infinity') {
+    return -Infinity;
+  }
+  const parsed = Number(trimmed);
+  if (Number.isNaN(parsed)) return null;
+  return parsed;
+};
+const parseComplexFromString = (text) => {
+  let trimmed = text.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith('(') && trimmed.endsWith(')') && trimmed.length >= 2) {
+    trimmed = trimmed.slice(1, -1).trim();
+    if (!trimmed) return null;
+  }
+  if (/\s/.test(trimmed)) return null;
+  const endsWithJ = trimmed.endsWith('j') || trimmed.endsWith('J');
+  if (endsWithJ) {
+    const core = trimmed.slice(0, -1);
+    if (!core || core === '+') return { re: 0, im: 1 };
+    if (core === '-') return { re: 0, im: -1 };
+    let sepIdx = -1;
+    for (let i = 1; i < core.length; i += 1) {
+      const ch = core[i];
+      if (ch === '+' || ch === '-') {
+        const prev = core[i - 1];
+        if (prev === 'e' || prev === 'E') continue;
+        sepIdx = i;
+      }
+    }
+    if (sepIdx >= 0) {
+      const realPart = core.slice(0, sepIdx);
+      const imagPart = core.slice(sepIdx);
+      const real = parseFloatLiteral(realPart);
+      if (real === null) return null;
+      let imag = null;
+      if (imagPart === '+') {
+        imag = 1;
+      } else if (imagPart === '-') {
+        imag = -1;
+      } else {
+        imag = parseFloatLiteral(imagPart);
+      }
+      if (imag === null) return null;
+      return { re: real, im: imag };
+    }
+    const imag = parseFloatLiteral(core);
+    if (imag === null) return null;
+    return { re: 0, im: imag };
+  }
+  const real = parseFloatLiteral(trimmed);
+  if (real === null) return null;
+  return { re: real, im: 0 };
 };
 const formatStringRepr = (text) => {
   const useDouble = text.includes("'") && !text.includes('"');
@@ -2562,6 +3243,7 @@ const isTruthyBits = (val) => {
     if (obj && obj.type === 'bytearray') return obj.data.length !== 0;
     if (obj && obj.type === 'list') return obj.items.length !== 0;
     if (obj && obj.type === 'tuple') return obj.items.length !== 0;
+    if (obj && obj.type === 'complex') return obj.re !== 0 || obj.im !== 0;
     if (
       obj &&
       (obj.type === 'iter' ||
@@ -2709,6 +3391,10 @@ const lookupAttr = (objBits, name) => {
       return boxIntOrBigint(nbytes);
     }
   }
+  if (obj && obj.type === 'complex') {
+    if (name === 'real') return boxFloat(obj.re);
+    if (name === 'imag') return boxFloat(obj.im);
+  }
   if (isGenerator(objBits) && memory) {
     const addr = ptrAddr(objBits);
     const view = new DataView(memory.buffer);
@@ -2761,7 +3447,8 @@ const lookupAttr = (objBits, name) => {
       obj.type === 'bytearray' ||
       obj.type === 'memoryview' ||
       obj.type === 'set' ||
-      obj.type === 'frozenset')
+      obj.type === 'frozenset' ||
+      obj.type === 'complex')
   ) {
     const typeBits = typeOfBits(objBits);
     const val = lookupClassAttr(typeBits, name, objBits);
@@ -2852,6 +3539,7 @@ const typeOfBits = (objBits) => {
     if (obj.type === 'set') return getBuiltinType(17);
     if (obj.type === 'frozenset') return getBuiltinType(18);
     if (obj.type === 'memoryview') return getBuiltinType(15);
+    if (obj.type === 'complex') return getBuiltinType(19);
   }
   if (isAsyncGenerator(objBits)) return getAsyncGeneratorType();
   if (isGenerator(objBits)) return getGeneratorType();
@@ -4635,6 +5323,13 @@ const hashFloat = (val) => {
   const signed = hash * sign;
   return fixHash(signed);
 };
+const hashComplex = (re, im) => {
+  const reHash = hashFloat(re);
+  const imHash = hashFloat(im);
+  let hash = reHash + imHash * 1000003n;
+  if (hash === -1n) hash = -2n;
+  return hash;
+};
 const hashPointer = (ptrBits) => fixHash(toSigned64((ptrBits >> 4n) & HASH_MASK_64));
 const hashTupleBits = (tupleBits) => {
   const tuple = getTuple(tupleBits);
@@ -4737,6 +5432,7 @@ const hashBitsSigned = (bits) => {
     if (obj.type === 'str') return hashString(obj.value);
     if (obj.type === 'bytes') return hashBytes(obj.data);
     if (obj.type === 'bigint') return hashBigInt(obj.value);
+    if (obj.type === 'complex') return hashComplex(obj.re, obj.im);
     if (obj.type === 'tuple') return hashTupleBits(bits);
     if (obj.type === 'slice') return hashSliceBits(bits);
     if (obj.type === 'frozenset') return hashFrozensetBits(bits);
@@ -5228,6 +5924,17 @@ const getBuiltinMethodBits = (classBits, name) => {
       fn = (selfBits, formatBits, shapeBits, hasShapeBits) =>
         baseImports.memoryview_cast(selfBits, formatBits, shapeBits, hasShapeBits);
       arity = 4;
+    }
+  } else if (className === 'complex') {
+    if (name === 'conjugate') {
+      fn = (selfBits) => {
+        const obj = getComplex(selfBits);
+        if (!obj) {
+          throw new Error('TypeError: complex.conjugate expects complex');
+        }
+        return boxComplex(obj.re, -obj.im);
+      };
+      arity = 1;
     }
   }
   if (!fn) return boxNone();
@@ -6034,6 +6741,17 @@ BASE_IMPORTS = """\
     if (isIntLike(a) && isIntLike(b)) {
       return boxInt(unboxIntLike(a) + unboxIntLike(b));
     }
+    if (getComplex(a) || getComplex(b)) {
+      const lc = complexFromValStrict(a);
+      const rc = complexFromValStrict(b);
+      if ((lc && lc.overflow) || (rc && rc.overflow)) {
+        throw new Error('OverflowError: int too large to convert to float');
+      }
+      if (lc && rc) {
+        return boxComplex(lc.re + rc.re, lc.im + rc.im);
+      }
+      return boxNone();
+    }
     const lf = numberFromVal(a);
     const rf = numberFromVal(b);
     if (lf !== null && rf !== null) {
@@ -6117,6 +6835,17 @@ BASE_IMPORTS = """\
   sub: (a, b) => {
     if (isIntLike(a) && isIntLike(b)) {
       return boxInt(unboxIntLike(a) - unboxIntLike(b));
+    }
+    if (getComplex(a) || getComplex(b)) {
+      const lc = complexFromValStrict(a);
+      const rc = complexFromValStrict(b);
+      if ((lc && lc.overflow) || (rc && rc.overflow)) {
+        throw new Error('OverflowError: int too large to convert to float');
+      }
+      if (lc && rc) {
+        return boxComplex(lc.re - rc.re, lc.im - rc.im);
+      }
+      return boxNone();
     }
     const lf = numberFromVal(a);
     const rf = numberFromVal(b);
@@ -6329,6 +7058,19 @@ BASE_IMPORTS = """\
     if (isIntLike(a) && isIntLike(b)) {
       return boxInt(unboxIntLike(a) * unboxIntLike(b));
     }
+    if (getComplex(a) || getComplex(b)) {
+      const lc = complexFromValStrict(a);
+      const rc = complexFromValStrict(b);
+      if ((lc && lc.overflow) || (rc && rc.overflow)) {
+        throw new Error('OverflowError: int too large to convert to float');
+      }
+      if (lc && rc) {
+        const re = lc.re * rc.re - lc.im * rc.im;
+        const im = lc.im * rc.re + lc.re * rc.im;
+        return boxComplex(re, im);
+      }
+      return boxNone();
+    }
     const lf = numberFromVal(a);
     const rf = numberFromVal(b);
     if (lf !== null && rf !== null) {
@@ -6387,6 +7129,23 @@ BASE_IMPORTS = """\
   div: (a, b) => {
     const lf = numberFromVal(a);
     const rf = numberFromVal(b);
+    if (getComplex(a) || getComplex(b)) {
+      const lc = complexFromValStrict(a);
+      const rc = complexFromValStrict(b);
+      if ((lc && lc.overflow) || (rc && rc.overflow)) {
+        throw new Error('OverflowError: int too large to convert to float');
+      }
+      if (lc && rc) {
+        const denom = rc.re * rc.re + rc.im * rc.im;
+        if (denom === 0) {
+          throw new Error('ZeroDivisionError: division by zero');
+        }
+        const re = (lc.re * rc.re + lc.im * rc.im) / denom;
+        const im = (lc.im * rc.re - lc.re * rc.im) / denom;
+        return boxComplex(re, im);
+      }
+      return boxNone();
+    }
     if (lf === null || rf === null) {
       throw new Error('TypeError: unsupported operand type(s) for /');
     }
@@ -6447,6 +7206,21 @@ BASE_IMPORTS = """\
     return boxFloat(rem);
   },
   pow: (a, b) => {
+    if (getComplex(a) || getComplex(b)) {
+      const base = complexFromValStrict(a);
+      const exp = complexFromValStrict(b);
+      if ((base && base.overflow) || (exp && exp.overflow)) {
+        throw new Error('OverflowError: int too large to convert to float');
+      }
+      if (base && exp) {
+        const out = complexPow(base, exp);
+        if (!out) {
+          throw new Error('ZeroDivisionError: zero to a negative or complex power');
+        }
+        return boxComplex(out.re, out.im);
+      }
+      throw new Error('TypeError: unsupported operand type(s) for **');
+    }
     const isIntPair = isIntLike(a) && isIntLike(b);
     if (isIntPair) {
       const base = unboxIntLike(a);
@@ -6492,6 +7266,12 @@ BASE_IMPORTS = """\
     }
     if (lf === 0 && rf < 0) {
       throw new Error('ZeroDivisionError: 0.0 cannot be raised to a negative power');
+    }
+    if (lf < 0 && Number.isFinite(rf) && !Number.isInteger(rf)) {
+      const out = complexPow({ re: lf, im: 0 }, { re: rf, im: 0 });
+      if (out) {
+        return boxComplex(out.re, out.im);
+      }
     }
     return boxFloat(Math.pow(lf, rf));
   },
@@ -6687,6 +7467,24 @@ BASE_IMPORTS = """\
     return compareTypeError('>=', a, b);
   },
   eq: (a, b) => {
+    const lComplexObj = getComplex(a);
+    const rComplexObj = getComplex(b);
+    if (lComplexObj || rComplexObj) {
+      const lc = complexFromValLossy(a);
+      const rc = complexFromValLossy(b);
+      if (lc && rc) {
+        if (
+          Number.isNaN(lc.re) ||
+          Number.isNaN(lc.im) ||
+          Number.isNaN(rc.re) ||
+          Number.isNaN(rc.im)
+        ) {
+          return boxBool(false);
+        }
+        return boxBool(lc.re === rc.re && lc.im === rc.im);
+      }
+      return boxBool(false);
+    }
     const ln = numberFromVal(a);
     const rn = numberFromVal(b);
     if (ln !== null && rn !== null) {
@@ -7337,6 +8135,8 @@ BASE_IMPORTS = """\
       if (obj && obj.type === 'dict') return obj.entries.length ? 1n : 0n;
       if (obj && (obj.type === 'set' || obj.type === 'frozenset'))
         return obj.items.size ? 1n : 0n;
+      if (obj && obj.type === 'complex')
+        return obj.re !== 0 || obj.im !== 0 ? 1n : 0n;
       if (obj && obj.type === 'asyncgen') return 1n;
       if (obj && obj.type === 'iter') return 1n;
     }
@@ -7535,8 +8335,6 @@ BASE_IMPORTS = """\
     return boxPtr({ type: 'bytes', data: Uint8Array.from(data) });
   },
   str_from_obj: (val) => {
-    // TODO(stdlib-compat, owner:wasm, milestone:TC1): call __str__ for
-    // non-primitive objects to match CPython/Molt runtime behavior.
     if (isTag(val, TAG_INT)) {
       return boxPtr({ type: 'str', value: unboxInt(val).toString() });
     }
@@ -7561,6 +8359,28 @@ BASE_IMPORTS = """\
     }
     if (obj && obj.type === 'bigint') {
       return boxPtr({ type: 'str', value: obj.value.toString() });
+    }
+    if (obj && obj.type === 'complex') {
+      return boxPtr({ type: 'str', value: formatComplex(obj.re, obj.im) });
+    }
+    const strAttr = lookupAttr(val, '__str__');
+    if (strAttr !== undefined) {
+      let res;
+      try {
+        res = callCallable0(strAttr);
+      } catch (err) {
+        if (exceptionPending() !== 0n) {
+          return boxPtr({ type: 'str', value: '<object>' });
+        }
+        throw err;
+      }
+      if (exceptionPending() !== 0n) {
+        return boxPtr({ type: 'str', value: '<object>' });
+      }
+      const strVal = getStrObj(res);
+      if (strVal !== null) {
+        return res;
+      }
     }
     if (
       obj &&
@@ -7599,6 +8419,9 @@ BASE_IMPORTS = """\
     }
     if (obj && obj.type === 'bigint') {
       return boxPtr({ type: 'str', value: obj.value.toString() });
+    }
+    if (obj && obj.type === 'complex') {
+      return boxPtr({ type: 'str', value: formatComplex(obj.re, obj.im) });
     }
     return boxPtr({ type: 'str', value: '<obj>' });
   },
@@ -7692,6 +8515,13 @@ BASE_IMPORTS = """\
       }
     }
     if (!hasB) {
+      if (getComplex(val)) {
+        throw new Error(
+          `TypeError: int() argument must be a string, a bytes-like object or a real number, not '${typeName(
+            val,
+          )}'`,
+        );
+      }
       if (isIntLike(val)) return boxInt(unboxIntLike(val));
       if (isFloat(val)) {
         const num = bitsToFloat(val);
@@ -7737,6 +8567,13 @@ BASE_IMPORTS = """\
   float_from_obj: (val) => {
     if (isFloat(val)) return val;
     if (isIntLike(val)) return boxFloat(Number(unboxIntLike(val)));
+    if (getComplex(val)) {
+      throw new Error(
+        `TypeError: float() argument must be a string or a real number, not '${typeName(
+          val,
+        )}'`,
+      );
+    }
     const obj = getObj(val);
     if (obj && obj.type === 'str') {
       const text = obj.value.trim();
@@ -7812,6 +8649,121 @@ BASE_IMPORTS = """\
       }
     }
     throw new Error('TypeError: float() argument must be a string or a number');
+  },
+  complex_from_obj: (val, imagBits, hasImagBits) => {
+    const hasImag = isTruthyBits(hasImagBits);
+    if (!hasImag) {
+      const obj = getObj(val);
+      if (obj && obj.type === 'complex') {
+        return val;
+      }
+      if (isFloat(val)) return boxComplex(bitsToFloat(val), 0);
+      if (isIntLike(val)) return boxComplex(Number(unboxIntLike(val)), 0);
+      if (obj && obj.type === 'bigint') {
+        const num = Number(obj.value);
+        if (!Number.isFinite(num)) {
+          throw new Error('OverflowError: int too large to convert to float');
+        }
+        return boxComplex(num, 0);
+      }
+      if (obj && obj.type === 'str') {
+        const parsed = parseComplexFromString(obj.value);
+        if (!parsed) {
+          throw new Error('ValueError: complex() arg is a malformed string');
+        }
+        return boxComplex(parsed.re, parsed.im);
+      }
+      if (obj && (obj.type === 'bytes' || obj.type === 'bytearray')) {
+        throw new Error(
+          `TypeError: complex() argument must be a string or a number, not ${typeName(
+            val,
+          )}`,
+        );
+      }
+      const complexAttr = lookupAttr(val, '__complex__');
+      if (complexAttr !== undefined) {
+        const res = callCallable0(complexAttr);
+        const resObj = getComplex(res);
+        if (resObj) return res;
+        throw new Error(
+          `TypeError: ${typeName(val)}.__complex__ returned non-complex (type ${typeName(
+            res,
+          )})`,
+        );
+      }
+      const floatAttr = lookupAttr(val, '__float__');
+      if (floatAttr !== undefined) {
+        const res = callCallable0(floatAttr);
+        if (!isFloat(res)) {
+          throw new Error(
+            `TypeError: ${typeName(val)}.__float__ returned non-float (type ${typeName(
+              res,
+            )})`,
+          );
+        }
+        return boxComplex(bitsToFloat(res), 0);
+      }
+      const indexAttr = lookupAttr(val, '__index__');
+      if (indexAttr !== undefined) {
+        const res = callCallable0(indexAttr);
+        if (!isIntLike(res)) {
+          throw new Error(`TypeError: __index__ returned non-int (type ${typeName(res)})`);
+        }
+        return boxComplex(Number(unboxIntLike(res)), 0);
+      }
+      throw new Error('TypeError: complex() argument must be a string or a number');
+    }
+    const realObj = getObj(val);
+    if (
+      realObj &&
+      (realObj.type === 'str' ||
+        realObj.type === 'bytes' ||
+        realObj.type === 'bytearray')
+    ) {
+      throw new Error(
+        `TypeError: complex() argument 'real' must be a real number, not ${typeName(
+          val,
+        )}`,
+      );
+    }
+    const imagObj = getObj(imagBits);
+    if (
+      imagObj &&
+      (imagObj.type === 'str' ||
+        imagObj.type === 'bytes' ||
+        imagObj.type === 'bytearray')
+    ) {
+      throw new Error(
+        `TypeError: complex() argument 'imag' must be a real number, not ${typeName(
+          imagBits,
+        )}`,
+      );
+    }
+    const real = complexFromValStrict(val);
+    if (!real) {
+      throw new Error(
+        `TypeError: complex() argument 'real' must be a real number, not ${typeName(
+          val,
+        )}`,
+      );
+    }
+    if (real.overflow) {
+      throw new Error('OverflowError: int too large to convert to float');
+    }
+    const imag = complexFromValStrict(imagBits);
+    if (!imag) {
+      throw new Error(
+        `TypeError: complex() argument 'imag' must be a real number, not ${typeName(
+          imagBits,
+        )}`,
+      );
+    }
+    if (imag.overflow) {
+      throw new Error('OverflowError: int too large to convert to float');
+    }
+    const re = real.re - imag.im;
+    const im = real.im + imag.re;
+    return boxComplex(re, im);
   },
   len: (val) => {
     const list = getList(val);
@@ -10090,19 +11042,44 @@ BASE_IMPORTS = """\
   string_format: (val, specBits) => {
     const spec = getStrObj(specBits);
     if (spec === null) {
-      throw new Error(
-        `TypeError: format spec must be a str, not ${typeName(specBits)}`,
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(
+          boxPtr({
+            type: 'str',
+            value: `format spec must be a str, not ${typeName(specBits)}`,
+          }),
+        ),
       );
+      return raiseException(exc);
     }
     if (spec.length === 0) {
       return baseImports.str_from_obj(val);
     }
-    // TODO(stdlib-compat, owner:wasm, milestone:TC1): implement full format
-    // spec parsing/formatting to match runtime/CPython behavior.
-    const typeLabel = typeName(val);
-    throw new Error(
-      `TypeError: unsupported format string passed to ${typeLabel}.__format__`,
-    );
+    const raiseFormatError = (err) => {
+      const msg = err && err.message ? err.message : String(err);
+      const match = msg.match(/^([A-Za-z_]+Error):\\s*(.*)$/);
+      const kind = match ? match[1] : 'ValueError';
+      const text = match ? match[2] : msg;
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: kind }),
+        exceptionArgs(boxPtr({ type: 'str', value: text })),
+      );
+      return raiseException(exc);
+    };
+    let parsed;
+    try {
+      parsed = parseFormatSpec(spec);
+    } catch (err) {
+      return raiseFormatError(err);
+    }
+    let rendered = '';
+    try {
+      rendered = formatWithSpec(val, parsed);
+    } catch (err) {
+      return raiseFormatError(err);
+    }
+    return boxPtr({ type: 'str', value: rendered });
   },
   string_startswith: () => boxBool(false),
   string_startswith_slice: (
@@ -10931,6 +11908,10 @@ BASE_IMPORTS = """\
     if (isFloat(val)) {
       return boxFloat(Math.abs(bitsToFloat(val)));
     }
+    const complexObj = getComplex(val);
+    if (complexObj) {
+      return boxFloat(Math.hypot(complexObj.re, complexObj.im));
+    }
     const absAttr = lookupAttr(val, '__abs__');
     if (absAttr !== undefined) {
       return callCallable0(absAttr);
@@ -11108,6 +12089,207 @@ BASE_IMPORTS = """\
       firstlineno,
       linetableBits,
     });
+  },
+  compile_builtin: (
+    sourceBits,
+    filenameBits,
+    modeBits,
+    flagsBits,
+    dontInheritBits,
+    optimizeBits,
+  ) => {
+    const source = getStrObj(sourceBits);
+    if (source === null) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'compile() arg 1 must be a string' })),
+      );
+      return raiseException(exc);
+    }
+    const filename = getStrObj(filenameBits);
+    if (filename === null) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'compile() arg 2 must be a string' })),
+      );
+      return raiseException(exc);
+    }
+    const mode = getStrObj(modeBits);
+    if (mode === null) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'compile() arg 3 must be a string' })),
+      );
+      return raiseException(exc);
+    }
+    if (mode !== 'exec' && mode !== 'eval' && mode !== 'single') {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'ValueError' }),
+        exceptionArgs(
+          boxPtr({ type: 'str', value: "compile() mode must be 'exec', 'eval' or 'single'" }),
+        ),
+      );
+      return raiseException(exc);
+    }
+    if (!isIntLike(flagsBits)) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'compile() arg 4 must be int' })),
+      );
+      return raiseException(exc);
+    }
+    if (!isIntLike(dontInheritBits)) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'compile() arg 5 must be int' })),
+      );
+      return raiseException(exc);
+    }
+    if (!isIntLike(optimizeBits)) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'compile() arg 6 must be int' })),
+      );
+      return raiseException(exc);
+    }
+    const compileCheckNonlocal = (rawSource) => {
+      const isIdent = (name) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
+      const parseNameList = (raw) =>
+        raw
+          .split(',')
+          .map((part) => part.trim())
+          .filter((name) => isIdent(name));
+      const parseParamNames = (raw) =>
+        raw
+          .split(',')
+          .map((part) => part.trim())
+          .filter((part) => part.length > 0)
+          .map((part) => part.replace(/^\*+/, '').trim())
+          .filter((part) => part.length > 0)
+          .map((part) => part.split('=')[0].split(':')[0].trim())
+          .filter((part) => isIdent(part));
+      const bindingInOuter = (scopes, name) => {
+        for (let i = scopes.length - 1; i >= 1; i -= 1) {
+          const scope = scopes[i];
+          if (scope.assigned.has(name) || scope.params.has(name)) {
+            return true;
+          }
+        }
+        return false;
+      };
+      const scopes = [
+        {
+          indent: 0,
+          assigned: new Set(),
+          globals: new Set(),
+          nonlocals: new Set(),
+          params: new Set(),
+        },
+      ];
+      let pendingDefIndent = null;
+      let pendingParams = [];
+      const lines = rawSource.split(/\r?\n/);
+      for (const raw of lines) {
+        const stripped = raw.trimStart();
+        if (!stripped || stripped.startsWith('#')) {
+          continue;
+        }
+        const indent = raw.length - stripped.length;
+        if (pendingDefIndent !== null && indent > pendingDefIndent) {
+          const scope = {
+            indent,
+            assigned: new Set(),
+            globals: new Set(),
+            nonlocals: new Set(),
+            params: new Set(),
+          };
+          for (const name of pendingParams) {
+            scope.params.add(name);
+            scope.assigned.add(name);
+          }
+          scopes.push(scope);
+          pendingDefIndent = null;
+          pendingParams = [];
+        }
+        while (scopes.length > 1 && indent < scopes[scopes.length - 1].indent) {
+          const scope = scopes.pop();
+          for (const name of scope.nonlocals) {
+            if (!bindingInOuter(scopes, name)) {
+              return `no binding for nonlocal '${name}' found`;
+            }
+          }
+        }
+        if (stripped.startsWith('def ') || stripped.startsWith('async def ')) {
+          const header = stripped.startsWith('async def ')
+            ? stripped.slice('async def '.length)
+            : stripped.slice('def '.length);
+          const name = header.split('(')[0].trim();
+          if (isIdent(name)) {
+            scopes[scopes.length - 1].assigned.add(name);
+          }
+          const start = header.indexOf('(');
+          const end = header.lastIndexOf(')');
+          if (start >= 0 && end > start) {
+            pendingParams = parseParamNames(header.slice(start + 1, end));
+          }
+          pendingDefIndent = indent;
+          continue;
+        }
+        if (stripped.startsWith('global ')) {
+          for (const name of parseNameList(stripped.slice('global '.length))) {
+            const scope = scopes[scopes.length - 1];
+            if (scope.nonlocals.has(name)) {
+              return `name '${name}' is nonlocal and global`;
+            }
+            scope.globals.add(name);
+          }
+          continue;
+        }
+        if (stripped.startsWith('nonlocal ')) {
+          for (const name of parseNameList(stripped.slice('nonlocal '.length))) {
+            const scope = scopes[scopes.length - 1];
+            if (scope.globals.has(name)) {
+              return `name '${name}' is nonlocal and global`;
+            }
+            scope.nonlocals.add(name);
+          }
+          continue;
+        }
+        if (
+          stripped.includes('=') &&
+          !stripped.includes('==') &&
+          !stripped.includes('!=') &&
+          !stripped.startsWith('return ') &&
+          !stripped.startsWith('yield ') &&
+          !stripped.startsWith('raise ') &&
+          !stripped.startsWith('assert ')
+        ) {
+          const lhs = stripped.split('=', 1)[0].trim();
+          for (const name of parseNameList(lhs)) {
+            scopes[scopes.length - 1].assigned.add(name);
+          }
+        }
+      }
+      while (scopes.length > 1) {
+        const scope = scopes.pop();
+        for (const name of scope.nonlocals) {
+          if (!bindingInOuter(scopes, name)) {
+            return `no binding for nonlocal '${name}' found`;
+          }
+        }
+      }
+      return null;
+    };
+    const nonlocalMessage = compileCheckNonlocal(source);
+    if (nonlocalMessage !== null) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'SyntaxError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: nonlocalMessage })),
+      );
+      return raiseException(exc);
+    }
+    const nameBits = boxPtr({ type: 'str', value: '<module>' });
+    return baseImports.code_new(filenameBits, nameBits, boxInt(1), boxNone());
   },
   sum_builtin: (iterableBits, startBits) => {
     const iterBits = baseImports.iter(iterableBits);
@@ -11530,6 +12712,7 @@ BASE_IMPORTS = """\
   file_readline: () => boxNone(),
   file_readlines: () => boxNone(),
   file_readinto: () => boxNone(),
+  file_readinto1: () => boxNone(),
   file_write: () => boxNone(),
   file_writelines: () => boxNone(),
   file_seek: () => boxNone(),
@@ -11550,8 +12733,9 @@ BASE_IMPORTS = """\
     const view = new DataView(memory.buffer);
     const outAddr = expectPtrAddr(out, 'db_query');
     if (outAddr === 0) return 2;
-    view.setBigInt64(outAddr, 0n, true);
-    return 7;
+    const stream = streamCreate();
+    view.setBigInt64(outAddr, stream.handle, true);
+    return 0;
   },
   db_exec: (ptr, _len, out, _token) => {
     expectPtrAddr(ptr, 'db_exec');
@@ -11559,17 +12743,66 @@ BASE_IMPORTS = """\
     const view = new DataView(memory.buffer);
     const outAddr = expectPtrAddr(out, 'db_exec');
     if (outAddr === 0) return 2;
-    view.setBigInt64(outAddr, 0n, true);
-    return 7;
+    const stream = streamCreate();
+    view.setBigInt64(outAddr, stream.handle, true);
+    return 0;
   },
-  stream_new: () => 0n,
-  stream_send: (_handle, ptr, _len) => {
+  db_query_obj: (payloadBits, _token) => {
+    const data = getBytes(payloadBits) || getBytearray(payloadBits);
+    if (!data) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'send expects bytes-like object' })),
+      );
+      return raiseException(exc);
+    }
+    const stream = streamCreate();
+    return stream.handle;
+  },
+  db_exec_obj: (payloadBits, _token) => {
+    const data = getBytes(payloadBits) || getBytearray(payloadBits);
+    if (!data) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'send expects bytes-like object' })),
+      );
+      return raiseException(exc);
+    }
+    const stream = streamCreate();
+    return stream.handle;
+  },
+  db_host_poll: () => 0,
+  stream_new: (capacity) => streamCreate(capacity).handle,
+  stream_send: (handle, ptr, len) => {
     expectPtrAddr(ptr, 'stream_send');
+    const bytes = readMemoryBytes(ptr, len);
+    const stream = streamGet(handle);
+    if (!stream) return boxPending();
+    if (!stream.closed) {
+      stream.queue.push(bytes);
+    }
     return 0n;
   },
-  stream_recv: () => 0n,
-  stream_close: () => {},
-  stream_drop: () => {},
+  stream_recv: (handle) => {
+    const stream = streamGet(handle);
+    if (!stream) return boxNone();
+    if (stream.queue.length === 0) {
+      if (stream.closed) return boxNone();
+      baseImports.db_host_poll();
+      if (stream.queue.length === 0) {
+        return stream.closed ? boxNone() : boxPending();
+      }
+    }
+    const chunk = stream.queue.shift();
+    return boxBytes(chunk);
+  },
+  stream_close: (handle) => {
+    const stream = streamGet(handle);
+    if (stream) stream.closed = true;
+  },
+  stream_drop: (handle) => {
+    streamRelease(handle);
+  },
   ws_connect: (ptr, _len, out) => {
     expectPtrAddr(ptr, 'ws_connect');
     expectPtrAddr(out, 'ws_connect');
@@ -12051,6 +13284,8 @@ if (wasmImports.table) {
 const envImports = {};
 if (memory) envImports.memory = memory;
 if (table) envImports.__indirect_function_table = table;
+envImports.molt_getpid_host = () =>
+  BigInt(typeof process !== 'undefined' && process.pid ? process.pid : 0);
 """
 
 

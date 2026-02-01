@@ -16,6 +16,8 @@ interface intrinsics {
     ) -> molt-object;
     sys_version_info: func() -> molt-object;
     sys_version: func() -> molt-object;
+    os_name: func() -> molt-object;
+    sys_platform: func() -> molt-object;
     print_obj: func(val: molt-object);
     print_newline: func();
     alloc: func(size: u64) -> u64;
@@ -298,6 +300,14 @@ interface intrinsics {
         firstlineno: molt-object,
         linetable: molt-object,
     ) -> molt-object;
+    compile_builtin: func(
+        source: molt-object,
+        filename: molt-object,
+        mode: molt-object,
+        flags: molt-object,
+        dont_inherit: molt-object,
+        optimize: molt-object,
+    ) -> molt-object;
     round_builtin: func(val: molt-object, ndigits: molt-object) -> molt-object;
     enumerate_builtin: func(iterable: molt-object, start: molt-object) -> molt-object;
     next_builtin: func(iter: molt-object, default: molt-object) -> molt-object;
@@ -450,6 +460,7 @@ interface intrinsics {
     bytes_from_str: func(obj: molt-object, encoding: molt-object, errors: molt-object) -> molt-object;
     bytearray_from_str: func(obj: molt-object, encoding: molt-object, errors: molt-object) -> molt-object;
     float_from_obj: func(obj: molt-object) -> molt-object;
+    complex_from_obj: func(obj: molt-object, imag: molt-object, has_imag: molt-object) -> molt-object;
     intarray_from_seq: func(obj: molt-object) -> molt-object;
     memoryview_new: func(obj: molt-object) -> molt-object;
     memoryview_tobytes: func(obj: molt-object) -> molt-object;
@@ -508,6 +519,7 @@ interface intrinsics {
     file_readline: func(handle: molt-object, size: molt-object) -> molt-object;
     file_readlines: func(handle: molt-object, hint: molt-object) -> molt-object;
     file_readinto: func(handle: molt-object, buffer: molt-object) -> molt-object;
+    file_readinto1: func(handle: molt-object, buffer: molt-object) -> molt-object;
     file_write: func(handle: molt-object, data: molt-object) -> molt-object;
     file_writelines: func(handle: molt-object, lines: molt-object) -> molt-object;
     file_seek: func(handle: molt-object, offset: molt-object, whence: molt-object) -> molt-object;
@@ -522,11 +534,12 @@ interface intrinsics {
     file_close: func(handle: molt-object) -> molt-object;
     file_detach: func(handle: molt-object) -> molt-object;
     file_reconfigure: func(handle: molt-object, encoding: molt-object, errors: molt-object, newline: molt-object, line_buffering: molt-object, write_through: molt-object) -> molt-object;
-    // TODO(wasm-parity, owner:runtime, milestone:SL1, priority:P2, status:partial):
-    // add imports for remaining file methods (readinto1) once implemented.
     bridge_unavailable: func(msg: molt-object) -> molt-object;
     db_query: func(ptr: molt-ptr, len: u64, out: molt-ptr, cancel_token: molt-object) -> s32;
     db_exec: func(ptr: molt-ptr, len: u64, out: molt-ptr, cancel_token: molt-object) -> s32;
+    db_query_obj: func(payload: molt-object, cancel_token: molt-object) -> molt-object;
+    db_exec_obj: func(payload: molt-object, cancel_token: molt-object) -> molt-object;
+    db_host_poll: func() -> s32;
     stream_new: func(capacity: u64) -> u64;
     stream_clone: func(handle: u64) -> u64;
     stream_send: func(handle: u64, ptr: molt-ptr, len: u64) -> u64;

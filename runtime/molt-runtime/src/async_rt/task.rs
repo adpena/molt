@@ -1,8 +1,13 @@
-use crate::{obj_from_bits, resolve_ptr};
+use crate::{header_from_obj_ptr, obj_from_bits, resolve_ptr};
 
 pub(crate) fn resolve_task_ptr(bits: u64) -> Option<*mut u8> {
     let obj = obj_from_bits(bits);
     if let Some(ptr) = obj.as_ptr() {
+        unsafe {
+            if (*header_from_obj_ptr(ptr)).poll_fn == 0 {
+                return None;
+            }
+        }
         return Some(ptr);
     }
     if !obj.is_float() {
@@ -14,7 +19,13 @@ pub(crate) fn resolve_task_ptr(bits: u64) -> Option<*mut u8> {
         if addr < 4096 || (addr & 0x7) != 0 {
             return None;
         }
-        return resolve_ptr(bits);
+        let ptr = resolve_ptr(bits)?;
+        unsafe {
+            if (*header_from_obj_ptr(ptr)).poll_fn == 0 {
+                return None;
+            }
+        }
+        return Some(ptr);
     }
     None
 }

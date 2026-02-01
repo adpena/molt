@@ -27,6 +27,9 @@ def _track_token(token: CancellationToken) -> int:
 
 
 def molt_cancel_token_new(parent_id: int | None) -> int:
+    if parent_id == -1:
+        token = CancellationToken.detached()
+        return _track_token(token)
     if parent_id in (None, 0):
         token = CancellationToken()
         return _track_token(token)
@@ -153,7 +156,7 @@ async def molt_async_sleep(_delay: float = 0.0, _result: Any | None = None) -> A
     return _result
 
 
-def molt_thread_submit(callable: Any, args: Any, kwargs: Any) -> Any:
+def molt_thread_submit(fn: Any, args: Any, kwargs: Any) -> Any:
     async def _run() -> Any:
         if args is None:
             call_args = ()
@@ -163,7 +166,7 @@ def molt_thread_submit(callable: Any, args: Any, kwargs: Any) -> Any:
             call_kwargs = {}
         else:
             call_kwargs = dict(kwargs)
-        return callable(*call_args, **call_kwargs)
+        return fn(*call_args, **call_kwargs)
 
     return _run()
 
@@ -178,10 +181,35 @@ def molt_chan_send(chan: Any, val: Any) -> int:
     raise TypeError("molt_chan_send expected a Channel")
 
 
+def molt_chan_try_send(chan: Any, val: Any) -> int:
+    if hasattr(chan, "try_send"):
+        return 0 if chan.try_send(val) else _PENDING
+    return molt_chan_send(chan, val)
+
+
 def molt_chan_recv(chan: Any) -> Any:
     if hasattr(chan, "recv"):
         return chan.recv()
     raise TypeError("molt_chan_recv expected a Channel")
+
+
+def molt_chan_try_recv(chan: Any) -> Any:
+    if hasattr(chan, "try_recv"):
+        ok, value = chan.try_recv()
+        return value if ok else _PENDING
+    return molt_chan_recv(chan)
+
+
+def molt_chan_send_blocking(chan: Any, val: Any) -> int:
+    if hasattr(chan, "send"):
+        return chan.send(val)
+    return molt_chan_send(chan, val)
+
+
+def molt_chan_recv_blocking(chan: Any) -> Any:
+    if hasattr(chan, "recv"):
+        return chan.recv()
+    return molt_chan_recv(chan)
 
 
 def molt_chan_drop(chan: Any) -> None:

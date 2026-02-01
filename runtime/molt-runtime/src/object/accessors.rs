@@ -1,10 +1,10 @@
 use molt_obj_model::MoltObject;
 
 use crate::{
-    class_layout_version_bits, dec_ref_bits, header_from_obj_ptr, inc_ref_bits, obj_from_bits,
-    object_class_bits, object_mark_has_ptrs, object_type_id, profile_hit, raise_exception, to_i64,
-    usize_from_bits, PyToken, LAYOUT_GUARD_COUNT, LAYOUT_GUARD_FAIL, STRUCT_FIELD_STORE_COUNT,
-    TYPE_ID_OBJECT, TYPE_ID_TYPE,
+    class_layout_version_bits, dec_ref_bits, header_from_obj_ptr, inc_ref_bits, is_missing_bits,
+    obj_from_bits, object_class_bits, object_mark_has_ptrs, object_type_id, profile_hit,
+    raise_exception, to_i64, usize_from_bits, PyToken, LAYOUT_GUARD_COUNT, LAYOUT_GUARD_FAIL,
+    STRUCT_FIELD_STORE_COUNT, TYPE_ID_OBJECT, TYPE_ID_TYPE,
 };
 
 pub(crate) fn resolve_obj_ptr(bits: u64) -> Option<*mut u8> {
@@ -81,6 +81,7 @@ pub(crate) unsafe fn object_field_init_ptr_raw(
     );
     if obj_from_bits(val_bits).as_ptr().is_some() {
         object_mark_has_ptrs(_py, obj_ptr);
+        inc_ref_bits(_py, val_bits);
     }
     *slot = val_bits;
     MoltObject::none().bits()
@@ -203,7 +204,12 @@ pub unsafe extern "C" fn molt_guarded_field_get_ptr(
     crate::with_gil_entry!(_py, {
         let offset = usize_from_bits(offset_bits);
         if guard_layout_match(_py, obj_ptr, class_bits, expected_version) {
-            return object_field_get_ptr_raw(_py, obj_ptr, offset);
+            let bits = object_field_get_ptr_raw(_py, obj_ptr, offset);
+            if is_missing_bits(_py, bits) {
+                dec_ref_bits(_py, bits);
+                return crate::molt_get_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len_bits) as u64;
+            }
+            return bits;
         }
         crate::molt_get_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len_bits) as u64
     })

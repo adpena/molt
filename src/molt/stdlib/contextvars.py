@@ -110,6 +110,10 @@ class _Context:
         try:
             return func(*args, **kwargs)
         finally:
+            # Persist mutations made while running in this context.
+            current = _CONTEXTS.get(ctx_id)
+            if current is not None:
+                self._data = dict(current)
             if prior is None:
                 _CONTEXTS.pop(ctx_id, None)
             else:

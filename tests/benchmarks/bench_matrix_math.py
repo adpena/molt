@@ -1,7 +1,7 @@
 import molt_buffer
 
 
-def mat_mul():
+def mat_mul() -> int:
     a = molt_buffer.new(2, 2, 0)
     b = molt_buffer.new(2, 2, 0)
     molt_buffer.set(a, 0, 0, 1)
@@ -27,4 +27,9 @@ def mat_mul():
     return res
 
 
-print(mat_mul())
+def main() -> None:
+    print(mat_mul())
+
+
+if __name__ == "__main__":
+    main()

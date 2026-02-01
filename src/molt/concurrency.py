@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins as _builtins
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 if TYPE_CHECKING:
@@ -25,6 +26,16 @@ T = TypeVar("T")
 _PENDING = 0x7FFD_0000_0000_0000
 
 
+def _intrinsic(name: str) -> Any | None:
+    return globals().get(name, getattr(_builtins, name, None))
+
+
+_MOLT_CHAN_SEND_BLOCKING = _intrinsic("molt_chan_send_blocking")
+_MOLT_CHAN_RECV_BLOCKING = _intrinsic("molt_chan_recv_blocking")
+_MOLT_CHAN_TRY_SEND = _intrinsic("molt_chan_try_send")
+_MOLT_CHAN_TRY_RECV = _intrinsic("molt_chan_try_recv")
+
+
 class Channel:
     def __init__(self, handle: Any, maxsize: int = 0) -> None:
         self._handle = handle
@@ -34,6 +45,10 @@ class Channel:
     def send(self, value: T) -> int:
         if self._closed:
             raise RuntimeError("Channel is closed")
+        if _MOLT_CHAN_SEND_BLOCKING is not None:
+            res = _MOLT_CHAN_SEND_BLOCKING(self._handle, value)
+            if res != _PENDING:
+                return res
         while True:
             res = molt_chan_send(self._handle, value)
             if res != _PENDING:
@@ -42,6 +57,10 @@ class Channel:
     def recv(self) -> T:
         if self._closed:
             raise RuntimeError("Channel is closed")
+        if _MOLT_CHAN_RECV_BLOCKING is not None:
+            res = _MOLT_CHAN_RECV_BLOCKING(self._handle)
+            if res != _PENDING:
+                return cast(T, res)
         while True:
             res = molt_chan_recv(self._handle)
             if res != _PENDING:
@@ -64,6 +83,22 @@ class Channel:
             if res != _PENDING:
                 return cast(T, res)
             await molt_async_sleep(0.0)
+
+    def try_send(self, value: T) -> bool:
+        if self._closed:
+            raise RuntimeError("Channel is closed")
+        fn = _MOLT_CHAN_TRY_SEND or molt_chan_send
+        res = fn(self._handle, value)
+        return res != _PENDING
+
+    def try_recv(self) -> tuple[bool, T | None]:
+        if self._closed:
+            raise RuntimeError("Channel is closed")
+        fn = _MOLT_CHAN_TRY_RECV or molt_chan_recv
+        res = fn(self._handle)
+        if res == _PENDING:
+            return False, None
+        return True, cast(T, res)
 
     def close(self) -> None:
         if self._closed:
@@ -91,6 +126,14 @@ class CancellationToken:
     def __init__(self) -> None:
         self._token = molt_cancel_token_new(None)
         self._owned = True
+
+    @classmethod
+    def detached(cls) -> "CancellationToken":
+        token = cls()
+        old_id = token._token
+        token._token = molt_cancel_token_new(-1)
+        molt_cancel_token_drop(old_id)
+        return token
 
     def child(self) -> "CancellationToken":
         token = CancellationToken()

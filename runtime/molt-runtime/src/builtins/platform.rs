@@ -1,6 +1,9 @@
 use std::sync::atomic::AtomicU64;
+use std::sync::OnceLock;
 
 use crate::*;
+#[cfg(target_arch = "wasm32")]
+use crate::libc_compat as libc;
 
 // --- Platform constants ---
 
@@ -30,6 +33,97 @@ pub extern "C" fn molt_bridge_unavailable(msg_bits: u64) -> u64 {
 
 static ERRNO_CONSTANTS_CACHE: AtomicU64 = AtomicU64::new(0);
 static SOCKET_CONSTANTS_CACHE: AtomicU64 = AtomicU64::new(0);
+static OS_NAME_CACHE: AtomicU64 = AtomicU64::new(0);
+static SYS_PLATFORM_CACHE: AtomicU64 = AtomicU64::new(0);
+
+fn trace_env_get() -> bool {
+    static TRACE: OnceLock<bool> = OnceLock::new();
+    *TRACE.get_or_init(|| {
+        matches!(
+            std::env::var("MOLT_TRACE_ENV_GET").ok().as_deref(),
+            Some("1")
+        )
+    })
+}
+
+fn os_name_str() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "nt"
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        "posix"
+    }
+}
+
+fn sys_platform_str() -> &'static str {
+    #[cfg(target_arch = "wasm32")]
+    {
+        "wasi"
+    }
+    #[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
+    {
+        "win32"
+    }
+    #[cfg(all(not(target_arch = "wasm32"), target_os = "macos"))]
+    {
+        "darwin"
+    }
+    #[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
+    {
+        "linux"
+    }
+    #[cfg(all(not(target_arch = "wasm32"), target_os = "android"))]
+    {
+        "android"
+    }
+    #[cfg(all(not(target_arch = "wasm32"), target_os = "freebsd"))]
+    {
+        "freebsd"
+    }
+    #[cfg(all(
+        not(target_arch = "wasm32"),
+        not(any(
+            target_os = "windows",
+            target_os = "macos",
+            target_os = "linux",
+            target_os = "android",
+            target_os = "freebsd"
+        ))
+    ))]
+    {
+        "unknown"
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_os_name() -> u64 {
+    crate::with_gil_entry!(_py, {
+        init_atomic_bits(_py, &OS_NAME_CACHE, || {
+            let ptr = alloc_string(_py, os_name_str().as_bytes());
+            if ptr.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(ptr).bits()
+            }
+        })
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_sys_platform() -> u64 {
+    crate::with_gil_entry!(_py, {
+        init_atomic_bits(_py, &SYS_PLATFORM_CACHE, || {
+            let ptr = alloc_string(_py, sys_platform_str().as_bytes());
+            if ptr.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(ptr).bits()
+            }
+        })
+    })
+}
 
 fn base_errno_constants() -> Vec<(&'static str, i64)> {
     let mut out = vec![
@@ -78,73 +172,73 @@ fn socket_constants() -> Vec<(&'static str, i64)> {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-    let mut out = vec![
-        ("AF_INET", libc::AF_INET as i64),
-        ("AF_INET6", libc::AF_INET6 as i64),
-        ("SOCK_STREAM", libc::SOCK_STREAM as i64),
-        ("SOCK_DGRAM", libc::SOCK_DGRAM as i64),
-        ("SOCK_RAW", libc::SOCK_RAW as i64),
-        ("SOL_SOCKET", libc::SOL_SOCKET as i64),
-        ("SO_REUSEADDR", libc::SO_REUSEADDR as i64),
-        ("SO_KEEPALIVE", libc::SO_KEEPALIVE as i64),
-        ("SO_SNDBUF", libc::SO_SNDBUF as i64),
-        ("SO_RCVBUF", libc::SO_RCVBUF as i64),
-        ("SO_ERROR", libc::SO_ERROR as i64),
-        ("SO_LINGER", libc::SO_LINGER as i64),
-        ("SO_BROADCAST", libc::SO_BROADCAST as i64),
-        ("IPPROTO_TCP", libc::IPPROTO_TCP as i64),
-        ("IPPROTO_UDP", libc::IPPROTO_UDP as i64),
-        ("IPPROTO_IPV6", libc::IPPROTO_IPV6 as i64),
-        ("IPV6_V6ONLY", libc::IPV6_V6ONLY as i64),
-        ("TCP_NODELAY", libc::TCP_NODELAY as i64),
-        ("SHUT_RD", libc::SHUT_RD as i64),
-        ("SHUT_WR", libc::SHUT_WR as i64),
-        ("SHUT_RDWR", libc::SHUT_RDWR as i64),
-        ("AI_PASSIVE", libc::AI_PASSIVE as i64),
-        ("AI_CANONNAME", libc::AI_CANONNAME as i64),
-        ("AI_NUMERICHOST", libc::AI_NUMERICHOST as i64),
-        ("AI_NUMERICSERV", libc::AI_NUMERICSERV as i64),
-        ("NI_NUMERICHOST", libc::NI_NUMERICHOST as i64),
-        ("NI_NUMERICSERV", libc::NI_NUMERICSERV as i64),
-        ("MSG_PEEK", libc::MSG_PEEK as i64),
-    ];
-    #[cfg(unix)]
-    {
-        out.push(("AF_UNIX", libc::AF_UNIX as i64));
-    }
-    #[cfg(unix)]
-    {
-        if SOCK_NONBLOCK_FLAG != 0 {
-            out.push(("SOCK_NONBLOCK", SOCK_NONBLOCK_FLAG as i64));
+        let mut out = vec![
+            ("AF_INET", libc::AF_INET as i64),
+            ("AF_INET6", libc::AF_INET6 as i64),
+            ("SOCK_STREAM", libc::SOCK_STREAM as i64),
+            ("SOCK_DGRAM", libc::SOCK_DGRAM as i64),
+            ("SOCK_RAW", libc::SOCK_RAW as i64),
+            ("SOL_SOCKET", libc::SOL_SOCKET as i64),
+            ("SO_REUSEADDR", libc::SO_REUSEADDR as i64),
+            ("SO_KEEPALIVE", libc::SO_KEEPALIVE as i64),
+            ("SO_SNDBUF", libc::SO_SNDBUF as i64),
+            ("SO_RCVBUF", libc::SO_RCVBUF as i64),
+            ("SO_ERROR", libc::SO_ERROR as i64),
+            ("SO_LINGER", libc::SO_LINGER as i64),
+            ("SO_BROADCAST", libc::SO_BROADCAST as i64),
+            ("IPPROTO_TCP", libc::IPPROTO_TCP as i64),
+            ("IPPROTO_UDP", libc::IPPROTO_UDP as i64),
+            ("IPPROTO_IPV6", libc::IPPROTO_IPV6 as i64),
+            ("IPV6_V6ONLY", libc::IPV6_V6ONLY as i64),
+            ("TCP_NODELAY", libc::TCP_NODELAY as i64),
+            ("SHUT_RD", libc::SHUT_RD as i64),
+            ("SHUT_WR", libc::SHUT_WR as i64),
+            ("SHUT_RDWR", libc::SHUT_RDWR as i64),
+            ("AI_PASSIVE", libc::AI_PASSIVE as i64),
+            ("AI_CANONNAME", libc::AI_CANONNAME as i64),
+            ("AI_NUMERICHOST", libc::AI_NUMERICHOST as i64),
+            ("AI_NUMERICSERV", libc::AI_NUMERICSERV as i64),
+            ("NI_NUMERICHOST", libc::NI_NUMERICHOST as i64),
+            ("NI_NUMERICSERV", libc::NI_NUMERICSERV as i64),
+            ("MSG_PEEK", libc::MSG_PEEK as i64),
+        ];
+        #[cfg(unix)]
+        {
+            out.push(("AF_UNIX", libc::AF_UNIX as i64));
         }
-        if SOCK_CLOEXEC_FLAG != 0 {
-            out.push(("SOCK_CLOEXEC", SOCK_CLOEXEC_FLAG as i64));
+        #[cfg(unix)]
+        {
+            if SOCK_NONBLOCK_FLAG != 0 {
+                out.push(("SOCK_NONBLOCK", SOCK_NONBLOCK_FLAG as i64));
+            }
+            if SOCK_CLOEXEC_FLAG != 0 {
+                out.push(("SOCK_CLOEXEC", SOCK_CLOEXEC_FLAG as i64));
+            }
         }
-    }
-    #[cfg(unix)]
-    {
-        out.push(("MSG_DONTWAIT", libc::MSG_DONTWAIT as i64));
-    }
-    #[cfg(any(
-        target_os = "linux",
-        target_os = "android",
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "freebsd",
-        target_os = "netbsd",
-        target_os = "openbsd",
-        target_os = "dragonfly"
-    ))]
-    {
-        out.push(("SO_REUSEPORT", libc::SO_REUSEPORT as i64));
-    }
-    out.push(("EAI_AGAIN", libc::EAI_AGAIN as i64));
-    out.push(("EAI_FAIL", libc::EAI_FAIL as i64));
-    out.push(("EAI_FAMILY", libc::EAI_FAMILY as i64));
-    out.push(("EAI_NONAME", libc::EAI_NONAME as i64));
-    out.push(("EAI_SERVICE", libc::EAI_SERVICE as i64));
-    out.push(("EAI_SOCKTYPE", libc::EAI_SOCKTYPE as i64));
-    out
+        #[cfg(unix)]
+        {
+            out.push(("MSG_DONTWAIT", libc::MSG_DONTWAIT as i64));
+        }
+        #[cfg(any(
+            target_os = "linux",
+            target_os = "android",
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "freebsd",
+            target_os = "netbsd",
+            target_os = "openbsd",
+            target_os = "dragonfly"
+        ))]
+        {
+            out.push(("SO_REUSEPORT", libc::SO_REUSEPORT as i64));
+        }
+        out.push(("EAI_AGAIN", libc::EAI_AGAIN as i64));
+        out.push(("EAI_FAIL", libc::EAI_FAIL as i64));
+        out.push(("EAI_FAMILY", libc::EAI_FAMILY as i64));
+        out.push(("EAI_NONAME", libc::EAI_NONAME as i64));
+        out.push(("EAI_SERVICE", libc::EAI_SERVICE as i64));
+        out.push(("EAI_SOCKTYPE", libc::EAI_SOCKTYPE as i64));
+        out
     }
 }
 
@@ -252,32 +346,156 @@ pub extern "C" fn molt_env_get(key_bits: u64, default_bits: u64) -> u64 {
         #[cfg(target_arch = "wasm32")]
         {
             let Some(bytes) = wasm_env_get_bytes(&key) else {
+                if trace_env_get() {
+                    eprintln!("molt_env_get key={key} hit=false");
+                }
                 return default_bits;
             };
             let Ok(val) = std::str::from_utf8(&bytes) else {
+                if trace_env_get() {
+                    eprintln!("molt_env_get key={key} hit=false");
+                }
                 return default_bits;
             };
             let ptr = alloc_string(_py, val.as_bytes());
             if ptr.is_null() {
+                if trace_env_get() {
+                    eprintln!("molt_env_get key={key} hit=false");
+                }
                 default_bits
             } else {
+                if trace_env_get() {
+                    eprintln!("molt_env_get key={key} hit=true");
+                }
                 MoltObject::from_ptr(ptr).bits()
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            match std::env::var(key) {
+            match std::env::var(&key) {
                 Ok(val) => {
                     let ptr = alloc_string(_py, val.as_bytes());
                     if ptr.is_null() {
+                        if trace_env_get() {
+                            eprintln!("molt_env_get key={key} hit=false");
+                        }
                         default_bits
                     } else {
+                        if trace_env_get() {
+                            eprintln!("molt_env_get key={key} hit=true");
+                        }
                         MoltObject::from_ptr(ptr).bits()
                     }
                 }
-                Err(_) => default_bits,
+                Err(_) => {
+                    if trace_env_get() {
+                        eprintln!("molt_env_get key={key} hit=false");
+                    }
+                    default_bits
+                }
             }
         }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_env_snapshot() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let mut pairs = Vec::new();
+        let mut owned_bits = Vec::new();
+        #[cfg(target_arch = "wasm32")]
+        {
+            let mut env_count = 0u32;
+            let mut buf_size = 0u32;
+            let rc = unsafe { environ_sizes_get(&mut env_count, &mut buf_size) };
+            if rc != 0 || env_count == 0 || buf_size == 0 {
+                let dict_ptr = alloc_dict_with_pairs(_py, &[]);
+                if dict_ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                return MoltObject::from_ptr(dict_ptr).bits();
+            }
+            let env_count = match usize::try_from(env_count) {
+                Ok(val) => val,
+                Err(_) => return MoltObject::none().bits(),
+            };
+            let buf_size = match usize::try_from(buf_size) {
+                Ok(val) => val,
+                Err(_) => return MoltObject::none().bits(),
+            };
+            let mut ptrs = vec![std::ptr::null_mut(); env_count];
+            let mut buf = vec![0u8; buf_size];
+            let rc = unsafe { environ_get(ptrs.as_mut_ptr(), buf.as_mut_ptr()) };
+            if rc != 0 {
+                return MoltObject::none().bits();
+            }
+            for &ptr in &ptrs {
+                if ptr.is_null() {
+                    continue;
+                }
+                let offset = (ptr as usize).saturating_sub(buf.as_ptr() as usize);
+                if offset >= buf.len() {
+                    continue;
+                }
+                let slice = &buf[offset..];
+                let end = slice.iter().position(|&b| b == 0).unwrap_or(slice.len());
+                let entry = &slice[..end];
+                let text = String::from_utf8_lossy(entry);
+                if let Some((key, val)) = text.split_once('=') {
+                    let key_ptr = alloc_string(_py, key.as_bytes());
+                    let val_ptr = alloc_string(_py, val.as_bytes());
+                    if key_ptr.is_null() || val_ptr.is_null() {
+                        if !key_ptr.is_null() {
+                            dec_ref_bits(_py, MoltObject::from_ptr(key_ptr).bits());
+                        }
+                        if !val_ptr.is_null() {
+                            dec_ref_bits(_py, MoltObject::from_ptr(val_ptr).bits());
+                        }
+                        continue;
+                    }
+                    let key_bits = MoltObject::from_ptr(key_ptr).bits();
+                    let val_bits = MoltObject::from_ptr(val_ptr).bits();
+                    pairs.push(key_bits);
+                    pairs.push(val_bits);
+                    owned_bits.push(key_bits);
+                    owned_bits.push(val_bits);
+                }
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            for (key, val) in std::env::vars() {
+                let key_ptr = alloc_string(_py, key.as_bytes());
+                let val_ptr = alloc_string(_py, val.as_bytes());
+                if key_ptr.is_null() || val_ptr.is_null() {
+                    if !key_ptr.is_null() {
+                        dec_ref_bits(_py, MoltObject::from_ptr(key_ptr).bits());
+                    }
+                    if !val_ptr.is_null() {
+                        dec_ref_bits(_py, MoltObject::from_ptr(val_ptr).bits());
+                    }
+                    continue;
+                }
+                let key_bits = MoltObject::from_ptr(key_ptr).bits();
+                let val_bits = MoltObject::from_ptr(val_ptr).bits();
+                pairs.push(key_bits);
+                pairs.push(val_bits);
+                owned_bits.push(key_bits);
+                owned_bits.push(val_bits);
+            }
+        }
+        let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
+        if dict_ptr.is_null() {
+            for bits in owned_bits {
+                dec_ref_bits(_py, bits);
+            }
+            return MoltObject::none().bits();
+        }
+        let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
+        for bits in owned_bits {
+            dec_ref_bits(_py, bits);
+        }
+        dict_bits
     })
 }
 

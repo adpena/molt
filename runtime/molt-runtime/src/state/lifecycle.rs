@@ -7,11 +7,11 @@ use crate::PyToken;
 use crate::{
     builtin_classes_shutdown, clear_exception_state, clear_exception_type_cache, dec_ref_bits,
     default_cancel_tokens, obj_from_bits, reset_ptr_registry, GilReleaseGuard, MoltObject,
-    ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, ASYNCGEN_REGISTRY, BLOCK_ON_TASK,
-    CONTEXT_STACK, CURRENT_TASK, CURRENT_TOKEN, DEFAULT_RECURSION_LIMIT, EXCEPTION_STACK,
-    FN_PTR_CODE, FRAME_STACK, GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE, GIL_DEPTH,
-    NEXT_CANCEL_TOKEN_ID, OBJECT_POOL_BUCKETS, OBJECT_POOL_TLS, PARSE_ARENA, RECURSION_DEPTH,
-    RECURSION_LIMIT, TASK_RAISE_ACTIVE,
+    ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, BLOCK_ON_TASK, CONTEXT_STACK,
+    CURRENT_TASK, CURRENT_TOKEN, DEFAULT_RECURSION_LIMIT, EXCEPTION_STACK, FRAME_STACK,
+    GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE, GIL_DEPTH, NEXT_CANCEL_TOKEN_ID,
+    OBJECT_POOL_BUCKETS, OBJECT_POOL_TLS, PARSE_ARENA, RECURSION_DEPTH, RECURSION_LIMIT,
+    TASK_RAISE_ACTIVE,
 };
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
@@ -44,13 +44,18 @@ pub(crate) fn touch_tls_guard() {
 }
 
 pub(crate) fn runtime_teardown(_py: &PyToken<'_>, state: &RuntimeState) {
+    runtime_teardown_inner(_py, state, true);
+}
+
+pub(crate) fn runtime_teardown_isolate(_py: &PyToken<'_>, state: &RuntimeState) {
+    runtime_teardown_inner(_py, state, false);
+}
+
+fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: bool) {
     crate::gil_assert();
     let scheduler_started = state.scheduler_started.load(AtomicOrdering::Acquire);
     let sleep_queue_started = state.sleep_queue_started.load(AtomicOrdering::Acquire);
-    #[cfg(not(target_arch = "wasm32"))]
     let io_poller_started = state.io_poller_started.load(AtomicOrdering::Acquire);
-    #[cfg(target_arch = "wasm32")]
-    let io_poller_started = false;
     #[cfg(not(target_arch = "wasm32"))]
     let thread_pool_started = state.thread_pool_started.load(AtomicOrdering::Acquire);
     #[cfg(target_arch = "wasm32")]
@@ -64,7 +69,6 @@ pub(crate) fn runtime_teardown(_py: &PyToken<'_>, state: &RuntimeState) {
         if sleep_queue_started {
             state.sleep_queue().shutdown(_py);
         }
-        #[cfg(not(target_arch = "wasm32"))]
         if io_poller_started {
             state.io_poller().shutdown();
         }
@@ -87,11 +91,13 @@ pub(crate) fn runtime_teardown(_py: &PyToken<'_>, state: &RuntimeState) {
     clear_utf8_caches(state);
     clear_code_slots(_py, state);
     clear_object_pool(state);
-    clear_asyncgen_registry();
+    clear_asyncgen_registry(state);
     clear_asyncgen_hooks(_py, state);
     clear_asyncgen_locals(_py, state);
-    clear_fn_ptr_code_map(_py);
-    reset_ptr_registry();
+    clear_fn_ptr_code_map(_py, state);
+    if reset_ptrs {
+        reset_ptr_registry();
+    }
     clear_thread_local_state(_py);
 }
 
@@ -101,11 +107,9 @@ pub(crate) fn runtime_reset_for_init(_py: &PyToken<'_>, state: &RuntimeState) {
     reset_object_pool(state);
 }
 
-fn clear_asyncgen_registry() {
-    if let Some(registry) = ASYNCGEN_REGISTRY.get() {
-        let mut guard = registry.lock().unwrap();
-        guard.clear();
-    }
+fn clear_asyncgen_registry(state: &RuntimeState) {
+    let mut guard = state.asyncgen_registry.lock().unwrap();
+    guard.clear();
 }
 
 fn clear_asyncgen_hooks(_py: &PyToken<'_>, state: &RuntimeState) {
@@ -133,14 +137,12 @@ fn clear_asyncgen_locals(_py: &PyToken<'_>, state: &RuntimeState) {
     }
 }
 
-fn clear_fn_ptr_code_map(_py: &PyToken<'_>) {
+fn clear_fn_ptr_code_map(_py: &PyToken<'_>, state: &RuntimeState) {
     crate::gil_assert();
-    if let Some(map) = FN_PTR_CODE.get() {
-        let mut guard = map.lock().unwrap();
-        for (_key, bits) in guard.drain() {
-            if bits != 0 {
-                dec_ref_bits(_py, bits);
-            }
+    let mut guard = state.fn_ptr_code.lock().unwrap();
+    for (_key, bits) in guard.drain() {
+        if bits != 0 {
+            dec_ref_bits(_py, bits);
         }
     }
 }
@@ -247,6 +249,10 @@ fn clear_task_state(_py: &PyToken<'_>, state: &RuntimeState) {
     }
     {
         let mut guard = state.task_exception_depths.lock().unwrap();
+        let _ = std::mem::take(&mut *guard);
+    }
+    {
+        let mut guard = state.task_exception_baselines.lock().unwrap();
         let _ = std::mem::take(&mut *guard);
     }
     let pointers = {
@@ -374,16 +380,28 @@ fn interned_name_slots(state: &RuntimeState) -> Vec<&AtomicU64> {
         &state.interned.getattr_name,
         &state.interned.getattribute_name,
         &state.interned.call_name,
+        &state.interned.await_name,
         &state.interned.init_name,
+        &state.interned.init_subclass_name,
         &state.interned.new_name,
+        &state.interned.instancecheck_name,
+        &state.interned.subclasscheck_name,
+        &state.interned.enter_name,
+        &state.interned.exit_name,
         &state.interned.setattr_name,
         &state.interned.delattr_name,
         &state.interned.write_name,
         &state.interned.flush_name,
         &state.interned.sys_name,
+        &state.interned.sys_version_info,
+        &state.interned.sys_version,
         &state.interned.stdout_name,
+        &state.interned.modules_name,
+        &state.interned.all_name,
         &state.interned.fspath_name,
         &state.interned.dict_name,
+        &state.interned.slots_name,
+        &state.interned.weakref_name,
         &state.interned.molt_dict_data_name,
         &state.interned.class_name,
         &state.interned.annotations_name,
@@ -400,7 +418,13 @@ fn interned_name_slots(state: &RuntimeState) -> Vec<&AtomicU64> {
         &state.interned.format_name,
         &state.interned.qualname_name,
         &state.interned.name_name,
+        &state.interned.obj_name,
         &state.interned.f_lasti_name,
+        &state.interned.f_code_name,
+        &state.interned.f_lineno_name,
+        &state.interned.tb_frame_name,
+        &state.interned.tb_lineno_name,
+        &state.interned.tb_next_name,
         &state.interned.molt_arg_names,
         &state.interned.molt_posonly,
         &state.interned.molt_kwonly_names,
@@ -409,6 +433,7 @@ fn interned_name_slots(state: &RuntimeState) -> Vec<&AtomicU64> {
         &state.interned.molt_closure_size,
         &state.interned.molt_is_coroutine,
         &state.interned.molt_is_generator,
+        &state.interned.molt_bind_kind,
         &state.interned.defaults_name,
         &state.interned.kwdefaults_name,
         &state.interned.lt_name,
@@ -419,6 +444,8 @@ fn interned_name_slots(state: &RuntimeState) -> Vec<&AtomicU64> {
         &state.interned.ne_name,
         &state.interned.add_name,
         &state.interned.radd_name,
+        &state.interned.mul_name,
+        &state.interned.rmul_name,
         &state.interned.sub_name,
         &state.interned.rsub_name,
         &state.interned.truediv_name,
@@ -446,6 +473,7 @@ fn clear_special_cache(_py: &PyToken<'_>, state: &RuntimeState) {
         &state.special_cache.molt_missing,
         &state.special_cache.molt_not_implemented,
         &state.special_cache.molt_ellipsis,
+        &state.special_cache.awaitable_await,
     ];
     clear_atomic_slots(_py, &slots);
 }

@@ -7,12 +7,11 @@ use crate::state::runtime_state::runtime_state_lock;
 use crate::{
     alloc_class_obj, alloc_string, alloc_tuple, class_break_cycles, class_name_bits, dec_ref_bits,
     inc_ref_bits, molt_class_set_base, obj_from_bits, object_set_class_bits, object_type_id,
-    runtime_state,
-    string_obj_to_owned, RuntimeState, BUILTIN_TAG_BASE_EXCEPTION, BUILTIN_TAG_EXCEPTION,
-    BUILTIN_TAG_OBJECT, BUILTIN_TAG_TYPE, TYPE_ID_TYPE, TYPE_TAG_BOOL, TYPE_TAG_BYTEARRAY,
-    TYPE_TAG_BYTES, TYPE_TAG_DICT, TYPE_TAG_FLOAT, TYPE_TAG_FROZENSET, TYPE_TAG_INT, TYPE_TAG_LIST,
-    TYPE_TAG_MEMORYVIEW, TYPE_TAG_NONE, TYPE_TAG_RANGE, TYPE_TAG_SET, TYPE_TAG_SLICE, TYPE_TAG_STR,
-    TYPE_TAG_TUPLE,
+    runtime_state, string_obj_to_owned, RuntimeState, BUILTIN_TAG_BASE_EXCEPTION,
+    BUILTIN_TAG_EXCEPTION, BUILTIN_TAG_OBJECT, BUILTIN_TAG_TYPE, TYPE_ID_TYPE, TYPE_TAG_BOOL,
+    TYPE_TAG_BYTEARRAY, TYPE_TAG_BYTES, TYPE_TAG_COMPLEX, TYPE_TAG_DICT, TYPE_TAG_FLOAT,
+    TYPE_TAG_FROZENSET, TYPE_TAG_INT, TYPE_TAG_LIST, TYPE_TAG_MEMORYVIEW, TYPE_TAG_NONE,
+    TYPE_TAG_RANGE, TYPE_TAG_SET, TYPE_TAG_SLICE, TYPE_TAG_STR, TYPE_TAG_TUPLE,
 };
 
 pub(crate) struct BuiltinClasses {
@@ -27,6 +26,7 @@ pub(crate) struct BuiltinClasses {
     pub(crate) exception_group: u64,
     pub(crate) int: u64,
     pub(crate) float: u64,
+    pub(crate) complex: u64,
     pub(crate) bool: u64,
     pub(crate) str: u64,
     pub(crate) bytes: u64,
@@ -46,6 +46,9 @@ pub(crate) struct BuiltinClasses {
     pub(crate) buffered_random: u64,
     pub(crate) text_io_wrapper: u64,
     pub(crate) function: u64,
+    pub(crate) coroutine: u64,
+    pub(crate) generator: u64,
+    pub(crate) async_generator: u64,
     pub(crate) builtin_function_or_method: u64,
     pub(crate) code: u64,
     pub(crate) frame: u64,
@@ -53,6 +56,7 @@ pub(crate) struct BuiltinClasses {
     pub(crate) module: u64,
     pub(crate) super_type: u64,
     pub(crate) generic_alias: u64,
+    pub(crate) union_type: u64,
 }
 
 impl BuiltinClasses {
@@ -70,6 +74,7 @@ impl BuiltinClasses {
             self.exception_group,
             self.int,
             self.float,
+            self.complex,
             self.bool,
             self.str,
             self.bytes,
@@ -89,6 +94,9 @@ impl BuiltinClasses {
             self.buffered_random,
             self.text_io_wrapper,
             self.function,
+            self.coroutine,
+            self.generator,
+            self.async_generator,
             self.builtin_function_or_method,
             self.code,
             self.frame,
@@ -96,6 +104,7 @@ impl BuiltinClasses {
             self.module,
             self.super_type,
             self.generic_alias,
+            self.union_type,
         ] {
             dec_ref_bits(_py, bits);
         }
@@ -124,6 +133,23 @@ fn make_builtin_class(_py: &PyToken<'_>, name: &str) -> u64 {
     MoltObject::from_ptr(class_ptr).bits()
 }
 
+fn union_type_class_name() -> &'static str {
+    let minor = std::env::var("MOLT_SYS_VERSION_INFO")
+        .ok()
+        .and_then(|raw| {
+            let mut parts = raw.split(',');
+            let _major = parts.next()?.trim().parse::<i64>().ok()?;
+            let minor = parts.next()?.trim().parse::<i64>().ok()?;
+            Some(minor)
+        })
+        .unwrap_or(14);
+    if minor >= 14 {
+        "Union"
+    } else {
+        "UnionType"
+    }
+}
+
 fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
     let object = make_builtin_class(_py, "object");
     let type_obj = make_builtin_class(_py, "type");
@@ -136,6 +162,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
     let exception_group = make_builtin_class(_py, "ExceptionGroup");
     let int = make_builtin_class(_py, "int");
     let float = make_builtin_class(_py, "float");
+    let complex = make_builtin_class(_py, "complex");
     let bool = make_builtin_class(_py, "bool");
     let str = make_builtin_class(_py, "str");
     let bytes = make_builtin_class(_py, "bytes");
@@ -155,6 +182,9 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
     let buffered_random = make_builtin_class(_py, "BufferedRandom");
     let text_io_wrapper = make_builtin_class(_py, "TextIOWrapper");
     let function = make_builtin_class(_py, "function");
+    let coroutine = make_builtin_class(_py, "coroutine");
+    let generator = make_builtin_class(_py, "generator");
+    let async_generator = make_builtin_class(_py, "async_generator");
     let builtin_function_or_method = make_builtin_class(_py, "builtin_function_or_method");
     let code = make_builtin_class(_py, "code");
     let frame = make_builtin_class(_py, "frame");
@@ -162,6 +192,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
     let module = make_builtin_class(_py, "module");
     let super_type = make_builtin_class(_py, "super");
     let generic_alias = make_builtin_class(_py, "GenericAlias");
+    let union_type = make_builtin_class(_py, union_type_class_name());
 
     unsafe {
         for bits in [
@@ -175,6 +206,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
             exception_group,
             int,
             float,
+            complex,
             bool,
             str,
             bytes,
@@ -194,6 +226,9 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
             buffered_random,
             text_io_wrapper,
             function,
+            coroutine,
+            generator,
+            async_generator,
             builtin_function_or_method,
             code,
             frame,
@@ -201,6 +236,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
             module,
             super_type,
             generic_alias,
+            union_type,
         ] {
             if let Some(ptr) = obj_from_bits(bits).as_ptr() {
                 if object_type_id(ptr) == TYPE_ID_TYPE {
@@ -233,6 +269,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
     }
     let _ = molt_class_set_base(int, object);
     let _ = molt_class_set_base(float, object);
+    let _ = molt_class_set_base(complex, object);
     let _ = molt_class_set_base(bool, int);
     let _ = molt_class_set_base(str, object);
     let _ = molt_class_set_base(bytes, object);
@@ -252,6 +289,9 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
     let _ = molt_class_set_base(buffered_random, file);
     let _ = molt_class_set_base(text_io_wrapper, file);
     let _ = molt_class_set_base(function, object);
+    let _ = molt_class_set_base(coroutine, object);
+    let _ = molt_class_set_base(generator, object);
+    let _ = molt_class_set_base(async_generator, object);
     let _ = molt_class_set_base(builtin_function_or_method, object);
     let _ = molt_class_set_base(code, object);
     let _ = molt_class_set_base(frame, object);
@@ -259,6 +299,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
     let _ = molt_class_set_base(module, object);
     let _ = molt_class_set_base(super_type, object);
     let _ = molt_class_set_base(generic_alias, object);
+    let _ = molt_class_set_base(union_type, object);
 
     BuiltinClasses {
         object,
@@ -272,6 +313,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
         exception_group,
         int,
         float,
+        complex,
         bool,
         str,
         bytes,
@@ -291,6 +333,9 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
         buffered_random,
         text_io_wrapper,
         function,
+        coroutine,
+        generator,
+        async_generator,
         builtin_function_or_method,
         code,
         frame,
@@ -298,6 +343,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
         module,
         super_type,
         generic_alias,
+        union_type,
     }
 }
 
@@ -345,6 +391,7 @@ pub(crate) fn builtin_classes_shutdown(py: &PyToken<'_>, state: &RuntimeState) {
             builtins.exception,
             builtins.int,
             builtins.float,
+            builtins.complex,
             builtins.bool,
             builtins.str,
             builtins.bytes,
@@ -364,6 +411,9 @@ pub(crate) fn builtin_classes_shutdown(py: &PyToken<'_>, state: &RuntimeState) {
             builtins.buffered_random,
             builtins.text_io_wrapper,
             builtins.function,
+            builtins.coroutine,
+            builtins.generator,
+            builtins.async_generator,
             builtins.builtin_function_or_method,
             builtins.code,
             builtins.frame,
@@ -371,8 +421,9 @@ pub(crate) fn builtin_classes_shutdown(py: &PyToken<'_>, state: &RuntimeState) {
             builtins.module,
             builtins.super_type,
             builtins.generic_alias,
+            builtins.union_type,
         ] {
-            class_break_cycles(&py, bits);
+            class_break_cycles(py, bits);
         }
     }
     unsafe {
@@ -393,6 +444,7 @@ pub(crate) fn is_builtin_class_bits(_py: &PyToken<'_>, bits: u64) -> bool {
         || bits == builtins.exception_group
         || bits == builtins.int
         || bits == builtins.float
+        || bits == builtins.complex
         || bits == builtins.bool
         || bits == builtins.str
         || bits == builtins.bytes
@@ -412,6 +464,9 @@ pub(crate) fn is_builtin_class_bits(_py: &PyToken<'_>, bits: u64) -> bool {
         || bits == builtins.buffered_random
         || bits == builtins.text_io_wrapper
         || bits == builtins.function
+        || bits == builtins.coroutine
+        || bits == builtins.generator
+        || bits == builtins.async_generator
         || bits == builtins.builtin_function_or_method
         || bits == builtins.code
         || bits == builtins.frame
@@ -419,6 +474,7 @@ pub(crate) fn is_builtin_class_bits(_py: &PyToken<'_>, bits: u64) -> bool {
         || bits == builtins.module
         || bits == builtins.super_type
         || bits == builtins.generic_alias
+        || bits == builtins.union_type
 }
 
 pub(crate) fn builtin_type_bits(_py: &PyToken<'_>, tag: i64) -> Option<u64> {
@@ -426,6 +482,7 @@ pub(crate) fn builtin_type_bits(_py: &PyToken<'_>, tag: i64) -> Option<u64> {
     match tag {
         TYPE_TAG_INT => Some(builtins.int),
         TYPE_TAG_FLOAT => Some(builtins.float),
+        TYPE_TAG_COMPLEX => Some(builtins.complex),
         TYPE_TAG_BOOL => Some(builtins.bool),
         TYPE_TAG_NONE => Some(builtins.none_type),
         TYPE_TAG_STR => Some(builtins.str),

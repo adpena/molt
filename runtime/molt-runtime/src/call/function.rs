@@ -436,6 +436,7 @@ unsafe fn call_function_obj5(
     res
 }
 
+#[allow(clippy::too_many_arguments)]
 unsafe fn call_function_obj6(
     _py: &PyToken<'_>,
     func_bits: u64,

@@ -105,15 +105,20 @@ def islice(
     stop: int | None = None,
     step: int = 1,
 ) -> Iterator[T]:
+    stop_only = stop is None
     if stop is None:
         stop = start
         start = 0
-    if start < 0:
-        start = 0
-    if stop is not None and stop < 0:
-        stop = 0
+    if start < 0 or (stop is not None and stop < 0):
+        if stop_only:
+            raise ValueError(
+                "Stop argument for islice() must be None or an integer: 0 <= x <= sys.maxsize."
+            )
+        raise ValueError(
+            "Indices for islice() must be None or an integer: 0 <= x <= sys.maxsize."
+        )
     if step <= 0:
-        raise ValueError("islice() step must be a positive integer")
+        raise ValueError("Step for islice() must be a positive integer or None.")
     return _IsliceIter(iterable, start, stop, step)
 
 

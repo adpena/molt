@@ -63,3 +63,15 @@ def test_channel_async_backpressure():
         return items
 
     assert asyncio.run(run()) == (1, 2)
+
+
+def test_channel_try_send_recv():
+    chan = channel(1)
+    assert chan.try_send(1) is True
+    assert chan.try_send(2) is False
+    ok, value = chan.try_recv()
+    assert ok
+    assert value == 1
+    ok, value = chan.try_recv()
+    assert not ok
+    assert value is None

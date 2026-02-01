@@ -10,8 +10,15 @@ use crate::{
     alloc_object, attr_lookup_ptr_allow_missing, call_callable0, class_name_for_error,
     dec_ref_bits, exception_pending, intern_static_name, maybe_ptr_from_bits, obj_from_bits,
     object_type_id, raise_exception, runtime_state, type_of_bits, MoltHeader, INLINE_INT_MAX_I128,
-    INLINE_INT_MIN_I128, TYPE_ID_BIGINT,
+    INLINE_INT_MIN_I128, TYPE_ID_BIGINT, TYPE_ID_COMPLEX,
 };
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ComplexParts {
+    pub(crate) re: f64,
+    pub(crate) im: f64,
+}
 
 pub(crate) fn to_i64(obj: MoltObject) -> Option<i64> {
     if obj.is_int() {
@@ -32,6 +39,79 @@ pub(crate) fn bigint_ptr_from_bits(bits: u64) -> Option<*mut u8> {
             None
         }
     }
+}
+
+pub(crate) fn complex_ptr_from_bits(bits: u64) -> Option<*mut u8> {
+    let ptr = maybe_ptr_from_bits(bits)?;
+    unsafe {
+        if object_type_id(ptr) == TYPE_ID_COMPLEX {
+            Some(ptr)
+        } else {
+            None
+        }
+    }
+}
+
+pub(crate) unsafe fn complex_ref(ptr: *mut u8) -> &'static ComplexParts {
+    &*(ptr as *const ComplexParts)
+}
+
+pub(crate) fn complex_bits(_py: &PyToken<'_>, re: f64, im: f64) -> u64 {
+    let total = mem::size_of::<MoltHeader>() + mem::size_of::<ComplexParts>();
+    let ptr = alloc_object(_py, total, TYPE_ID_COMPLEX);
+    if ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    unsafe {
+        std::ptr::write(ptr as *mut ComplexParts, ComplexParts { re, im });
+    }
+    MoltObject::from_ptr(ptr).bits()
+}
+
+pub(crate) fn complex_from_obj_strict(
+    _py: &PyToken<'_>,
+    obj: MoltObject,
+) -> Result<Option<ComplexParts>, ()> {
+    if let Some(ptr) = complex_ptr_from_bits(obj.bits()) {
+        return Ok(Some(unsafe { *complex_ref(ptr) }));
+    }
+    if let Some(f) = obj.as_float() {
+        return Ok(Some(ComplexParts { re: f, im: 0.0 }));
+    }
+    if let Some(i) = to_i64(obj) {
+        return Ok(Some(ComplexParts {
+            re: i as f64,
+            im: 0.0,
+        }));
+    }
+    if let Some(ptr) = bigint_ptr_from_bits(obj.bits()) {
+        if let Some(val) = unsafe { bigint_ref(ptr) }.to_f64() {
+            return Ok(Some(ComplexParts { re: val, im: 0.0 }));
+        }
+        return Err(());
+    }
+    Ok(None)
+}
+
+pub(crate) fn complex_from_obj_lossy(obj: MoltObject) -> Option<ComplexParts> {
+    if let Some(ptr) = complex_ptr_from_bits(obj.bits()) {
+        return Some(unsafe { *complex_ref(ptr) });
+    }
+    if let Some(f) = obj.as_float() {
+        return Some(ComplexParts { re: f, im: 0.0 });
+    }
+    if let Some(i) = to_i64(obj) {
+        return Some(ComplexParts {
+            re: i as f64,
+            im: 0.0,
+        });
+    }
+    if let Some(ptr) = bigint_ptr_from_bits(obj.bits()) {
+        return unsafe { bigint_ref(ptr) }
+            .to_f64()
+            .map(|val| ComplexParts { re: val, im: 0.0 });
+    }
+    None
 }
 
 pub(crate) fn to_bigint(obj: MoltObject) -> Option<BigInt> {

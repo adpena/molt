@@ -6,10 +6,15 @@ use crate::*;
 use socket2::{Domain, Protocol, SockAddr, SockRef, Socket, Type};
 #[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashMap;
+#[cfg(target_arch = "wasm32")]
+use crate::libc_compat as libc;
+#[cfg(target_arch = "wasm32")]
+use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::ffi::{CStr, CString, OsString};
-#[cfg(not(target_arch = "wasm32"))]
 use std::io::ErrorKind;
+#[cfg(target_arch = "wasm32")]
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 #[cfg(not(target_arch = "wasm32"))]
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 #[cfg(unix)]
@@ -23,7 +28,11 @@ use std::os::windows::io::{AsRawSocket, BorrowedSocket, FromRawSocket, IntoRawSo
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::{Mutex, OnceLock};
+#[cfg(target_arch = "wasm32")]
+use std::sync::{Mutex, OnceLock};
 #[cfg(not(target_arch = "wasm32"))]
+use std::time::Duration;
+#[cfg(target_arch = "wasm32")]
 use std::time::Duration;
 
 // --- Sockets ---
@@ -73,6 +82,39 @@ type SocketFd = RawSocket;
 fn socket_fd_map() -> &'static Mutex<HashMap<SocketFd, PtrSlot>> {
     static SOCKET_FD_MAP: OnceLock<Mutex<HashMap<SocketFd, PtrSlot>>> = OnceLock::new();
     SOCKET_FD_MAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn trace_socket_recv() -> bool {
+    static TRACE: OnceLock<bool> = OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_SOCKET_RECV").as_deref() == Ok("1"))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn trace_socket_send() -> bool {
+    static TRACE: OnceLock<bool> = OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_SOCKET_SEND").as_deref() == Ok("1"))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn socket_debug_fd(socket_ptr: *mut u8) -> Option<i64> {
+    with_socket_mut(socket_ptr, |inner| {
+        #[cfg(unix)]
+        {
+            inner
+                .raw_fd()
+                .map(|fd| fd as i64)
+                .ok_or_else(|| std::io::Error::new(ErrorKind::NotConnected, "socket closed"))
+        }
+        #[cfg(windows)]
+        {
+            inner
+                .raw_socket()
+                .map(|fd| fd as i64)
+                .ok_or_else(|| std::io::Error::new(ErrorKind::NotConnected, "socket closed"))
+        }
+    })
+    .ok()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -170,7 +212,7 @@ impl MoltSocketInner {
     }
 
     #[cfg(unix)]
-    fn raw_fd(&self) -> Option<RawFd> {
+    pub(crate) fn raw_fd(&self) -> Option<RawFd> {
         let fd = match &self.kind {
             MoltSocketKind::Pending(sock) => sock.as_raw_fd(),
             MoltSocketKind::TcpStream(sock) => sock.as_raw_fd(),
@@ -185,7 +227,7 @@ impl MoltSocketInner {
     }
 
     #[cfg(windows)]
-    fn raw_socket(&self) -> Option<RawSocket> {
+    pub(crate) fn raw_socket(&self) -> Option<RawSocket> {
         let sock = match &self.kind {
             MoltSocketKind::Pending(sock) => sock.as_raw_socket(),
             MoltSocketKind::TcpStream(sock) => sock.as_raw_socket(),
@@ -216,7 +258,7 @@ where
         ));
     }
     let mut guard = socket.inner.lock().unwrap();
-    f(&mut *guard)
+    f(&mut guard)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -237,6 +279,82 @@ fn socket_set_timeout(socket_ptr: *mut u8, timeout: Option<Duration>) {
     let socket = unsafe { &*(socket_ptr as *mut MoltSocket) };
     let mut guard = socket.timeout.lock().unwrap();
     *guard = timeout;
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone)]
+struct WasmSocketMeta {
+    family: i32,
+    sock_type: i32,
+    proto: i32,
+    timeout: Option<Duration>,
+    connect_pending: bool,
+}
+
+#[cfg(target_arch = "wasm32")]
+fn wasm_socket_meta_map() -> &'static Mutex<HashMap<i64, WasmSocketMeta>> {
+    static MAP: OnceLock<Mutex<HashMap<i64, WasmSocketMeta>>> = OnceLock::new();
+    MAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn wasm_socket_meta_insert(handle: i64, meta: WasmSocketMeta) {
+    wasm_socket_meta_map().lock().unwrap().insert(handle, meta);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn wasm_socket_meta_remove(handle: i64) {
+    wasm_socket_meta_map().lock().unwrap().remove(&handle);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn with_wasm_socket_meta_mut<R, F>(handle: i64, f: F) -> Result<R, String>
+where
+    F: FnOnce(&mut WasmSocketMeta) -> R,
+{
+    let mut guard = wasm_socket_meta_map().lock().unwrap();
+    let Some(meta) = guard.get_mut(&handle) else {
+        return Err("socket closed".to_string());
+    };
+    Ok(f(meta))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn wasm_socket_family(handle: i64) -> Result<i32, String> {
+    let guard = wasm_socket_meta_map().lock().unwrap();
+    guard
+        .get(&handle)
+        .map(|meta| meta.family)
+        .ok_or_else(|| "socket closed".to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn socket_timeout(handle: i64) -> Option<Duration> {
+    let guard = wasm_socket_meta_map().lock().unwrap();
+    guard.get(&handle).and_then(|meta| meta.timeout)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn socket_set_timeout(handle: i64, timeout: Option<Duration>) -> Result<(), String> {
+    with_wasm_socket_meta_mut(handle, |meta| {
+        meta.timeout = timeout;
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn socket_connect_pending(handle: i64) -> bool {
+    let guard = wasm_socket_meta_map().lock().unwrap();
+    guard
+        .get(&handle)
+        .map(|meta| meta.connect_pending)
+        .unwrap_or(false)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn socket_set_connect_pending(handle: i64, pending: bool) -> Result<(), String> {
+    with_wasm_socket_meta_mut(handle, |meta| {
+        meta.connect_pending = pending;
+    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -335,7 +453,36 @@ pub(crate) fn send_data_from_bits(bits: u64) -> Result<SendData, String> {
     Err("send expects bytes-like object".to_string())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
+fn socket_handle_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<i64, String> {
+    let obj = obj_from_bits(bits);
+    if obj.is_none() {
+        return Err("invalid socket".to_string());
+    }
+    if let Some(val) = to_i64(obj) {
+        if val < 0 {
+            return Err("invalid socket".to_string());
+        }
+        return Ok(val);
+    }
+    let obj_type = class_name_for_error(type_of_bits(_py, bits));
+    Err(format!("socket handle must be int, not {obj_type}"))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn errno_from_rc(rc: i32) -> i32 {
+    if rc < 0 {
+        -rc
+    } else {
+        0
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn would_block_errno(errno: i32) -> bool {
+    errno == libc::EAGAIN || errno == libc::EWOULDBLOCK
+}
+
 pub(crate) fn require_capability<T: ExceptionSentinel>(
     _py: &PyToken<'_>,
     caps: &[&str],
@@ -349,14 +496,12 @@ pub(crate) fn require_capability<T: ExceptionSentinel>(
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn require_time_wall_capability<T: ExceptionSentinel>(
     _py: &PyToken<'_>,
 ) -> Result<(), T> {
     require_capability(_py, &["time.wall", "time"], "time.wall")
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn require_net_capability<T: ExceptionSentinel>(
     _py: &PyToken<'_>,
     caps: &[&str],
@@ -364,7 +509,6 @@ pub(crate) fn require_net_capability<T: ExceptionSentinel>(
     require_capability(_py, caps, "net")
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn require_process_capability<T: ExceptionSentinel>(
     _py: &PyToken<'_>,
     caps: &[&str],
@@ -372,7 +516,6 @@ pub(crate) fn require_process_capability<T: ExceptionSentinel>(
     require_capability(_py, caps, "process")
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn host_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<Option<String>, String> {
     let obj = obj_from_bits(bits);
     if obj.is_none() {
@@ -396,7 +539,6 @@ fn host_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<Option<String>, String
     Err(format!("host must be str, bytes, or None, not {obj_type}"))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn port_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<u16, String> {
     let obj = obj_from_bits(bits);
     if let Some(port) = to_i64(obj) {
@@ -415,7 +557,6 @@ fn port_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<u16, String> {
     Err(format!("port must be int or str, not {obj_type}"))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn service_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<Option<String>, String> {
     let obj = obj_from_bits(bits);
     if obj.is_none() {
@@ -585,6 +726,117 @@ fn sockaddr_to_bits(_py: &PyToken<'_>, addr: &SockAddr) -> u64 {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+fn encode_sockaddr(_py: &PyToken<'_>, addr_bits: u64, family: i32) -> Result<Vec<u8>, String> {
+    if family == libc::AF_UNIX {
+        return Err("AF_UNIX is unsupported".to_string());
+    }
+    let obj = obj_from_bits(addr_bits);
+    let Some(ptr) = obj.as_ptr() else {
+        return Err("address must be tuple".to_string());
+    };
+    unsafe {
+        let type_id = object_type_id(ptr);
+        if type_id != TYPE_ID_TUPLE && type_id != TYPE_ID_LIST {
+            return Err("address must be tuple".to_string());
+        }
+        let elems = seq_vec_ref(ptr);
+        if elems.len() < 2 {
+            return Err("address must be (host, port)".to_string());
+        }
+        let host = host_from_bits(_py, elems[0])?;
+        let port = port_from_bits(_py, elems[1])?;
+        let mut out = Vec::new();
+        out.extend_from_slice(&(family as u16).to_le_bytes());
+        out.extend_from_slice(&port.to_le_bytes());
+        if family == libc::AF_INET {
+            let host = host.unwrap_or_else(|| "0.0.0.0".to_string());
+            let ip = host
+                .parse::<Ipv4Addr>()
+                .map_err(|_| "invalid IPv4 address".to_string())?;
+            out.extend_from_slice(&ip.octets());
+            return Ok(out);
+        }
+        if family == libc::AF_INET6 {
+            let host = host.unwrap_or_else(|| "::".to_string());
+            let ip = host
+                .parse::<Ipv6Addr>()
+                .map_err(|_| "invalid IPv6 address".to_string())?;
+            let mut flowinfo = 0u32;
+            let mut scope_id = 0u32;
+            if elems.len() >= 3 {
+                flowinfo = to_i64(obj_from_bits(elems[2])).unwrap_or(0) as u32;
+            }
+            if elems.len() >= 4 {
+                scope_id = to_i64(obj_from_bits(elems[3])).unwrap_or(0) as u32;
+            }
+            out.extend_from_slice(&flowinfo.to_le_bytes());
+            out.extend_from_slice(&scope_id.to_le_bytes());
+            out.extend_from_slice(&ip.octets());
+            return Ok(out);
+        }
+        Err("unsupported address family".to_string())
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn decode_sockaddr(_py: &PyToken<'_>, buf: &[u8]) -> Result<u64, String> {
+    if buf.len() < 4 {
+        return Err("invalid sockaddr".to_string());
+    }
+    let family = u16::from_le_bytes([buf[0], buf[1]]) as i32;
+    let port = u16::from_le_bytes([buf[2], buf[3]]);
+    if family == libc::AF_INET {
+        if buf.len() < 8 {
+            return Err("invalid IPv4 sockaddr".to_string());
+        }
+        let mut octets = [0u8; 4];
+        octets.copy_from_slice(&buf[4..8]);
+        let host = Ipv4Addr::from(octets).to_string();
+        let host_ptr = alloc_string(_py, host.as_bytes());
+        if host_ptr.is_null() {
+            return Ok(MoltObject::none().bits());
+        }
+        let host_bits = MoltObject::from_ptr(host_ptr).bits();
+        let port_bits = MoltObject::from_int(port as i64).bits();
+        let tuple_ptr = alloc_tuple(_py, &[host_bits, port_bits]);
+        dec_ref_bits(_py, host_bits);
+        if tuple_ptr.is_null() {
+            Ok(MoltObject::none().bits())
+        } else {
+            Ok(MoltObject::from_ptr(tuple_ptr).bits())
+        }
+    } else if family == libc::AF_INET6 {
+        if buf.len() < 28 {
+            return Err("invalid IPv6 sockaddr".to_string());
+        }
+        let flowinfo = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+        let scope_id = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
+        let mut octets = [0u8; 16];
+        octets.copy_from_slice(&buf[12..28]);
+        let host = Ipv6Addr::from(octets).to_string();
+        let host_ptr = alloc_string(_py, host.as_bytes());
+        if host_ptr.is_null() {
+            return Ok(MoltObject::none().bits());
+        }
+        let host_bits = MoltObject::from_ptr(host_ptr).bits();
+        let port_bits = MoltObject::from_int(port as i64).bits();
+        let flow_bits = MoltObject::from_int(flowinfo as i64).bits();
+        let scope_bits = MoltObject::from_int(scope_id as i64).bits();
+        let tuple_ptr = alloc_tuple(_py, &[host_bits, port_bits, flow_bits, scope_bits]);
+        dec_ref_bits(_py, host_bits);
+        if tuple_ptr.is_null() {
+            Ok(MoltObject::none().bits())
+        } else {
+            Ok(MoltObject::from_ptr(tuple_ptr).bits())
+        }
+    } else if family == libc::AF_UNIX {
+        Err("AF_UNIX is unsupported".to_string())
+    } else {
+        Err("unsupported address family".to_string())
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn socket_wait_ready(
     _py: &PyToken<'_>,
@@ -594,7 +846,7 @@ fn socket_wait_ready(
     let timeout = socket_timeout(socket_ptr);
     if let Some(timeout) = timeout {
         if timeout == Duration::ZERO {
-            return Err(std::io::Error::new(ErrorKind::WouldBlock, "would block"));
+            return Err(std::io::Error::from_raw_os_error(libc::EWOULDBLOCK));
         }
         runtime_state(_py)
             .io_poller()
@@ -606,6 +858,33 @@ fn socket_wait_ready(
             .wait_blocking(socket_ptr, events, None)
             .map(|_| ())
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn socket_wait_ready(_py: &PyToken<'_>, handle: i64, events: u32) -> Result<(), std::io::Error> {
+    let timeout = socket_timeout(handle);
+    if let Some(timeout) = timeout {
+        if timeout == Duration::ZERO {
+            return Err(std::io::Error::from_raw_os_error(libc::EWOULDBLOCK));
+        }
+        let ms = timeout.as_millis().min(i64::MAX as u128) as i64;
+        let rc = unsafe { crate::molt_socket_wait_host(handle, events, ms) };
+        if rc == 0 {
+            return Ok(());
+        }
+        if rc == -(libc::ETIMEDOUT as i32) {
+            return Err(std::io::Error::new(ErrorKind::TimedOut, "timed out"));
+        }
+        return Err(std::io::Error::from_raw_os_error(-rc));
+    }
+    let rc = unsafe { crate::molt_socket_wait_host(handle, events, -1) };
+    if rc == 0 {
+        return Ok(());
+    }
+    if rc == -(libc::ETIMEDOUT as i32) {
+        return Err(std::io::Error::new(ErrorKind::TimedOut, "timed out"));
+    }
+    Err(std::io::Error::from_raw_os_error(-rc))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -833,10 +1112,15 @@ pub extern "C" fn molt_socket_new(
         let timeout = {
             #[cfg(unix)]
             {
-                if (sock_type & SOCK_NONBLOCK_FLAG) != 0 {
-                    Some(Duration::ZERO)
-                } else {
-                    None
+                match SOCK_NONBLOCK_FLAG {
+                    0 => None,
+                    flag => {
+                        if (sock_type & flag) != 0 {
+                            Some(Duration::ZERO)
+                        } else {
+                            None
+                        }
+                    }
                 }
             }
             #[cfg(not(unix))]
@@ -943,6 +1227,8 @@ pub extern "C" fn molt_socket_new(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_close(sock_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -968,6 +1254,8 @@ pub unsafe extern "C" fn molt_socket_close(sock_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_drop(sock_bits: u64) {
     crate::with_gil_entry!(_py, {
@@ -984,6 +1272,8 @@ pub unsafe extern "C" fn molt_socket_drop(sock_bits: u64) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_clone(sock_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -1000,11 +1290,28 @@ pub unsafe extern "C" fn molt_socket_clone(sock_bits: u64) -> u64 {
 #[no_mangle]
 pub extern "C" fn molt_socket_clone(_sock_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        return raise_exception::<_>(_py, "RuntimeError", "socket clone unsupported on wasm");
+        let handle = match socket_handle_from_bits(_py, _sock_bits) {
+            Ok(val) => val,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let new_handle = unsafe { crate::molt_socket_clone_host(handle) };
+        if new_handle < 0 {
+            return raise_os_error_errno::<u64>(_py, (-new_handle) as i64, "socket.clone");
+        }
+        let meta = {
+            let guard = wasm_socket_meta_map().lock().unwrap();
+            guard.get(&handle).cloned()
+        };
+        if let Some(meta) = meta {
+            wasm_socket_meta_insert(new_handle, meta);
+        }
+        MoltObject::from_int(new_handle).bits()
     })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_fileno(sock_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -1044,6 +1351,8 @@ pub unsafe extern "C" fn molt_socket_fileno(sock_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_gettimeout(sock_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -1060,6 +1369,8 @@ pub unsafe extern "C" fn molt_socket_gettimeout(sock_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_settimeout(sock_bits: u64, timeout_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -1089,6 +1400,8 @@ pub unsafe extern "C" fn molt_socket_settimeout(sock_bits: u64, timeout_bits: u6
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_setblocking(sock_bits: u64, flag_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -1107,6 +1420,8 @@ pub unsafe extern "C" fn molt_socket_setblocking(sock_bits: u64, flag_bits: u64)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_getblocking(sock_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -1125,6 +1440,8 @@ pub unsafe extern "C" fn molt_socket_getblocking(sock_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_bind(sock_bits: u64, addr_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -1145,7 +1462,7 @@ pub unsafe extern "C" fn molt_socket_bind(sock_bits: u64, addr_bits: u64) -> u64
             Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
         };
         let res = with_socket_mut(socket_ptr, |inner| match &inner.kind {
-            MoltSocketKind::Pending(sock) => sock.bind(&sockaddr).map_err(|e| e),
+            MoltSocketKind::Pending(sock) => sock.bind(&sockaddr),
             MoltSocketKind::TcpListener(_) | MoltSocketKind::TcpStream(_) => Err(
                 std::io::Error::new(ErrorKind::InvalidInput, "socket already bound"),
             ),
@@ -1181,6 +1498,8 @@ pub unsafe extern "C" fn molt_socket_bind(sock_bits: u64, addr_bits: u64) -> u64
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_listen(sock_bits: u64, backlog_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -1244,6 +1563,8 @@ pub unsafe extern "C" fn molt_socket_listen(sock_bits: u64, backlog_bits: u64) -
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_accept(sock_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -1341,6 +1662,8 @@ pub unsafe extern "C" fn molt_socket_accept(sock_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_connect(sock_bits: u64, addr_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -1507,6 +1830,8 @@ pub unsafe extern "C" fn molt_socket_connect(sock_bits: u64, addr_bits: u64) -> 
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_connect_ex(sock_bits: u64, addr_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -1627,6 +1952,8 @@ pub unsafe extern "C" fn molt_socket_connect_ex(sock_bits: u64, addr_bits: u64) 
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_recv(sock_bits: u64, size_bits: u64, flags_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -1647,6 +1974,7 @@ pub unsafe extern "C" fn molt_socket_recv(sock_bits: u64, size_bits: u64, flags_
             }
             return MoltObject::from_ptr(ptr).bits();
         }
+        let nonblocking = matches!(socket_timeout(socket_ptr), Some(val) if val == Duration::ZERO);
         let mut buf = vec![0u8; size];
         loop {
             let res = with_socket_mut(socket_ptr, |inner| {
@@ -1674,31 +2002,55 @@ pub unsafe extern "C" fn molt_socket_recv(sock_bits: u64, size_bits: u64, flags_
             });
             match res {
                 Ok(n) => {
+                    if trace_socket_recv() {
+                        let fd = socket_debug_fd(socket_ptr).unwrap_or(-1);
+                        eprintln!("molt socket recv: fd={} len={}", fd, n);
+                    }
                     let ptr = alloc_bytes(_py, &buf[..n]);
                     if ptr.is_null() {
                         return MoltObject::none().bits();
                     }
                     return MoltObject::from_ptr(ptr).bits();
                 }
-                Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                    if dontwait {
-                        return raise_os_error::<u64>(_py, err, "recv");
+                Err(err) => {
+                    let raw = err.raw_os_error();
+                    let would_block_raw = matches!(
+                        raw,
+                        Some(code) if code == libc::EAGAIN || code == libc::EWOULDBLOCK
+                    );
+                    let would_block = err.kind() == ErrorKind::WouldBlock || would_block_raw;
+                    if trace_socket_recv() {
+                        let fd = socket_debug_fd(socket_ptr).unwrap_or(-1);
+                        eprintln!(
+                            "molt socket recv error: fd={} kind={:?} raw={raw:?} dontwait={dontwait} msg={}",
+                            fd,
+                            err.kind(),
+                            err
+                        );
                     }
-                    if let Err(wait_err) = socket_wait_ready(_py, socket_ptr, IO_EVENT_READ) {
-                        if wait_err.kind() == ErrorKind::TimedOut {
-                            return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                    if would_block {
+                        if dontwait || nonblocking {
+                            let errno = raw.unwrap_or(libc::EWOULDBLOCK) as i64;
+                            return raise_os_error_errno::<u64>(_py, errno, "recv: would block");
                         }
-                        return raise_os_error::<u64>(_py, wait_err, "recv");
+                        if let Err(wait_err) = socket_wait_ready(_py, socket_ptr, IO_EVENT_READ) {
+                            if wait_err.kind() == ErrorKind::TimedOut {
+                                return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                            }
+                            return raise_os_error::<u64>(_py, wait_err, "recv");
+                        }
+                        continue;
                     }
-                    continue;
+                    return raise_os_error::<u64>(_py, err, "recv");
                 }
-                Err(err) => return raise_os_error::<u64>(_py, err, "recv"),
             }
         }
     })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_recv_into(
     sock_bits: u64,
@@ -1720,18 +2072,18 @@ pub unsafe extern "C" fn molt_socket_recv_into(
         let size = to_i64(obj_from_bits(size_bits)).unwrap_or(-1);
         let target_len;
         let mut use_memoryview = false;
-        let type_id = object_type_id(buffer_ptr);
+        let type_id = unsafe { object_type_id(buffer_ptr) };
         if type_id == TYPE_ID_BYTEARRAY {
-            target_len = bytearray_len(buffer_ptr);
+            target_len = unsafe { bytearray_len(buffer_ptr) };
         } else if type_id == TYPE_ID_MEMORYVIEW {
-            if memoryview_readonly(buffer_ptr) {
+            if unsafe { memoryview_readonly(buffer_ptr) } {
                 return raise_exception::<_>(
                     _py,
                     "TypeError",
                     "recv_into requires a writable buffer",
                 );
             }
-            target_len = memoryview_len(buffer_ptr);
+            target_len = unsafe { memoryview_len(buffer_ptr) };
             use_memoryview = true;
         } else {
             return raise_exception::<_>(_py, "TypeError", "recv_into requires a writable buffer");
@@ -1818,6 +2170,8 @@ pub unsafe extern "C" fn molt_socket_recv_into(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_send(sock_bits: u64, data_bits: u64, flags_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -1830,6 +2184,7 @@ pub unsafe extern "C" fn molt_socket_send(sock_bits: u64, data_bits: u64, flags_
         let dontwait = (flags & libc::MSG_DONTWAIT) != 0;
         #[cfg(not(unix))]
         let dontwait = false;
+        let nonblocking = matches!(socket_timeout(socket_ptr), Some(val) if val == Duration::ZERO);
         let send_data = match send_data_from_bits(data_bits) {
             Ok(data) => data,
             Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
@@ -1866,9 +2221,22 @@ pub unsafe extern "C" fn molt_socket_send(sock_bits: u64, data_bits: u64, flags_
                 }
             });
             match res {
-                Ok(n) => return MoltObject::from_int(n as i64).bits(),
+                Ok(n) => {
+                    if trace_socket_send() {
+                        let fd = socket_debug_fd(socket_ptr).unwrap_or(-1);
+                        eprintln!("molt socket send: fd={} len={} sent={}", fd, data_len, n);
+                    }
+                    return MoltObject::from_int(n as i64).bits();
+                }
                 Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                    if dontwait {
+                    if trace_socket_send() {
+                        let fd = socket_debug_fd(socket_ptr).unwrap_or(-1);
+                        eprintln!(
+                            "molt socket send would_block: fd={} nonblocking={} dontwait={}",
+                            fd, nonblocking, dontwait
+                        );
+                    }
+                    if dontwait || nonblocking {
                         return raise_os_error::<u64>(_py, err, "send");
                     }
                     if let Err(wait_err) = socket_wait_ready(_py, socket_ptr, IO_EVENT_WRITE) {
@@ -1886,6 +2254,8 @@ pub unsafe extern "C" fn molt_socket_send(sock_bits: u64, data_bits: u64, flags_
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_sendall(
     sock_bits: u64,
@@ -1902,6 +2272,7 @@ pub unsafe extern "C" fn molt_socket_sendall(
         let dontwait = (flags & libc::MSG_DONTWAIT) != 0;
         #[cfg(not(unix))]
         let dontwait = false;
+        let nonblocking = matches!(socket_timeout(socket_ptr), Some(val) if val == Duration::ZERO);
         let send_data = match send_data_from_bits(data_bits) {
             Ok(data) => data,
             Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
@@ -1948,7 +2319,7 @@ pub unsafe extern "C" fn molt_socket_sendall(
                 }
                 Ok(n) => offset += n,
                 Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                    if dontwait {
+                    if dontwait || nonblocking {
                         return raise_os_error::<u64>(_py, err, "sendall");
                     }
                     if let Err(wait_err) = socket_wait_ready(_py, socket_ptr, IO_EVENT_WRITE) {
@@ -1966,6 +2337,8 @@ pub unsafe extern "C" fn molt_socket_sendall(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_sendto(
     sock_bits: u64,
@@ -1992,6 +2365,7 @@ pub unsafe extern "C" fn molt_socket_sendto(
         let dontwait = (flags & libc::MSG_DONTWAIT) != 0;
         #[cfg(not(unix))]
         let dontwait = false;
+        let nonblocking = matches!(socket_timeout(socket_ptr), Some(val) if val == Duration::ZERO);
         let send_data = match send_data_from_bits(data_bits) {
             Ok(data) => data,
             Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
@@ -2034,7 +2408,7 @@ pub unsafe extern "C" fn molt_socket_sendto(
             match res {
                 Ok(n) => return MoltObject::from_int(n as i64).bits(),
                 Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                    if dontwait {
+                    if dontwait || nonblocking {
                         return raise_os_error::<u64>(_py, err, "sendto");
                     }
                     if let Err(wait_err) = socket_wait_ready(_py, socket_ptr, IO_EVENT_WRITE) {
@@ -2052,6 +2426,8 @@ pub unsafe extern "C" fn molt_socket_sendto(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_recvfrom(
     sock_bits: u64,
@@ -2133,6 +2509,8 @@ pub unsafe extern "C" fn molt_socket_recvfrom(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_shutdown(sock_bits: u64, how_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -2165,6 +2543,8 @@ pub unsafe extern "C" fn molt_socket_shutdown(sock_bits: u64, how_bits: u64) -> 
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_getsockname(sock_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -2204,6 +2584,8 @@ pub unsafe extern "C" fn molt_socket_getsockname(sock_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_getpeername(sock_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -2243,6 +2625,8 @@ pub unsafe extern "C" fn molt_socket_getpeername(sock_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_setsockopt(
     sock_bits: u64,
@@ -2316,6 +2700,8 @@ pub unsafe extern "C" fn molt_socket_setsockopt(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_getsockopt(
     sock_bits: u64,
@@ -2359,7 +2745,7 @@ pub unsafe extern "C" fn molt_socket_getsockopt(
                 if ret == 0 {
                     let ptr = alloc_bytes(_py, &buf[..len as usize]);
                     if ptr.is_null() {
-                        Err(std::io::Error::new(ErrorKind::Other, "allocation failed"))
+                        Err(std::io::Error::other("allocation failed"))
                     } else {
                         Ok(MoltObject::from_ptr(ptr).bits())
                     }
@@ -2393,6 +2779,8 @@ pub unsafe extern "C" fn molt_socket_getsockopt(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_detach(sock_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -2438,7 +2826,7 @@ pub unsafe extern "C" fn molt_socket_detach(sock_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-// TODO(wasm-parity, owner:runtime, milestone:RT2, priority:P0, status:missing): implement WASI socket support and io_poller-backed readiness for wasm targets.
+#[allow(dead_code)]
 fn wasm_socket_unavailable<T: ExceptionSentinel>(_py: &PyToken<'_>) -> T {
     raise_exception(_py, "RuntimeError", "socket unsupported on wasm")
 }
@@ -2451,85 +2839,468 @@ pub extern "C" fn molt_socket_new(
     _proto_bits: u64,
     _fileno_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, { wasm_socket_unavailable(_py) })
+    crate::with_gil_entry!(_py, {
+        if require_net_capability::<u64>(_py, &["net", "net.connect", "net.listen", "net.bind"])
+            .is_err()
+        {
+            return MoltObject::none().bits();
+        }
+        let family = match to_i64(obj_from_bits(_family_bits)) {
+            Some(val) => val as i32,
+            None => return raise_exception::<_>(_py, "TypeError", "family must be int"),
+        };
+        let sock_type = match to_i64(obj_from_bits(_type_bits)) {
+            Some(val) => val as i32,
+            None => return raise_exception::<_>(_py, "TypeError", "type must be int"),
+        };
+        let proto = to_i64(obj_from_bits(_proto_bits)).unwrap_or(0) as i32;
+        let fileno = if obj_from_bits(_fileno_bits).is_none() {
+            -1
+        } else {
+            match to_i64(obj_from_bits(_fileno_bits)) {
+                Some(val) => val,
+                None => {
+                    return raise_exception::<_>(_py, "TypeError", "fileno must be int or None")
+                }
+            }
+        };
+        #[cfg(unix)]
+        let base_type = sock_type & !(SOCK_NONBLOCK_FLAG | SOCK_CLOEXEC_FLAG);
+        #[cfg(not(unix))]
+        let base_type = sock_type;
+        let timeout = {
+            #[cfg(unix)]
+            {
+                if (sock_type & SOCK_NONBLOCK_FLAG) != 0 {
+                    Some(Duration::ZERO)
+                } else {
+                    None
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                None
+            }
+        };
+        let handle = unsafe { crate::molt_socket_new_host(family, base_type, proto, fileno) };
+        if handle < 0 {
+            return raise_os_error_errno::<u64>(_py, (-handle) as i64, "socket");
+        }
+        wasm_socket_meta_insert(
+            handle,
+            WasmSocketMeta {
+                family,
+                sock_type: base_type,
+                proto,
+                timeout,
+                connect_pending: false,
+            },
+        );
+        MoltObject::from_int(handle).bits()
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn molt_socket_close(_sock_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { wasm_socket_unavailable(_py) })
+    crate::with_gil_entry!(_py, {
+        let handle = match socket_handle_from_bits(_py, _sock_bits) {
+            Ok(val) => val,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let rc = unsafe { crate::molt_socket_close_host(handle) };
+        wasm_socket_meta_remove(handle);
+        if rc < 0 {
+            return raise_os_error_errno::<u64>(_py, (-rc) as i64, "close");
+        }
+        MoltObject::none().bits()
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn molt_socket_drop(_sock_bits: u64) {
-    crate::with_gil_entry!(_py, { wasm_socket_unavailable(_py) })
+    crate::with_gil_entry!(_py, {
+        let handle = match socket_handle_from_bits(_py, _sock_bits) {
+            Ok(val) => val,
+            Err(_) => return,
+        };
+        let _ = unsafe { crate::molt_socket_close_host(handle) };
+        wasm_socket_meta_remove(handle);
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn molt_socket_fileno(_sock_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { wasm_socket_unavailable(_py) })
+    crate::with_gil_entry!(_py, {
+        let handle = match socket_handle_from_bits(_py, _sock_bits) {
+            Ok(val) => val,
+            Err(_) => return MoltObject::from_int(-1).bits(),
+        };
+        MoltObject::from_int(handle).bits()
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn molt_socket_gettimeout(_sock_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { wasm_socket_unavailable(_py) })
+    crate::with_gil_entry!(_py, {
+        let handle = match socket_handle_from_bits(_py, _sock_bits) {
+            Ok(val) => val,
+            Err(_) => return MoltObject::none().bits(),
+        };
+        match socket_timeout(handle) {
+            None => MoltObject::none().bits(),
+            Some(val) => MoltObject::from_float(val.as_secs_f64()).bits(),
+        }
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn molt_socket_settimeout(_sock_bits: u64, _timeout_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { wasm_socket_unavailable(_py) })
+    crate::with_gil_entry!(_py, {
+        let handle = match socket_handle_from_bits(_py, _sock_bits) {
+            Ok(val) => val,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let obj = obj_from_bits(_timeout_bits);
+        if obj.is_none() {
+            let _ = socket_set_timeout(handle, None);
+            return MoltObject::none().bits();
+        }
+        let Some(timeout) = to_f64(obj) else {
+            return raise_exception::<_>(_py, "TypeError", "timeout must be float or None");
+        };
+        if !timeout.is_finite() || timeout < 0.0 {
+            return raise_exception::<_>(_py, "ValueError", "timeout must be non-negative");
+        }
+        let duration = if timeout == 0.0 {
+            Duration::ZERO
+        } else {
+            Duration::from_secs_f64(timeout)
+        };
+        if let Err(msg) = socket_set_timeout(handle, Some(duration)) {
+            return raise_exception::<_>(_py, "RuntimeError", &msg);
+        }
+        MoltObject::none().bits()
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn molt_socket_setblocking(_sock_bits: u64, _flag_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { wasm_socket_unavailable(_py) })
+    crate::with_gil_entry!(_py, {
+        let handle = match socket_handle_from_bits(_py, _sock_bits) {
+            Ok(val) => val,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let flag = obj_from_bits(_flag_bits).as_bool().unwrap_or(false);
+        if flag {
+            let _ = socket_set_timeout(handle, None);
+        } else {
+            let _ = socket_set_timeout(handle, Some(Duration::ZERO));
+        }
+        MoltObject::none().bits()
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn molt_socket_getblocking(_sock_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { wasm_socket_unavailable(_py) })
+    crate::with_gil_entry!(_py, {
+        let handle = match socket_handle_from_bits(_py, _sock_bits) {
+            Ok(val) => val,
+            Err(_) => return MoltObject::from_bool(false).bits(),
+        };
+        let timeout = socket_timeout(handle);
+        let blocking = match timeout {
+            None => true,
+            Some(val) if val == Duration::ZERO => false,
+            Some(_) => true,
+        };
+        MoltObject::from_bool(blocking).bits()
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn molt_socket_bind(_sock_bits: u64, _addr_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { wasm_socket_unavailable(_py) })
+    crate::with_gil_entry!(_py, {
+        if require_net_capability::<u64>(_py, &["net", "net.bind", "net"]).is_err() {
+            return MoltObject::none().bits();
+        }
+        let handle = match socket_handle_from_bits(_py, _sock_bits) {
+            Ok(val) => val,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let family = match wasm_socket_family(handle) {
+            Ok(val) => val,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let addr = match encode_sockaddr(_py, _addr_bits, family) {
+            Ok(val) => val,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let rc = unsafe {
+            crate::molt_socket_bind_host(handle, addr.as_ptr() as u32, addr.len() as u32)
+        };
+        if rc < 0 {
+            return raise_os_error_errno::<u64>(_py, errno_from_rc(rc) as i64, "bind");
+        }
+        MoltObject::none().bits()
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn molt_socket_listen(_sock_bits: u64, _backlog_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { wasm_socket_unavailable(_py) })
+    crate::with_gil_entry!(_py, {
+        if require_net_capability::<u64>(_py, &["net", "net.listen", "net"]).is_err() {
+            return MoltObject::none().bits();
+        }
+        let handle = match socket_handle_from_bits(_py, _sock_bits) {
+            Ok(val) => val,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let backlog = to_i64(obj_from_bits(_backlog_bits)).unwrap_or(0) as i32;
+        let rc = unsafe { crate::molt_socket_listen_host(handle, backlog) };
+        if rc < 0 {
+            return raise_os_error_errno::<u64>(_py, errno_from_rc(rc) as i64, "listen");
+        }
+        MoltObject::none().bits()
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn molt_socket_accept(_sock_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { wasm_socket_unavailable(_py) })
+    crate::with_gil_entry!(_py, {
+        if require_net_capability::<u64>(_py, &["net", "net.listen", "net"]).is_err() {
+            return MoltObject::none().bits();
+        }
+        let handle = match socket_handle_from_bits(_py, _sock_bits) {
+            Ok(val) => val,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let family = match wasm_socket_family(handle) {
+            Ok(val) => val,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let timeout = socket_timeout(handle);
+        let mut addr_buf = vec![0u8; 128];
+        let mut addr_len: u32 = 0;
+        loop {
+            let rc = unsafe {
+                crate::molt_socket_accept_host(
+                    handle,
+                    addr_buf.as_mut_ptr() as u32,
+                    addr_buf.len() as u32,
+                    (&mut addr_len) as *mut u32 as u32,
+                )
+            };
+            if rc >= 0 {
+                let new_handle = rc;
+                wasm_socket_meta_insert(
+                    new_handle,
+                    WasmSocketMeta {
+                        family,
+                        sock_type: libc::SOCK_STREAM,
+                        proto: 0,
+                        timeout,
+                        connect_pending: false,
+                    },
+                );
+                let addr_bits = match decode_sockaddr(_py, &addr_buf[..addr_len as usize]) {
+                    Ok(bits) => bits,
+                    Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+                };
+                let handle_bits = MoltObject::from_int(new_handle).bits();
+                let tuple_ptr = alloc_tuple(_py, &[handle_bits, addr_bits]);
+                if tuple_ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                return MoltObject::from_ptr(tuple_ptr).bits();
+            }
+            let errno = errno_from_rc(rc as i32);
+            if would_block_errno(errno) {
+                if let Some(val) = timeout {
+                    if val == Duration::ZERO {
+                        return raise_os_error_errno::<u64>(
+                            _py,
+                            libc::EWOULDBLOCK as i64,
+                            "accept would block",
+                        );
+                    }
+                }
+                if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_READ) {
+                    if wait_err.kind() == ErrorKind::TimedOut {
+                        return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                    }
+                    return raise_os_error::<u64>(_py, wait_err, "accept");
+                }
+                continue;
+            }
+            return raise_os_error_errno::<u64>(_py, errno as i64, "accept");
+        }
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn molt_socket_connect(_sock_bits: u64, _addr_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { wasm_socket_unavailable(_py) })
+    crate::with_gil_entry!(_py, {
+        if require_net_capability::<u64>(_py, &["net", "net.connect", "net"]).is_err() {
+            return MoltObject::none().bits();
+        }
+        let handle = match socket_handle_from_bits(_py, _sock_bits) {
+            Ok(val) => val,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let family = match wasm_socket_family(handle) {
+            Ok(val) => val,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let addr = match encode_sockaddr(_py, _addr_bits, family) {
+            Ok(val) => val,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let timeout = socket_timeout(handle);
+        let rc = unsafe {
+            crate::molt_socket_connect_host(handle, addr.as_ptr() as u32, addr.len() as u32)
+        };
+        if rc == 0 {
+            let _ = socket_set_connect_pending(handle, false);
+            return MoltObject::none().bits();
+        }
+        let errno = errno_from_rc(rc);
+        if errno == libc::EINPROGRESS || errno == libc::EWOULDBLOCK {
+            let _ = socket_set_connect_pending(handle, true);
+            if matches!(timeout, Some(val) if val == Duration::ZERO) {
+                return raise_os_error_errno::<u64>(
+                    _py,
+                    libc::EINPROGRESS as i64,
+                    "operation in progress",
+                );
+            }
+            if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_WRITE) {
+                if wait_err.kind() == ErrorKind::TimedOut {
+                    return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                }
+                return raise_os_error::<u64>(_py, wait_err, "connect");
+            }
+            let rc = unsafe { crate::molt_socket_connect_ex_host(handle) };
+            if rc == 0 {
+                let _ = socket_set_connect_pending(handle, false);
+                return MoltObject::none().bits();
+            }
+            let err = errno_from_rc(rc);
+            let _ = socket_set_connect_pending(handle, false);
+            return raise_os_error_errno::<u64>(_py, err as i64, "connect");
+        }
+        raise_os_error_errno::<u64>(_py, errno as i64, "connect")
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn molt_socket_connect_ex(_sock_bits: u64, _addr_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { wasm_socket_unavailable(_py) })
+    crate::with_gil_entry!(_py, {
+        if require_net_capability::<u64>(_py, &["net", "net.connect", "net"]).is_err() {
+            return MoltObject::none().bits();
+        }
+        let handle = match socket_handle_from_bits(_py, _sock_bits) {
+            Ok(val) => val,
+            Err(_) => return MoltObject::from_int(libc::EBADF as i64).bits(),
+        };
+        if socket_connect_pending(handle) {
+            let rc = unsafe { crate::molt_socket_connect_ex_host(handle) };
+            let errno = errno_from_rc(rc);
+            if errno == 0 {
+                let _ = socket_set_connect_pending(handle, false);
+            }
+            return MoltObject::from_int(errno as i64).bits();
+        }
+        let family = match wasm_socket_family(handle) {
+            Ok(val) => val,
+            Err(_) => return MoltObject::from_int(libc::EAFNOSUPPORT as i64).bits(),
+        };
+        let addr = match encode_sockaddr(_py, _addr_bits, family) {
+            Ok(val) => val,
+            Err(_) => return MoltObject::from_int(libc::EAFNOSUPPORT as i64).bits(),
+        };
+        let rc = unsafe {
+            crate::molt_socket_connect_host(handle, addr.as_ptr() as u32, addr.len() as u32)
+        };
+        if rc == 0 {
+            let _ = socket_set_connect_pending(handle, false);
+            return MoltObject::from_int(0).bits();
+        }
+        let errno = errno_from_rc(rc);
+        if errno == libc::EINPROGRESS || errno == libc::EWOULDBLOCK {
+            let _ = socket_set_connect_pending(handle, true);
+        }
+        MoltObject::from_int(errno as i64).bits()
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn molt_socket_recv(_sock_bits: u64, _size_bits: u64, _flags_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { wasm_socket_unavailable(_py) })
+    crate::with_gil_entry!(_py, {
+        let handle = match socket_handle_from_bits(_py, _sock_bits) {
+            Ok(val) => val,
+            Err(_) => return MoltObject::none().bits(),
+        };
+        let size = to_i64(obj_from_bits(_size_bits)).unwrap_or(0).max(0) as usize;
+        let flags = to_i64(obj_from_bits(_flags_bits)).unwrap_or(0) as i32;
+        #[cfg(unix)]
+        let dontwait = (flags & libc::MSG_DONTWAIT) != 0;
+        #[cfg(not(unix))]
+        let dontwait = false;
+        if size == 0 {
+            let ptr = alloc_bytes(_py, &[]);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(ptr).bits();
+        }
+        let nonblocking = matches!(socket_timeout(handle), Some(val) if val == Duration::ZERO);
+        let mut buf = vec![0u8; size];
+        loop {
+            let rc = unsafe {
+                crate::molt_socket_recv_host(
+                    handle,
+                    buf.as_mut_ptr() as u32,
+                    buf.len() as u32,
+                    flags,
+                )
+            };
+            if rc >= 0 {
+                let n = rc as usize;
+                let ptr = alloc_bytes(_py, &buf[..n]);
+                if ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                return MoltObject::from_ptr(ptr).bits();
+            }
+            let errno = errno_from_rc(rc);
+            if would_block_errno(errno) {
+                if dontwait || nonblocking {
+                    return raise_os_error_errno::<u64>(_py, errno as i64, "recv: would block");
+                }
+                if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_READ) {
+                    if wait_err.kind() == ErrorKind::TimedOut {
+                        return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                    }
+                    return raise_os_error::<u64>(_py, wait_err, "recv");
+                }
+                continue;
+            }
+            return raise_os_error_errno::<u64>(_py, errno as i64, "recv");
+        }
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -2540,19 +3311,210 @@ pub extern "C" fn molt_socket_recv_into(
     _size_bits: u64,
     _flags_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, { wasm_socket_unavailable(_py) })
+    crate::with_gil_entry!(_py, {
+        let handle = match socket_handle_from_bits(_py, _sock_bits) {
+            Ok(val) => val,
+            Err(_) => return MoltObject::from_int(0).bits(),
+        };
+        let buffer_obj = obj_from_bits(_buffer_bits);
+        let buffer_ptr = buffer_obj.as_ptr();
+        if buffer_ptr.is_none() {
+            return raise_exception::<_>(_py, "TypeError", "recv_into requires a writable buffer");
+        }
+        let buffer_ptr = buffer_ptr.unwrap();
+        let size = to_i64(obj_from_bits(_size_bits)).unwrap_or(-1);
+        let target_len;
+        let mut use_memoryview = false;
+        let type_id = unsafe { object_type_id(buffer_ptr) };
+        if type_id == TYPE_ID_BYTEARRAY {
+            target_len = unsafe { bytearray_len(buffer_ptr) };
+        } else if type_id == TYPE_ID_MEMORYVIEW {
+            if unsafe { memoryview_readonly(buffer_ptr) } {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "recv_into requires a writable buffer",
+                );
+            }
+            target_len = unsafe { memoryview_len(buffer_ptr) };
+            use_memoryview = true;
+        } else {
+            return raise_exception::<_>(_py, "TypeError", "recv_into requires a writable buffer");
+        }
+        let size = if size < 0 {
+            target_len
+        } else {
+            (size as usize).min(target_len)
+        };
+        let flags = to_i64(obj_from_bits(_flags_bits)).unwrap_or(0) as i32;
+        #[cfg(unix)]
+        let dontwait = (flags & libc::MSG_DONTWAIT) != 0;
+        #[cfg(not(unix))]
+        let dontwait = false;
+        loop {
+            let rc = if use_memoryview {
+                let mut tmp = vec![0u8; size];
+                let res = unsafe {
+                    crate::molt_socket_recv_host(
+                        handle,
+                        tmp.as_mut_ptr() as u32,
+                        tmp.len() as u32,
+                        flags,
+                    )
+                };
+                if res >= 0 {
+                    if let Err(msg) =
+                        unsafe { memoryview_write_bytes(buffer_ptr, &tmp[..res as usize]) }
+                    {
+                        return raise_exception::<u64>(_py, "TypeError", &msg);
+                    }
+                }
+                res
+            } else {
+                let buf = unsafe { bytearray_vec(buffer_ptr) };
+                unsafe {
+                    crate::molt_socket_recv_host(
+                        handle,
+                        buf.as_mut_ptr() as u32,
+                        size as u32,
+                        flags,
+                    )
+                }
+            };
+            if rc >= 0 {
+                return MoltObject::from_int(rc as i64).bits();
+            }
+            let errno = errno_from_rc(rc);
+            if would_block_errno(errno) {
+                if dontwait {
+                    return raise_os_error_errno::<u64>(_py, errno as i64, "recv_into");
+                }
+                if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_READ) {
+                    if wait_err.kind() == ErrorKind::TimedOut {
+                        return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                    }
+                    return raise_os_error::<u64>(_py, wait_err, "recv_into");
+                }
+                continue;
+            }
+            return raise_os_error_errno::<u64>(_py, errno as i64, "recv_into");
+        }
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn molt_socket_send(_sock_bits: u64, _data_bits: u64, _flags_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { wasm_socket_unavailable(_py) })
+    crate::with_gil_entry!(_py, {
+        let handle = match socket_handle_from_bits(_py, _sock_bits) {
+            Ok(val) => val,
+            Err(_) => return MoltObject::from_int(0).bits(),
+        };
+        let flags = to_i64(obj_from_bits(_flags_bits)).unwrap_or(0) as i32;
+        #[cfg(unix)]
+        let dontwait = (flags & libc::MSG_DONTWAIT) != 0;
+        #[cfg(not(unix))]
+        let dontwait = false;
+        let nonblocking = matches!(socket_timeout(handle), Some(val) if val == Duration::ZERO);
+        let send_data = match send_data_from_bits(_data_bits) {
+            Ok(data) => data,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let (data_ptr, data_len, owned): (*const u8, usize, Option<Vec<u8>>) = match send_data {
+            SendData::Borrowed(ptr, len) => (ptr, len, None),
+            SendData::Owned(vec) => {
+                let ptr = vec.as_ptr();
+                let len = vec.len();
+                (ptr, len, Some(vec))
+            }
+        };
+        let _owned_guard = owned;
+        if data_len == 0 {
+            return MoltObject::from_int(0).bits();
+        }
+        loop {
+            let rc = unsafe {
+                crate::molt_socket_send_host(handle, data_ptr as u32, data_len as u32, flags)
+            };
+            if rc >= 0 {
+                return MoltObject::from_int(rc as i64).bits();
+            }
+            let errno = errno_from_rc(rc);
+            if would_block_errno(errno) {
+                if dontwait || nonblocking {
+                    return raise_os_error_errno::<u64>(_py, errno as i64, "send");
+                }
+                if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_WRITE) {
+                    if wait_err.kind() == ErrorKind::TimedOut {
+                        return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                    }
+                    return raise_os_error::<u64>(_py, wait_err, "send");
+                }
+                continue;
+            }
+            return raise_os_error_errno::<u64>(_py, errno as i64, "send");
+        }
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn molt_socket_sendall(_sock_bits: u64, _data_bits: u64, _flags_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { wasm_socket_unavailable(_py) })
+    crate::with_gil_entry!(_py, {
+        let handle = match socket_handle_from_bits(_py, _sock_bits) {
+            Ok(val) => val,
+            Err(_) => return MoltObject::none().bits(),
+        };
+        let flags = to_i64(obj_from_bits(_flags_bits)).unwrap_or(0) as i32;
+        #[cfg(unix)]
+        let dontwait = (flags & libc::MSG_DONTWAIT) != 0;
+        #[cfg(not(unix))]
+        let dontwait = false;
+        let nonblocking = matches!(socket_timeout(handle), Some(val) if val == Duration::ZERO);
+        let send_data = match send_data_from_bits(_data_bits) {
+            Ok(data) => data,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let (data_ptr, data_len, owned): (*const u8, usize, Option<Vec<u8>>) = match send_data {
+            SendData::Borrowed(ptr, len) => (ptr, len, None),
+            SendData::Owned(vec) => {
+                let ptr = vec.as_ptr();
+                let len = vec.len();
+                (ptr, len, Some(vec))
+            }
+        };
+        let _owned_guard = owned;
+        let mut sent = 0usize;
+        while sent < data_len {
+            let rc = unsafe {
+                crate::molt_socket_send_host(
+                    handle,
+                    data_ptr.add(sent) as u32,
+                    (data_len - sent) as u32,
+                    flags,
+                )
+            };
+            if rc >= 0 {
+                sent += rc as usize;
+                continue;
+            }
+            let errno = errno_from_rc(rc);
+            if would_block_errno(errno) {
+                if dontwait || nonblocking {
+                    return raise_os_error_errno::<u64>(_py, errno as i64, "sendall");
+                }
+                if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_WRITE) {
+                    if wait_err.kind() == ErrorKind::TimedOut {
+                        return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                    }
+                    return raise_os_error::<u64>(_py, wait_err, "sendall");
+                }
+                continue;
+            }
+            return raise_os_error_errno::<u64>(_py, errno as i64, "sendall");
+        }
+        MoltObject::none().bits()
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -2563,31 +3525,225 @@ pub extern "C" fn molt_socket_sendto(
     _flags_bits: u64,
     _addr_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, { wasm_socket_unavailable(_py) })
+    crate::with_gil_entry!(_py, {
+        let handle = match socket_handle_from_bits(_py, _sock_bits) {
+            Ok(val) => val,
+            Err(_) => return MoltObject::from_int(0).bits(),
+        };
+        let family = match wasm_socket_family(handle) {
+            Ok(val) => val,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let addr = match encode_sockaddr(_py, _addr_bits, family) {
+            Ok(val) => val,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let flags = to_i64(obj_from_bits(_flags_bits)).unwrap_or(0) as i32;
+        #[cfg(unix)]
+        let dontwait = (flags & libc::MSG_DONTWAIT) != 0;
+        #[cfg(not(unix))]
+        let dontwait = false;
+        let nonblocking = matches!(socket_timeout(handle), Some(val) if val == Duration::ZERO);
+        let send_data = match send_data_from_bits(_data_bits) {
+            Ok(data) => data,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let (data_ptr, data_len, owned): (*const u8, usize, Option<Vec<u8>>) = match send_data {
+            SendData::Borrowed(ptr, len) => (ptr, len, None),
+            SendData::Owned(vec) => {
+                let ptr = vec.as_ptr();
+                let len = vec.len();
+                (ptr, len, Some(vec))
+            }
+        };
+        let _owned_guard = owned;
+        if data_len == 0 {
+            return MoltObject::from_int(0).bits();
+        }
+        loop {
+            let rc = unsafe {
+                crate::molt_socket_sendto_host(
+                    handle,
+                    data_ptr as u32,
+                    data_len as u32,
+                    flags,
+                    addr.as_ptr() as u32,
+                    addr.len() as u32,
+                )
+            };
+            if rc >= 0 {
+                return MoltObject::from_int(rc as i64).bits();
+            }
+            let errno = errno_from_rc(rc);
+            if would_block_errno(errno) {
+                if dontwait || nonblocking {
+                    return raise_os_error_errno::<u64>(_py, errno as i64, "sendto");
+                }
+                if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_WRITE) {
+                    if wait_err.kind() == ErrorKind::TimedOut {
+                        return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                    }
+                    return raise_os_error::<u64>(_py, wait_err, "sendto");
+                }
+                continue;
+            }
+            return raise_os_error_errno::<u64>(_py, errno as i64, "sendto");
+        }
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn molt_socket_recvfrom(_sock_bits: u64, _size_bits: u64, _flags_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { wasm_socket_unavailable(_py) })
+    crate::with_gil_entry!(_py, {
+        let handle = match socket_handle_from_bits(_py, _sock_bits) {
+            Ok(val) => val,
+            Err(_) => return MoltObject::none().bits(),
+        };
+        let size = to_i64(obj_from_bits(_size_bits)).unwrap_or(0).max(0) as usize;
+        let flags = to_i64(obj_from_bits(_flags_bits)).unwrap_or(0) as i32;
+        #[cfg(unix)]
+        let dontwait = (flags & libc::MSG_DONTWAIT) != 0;
+        #[cfg(not(unix))]
+        let dontwait = false;
+        if size == 0 {
+            let bytes_ptr = alloc_bytes(_py, &[]);
+            if bytes_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let tuple_ptr = alloc_tuple(
+                _py,
+                &[
+                    MoltObject::from_ptr(bytes_ptr).bits(),
+                    MoltObject::none().bits(),
+                ],
+            );
+            if tuple_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(tuple_ptr).bits();
+        }
+        let nonblocking = matches!(socket_timeout(handle), Some(val) if val == Duration::ZERO);
+        let mut buf = vec![0u8; size];
+        let mut addr_buf = vec![0u8; 128];
+        let mut addr_len: u32 = 0;
+        loop {
+            let rc = unsafe {
+                crate::molt_socket_recvfrom_host(
+                    handle,
+                    buf.as_mut_ptr() as u32,
+                    buf.len() as u32,
+                    flags,
+                    addr_buf.as_mut_ptr() as u32,
+                    addr_buf.len() as u32,
+                    (&mut addr_len) as *mut u32 as u32,
+                )
+            };
+            if rc >= 0 {
+                let bytes_ptr = alloc_bytes(_py, &buf[..rc as usize]);
+                if bytes_ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                let addr_bits = match decode_sockaddr(_py, &addr_buf[..addr_len as usize]) {
+                    Ok(bits) => bits,
+                    Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+                };
+                let bytes_bits = MoltObject::from_ptr(bytes_ptr).bits();
+                let tuple_ptr = alloc_tuple(_py, &[bytes_bits, addr_bits]);
+                if tuple_ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                return MoltObject::from_ptr(tuple_ptr).bits();
+            }
+            let errno = errno_from_rc(rc);
+            if would_block_errno(errno) {
+                if dontwait || nonblocking {
+                    return raise_os_error_errno::<u64>(_py, errno as i64, "recvfrom");
+                }
+                if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_READ) {
+                    if wait_err.kind() == ErrorKind::TimedOut {
+                        return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                    }
+                    return raise_os_error::<u64>(_py, wait_err, "recvfrom");
+                }
+                continue;
+            }
+            return raise_os_error_errno::<u64>(_py, errno as i64, "recvfrom");
+        }
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn molt_socket_shutdown(_sock_bits: u64, _how_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { wasm_socket_unavailable(_py) })
+    crate::with_gil_entry!(_py, {
+        let handle = match socket_handle_from_bits(_py, _sock_bits) {
+            Ok(val) => val,
+            Err(_) => return MoltObject::none().bits(),
+        };
+        let how = to_i64(obj_from_bits(_how_bits)).unwrap_or(0) as i32;
+        let rc = unsafe { crate::molt_socket_shutdown_host(handle, how) };
+        if rc < 0 {
+            return raise_os_error_errno::<u64>(_py, errno_from_rc(rc) as i64, "shutdown");
+        }
+        MoltObject::none().bits()
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn molt_socket_getsockname(_sock_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { wasm_socket_unavailable(_py) })
+    crate::with_gil_entry!(_py, {
+        let handle = match socket_handle_from_bits(_py, _sock_bits) {
+            Ok(val) => val,
+            Err(_) => return MoltObject::none().bits(),
+        };
+        let mut addr_buf = vec![0u8; 128];
+        let mut addr_len: u32 = 0;
+        let rc = unsafe {
+            crate::molt_socket_getsockname_host(
+                handle,
+                addr_buf.as_mut_ptr() as u32,
+                addr_buf.len() as u32,
+                (&mut addr_len) as *mut u32 as u32,
+            )
+        };
+        if rc < 0 {
+            return raise_os_error_errno::<u64>(_py, errno_from_rc(rc) as i64, "getsockname");
+        }
+        match decode_sockaddr(_py, &addr_buf[..addr_len as usize]) {
+            Ok(bits) => bits,
+            Err(msg) => raise_exception::<_>(_py, "TypeError", &msg),
+        }
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn molt_socket_getpeername(_sock_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { wasm_socket_unavailable(_py) })
+    crate::with_gil_entry!(_py, {
+        let handle = match socket_handle_from_bits(_py, _sock_bits) {
+            Ok(val) => val,
+            Err(_) => return MoltObject::none().bits(),
+        };
+        let mut addr_buf = vec![0u8; 128];
+        let mut addr_len: u32 = 0;
+        let rc = unsafe {
+            crate::molt_socket_getpeername_host(
+                handle,
+                addr_buf.as_mut_ptr() as u32,
+                addr_buf.len() as u32,
+                (&mut addr_len) as *mut u32 as u32,
+            )
+        };
+        if rc < 0 {
+            return raise_os_error_errno::<u64>(_py, errno_from_rc(rc) as i64, "getpeername");
+        }
+        match decode_sockaddr(_py, &addr_buf[..addr_len as usize]) {
+            Ok(bits) => bits,
+            Err(msg) => raise_exception::<_>(_py, "TypeError", &msg),
+        }
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -2598,7 +3754,40 @@ pub extern "C" fn molt_socket_setsockopt(
     _opt_bits: u64,
     _value_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, { wasm_socket_unavailable(_py) })
+    crate::with_gil_entry!(_py, {
+        let handle = match socket_handle_from_bits(_py, _sock_bits) {
+            Ok(val) => val,
+            Err(_) => return MoltObject::none().bits(),
+        };
+        let level = to_i64(obj_from_bits(_level_bits)).unwrap_or(0) as i32;
+        let optname = to_i64(obj_from_bits(_opt_bits)).unwrap_or(0) as i32;
+        let obj = obj_from_bits(_value_bits);
+        let (val_buf, val_len) = if let Some(val) = to_i64(obj) {
+            let bytes = (val as i32).to_ne_bytes();
+            (bytes.to_vec(), bytes.len())
+        } else if let Some(ptr) = obj.as_ptr() {
+            let bytes = unsafe { bytes_like_slice_raw(ptr) };
+            let Some(bytes) = bytes else {
+                return raise_exception::<_>(_py, "TypeError", "invalid optval");
+            };
+            (bytes.to_vec(), bytes.len())
+        } else {
+            return raise_exception::<_>(_py, "TypeError", "invalid optval");
+        };
+        let rc = unsafe {
+            crate::molt_socket_setsockopt_host(
+                handle,
+                level,
+                optname,
+                val_buf.as_ptr() as u32,
+                val_len as u32,
+            )
+        };
+        if rc < 0 {
+            return raise_os_error_errno::<u64>(_py, errno_from_rc(rc) as i64, "setsockopt");
+        }
+        MoltObject::none().bits()
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -2609,16 +3798,86 @@ pub extern "C" fn molt_socket_getsockopt(
     _opt_bits: u64,
     _buflen_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, { wasm_socket_unavailable(_py) })
+    crate::with_gil_entry!(_py, {
+        let handle = match socket_handle_from_bits(_py, _sock_bits) {
+            Ok(val) => val,
+            Err(_) => return MoltObject::none().bits(),
+        };
+        let level = to_i64(obj_from_bits(_level_bits)).unwrap_or(0) as i32;
+        let optname = to_i64(obj_from_bits(_opt_bits)).unwrap_or(0) as i32;
+        let buflen = if obj_from_bits(_buflen_bits).is_none() {
+            None
+        } else {
+            Some(to_i64(obj_from_bits(_buflen_bits)).unwrap_or(0).max(0) as usize)
+        };
+        let mut out_len: u32 = 0;
+        if let Some(buflen) = buflen {
+            let mut buf = vec![0u8; buflen];
+            let rc = unsafe {
+                crate::molt_socket_getsockopt_host(
+                    handle,
+                    level,
+                    optname,
+                    buf.as_mut_ptr() as u32,
+                    buf.len() as u32,
+                    (&mut out_len) as *mut u32 as u32,
+                )
+            };
+            if rc < 0 {
+                return raise_os_error_errno::<u64>(_py, errno_from_rc(rc) as i64, "getsockopt");
+            }
+            let ptr = alloc_bytes(_py, &buf[..out_len as usize]);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(ptr).bits();
+        }
+        let mut buf = vec![0u8; std::mem::size_of::<i32>()];
+        let rc = unsafe {
+            crate::molt_socket_getsockopt_host(
+                handle,
+                level,
+                optname,
+                buf.as_mut_ptr() as u32,
+                buf.len() as u32,
+                (&mut out_len) as *mut u32 as u32,
+            )
+        };
+        if rc < 0 {
+            return raise_os_error_errno::<u64>(_py, errno_from_rc(rc) as i64, "getsockopt");
+        }
+        if out_len as usize >= std::mem::size_of::<i32>() {
+            let val = i32::from_ne_bytes([buf[0], buf[1], buf[2], buf[3]]) as i64;
+            return MoltObject::from_int(val).bits();
+        }
+        let ptr = alloc_bytes(_py, &buf[..out_len as usize]);
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn molt_socket_detach(_sock_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, { wasm_socket_unavailable(_py) })
+    crate::with_gil_entry!(_py, {
+        let handle = match socket_handle_from_bits(_py, _sock_bits) {
+            Ok(val) => val,
+            Err(_) => return MoltObject::from_int(-1).bits(),
+        };
+        let rc = unsafe { crate::molt_socket_detach_host(handle) };
+        wasm_socket_meta_remove(handle);
+        if rc < 0 {
+            return raise_os_error_errno::<u64>(_py, (-rc) as i64, "detach");
+        }
+        MoltObject::from_int(rc).bits()
+    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socketpair(family_bits: u64, type_bits: u64, proto_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -2639,9 +3898,7 @@ pub unsafe extern "C" fn molt_socketpair(family_bits: u64, type_bits: u64, proto
         } else {
             match to_i64(obj_from_bits(family_bits)) {
                 Some(val) => val as i32,
-                None => {
-                    return raise_exception::<_>(_py, "TypeError", "family must be int or None")
-                }
+                None => raise_exception::<_>(_py, "TypeError", "family must be int or None"),
             }
         };
         let sock_type = if obj_from_bits(type_bits).is_none() {
@@ -2649,7 +3906,7 @@ pub unsafe extern "C" fn molt_socketpair(family_bits: u64, type_bits: u64, proto
         } else {
             match to_i64(obj_from_bits(type_bits)) {
                 Some(val) => val as i32,
-                None => return raise_exception::<_>(_py, "TypeError", "type must be int or None"),
+                None => raise_exception::<_>(_py, "TypeError", "type must be int or None"),
             }
         };
         let proto = if obj_from_bits(proto_bits).is_none() {
@@ -2657,7 +3914,7 @@ pub unsafe extern "C" fn molt_socketpair(family_bits: u64, type_bits: u64, proto
         } else {
             match to_i64(obj_from_bits(proto_bits)) {
                 Some(val) => val as i32,
-                None => return raise_exception::<_>(_py, "TypeError", "proto must be int or None"),
+                None => raise_exception::<_>(_py, "TypeError", "proto must be int or None"),
             }
         };
         #[cfg(unix)]
@@ -2690,7 +3947,7 @@ pub unsafe extern "C" fn molt_socketpair(family_bits: u64, type_bits: u64, proto
             if tuple_ptr.is_null() {
                 return MoltObject::none().bits();
             }
-            return MoltObject::from_ptr(tuple_ptr).bits();
+            MoltObject::from_ptr(tuple_ptr).bits()
         }
         #[cfg(windows)]
         {
@@ -2750,11 +4007,78 @@ pub unsafe extern "C" fn molt_socketpair(family_bits: u64, type_bits: u64, proto
 #[no_mangle]
 pub extern "C" fn molt_socketpair(_family_bits: u64, _type_bits: u64, _proto_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        return raise_exception::<_>(_py, "RuntimeError", "socketpair unsupported on wasm");
+        if require_net_capability::<u64>(_py, &["net", "net.connect", "net.listen", "net.bind"])
+            .is_err()
+        {
+            return MoltObject::none().bits();
+        }
+        let family = if obj_from_bits(_family_bits).is_none() {
+            #[cfg(unix)]
+            {
+                libc::AF_UNIX
+            }
+            #[cfg(not(unix))]
+            {
+                libc::AF_INET
+            }
+        } else {
+            match to_i64(obj_from_bits(_family_bits)) {
+                Some(val) => val as i32,
+                None => return raise_exception::<_>(_py, "TypeError", "family must be int"),
+            }
+        };
+        let sock_type = match to_i64(obj_from_bits(_type_bits)) {
+            Some(val) => val as i32,
+            None => return raise_exception::<_>(_py, "TypeError", "type must be int"),
+        };
+        let proto = to_i64(obj_from_bits(_proto_bits)).unwrap_or(0) as i32;
+        let mut left: u64 = 0;
+        let mut right: u64 = 0;
+        let rc = unsafe {
+            crate::molt_socket_socketpair_host(
+                family,
+                sock_type,
+                proto,
+                (&mut left) as *mut u64 as u32,
+                (&mut right) as *mut u64 as u32,
+            )
+        };
+        if rc < 0 {
+            return raise_os_error_errno::<u64>(_py, errno_from_rc(rc) as i64, "socketpair");
+        }
+        wasm_socket_meta_insert(
+            left as i64,
+            WasmSocketMeta {
+                family,
+                sock_type,
+                proto,
+                timeout: None,
+                connect_pending: false,
+            },
+        );
+        wasm_socket_meta_insert(
+            right as i64,
+            WasmSocketMeta {
+                family,
+                sock_type,
+                proto,
+                timeout: None,
+                connect_pending: false,
+            },
+        );
+        let left_bits = MoltObject::from_int(left as i64).bits();
+        let right_bits = MoltObject::from_int(right as i64).bits();
+        let tuple_ptr = alloc_tuple(_py, &[left_bits, right_bits]);
+        if tuple_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(tuple_ptr).bits()
     })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_getaddrinfo(
     host_bits: u64,
@@ -2896,11 +4220,260 @@ pub extern "C" fn molt_socket_getaddrinfo(
     _flags_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        return raise_exception::<_>(_py, "RuntimeError", "getaddrinfo unsupported on wasm");
+        if require_net_capability::<u64>(_py, &["net", "net.connect", "net.bind", "net"]).is_err() {
+            return MoltObject::none().bits();
+        }
+        let host = match host_from_bits(_py, _host_bits) {
+            Ok(val) => val,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let service = match service_from_bits(_py, _port_bits) {
+            Ok(val) => val,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let family = to_i64(obj_from_bits(_family_bits)).unwrap_or(0) as i32;
+        let sock_type = to_i64(obj_from_bits(_type_bits)).unwrap_or(0) as i32;
+        let proto = to_i64(obj_from_bits(_proto_bits)).unwrap_or(0) as i32;
+        let flags = to_i64(obj_from_bits(_flags_bits)).unwrap_or(0) as i32;
+        let host_bytes = host.as_ref().map(|val| val.as_bytes()).unwrap_or(&[]);
+        let service_bytes = service.as_ref().map(|val| val.as_bytes()).unwrap_or(&[]);
+        if host_bytes.iter().any(|b| *b == 0) {
+            return raise_exception::<_>(_py, "TypeError", "host contains NUL byte");
+        }
+        if service_bytes.iter().any(|b| *b == 0) {
+            return raise_exception::<_>(_py, "TypeError", "service contains NUL byte");
+        }
+        let mut cap = 4096usize;
+        let mut buf = vec![0u8; cap];
+        let mut out_len: u32 = 0;
+        let mut fallback_numeric = false;
+        loop {
+            let rc = unsafe {
+                crate::molt_socket_getaddrinfo_host(
+                    host_bytes.as_ptr() as u32,
+                    host_bytes.len() as u32,
+                    service_bytes.as_ptr() as u32,
+                    service_bytes.len() as u32,
+                    family,
+                    sock_type,
+                    proto,
+                    flags,
+                    buf.as_mut_ptr() as u32,
+                    buf.len() as u32,
+                    (&mut out_len) as *mut u32 as u32,
+                )
+            };
+            if rc == 0 {
+                break;
+            }
+            let errno = errno_from_rc(rc);
+            if errno == libc::ENOSYS {
+                fallback_numeric = true;
+                break;
+            }
+            if errno == libc::ENOMEM && out_len as usize > cap {
+                cap = out_len as usize;
+                buf.resize(cap, 0);
+                continue;
+            }
+            return raise_os_error_errno::<u64>(_py, errno as i64, "getaddrinfo");
+        }
+        if fallback_numeric {
+            let ip = if let Some(host) = host.as_ref() {
+                match host.parse::<IpAddr>() {
+                    Ok(ip) => ip,
+                    Err(_) => {
+                        return raise_os_error_errno::<u64>(
+                            _py,
+                            libc::EAI_NONAME as i64,
+                            "name or service not known",
+                        )
+                    }
+                }
+            } else if family == libc::AF_INET6 {
+                IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+            } else {
+                IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+            };
+            let port = match service.as_ref() {
+                Some(val) => match val.parse::<u16>() {
+                    Ok(port) => port,
+                    Err(_) => {
+                        return raise_exception::<_>(_py, "TypeError", "service must be int");
+                    }
+                },
+                None => 0,
+            };
+            let sockaddr = match ip {
+                IpAddr::V4(ip) => {
+                    let addr = Ipv4Addr::from(ip.octets());
+                    let host = addr.to_string();
+                    let host_ptr = alloc_string(_py, host.as_bytes());
+                    if host_ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    let host_bits = MoltObject::from_ptr(host_ptr).bits();
+                    let port_bits = MoltObject::from_int(port as i64).bits();
+                    let tuple_ptr = alloc_tuple(_py, &[host_bits, port_bits]);
+                    dec_ref_bits(_py, host_bits);
+                    if tuple_ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    MoltObject::from_ptr(tuple_ptr).bits()
+                }
+                IpAddr::V6(ip) => {
+                    let addr = Ipv6Addr::from(ip.octets());
+                    let host = addr.to_string();
+                    let host_ptr = alloc_string(_py, host.as_bytes());
+                    if host_ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    let host_bits = MoltObject::from_ptr(host_ptr).bits();
+                    let port_bits = MoltObject::from_int(port as i64).bits();
+                    let flow_bits = MoltObject::from_int(0).bits();
+                    let scope_bits = MoltObject::from_int(0).bits();
+                    let tuple_ptr =
+                        alloc_tuple(_py, &[host_bits, port_bits, flow_bits, scope_bits]);
+                    dec_ref_bits(_py, host_bits);
+                    if tuple_ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    MoltObject::from_ptr(tuple_ptr).bits()
+                }
+            };
+            let family_bits = MoltObject::from_int(family as i64).bits();
+            let sock_type_bits = MoltObject::from_int(sock_type as i64).bits();
+            let proto_bits = MoltObject::from_int(proto as i64).bits();
+            let tuple_ptr = alloc_tuple(
+                _py,
+                &[
+                    family_bits,
+                    sock_type_bits,
+                    proto_bits,
+                    MoltObject::none().bits(),
+                    sockaddr,
+                ],
+            );
+            if tuple_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let list_ptr = alloc_list(_py, &[MoltObject::from_ptr(tuple_ptr).bits()]);
+            if list_ptr.is_null() {
+                dec_ref_bits(_py, MoltObject::from_ptr(tuple_ptr).bits());
+                return MoltObject::none().bits();
+            }
+            dec_ref_bits(_py, MoltObject::from_ptr(tuple_ptr).bits());
+            return MoltObject::from_ptr(list_ptr).bits();
+        }
+        let data = &buf[..out_len as usize];
+        if data.len() < 4 {
+            return raise_exception::<_>(_py, "RuntimeError", "invalid addrinfo payload");
+        }
+        let mut offset = 0usize;
+        let count = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+        offset += 4;
+        let mut out: Vec<u64> = Vec::with_capacity(count);
+        for _ in 0..count {
+            if offset + 12 > data.len() {
+                return raise_exception::<_>(_py, "RuntimeError", "invalid addrinfo payload");
+            }
+            let family = i32::from_le_bytes([
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
+            ]);
+            let sock_type = i32::from_le_bytes([
+                data[offset + 4],
+                data[offset + 5],
+                data[offset + 6],
+                data[offset + 7],
+            ]);
+            let proto = i32::from_le_bytes([
+                data[offset + 8],
+                data[offset + 9],
+                data[offset + 10],
+                data[offset + 11],
+            ]);
+            offset += 12;
+            if offset + 4 > data.len() {
+                return raise_exception::<_>(_py, "RuntimeError", "invalid addrinfo payload");
+            }
+            let canon_len = u32::from_le_bytes([
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
+            ]) as usize;
+            offset += 4;
+            if offset + canon_len > data.len() {
+                return raise_exception::<_>(_py, "RuntimeError", "invalid addrinfo payload");
+            }
+            let canon_bits = if canon_len > 0 {
+                let ptr = alloc_string(_py, &data[offset..offset + canon_len]);
+                if ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                MoltObject::from_ptr(ptr).bits()
+            } else {
+                MoltObject::none().bits()
+            };
+            offset += canon_len;
+            if offset + 4 > data.len() {
+                return raise_exception::<_>(_py, "RuntimeError", "invalid addrinfo payload");
+            }
+            let addr_len = u32::from_le_bytes([
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
+            ]) as usize;
+            offset += 4;
+            if offset + addr_len > data.len() {
+                return raise_exception::<_>(_py, "RuntimeError", "invalid addrinfo payload");
+            }
+            let sockaddr_bits = match decode_sockaddr(_py, &data[offset..offset + addr_len]) {
+                Ok(bits) => bits,
+                Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            };
+            offset += addr_len;
+            let family_bits = MoltObject::from_int(family as i64).bits();
+            let sock_type_bits = MoltObject::from_int(sock_type as i64).bits();
+            let proto_bits = MoltObject::from_int(proto as i64).bits();
+            let tuple_ptr = alloc_tuple(
+                _py,
+                &[
+                    family_bits,
+                    sock_type_bits,
+                    proto_bits,
+                    canon_bits,
+                    sockaddr_bits,
+                ],
+            );
+            dec_ref_bits(_py, canon_bits);
+            if tuple_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            out.push(MoltObject::from_ptr(tuple_ptr).bits());
+        }
+        let list_ptr = alloc_list(_py, &out);
+        if list_ptr.is_null() {
+            for bits in out {
+                dec_ref_bits(_py, bits);
+            }
+            return MoltObject::none().bits();
+        }
+        let list_bits = MoltObject::from_ptr(list_ptr).bits();
+        for bits in out {
+            dec_ref_bits(_py, bits);
+        }
+        list_bits
     })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_getnameinfo(addr_bits: u64, flags_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -2968,11 +4541,52 @@ pub unsafe extern "C" fn molt_socket_getnameinfo(addr_bits: u64, flags_bits: u64
 #[no_mangle]
 pub extern "C" fn molt_socket_getnameinfo(_addr_bits: u64, _flags_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        return raise_exception::<_>(_py, "RuntimeError", "getnameinfo unsupported on wasm");
+        let _flags = to_i64(obj_from_bits(_flags_bits)).unwrap_or(0) as i32;
+        let obj = obj_from_bits(_addr_bits);
+        let Some(ptr) = obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "sockaddr must be tuple");
+        };
+        let type_id = unsafe { object_type_id(ptr) };
+        if type_id != TYPE_ID_TUPLE && type_id != TYPE_ID_LIST {
+            return raise_exception::<_>(_py, "TypeError", "sockaddr must be tuple");
+        }
+        let elems = unsafe { seq_vec_ref(ptr) };
+        if elems.len() < 2 {
+            return raise_exception::<_>(_py, "TypeError", "sockaddr must be (host, port)");
+        }
+        let host = match host_from_bits(_py, elems[0]) {
+            Ok(Some(val)) => val,
+            Ok(None) => return raise_exception::<_>(_py, "TypeError", "host cannot be None"),
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let port = match port_from_bits(_py, elems[1]) {
+            Ok(val) => val,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let host_ptr = alloc_string(_py, host.as_bytes());
+        if host_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let serv_ptr = alloc_string(_py, port.to_string().as_bytes());
+        if serv_ptr.is_null() {
+            dec_ref_bits(_py, MoltObject::from_ptr(host_ptr).bits());
+            return MoltObject::none().bits();
+        }
+        let host_bits = MoltObject::from_ptr(host_ptr).bits();
+        let serv_bits = MoltObject::from_ptr(serv_ptr).bits();
+        let tuple_ptr = alloc_tuple(_py, &[host_bits, serv_bits]);
+        dec_ref_bits(_py, host_bits);
+        dec_ref_bits(_py, serv_bits);
+        if tuple_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(tuple_ptr).bits()
     })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_gethostname() -> u64 {
     crate::with_gil_entry!(_py, {
@@ -2996,11 +4610,40 @@ pub unsafe extern "C" fn molt_socket_gethostname() -> u64 {
 #[no_mangle]
 pub extern "C" fn molt_socket_gethostname() -> u64 {
     crate::with_gil_entry!(_py, {
-        return raise_exception::<_>(_py, "RuntimeError", "gethostname unsupported on wasm");
+        let mut buf = vec![0u8; 256];
+        let mut out_len: u32 = 0;
+        let mut rc = unsafe {
+            crate::molt_socket_gethostname_host(
+                buf.as_mut_ptr() as u32,
+                buf.len() as u32,
+                (&mut out_len) as *mut u32 as u32,
+            )
+        };
+        if rc == -(libc::ENOMEM as i32) && out_len as usize > buf.len() {
+            buf.resize(out_len as usize, 0);
+            rc = unsafe {
+                crate::molt_socket_gethostname_host(
+                    buf.as_mut_ptr() as u32,
+                    buf.len() as u32,
+                    (&mut out_len) as *mut u32 as u32,
+                )
+            };
+        }
+        if rc < 0 {
+            return raise_os_error_errno::<u64>(_py, errno_from_rc(rc) as i64, "gethostname");
+        }
+        let len = out_len as usize;
+        let ptr = alloc_string(_py, &buf[..len]);
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
     })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_getservbyname(name_bits: u64, proto_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -3044,11 +4687,43 @@ pub unsafe extern "C" fn molt_socket_getservbyname(name_bits: u64, proto_bits: u
 #[no_mangle]
 pub extern "C" fn molt_socket_getservbyname(_name_bits: u64, _proto_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        return raise_exception::<_>(_py, "RuntimeError", "getservbyname unsupported on wasm");
+        let name = match host_from_bits(_py, _name_bits) {
+            Ok(Some(val)) => val,
+            Ok(None) => {
+                return raise_exception::<_>(_py, "TypeError", "service name cannot be None")
+            }
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let proto = match host_from_bits(_py, _proto_bits) {
+            Ok(val) => val,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let name_bytes = name.as_bytes();
+        let proto_bytes = proto.as_ref().map(|val| val.as_bytes()).unwrap_or(&[]);
+        if name_bytes.iter().any(|b| *b == 0) {
+            return raise_exception::<_>(_py, "TypeError", "service name contains NUL byte");
+        }
+        if proto_bytes.iter().any(|b| *b == 0) {
+            return raise_exception::<_>(_py, "TypeError", "proto contains NUL byte");
+        }
+        let rc = unsafe {
+            crate::molt_socket_getservbyname_host(
+                name_bytes.as_ptr() as u32,
+                name_bytes.len() as u32,
+                proto_bytes.as_ptr() as u32,
+                proto_bytes.len() as u32,
+            )
+        };
+        if rc < 0 {
+            return raise_os_error_errno::<u64>(_py, errno_from_rc(rc) as i64, "getservbyname");
+        }
+        MoltObject::from_int(rc as i64).bits()
     })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_getservbyport(port_bits: u64, proto_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -3089,11 +4764,57 @@ pub unsafe extern "C" fn molt_socket_getservbyport(port_bits: u64, proto_bits: u
 #[no_mangle]
 pub extern "C" fn molt_socket_getservbyport(_port_bits: u64, _proto_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        return raise_exception::<_>(_py, "RuntimeError", "getservbyport unsupported on wasm");
+        let port = match to_i64(obj_from_bits(_port_bits)) {
+            Some(val) if val >= 0 && val <= u16::MAX as i64 => val as u16,
+            _ => return raise_exception::<_>(_py, "TypeError", "port must be int"),
+        };
+        let proto = match host_from_bits(_py, _proto_bits) {
+            Ok(val) => val,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let proto_bytes = proto.as_ref().map(|val| val.as_bytes()).unwrap_or(&[]);
+        if proto_bytes.iter().any(|b| *b == 0) {
+            return raise_exception::<_>(_py, "TypeError", "proto contains NUL byte");
+        }
+        let mut buf = vec![0u8; 256];
+        let mut out_len: u32 = 0;
+        let mut rc = unsafe {
+            crate::molt_socket_getservbyport_host(
+                port as i32,
+                proto_bytes.as_ptr() as u32,
+                proto_bytes.len() as u32,
+                buf.as_mut_ptr() as u32,
+                buf.len() as u32,
+                (&mut out_len) as *mut u32 as u32,
+            )
+        };
+        if rc == -(libc::ENOMEM as i32) && out_len as usize > buf.len() {
+            buf.resize(out_len as usize, 0);
+            rc = unsafe {
+                crate::molt_socket_getservbyport_host(
+                    port as i32,
+                    proto_bytes.as_ptr() as u32,
+                    proto_bytes.len() as u32,
+                    buf.as_mut_ptr() as u32,
+                    buf.len() as u32,
+                    (&mut out_len) as *mut u32 as u32,
+                )
+            };
+        }
+        if rc < 0 {
+            return raise_os_error_errno::<u64>(_py, errno_from_rc(rc) as i64, "getservbyport");
+        }
+        let ptr = alloc_string(_py, &buf[..out_len as usize]);
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
     })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_inet_pton(family_bits: u64, address_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -3137,7 +4858,7 @@ pub unsafe extern "C" fn molt_socket_inet_pton(family_bits: u64, address_bits: u
             }
             return MoltObject::from_ptr(ptr).bits();
         }
-        return raise_exception::<_>(_py, "ValueError", "unsupported address family");
+        raise_exception::<_>(_py, "ValueError", "unsupported address family")
     })
 }
 
@@ -3145,11 +4866,53 @@ pub unsafe extern "C" fn molt_socket_inet_pton(family_bits: u64, address_bits: u
 #[no_mangle]
 pub extern "C" fn molt_socket_inet_pton(_family_bits: u64, _address_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        return raise_exception::<_>(_py, "RuntimeError", "inet_pton unsupported on wasm");
+        let family = to_i64(obj_from_bits(_family_bits)).unwrap_or(0) as i32;
+        let addr = match host_from_bits(_py, _address_bits) {
+            Ok(Some(val)) => val,
+            Ok(None) => return raise_exception::<_>(_py, "TypeError", "address cannot be None"),
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        if family == libc::AF_INET {
+            let ip: Ipv4Addr = match addr.parse() {
+                Ok(ip) => ip,
+                Err(_) => {
+                    return raise_os_error_errno::<u64>(
+                        _py,
+                        libc::EINVAL as i64,
+                        "invalid IPv4 address",
+                    )
+                }
+            };
+            let ptr = alloc_bytes(_py, &ip.octets());
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(ptr).bits();
+        }
+        if family == libc::AF_INET6 {
+            let ip: Ipv6Addr = match addr.parse() {
+                Ok(ip) => ip,
+                Err(_) => {
+                    return raise_os_error_errno::<u64>(
+                        _py,
+                        libc::EINVAL as i64,
+                        "invalid IPv6 address",
+                    )
+                }
+            };
+            let ptr = alloc_bytes(_py, &ip.octets());
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(ptr).bits();
+        }
+        raise_exception::<_>(_py, "ValueError", "unsupported address family")
     })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Caller must pass valid socket handles and runtime-encoded arguments.
 #[no_mangle]
 pub unsafe extern "C" fn molt_socket_inet_ntop(family_bits: u64, packed_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -3205,7 +4968,7 @@ pub unsafe extern "C" fn molt_socket_inet_ntop(family_bits: u64, packed_bits: u6
             }
             return MoltObject::from_ptr(ptr).bits();
         }
-        return raise_exception::<_>(_py, "ValueError", "unsupported address family");
+        raise_exception::<_>(_py, "ValueError", "unsupported address family")
     })
 }
 
@@ -3213,7 +4976,46 @@ pub unsafe extern "C" fn molt_socket_inet_ntop(family_bits: u64, packed_bits: u6
 #[no_mangle]
 pub extern "C" fn molt_socket_inet_ntop(_family_bits: u64, _packed_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        return raise_exception::<_>(_py, "RuntimeError", "inet_ntop unsupported on wasm");
+        let family = to_i64(obj_from_bits(_family_bits)).unwrap_or(0) as i32;
+        let obj = obj_from_bits(_packed_bits);
+        let data = if let Some(ptr) = obj.as_ptr() {
+            let bytes = unsafe { bytes_like_slice_raw(ptr) };
+            let Some(bytes) = bytes else {
+                return raise_exception::<_>(_py, "TypeError", "packed must be bytes-like");
+            };
+            bytes.to_vec()
+        } else {
+            return raise_exception::<_>(_py, "TypeError", "packed must be bytes-like");
+        };
+        if family == libc::AF_INET {
+            if data.len() != 4 {
+                return raise_exception::<_>(_py, "ValueError", "invalid IPv4 packed length");
+            }
+            let mut octets = [0u8; 4];
+            octets.copy_from_slice(&data[..4]);
+            let addr = Ipv4Addr::from(octets);
+            let text = addr.to_string();
+            let ptr = alloc_string(_py, text.as_bytes());
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(ptr).bits();
+        }
+        if family == libc::AF_INET6 {
+            if data.len() != 16 {
+                return raise_exception::<_>(_py, "ValueError", "invalid IPv6 packed length");
+            }
+            let mut octets = [0u8; 16];
+            octets.copy_from_slice(&data[..16]);
+            let addr = Ipv6Addr::from(octets);
+            let text = addr.to_string();
+            let ptr = alloc_string(_py, text.as_bytes());
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(ptr).bits();
+        }
+        raise_exception::<_>(_py, "ValueError", "unsupported address family")
     })
 }
 
@@ -3229,5 +5031,8 @@ pub extern "C" fn molt_socket_has_ipv6() -> u64 {
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn molt_socket_has_ipv6() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(false).bits() })
+    crate::with_gil_entry!(_py, {
+        let supported = unsafe { crate::molt_socket_has_ipv6_host() };
+        MoltObject::from_bool(supported != 0).bits()
+    })
 }

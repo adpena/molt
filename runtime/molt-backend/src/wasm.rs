@@ -23,6 +23,8 @@ const QNAN_TAG_PTR_I64: i64 = (QNAN | TAG_PTR) as i64;
 const INT_MASK: u64 = (1 << 47) - 1;
 const HEADER_SIZE_BYTES: i32 = 40;
 const HEADER_STATE_OFFSET: i32 = -(HEADER_SIZE_BYTES - 16);
+const HEADER_FLAGS_OFFSET: i32 = -(HEADER_SIZE_BYTES - 32);
+const HEADER_COROUTINE_FLAG: i64 = 1 << 12;
 const GEN_CONTROL_SIZE: i32 = 48;
 const TASK_KIND_FUTURE: i64 = 0;
 const TASK_KIND_GENERATOR: i64 = 1;
@@ -121,10 +123,8 @@ fn build_dispatch_blocks(ops: &[OpIR]) -> (Vec<usize>, Vec<usize>) {
             }
             _ => {}
         }
-        if is_stateful_dispatch_terminator(op.kind.as_str()) {
-            if idx + 1 < op_count {
-                is_start[idx + 1] = true;
-            }
+        if is_stateful_dispatch_terminator(op.kind.as_str()) && idx + 1 < op_count {
+            is_start[idx + 1] = true;
         }
     }
 
@@ -138,12 +138,12 @@ fn build_dispatch_blocks(ops: &[OpIR]) -> (Vec<usize>, Vec<usize>) {
     let mut block_for_op = vec![0; op_count];
     let mut block_idx = 0usize;
     let mut next_start = starts.get(1).copied().unwrap_or(op_count);
-    for idx in 0..op_count {
+    for (idx, block_slot) in block_for_op.iter_mut().enumerate().take(op_count) {
         if idx == next_start {
             block_idx += 1;
             next_start = starts.get(block_idx + 1).copied().unwrap_or(op_count);
         }
-        block_for_op[idx] = block_idx;
+        *block_slot = block_idx;
     }
 
     (starts, block_for_op)
@@ -181,6 +181,16 @@ impl Default for WasmBackend {
     }
 }
 
+fn wasm_data_base() -> u32 {
+    // Default after runtime static data: 1 MiB.
+    let raw = std::env::var("MOLT_WASM_DATA_BASE")
+        .ok()
+        .and_then(|val| val.parse::<u64>().ok())
+        .unwrap_or(1_048_576);
+    let aligned = (raw + 7) & !7;
+    aligned.min(u64::from(u32::MAX)) as u32
+}
+
 impl WasmBackend {
     pub fn new() -> Self {
         Self {
@@ -195,7 +205,7 @@ impl WasmBackend {
             tables: TableSection::new(),
             func_count: 0,
             import_ids: HashMap::new(),
-            data_offset: 8,
+            data_offset: wasm_data_base(),
             data_segments: Vec::new(),
             data_relocs: Vec::new(),
             molt_main_index: None,
@@ -493,6 +503,8 @@ impl WasmBackend {
         add_import("asyncgen_hooks_set", 3, &mut self.import_ids);
         add_import("asyncgen_locals", 2, &mut self.import_ids);
         add_import("asyncgen_locals_register", 5, &mut self.import_ids);
+        add_import("gen_locals", 2, &mut self.import_ids);
+        add_import("gen_locals_register", 5, &mut self.import_ids);
         add_import("asyncgen_shutdown", 0, &mut self.import_ids);
         add_import("future_poll", 2, &mut self.import_ids);
         add_import("future_cancel", 2, &mut self.import_ids);
@@ -674,6 +686,9 @@ impl WasmBackend {
         add_import("json_parse_scalar_obj", 2, &mut self.import_ids);
         add_import("msgpack_parse_scalar_obj", 2, &mut self.import_ids);
         add_import("cbor_parse_scalar_obj", 2, &mut self.import_ids);
+        add_import("weakref_register", 5, &mut self.import_ids);
+        add_import("weakref_get", 2, &mut self.import_ids);
+        add_import("weakref_drop", 2, &mut self.import_ids);
         add_import("string_from_bytes", 19, &mut self.import_ids);
         add_import("bytes_from_bytes", 19, &mut self.import_ids);
         add_import("bigint_from_str", 16, &mut self.import_ids);
@@ -688,6 +703,7 @@ impl WasmBackend {
         add_import("callable_builtin", 2, &mut self.import_ids);
         add_import("int_from_obj", 5, &mut self.import_ids);
         add_import("float_from_obj", 2, &mut self.import_ids);
+        add_import("complex_from_obj", 5, &mut self.import_ids);
         add_import("memoryview_new", 2, &mut self.import_ids);
         add_import("memoryview_tobytes", 2, &mut self.import_ids);
         add_import("memoryview_cast", 7, &mut self.import_ids);
@@ -703,6 +719,10 @@ impl WasmBackend {
         add_import("getargv", 0, &mut self.import_ids);
         add_import("sys_version_info", 0, &mut self.import_ids);
         add_import("sys_version", 0, &mut self.import_ids);
+        add_import("sys_stdin", 0, &mut self.import_ids);
+        add_import("sys_stdout", 0, &mut self.import_ids);
+        add_import("sys_stderr", 0, &mut self.import_ids);
+        add_import("sys_executable", 0, &mut self.import_ids);
         add_import("getrecursionlimit", 0, &mut self.import_ids);
         add_import("setrecursionlimit", 2, &mut self.import_ids);
         add_import("recursion_guard_enter", 0, &mut self.import_ids);
@@ -714,6 +734,7 @@ impl WasmBackend {
         add_import("code_slot_set", 3, &mut self.import_ids);
         add_import("fn_ptr_code_set", 3, &mut self.import_ids);
         add_import("code_new", 7, &mut self.import_ids);
+        add_import("compile_builtin", 9, &mut self.import_ids);
         add_import("round_builtin", 3, &mut self.import_ids);
         add_import("enumerate_builtin", 3, &mut self.import_ids);
         add_import("iter_sentinel", 3, &mut self.import_ids);
@@ -726,7 +747,7 @@ impl WasmBackend {
         add_import("sorted_builtin", 5, &mut self.import_ids);
         add_import("map_builtin", 3, &mut self.import_ids);
         add_import("filter_builtin", 3, &mut self.import_ids);
-        add_import("zip_builtin", 2, &mut self.import_ids);
+        add_import("zip_builtin", 3, &mut self.import_ids);
         add_import("reversed_builtin", 2, &mut self.import_ids);
         add_import("getattr_builtin", 5, &mut self.import_ids);
         add_import("dir_builtin", 2, &mut self.import_ids);
@@ -834,8 +855,12 @@ impl WasmBackend {
         add_import("bytes_count_slice", 9, &mut self.import_ids);
         add_import("bytearray_count_slice", 9, &mut self.import_ids);
         add_import("env_get", 3, &mut self.import_ids);
+        add_import("env_snapshot", 0, &mut self.import_ids);
+        add_import("os_name", 0, &mut self.import_ids);
+        add_import("sys_platform", 0, &mut self.import_ids);
         add_import("errno_constants", 0, &mut self.import_ids);
         add_import("getpid", 0, &mut self.import_ids);
+        add_import("getcwd", 0, &mut self.import_ids);
         add_import("time_monotonic", 0, &mut self.import_ids);
         add_import("time_monotonic_ns", 0, &mut self.import_ids);
         add_import("time_time", 0, &mut self.import_ids);
@@ -930,11 +955,14 @@ impl WasmBackend {
         add_import("bridge_unavailable", 2, &mut self.import_ids);
         add_import("db_query", 26, &mut self.import_ids);
         add_import("db_exec", 26, &mut self.import_ids);
+        add_import("db_query_obj", 3, &mut self.import_ids);
+        add_import("db_exec_obj", 3, &mut self.import_ids);
         add_import("file_open", 3, &mut self.import_ids);
         add_import("file_read", 3, &mut self.import_ids);
         add_import("file_readline", 3, &mut self.import_ids);
         add_import("file_readlines", 3, &mut self.import_ids);
         add_import("file_readinto", 3, &mut self.import_ids);
+        add_import("file_readinto1", 3, &mut self.import_ids);
         add_import("file_write", 3, &mut self.import_ids);
         add_import("file_writelines", 3, &mut self.import_ids);
         add_import("file_seek", 5, &mut self.import_ids);
@@ -949,8 +977,6 @@ impl WasmBackend {
         add_import("file_close", 2, &mut self.import_ids);
         add_import("file_detach", 2, &mut self.import_ids);
         add_import("file_reconfigure", 9, &mut self.import_ids);
-        // TODO(wasm-parity, owner:compiler, milestone:SL1, priority:P2, status:partial):
-        // add imports for remaining file methods (readinto1) once implemented.
 
         self.func_count = import_idx;
         let reloc_enabled = should_emit_relocs();
@@ -989,15 +1015,8 @@ impl WasmBackend {
         }
 
         let mut user_type_map: HashMap<usize, u32> = HashMap::new();
-        user_type_map.insert(0, 0);
-        user_type_map.insert(1, 2);
-        user_type_map.insert(2, 3);
-        user_type_map.insert(3, 5);
-        user_type_map.insert(4, 7);
-        user_type_map.insert(6, 9);
-        user_type_map.insert(7, 10);
-        // Types 0-28 are defined above; start new signatures after them.
-        let mut next_type_idx = 29u32;
+        // Types 0-29 are defined above; start new signatures after them.
+        let mut next_type_idx = 30u32;
         for func_ir in &ir.functions {
             if func_ir.name.ends_with("_poll") {
                 continue;
@@ -1028,11 +1047,23 @@ impl WasmBackend {
             }
         }
 
+        let mut call_indirect_type_map: HashMap<usize, u32> = HashMap::new();
+        for arity in 0..=max_call_indirect + 1 {
+            self.types.function(
+                std::iter::repeat_n(ValType::I64, arity),
+                std::iter::once(ValType::I64),
+            );
+            call_indirect_type_map.insert(arity, next_type_idx);
+            next_type_idx += 1;
+        }
+
         for arity in 0..=max_call_indirect {
-            let sig_idx = *user_type_map.get(&(arity + 1)).unwrap_or_else(|| {
+            let sig_idx = *call_indirect_type_map
+                .get(&(arity + 1))
+                .unwrap_or_else(|| {
                 panic!("missing call_indirect signature for arity {}", arity + 1)
             });
-            let callee_idx = *user_type_map
+            let callee_idx = *call_indirect_type_map
                 .get(&arity)
                 .unwrap_or_else(|| panic!("missing call_indirect callee type for arity {}", arity));
             self.funcs.function(sig_idx);
@@ -1060,17 +1091,8 @@ impl WasmBackend {
         self.func_count += 1;
 
         // Memory & Table (imported for shared-instance linking)
-        let memory_ty = MemoryType {
-            minimum: 18,
-            maximum: None,
-            memory64: false,
-            shared: false,
-        };
-        self.imports
-            .import("env", "memory", EntityType::Memory(memory_ty));
-        self.exports.export("molt_memory", ExportKind::Memory, 0);
 
-        let builtin_table_funcs: [(&str, &str, usize); 89] = [
+        let builtin_table_funcs: Vec<(&str, &str, usize)> = vec![
             ("molt_missing", "missing", 0),
             ("molt_repr_builtin", "repr_builtin", 1),
             ("molt_format_builtin", "format_builtin", 2),
@@ -1087,7 +1109,7 @@ impl WasmBackend {
             ("molt_sorted_builtin", "sorted_builtin", 3),
             ("molt_map_builtin", "map_builtin", 2),
             ("molt_filter_builtin", "filter_builtin", 2),
-            ("molt_zip_builtin", "zip_builtin", 1),
+            ("molt_zip_builtin", "zip_builtin", 2),
             ("molt_reversed_builtin", "reversed_builtin", 1),
             ("molt_getattr_builtin", "getattr_builtin", 3),
             ("molt_dir_builtin", "dir_builtin", 1),
@@ -1115,10 +1137,54 @@ impl WasmBackend {
             ("molt_getargv", "getargv", 0),
             ("molt_sys_version_info", "sys_version_info", 0),
             ("molt_sys_version", "sys_version", 0),
+            ("molt_sys_stdin", "sys_stdin", 0),
+            ("molt_sys_stdout", "sys_stdout", 0),
+            ("molt_sys_stderr", "sys_stderr", 0),
+            ("molt_sys_executable", "sys_executable", 0),
+            ("molt_sys_set_version_info", "sys_set_version_info", 6),
             ("molt_env_get", "env_get", 2),
+            ("molt_env_snapshot", "env_snapshot", 0),
+            ("molt_os_name", "os_name", 0),
+            ("molt_sys_platform", "sys_platform", 0),
             ("molt_errno_constants", "errno_constants", 0),
             ("molt_socket_constants", "socket_constants", 0),
+            ("molt_socket_has_ipv6", "socket_has_ipv6", 0),
+            ("molt_socket_new", "socket_new", 4),
+            ("molt_socket_close", "socket_close", 1),
+            ("molt_socket_drop", "socket_drop", 1),
+            ("molt_socket_clone", "socket_clone", 1),
+            ("molt_socket_fileno", "socket_fileno", 1),
+            ("molt_socket_gettimeout", "socket_gettimeout", 1),
+            ("molt_socket_settimeout", "socket_settimeout", 2),
+            ("molt_socket_setblocking", "socket_setblocking", 2),
+            ("molt_socket_getblocking", "socket_getblocking", 1),
+            ("molt_socket_bind", "socket_bind", 2),
+            ("molt_socket_listen", "socket_listen", 2),
+            ("molt_socket_accept", "socket_accept", 1),
+            ("molt_socket_connect", "socket_connect", 2),
+            ("molt_socket_connect_ex", "socket_connect_ex", 2),
+            ("molt_socket_recv", "socket_recv", 3),
+            ("molt_socket_recv_into", "socket_recv_into", 4),
+            ("molt_socket_send", "socket_send", 3),
+            ("molt_socket_sendall", "socket_sendall", 3),
+            ("molt_socket_sendto", "socket_sendto", 4),
+            ("molt_socket_recvfrom", "socket_recvfrom", 3),
+            ("molt_socket_shutdown", "socket_shutdown", 2),
+            ("molt_socket_getsockname", "socket_getsockname", 1),
+            ("molt_socket_getpeername", "socket_getpeername", 1),
+            ("molt_socket_setsockopt", "socket_setsockopt", 4),
+            ("molt_socket_getsockopt", "socket_getsockopt", 4),
+            ("molt_socket_detach", "socket_detach", 1),
+            ("molt_socketpair", "socketpair", 3),
+            ("molt_socket_getaddrinfo", "socket_getaddrinfo", 6),
+            ("molt_socket_getnameinfo", "socket_getnameinfo", 2),
+            ("molt_socket_gethostname", "socket_gethostname", 0),
+            ("molt_socket_getservbyname", "socket_getservbyname", 2),
+            ("molt_socket_getservbyport", "socket_getservbyport", 2),
+            ("molt_socket_inet_pton", "socket_inet_pton", 2),
+            ("molt_socket_inet_ntop", "socket_inet_ntop", 2),
             ("molt_getpid", "getpid", 0),
+            ("molt_getcwd", "getcwd", 0),
             ("molt_time_monotonic", "time_monotonic", 0),
             ("molt_time_monotonic_ns", "time_monotonic_ns", 0),
             ("molt_time_time", "time_time", 0),
@@ -1132,13 +1198,21 @@ impl WasmBackend {
             ("molt_asyncgen_hooks_get", "asyncgen_hooks_get", 0),
             ("molt_asyncgen_hooks_set", "asyncgen_hooks_set", 2),
             ("molt_asyncgen_locals", "asyncgen_locals", 1),
+            ("molt_gen_locals", "gen_locals", 1),
+            ("molt_asyncgen_shutdown", "asyncgen_shutdown", 0),
+            ("molt_code_new", "code_new", 4),
+            ("molt_compile_builtin", "compile_builtin", 6),
             ("molt_module_new", "module_new", 1),
             ("molt_function_set_builtin", "function_set_builtin", 1),
-            ("molt_exceptiongroup_match", "exceptiongroup_match", 3),
-            ("molt_exceptiongroup_combine", "exceptiongroup_combine", 2),
+            ("molt_exceptiongroup_match", "exceptiongroup_match", 2),
+            ("molt_exceptiongroup_combine", "exceptiongroup_combine", 1),
             ("molt_iter_checked", "iter", 1),
             ("molt_aiter", "aiter", 1),
             ("molt_io_wait_new", "io_wait_new", 3),
+            ("molt_future_cancel", "future_cancel", 1),
+            ("molt_future_cancel_msg", "future_cancel_msg", 2),
+            ("molt_future_cancel_clear", "future_cancel_clear", 1),
+            ("molt_block_on", "block_on", 1),
             ("molt_heapq_heapify", "heapq_heapify", 1),
             ("molt_heapq_heappush", "heapq_heappush", 2),
             ("molt_heapq_heappop", "heapq_heappop", 1),
@@ -1160,6 +1234,9 @@ impl WasmBackend {
             ("molt_stream_recv", "stream_recv", 1),
             ("molt_stream_close", "stream_close", 1),
             ("molt_stream_drop", "stream_drop", 1),
+            ("molt_weakref_register", "weakref_register", 3),
+            ("molt_weakref_get", "weakref_get", 1),
+            ("molt_weakref_drop", "weakref_drop", 1),
         ];
         let mut builtin_trampoline_funcs: Vec<(String, usize)> = Vec::new();
         for (runtime_name, _, _) in builtin_table_funcs.iter() {
@@ -1174,9 +1251,10 @@ impl WasmBackend {
                 builtin_wrapper_funcs.push(((*runtime_name).to_string(), *import_name, *arity));
             }
         }
-        let void_builtin_imports: HashSet<&str> = ["process_drop", "stream_close", "stream_drop"]
-            .into_iter()
-            .collect();
+        let void_builtin_imports: HashSet<&str> =
+            ["process_drop", "socket_drop", "stream_close", "stream_drop"]
+                .into_iter()
+                .collect();
         if builtin_trampoline_specs.len() != builtin_trampoline_funcs.len() {
             for name in builtin_trampoline_specs.keys() {
                 if !builtin_table_funcs
@@ -1479,6 +1557,24 @@ impl WasmBackend {
             });
             element_section = Some(section);
         }
+
+        let page_size: u64 = 64 * 1024;
+        let required_pages =
+            (self.data_offset as u64 + page_size - 1) / page_size;
+        let floor_pages = std::env::var("MOLT_WASM_MIN_PAGES")
+            .ok()
+            .and_then(|val| val.parse::<u64>().ok())
+            .unwrap_or(64);
+        let minimum_pages = required_pages.max(floor_pages);
+        let memory_ty = MemoryType {
+            minimum: minimum_pages,
+            maximum: None,
+            memory64: false,
+            shared: false,
+        };
+        self.imports
+            .import("env", "memory", EntityType::Memory(memory_ty));
+        self.exports.export("molt_memory", ExportKind::Memory, 0);
 
         self.module.section(&self.types);
         self.module.section(&self.imports);
@@ -3481,7 +3577,7 @@ impl WasmBackend {
                         let spec = locals[&args[1]];
                         func.instruction(&Instruction::LocalGet(val));
                         func.instruction(&Instruction::LocalGet(spec));
-                        emit_call(func, reloc_enabled, import_ids["string_format"]);
+                        emit_call(func, reloc_enabled, import_ids["format_builtin"]);
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
@@ -3985,6 +4081,18 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(base));
                         func.instruction(&Instruction::LocalGet(has_base));
                         emit_call(func, reloc_enabled, import_ids["int_from_obj"]);
+                        let res = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::LocalSet(res));
+                    }
+                    "complex_from_obj" => {
+                        let args = op.args.as_ref().unwrap();
+                        let val = locals[&args[0]];
+                        let imag = locals[&args[1]];
+                        let has_imag = locals[&args[2]];
+                        func.instruction(&Instruction::LocalGet(val));
+                        func.instruction(&Instruction::LocalGet(imag));
+                        func.instruction(&Instruction::LocalGet(has_imag));
+                        emit_call(func, reloc_enabled, import_ids["complex_from_obj"]);
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
@@ -5214,6 +5322,19 @@ impl WasmBackend {
                         emit_call(func, reloc_enabled, import_ids["asyncgen_locals_register"]);
                         func.instruction(&Instruction::Drop);
                     }
+                    "gen_locals_register" => {
+                        let args = op.args.as_ref().unwrap();
+                        let names_bits = locals[&args[0]];
+                        let offsets_bits = locals[&args[1]];
+                        let func_name = op.s_value.as_ref().unwrap();
+                        let table_slot = func_map[func_name];
+                        let table_idx = table_base + table_slot;
+                        emit_table_index_i64(func, reloc_enabled, table_idx);
+                        func.instruction(&Instruction::LocalGet(names_bits));
+                        func.instruction(&Instruction::LocalGet(offsets_bits));
+                        emit_call(func, reloc_enabled, import_ids["gen_locals_register"]);
+                        func.instruction(&Instruction::Drop);
+                    }
                     "code_slots_init" => {
                         let count = op.value.unwrap_or(0);
                         func.instruction(&Instruction::I64Const(count));
@@ -5433,9 +5554,10 @@ impl WasmBackend {
                     "alloc_task" => {
                         let total = op.value.unwrap_or(0);
                         let task_kind = op.task_kind.as_deref().unwrap_or("future");
-                        let (kind_bits, payload_base) = match task_kind {
-                            "generator" => (TASK_KIND_GENERATOR, GEN_CONTROL_SIZE),
-                            "future" => (TASK_KIND_FUTURE, 0),
+                        let (kind_bits, payload_base, mark_coroutine) = match task_kind {
+                            "generator" => (TASK_KIND_GENERATOR, GEN_CONTROL_SIZE, false),
+                            "future" => (TASK_KIND_FUTURE, 0, false),
+                            "coroutine" => (TASK_KIND_FUTURE, 0, true),
                             _ => panic!("unknown task kind: {task_kind}"),
                         };
                         let table_slot = func_map[op.s_value.as_ref().unwrap()];
@@ -5446,6 +5568,36 @@ impl WasmBackend {
                         emit_call(func, reloc_enabled, import_ids["task_new"]);
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
+                        if mark_coroutine {
+                            let tmp_ptr = locals["__molt_tmp0"];
+                            let tmp_addr = locals["__molt_tmp1"];
+                            let tmp_flags = locals["__molt_tmp2"];
+                            func.instruction(&Instruction::LocalGet(res));
+                            emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+                            func.instruction(&Instruction::I64ExtendI32U);
+                            func.instruction(&Instruction::LocalSet(tmp_ptr));
+                            func.instruction(&Instruction::LocalGet(tmp_ptr));
+                            func.instruction(&Instruction::I32WrapI64);
+                            func.instruction(&Instruction::I32Const(HEADER_FLAGS_OFFSET));
+                            func.instruction(&Instruction::I32Add);
+                            func.instruction(&Instruction::LocalSet(tmp_addr));
+                            func.instruction(&Instruction::LocalGet(tmp_addr));
+                            func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                                align: 3,
+                                offset: 0,
+                                memory_index: 0,
+                            }));
+                            func.instruction(&Instruction::I64Const(HEADER_COROUTINE_FLAG));
+                            func.instruction(&Instruction::I64Or);
+                            func.instruction(&Instruction::LocalSet(tmp_flags));
+                            func.instruction(&Instruction::LocalGet(tmp_addr));
+                            func.instruction(&Instruction::LocalGet(tmp_flags));
+                            func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
+                                align: 3,
+                                offset: 0,
+                                memory_index: 0,
+                            }));
+                        }
                         if let Some(args) = op.args.as_ref() {
                             for (i, name) in args.iter().enumerate() {
                                 let arg_local = locals[name];
@@ -5465,7 +5617,7 @@ impl WasmBackend {
                                 emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
                             }
                         }
-                        if task_kind == "future" {
+                        if matches!(task_kind, "future" | "coroutine") {
                             func.instruction(&Instruction::LocalGet(res));
                             emit_call(func, reloc_enabled, import_ids["cancel_token_get_current"]);
                             emit_call(func, reloc_enabled, import_ids["cancel_token_new"]);
@@ -5699,6 +5851,13 @@ impl WasmBackend {
                         emit_call(func, reloc_enabled, import_ids["file_close"]);
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                     }
+                    "file_flush" => {
+                        let args = op.args.as_ref().unwrap();
+                        let handle = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(handle));
+                        emit_call(func, reloc_enabled, import_ids["file_flush"]);
+                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                    }
                     "cancel_token_new" => {
                         let args = op.args.as_ref().unwrap();
                         let parent = locals[&args[0]];
@@ -5834,9 +5993,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::Return);
                     }
                     "ret_void" => {
-                        if type_idx == 0 || type_idx == 2 {
-                            func.instruction(&Instruction::I64Const(0));
-                        }
+                        func.instruction(&Instruction::I64Const(0));
                         func.instruction(&Instruction::Return);
                     }
                     "jump" => {
@@ -6578,9 +6735,7 @@ impl WasmBackend {
                             block_terminated = true;
                         }
                         "ret_void" => {
-                            if type_idx == 0 || type_idx == 2 {
-                                func.instruction(&Instruction::I64Const(0));
-                            }
+                            func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::Return);
                             block_terminated = true;
                         }
@@ -6949,9 +7104,7 @@ impl WasmBackend {
                             block_terminated = true;
                         }
                         "ret_void" => {
-                            if type_idx == 0 || type_idx == 2 {
-                                func.instruction(&Instruction::I64Const(0));
-                            }
+                            func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::Return);
                             block_terminated = true;
                         }
@@ -7400,7 +7553,11 @@ fn add_reloc_sections(
     let mut table_names: Vec<String> = Vec::new();
     for table_idx in 0..table_defined_count {
         let index = table_import_count + table_idx;
-        let name = format!("__molt_table_{index}");
+        let name = if index == 0 {
+            "molt_table".to_string()
+        } else {
+            format!("__molt_table_{index}")
+        };
         table_names.push(name);
         let name_ref = table_names.last().unwrap();
         sym_tab.table(0, index, Some(name_ref));

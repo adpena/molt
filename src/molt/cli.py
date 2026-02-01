@@ -5,6 +5,7 @@ import datetime as dt
 import hashlib
 import tempfile
 import json
+import keyword
 import os
 import platform
 import re
@@ -37,6 +38,9 @@ BuildProfile = Literal["dev", "release"]
 EmitMode = Literal["bin", "obj", "wasm"]
 STUB_MODULES = {"molt_buffer", "molt_cbor", "molt_json", "molt_msgpack"}
 STUB_PARENT_MODULES = {"molt"}
+ENTRY_OVERRIDE_ENV = "MOLT_ENTRY_MODULE"
+ENTRY_OVERRIDE_SPAWN = "multiprocessing.spawn"
+IMPORTER_MODULE_NAME = "_molt_importer"
 JSON_SCHEMA_VERSION = "1.0"
 CAPABILITY_PROFILES: dict[str, list[str]] = {
     "core": [],
@@ -92,6 +96,75 @@ def _fail(
     else:
         print(message, file=sys.stderr)
     return code
+
+
+def _write_importer_module(module_names: list[str], output_dir: Path) -> Path:
+    filtered_names = [name for name in module_names if name]
+
+    def needs_importlib(name: str) -> bool:
+        return any(
+            not part.isidentifier() or keyword.iskeyword(part)
+            for part in name.split(".")
+        )
+
+    importlib_needed = any(needs_importlib(name) for name in filtered_names)
+    lines = [
+        '"""Auto-generated import dispatcher for Molt-compiled modules."""',
+        "",
+        "from __future__ import annotations",
+        "",
+    ]
+    if importlib_needed:
+        lines.append("import importlib as _importlib")
+        lines.append("")
+    lines.extend(
+        [
+            "import sys as _sys",
+            "",
+            "def _resolve_name(name: str, package: str | None, level: int) -> str:",
+            "    if level <= 0:",
+            "        return name",
+            "    if not package:",
+            '        raise ImportError("relative import requires package")',
+            '    parts = package.split(".")',
+            "    if level > len(parts):",
+            '        raise ImportError("attempted relative import beyond top-level package")',
+            '    base = ".".join(parts[:-level])',
+            '    return f"{base}.{name}" if base else name',
+            "",
+            "def _molt_import(name, globals=None, locals=None, fromlist=(), level=0):",
+            "    if not name:",
+            '        raise ImportError("Empty module name")',
+            "    package = None",
+            "    if isinstance(globals, dict):",
+            '        package = globals.get("__package__") or globals.get("__name__")',
+            "    resolved = _resolve_name(name, package, level) if level else name",
+            '    modules = getattr(_sys, "modules", {})',
+            "    if resolved in modules:",
+            "        mod = modules[resolved]",
+            "        if fromlist:",
+            "            return mod",
+            '        top = resolved.split(".", 1)[0]',
+            "        return modules.get(top, mod)",
+        ]
+    )
+    for module_name in filtered_names:
+        lines.append(f"    if resolved == {module_name!r}:")
+        if needs_importlib(module_name):
+            lines.append("        _importlib.import_module(resolved)")
+        else:
+            lines.append(f"        import {module_name}")
+        lines.append("        mod = modules.get(resolved)")
+        lines.append("        if mod is None:")
+        lines.append("            raise ImportError(f\"No module named '{resolved}'\")")
+        lines.append("        if fromlist:")
+        lines.append("            return mod")
+        lines.append('        top = resolved.split(".", 1)[0]')
+        lines.append("        return modules.get(top, mod)")
+    lines.append("    raise ImportError(f\"No module named '{resolved}'\")")
+    path = output_dir / f"{IMPORTER_MODULE_NAME}.py"
+    path.write_text("\n".join(lines) + "\n")
+    return path
 
 
 def _collect_env_overrides(file_path: str) -> dict[str, str]:
@@ -254,6 +327,8 @@ def _module_name_from_path(path: Path, roots: list[Path], stdlib_root: Path) -> 
     if rel is not None:
         if rel.name == "__init__.py":
             rel = rel.parent
+            if not rel.parts:
+                return resolved.parent.name
         else:
             rel = rel.with_suffix("")
         if rel.parts:
@@ -279,6 +354,8 @@ def _module_name_from_path(path: Path, roots: list[Path], stdlib_root: Path) -> 
         rel = rel.parent
     else:
         rel = rel.with_suffix("")
+    if not rel.parts:
+        return resolved.parent.name
     return ".".join(rel.parts)
 
 
@@ -342,11 +419,14 @@ def _collect_namespace_parents(
 
 def _collect_imports(tree: ast.AST) -> list[str]:
     imports: list[str] = []
+    needs_typing = False
+    type_alias_cls = getattr(ast, "TypeAlias", None)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 imports.append(alias.name)
-        elif isinstance(node, ast.ImportFrom):
+            continue
+        if isinstance(node, ast.ImportFrom):
             if node.level:
                 continue
             if node.module:
@@ -354,6 +434,16 @@ def _collect_imports(tree: ast.AST) -> list[str]:
                 for alias in node.names:
                     if alias.name != "*":
                         imports.append(f"{node.module}.{alias.name}")
+            continue
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if getattr(node, "type_params", None):
+                needs_typing = True
+            continue
+        if type_alias_cls is not None and isinstance(node, type_alias_cls):
+            needs_typing = True
+            continue
+    if needs_typing:
+        imports.append("typing")
     return imports
 
 
@@ -466,6 +556,15 @@ def _stdlib_allowlist() -> set[str]:
             if entry:
                 allowlist.add(entry)
     return allowlist
+
+
+def _ensure_core_stdlib_modules(
+    module_graph: dict[str, Path], stdlib_root: Path
+) -> None:
+    for name in ("builtins", "sys"):
+        path = _resolve_module_path(name, [stdlib_root])
+        if path is not None:
+            module_graph.setdefault(name, path)
 
 
 def _discover_module_graph(
@@ -928,14 +1027,16 @@ def _ensure_runtime_wasm(
 ) -> bool:
     root = Path(__file__).resolve().parents[2]
     env = os.environ.copy()
-    flags = "-C link-arg=--import-memory -C link-arg=--import-table"
     if reloc:
         flags = (
-            f"{flags} -C link-arg=--relocatable -C link-arg=--no-gc-sections"
+            "-C link-arg=--relocatable -C link-arg=--no-gc-sections"
             " -C relocation-model=pic"
         )
     else:
-        flags = f"{flags} -C link-arg=--growable-table"
+        flags = (
+            "-C link-arg=--import-memory -C link-arg=--import-table"
+            " -C link-arg=--growable-table"
+        )
     rustflags = f"{env.get('RUSTFLAGS', '')} {flags}".strip()
     fingerprint = _runtime_fingerprint(
         root,
@@ -1130,6 +1231,10 @@ def _default_molt_cache() -> Path:
         else:
             base = Path.home() / ".cache"
     return base / "molt"
+
+
+def _cargo_target_root(project_root: Path) -> Path:
+    return _resolve_env_path("CARGO_TARGET_DIR", project_root / "target")
 
 
 def _default_build_root(output_base: str) -> Path:
@@ -1447,6 +1552,20 @@ def build(
         skip_modules=STUB_MODULES,
         stub_parents=stub_parents,
     )
+    _ensure_core_stdlib_modules(module_graph, stdlib_root)
+    spawn_enabled = False
+    spawn_path = _resolve_module_path(ENTRY_OVERRIDE_SPAWN, [stdlib_root])
+    if spawn_path is not None:
+        spawn_enabled = True
+        spawn_graph, _ = _discover_module_graph(
+            spawn_path,
+            roots,
+            module_roots,
+            skip_modules=STUB_MODULES,
+            stub_parents=stub_parents,
+        )
+        for name, path in spawn_graph.items():
+            module_graph.setdefault(name, path)
     namespace_parents = _collect_namespace_parents(module_graph, roots)
     if namespace_parents:
         stub_parents = stub_parents.union(namespace_parents)
@@ -1561,6 +1680,17 @@ def build(
     for stub in stub_parents:
         if stub != entry_module:
             module_graph.pop(stub, None)
+    if IMPORTER_MODULE_NAME not in module_graph:
+        importer_names = sorted(
+            name
+            for name in module_graph
+            if name not in {IMPORTER_MODULE_NAME, "builtins"}
+        )
+        importer_path = _write_importer_module(importer_names, artifacts_root)
+        module_graph[IMPORTER_MODULE_NAME] = importer_path
+    machinery_path = _resolve_module_path("importlib.machinery", [stdlib_root])
+    if machinery_path is not None:
+        module_graph.setdefault("importlib.machinery", machinery_path)
     known_modules = set(module_graph.keys())
     stdlib_allowlist = _stdlib_allowlist()
     stdlib_allowlist.update(STUB_MODULES)
@@ -1691,6 +1821,9 @@ def build(
                 json_output,
                 command="build",
             )
+        entry_override = entry_module
+        if module_name == entry_module and entry_module != "__main__":
+            entry_override = None
         gen = SimpleTIRGenerator(
             parse_codec=parse_codec,
             type_hint_policy=type_hint_policy,
@@ -1698,7 +1831,7 @@ def build(
             source_path=str(module_path),
             type_facts=type_facts,
             module_name=module_name,
-            entry_module=entry_module,
+            entry_module=entry_override,
             enable_phi=enable_phi,
             known_modules=known_modules,
             known_classes=known_classes,
@@ -1728,7 +1861,70 @@ def build(
         for class_name in gen.local_class_names:
             known_classes[class_name] = gen.classes[class_name]
 
-    entry_init = SimpleTIRGenerator.module_init_symbol(entry_module)
+    entry_path: Path | None = None
+    if entry_module != "__main__":
+        entry_path = module_graph.get(entry_module)
+        if entry_path is None:
+            return _fail(
+                f"Entry module not found: {entry_module}",
+                json_output,
+                command="build",
+            )
+        try:
+            source = entry_path.read_text()
+        except OSError as exc:
+            return _fail(
+                f"Failed to read module {entry_path}: {exc}",
+                json_output,
+                command="build",
+            )
+        try:
+            tree = ast.parse(source)
+        except SyntaxError as exc:
+            return _fail(
+                f"Syntax error in {entry_path}: {exc}",
+                json_output,
+                command="build",
+            )
+        main_gen = SimpleTIRGenerator(
+            parse_codec=parse_codec,
+            type_hint_policy=type_hint_policy,
+            fallback_policy=fallback_policy,
+            source_path=str(entry_path),
+            type_facts=type_facts,
+            type_facts_module=entry_module,
+            module_name="__main__",
+            module_spec_name=entry_module,
+            entry_module=None,
+            enable_phi=enable_phi,
+            known_modules=known_modules,
+            known_classes=known_classes,
+            stdlib_allowlist=stdlib_allowlist,
+            known_func_defaults=known_func_defaults,
+        )
+        try:
+            main_gen.visit(tree)
+        except CompatibilityError as exc:
+            return _fail(str(exc), json_output, command="build")
+        main_ir = main_gen.to_json()
+        main_init = SimpleTIRGenerator.module_init_symbol("__main__")
+        local_code_ids = dict(main_gen.func_code_ids)
+        if "molt_main" in local_code_ids:
+            local_code_ids[main_init] = local_code_ids.pop("molt_main")
+        local_id_to_symbol = {
+            code_id: symbol for symbol, code_id in local_code_ids.items()
+        }
+        try:
+            _remap_module_code_ops("__main__", main_ir["functions"], local_id_to_symbol)
+        except ValueError as exc:
+            return _fail(str(exc), json_output, command="build")
+        for func in main_ir["functions"]:
+            if func["name"] == "molt_main":
+                func["name"] = main_init
+        functions.extend(main_ir["functions"])
+
+    entry_init_name = "__main__" if entry_module != "__main__" else entry_module
+    entry_init = SimpleTIRGenerator.module_init_symbol(entry_init_name)
     py_version = sys.version_info
     version_release = py_version.releaselevel
     version_serial = py_version.serial
@@ -1769,7 +1965,6 @@ def build(
         },
         {"kind": "ret_void"},
     ]
-    entry_ops.insert(1, {"kind": "code_slots_init", "value": len(global_code_ids)})
     version_ops = [
         {"kind": "const", "value": py_version.major, "out": "v3"},
         {"kind": "const", "value": py_version.minor, "out": "v4"},
@@ -1785,8 +1980,241 @@ def build(
             "value": _register_global_code_id("molt_sys_set_version_info"),
         },
     ]
-    entry_ops[2:2] = version_ops
+    entry_ops[1:1] = version_ops
+    entry_call_idx = next(
+        idx
+        for idx, op in enumerate(entry_ops)
+        if op.get("kind") == "call" and op.get("s_value") == entry_init
+    )
+    used_vars: set[int] = set()
+    for op in entry_ops:
+        out = op.get("out")
+        if isinstance(out, str) and out.startswith("v"):
+            try:
+                used_vars.add(int(out[1:]))
+            except ValueError:
+                continue
+    next_var = max(used_vars, default=-1) + 1
+    if "sys" in module_graph:
+        sys_init = SimpleTIRGenerator.module_init_symbol("sys")
+        sys_out_var = f"v{next_var}"
+        next_var += 1
+        sys_init_op = {
+            "kind": "call",
+            "s_value": sys_init,
+            "args": [],
+            "out": sys_out_var,
+            "value": _register_global_code_id(sys_init),
+        }
+        entry_call_idx = next(
+            idx
+            for idx, op in enumerate(entry_ops)
+            if op.get("kind") == "call" and op.get("s_value") == entry_init
+        )
+        entry_ops[entry_call_idx:entry_call_idx] = [sys_init_op]
+
+    module_code_ops: list[dict[str, Any]] = []
+    for module_name in module_order:
+        module_path = module_graph[module_name]
+        init_symbol = SimpleTIRGenerator.module_init_symbol(module_name)
+        code_id = _register_global_code_id(init_symbol)
+        file_var = f"v{next_var}"
+        next_var += 1
+        name_var = f"v{next_var}"
+        next_var += 1
+        line_var = f"v{next_var}"
+        next_var += 1
+        linetable_var = f"v{next_var}"
+        next_var += 1
+        code_var = f"v{next_var}"
+        next_var += 1
+        module_code_ops.extend(
+            [
+                {
+                    "kind": "const_str",
+                    "s_value": module_path.as_posix(),
+                    "out": file_var,
+                },
+                {"kind": "const_str", "s_value": "<module>", "out": name_var},
+                {"kind": "const", "value": 1, "out": line_var},
+                {"kind": "const_none", "out": linetable_var},
+                {
+                    "kind": "code_new",
+                    "args": [file_var, name_var, line_var, linetable_var],
+                    "out": code_var,
+                },
+                {
+                    "kind": "code_slot_set",
+                    "value": code_id,
+                    "args": [code_var],
+                },
+            ]
+        )
+    if entry_module != "__main__" and entry_path is not None:
+        init_symbol = SimpleTIRGenerator.module_init_symbol("__main__")
+        code_id = _register_global_code_id(init_symbol)
+        file_var = f"v{next_var}"
+        next_var += 1
+        name_var = f"v{next_var}"
+        next_var += 1
+        line_var = f"v{next_var}"
+        next_var += 1
+        linetable_var = f"v{next_var}"
+        next_var += 1
+        code_var = f"v{next_var}"
+        next_var += 1
+        module_code_ops.extend(
+            [
+                {
+                    "kind": "const_str",
+                    "s_value": entry_path.as_posix(),
+                    "out": file_var,
+                },
+                {"kind": "const_str", "s_value": "<module>", "out": name_var},
+                {"kind": "const", "value": 1, "out": line_var},
+                {"kind": "const_none", "out": linetable_var},
+                {
+                    "kind": "code_new",
+                    "args": [file_var, name_var, line_var, linetable_var],
+                    "out": code_var,
+                },
+                {
+                    "kind": "code_slot_set",
+                    "value": code_id,
+                    "args": [code_var],
+                },
+            ]
+        )
+    entry_ops[entry_call_idx:entry_call_idx] = module_code_ops
+    if spawn_enabled:
+        spawn_init = SimpleTIRGenerator.module_init_symbol(ENTRY_OVERRIDE_SPAWN)
+        spawn_code_id = _register_global_code_id(spawn_init)
+        entry_call_idx = next(
+            idx
+            for idx, op in enumerate(entry_ops)
+            if op.get("kind") == "call" and op.get("s_value") == entry_init
+        )
+        entry_code_id = _register_global_code_id(entry_init)
+        env_key_var = f"v{next_var}"
+        next_var += 1
+        env_default_var = f"v{next_var}"
+        next_var += 1
+        env_value_var = f"v{next_var}"
+        next_var += 1
+        spawn_name_var = f"v{next_var}"
+        next_var += 1
+        spawn_eq_var = f"v{next_var}"
+        next_var += 1
+        spawn_out_var = f"v{next_var}"
+        next_var += 1
+        entry_out_var = f"v{next_var}"
+        next_var += 1
+        entry_ops[entry_call_idx : entry_call_idx + 1] = [
+            {"kind": "const_str", "s_value": ENTRY_OVERRIDE_ENV, "out": env_key_var},
+            {"kind": "const_str", "s_value": "", "out": env_default_var},
+            {
+                "kind": "env_get",
+                "args": [env_key_var, env_default_var],
+                "out": env_value_var,
+            },
+            {
+                "kind": "const_str",
+                "s_value": ENTRY_OVERRIDE_SPAWN,
+                "out": spawn_name_var,
+            },
+            {
+                "kind": "string_eq",
+                "args": [env_value_var, spawn_name_var],
+                "out": spawn_eq_var,
+            },
+            {"kind": "if", "args": [spawn_eq_var]},
+            {
+                "kind": "call",
+                "s_value": spawn_init,
+                "args": [],
+                "out": spawn_out_var,
+                "value": spawn_code_id,
+            },
+            {"kind": "else"},
+            {
+                "kind": "call",
+                "s_value": entry_init,
+                "args": [],
+                "out": entry_out_var,
+                "value": entry_code_id,
+            },
+            {"kind": "end_if"},
+        ]
+    entry_ops.insert(1, {"kind": "code_slots_init", "value": len(global_code_ids)})
     functions.append({"name": "molt_main", "params": [], "ops": entry_ops})
+    isolate_bootstrap_ops = [
+        {"kind": "code_slots_init", "value": len(global_code_ids)},
+        *version_ops,
+        *module_code_ops,
+        {"kind": "ret_void"},
+    ]
+    functions.append(
+        {"name": "molt_isolate_bootstrap", "params": [], "ops": isolate_bootstrap_ops}
+    )
+    import_ops: list[dict[str, Any]] = []
+    import_var_idx = 0
+
+    def _import_var() -> str:
+        nonlocal import_var_idx
+        name = f"v{import_var_idx}"
+        import_var_idx += 1
+        return name
+
+    name_var = "p0"
+    module_var = _import_var()
+    import_ops.append(
+        {"kind": "module_cache_get", "args": [name_var], "out": module_var}
+    )
+    none_var = _import_var()
+    import_ops.append({"kind": "const_none", "out": none_var})
+    is_none_var = _import_var()
+    import_ops.append(
+        {"kind": "is", "args": [module_var, none_var], "out": is_none_var}
+    )
+    import_ops.append({"kind": "if", "args": [is_none_var]})
+    if module_order:
+        for idx, module_name in enumerate(module_order):
+            match_name_var = _import_var()
+            import_ops.append(
+                {"kind": "const_str", "s_value": module_name, "out": match_name_var}
+            )
+            match_var = _import_var()
+            import_ops.append(
+                {
+                    "kind": "string_eq",
+                    "args": [name_var, match_name_var],
+                    "out": match_var,
+                }
+            )
+            import_ops.append({"kind": "if", "args": [match_var]})
+            init_symbol = SimpleTIRGenerator.module_init_symbol(module_name)
+            init_out = _import_var()
+            import_ops.append(
+                {
+                    "kind": "call",
+                    "s_value": init_symbol,
+                    "args": [],
+                    "out": init_out,
+                    "value": _register_global_code_id(init_symbol),
+                }
+            )
+            if idx < len(module_order) - 1:
+                import_ops.append({"kind": "else"})
+        import_ops.extend({"kind": "end_if"} for _ in module_order)
+    import_ops.append({"kind": "end_if"})
+    loaded_var = _import_var()
+    import_ops.append(
+        {"kind": "module_cache_get", "args": [name_var], "out": loaded_var}
+    )
+    import_ops.append({"kind": "ret", "args": [loaded_var]})
+    functions.append(
+        {"name": "molt_isolate_import", "params": ["p0"], "ops": import_ops}
+    )
     ir = {"functions": functions}
     if emit_ir_path is not None:
         try:
@@ -1808,16 +2236,13 @@ def build(
             return _fail("Runtime wasm build failed", json_output, command="build")
     elif emit_mode == "bin":
         profile_dir = _cargo_profile_dir(profile)
+        target_root = _cargo_target_root(project_root)
         if target_triple:
             runtime_lib = (
-                project_root
-                / "target"
-                / target_triple
-                / profile_dir
-                / "libmolt_runtime.a"
+                target_root / target_triple / profile_dir / "libmolt_runtime.a"
             )
         else:
-            runtime_lib = project_root / "target" / profile_dir / "libmolt_runtime.a"
+            runtime_lib = target_root / profile_dir / "libmolt_runtime.a"
         if not _ensure_runtime_lib(
             runtime_lib,
             target_triple,
@@ -2131,6 +2556,10 @@ extern void molt_set_argv(int argc, const char** argv);
 extern void molt_set_argv_utf16(int argc, const wchar_t** argv);
 #endif
 extern void molt_main();
+extern unsigned long long molt_exception_pending();
+extern unsigned long long molt_exception_last();
+extern unsigned long long molt_raise(unsigned long long exc_bits);
+extern void molt_dec_ref(unsigned long long bits);
 extern int molt_json_parse_scalar(const char* ptr, long len, unsigned long long* out);
 extern int molt_msgpack_parse_scalar(const char* ptr, long len, unsigned long long* out);
 extern int molt_cbor_parse_scalar(const char* ptr, long len, unsigned long long* out);
@@ -2142,17 +2571,33 @@ extern void molt_spawn(void* task);
 extern void* molt_chan_new(unsigned long long capacity);
 extern long molt_chan_send(void* chan, long val);
 extern long molt_chan_recv(void* chan);
+extern long molt_chan_try_send(void* chan, long val);
+extern long molt_chan_try_recv(void* chan);
+extern long molt_chan_send_blocking(void* chan, long val);
+extern long molt_chan_recv_blocking(void* chan);
 extern void molt_print_obj(unsigned long long val);
 extern void molt_profile_dump();
 /* MOLT_TRUSTED_SNIPPET */
 /* MOLT_CAPABILITIES_SNIPPET */
 
-static void molt_finish() {
+static int molt_finish() {
+    unsigned long long pending = molt_exception_pending();
+    const char* debug_exc = getenv("MOLT_DEBUG_MAIN_EXCEPTION");
+    if (debug_exc != NULL && debug_exc[0] != '\\0' && strcmp(debug_exc, "0") != 0) {
+        fprintf(stderr, "molt main finish pending=%d\\n", pending != 0);
+    }
+    if (pending != 0) {
+        unsigned long long exc = molt_exception_last();
+        molt_raise(exc);
+        molt_dec_ref(exc);
+        return 1;
+    }
     const char* profile = getenv("MOLT_PROFILE");
     if (profile != NULL && profile[0] != '\\0' && strcmp(profile, "0") != 0) {
         molt_profile_dump();
     }
     molt_runtime_shutdown();
+    return 0;
 }
 
 #ifdef _WIN32
@@ -2162,8 +2607,7 @@ int wmain(int argc, wchar_t** argv) {
     molt_runtime_init();
     molt_set_argv_utf16(argc, (const wchar_t**)argv);
     molt_main();
-    molt_finish();
-    return 0;
+    return molt_finish();
 }
 #else
 int main(int argc, char** argv) {
@@ -2172,8 +2616,7 @@ int main(int argc, char** argv) {
     molt_runtime_init();
     molt_set_argv(argc, (const char**)argv);
     molt_main();
-    molt_finish();
-    return 0;
+    return molt_finish();
 }
 #endif
 """
@@ -2196,16 +2639,13 @@ int main(int argc, char** argv) {
         output_binary.parent.mkdir(parents=True, exist_ok=True)
     if runtime_lib is None:
         profile_dir = _cargo_profile_dir(profile)
+        target_root = _cargo_target_root(project_root)
         if target_triple:
             runtime_lib = (
-                project_root
-                / "target"
-                / target_triple
-                / profile_dir
-                / "libmolt_runtime.a"
+                target_root / target_triple / profile_dir / "libmolt_runtime.a"
             )
         else:
-            runtime_lib = project_root / "target" / profile_dir / "libmolt_runtime.a"
+            runtime_lib = target_root / profile_dir / "libmolt_runtime.a"
 
     cc = os.environ.get("CC", "clang")
     link_cmd = shlex.split(cc)
@@ -2723,7 +3163,7 @@ def doctor(
                     advice=["Ensure uv.lock exists and is readable"],
                 )
 
-    runtime_lib = root / "target" / "release" / "libmolt_runtime.a"
+    runtime_lib = _cargo_target_root(root) / "release" / "libmolt_runtime.a"
     record(
         "molt-runtime",
         runtime_lib.exists(),

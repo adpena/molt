@@ -14,6 +14,7 @@
 - 0800 What Molt Is Willing To Break: `docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md`
 - STATUS: `docs/spec/STATUS.md`
 - `docs/ROADMAP.md`
+- `docs/ROADMAP_90_DAYS.md`
 
 ## Architecture and Runtime
 - 0002 Architecture: `docs/spec/areas/core/0002-architecture.md`

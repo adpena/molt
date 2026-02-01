@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Iterable, Iterator, cast
+from typing import Any, Iterable, Iterator, TYPE_CHECKING, cast
 
 import collections.abc as abc
 import builtins as _builtins
 import keyword as _keyword
 import operator as _operator
+
 
 __all__ = ["abc", "Counter", "defaultdict", "deque", "namedtuple"]
 

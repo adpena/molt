@@ -12,9 +12,11 @@ __all__ = [
     "print_exception",
     "print_tb",
     "print_exc",
+    "TracebackException",
 ]
 
 # TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): add full traceback extraction + chaining details.
+# TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): implement full FrameSummary/TracebackException fields and rich formatting per PEP 657.
 
 
 def _exc_name(exc_type: Any, value: Any) -> str:
@@ -92,6 +94,93 @@ def _format_tb_entry(tb: Any) -> str:
         return "<traceback>\n"
     filename, lineno, name = info
     return f'  File "{filename}", line {lineno}, in {name}\n'
+
+
+def _get_source_line(filename: str, lineno: int) -> str:
+    try:
+        with open(filename, "r") as handle:  # noqa: PTH123 - trusted mode in diff tests
+            for idx, line in enumerate(handle, 1):
+                if idx == lineno:
+                    return line.rstrip("\n")
+    except Exception:
+        return ""
+    return ""
+
+
+def _infer_col_offsets(line: str) -> tuple[int, int]:
+    if not line:
+        return 0, 0
+    stripped = line.lstrip()
+    indent = len(line) - len(stripped)
+    if stripped.startswith("return "):
+        col = indent + len("return ")
+    else:
+        col = indent
+    end = len(line)
+    return col, end
+
+
+class FrameSummary:
+    def __init__(
+        self,
+        *,
+        filename: str,
+        lineno: int,
+        end_lineno: int,
+        colno: int,
+        end_colno: int,
+        name: str,
+        line: str,
+    ) -> None:
+        self.filename = filename
+        self.lineno = lineno
+        self.end_lineno = end_lineno
+        self.colno = colno
+        self.end_colno = end_colno
+        self.name = name
+        self.line = line
+
+
+def _frame_summary_from_tb(tb: Any) -> FrameSummary:
+    frame = getattr(tb, "tb_frame", None)
+    lineno = getattr(tb, "tb_lineno", None)
+    if lineno is None:
+        lineno = 0
+    filename = "<unknown>"
+    name = "<module>"
+    if frame is not None:
+        code = getattr(frame, "f_code", None)
+        if code is not None:
+            filename = getattr(code, "co_filename", filename)
+            name = getattr(code, "co_name", name)
+    line = _get_source_line(str(filename), int(lineno)) if lineno else ""
+    colno, end_colno = _infer_col_offsets(line)
+    return FrameSummary(
+        filename=str(filename),
+        lineno=int(lineno),
+        end_lineno=int(lineno),
+        colno=colno,
+        end_colno=end_colno,
+        name=str(name),
+        line=line,
+    )
+
+
+class TracebackException:
+    def __init__(self, exc: BaseException | None, stack: list[FrameSummary]) -> None:
+        self.stack = stack
+        self.exc_type = type(exc) if exc is not None else None
+        self._exc = exc
+
+    @classmethod
+    def from_exception(cls, exc: BaseException) -> "TracebackException":
+        tb = getattr(exc, "__traceback__", None)
+        stack: list[FrameSummary] = []
+        while tb is not None:
+            stack.append(_frame_summary_from_tb(tb))
+            tb = getattr(tb, "tb_next", None)
+        stack.reverse()
+        return cls(exc, stack)
 
 
 def format_tb(tb: Any, limit: int | None = None) -> list[str]:

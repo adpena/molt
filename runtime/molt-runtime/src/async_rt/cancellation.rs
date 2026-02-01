@@ -3,22 +3,34 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Mutex;
+use std::sync::OnceLock;
 
 use crate::{
     alloc_exception_from_class_bits, alloc_tuple, dec_ref_bits, exception_type_bits_from_name,
     header_from_obj_ptr, obj_from_bits, raise_exception, record_exception, runtime_state,
-    task_exception_depth_drop, task_exception_handler_stack_drop, task_exception_stack_drop,
-    task_last_exception_drop, ExceptionSentinel, MoltHeader, MoltObject, PtrSlot,
-    HEADER_FLAG_BLOCK_ON, HEADER_FLAG_CANCEL_PENDING, HEADER_FLAG_SPAWN_RETAIN,
+    seq_vec_ref, string_obj_to_owned, task_exception_baseline_drop, task_exception_depth_drop,
+    task_exception_handler_stack_drop, task_exception_stack_drop, task_last_exception_drop,
+    type_name, ExceptionSentinel, MoltHeader, MoltObject, PtrSlot, HEADER_FLAG_BLOCK_ON,
+    HEADER_FLAG_CANCEL_PENDING, HEADER_FLAG_SPAWN_RETAIN, TYPE_ID_TUPLE,
 };
 
-use super::scheduler::{await_waiter_clear, wake_task_ptr, CURRENT_TASK};
+use super::scheduler::{await_waiter_clear, wake_task_ptr};
 use super::spawned_task_dec;
 
 pub(crate) struct CancelTokenEntry {
     pub(crate) parent: u64,
     pub(crate) cancelled: bool,
     pub(crate) refs: u64,
+}
+
+fn trace_cancel_msg() -> bool {
+    static TRACE: OnceLock<bool> = OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_CANCEL_MSG").as_deref() == Ok("1"))
+}
+
+fn trace_cancel_token() -> bool {
+    static TRACE: OnceLock<bool> = OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_CANCEL_TOKEN").as_deref() == Ok("1"))
 }
 
 pub(crate) fn default_cancel_tokens() -> HashMap<u64, CancelTokenEntry> {
@@ -71,6 +83,14 @@ pub(crate) fn task_cancel_message_set(_py: &PyToken<'_>, task_ptr: *mut u8, msg_
         return;
     }
     let msg_obj = obj_from_bits(msg_bits);
+    if trace_cancel_msg() {
+        let msg_desc =
+            string_obj_to_owned(msg_obj).unwrap_or_else(|| type_name(_py, msg_obj).to_string());
+        eprintln!(
+            "molt cancel msg set task=0x{:x} msg={}",
+            task_ptr as usize, msg_desc
+        );
+    }
     let args_ptr = if msg_obj.is_none() {
         alloc_tuple(_py, &[])
     } else {
@@ -117,6 +137,9 @@ pub(crate) fn set_current_token(_py: &PyToken<'_>, id: u64) -> u64 {
         cell.set(id);
         prev
     });
+    if trace_cancel_token() {
+        eprintln!("molt cancel token set_current prev={} new={}", prev, id);
+    }
     release_token(_py, prev);
     prev
 }
@@ -148,6 +171,12 @@ pub(crate) fn register_task_token(_py: &PyToken<'_>, task_ptr: *mut u8, token: u
     let mut map = task_tokens(_py).lock().unwrap();
     if let Some(old) = map.insert(PtrSlot(task_ptr), token) {
         release_token(_py, old);
+    }
+    if trace_cancel_token() {
+        eprintln!(
+            "molt cancel token register task=0x{:x} token={}",
+            task_ptr as usize, token
+        );
     }
     retain_token(_py, token);
 }
@@ -181,6 +210,7 @@ pub(crate) fn clear_task_token(_py: &PyToken<'_>, task_ptr: *mut u8) {
     task_exception_handler_stack_drop(_py, task_ptr);
     task_exception_stack_drop(_py, task_ptr);
     task_exception_depth_drop(_py, task_ptr);
+    task_exception_baseline_drop(_py, task_ptr);
     await_waiter_clear(_py, task_ptr);
 }
 
@@ -223,6 +253,23 @@ pub(crate) fn raise_cancelled_with_message<T: ExceptionSentinel>(
     task_ptr: *mut u8,
 ) -> T {
     if let Some(args_bits) = task_cancel_message_args(_py, task_ptr) {
+        if trace_cancel_msg() {
+            let msg_desc = obj_from_bits(args_bits)
+                .as_ptr()
+                .filter(|ptr| unsafe { crate::object_type_id(*ptr) == TYPE_ID_TUPLE })
+                .and_then(|ptr| {
+                    let elems = unsafe { seq_vec_ref(ptr) };
+                    elems.first().map(|bits| obj_from_bits(*bits))
+                })
+                .map(|obj| {
+                    string_obj_to_owned(obj).unwrap_or_else(|| type_name(_py, obj).to_string())
+                })
+                .unwrap_or_else(|| "<none>".to_string());
+            eprintln!(
+                "molt cancel raise task=0x{:x} msg={}",
+                task_ptr as usize, msg_desc
+            );
+        }
         let class_bits = exception_type_bits_from_name(_py, "CancelledError");
         let ptr = alloc_exception_from_class_bits(_py, class_bits, args_bits);
         if !ptr.is_null() {
@@ -284,18 +331,34 @@ pub(crate) fn token_is_cancelled(_py: &PyToken<'_>, id: u64) -> bool {
 pub unsafe extern "C" fn molt_cancel_token_new(parent_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         cancel_tokens(_py);
-        let parent_id = match token_id_from_bits(parent_bits) {
-            Some(0) => current_token_id(),
-            Some(id) => id,
-            None => {
+        let parent_id = {
+            let parent_obj = obj_from_bits(parent_bits);
+            if parent_obj.is_none() {
+                current_token_id()
+            } else if let Some(val) = parent_obj.as_int() {
+                if val == -1 {
+                    0
+                } else if val >= 0 {
+                    val as u64
+                } else {
+                    return raise_exception::<_>(
+                        _py,
+                        "ValueError",
+                        "cancel token parent must be >= 0 or -1",
+                    );
+                }
+            } else {
                 return raise_exception::<_>(
                     _py,
                     "TypeError",
                     "cancel token parent must be int or None",
-                )
+                );
             }
         };
         let id = NEXT_CANCEL_TOKEN_ID.fetch_add(1, AtomicOrdering::Relaxed);
+        if trace_cancel_token() {
+            eprintln!("molt cancel token new id={} parent={}", id, parent_id);
+        }
         let mut map = cancel_tokens(_py).lock().unwrap();
         map.insert(
             id,
@@ -380,12 +443,6 @@ pub unsafe extern "C" fn molt_cancel_token_set_current(token_bits: u64) -> u64 {
             None => return raise_exception::<_>(_py, "TypeError", "cancel token id must be int"),
         };
         let prev = set_current_token(_py, id);
-        CURRENT_TASK.with(|cell| {
-            let task = cell.get();
-            if !task.is_null() {
-                register_task_token(_py, task, id);
-            }
-        });
         MoltObject::from_int(prev as i64).bits()
     })
 }

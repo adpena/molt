@@ -11,6 +11,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TextIO
 
 SUPER_SAMPLES = 10
 
@@ -102,10 +103,27 @@ def _enable_line_buffering() -> None:
             continue
 
 
-def _run_with_pty(cmd: list[str], env: dict[str, str]) -> _RunResult:
+def _log_write(log: TextIO | None, text: str) -> None:
+    if log is None:
+        return
+    log.write(text)
+    log.flush()
+
+
+def _log_command(log: TextIO | None, cmd: list[str]) -> None:
+    if log is None:
+        return
+    ts = dt.datetime.now(dt.timezone.utc).isoformat()
+    _log_write(log, f"\n# {ts} $ {' '.join(cmd)}\n")
+
+
+def _run_with_pty(
+    cmd: list[str], env: dict[str, str], log: TextIO | None
+) -> _RunResult:
     import os
     import pty
 
+    _log_command(log, cmd)
     master_fd, slave_fd = pty.openpty()
     try:
         proc = subprocess.Popen(
@@ -129,6 +147,7 @@ def _run_with_pty(cmd: list[str], env: dict[str, str]) -> _RunResult:
             else:
                 sys.stdout.write(data.decode(errors="replace"))
                 sys.stdout.flush()
+            _log_write(log, data.decode(errors="replace"))
     except KeyboardInterrupt:
         proc.terminate()
         raise
@@ -139,12 +158,40 @@ def _run_with_pty(cmd: list[str], env: dict[str, str]) -> _RunResult:
 
 
 def _run_cmd(
-    cmd: list[str], env: dict[str, str], *, capture: bool, tty: bool
+    cmd: list[str],
+    env: dict[str, str],
+    *,
+    capture: bool,
+    tty: bool,
+    log: TextIO | None,
 ) -> _RunResult:
     if tty and not capture and os.name == "posix":
-        return _run_with_pty(cmd, env)
-    res = subprocess.run(cmd, capture_output=capture, text=True, env=env)
-    return _RunResult(res.returncode, res.stdout or "", res.stderr or "")
+        return _run_with_pty(cmd, env, log)
+    if log is None and not capture:
+        res = subprocess.run(cmd, text=True, env=env)
+        return _RunResult(res.returncode)
+    if log is None and capture:
+        res = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        return _RunResult(res.returncode, res.stdout or "", res.stderr or "")
+
+    _log_command(log, cmd)
+    proc = subprocess.Popen(
+        cmd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    output: list[str] = []
+    if proc.stdout is not None:
+        for line in proc.stdout:
+            if not capture:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+            _log_write(log, line)
+            output.append(line)
+    return _RunResult(proc.wait(), "".join(output), "")
 
 
 def _git_rev() -> str | None:
@@ -171,6 +218,13 @@ def _base_env() -> dict[str, str]:
     return env
 
 
+def _open_log(log_path: Path | None) -> TextIO | None:
+    if log_path is None:
+        return None
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    return log_path.open("a", encoding="utf-8", buffering=1)
+
+
 def _python_executable() -> str:
     exe = Path(sys.executable)
     if exe.exists():
@@ -187,15 +241,19 @@ def _append_rustflags(env: dict[str, str], flags: str) -> None:
     env["RUSTFLAGS"] = joined
 
 
-def build_runtime_wasm(*, reloc: bool, output: Path, tty: bool) -> bool:
+def build_runtime_wasm(
+    *, reloc: bool, output: Path, tty: bool, log: TextIO | None
+) -> bool:
     env = os.environ.copy()
-    base_flags = "-C link-arg=--import-memory -C link-arg=--import-table"
-    if not reloc:
-        base_flags = f"{base_flags} -C link-arg=--growable-table"
     if reloc:
         base_flags = (
-            f"{base_flags} -C link-arg=--relocatable -C link-arg=--no-gc-sections"
+            "-C link-arg=--relocatable -C link-arg=--no-gc-sections"
             " -C relocation-model=pic"
+        )
+    else:
+        base_flags = (
+            "-C link-arg=--import-memory -C link-arg=--import-table"
+            " -C link-arg=--growable-table"
         )
     _append_rustflags(env, base_flags)
     res = _run_cmd(
@@ -211,6 +269,7 @@ def build_runtime_wasm(*, reloc: bool, output: Path, tty: bool) -> bool:
         env=env,
         capture=not tty,
         tty=tty,
+        log=log,
     )
     if res.returncode != 0:
         if res.stderr or res.stdout:
@@ -238,6 +297,7 @@ def _link_wasm(
     input_path: Path,
     *,
     require_linked: bool,
+    log: TextIO | None,
 ) -> Path | None:
     if not _want_linked():
         return None
@@ -261,7 +321,7 @@ def _link_wasm(
     if LINKED_WASM.exists():
         LINKED_WASM.unlink()
     runtime_path = RUNTIME_WASM_RELOC if RUNTIME_WASM_RELOC.exists() else RUNTIME_WASM
-    res = subprocess.run(
+    res = _run_cmd(
         [
             sys.executable,
             "tools/wasm_link.py",
@@ -273,8 +333,9 @@ def _link_wasm(
             str(LINKED_WASM),
         ],
         env=env,
-        capture_output=True,
-        text=True,
+        capture=True,
+        tty=False,
+        log=log,
     )
     if res.returncode != 0:
         err = res.stderr.strip() or res.stdout.strip()
@@ -301,7 +362,13 @@ def _link_wasm(
 
 
 def _build_wasm_output(
-    python_exe: str, env: dict[str, str], output_path: Path, script: str, *, tty: bool
+    python_exe: str,
+    env: dict[str, str],
+    output_path: Path,
+    script: str,
+    *,
+    tty: bool,
+    log: TextIO | None,
 ) -> float | None:
     extra_args = MOLT_ARGS_BY_BENCH.get(script, [])
     start = time.perf_counter()
@@ -322,6 +389,7 @@ def _build_wasm_output(
         env=env,
         capture=not tty,
         tty=tty,
+        log=log,
     )
     build_s = time.perf_counter() - start
     if build_res.returncode != 0:
@@ -339,9 +407,20 @@ def _build_wasm_output(
 
 
 def prepare_wasm_binary(
-    script: str, *, require_linked: bool, tty: bool
+    script: str,
+    *,
+    require_linked: bool,
+    tty: bool,
+    log: TextIO | None,
+    keep_temp: bool,
 ) -> WasmBinary | None:
     temp_dir = tempfile.TemporaryDirectory(prefix="molt-wasm-bench-")
+    if keep_temp:
+        # Prevent TemporaryDirectory cleanup on GC so artifacts stick around.
+        try:
+            temp_dir._finalizer.detach()  # type: ignore[attr-defined]
+        except Exception:
+            pass
     output_path = Path(temp_dir.name) / "output.wasm"
     base_env = _base_env()
     base_env["MOLT_WASM_PATH"] = str(output_path)
@@ -354,13 +433,14 @@ def prepare_wasm_binary(
     else:
         env.pop("MOLT_WASM_LINK", None)
 
-    build_s = _build_wasm_output(python_exe, env, output_path, script, tty=tty)
+    build_s = _build_wasm_output(python_exe, env, output_path, script, tty=tty, log=log)
     if build_s is None:
-        temp_dir.cleanup()
+        if not keep_temp:
+            temp_dir.cleanup()
         return None
 
     linked = (
-        _link_wasm(env, output_path, require_linked=require_linked)
+        _link_wasm(env, output_path, require_linked=require_linked, log=log)
         if want_linked
         else None
     )
@@ -370,7 +450,8 @@ def prepare_wasm_binary(
             f"WASM link required but unavailable for {script}.",
             file=sys.stderr,
         )
-        temp_dir.cleanup()
+        if not keep_temp:
+            temp_dir.cleanup()
         raise RuntimeError("linked wasm required")
     if want_linked and not linked_used:
         print(
@@ -379,9 +460,12 @@ def prepare_wasm_binary(
         )
         env = base_env.copy()
         env.pop("MOLT_WASM_LINK", None)
-        build_s = _build_wasm_output(python_exe, env, output_path, script, tty=tty)
+        build_s = _build_wasm_output(
+            python_exe, env, output_path, script, tty=tty, log=log
+        )
         if build_s is None:
-            temp_dir.cleanup()
+            if not keep_temp:
+                temp_dir.cleanup()
             return None
 
     wasm_path = linked if linked_used else output_path
@@ -393,14 +477,11 @@ def prepare_wasm_binary(
     return WasmBinary(run_env, temp_dir, build_s, wasm_size, linked_used)
 
 
-def measure_wasm_run(run_env: dict[str, str]) -> float | None:
+def measure_wasm_run(
+    run_env: dict[str, str], runner_cmd: list[str], *, log: TextIO | None
+) -> float | None:
     start = time.perf_counter()
-    run_res = subprocess.run(
-        ["node", "run_wasm.js"],
-        env=run_env,
-        capture_output=True,
-        text=True,
-    )
+    run_res = _run_cmd(runner_cmd, run_env, capture=True, tty=False, log=log)
     end = time.perf_counter()
     if run_res.returncode != 0:
         err = run_res.stderr.strip() or run_res.stdout.strip()
@@ -411,14 +492,44 @@ def measure_wasm_run(run_env: dict[str, str]) -> float | None:
 
 
 def collect_samples(
-    wasm: WasmBinary, samples: int, warmup: int
+    wasm: WasmBinary,
+    samples: int,
+    warmup: int,
+    runner_cmd: list[str],
+    *,
+    log: TextIO | None,
 ) -> tuple[list[float], bool]:
     for _ in range(warmup):
-        if measure_wasm_run(wasm.run_env) is None:
+        if measure_wasm_run(wasm.run_env, runner_cmd, log=log) is None:
             return [], False
-    runs = [measure_wasm_run(wasm.run_env) for _ in range(samples)]
+    runs = [measure_wasm_run(wasm.run_env, runner_cmd, log=log) for _ in range(samples)]
     valid = [t for t in runs if t is not None]
     return valid, bool(valid)
+
+
+def _resolve_runner(runner: str, *, tty: bool, log: TextIO | None) -> list[str]:
+    if runner == "node":
+        return ["node", "run_wasm.js"]
+    if runner != "wasmtime":
+        raise ValueError(f"Unsupported wasm runner: {runner}")
+    path = shutil.which("molt-wasm-host")
+    if path:
+        return [path]
+    target = Path("target") / "release" / "molt-wasm-host"
+    if not target.exists():
+        res = _run_cmd(
+            ["cargo", "build", "--release", "--package", "molt-wasm-host"],
+            env=os.environ.copy(),
+            capture=not tty,
+            tty=tty,
+            log=log,
+        )
+        if res.returncode != 0:
+            err = (res.stderr or res.stdout).strip()
+            raise RuntimeError(f"Failed to build molt-wasm-host: {err}")
+    if not target.exists():
+        raise RuntimeError("molt-wasm-host binary not found after build")
+    return [str(target)]
 
 
 def summarize_samples(samples: list[float]) -> dict[str, float]:
@@ -444,7 +555,10 @@ def bench_results(
     super_run: bool,
     *,
     require_linked: bool,
+    runner_cmd: list[str],
     tty: bool,
+    log: TextIO | None,
+    keep_temp: bool,
 ) -> dict[str, dict]:
     data: dict[str, dict] = {}
     print(f"{'Benchmark':<30} | {'WASM (s)':<12} | {'WASM size':<10}")
@@ -458,17 +572,30 @@ def bench_results(
         ok = False
         wasm_samples: list[float] = []
         wasm_binary = prepare_wasm_binary(
-            script, require_linked=require_linked, tty=tty
+            script,
+            require_linked=require_linked,
+            tty=tty,
+            log=log,
+            keep_temp=keep_temp,
         )
         if wasm_binary is not None:
             try:
-                wasm_samples, ok = collect_samples(wasm_binary, samples, warmup)
+                wasm_samples, ok = collect_samples(
+                    wasm_binary, samples, warmup, runner_cmd, log=log
+                )
                 wasm_time = statistics.mean(wasm_samples) if ok else 0.0
                 wasm_size = wasm_binary.size_kb
                 wasm_build = wasm_binary.build_s
                 linked_used = wasm_binary.linked_used
             finally:
-                wasm_binary.temp_dir.cleanup()
+                if keep_temp:
+                    print(
+                        "Keeping wasm artifacts in "
+                        f"{wasm_binary.temp_dir.name} (MOLT_WASM_KEEP=1)",
+                        file=sys.stderr,
+                    )
+                else:
+                    wasm_binary.temp_dir.cleanup()
         time_cell = f"{wasm_time:<12.4f}" if ok else f"{'n/a':<12}"
         print(f"{name:<30} | {time_cell} | {wasm_size:>8.1f} KB")
         data[name] = {
@@ -493,6 +620,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run Molt WASM benchmark suite.")
     parser.add_argument("--json-out", type=Path, default=None)
     parser.add_argument("--samples", type=int, default=None)
+    parser.add_argument(
+        "--runner",
+        choices=["node", "wasmtime"],
+        default=os.environ.get("MOLT_WASM_RUNNER", "node"),
+        help="Runner to execute wasm benchmarks (default: node).",
+    )
     parser.add_argument(
         "--warmup",
         type=int,
@@ -520,6 +653,17 @@ def main() -> None:
         action="store_true",
         help="Attach subprocesses to a pseudo-TTY for immediate output.",
     )
+    parser.add_argument(
+        "--log-file",
+        type=Path,
+        default=None,
+        help="Append subprocess output to a log file (also honors MOLT_WASM_LOG).",
+    )
+    parser.add_argument(
+        "--keep-artifacts",
+        action="store_true",
+        help="Keep per-benchmark wasm temp dirs (also honors MOLT_WASM_KEEP=1).",
+    )
     args = parser.parse_args()
 
     if args.linked or args.require_linked:
@@ -530,17 +674,38 @@ def main() -> None:
         parser.error("--super cannot be combined with --samples")
 
     use_tty = args.tty or os.environ.get("MOLT_TTY") == "1"
+    log_path = args.log_file
+    if log_path is None:
+        env_log = os.environ.get("MOLT_WASM_LOG")
+        if env_log:
+            log_path = Path(env_log)
+    log_file = _open_log(log_path)
+    if log_file is not None:
+        _log_write(
+            log_file,
+            f"# Molt wasm bench log {dt.datetime.now(dt.timezone.utc).isoformat()}\n",
+        )
+    keep_temp = args.keep_artifacts or os.environ.get("MOLT_WASM_KEEP") == "1"
+    if args.keep_artifacts:
+        os.environ["MOLT_WASM_KEEP"] = "1"
 
-    if not build_runtime_wasm(reloc=False, output=RUNTIME_WASM, tty=use_tty):
+    runner_cmd = _resolve_runner(args.runner, tty=use_tty, log=log_file)
+    if not build_runtime_wasm(
+        reloc=False, output=RUNTIME_WASM, tty=use_tty, log=log_file
+    ):
+        if log_file is not None:
+            log_file.close()
         sys.exit(1)
     if _want_linked() and not build_runtime_wasm(
-        reloc=True, output=RUNTIME_WASM_RELOC, tty=use_tty
+        reloc=True, output=RUNTIME_WASM_RELOC, tty=use_tty, log=log_file
     ):
         if args.require_linked:
             print(
                 "Relocatable runtime build failed; linked output is required.",
                 file=sys.stderr,
             )
+            if log_file is not None:
+                log_file.close()
             sys.exit(1)
         print(
             "Relocatable runtime build failed; falling back to non-linked wasm runs.",
@@ -561,10 +726,15 @@ def main() -> None:
             warmup,
             args.super,
             require_linked=args.require_linked,
+            runner_cmd=runner_cmd,
             tty=use_tty,
+            log=log_file,
+            keep_temp=keep_temp,
         )
     except RuntimeError as exc:
         print(f"WASM bench aborted: {exc}", file=sys.stderr)
+        if log_file is not None:
+            log_file.close()
         sys.exit(1)
 
     load_avg = None
@@ -595,6 +765,8 @@ def main() -> None:
         timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d_%H%M%S")
         json_out = Path("bench/results") / f"bench_wasm_{timestamp}.json"
     write_json(json_out, payload)
+    if log_file is not None:
+        log_file.close()
 
 
 if __name__ == "__main__":

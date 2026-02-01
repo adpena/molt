@@ -152,6 +152,20 @@ def _configure_runtime_lib(lib: ctypes.CDLL) -> None:
         lib, "molt_chan_send", [ctypes.c_void_p, ctypes.c_longlong], ctypes.c_longlong
     )
     _bind_required(lib, "molt_chan_recv", [ctypes.c_void_p], ctypes.c_longlong)
+    _bind_required(
+        lib,
+        "molt_chan_try_send",
+        [ctypes.c_void_p, ctypes.c_longlong],
+        ctypes.c_longlong,
+    )
+    _bind_required(lib, "molt_chan_try_recv", [ctypes.c_void_p], ctypes.c_longlong)
+    _bind_required(
+        lib,
+        "molt_chan_send_blocking",
+        [ctypes.c_void_p, ctypes.c_longlong],
+        ctypes.c_longlong,
+    )
+    _bind_required(lib, "molt_chan_recv_blocking", [ctypes.c_void_p], ctypes.c_longlong)
     _bind_required(lib, "molt_chan_drop", [ctypes.c_void_p], None)
     _bind_required(lib, "molt_spawn", [ctypes.c_void_p], None)
     _bind_required(lib, "molt_cancel_token_new", [ctypes.c_longlong], ctypes.c_longlong)
@@ -374,6 +388,8 @@ def molt_cancel_token_new(parent: int | None = None) -> int:
     _ensure_cancel_root()
     if parent is None:
         parent_id = _CANCEL_CURRENT
+    elif parent == -1:
+        parent_id = 0
     else:
         parent_id = parent
     if parent_id < 0:
@@ -597,6 +613,22 @@ def molt_chan_send(chan: Any, val: Any) -> int:
     raise TypeError("molt_chan_send expected a channel handle")
 
 
+def molt_chan_try_send(chan: Any, val: Any) -> int:
+    if _use_runtime_concurrency():
+        lib = load_runtime()
+        if lib is not None:
+            chan_ptr = _chan_ptr(chan)
+            if chan_ptr is not None:
+                return int(lib.molt_chan_try_send(chan_ptr, int(val)))
+    if isinstance(chan, queue.Queue):
+        try:
+            chan.put_nowait(val)
+            return 0
+        except queue.Full:
+            return _PENDING
+    raise TypeError("molt_chan_try_send expected a channel handle")
+
+
 def molt_chan_recv(chan: Any) -> Any:
     if _use_runtime_concurrency():
         lib = load_runtime()
@@ -615,6 +647,46 @@ def molt_chan_recv(chan: Any) -> Any:
         except queue.Empty:
             return _PENDING
     raise TypeError("molt_chan_recv expected a channel handle")
+
+
+def molt_chan_try_recv(chan: Any) -> Any:
+    if _use_runtime_concurrency():
+        lib = load_runtime()
+        if lib is not None:
+            chan_ptr = _chan_ptr(chan)
+            if chan_ptr is not None:
+                return int(lib.molt_chan_try_recv(chan_ptr))
+    if isinstance(chan, queue.Queue):
+        try:
+            return chan.get_nowait()
+        except queue.Empty:
+            return _PENDING
+    raise TypeError("molt_chan_try_recv expected a channel handle")
+
+
+def molt_chan_send_blocking(chan: Any, val: Any) -> int:
+    if _use_runtime_concurrency():
+        lib = load_runtime()
+        if lib is not None:
+            chan_ptr = _chan_ptr(chan)
+            if chan_ptr is not None:
+                return int(lib.molt_chan_send_blocking(chan_ptr, int(val)))
+    if isinstance(chan, queue.Queue):
+        chan.put(val)
+        return 0
+    raise TypeError("molt_chan_send_blocking expected a channel handle")
+
+
+def molt_chan_recv_blocking(chan: Any) -> Any:
+    if _use_runtime_concurrency():
+        lib = load_runtime()
+        if lib is not None:
+            chan_ptr = _chan_ptr(chan)
+            if chan_ptr is not None:
+                return int(lib.molt_chan_recv_blocking(chan_ptr))
+    if isinstance(chan, queue.Queue):
+        return chan.get()
+    raise TypeError("molt_chan_recv_blocking expected a channel handle")
 
 
 def molt_chan_drop(chan: Any) -> None:
@@ -1081,6 +1153,10 @@ def install() -> None:
     setattr(builtins, "molt_chan_new", molt_chan_new)
     setattr(builtins, "molt_chan_send", molt_chan_send)
     setattr(builtins, "molt_chan_recv", molt_chan_recv)
+    setattr(builtins, "molt_chan_try_send", molt_chan_try_send)
+    setattr(builtins, "molt_chan_try_recv", molt_chan_try_recv)
+    setattr(builtins, "molt_chan_send_blocking", molt_chan_send_blocking)
+    setattr(builtins, "molt_chan_recv_blocking", molt_chan_recv_blocking)
     setattr(builtins, "molt_chan_drop", molt_chan_drop)
     setattr(builtins, "molt_block_on", molt_block_on)
     setattr(builtins, "molt_async_sleep", molt_async_sleep)

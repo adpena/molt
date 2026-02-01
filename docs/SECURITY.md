@@ -42,6 +42,10 @@ We use `tools/runtime_safety.py` to run:
 - **Miri**: To verify the soundness of our (minimal) Rust `unsafe` blocks.
 - **Fuzzing**: Targeted `cargo fuzz` runs for high-risk components (string parsers, codec decoders).
 
+### Supply-chain audits (recommended before release)
+- **Rust**: `cargo audit`, `cargo deny check`
+- **Python**: `uv run pip-audit`
+
 ## 4. Reporting a Vulnerability
 
 If you find a security issue in Molt, please do not open a public issue.
