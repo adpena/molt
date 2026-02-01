@@ -15,19 +15,59 @@ def _load_intrinsic(name: str) -> Any | None:
     return getattr(_builtins, name, None)
 
 
+_MOLT_ENV_GET_RAW = _load_intrinsic("_molt_env_get_raw")
+_MOLT_OS_NAME = _load_intrinsic("_molt_os_name")
+_MOLT_PATH_EXISTS = _load_intrinsic("_molt_path_exists")
+_MOLT_PATH_UNLINK = _load_intrinsic("_molt_path_unlink")
+_MOLT_GETCWD = _load_intrinsic("_molt_getcwd")
+
+
+def _should_load_py_os() -> bool:
+    return (
+        _MOLT_ENV_GET_RAW is None
+        and _MOLT_OS_NAME is None
+        and _MOLT_PATH_EXISTS is None
+        and _MOLT_PATH_UNLINK is None
+        and _MOLT_GETCWD is None
+    )
+
+
 def _load_py_os() -> Any:
+    if not _should_load_py_os():
+        return None
     try:
         import importlib as _importlib
 
-        return _importlib.import_module("os")
+        module = _importlib.import_module("os")
     except Exception:
         return None
+    if module is None:
+        return None
+    if getattr(module, "__name__", None) == __name__:
+        return None
+    return module
 
 
 _py_os = _load_py_os()
-_MOLT_PATH_EXISTS = _load_intrinsic("_molt_path_exists")
-_MOLT_PATH_UNLINK = _load_intrinsic("_molt_path_unlink")
-_MOLT_ENV_GET_RAW = _load_intrinsic("_molt_env_get_raw")
+
+
+def _resolve_os_name() -> str:
+    if callable(_MOLT_OS_NAME):
+        try:
+            value = _MOLT_OS_NAME()
+            if isinstance(value, str):
+                return value
+        except Exception:
+            pass
+    if _py_os is not None:
+        try:
+            value = getattr(_py_os, "name", None)
+            if isinstance(value, str):
+                return value
+        except Exception:
+            pass
+    return "posix"
+
 
 __all__ = [
     "name",
@@ -41,6 +81,7 @@ __all__ = [
     "SEEK_SET",
     "SEEK_CUR",
     "SEEK_END",
+    "getcwd",
     "getpid",
     "getenv",
     "unlink",
@@ -49,14 +90,20 @@ __all__ = [
 ]
 
 
-name = getattr(_py_os, "name", "posix") if _py_os is not None else "posix"
-sep = "/"
-pathsep = ":"
-linesep = "\n"
+name = _resolve_os_name()
+if name == "nt":
+    sep = "\\"
+    pathsep = ";"
+    linesep = "\r\n"
+    altsep = "/"
+else:
+    sep = "/"
+    pathsep = ":"
+    linesep = "\n"
+    altsep = None
 curdir = "."
 pardir = ".."
 extsep = "."
-altsep = None
 SEEK_SET = 0
 SEEK_CUR = 1
 SEEK_END = 2
@@ -71,6 +118,9 @@ if TYPE_CHECKING:
 
     def _molt_getpid() -> int:
         return 0
+
+    def _molt_getcwd() -> str:
+        return curdir
 
     def _molt_path_exists(path: Any) -> bool:
         return False
@@ -178,6 +228,7 @@ class _Path:
     curdir = curdir
     pardir = pardir
     extsep = extsep
+    altsep = altsep
 
     @staticmethod
     def join(
@@ -327,6 +378,22 @@ def getpid() -> int:
     if _py_os is not None:
         return _py_os.getpid()
     return 0
+
+
+def getcwd() -> str:
+    _require_cap("fs.read")
+    if callable(_MOLT_GETCWD):
+        return _MOLT_GETCWD()
+    if _py_os is not None:
+        try:
+            return _py_os.getcwd()
+        except Exception:
+            pass
+    for key in ("PWD", "CD", "CWD"):
+        value = _molt_env_get(key, None)
+        if isinstance(value, str) and value:
+            return value
+    return curdir
 
 
 def getenv(key: str, default: Any = None) -> Any:

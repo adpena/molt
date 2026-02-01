@@ -83,6 +83,13 @@ def run_uv(
         subprocess.check_call(cmd, cwd=ROOT, env=run_env)
 
 
+def _apply_dev_trusted(env: dict[str, str]) -> None:
+    raw = env.get("MOLT_DEV_TRUSTED", "").strip().lower()
+    if raw and raw in {"0", "false", "no", "off"}:
+        return
+    env.setdefault("MOLT_TRUSTED", "1")
+
+
 def main() -> None:
     cmd = sys.argv[1:] or ["help"]
     use_tty = "--tty" in cmd or os.environ.get("MOLT_TTY") == "1"
@@ -101,6 +108,7 @@ def main() -> None:
         )
     elif cmd[0] == "test":
         env = os.environ.copy()
+        _apply_dev_trusted(env)
         src_path = str(ROOT / "src")
         existing = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = (

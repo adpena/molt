@@ -5,6 +5,8 @@ use crate::{
     object_type_id, string_obj_to_owned, to_f64, MemoryViewFormat, MemoryViewFormatKind,
     MoltObject, PyToken, TYPE_ID_BYTEARRAY, TYPE_ID_BYTES, TYPE_ID_MEMORYVIEW,
 };
+#[cfg(target_arch = "wasm32")]
+use crate::libc_compat as libc;
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 

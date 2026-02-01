@@ -51,7 +51,8 @@ Planned milestones:
 - TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): stream print writes to avoid building intermediate output strings for large payloads.
 - TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): pre-size `dict.fromkeys` using iterable length hints to reduce rehashing.
 - TODO(perf, owner:compiler, milestone:RT2, priority:P2, status:planned): use i32 locals for wasm pointer temporaries in the backend to trim wrap/extend churn.
-- TODO(wasm-host, owner:runtime, milestone:RT3, priority:P2, status:planned): unblock wasmtime execution/profiling by aligning host imports/memory/table + WASI config, then add a wasmtime harness to compare perf vs Node.
+- Wasmtime host runner is available (`molt-wasm-host`) with shared memory/table wiring and a `tools/bench_wasm.py --runner wasmtime` path for perf comparison against Node.
+- Implemented: Wasmtime DB host delivery is non-blocking via `molt_db_host_poll` with stream semantics + cancellation checks; parity coverage still pending.
 
 ## Type Coverage
 - memoryview (Partial): multi-dimensional `format`/`shape`/`strides`/`nbytes` + `cast`, tuple scalar indexing, 1D slicing/assignment for bytes/bytearray-backed views.
@@ -72,7 +73,9 @@ Planned milestones:
 - Implemented: variadic call trampoline lifts compiled call-arity ceiling beyond 12 (native + wasm).
 - Implemented: PEP 649 lazy annotations (`__annotate__` + lazy `__annotations__` cache for module/class/function; VALUE/STRING formats).
 - Implemented: PEP 585 generic aliases for builtin containers (`list`/`dict`/`tuple`/`set`/`frozenset`/`type`) with `__origin__`/`__args__`.
+- Implemented: PEP 584 dict union (`|`, `|=`), PEP 604 union types (`X | Y`), and zip(strict) (PEP 618).
 - TODO(type-coverage, owner:runtime, milestone:TC3, priority:P2, status:partial): derive `types.GenericAlias.__parameters__` from `TypeVar`/`ParamSpec`/`TypeVarTuple` once typing metadata lands.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): implement full PEP 695 type params (bounds/constraints/defaults, ParamSpec/TypeVarTuple, alias metadata).
 - TODO(type-coverage, owner:runtime, milestone:TC2, priority:P1, status:partial): implement `str.isdigit` and start/end parameters for `str.startswith`/`str.endswith`.
 - Implemented: lambda lowering with closures, defaults, and kw-only/varargs support.
 - Implemented: `sorted()` builtin with stable ordering + key/reverse (core ordering types).
@@ -83,15 +86,12 @@ Planned milestones:
 - Implemented: dynamic call binding for bound methods/descriptors with builtin defaults + expanded class decorator parity coverage.
 - Implemented: print keyword-argument parity tests (`sep`, `end`, `file`, `flush`) for native + wasm.
 - Implemented: compiled `sys.argv` initialization for native + wasm harness; TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P2, status:partial): filesystem-encoding + surrogateescape decoding parity.
+- Implemented: `sys.executable` override via `MOLT_SYS_EXECUTABLE` (diff harness pins it to the host Python to avoid recursive `-c` subprocess spawns).
 - TODO(introspection, owner:runtime, milestone:TC2, priority:P2, status:partial): fill out code object fields (`co_varnames`, arg counts, `co_linetable`) for parity.
 - TODO(introspection, owner:runtime, milestone:TC2, priority:P2, status:partial): implement `sys._getframe` for compiled runtimes.
 - TODO(introspection, owner:frontend, milestone:TC2, priority:P2, status:partial): implement `globals`/`locals`/`vars`/`dir` builtins with correct scope semantics + callable parity.
-- TODO(import-system, owner:frontend, milestone:TC3, priority:P2, status:partial): split `__main__` and importable entry modules when the entry module is imported elsewhere.
-- TODO(import-system, owner:frontend, milestone:TC3, priority:P1, status:partial): populate module `__spec__` for compiled modules.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): importlib.machinery pending parity
 - TODO(stdlib-compat, owner:runtime, milestone:TC1, priority:P2, status:partial): bootstrap `sys.stdout` so print(file=None) always honors the sys stream.
-- TODO(wasm-parity, owner:runtime, milestone:TC1, priority:P2, status:partial): wasm `str_from_obj` should invoke `__str__` for non-primitive objects.
-- TODO(wasm-parity, owner:runtime, milestone:TC1, priority:P2, status:partial): wasm `string_format`/`format()` need full format-spec parsing/rendering (non-empty specs currently error).
-- TODO(wasm-parity, owner:runtime, milestone:SL2, priority:P2, status:partial): add a host-backed `getpid` or document the wasm placeholder semantics.
 - TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P2, status:missing): expose file handle `flush()` and wire wasm parity for file flushing.
 - TODO(tests, owner:frontend, milestone:TC2, priority:P2, status:planned): KW_NAMES error-path coverage (duplicate keywords, positional-only violations) in differential tests.
 - TODO(tests, owner:runtime, milestone:TC2, priority:P2, status:planned): security-focused attribute access tests (descriptor exceptions, `__getattr__` recursion traps).
@@ -127,8 +127,7 @@ Checklist:
 - File object API: `read`, `readinto`, `write`, `writelines`, `readline(s)`, `seek`, `tell`, `truncate`, `flush`, `close`, `fileno`, `isatty`, `readable`, `writable`, `seekable`, `name`, `mode`, `closed`, `__iter__`/`__next__` (partial: core methods/attrs implemented; Windows fileno/isatty pending).
 - Context manager: `__enter__`/`__exit__` semantics, close-on-exit, exception propagation, idempotent close (done).
 - Capability gating: enforce `fs.read`/`fs.write` and error surfaces per operation (done).
-- Native + WASM parity: file APIs and error messages aligned across hosts (pending: wasm host hooks for remaining file methods + open parity tests).
-  (TODO(wasm-parity, owner:runtime, milestone:SL1, priority:P1, status:partial): extend wasm host hooks for remaining file methods (readinto1) and parity coverage.)
+- Native + WASM parity: file APIs and error messages aligned across hosts (pending: open parity tests + wasm host parity coverage).
   (TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P2, status:partial): align file handle type names in error/AttributeError messages with CPython _io.* wrappers.)
 
 Test plan (sign-off):
@@ -147,10 +146,12 @@ Sign-off criteria:
 - Partial: importable `builtins` module binding supported builtins (attribute gaps tracked in the matrix).
   (TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): fill `builtins` module attribute coverage.)
 - Partial: asyncio shim (`run`/`sleep` lowered to runtime with delay/result semantics; `wait`/`wait_for`/`shield` + basic `gather` supported; `set_event_loop`/`new_event_loop` stubs); loop/task APIs still pending (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): asyncio loop/task API parity).
-- Partial: shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pickle` (protocol 0 only), `pprint`, `string`, `typing`, `sys`, `os`, `json`, `asyncio`, `threading`, `weakref`, `bisect`, `heapq`, `functools`, `itertools`, and `collections` (capability-gated env access).
+- Partial: shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pickle` (protocol 0 only), `pprint`, `string`, `typing`, `sys`, `os`, `json`, `asyncio`, `shlex` (`quote`), `threading`, `weakref`, `bisect`, `heapq`, `functools`, `itertools`, and `collections` (capability-gated env access).
   (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): advance partial shims to parity per matrix.)
-- Partial: capability-gated `socket`/`select`/`selectors` backed by runtime sockets + io_poller (native-only); wasm host parity pending.
-  (TODO(wasm-parity, owner:runtime, milestone:RT2, priority:P0, status:missing): implement wasm socket + io_poller host bindings with capability enforcement.)
+- TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P3, status:partial): process model integration for `multiprocessing`/`subprocess`/`concurrent.futures` (spawn-based partial; IPC + lifecycle parity pending).
+- TODO(runtime, owner:runtime, milestone:RT3, priority:P1, status:divergent): Fork/forkserver currently map to spawn semantics; implement true fork support.
+- Partial: capability-gated `socket`/`select`/`selectors` backed by runtime sockets + io_poller (native + wasmtime host implemented); Node/WASI host bindings now wired in `run_wasm.js`, browser host supports WebSocket-backed stream sockets + io_poller readiness while UDP/listen/server sockets remain unsupported.
+  (TODO(wasm-parity, owner:runtime, milestone:RT2, priority:P0, status:partial): expand browser socket coverage (UDP/listen/server sockets) + parity tests.)
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): `json` shim parity (Encoder/Decoder classes, JSONDecodeError details, runtime fast-path parser).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): expand `time` module surface (timezone/tzname/struct_time/get_clock_info/process_time) + deterministic clock policy.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): `weakref` shim supports `ref` cleared on `gc.collect`; add GC-aware semantics + full weakref API.
@@ -160,12 +161,12 @@ Sign-off criteria:
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): fill out `types` shims (TracebackType, FrameType, FunctionType, MethodType, etc).
 - TODO(tests, owner:runtime, milestone:SL1, priority:P1, status:partial): expand native+wasm codec parity coverage for binary/floats/large ints/tagged values + deeper container shapes.
 - TODO(tests, owner:stdlib, milestone:SL1, priority:P2, status:planned): wasm parity coverage for core stdlib shims (`heapq`, `itertools`, `functools`, `bisect`, `collections`).
-- Import-only allowlist expanded for `base64`, `binascii`, `unittest`, `site`, `sysconfig`, `collections.abc`, `importlib`, and `importlib.util`; planned additions: `importlib.metadata`, `html`, `html.parser`, `http.cookies`, `http.client`, `http.server`, `ipaddress`, `mimetypes`, `socketserver`, `wsgiref`, `xml`, `email.policy`, `email.message`, `email.parser`, `email.utils`, `email.header`, `urllib.parse`, `urllib.request`, `urllib.error`, `urllib.robotparser`, `logging.config`, `logging.handlers`, `cgi`, and `zlib` (API parity pending; TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): add import-only stubs + tests).
+- Import-only allowlist expanded for `base64`, `binascii`, `unittest`, `site`, `sysconfig`, `collections.abc`, `importlib`, and `importlib.util`; planned additions now cover the remaining CPython 3.12+ stdlib surface (see `docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md` Section 3.0b), including `annotationlib`, `codecs`, `compileall`, `configparser`, `difflib`, `dis`, `encodings`, `tokenize`, `trace`, `xmlrpc`, and `zipapp` (API parity pending; TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): add import-only stubs + tests).
 
 ## Compatibility Matrix Execution Plan (Next 8 Steps)
 1) Done: TC2 iterable unpacking + starred targets in assignment/for targets (tests + spec/status updates).
 2) TC2: remaining StopIteration semantics (sync/async) with differential coverage (StopIteration.value propagation done).
-3) TC2: builtin conversions (`bool`, `str`, `complex`) with hook/error parity.
+3) TC2: builtin conversions (`bool`, `str`) with hook/error parity.
    TODO(stdlib-compat, owner:runtime, milestone:TC2, priority:P2, status:missing): `str(bytes, encoding, errors)` decoding parity for bytes-like inputs.
 4) Done: TC2 async comprehensions lowering + runtime support with parity tests.
 5) TC2/TC3: reflection builtins, CPython `hash` parity (`PYTHONHASHSEED`) + `format`/rounding; update tests + docs.
@@ -184,12 +185,12 @@ Sign-off criteria:
 ## DB
 - Partial: `molt-db` pool skeleton (bounded, sync), feature-gated async pool primitive, SQLite connector (native-only; wasm parity pending), and async Postgres connector with statement cache; `molt_worker` exposes `db_query`/`db_exec` for SQLite + Postgres (TODO(wasm-db-parity, owner:runtime, milestone:DB2, priority:P1, status:partial): wasm DB parity).
 - Top priority: wasm parity for DB connectors before expanding DB adapters or query-builder ergonomics.
-- TODO(wasm-db-parity, owner:runtime, milestone:DB2, priority:P1, status:missing): ship wasm DB client shims + parity tests; Node/WASI host adapter now forwards `db_query`/`db_exec` to `molt-worker` via `run_wasm.js`.
+- Implemented: wasm DB client shims + parity test (`molt_db` async helper) consume response streams and surface bytes/Arrow IPC; Node/WASI host adapter forwards `db_query`/`db_exec` to `molt-worker` via `run_wasm.js`.
 
 ## Parity Cluster Plan (Next)
 - 1) Async runtime core: Task/Future APIs, scheduler, contextvars, and cancellation injection into awaits/I/O. Key files: `runtime/molt-runtime/src/lib.rs`, `src/molt/stdlib/asyncio.py`, `src/molt/stdlib/contextvars.py`, `docs/spec/STATUS.md`. Outcome: asyncio loop/task parity for core patterns. Validation: new unit + differential tests; `tools/dev.py test`.
 - 2) Capability-gated async I/O: sockets/SSL/selectors/time primitives with cancellation propagation. Key files: `docs/spec/areas/web/0900_HTTP_SERVER_RUNTIME.md`, `docs/spec/areas/runtime/0505_IO_ASYNC_AND_CONNECTORS.md`, `runtime/molt-runtime/src/lib.rs`. Outcome: async I/O primitives usable by DB/HTTP stacks. Validation: I/O unit tests + fuzzed parser tests + wasm/native parity checks.
-- TODO(runtime, owner:runtime, milestone:RT2, priority:P2, status:missing): add host-level websocket connect hook for `molt_ws_connect` and wire capability enforcement for production socket usage.
+- TODO(runtime, owner:runtime, milestone:RT2, priority:P2, status:missing): add native host-level websocket connect hook for `molt_ws_connect` and wire capability enforcement for production socket usage.
 - 3) DB semantics expansion: implement `db_exec`, transactions, typed param mapping; add multirange + array lower-bound decoding. Key files: `runtime/molt-db/src/postgres.rs`, `runtime/molt-worker/src/main.rs`, `docs/spec/areas/db/0700_MOLT_DB_LAYER_VISION.md`, `docs/spec/areas/db/0701_ASYNC_PG_POOL_AND_PROTOCOL.md`, `docs/spec/areas/db/0915_MOLT_DB_IPC_CONTRACT.md`. Outcome: production-ready DB calls with explicit write gating and full type decoding. Validation: dockerized Postgres integration + cancellation tests.
 - 4) WASM DB parity: define WIT/host calls for DB access and implement wasm connectors in molt-db. Key files: `wit/molt-runtime.wit`, `runtime/molt-runtime/src/lib.rs`, `runtime/molt-db/src/lib.rs`, `docs/spec/areas/wasm/0400_WASM_PORTABLE_ABI.md`. Outcome: wasm builds can execute DB queries behind capability gates. Validation: wasm harness tests + native/wasm result parity.
 - 5) Framework-agnostic adapters: finalize `molt_db_adapter` + helper APIs for Django/Flask/FastAPI with shared payload builders. Key files: `src/molt_db_adapter/`, `docs/spec/areas/db/0702_QUERY_BUILDER_AND_DJANGO_ADAPTER.md`, `demo/`, `tests/`. Outcome: same IPC contract across frameworks with consistent error mapping. Validation: integration tests in sample Django/Flask/FastAPI apps.

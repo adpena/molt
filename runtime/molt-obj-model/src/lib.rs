@@ -1,7 +1,9 @@
 //! Core object representation for Molt.
 //! Uses NaN-boxing to represent primitives and heap pointers in 64 bits.
 
+use std::backtrace::Backtrace;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{OnceLock, RwLock};
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -50,9 +52,21 @@ unsafe impl Send for PtrSlot {}
 unsafe impl Sync for PtrSlot {}
 
 static PTR_REGISTRY: OnceLock<PtrRegistry> = OnceLock::new();
+static PTR_REG_COUNT: AtomicU64 = AtomicU64::new(0);
+static PTR_REG_BACKTRACE_PRINTED: AtomicU64 = AtomicU64::new(0);
 
 fn ptr_registry() -> &'static PtrRegistry {
     PTR_REGISTRY.get_or_init(PtrRegistry::new)
+}
+
+fn trace_ptr_registry() -> bool {
+    static TRACE: OnceLock<bool> = OnceLock::new();
+    *TRACE.get_or_init(|| {
+        matches!(
+            std::env::var("MOLT_TRACE_PTR_REGISTRY").ok().as_deref(),
+            Some("1")
+        )
+    })
 }
 
 fn canonical_addr_from_masked(masked: u64) -> u64 {
@@ -63,6 +77,22 @@ fn canonical_addr_from_masked(masked: u64) -> u64 {
 pub fn register_ptr(ptr: *mut u8) -> u64 {
     if ptr.is_null() {
         return 0;
+    }
+    let count = PTR_REG_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    if trace_ptr_registry() {
+        if count.is_multiple_of(100_000) {
+            eprintln!("ptr_registry register count={count}");
+        }
+        if count >= 1_000_000
+            && PTR_REG_BACKTRACE_PRINTED
+                .compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+        {
+            eprintln!(
+                "ptr_registry backtrace at count={count}:\n{}",
+                Backtrace::capture()
+            );
+        }
     }
     let slot = PtrSlot(ptr);
     let addr = ptr.expose_provenance() as u64;
@@ -104,6 +134,8 @@ pub fn reset_ptr_registry() {
             }
         }
     }
+    PTR_REG_COUNT.store(0, Ordering::Relaxed);
+    PTR_REG_BACKTRACE_PRINTED.store(0, Ordering::Relaxed);
 }
 
 impl MoltObject {

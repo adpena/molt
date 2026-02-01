@@ -22,6 +22,8 @@ mod builtins;
 mod call;
 mod concurrency;
 mod constants;
+#[cfg(target_arch = "wasm32")]
+mod libc_compat;
 mod object;
 mod provenance;
 mod state;
@@ -40,17 +42,16 @@ pub(crate) use molt_obj_model::MoltObject;
 
 pub(crate) use crate::async_rt::channels::has_capability;
 pub use crate::async_rt::channels::*;
+#[allow(unused_imports)]
 pub use crate::async_rt::generators::*;
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use crate::async_rt::io_poller::IoPoller;
-#[cfg(not(target_arch = "wasm32"))]
 pub use crate::async_rt::io_poller::*;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use crate::async_rt::is_block_on_task;
 pub use crate::async_rt::process::*;
 pub(crate) use crate::async_rt::scheduler::BLOCK_ON_TASK;
+pub(crate) use crate::async_rt::sockets::io_wait_release_socket;
 pub use crate::async_rt::sockets::*;
-pub(crate) use crate::async_rt::sockets::{
-    io_wait_release_socket,
-};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use crate::async_rt::sockets::{
     argv_from_bits, env_from_bits, require_net_capability, require_process_capability,
@@ -62,15 +63,15 @@ pub(crate) use crate::async_rt::{
     io_wait_poll_fn_addr, molt_block_on, poll_future_with_task_stack, process_poll_fn_addr,
     resolve_task_ptr, thread_poll_fn_addr,
 };
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use crate::async_rt::is_block_on_task;
 pub(crate) use crate::builtins::attr::{
-    attr_error, attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, class_attr_lookup,
-    class_attr_lookup_raw_mro, class_field_offset, dataclass_attr_lookup_raw, descriptor_bind,
-    descriptor_cache_lookup, descriptor_cache_store, descriptor_is_data, descriptor_method_bits,
-    descriptor_no_deleter, descriptor_no_setter, dir_collect_from_class_bits,
-    dir_collect_from_instance, instance_bits_for_call, is_iterator_bits, module_attr_lookup,
-    object_attr_lookup_raw, property_no_deleter, property_no_setter, raise_attr_name_type_error,
+    apply_class_slots_layout, attr_error, attr_error_with_message, attr_error_with_obj,
+    attr_error_with_obj_message, attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes,
+    class_attr_lookup, class_attr_lookup_raw_mro, class_field_offset, dataclass_attr_lookup_raw,
+    descriptor_bind, descriptor_cache_lookup, descriptor_cache_store, descriptor_is_data,
+    descriptor_method_bits, descriptor_no_deleter, descriptor_no_setter,
+    dir_collect_from_class_bits, dir_collect_from_instance, instance_bits_for_call,
+    is_iterator_bits, module_attr_lookup, object_attr_lookup_raw, property_no_deleter,
+    property_no_setter, raise_attr_name_type_error,
 };
 pub use crate::builtins::attributes::*;
 pub use crate::builtins::callable::*;
@@ -94,29 +95,29 @@ pub(crate) use crate::builtins::context::{context_payload_bits, context_stack_un
 pub(crate) use crate::builtins::exceptions::{
     alloc_exception, alloc_exception_from_class_bits, clear_exception, clear_exception_state,
     clear_exception_type_cache, exception_args_bits, exception_args_from_iterable,
-    exception_cause_bits, exception_class_bits, exception_context_align_depth,
-    exception_context_bits, exception_context_fallback_pop, exception_context_fallback_push,
-    exception_dict_bits, exception_group_method_bits, exception_kind_bits,
-    exception_message_from_args, exception_method_bits, exception_msg_bits, exception_pending,
-    exception_set_stop_iteration_value,
+    exception_cause_bits, exception_class_bits, exception_clear_reason_set,
+    exception_context_align_depth, exception_context_bits, exception_context_fallback_pop,
+    exception_context_fallback_push, exception_dict_bits, exception_group_method_bits,
+    exception_handler_active, exception_kind_bits, exception_message_from_args,
+    exception_method_bits, exception_msg_bits, exception_pending,
+    exception_set_stop_iteration_value, exception_stack_baseline_get, exception_stack_baseline_set,
     exception_stack_depth, exception_stack_pop, exception_stack_push, exception_stack_set_depth,
     exception_store_args_and_message, exception_suppress_bits, exception_trace_bits,
     exception_type_bits, exception_type_bits_from_name, exception_value_bits, format_exception,
-    format_exception_message, frame_stack_pop, frame_stack_push, frame_stack_set_line,
-    generator_exception_stack_drop, generator_exception_stack_store,
-    generator_exception_stack_take, generator_raise_active, molt_exception_clear,
-    molt_exception_kind, molt_exception_last, molt_exception_set_last, molt_raise,
-    raise_exception,
-    raise_key_error_with_key, raise_not_iterable, raise_unsupported_inplace, record_exception,
-    set_generator_raise, set_task_raise_active, task_exception_depth_drop,
-    task_exception_depth_store, task_exception_depth_take, task_exception_handler_stack_drop,
-    task_exception_handler_stack_store, task_exception_handler_stack_take,
-    task_exception_stack_drop, task_exception_stack_store, task_exception_stack_take,
-    task_last_exception_drop, task_raise_active, ExceptionSentinel, ACTIVE_EXCEPTION_FALLBACK,
-    ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK, GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE,
-    TASK_RAISE_ACTIVE,
+    format_exception_message, format_exception_with_traceback, frame_stack_pop, frame_stack_push,
+    frame_stack_set_line, generator_exception_stack_drop, generator_exception_stack_store,
+    generator_exception_stack_take, generator_raise_active, handle_system_exit,
+    molt_exception_clear, molt_exception_kind, molt_exception_last, molt_exception_set_last,
+    molt_raise, raise_exception, raise_key_error_with_key, raise_not_iterable,
+    raise_unsupported_inplace, record_exception, set_generator_raise, set_task_raise_active,
+    task_exception_baseline_drop, task_exception_baseline_store, task_exception_baseline_take,
+    task_exception_depth_drop, task_exception_depth_store, task_exception_depth_take,
+    task_exception_handler_stack_drop, task_exception_handler_stack_store,
+    task_exception_handler_stack_take, task_exception_stack_drop, task_exception_stack_store,
+    task_exception_stack_take, task_last_exception_drop, task_raise_active, ExceptionSentinel,
+    ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK, GENERATOR_EXCEPTION_STACKS,
+    GENERATOR_RAISE, TASK_RAISE_ACTIVE,
 };
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use crate::builtins::exceptions::{raise_os_error, raise_os_error_errno};
 pub use crate::builtins::functions::*;
 pub use crate::builtins::io::*;
@@ -129,10 +130,11 @@ pub(crate) use crate::builtins::methods::*;
 pub use crate::builtins::modules::*;
 pub(crate) use crate::builtins::numbers::{
     bigint_bits, bigint_from_f64_trunc, bigint_ptr_from_bits, bigint_ref, bigint_to_inline,
-    compare_numbers, float_pair_from_obj, index_bigint_from_obj, index_i64_from_obj,
-    index_i64_with_overflow, inline_int_from_i128, int_bits_from_bigint, int_bits_from_i128,
-    int_bits_from_i64, round_float_ndigits, round_half_even, split_maxsplit_from_obj, to_bigint,
-    to_f64, to_i64,
+    compare_numbers, complex_bits, complex_from_obj_lossy, complex_from_obj_strict,
+    complex_ptr_from_bits, complex_ref, float_pair_from_obj, index_bigint_from_obj,
+    index_i64_from_obj, index_i64_with_overflow, inline_int_from_i128, int_bits_from_bigint,
+    int_bits_from_i128, int_bits_from_i64, round_float_ndigits, round_half_even,
+    split_maxsplit_from_obj, to_bigint, to_f64, to_i64, ComplexParts,
 };
 pub use crate::builtins::platform::*;
 pub(crate) use crate::builtins::strings::{
@@ -144,7 +146,8 @@ pub(crate) use crate::builtins::strings::{
     split_string_whitespace_to_list_maxsplit, splitlines_bytes_to_list, splitlines_string_to_list,
 };
 pub(crate) use crate::builtins::type_ops::{
-    class_bases_vec, class_mro_ref, class_mro_vec, isinstance_bits, issubclass_bits, type_of_bits,
+    class_bases_vec, class_mro_ref, class_mro_vec, isinstance_bits, isinstance_runtime,
+    issubclass_bits, issubclass_runtime, type_of_bits,
 };
 pub use crate::builtins::types::*;
 #[allow(unused_imports)]
@@ -178,21 +181,22 @@ pub(crate) use crate::object::layout::{
     bytearray_vec_ptr, bytearray_vec_ref, call_iter_callable_bits, call_iter_sentinel_bits,
     class_annotate_bits, class_annotations_bits, class_bases_bits, class_bump_layout_version,
     class_dict_bits, class_layout_version_bits, class_mro_bits, class_name_bits,
-    class_set_annotate_bits, class_set_annotations_bits, class_set_bases_bits,
-    class_set_layout_version_bits, class_set_mro_bits, classmethod_func_bits, code_filename_bits,
-    code_firstlineno, code_linetable_bits, code_name_bits, ensure_function_code_bits,
-    enumerate_index_bits, enumerate_set_index_bits, enumerate_target_bits, filter_func_bits,
-    filter_iter_bits, function_annotate_bits, function_annotations_bits, function_arity,
-    function_closure_bits, function_code_bits, function_dict_bits, function_fn_ptr,
-    function_name_bits, function_set_annotate_bits, function_set_annotations_bits,
-    function_set_closure_bits, function_set_code_bits, function_set_dict_bits,
-    function_set_trampoline_ptr, function_trampoline_ptr, generic_alias_args_bits,
-    generic_alias_origin_bits, iter_index, iter_set_index, iter_target_bits, map_func_bits,
-    map_iters_ptr, module_dict_bits, module_name_bits, property_del_bits, property_get_bits,
-    property_set_bits, range_len_i64, range_start, range_step, range_stop, reversed_index,
-    reversed_set_index, reversed_target_bits, seq_vec, seq_vec_ptr, seq_vec_ref, slice_start_bits,
-    slice_step_bits, slice_stop_bits, staticmethod_func_bits, super_obj_bits, super_type_bits,
-    zip_iters_ptr,
+    class_qualname_bits, class_set_annotate_bits, class_set_annotations_bits, class_set_bases_bits,
+    class_set_layout_version_bits, class_set_mro_bits, class_set_name_bits,
+    class_set_qualname_bits, classmethod_func_bits, code_filename_bits, code_firstlineno,
+    code_linetable_bits, code_name_bits, ensure_function_code_bits, enumerate_index_bits,
+    enumerate_set_index_bits, enumerate_target_bits, filter_func_bits, filter_iter_bits,
+    function_annotate_bits, function_annotations_bits, function_arity, function_closure_bits,
+    function_code_bits, function_dict_bits, function_fn_ptr, function_name_bits,
+    function_set_annotate_bits, function_set_annotations_bits, function_set_closure_bits,
+    function_set_code_bits, function_set_dict_bits, function_set_trampoline_ptr,
+    function_trampoline_ptr, generic_alias_args_bits, generic_alias_origin_bits, iter_index,
+    iter_set_index, iter_target_bits, map_func_bits, map_iters_ptr, module_dict_bits,
+    module_name_bits, property_del_bits, property_get_bits, property_set_bits, range_len_i64,
+    range_start, range_step, range_stop, reversed_index, reversed_set_index, reversed_target_bits,
+    seq_vec, seq_vec_ptr, seq_vec_ref, slice_start_bits, slice_step_bits, slice_stop_bits,
+    staticmethod_func_bits, super_obj_bits, super_type_bits, union_type_args_bits, zip_iters_ptr,
+    zip_set_strict_bits, zip_strict_bits,
 };
 pub(crate) use crate::object::memoryview::{
     bytes_like_slice, bytes_like_slice_raw, memoryview_bytes_slice, memoryview_collect_bytes,
@@ -215,14 +219,15 @@ pub(crate) use crate::object::ops::{
     type_name, utf8_cache_remove, utf8_codepoint_count_cached,
 };
 pub(crate) use crate::object::type_ids::*;
+pub(crate) use crate::object::weakref::weakref_clear_for_ptr;
 pub(crate) use crate::object::{
     alloc_object, alloc_object_zeroed, alloc_object_zeroed_with_pool, bits_from_ptr, buffer2d_ptr,
-    bytes_data,
-    bytes_len, dataclass_desc_ptr, dataclass_dict_bits, dataclass_fields_mut, dataclass_fields_ref,
-    dataclass_set_dict_bits, dec_ref_bits, file_handle_ptr, header_from_obj_ptr, inc_ref_bits,
-    init_atomic_bits, instance_dict_bits, instance_set_dict_bits, intarray_len, intarray_slice,
-    maybe_ptr_from_bits, memoryview_format_bits, memoryview_itemsize, memoryview_len,
-    memoryview_ndim, memoryview_offset, memoryview_owner_bits, memoryview_ptr, memoryview_readonly,
+    bytes_data, bytes_len, dataclass_desc_ptr, dataclass_dict_bits, dataclass_fields_mut,
+    dataclass_fields_ref, dataclass_set_dict_bits, dec_ref_bits, file_handle_ptr,
+    header_from_obj_ptr, inc_ref_bits, init_atomic_bits, instance_dict_bits,
+    instance_set_dict_bits, intarray_len, intarray_slice, maybe_ptr_from_bits,
+    memoryview_format_bits, memoryview_itemsize, memoryview_len, memoryview_ndim,
+    memoryview_offset, memoryview_owner_bits, memoryview_ptr, memoryview_readonly,
     memoryview_shape, memoryview_stride, memoryview_strides, obj_from_bits, object_class_bits,
     object_mark_has_ptrs, object_payload_size, object_set_class_bits, object_type_id,
     pending_bits_i64, ptr_from_bits, string_bytes, string_len, Buffer2D, DataclassDesc, MemoryView,
@@ -230,9 +235,8 @@ pub(crate) use crate::object::{
     HEADER_FLAG_BLOCK_ON, HEADER_FLAG_CANCEL_PENDING, HEADER_FLAG_GEN_RUNNING,
     HEADER_FLAG_GEN_STARTED, HEADER_FLAG_SKIP_CLASS_DECREF, HEADER_FLAG_SPAWN_RETAIN,
     HEADER_FLAG_TASK_DONE, HEADER_FLAG_TASK_QUEUED, HEADER_FLAG_TASK_RUNNING,
-    HEADER_FLAG_TASK_WAKE_PENDING,
-    HEADER_FLAG_TRACEBACK_SUPPRESSED,
-    OBJECT_POOL_BUCKETS, OBJECT_POOL_TLS,
+    HEADER_FLAG_TASK_WAKE_PENDING, HEADER_FLAG_TRACEBACK_SUPPRESSED, OBJECT_POOL_BUCKETS,
+    OBJECT_POOL_TLS,
 };
 pub use crate::object::{molt_dec_ref, molt_inc_ref, MoltHeader};
 #[allow(unused_imports)]
@@ -390,6 +394,179 @@ extern "C" {
     fn molt_db_query_host(req_bits: u64, len_bits: u64, out_bits: u64, token_id: u64) -> i32;
     #[link_name = "molt_db_exec_host"]
     fn molt_db_exec_host(req_bits: u64, len_bits: u64, out_bits: u64, token_id: u64) -> i32;
+    #[link_name = "molt_db_host_poll"]
+    fn molt_db_host_poll() -> i32;
+    #[link_name = "molt_getpid_host"]
+    fn molt_getpid_host() -> i64;
+    #[link_name = "molt_socket_new_host"]
+    pub(crate) fn molt_socket_new_host(family: i32, sock_type: i32, proto: i32, fileno: i64)
+        -> i64;
+    #[link_name = "molt_socket_close_host"]
+    pub(crate) fn molt_socket_close_host(handle: i64) -> i32;
+    #[link_name = "molt_socket_clone_host"]
+    pub(crate) fn molt_socket_clone_host(handle: i64) -> i64;
+    #[link_name = "molt_socket_bind_host"]
+    pub(crate) fn molt_socket_bind_host(handle: i64, addr_ptr: u32, addr_len: u32) -> i32;
+    #[link_name = "molt_socket_listen_host"]
+    pub(crate) fn molt_socket_listen_host(handle: i64, backlog: i32) -> i32;
+    #[link_name = "molt_socket_accept_host"]
+    pub(crate) fn molt_socket_accept_host(
+        handle: i64,
+        addr_ptr: u32,
+        addr_cap: u32,
+        out_len_ptr: u32,
+    ) -> i64;
+    #[link_name = "molt_socket_connect_host"]
+    pub(crate) fn molt_socket_connect_host(handle: i64, addr_ptr: u32, addr_len: u32) -> i32;
+    #[link_name = "molt_socket_connect_ex_host"]
+    pub(crate) fn molt_socket_connect_ex_host(handle: i64) -> i32;
+    #[link_name = "molt_socket_recv_host"]
+    pub(crate) fn molt_socket_recv_host(handle: i64, buf_ptr: u32, buf_len: u32, flags: i32)
+        -> i32;
+    #[link_name = "molt_socket_send_host"]
+    pub(crate) fn molt_socket_send_host(handle: i64, buf_ptr: u32, buf_len: u32, flags: i32)
+        -> i32;
+    #[link_name = "molt_socket_sendto_host"]
+    pub(crate) fn molt_socket_sendto_host(
+        handle: i64,
+        buf_ptr: u32,
+        buf_len: u32,
+        flags: i32,
+        addr_ptr: u32,
+        addr_len: u32,
+    ) -> i32;
+    #[link_name = "molt_socket_recvfrom_host"]
+    pub(crate) fn molt_socket_recvfrom_host(
+        handle: i64,
+        buf_ptr: u32,
+        buf_len: u32,
+        flags: i32,
+        addr_ptr: u32,
+        addr_cap: u32,
+        out_len_ptr: u32,
+    ) -> i32;
+    #[link_name = "molt_socket_shutdown_host"]
+    pub(crate) fn molt_socket_shutdown_host(handle: i64, how: i32) -> i32;
+    #[link_name = "molt_socket_getsockname_host"]
+    pub(crate) fn molt_socket_getsockname_host(
+        handle: i64,
+        addr_ptr: u32,
+        addr_cap: u32,
+        out_len_ptr: u32,
+    ) -> i32;
+    #[link_name = "molt_socket_getpeername_host"]
+    pub(crate) fn molt_socket_getpeername_host(
+        handle: i64,
+        addr_ptr: u32,
+        addr_cap: u32,
+        out_len_ptr: u32,
+    ) -> i32;
+    #[link_name = "molt_socket_setsockopt_host"]
+    pub(crate) fn molt_socket_setsockopt_host(
+        handle: i64,
+        level: i32,
+        optname: i32,
+        val_ptr: u32,
+        val_len: u32,
+    ) -> i32;
+    #[link_name = "molt_socket_getsockopt_host"]
+    pub(crate) fn molt_socket_getsockopt_host(
+        handle: i64,
+        level: i32,
+        optname: i32,
+        val_ptr: u32,
+        val_len: u32,
+        out_len_ptr: u32,
+    ) -> i32;
+    #[link_name = "molt_socket_detach_host"]
+    pub(crate) fn molt_socket_detach_host(handle: i64) -> i64;
+    #[link_name = "molt_socket_socketpair_host"]
+    pub(crate) fn molt_socket_socketpair_host(
+        family: i32,
+        sock_type: i32,
+        proto: i32,
+        out_left_ptr: u32,
+        out_right_ptr: u32,
+    ) -> i32;
+    #[link_name = "molt_socket_getaddrinfo_host"]
+    pub(crate) fn molt_socket_getaddrinfo_host(
+        host_ptr: u32,
+        host_len: u32,
+        serv_ptr: u32,
+        serv_len: u32,
+        family: i32,
+        sock_type: i32,
+        proto: i32,
+        flags: i32,
+        out_ptr: u32,
+        out_cap: u32,
+        out_len_ptr: u32,
+    ) -> i32;
+    #[link_name = "molt_socket_gethostname_host"]
+    pub(crate) fn molt_socket_gethostname_host(buf_ptr: u32, buf_cap: u32, out_len_ptr: u32)
+        -> i32;
+    #[link_name = "molt_socket_getservbyname_host"]
+    pub(crate) fn molt_socket_getservbyname_host(
+        name_ptr: u32,
+        name_len: u32,
+        proto_ptr: u32,
+        proto_len: u32,
+    ) -> i32;
+    #[link_name = "molt_socket_getservbyport_host"]
+    pub(crate) fn molt_socket_getservbyport_host(
+        port: i32,
+        proto_ptr: u32,
+        proto_len: u32,
+        buf_ptr: u32,
+        buf_cap: u32,
+        out_len_ptr: u32,
+    ) -> i32;
+    #[link_name = "molt_socket_poll_host"]
+    pub(crate) fn molt_socket_poll_host(handle: i64, events: u32) -> i32;
+    #[link_name = "molt_socket_wait_host"]
+    pub(crate) fn molt_socket_wait_host(handle: i64, events: u32, timeout_ms: i64) -> i32;
+    #[link_name = "molt_socket_has_ipv6_host"]
+    pub(crate) fn molt_socket_has_ipv6_host() -> i32;
+    #[link_name = "molt_ws_connect_host"]
+    pub(crate) fn molt_ws_connect_host(url_ptr: u32, url_len: u64, out_handle: *mut i64) -> i32;
+    #[link_name = "molt_ws_send_host"]
+    pub(crate) fn molt_ws_send_host(handle: i64, data_ptr: *const u8, len: u64) -> i32;
+    #[link_name = "molt_ws_recv_host"]
+    pub(crate) fn molt_ws_recv_host(
+        handle: i64,
+        buf_ptr: *mut u8,
+        buf_cap: u32,
+        out_len_ptr: *mut u32,
+    ) -> i32;
+    #[link_name = "molt_ws_close_host"]
+    pub(crate) fn molt_ws_close_host(handle: i64) -> i32;
+    #[link_name = "molt_process_spawn_host"]
+    pub(crate) fn molt_process_spawn_host(
+        args_ptr: u32,
+        args_len: u32,
+        env_ptr: u32,
+        env_len: u32,
+        cwd_ptr: u32,
+        cwd_len: u32,
+        stdin_mode: i32,
+        stdout_mode: i32,
+        stderr_mode: i32,
+        out_handle: *mut i64,
+    ) -> i32;
+    #[link_name = "molt_process_wait_host"]
+    pub(crate) fn molt_process_wait_host(handle: i64, timeout_ms: i64, out_code: *mut i32) -> i32;
+    #[link_name = "molt_process_kill_host"]
+    pub(crate) fn molt_process_kill_host(handle: i64) -> i32;
+    #[link_name = "molt_process_terminate_host"]
+    pub(crate) fn molt_process_terminate_host(handle: i64) -> i32;
+    #[link_name = "molt_process_write_host"]
+    pub(crate) fn molt_process_write_host(handle: i64, data_ptr: *const u8, len: u64) -> i32;
+    #[link_name = "molt_process_close_stdin_host"]
+    pub(crate) fn molt_process_close_stdin_host(handle: i64) -> i32;
+    #[link_name = "molt_process_stdio_host"]
+    pub(crate) fn molt_process_stdio_host(handle: i64, which: i32, out_stream: *mut u64) -> i32;
+    #[link_name = "molt_process_host_poll"]
+    pub(crate) fn molt_process_host_poll() -> i32;
 }
 
 // (file handle helpers moved to runtime/molt-runtime/src/builtins/io.rs)

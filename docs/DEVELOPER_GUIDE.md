@@ -142,33 +142,33 @@ If you want to modify Molt, follow these steps:
 1.  **Setup**: Ensure you have Rust (stable) and Python 3.12+ installed.
 2.  **Build**:
     ```bash
-    cargo build --package molt-runtime
+    cargo build --release --package molt-runtime
     ```
 3.  **Test**:
     ```bash
     # Run the full dev suite
-    tools/dev.py test
+    uv run --python 3.12 python3 tools/dev.py test
     ```
     ```bash
     # Run CPython regrtest against Molt (logs under logs/cpython_regrtest/)
-    python3 tools/cpython_regrtest.py --clone
+    uv run --python 3.12 python3 tools/cpython_regrtest.py --clone
     ```
     ```bash
     # Run with uv-managed Python 3.12 and coverage enabled
-    python3 tools/cpython_regrtest.py --uv --uv-python 3.12 --uv-prepare --coverage
+    uv run --python 3.12 python3 tools/cpython_regrtest.py --uv --uv-python 3.12 --uv-prepare --coverage
     ```
     ```bash
     # Include Rust coverage (requires cargo-llvm-cov)
-    python3 tools/cpython_regrtest.py --uv --uv-python 3.12 --uv-prepare --rust-coverage
+    uv run --python 3.12 python3 tools/cpython_regrtest.py --uv --uv-python 3.12 --uv-prepare --rust-coverage
     ```
     ```bash
     # Multi-version run (3.12 + 3.13) with a skip list
-    python3 tools/cpython_regrtest.py --uv --uv-python 3.12 --uv-python 3.13 \
+    uv run --python 3.12 python3 tools/cpython_regrtest.py --uv --uv-python 3.12 --uv-python 3.13 \
         --uv-prepare --skip-file tools/cpython_regrtest_skip.txt
     ```
     ```bash
     # Core-only smoke run (curated test list)
-    python3 tools/cpython_regrtest.py --core-only --core-file tools/cpython_regrtest_core.txt
+    uv run --python 3.12 python3 tools/cpython_regrtest.py --core-only --core-file tools/cpython_regrtest_core.txt
     ```
     The regrtest harness writes logs to `logs/cpython_regrtest/` with a
     per-version `summary.md` plus a root `summary.md`. Each run also includes
@@ -195,11 +195,69 @@ isolated by running the repo CLI directly:
 MOLT_HOME=~/.molt-dev PYTHONPATH=src uv run --python 3.12 python3 -m molt.cli build examples/hello.py
 ```
 
+## Tooling Quickstart (Optional but Recommended)
+
+### Pre-commit (Python formatting + typing)
+```bash
+uv run pre-commit install
+uv run pre-commit run -a
+```
+
+### Differential coverage reporting
+```bash
+uv run --python 3.12 python3 tools/diff_coverage.py
+# Writes tests/differential/COVERAGE_REPORT.md
+```
+
+### Type/stdlib TODO sync check
+```bash
+uv run --python 3.12 python3 tools/check_type_coverage_todos.py
+```
+
+### Runtime safety and fuzzing
+```bash
+uv run --python 3.12 python3 tools/runtime_safety.py clippy
+uv run --python 3.12 python3 tools/runtime_safety.py miri
+uv run --python 3.12 python3 tools/runtime_safety.py fuzz --target string_ops --runs 10000
+```
+
+### Supply-chain audits (optional gates)
+```bash
+cargo audit
+cargo deny check
+uv run pip-audit
+```
+
+### Faster Rust test runs
+```bash
+cargo nextest run -p molt-runtime --all-targets
+```
+
+### Build caching (Rust)
+```bash
+export RUSTC_WRAPPER=sccache
+sccache -s
+```
+
+### Binary size + WASM size analysis
+```bash
+cargo bloat -p molt-runtime --release
+cargo llvm-lines -p molt-runtime
+twiggy top output.wasm
+wasm-opt -Oz -o output.opt.wasm output.wasm
+wasm-tools strip output.opt.wasm -o output.stripped.wasm
+```
+
+### Native flamegraphs
+```bash
+cargo flamegraph -p molt-runtime --bench ptr_registry
+```
+
 ## WASM Workflow
 
-- Build (linked): `PYTHONPATH=src python3 -m molt.cli build --target wasm --linked examples/hello.py`
-- Build (custom linked output): `PYTHONPATH=src python3 -m molt.cli build --target wasm --linked --linked-output dist/app_linked.wasm examples/hello.py`
-- Build (require linked): `PYTHONPATH=src python3 -m molt.cli build --target wasm --require-linked examples/hello.py`
+- Build (linked): `PYTHONPATH=src uv run --python 3.12 python3 -m molt.cli build --target wasm --linked examples/hello.py`
+- Build (custom linked output): `PYTHONPATH=src uv run --python 3.12 python3 -m molt.cli build --target wasm --linked --linked-output dist/app_linked.wasm examples/hello.py`
+- Build (require linked): `PYTHONPATH=src uv run --python 3.12 python3 -m molt.cli build --target wasm --require-linked examples/hello.py`
 - Run (Node/WASI): `node run_wasm.js /path/to/output.wasm` (prefers `*_linked.wasm` when present; disable with `MOLT_WASM_PREFER_LINKED=0`)
 
 ## Operational Assumptions

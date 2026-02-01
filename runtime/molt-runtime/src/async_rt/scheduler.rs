@@ -1,50 +1,58 @@
 use crate::PyToken;
 use std::cell::Cell;
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crossbeam_deque::{Injector, Stealer, Worker};
+use crossbeam_deque::{Injector, Worker};
 
+use crate::object::ops::string_obj_to_owned;
+use crate::object::{dec_ref_ptr, inc_ref_ptr};
 use crate::state::clear_worker_thread_state;
 use crate::{
-    async_sleep_poll_fn_addr, call_poll_fn, class_name_for_error, code_filename_bits,
-    code_name_bits, exception_context_align_depth,
-    exception_context_fallback_pop, exception_context_fallback_push, exception_pending,
-    exception_stack_depth, exception_stack_set_depth, header_from_obj_ptr, inc_ref_bits,
-    dec_ref_bits, io_wait_poll_fn_addr, maybe_ptr_from_bits, molt_exception_last, obj_from_bits,
-    pending_bits_i64,
+    anext_default_poll_fn_addr, async_sleep_poll_fn_addr, asyncgen_poll_fn_addr, call_poll_fn,
+    class_name_for_error, code_filename_bits, code_name_bits, context_stack_unwind, dec_ref_bits,
+    exception_context_align_depth, exception_context_fallback_pop, exception_context_fallback_push,
+    exception_handler_active, exception_kind_bits, exception_pending, exception_stack_baseline_get,
+    exception_stack_baseline_set, exception_stack_depth, exception_stack_set_depth,
+    format_exception_with_traceback, generator_raise_active, handle_system_exit,
+    header_from_obj_ptr, inc_ref_bits, io_wait_poll_fn_addr, maybe_ptr_from_bits,
+    molt_exception_last, obj_from_bits, object_class_bits, object_type_id, pending_bits_i64,
     process_poll_fn_addr, profile_hit, promise_poll_fn_addr, ptr_from_bits, raise_exception,
     record_exception, resolve_task_ptr, runtime_state, set_task_raise_active,
-    task_exception_depth_store,
-    task_exception_depth_take, task_exception_handler_stack_store, task_exception_handler_stack_take,
-    task_exception_stack_store, task_exception_stack_take, task_raise_active, thread_poll_fn_addr,
-    to_i64, with_gil, GilGuard, GilReleaseGuard, MoltHeader, MoltObject,
-    object_class_bits, object_type_id, PtrSlot, ACTIVE_EXCEPTION_STACK, ASYNCGEN_REGISTRY,
-    ASYNC_PENDING_COUNT, ASYNC_POLL_COUNT,
-    ASYNC_SLEEP_REGISTER_COUNT, ASYNC_WAKEUP_COUNT,
-    EXCEPTION_STACK, FN_PTR_CODE, GIL_DEPTH, HEADER_FLAG_BLOCK_ON, HEADER_FLAG_SPAWN_RETAIN,
+    task_exception_baseline_store, task_exception_baseline_take, task_exception_depth_store,
+    task_exception_depth_take, task_exception_handler_stack_store,
+    task_exception_handler_stack_take, task_exception_stack_store, task_exception_stack_take,
+    task_raise_active, thread_poll_fn_addr, to_i64, with_gil, GilGuard, GilReleaseGuard,
+    MoltHeader, MoltObject, PtrSlot, ACTIVE_EXCEPTION_STACK, ASYNC_PENDING_COUNT,
+    ASYNC_POLL_COUNT, ASYNC_SLEEP_REGISTER_COUNT, ASYNC_WAKEUP_COUNT, EXCEPTION_STACK,
+    GIL_DEPTH, HEADER_FLAG_BLOCK_ON, HEADER_FLAG_SPAWN_RETAIN,
     HEADER_FLAG_TASK_DONE, HEADER_FLAG_TASK_QUEUED, HEADER_FLAG_TASK_RUNNING,
     HEADER_FLAG_TASK_WAKE_PENDING,
 };
-use crate::object::ops::string_obj_to_owned;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::IoPoller;
+use crate::ProcessTaskState;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::{ProcessTaskState, ThreadTaskState};
+use crate::ThreadTaskState;
 
-use super::{spawned_task_count, spawned_task_inc};
 use super::cancellation::{
     cancel_tokens, clear_task_token, current_token_id, ensure_task_token,
-    raise_cancelled_with_message, register_task_token, set_current_token, task_cancel_pending,
-    task_take_cancel_pending,
+    raise_cancelled_with_message, set_current_token, task_cancel_pending, task_take_cancel_pending,
 };
+use super::{spawned_task_count, spawned_task_inc};
 
 // --- Scheduler ---
+
+#[inline]
+fn debug_current_task() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_CURRENT_TASK").as_deref() == Ok("1"))
+}
 
 pub(crate) struct AsyncHangProbe {
     threshold: usize,
@@ -95,9 +103,8 @@ pub(crate) fn async_worker_threads() -> usize {
         let max_threads = num_cpus::get().max(1);
         let parsed = std::env::var("MOLT_ASYNC_THREADS")
             .ok()
-            .and_then(|val| val.trim().parse::<usize>().ok())
-            .filter(|val| *val > 0);
-        parsed.unwrap_or(1).min(max_threads)
+            .and_then(|val| val.trim().parse::<usize>().ok());
+        parsed.unwrap_or(0).min(max_threads)
     })
 }
 
@@ -131,12 +138,12 @@ pub(crate) fn task_waiting_on(_py: &PyToken<'_>) -> &'static Mutex<HashMap<PtrSl
     &runtime_state(_py).task_waiting_on
 }
 
-pub(crate) fn asyncgen_registry() -> &'static Mutex<HashSet<PtrSlot>> {
-    ASYNCGEN_REGISTRY.get_or_init(|| Mutex::new(HashSet::new()))
+pub(crate) fn asyncgen_registry(_py: &PyToken<'_>) -> &'static Mutex<HashSet<PtrSlot>> {
+    &runtime_state(_py).asyncgen_registry
 }
 
-pub(crate) fn fn_ptr_code_map() -> &'static Mutex<HashMap<u64, u64>> {
-    FN_PTR_CODE.get_or_init(|| Mutex::new(HashMap::new()))
+pub(crate) fn fn_ptr_code_map(_py: &PyToken<'_>) -> &'static Mutex<HashMap<u64, u64>> {
+    &runtime_state(_py).fn_ptr_code
 }
 
 pub(crate) fn fn_ptr_code_set(_py: &PyToken<'_>, fn_ptr: u64, code_bits: u64) {
@@ -144,7 +151,7 @@ pub(crate) fn fn_ptr_code_set(_py: &PyToken<'_>, fn_ptr: u64, code_bits: u64) {
     if fn_ptr == 0 {
         return;
     }
-    let mut guard = fn_ptr_code_map().lock().unwrap();
+    let mut guard = fn_ptr_code_map(_py).lock().unwrap();
     if code_bits == 0 {
         if let Some(old_bits) = guard.remove(&fn_ptr) {
             if old_bits != 0 {
@@ -172,11 +179,11 @@ pub extern "C" fn molt_fn_ptr_code_set(fn_ptr: u64, code_bits: u64) -> u64 {
     })
 }
 
-pub(crate) fn fn_ptr_code_get(fn_ptr: u64) -> u64 {
+pub(crate) fn fn_ptr_code_get(_py: &PyToken<'_>, fn_ptr: u64) -> u64 {
     if fn_ptr == 0 {
         return 0;
     }
-    let guard = fn_ptr_code_map().lock().unwrap();
+    let guard = fn_ptr_code_map(_py).lock().unwrap();
     guard.get(&fn_ptr).copied().unwrap_or(0)
 }
 
@@ -213,7 +220,10 @@ pub(crate) fn await_waiter_register(_py: &PyToken<'_>, waiter_ptr: *mut u8, awai
             waiter_ptr as usize, awaited_ptr as usize
         );
     }
-    if matches!(std::env::var("MOLT_TRACE_PROMISE").ok().as_deref(), Some("1")) {
+    if matches!(
+        std::env::var("MOLT_TRACE_PROMISE").ok().as_deref(),
+        Some("1")
+    ) {
         let poll_fn = unsafe { (*header_from_obj_ptr(awaited_ptr)).poll_fn };
         if poll_fn == promise_poll_fn_addr() {
             eprintln!(
@@ -226,15 +236,28 @@ pub(crate) fn await_waiter_register(_py: &PyToken<'_>, waiter_ptr: *mut u8, awai
     let awaited_key = PtrSlot(awaited_ptr);
     let mut waiting_map = task_waiting_on(_py).lock().unwrap();
     let mut awaiters_map = await_waiters(_py).lock().unwrap();
-    if let Some(prev) = waiting_map.insert(waiter_key, awaited_key) {
-        if prev != awaited_key {
-            if let Some(waiters) = awaiters_map.get_mut(&prev) {
+    let prev = waiting_map.insert(waiter_key, awaited_key);
+    // Keep raw pointers alive while they live in the await graph.
+    unsafe {
+        if prev.is_none() {
+            inc_ref_ptr(_py, waiter_ptr);
+        }
+        if prev != Some(awaited_key) {
+            inc_ref_ptr(_py, awaited_ptr);
+        }
+    }
+    if let Some(prev_key) = prev {
+        if prev_key != awaited_key {
+            if let Some(waiters) = awaiters_map.get_mut(&prev_key) {
                 if let Some(pos) = waiters.iter().position(|val| *val == waiter_key) {
                     waiters.swap_remove(pos);
                 }
                 if waiters.is_empty() {
-                    awaiters_map.remove(&prev);
+                    awaiters_map.remove(&prev_key);
                 }
+            }
+            unsafe {
+                dec_ref_ptr(_py, prev_key.0);
             }
         }
     }
@@ -261,13 +284,19 @@ pub(crate) fn await_waiter_clear(_py: &PyToken<'_>, waiter_ptr: *mut u8) {
         return;
     }
     let awaited_key = awaited_key.unwrap();
-    if matches!(std::env::var("MOLT_TRACE_PROMISE").ok().as_deref(), Some("1")) {
+    unsafe {
+        dec_ref_ptr(_py, awaited_key.0);
+        dec_ref_ptr(_py, waiter_ptr);
+    }
+    if matches!(
+        std::env::var("MOLT_TRACE_PROMISE").ok().as_deref(),
+        Some("1")
+    ) {
         let poll_fn = unsafe { (*header_from_obj_ptr(awaited_key.0)).poll_fn };
         if poll_fn == promise_poll_fn_addr() {
             eprintln!(
                 "molt async trace: await_clear_promise waiter=0x{:x} awaited=0x{:x}",
-                waiter_ptr as usize,
-                awaited_key.0 as usize
+                waiter_ptr as usize, awaited_key.0 as usize
             );
         }
     }
@@ -372,6 +401,42 @@ pub(crate) fn process_task_drop(_py: &PyToken<'_>, future_ptr: *mut u8) {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn process_task_state(
+    _py: &PyToken<'_>,
+    future_ptr: *mut u8,
+) -> Option<Arc<ProcessTaskState>> {
+    if future_ptr.is_null() {
+        return None;
+    }
+    runtime_state(_py)
+        .process_tasks
+        .lock()
+        .unwrap()
+        .get(&PtrSlot(future_ptr))
+        .cloned()
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn process_task_drop(_py: &PyToken<'_>, future_ptr: *mut u8) {
+    crate::gil_assert();
+    if future_ptr.is_null() {
+        return;
+    }
+    let state = runtime_state(_py)
+        .process_tasks
+        .lock()
+        .unwrap()
+        .remove(&PtrSlot(future_ptr));
+    if let Some(state) = state {
+        state.cancelled.store(true, AtomicOrdering::Release);
+        let mut guard = state.process.wait_future.lock().unwrap();
+        if guard.map(|val| val.0) == Some(future_ptr) {
+            *guard = None;
+        }
+    }
+}
+
 pub(crate) fn task_waiting_on_event(_py: &PyToken<'_>, task_ptr: *mut u8) -> bool {
     if task_ptr.is_null() {
         return false;
@@ -451,6 +516,14 @@ pub(crate) enum BlockOnWaitSpec {
 }
 
 const BLOCK_ON_MIN_SLEEP: Duration = Duration::from_micros(50);
+const BLOCK_ON_MAX_WAIT: Duration = Duration::from_millis(5);
+
+fn block_on_poll_timeout(timeout: Option<Duration>) -> Duration {
+    match timeout {
+        Some(val) => val.min(BLOCK_ON_MAX_WAIT),
+        None => BLOCK_ON_MAX_WAIT,
+    }
+}
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) enum BlockOnWaitSpec {}
@@ -470,17 +543,25 @@ pub(crate) fn block_on_wait_spec(
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        unsafe {
-            let header = header_from_obj_ptr(awaited_ptr);
-            let poll_fn = (*header).poll_fn;
-            let timeout = deadline.and_then(|dl| {
+        #[inline]
+        fn remaining_timeout(deadline: Option<Instant>) -> Option<Duration> {
+            deadline.and_then(|dl| {
                 let now = Instant::now();
                 if dl > now {
                     Some(dl - now)
                 } else {
                     None
                 }
-            });
+            })
+        }
+        #[inline]
+        unsafe fn wait_spec_for_ptr(
+            _py: &PyToken<'_>,
+            cursor: *mut u8,
+            timeout: Option<Duration>,
+        ) -> Option<BlockOnWaitSpec> {
+            let header = header_from_obj_ptr(cursor);
+            let poll_fn = (*header).poll_fn;
             if poll_fn == io_wait_poll_fn_addr() {
                 let payload_bytes = (*header)
                     .size
@@ -488,7 +569,7 @@ pub(crate) fn block_on_wait_spec(
                 if payload_bytes < 2 * std::mem::size_of::<u64>() {
                     return None;
                 }
-                let payload_ptr = awaited_ptr as *mut u64;
+                let payload_ptr = cursor as *mut u64;
                 let socket_bits = *payload_ptr;
                 let events_bits = *payload_ptr.add(1);
                 let socket_ptr = ptr_from_bits(socket_bits);
@@ -508,14 +589,35 @@ pub(crate) fn block_on_wait_spec(
                 });
             }
             if poll_fn == thread_poll_fn_addr() {
-                if let Some(state) = thread_task_state(_py, awaited_ptr) {
+                if let Some(state) = thread_task_state(_py, cursor) {
                     return Some(BlockOnWaitSpec::Thread { state, timeout });
                 }
             }
             if poll_fn == process_poll_fn_addr() {
-                if let Some(state) = process_task_state(_py, awaited_ptr) {
+                if let Some(state) = process_task_state(_py, cursor) {
                     return Some(BlockOnWaitSpec::Process { state, timeout });
                 }
+            }
+            None
+        }
+        unsafe {
+            let mut cursor = awaited_ptr;
+            for _ in 0..8 {
+                let timeout = remaining_timeout(deadline);
+                if let Some(spec) = wait_spec_for_ptr(_py, cursor, timeout) {
+                    return Some(spec);
+                }
+                let next = {
+                    let waiting_map = task_waiting_on(_py).lock().unwrap();
+                    waiting_map.get(&PtrSlot(cursor)).map(|val| val.0)
+                };
+                let Some(next_ptr) = next else {
+                    break;
+                };
+                if next_ptr.is_null() || next_ptr == cursor {
+                    break;
+                }
+                cursor = next_ptr;
             }
         }
         None
@@ -741,6 +843,29 @@ impl SleepQueue {
         guard.blocking.remove(&PtrSlot(task_ptr))
     }
 
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn next_scheduler_deadline(&self) -> Option<Instant> {
+        let _ = self;
+        None
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn next_scheduler_deadline(&self) -> Option<Instant> {
+        let mut guard = self.inner.lock().unwrap();
+        if guard.shutdown {
+            return None;
+        }
+        loop {
+            let entry = guard.heap.peek()?;
+            let key = entry.task_ptr;
+            if guard.tasks.get(&key) != Some(&entry.gen) {
+                guard.heap.pop();
+                continue;
+            }
+            return Some(entry.deadline);
+        }
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn is_scheduled(&self, _py: &PyToken<'_>, task_ptr: *mut u8) -> bool {
         let _ = _py;
@@ -749,6 +874,12 @@ impl SleepQueue {
             return false;
         }
         guard.tasks.contains_key(&PtrSlot(task_ptr))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn is_scheduled(&self, _py: &PyToken<'_>, _task_ptr: *mut u8) -> bool {
+        let _ = _py;
+        false
     }
 
     pub(crate) fn shutdown(&self, _py: &PyToken<'_>) {
@@ -847,10 +978,65 @@ unsafe impl Send for MoltTask {}
 
 pub struct MoltScheduler {
     injector: Arc<Injector<MoltTask>>,
-    stealers: Vec<Stealer<MoltTask>>,
     running: Arc<AtomicBool>,
+    deferred: Arc<Mutex<DeferredQueue>>,
+    epoch: Arc<AtomicU64>,
     #[cfg(not(target_arch = "wasm32"))]
     worker_handles: Mutex<Vec<thread::JoinHandle<()>>>,
+}
+
+#[derive(Default)]
+struct DeferredQueue {
+    entries: HashMap<PtrSlot, u64>,
+    by_epoch: BTreeMap<u64, VecDeque<PtrSlot>>,
+}
+
+impl DeferredQueue {
+    fn insert(&mut self, task_ptr: PtrSlot, target: u64) -> bool {
+        if self.entries.contains_key(&task_ptr) {
+            return false;
+        }
+        self.entries.insert(task_ptr, target);
+        self.by_epoch
+            .entry(target)
+            .or_default()
+            .push_back(task_ptr);
+        true
+    }
+
+    fn remove(&mut self, task_ptr: PtrSlot) {
+        self.entries.remove(&task_ptr);
+    }
+
+    fn contains(&self, task_ptr: PtrSlot) -> bool {
+        self.entries.contains_key(&task_ptr)
+    }
+
+    fn flush(&mut self, current: u64, injector: &Injector<MoltTask>) -> bool {
+        if self.entries.is_empty() {
+            return false;
+        }
+        let mut enqueued = false;
+        let mut ready_epochs = Vec::new();
+        for (&epoch, queue) in self.by_epoch.iter_mut() {
+            if epoch > current {
+                break;
+            }
+            while let Some(task_ptr) = queue.pop_front() {
+                if self.entries.remove(&task_ptr).is_some() {
+                    injector.push(MoltTask {
+                        future_ptr: task_ptr.0,
+                    });
+                    enqueued = true;
+                }
+            }
+            ready_epochs.push(epoch);
+        }
+        for epoch in ready_epochs {
+            self.by_epoch.remove(&epoch);
+        }
+        enqueued
+    }
 }
 
 impl MoltScheduler {
@@ -860,7 +1046,9 @@ impl MoltScheduler {
         #[cfg(not(target_arch = "wasm32"))]
         let num_threads = async_worker_threads();
         let injector = Arc::new(Injector::new());
-        let mut workers = Vec::new();
+        let deferred = Arc::new(Mutex::new(DeferredQueue::default()));
+        let epoch = Arc::new(AtomicU64::new(0));
+        let mut workers: Vec<Worker<MoltTask>> = Vec::new();
         let mut stealers = Vec::new();
         let running = Arc::new(AtomicBool::new(true));
         #[cfg(not(target_arch = "wasm32"))]
@@ -878,6 +1066,8 @@ impl MoltScheduler {
             #[cfg(not(target_arch = "wasm32"))]
             {
                 let injector_clone = Arc::clone(&injector);
+                let deferred_clone = Arc::clone(&deferred);
+                let epoch_clone = Arc::clone(&epoch);
                 let stealers_clone = stealers.clone();
                 let running_clone = Arc::clone(&running);
 
@@ -891,35 +1081,43 @@ impl MoltScheduler {
                             break;
                         }
 
-                    if let Some(task) = worker.pop() {
-                        Self::execute_task(task, &injector_clone);
-                        continue;
-                    }
-
-                    match injector_clone.steal_batch_and_pop(&worker) {
-                        crossbeam_deque::Steal::Success(task) => {
+                        if let Some(task) = worker.pop() {
                             Self::execute_task(task, &injector_clone);
                             continue;
                         }
-                        crossbeam_deque::Steal::Retry => continue,
-                        crossbeam_deque::Steal::Empty => {}
-                    }
 
-                    let mut stolen = false;
-                    for (j, stealer) in stealers_clone.iter().enumerate() {
-                        if i == j {
-                            continue;
+                        match injector_clone.steal_batch_and_pop(&worker) {
+                            crossbeam_deque::Steal::Success(task) => {
+                                Self::execute_task(task, &injector_clone);
+                                continue;
+                            }
+                            crossbeam_deque::Steal::Retry => continue,
+                            crossbeam_deque::Steal::Empty => {}
                         }
-                        if let crossbeam_deque::Steal::Success(task) =
-                            stealer.steal_batch_and_pop(&worker)
-                        {
-                            Self::execute_task(task, &injector_clone);
-                            stolen = true;
-                            break;
+
+                        let mut stolen = false;
+                        for (j, stealer) in stealers_clone.iter().enumerate() {
+                            if i == j {
+                                continue;
+                            }
+                            if let crossbeam_deque::Steal::Success(task) =
+                                stealer.steal_batch_and_pop(&worker)
+                            {
+                                Self::execute_task(task, &injector_clone);
+                                stolen = true;
+                                break;
+                            }
                         }
-                    }
 
                         if !stolen {
+                            let _ = epoch_clone.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+                            if Self::flush_deferred_shared(
+                                &deferred_clone,
+                                &epoch_clone,
+                                &injector_clone,
+                            ) {
+                                continue;
+                            }
                             thread::yield_now();
                         }
                     }
@@ -930,8 +1128,9 @@ impl MoltScheduler {
 
         Self {
             injector,
-            stealers,
             running,
+            deferred,
+            epoch,
             #[cfg(not(target_arch = "wasm32"))]
             worker_handles: Mutex::new(worker_handles),
         }
@@ -947,10 +1146,70 @@ impl MoltScheduler {
                 task.future_ptr as usize
             );
         }
-        if self.stealers.is_empty() {
+        self.injector.push(task);
+    }
+
+    fn advance_epoch(&self) -> u64 {
+        self.epoch.fetch_add(1, AtomicOrdering::SeqCst) + 1
+    }
+
+    pub(crate) fn defer_task_ptr(&self, task_ptr: *mut u8) {
+        if task_ptr.is_null() || !self.running.load(AtomicOrdering::Relaxed) {
+            return;
+        }
+        let target = self.epoch.load(AtomicOrdering::Relaxed).saturating_add(1);
+        let mut guard = self.deferred.lock().unwrap();
+        guard.insert(PtrSlot(task_ptr), target);
+    }
+
+    pub(crate) fn clear_deferred(&self, task_ptr: *mut u8) {
+        if task_ptr.is_null() {
+            return;
+        }
+        let mut guard = self.deferred.lock().unwrap();
+        guard.remove(PtrSlot(task_ptr));
+    }
+
+    pub(crate) fn is_deferred(&self, task_ptr: *mut u8) -> bool {
+        if task_ptr.is_null() {
+            return false;
+        }
+        let guard = self.deferred.lock().unwrap();
+        guard.contains(PtrSlot(task_ptr))
+    }
+
+    fn try_pop(&self) -> Option<MoltTask> {
+        match self.injector.steal() {
+            crossbeam_deque::Steal::Success(task) => Some(task),
+            _ => None,
+        }
+    }
+
+    fn flush_deferred(&self) -> bool {
+        Self::flush_deferred_shared(&self.deferred, &self.epoch, &self.injector)
+    }
+
+    fn flush_deferred_shared(
+        deferred: &Arc<Mutex<DeferredQueue>>,
+        epoch: &Arc<AtomicU64>,
+        injector: &Injector<MoltTask>,
+    ) -> bool {
+        let current = epoch.load(AtomicOrdering::Relaxed);
+        let mut guard = deferred.lock().unwrap();
+        guard.flush(current, injector)
+    }
+
+    pub(crate) fn drain_ready(&self) {
+        self.advance_epoch();
+        self.flush_deferred();
+        #[cfg(target_arch = "wasm32")]
+        {
+            let gil = GilGuard::new();
+            let py = gil.token();
+            runtime_state(&py).io_poller().poll_host(&py);
+        }
+        while let Some(task) = self.try_pop() {
             Self::execute_task(task, &self.injector);
-        } else {
-            self.injector.push(task);
         }
     }
 
@@ -973,7 +1232,6 @@ impl MoltScheduler {
     fn execute_task(task: MoltTask, _injector: &Injector<MoltTask>) {
         #[cfg(target_arch = "wasm32")]
         {
-            let _ = injector;
             unsafe {
                 let task_ptr = task.future_ptr;
                 let header = task_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
@@ -1047,8 +1305,14 @@ impl MoltScheduler {
                     loop {
                         let mut res = call_poll_fn(_py, poll_fn_addr, task_ptr);
                         if task_cancel_pending(task_ptr) {
-                            task_take_cancel_pending(task_ptr);
-                            res = raise_cancelled_with_message::<i64>(_py, task_ptr);
+                            if exception_pending(_py) {
+                                let _ = task_take_cancel_pending(task_ptr);
+                            } else if res == pending_bits_i64() {
+                                let _ = task_take_cancel_pending(task_ptr);
+                                res = raise_cancelled_with_message::<i64>(_py, task_ptr);
+                            } else {
+                                let _ = task_take_cancel_pending(task_ptr);
+                            }
                         }
                         let pending = res == pending_bits_i64();
                         record_async_poll(_py, task_ptr, pending, "scheduler");
@@ -1094,6 +1358,15 @@ impl MoltScheduler {
                         break;
                     }
                     set_current_token(_py, prev_token);
+                    if debug_current_task() && prev_task.is_null() {
+                        let current = CURRENT_TASK.with(|cell| cell.get());
+                        if !current.is_null() {
+                            eprintln!(
+                                "molt task trace: scheduler restore null (poll) current=0x{:x} task=0x{:x}",
+                                current as usize, task_ptr as usize
+                            );
+                        }
+                    }
                     CURRENT_TASK.with(|cell| cell.set(prev_task));
                 }
                 if poll_fn_addr == 0 && async_trace_enabled() {
@@ -1209,16 +1482,24 @@ impl MoltScheduler {
                         let waiting_on_event = task_waiting_on_event(_py, task_ptr);
                         let scheduled =
                             runtime_state(_py).sleep_queue().is_scheduled(_py, task_ptr);
+                        let deferred = runtime_state(_py).scheduler().is_deferred(task_ptr);
                         let waiting_on_blocked = task_waiting_on_blocked(_py, task_ptr);
                         if async_trace_enabled() {
                             eprintln!(
-                                "molt async trace: poll_pending task=0x{:x} waiting_on_event={} scheduled={} waiting_on_blocked={}",
-                                task_ptr as usize, waiting_on_event, scheduled, waiting_on_blocked
+                                "molt async trace: poll_pending task=0x{:x} waiting_on_event={} scheduled={} deferred={} waiting_on_blocked={}",
+                                task_ptr as usize,
+                                waiting_on_event,
+                                scheduled,
+                                deferred,
+                                waiting_on_blocked
                             );
                         }
-                        if wake_pending {
-                            enqueue_task_ptr(_py, task_ptr);
-                        } else if !waiting_on_event && !scheduled && !waiting_on_blocked {
+                        if wake_pending
+                            || (!waiting_on_event
+                                && !scheduled
+                                && !deferred
+                                && !waiting_on_blocked)
+                        {
                             enqueue_task_ptr(_py, task_ptr);
                         }
                     } else {
@@ -1233,6 +1514,15 @@ impl MoltScheduler {
                     }
                     set_task_raise_active(prev_raise);
                     set_current_token(_py, prev_token);
+                    if debug_current_task() && prev_task.is_null() {
+                        let current = CURRENT_TASK.with(|cell| cell.get());
+                        if !current.is_null() {
+                            eprintln!(
+                                "molt task trace: scheduler restore null (ready) current=0x{:x} task=0x{:x}",
+                                current as usize, task_ptr as usize
+                            );
+                        }
+                    }
                     CURRENT_TASK.with(|cell| cell.set(prev_task));
                 }
                 if poll_fn_addr == 0 {
@@ -1283,7 +1573,7 @@ fn task_clear_queue_flags(task_ptr: *mut u8) {
     }
 }
 
-fn task_mark_done(task_ptr: *mut u8) {
+pub(crate) fn task_mark_done(task_ptr: *mut u8) {
     if task_ptr.is_null() {
         return;
     }
@@ -1337,6 +1627,7 @@ pub(crate) fn wake_task_ptr(_py: &PyToken<'_>, task_ptr: *mut u8) {
     if task_ptr.is_null() {
         return;
     }
+    runtime_state(_py).scheduler().clear_deferred(task_ptr);
     if current_task_key() == Some(PtrSlot(task_ptr)) {
         let _guard = task_queue_lock().lock().unwrap();
         unsafe {
@@ -1358,8 +1649,7 @@ pub(crate) fn wake_task_ptr(_py: &PyToken<'_>, task_ptr: *mut u8) {
     sleep_queue.cancel_task(_py, task_ptr);
     let mut should_enqueue = false;
     let mut should_return = false;
-    let mut inline_only = false;
-    {
+    let inline_only = {
         let _guard = task_queue_lock().lock().unwrap();
         unsafe {
             let header = header_from_obj_ptr(task_ptr);
@@ -1368,7 +1658,7 @@ pub(crate) fn wake_task_ptr(_py: &PyToken<'_>, task_ptr: *mut u8) {
             let running = ((*header).flags & HEADER_FLAG_TASK_RUNNING) != 0;
             let queued = ((*header).flags & HEADER_FLAG_TASK_QUEUED) != 0;
             let spawned = ((*header).flags & HEADER_FLAG_SPAWN_RETAIN) != 0;
-            inline_only = !spawned && !block_on;
+            let inline_only = !spawned && !block_on;
             if async_trace_enabled() {
                 eprintln!(
                     "molt async trace: wake_task task=0x{:x} done={} block_on={} running={} queued={}",
@@ -1393,8 +1683,9 @@ pub(crate) fn wake_task_ptr(_py: &PyToken<'_>, task_ptr: *mut u8) {
                 (*header).flags |= HEADER_FLAG_TASK_QUEUED;
                 should_enqueue = true;
             }
+            inline_only
         }
-    }
+    };
     if should_return {
         return;
     }
@@ -1439,8 +1730,8 @@ pub unsafe extern "C" fn molt_spawn(task_bits: u64) {
             );
         }
         cancel_tokens(_py);
-        let token = current_token_id();
-        register_task_token(_py, task_ptr, token);
+        // Respect the task's pre-registered cancellation/context token when present.
+        let _ = ensure_task_token(_py, task_ptr, current_token_id());
         let header = task_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
         if ((*header).flags & HEADER_FLAG_SPAWN_RETAIN) == 0 {
             (*header).flags |= HEADER_FLAG_SPAWN_RETAIN;
@@ -1461,6 +1752,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
         prev_task,
         prev_token,
         caller_depth,
+        caller_baseline,
         caller_handlers,
         caller_active,
         prev_raise,
@@ -1488,10 +1780,13 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
         let token = ensure_task_token(_py, task_ptr, current_token_id());
         let prev_token = set_current_token(_py, token);
         let caller_depth = exception_stack_depth();
+        let caller_baseline = exception_stack_baseline_get();
         let caller_handlers =
             EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
         let caller_active =
             ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
+        let task_baseline = task_exception_baseline_take(_py, task_ptr);
+        exception_stack_baseline_set(task_baseline);
         let caller_context = caller_active
             .last()
             .copied()
@@ -1517,6 +1812,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
             prev_task,
             prev_token,
             caller_depth,
+            caller_baseline,
             caller_handlers,
             caller_active,
             prev_raise,
@@ -1528,46 +1824,74 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
     }
 
     let result = loop {
-        let (pending, wait_spec, deadline, res, wake_pending) = {
+        {
+            let _gil = GilGuard::new();
+            let _py = _gil.token();
+            // Consume any pending wake flag; we are about to poll the root task.
+            let _ = task_take_wake_pending(task_ptr);
+        }
+        let (pending, wait_spec, deadline, res) = {
             let _gil = GilGuard::new();
             let _py = _gil.token();
             let _py = &_py;
             let mut res = call_poll_fn(_py, poll_fn_addr, task_ptr);
             if task_cancel_pending(task_ptr) {
-                task_take_cancel_pending(task_ptr);
-                res = raise_cancelled_with_message::<i64>(_py, task_ptr);
+                if exception_pending(_py) {
+                    let _ = task_take_cancel_pending(task_ptr);
+                } else if res == pending_bits_i64() {
+                    let _ = task_take_cancel_pending(task_ptr);
+                    res = raise_cancelled_with_message::<i64>(_py, task_ptr);
+                } else {
+                    let _ = task_take_cancel_pending(task_ptr);
+                }
             }
             let pending = res == pending_bits_i64();
             record_async_poll(_py, task_ptr, pending, "block_on");
-            let wake_pending = task_take_wake_pending(task_ptr);
             if pending {
-                let deadline = runtime_state(_py)
+                let blocking_deadline = runtime_state(_py)
                     .sleep_queue()
                     .take_blocking_deadline(_py, task_ptr);
+                let scheduler_deadline = runtime_state(_py).sleep_queue().next_scheduler_deadline();
+                let deadline = match (blocking_deadline, scheduler_deadline) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (Some(a), None) => Some(a),
+                    (None, Some(b)) => Some(b),
+                    (None, None) => None,
+                };
                 let awaited_ptr = task_waiting_on_future(_py, task_ptr);
-                if matches!(std::env::var("MOLT_TRACE_BLOCK_ON").ok().as_deref(), Some("1")) {
+                if matches!(
+                    std::env::var("MOLT_TRACE_BLOCK_ON").ok().as_deref(),
+                    Some("1")
+                ) {
                     if let Some(ptr) = awaited_ptr {
                         let poll_fn = (*header_from_obj_ptr(ptr)).poll_fn;
-                        let kind = if poll_fn == async_sleep_poll_fn_addr() {
-                            "sleep"
-                        } else if poll_fn == promise_poll_fn_addr() {
-                            "promise"
-                        } else if poll_fn == io_wait_poll_fn_addr() {
-                            "io_wait"
-                        } else if poll_fn == thread_poll_fn_addr() {
-                            "thread"
-                        } else if poll_fn == process_poll_fn_addr() {
-                            "process"
-                        } else {
-                            "other"
+                        let poll_kind = |addr: u64| -> &'static str {
+                            if addr == async_sleep_poll_fn_addr() {
+                                "sleep"
+                            } else if addr == promise_poll_fn_addr() {
+                                "promise"
+                            } else if addr == io_wait_poll_fn_addr() {
+                                "io_wait"
+                            } else if addr == thread_poll_fn_addr() {
+                                "thread"
+                            } else if addr == process_poll_fn_addr() {
+                                "process"
+                            } else if addr == asyncgen_poll_fn_addr() {
+                                "asyncgen"
+                            } else if addr == anext_default_poll_fn_addr() {
+                                "anext_default"
+                            } else {
+                                "other"
+                            }
                         };
+                        let kind = poll_kind(poll_fn);
                         let mut detail = String::new();
                         if kind == "other" {
                             let class_bits = object_class_bits(ptr);
                             let class_name = class_name_for_error(class_bits);
                             let type_id = object_type_id(ptr);
                             detail = format!(" type_id={} class={}", type_id, class_name);
-                            let code_bits = fn_ptr_code_get(poll_fn);
+                            let code_bits = fn_ptr_code_get(_py, poll_fn);
                             if code_bits != 0 {
                                 let code_ptr = ptr_from_bits(code_bits);
                                 if !code_ptr.is_null() {
@@ -1583,6 +1907,34 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                                             type_id, class_name, name, file
                                         );
                                     }
+                                }
+                            }
+                            if matches!(
+                                std::env::var("MOLT_TRACE_BLOCK_ON_CHAIN").ok().as_deref(),
+                                Some("1")
+                            ) {
+                                let mut cursor = ptr;
+                                for depth in 0..8 {
+                                    let cursor_poll = (*header_from_obj_ptr(cursor)).poll_fn;
+                                    let cursor_kind = poll_kind(cursor_poll);
+                                    eprintln!(
+                                        "molt async trace: block_on_chain depth={} ptr=0x{:x} poll=0x{:x} kind={}",
+                                        depth,
+                                        cursor as usize,
+                                        cursor_poll,
+                                        cursor_kind
+                                    );
+                                    let next = {
+                                        let waiting_map = task_waiting_on(_py).lock().unwrap();
+                                        waiting_map.get(&PtrSlot(cursor)).map(|val| val.0)
+                                    };
+                                    let Some(next_ptr) = next else {
+                                        break;
+                                    };
+                                    if next_ptr.is_null() || next_ptr == cursor {
+                                        break;
+                                    }
+                                    cursor = next_ptr;
                                 }
                             }
                         }
@@ -1601,14 +1953,24 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                         );
                     }
                 }
-                let wait_spec =
-                    awaited_ptr.and_then(|awaited_ptr| block_on_wait_spec(_py, awaited_ptr, deadline));
-                (pending, wait_spec, deadline, res, wake_pending)
+                let wait_spec = awaited_ptr
+                    .and_then(|awaited_ptr| block_on_wait_spec(_py, awaited_ptr, deadline));
+                (pending, wait_spec, deadline, res)
             } else {
-                (pending, None, None, res, wake_pending)
+                (pending, None, None, res)
             }
         };
         if pending {
+            {
+                let _gil = GilGuard::new();
+                let _py = _gil.token();
+                runtime_state(&_py).scheduler().drain_ready();
+            }
+            let wake_pending = {
+                let _gil = GilGuard::new();
+                let _py = _gil.token();
+                task_take_wake_pending(task_ptr)
+            };
             if wake_pending {
                 std::thread::sleep(BLOCK_ON_MIN_SLEEP);
                 continue;
@@ -1623,13 +1985,16 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                         events,
                         timeout,
                     } => {
-                        let _ = poller.wait_blocking(socket_ptr, events, timeout);
+                        let wait = block_on_poll_timeout(timeout);
+                        let _ = poller.wait_blocking(socket_ptr, events, Some(wait));
                     }
                     BlockOnWaitSpec::Thread { state, timeout } => {
-                        state.wait_blocking(timeout);
+                        let wait = block_on_poll_timeout(timeout);
+                        state.wait_blocking(Some(wait));
                     }
                     BlockOnWaitSpec::Process { state, timeout } => {
-                        state.wait_blocking(timeout);
+                        let wait = block_on_poll_timeout(timeout);
+                        state.wait_blocking(Some(wait));
                     }
                 }
                 #[cfg(target_arch = "wasm32")]
@@ -1660,6 +2025,19 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
             }
             continue;
         }
+        // Even when the root task reports ready, CPython drains the ready queue
+        // before fully stopping the loop. Run ready tasks and retry if they
+        // scheduled a cancellation or wake-up for the root task.
+        {
+            let _gil = GilGuard::new();
+            let _py = _gil.token();
+            let _py = &_py;
+            runtime_state(_py).scheduler().drain_ready();
+            // Once the root task is ready, don't re-poll it; clear pending wake/cancel flags.
+            task_mark_done(task_ptr);
+            let _ = task_take_cancel_pending(task_ptr);
+            let _ = task_take_wake_pending(task_ptr);
+        }
         break res;
     };
 
@@ -1670,6 +2048,9 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
         let new_depth = exception_stack_depth();
         task_exception_depth_store(_py, task_ptr, new_depth);
         exception_context_align_depth(_py, new_depth);
+        let new_baseline = exception_stack_baseline_get();
+        task_exception_baseline_store(_py, task_ptr, new_baseline);
+        exception_stack_baseline_set(caller_baseline);
         let task_handlers = EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
         task_exception_handler_stack_store(_py, task_ptr, task_handlers);
         let task_active =
@@ -1683,28 +2064,86 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
         });
         exception_stack_set_depth(_py, caller_depth);
         exception_context_fallback_pop();
-        if exception_pending(_py) {
-            let exc_bits = molt_exception_last();
-            if let Some(exc_ptr) = maybe_ptr_from_bits(exc_bits) {
-                let restore_task = CURRENT_TASK.with(|cell| {
-                    let restore = cell.get();
-                    cell.set(prev_task);
-                    restore
-                });
-                record_exception(_py, exc_ptr);
-                CURRENT_TASK.with(|cell| cell.set(restore_task));
-            }
-        if !obj_from_bits(exc_bits).is_none() {
-            dec_ref_bits(_py, exc_bits);
+        // Move any pending exception off the block_on task and onto the caller/global slot.
+        let task_exc_slot = {
+            let mut guard = task_last_exceptions(_py).lock().unwrap();
+            guard.remove(&PtrSlot(task_ptr))
+        };
+        let pending_bits = if let Some(exc_slot) = task_exc_slot {
+            MoltObject::from_ptr(exc_slot.0).bits()
+        } else if exception_pending(_py) {
+            molt_exception_last()
+        } else {
+            MoltObject::none().bits()
+        };
+        if let Some(exc_ptr) = maybe_ptr_from_bits(pending_bits) {
+            let restore_task = CURRENT_TASK.with(|cell| {
+                let restore = cell.get();
+                if debug_current_task() && prev_task.is_null() && !restore.is_null() {
+                    eprintln!(
+                        "molt task trace: block_on temp restore null current=0x{:x} task=0x{:x}",
+                        restore as usize, task_ptr as usize
+                    );
+                }
+                cell.set(prev_task);
+                restore
+            });
+            record_exception(_py, exc_ptr);
+            CURRENT_TASK.with(|cell| cell.set(restore_task));
         }
-    }
-    let header = header_from_obj_ptr(task_ptr);
-    (*header).flags &= !HEADER_FLAG_BLOCK_ON;
-    task_mark_done(task_ptr);
+        if !obj_from_bits(pending_bits).is_none() {
+            dec_ref_bits(_py, pending_bits);
+        }
+        let header = header_from_obj_ptr(task_ptr);
+        (*header).flags &= !HEADER_FLAG_BLOCK_ON;
+        task_mark_done(task_ptr);
         BLOCK_ON_TASK.with(|cell| cell.set(std::ptr::null_mut()));
         set_task_raise_active(prev_raise);
         set_current_token(_py, prev_token);
+        if debug_current_task() && prev_task.is_null() {
+            let current = CURRENT_TASK.with(|cell| cell.get());
+            if !current.is_null() {
+                eprintln!(
+                    "molt task trace: block_on restore null current=0x{:x} task=0x{:x}",
+                    current as usize, task_ptr as usize
+                );
+            }
+        }
         CURRENT_TASK.with(|cell| cell.set(prev_task));
+        let pending_after = exception_pending(_py);
+        let handlers_active = exception_handler_active();
+        let generator_raise = generator_raise_active();
+        let task_raise = task_raise_active();
+        let trace_block_on = matches!(
+            std::env::var("MOLT_TRACE_BLOCK_ON").ok().as_deref(),
+            Some("1")
+        );
+        if prev_task.is_null() && trace_block_on {
+            eprintln!(
+                "molt async trace: block_on_exit pending={} handlers={} gen_raise={} task_raise={}",
+                pending_after, handlers_active, generator_raise, task_raise
+            );
+        }
+        if prev_task.is_null()
+            && pending_after
+            && !handlers_active
+            && !generator_raise
+            && !task_raise
+        {
+            let exc_bits = molt_exception_last();
+            if let Some(exc_ptr) = maybe_ptr_from_bits(exc_bits) {
+                let kind_bits = exception_kind_bits(exc_ptr);
+                if string_obj_to_owned(obj_from_bits(kind_bits)).as_deref() == Some("SystemExit") {
+                    handle_system_exit(_py, exc_ptr);
+                }
+                context_stack_unwind(_py, exc_bits);
+                eprintln!("{}", format_exception_with_traceback(_py, exc_ptr));
+                std::process::exit(1);
+            }
+            if !obj_from_bits(exc_bits).is_none() {
+                dec_ref_bits(_py, exc_bits);
+            }
+        }
     }
     result
 }

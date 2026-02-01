@@ -1,3 +1,4 @@
+pub(crate) mod annotations;
 pub(crate) mod attr;
 pub(crate) mod attributes;
 pub(crate) mod callable;

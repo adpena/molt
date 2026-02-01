@@ -1,24 +1,30 @@
-Checkpoint: 2026-01-24T20:24:18Z
-Git: af2e937884b15112580c183ec29dd13c72d40da8 (dirty)
+Checkpoint: 2026-01-30T03:54:40Z
+Git: 49511fbd80b49acf0c35444f66e847dce7690630 (dirty)
 
 Summary
-- Hardened async sleep zero-delay behavior to yield once without depending on monotonic deadlines.
-- Added async trace instrumentation hooks for scheduler/sleep/awaiter paths.
+- Implemented Node/WASI socket host bindings in `run_wasm.js` with worker-backed sockets, io_poller readiness, DNS/service lookup, and structured error handling.
+- Added a browser WASM host harness (`wasm/browser_host.html` + `wasm/browser_host.js`) with direct-link/linked loading and capability-gated stubs.
+- Added browser DB host adapter for WASM (fetch/JS adapter) with stream headers, Arrow IPC handling, and cancellation polling wired into `loadMoltWasm` imports.
+- Refined browser DB host request handling (query vs exec dispatch, pointer validation, adapter payload normalization).
+- Updated STATUS/ROADMAP/DB specs to reflect browser DB host support and adjusted wasm DB parity notes.
 
 Files touched (uncommitted)
 - CHECKPOINT.md
 - docs/AGENT_LOCKS.md
-- runtime/molt-runtime/src/async_rt/generators.rs
-- runtime/molt-runtime/src/async_rt/mod.rs
-- runtime/molt-runtime/src/async_rt/scheduler.rs
+- docs/spec/STATUS.md
+- ROADMAP.md
+- tools/wasm_link.py
+- wasm/browser_host.html
+- wasm/browser_host.js
+- tests/test_wasm_browser_socket_host.py
+- tests/test_wasm_browser_db_host.py
 - Large pre-existing dirty tree remains; see `git status -sb` for full list.
 
 Docs/spec updates needed?
-- None this turn (STATUS/0014/0015/0023/0400/ROADMAP updated).
+- None (STATUS/ROADMAP updated).
 
 Tests
-- `uv sync --python 3.12`
-- `uv run --python 3.12 python3 -m molt.cli run --compiled tests/benchmarks/bench_async_await.py` (timed out after 180s; likely compile + bench)
+- Not run.
 
 Benchmarks
 - Not run.
@@ -33,6 +39,7 @@ Known gaps
 - `print(file=None)` uses host stdout if `sys` is not initialized.
 - File I/O gaps: broader codecs + full error handlers (utf-8/ascii/latin-1 only), partial text-mode seek/tell cookies, detach/reconfigure, Windows fileno/isatty parity.
 - WASM host hooks for remaining file methods (detach/reconfigure) and parity coverage pending.
+- WASM browser host now supports WebSocket-backed stream sockets + DB host adapter, but UDP/listen/server sockets and broader host I/O remain unsupported.
 - WASM `str_from_obj` does not call `__str__` for non-primitive objects.
 - Backend panic for classes defining `__next__` without `__iter__` (see ROADMAP TODO).
 - `sys.argv` decoding still uses lossy UTF-8/UTF-16 until filesystem-encoding + surrogateescape parity lands.

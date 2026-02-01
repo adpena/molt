@@ -68,7 +68,10 @@ def update_wrapper(
                 continue
     if updated is WRAPPER_UPDATES:
         try:
-            wrapper_obj.__dict__.update(wrapped_obj.__dict__)
+            for key, value in wrapped_obj.__dict__.items():
+                if isinstance(key, str) and key.startswith("__molt_"):
+                    continue
+                wrapper_obj.__dict__[key] = value
         except Exception:
             pass
     else:

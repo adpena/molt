@@ -79,7 +79,7 @@ Type coverage TODOs tracked here for CI parity:
 - TODO(import-system, owner:stdlib, milestone:TC3, priority:P1, status:planned): project-root builds (package discovery, `__init__` handling, namespace packages, deterministic dependency graph caching).
 - TODO(import-system, owner:stdlib, milestone:TC3, priority:P1, status:planned): relative imports (explicit and implicit) with deterministic package resolution.
 - TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:planned): reflection builtins (`type`, `isinstance`, `issubclass`, `getattr`, `setattr`, `hasattr`, `dir`, `vars`, `globals`, `locals`).
-- TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:planned): dynamic execution builtins (`eval`, `exec`, `compile`) with sandboxing rules.
+- TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:partial): dynamic execution builtins: `compile` performs global/nonlocal checks and returns a stub code object; `eval`/`exec` and full compile (sandbox + codegen) remain missing.
 - TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:planned): I/O builtins (`open`, `input`, `help`, `breakpoint`) with capability gating.
 - TODO(type-coverage, owner:runtime, milestone:TC3, priority:P2, status:planned): descriptor builtins (`property`, `classmethod`, `staticmethod`, `super`).
 
@@ -97,7 +97,8 @@ Ten-item parity plan details live in `docs/spec/areas/compat/0015_STDLIB_COMPATI
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:planned): `json` parity plan (interop with `molt_json`).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): `random` module API + CPython-compatible RNG parity.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): `gc` module API + runtime cycle collector hook.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): logging shim (asyncio.log uses a no-op logger fallback).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): threading parity with shared-memory semantics + full primitives.
+- logging core implemented (Logger/Handler/Formatter/LogRecord + basicConfig); `logging.config`/`logging.handlers` pending.
 - TODO(stdlib-compat, owner:frontend, milestone:SL1, priority:P2, status:planned): decorator whitelist + compile-time lowering for `@lru_cache`.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): `dataclasses` transform (kw-only, order, richer `__init__` signatures) + `__annotations__` propagation.
 - TODO(stdlib-compat, owner:runtime, milestone:SL2, priority:P2, status:planned): `hashlib` deterministic hashing policy.
@@ -109,7 +110,6 @@ Ten-item parity plan details live in `docs/spec/areas/compat/0015_STDLIB_COMPATI
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): os.environ parity (mapping methods + backend).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): network/process gating (`socket`, `ssl`, `subprocess`, `asyncio`).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): socket/select shims expose error classes only; implement full capability-gated APIs.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): `typing` runtime helpers + `__annotations__` preservation.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): import-only allowlisted stdlib modules (`argparse`, `ast`, `atexit`, `collections.abc`, `importlib`, `platform`, `queue`, `shlex`, `shutil`, `textwrap`, `time`, `tomllib`, `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pprint`, `string`, `numbers`, `unicodedata`, `glob`, `tempfile`, `ctypes`) to minimal parity.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): unittest/test/doctest stubs for regrtest (support: captured_output/captured_stdout/captured_stderr, warnings_helper.check_warnings, cpython_only, requires, swap_attr/swap_item, import_helper.import_module/import_fresh_module, os_helper.temp_dir/unlink); doctest blocked on eval/exec/compile gating, full unittest parity pending.
 
@@ -157,6 +157,7 @@ Language feature TODOs tracked here for parity:
 - [x] External Rust FFI
 - [x] List/Dict literals + indexing/assignment (MVP, deterministic dict table + insertion order)
 - [x] List/Dict methods (append/pop/get/keys/values) hardening (list growth + dict view types + RC return semantics)
+- [x] PEP 584 dict union + PEP 604 union types + zip(strict) (PEP 618) parity
 - [x] Tuple literals + tuple hashing/equality for composite dict keys
 - [x] Iterator protocol + for-loop lowering for list/tuple/dict views
 - [x] Temp arena allocation for parse-time containers (arrays/maps)
@@ -180,7 +181,9 @@ Language feature TODOs tracked here for parity:
 - [ ] Task-based Concurrency (No GIL) (TODO(async-runtime, owner:runtime, milestone:RT2, priority:P1, status:partial): task-based concurrency).
 - [ ] Per-runtime GIL strategy + runtime instance ownership model (TODO(runtime, owner:runtime, milestone:RT2, priority:P1, status:planned): define per-runtime GIL strategy and runtime instance ownership model).
 - [ ] PyToken enforcement across runtime mutation entrypoints (TODO(concurrency, owner:runtime, milestone:RT2, priority:P1, status:partial): thread PyToken through runtime mutation entrypoints).
-- [ ] Process model integration for `multiprocessing`/`subprocess`/`concurrent.futures` (capability-gated spawn, IPC primitives, worker lifecycle). (TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P3, status:planned): process model integration for `multiprocessing`/`subprocess`/`concurrent.futures`.)
+- [~] Process model integration for `multiprocessing`/`subprocess`/`concurrent.futures` (capability-gated spawn, IPC primitives, worker lifecycle). Spawn-based `multiprocessing` is now partial; `fork`/`forkserver` map to spawn semantics and need true fork support; `subprocess`/`concurrent.futures` remain pending.
+  (TODO(runtime, owner:runtime, milestone:RT3, priority:P1, status:divergent): Fork/forkserver currently map to spawn semantics; implement true fork support.)
+  (TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P3, status:partial): process model integration for `multiprocessing`/`subprocess`/`concurrent.futures`.)
 - [ ] Rust Executor Integration (Tokio/Smol) (TODO(async-runtime, owner:runtime, milestone:RT2, priority:P2, status:planned): executor integration).
 - [ ] Native HTTP Package (`molt_http`) (TODO(http-runtime, owner:runtime, milestone:SL3, priority:P2, status:missing): native HTTP package).
 - [ ] Native WebSocket + streaming I/O (`molt_ws` or equivalent) (TODO(http-runtime, owner:runtime, milestone:SL3, priority:P2, status:missing): native WebSocket + streaming I/O).
@@ -204,4 +207,4 @@ Language feature TODOs tracked here for parity:
 
 ---
 
-*Last Updated: Thursday, January 22, 2026 - 19:24 CST*
+*Last Updated: Friday, January 30, 2026 - 05:22 CST*

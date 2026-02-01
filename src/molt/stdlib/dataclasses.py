@@ -81,8 +81,13 @@ def _dataclass_init(self, *args, **kwargs):
     if kwargs:
         unexpected = next(iter(kwargs))
         raise TypeError(f"unexpected keyword argument '{unexpected}'")
+    params = getattr(self.__class__, "__dataclass_params__", None)
+    frozen = getattr(params, "frozen", False)
     for name in field_names:
-        object.__setattr__(self, name, values[name])
+        if frozen:
+            object.__setattr__(self, name, values[name])
+        else:
+            setattr(self, name, values[name])
 
 
 def _dataclass_repr(self) -> str:

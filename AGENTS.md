@@ -37,11 +37,25 @@
 - `cargo test`: run Rust unit tests for runtime crates.
 - `uv sync --group bench --python 3.12`: install optional Cython/Numba benchmark deps before running `tools/bench.py` (Numba requires <3.13).
 
+## Tooling Add-ons (Optional)
+- `uv run pre-commit install` and `uv run pre-commit run -a`: enable repo hooks (ruff/ty formatting + checks).
+- `python3 tools/diff_coverage.py`: generate `tests/differential/COVERAGE_REPORT.md`.
+- `python3 tools/check_type_coverage_todos.py`: ensure type/stdlib TODOs are mirrored in `ROADMAP.md`.
+- `python3 tools/runtime_safety.py clippy|miri|fuzz --target string_ops --runs 10000`: runtime safety gates.
+- `cargo audit` and `cargo deny check`: Rust supply-chain audits.
+- `uv run pip-audit`: Python dependency audit (run after `uv sync --group dev`).
+- `cargo nextest run -p molt-runtime --all-targets`: faster Rust test runner.
+- `export RUSTC_WRAPPER=sccache`: enable Rust compile caching (check stats with `sccache -s`).
+- `cargo bloat -p molt-runtime --release` and `cargo llvm-lines -p molt-runtime`: size attribution.
+- `cargo flamegraph -p molt-runtime --bench ptr_registry`: native flamegraphs.
+
 ## WASM Tooling
 - Bench harness: `tools/bench_wasm.py` (`--linked` uses `wasm-ld` when available; `--require-linked` aborts if linking fails).
 - Linking helper: `tools/wasm_link.py` (single-module linking via `wasm-ld`).
 - Profiling helper: `tools/wasm_profile.py` (Node `--cpu-prof` for wasm benches).
 - Inspect binaries: `wasm-tools print <file.wasm>` for imports/exports/sections.
+- Size analysis: `twiggy top <file.wasm>` for WASM size attribution.
+- Size optimization: `wasm-opt -Oz -o output.opt.wasm output.wasm` (Binaryen).
 - Runtime harness: `run_wasm.js` (Node/WASI; prefers `*_linked.wasm` when present, set `MOLT_WASM_PREFER_LINKED=0` to opt out).
 - Runner prefers linked wasm when `*_linked.wasm` exists next to the input (disable with `MOLT_WASM_PREFER_LINKED=0`).
 - Linked builds require `wasm-ld` and `wasm-tools` (install via Homebrew `llvm` + `wasm-tools` or Cargo).
@@ -66,6 +80,28 @@
 
 ## Testing Guidelines
 - Use `pytest tests/differential` for `molt-diff` parity checks against CPython.
+- NON-NEGOTIABLE: Always use the external volume as the outdir root when it is available (prefer `/Volumes/APDataStore/Molt`); if it is not available, write outputs to the repo’s standard build folders (for example `logs/`, `bench/results/`, `target/`, `dist/`, `build/`, `wasm/`, or `runtime/**/target/`) and never to the repo root.
+- Differential artifacts can be redirected to an external volume to avoid local disk pressure.
+  - Set `MOLT_DIFF_ROOT` to an absolute path; all per-test build artifacts, caches, and temp dirs will live under it.
+  - Optional: set `MOLT_DIFF_TMPDIR` to override only the temp root.
+  - Optional: set `MOLT_CACHE` to a shared path to reuse Molt codegen artifacts across tests (dramatically faster on large suites).
+  - Optional: set `MOLT_DIFF_KEEP=1` to preserve per-test artifacts after each run.
+  - Optional: set `MOLT_DIFF_TRUSTED=1` to force trusted mode for diff runs (defaults to trusted unless `MOLT_DEV_TRUSTED=0`).
+  - Default to a shorter timeout unless a test is known to be slow: `MOLT_DIFF_TIMEOUT=180` (bump per-test only when needed).
+  - Example (external volume + shared cache + temp root): `MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache MOLT_DIFF_ROOT=/Volumes/APDataStore/Molt MOLT_DIFF_TMPDIR=/Volumes/APDataStore/Molt/tmp MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`.
+- Example (RSS metrics): `MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache MOLT_DIFF_ROOT=/Volumes/APDataStore/Molt MOLT_DIFF_TMPDIR=/Volumes/APDataStore/Molt/tmp MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`.
+- Example (multi-target list, auto-parallel): `MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache MOLT_DIFF_ROOT=/Volumes/APDataStore/Molt MOLT_DIFF_TMPDIR=/Volumes/APDataStore/Molt/tmp MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic/augassign_inplace.py tests/differential/basic/container_mutation.py tests/differential/basic/ellipsis_basic.py`
+  - Example (parallel full sweep + live log + aggregate log + per-test logs):
+    `MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache MOLT_DIFF_ROOT=/Volumes/APDataStore/Molt MOLT_DIFF_TMPDIR=/Volumes/APDataStore/Molt/tmp MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_GLOB='**/*.py' uv run --python 3.12 python3 -u tests/molt_diff.py --jobs 8 --live --log-file /Volumes/APDataStore/Molt/diff_live.log --log-aggregate /Volumes/APDataStore/Molt/diff_full.log --log-dir /Volumes/APDataStore/Molt/diff_logs tests/differential`
+  - Example (monitor live log): `tail -f /Volumes/APDataStore/Molt/diff_live.log`
+  - Example (monitor aggregate log): `tail -f /Volumes/APDataStore/Molt/diff_full.log`
+  - Disable trusted default: `MOLT_DEV_TRUSTED=0 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`.
+  - Optional speed workflow: prebuild runtime (`cargo build --release --package molt-runtime`), then do a two-pass diff run (no RSS first, RSS only for failures).
+  - Always update `tests/differential/INDEX.md` after diff runs:
+    - Record the run date/time, host Python (`uv run --python 3.12/3.13/3.14`), totals, and failure list.
+    - Use `/Volumes/APDataStore/Molt/rss_metrics.jsonl` to extract the latest per-test status when RSS is enabled.
+    - Prefer re-running only failing tests (Failure Queue) unless a full sweep is explicitly requested.
+- `tests/molt_diff.py` accepts multiple file/dir arguments and runs them in parallel by default (auto `--jobs`); use a shell loop only when you need custom ordering or retries.
 - The `tests/differential/basic/bytes_codec.py` case requires `msgpack` + `cbor2` (install via `uv sync --group dev`); otherwise the diff harness will skip it.
 - Use `tools/cpython_regrtest.py` to track CPython regression parity; it uses `tools/molt_regrtest_shim.py` to run tests via `--molt-cmd`. Keep skip reasons in `tools/cpython_regrtest_skip.txt`, and review `summary.md` + `junit.xml` in `logs/cpython_regrtest/`.
 - `--coverage` now combines host regrtest + Molt subprocess coverage (requires `coverage` and a Python-based `--molt-cmd`; non-Python commands log a warning and skip Molt coverage).

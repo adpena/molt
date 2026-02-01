@@ -31,9 +31,9 @@ management and **Rust** (Cargo + rustup) for the runtime, WASM interop, and “M
 ### CLI workflow (examples)
 - Local dev:
   - `uv venv` (or `uv sync`)
-  - `uv run ruff check .`
-  - `uv run ty check src`
-  - `uv run pytest`
+  - `uv run --python <version> ruff check .`
+  - `uv run --python <version> ty check src`
+  - `uv run --python <version> pytest`
 - CI:
   - Cache uv downloads
   - `uv sync --frozen` (or equivalent) to guarantee exact lock usage

@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Any, NamedTuple
 import time as _time
 import builtins as _builtins
+import sys as _sys
 
 import asyncio as _asyncio
 
@@ -43,6 +44,16 @@ def _load_intrinsic(name: str) -> Any | None:
         return direct
     return getattr(_builtins, name, None)
 
+
+# Force builtin_func emission for intrinsics referenced via string lookups.
+try:
+    _molt_io_wait_new = _molt_io_wait_new  # type: ignore[name-defined]  # noqa: F821
+except NameError:  # pragma: no cover - absent in host CPython
+    _molt_io_wait_new = None
+try:
+    molt_block_on = molt_block_on  # type: ignore[name-defined]  # noqa: F821
+except NameError:  # pragma: no cover - absent in host CPython
+    molt_block_on = None
 
 _molt_io_wait_new = _load_intrinsic("_molt_io_wait_new")
 _molt_block_on = _load_intrinsic("molt_block_on")
@@ -139,5 +150,11 @@ class DefaultSelector(BaseSelector):
 
 SelectSelector = DefaultSelector
 PollSelector = DefaultSelector
-EpollSelector = DefaultSelector
-KqueueSelector = DefaultSelector
+_IS_LINUX = _sys.platform.startswith("linux")
+_HAS_KQUEUE = not _IS_LINUX and _sys.platform != "win32"
+
+if _IS_LINUX:
+    EpollSelector = DefaultSelector
+
+if _HAS_KQUEUE:
+    KqueueSelector = DefaultSelector

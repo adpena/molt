@@ -45,8 +45,8 @@ mod tests {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let resolved = molt_handle_resolve(bits) as *mut u8;
-            assert_eq!(resolved, ptr);
+            let resolved = molt_handle_resolve(bits);
+            assert_eq!(resolved, ptr as u64);
         }
         crate::with_gil_entry!(_py, {
             unsafe { dec_ref_ptr(_py, ptr) };

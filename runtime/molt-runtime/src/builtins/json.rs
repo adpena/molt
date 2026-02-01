@@ -513,7 +513,7 @@ pub extern "C" fn molt_json_parse_scalar_obj(obj_bits: u64) -> u64 {
             });
             match obj {
                 Ok(val) => val.bits(),
-                Err(_) => return raise_exception::<_>(_py, "ValueError", "invalid JSON payload"),
+                Err(_) => raise_exception::<_>(_py, "ValueError", "invalid JSON payload"),
             }
         }
     })
@@ -539,7 +539,7 @@ pub extern "C" fn molt_msgpack_parse_scalar_obj(obj_bits: u64) -> u64 {
             let v = match rmpv::decode::read_value(&mut cursor) {
                 Ok(val) => val,
                 Err(_) => {
-                    return raise_exception::<_>(_py, "ValueError", "invalid msgpack payload")
+                    return raise_exception::<u64>(_py, "ValueError", "invalid msgpack payload");
                 }
             };
             let obj = PARSE_ARENA.with(|arena| {
@@ -550,9 +550,7 @@ pub extern "C" fn molt_msgpack_parse_scalar_obj(obj_bits: u64) -> u64 {
             });
             match obj {
                 Ok(val) => val.bits(),
-                Err(_) => {
-                    return raise_exception::<_>(_py, "ValueError", "invalid msgpack payload")
-                }
+                Err(_) => raise_exception::<u64>(_py, "ValueError", "invalid msgpack payload"),
             }
         }
     })
@@ -576,7 +574,9 @@ pub extern "C" fn molt_cbor_parse_scalar_obj(obj_bits: u64) -> u64 {
             let slice = std::slice::from_raw_parts(data, len);
             let v: serde_cbor::Value = match serde_cbor::from_slice(slice) {
                 Ok(val) => val,
-                Err(_) => return raise_exception::<_>(_py, "ValueError", "invalid cbor payload"),
+                Err(_) => {
+                    return raise_exception::<u64>(_py, "ValueError", "invalid cbor payload");
+                }
             };
             let obj = PARSE_ARENA.with(|arena| {
                 let mut arena = arena.borrow_mut();
@@ -586,7 +586,7 @@ pub extern "C" fn molt_cbor_parse_scalar_obj(obj_bits: u64) -> u64 {
             });
             match obj {
                 Ok(val) => val.bits(),
-                Err(_) => return raise_exception::<_>(_py, "ValueError", "invalid cbor payload"),
+                Err(_) => raise_exception::<u64>(_py, "ValueError", "invalid cbor payload"),
             }
         }
     })

@@ -20,6 +20,9 @@ Canonical status lives in `docs/spec/STATUS.md` (README and ROADMAP are kept in 
 - **AOT Compilation**: Uses Cranelift to generate high-performance machine code.
 - **Differential Testing**: Verified against CPython 3.12.
 - **Generic aliases (PEP 585)**: builtin `list`/`dict`/`tuple`/`set`/`frozenset`/`type` support `__origin__`/`__args__`.
+- **Dict union (PEP 584)**: `dict | dict` and `dict |= dict` parity.
+- **Union types (PEP 604)**: `X | Y` unions with `types.UnionType` (`types.Union` on 3.14).
+- **Zip strictness (PEP 618)**: `zip(strict=...)` parity.
 - **Sets**: literals + constructor with add/contains/iter/len + algebra (`|`, `&`, `-`, `^`); `frozenset` constructor + algebra.
 - **Numeric builtins**: `int()`/`round()`/`math.trunc()` with `__int__`/`__index__`/`__round__`/`__trunc__` hooks and base parsing for string/bytes.
 - **BigInt fallback**: heap-backed ints for values beyond inline range.
@@ -44,6 +47,7 @@ Canonical status lives in `docs/spec/STATUS.md` (README and ROADMAP are kept in 
 - **Exceptions**: `try/except/else/finally` + `raise`/reraise support; still partial vs full BaseException semantics (see `docs/spec/areas/compat/0014_TYPE_COVERAGE_MATRIX.md`).
 - **Imports**: static module graph only; no dynamic import hooks or full package resolution.
 - **Stdlib**: partial shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pickle` (protocol 0 only), `pprint`, `string`, `typing`, `sys`, `os`, `gc`, `random`, `test` (regrtest helpers only), `asyncio`, `threading`, `bisect`, `heapq`, `functools`, `itertools`, `collections`, `socket` (error classes only), `select` (error alias only); import-only stubs for `collections.abc`, `importlib`, `importlib.util` (dynamic import hooks pending).
+- **Process-based concurrency**: spawn-based `multiprocessing` (Process/Pool/Queue/Pipe/SharedValue/SharedArray) behind capabilities; `fork`/`forkserver` map to spawn semantics; `subprocess`/`concurrent.futures` pending.
 - **Reflection**: `type`, `isinstance`, `issubclass`, and `object` are supported with C3 MRO + multiple inheritance; no metaclasses or dynamic `type()` construction.
 - **Async iteration**: `anext` returns an awaitable; `__aiter__` must return an async iterator (awaitable `__aiter__` still pending).
 - **Asyncio**: shim exposes `run`/`sleep`, `EventLoop`, `Task`/`Future`, `create_task`/`ensure_future`/`current_task`, `Event`, `wait`, `wait_for`, `shield`, and basic `gather`; task groups and I/O adapters pending.
@@ -227,8 +231,8 @@ export MOLT_WORKER_CMD="molt-worker --stdio --exports demo/molt_worker_app/molt_
 ## CLI overview
 
 - `molt run <file.py>`: run CPython with Molt shims for parity checks (`--trusted` disables capability checks).
-- `molt test`: run the dev test suite (`tools/dev.py test`); `--suite diff|pytest` available (`--trusted` disables capability checks).
-- `molt diff <path>`: differential testing via `tests/molt_diff.py` (`--trusted` disables capability checks).
+- `molt test`: run the dev test suite (wraps `uv run --python 3.12 python3 tools/dev.py test`); `--suite diff|pytest` available (`--trusted` disables capability checks).
+- `molt diff <path>`: differential testing via `uv run --python 3.12 python3 tests/molt_diff.py` (`--trusted` disables capability checks).
 - `molt build --target <triple> --cache --deterministic --capabilities <file|profile>`: cross-target builds with lockfile + capability checks (`--trusted` for trusted native deployments).
 - `molt bench` / `molt profile`: wrappers over `tools/bench.py` and `tools/profile.py`.
 - `molt doctor`: toolchain readiness checks (uv/cargo/clang/locks).
@@ -282,19 +286,19 @@ See `docs/spec/areas/` for detailed architectural decisions.
 
 ### CI Parity Jobs
 - **WASM parity**: CI runs a dedicated `test-wasm` job that executes `tests/test_wasm_control_flow.py` via Node.
-- **Differential suite**: CI runs `python tests/molt_diff.py tests/differential/basic` on CPython 3.12.
+- **Differential suite**: CI runs `uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic` on CPython 3.12.
 
 ### Local Commands
-- Python: `tools/dev.py test` (runs `pytest -q` via `uv run` on Python 3.12/3.13/3.14)
+- Python: `uv run --python 3.12 python3 tools/dev.py test` (runs `pytest -q` via `uv run` on Python 3.12/3.13/3.14)
 - Rust: `cargo test`
-- Differential: `python tests/molt_diff.py <case.py>`
+- Differential: `uv run --python 3.12 python3 tests/molt_diff.py <case.py>`
 - Bench setup (optional): `uv sync --group bench --python 3.12` (Numba requires <3.13)
 - Dev installs include Cython/Numba by default (via the `dev` dependency group).
 - Depyler baseline (optional): `cargo install depyler`
 - Codon baseline (optional): install `codon` and run benches with an arm64 interpreter on Apple Silicon (e.g., `uv run --python /opt/homebrew/bin/python3.14 python3 tools/bench.py --json-out bench/results/bench.json`); see `bench/README.md` for current skips.
-- WASM build (linked): `python3 -m molt.cli build --target wasm --linked examples/hello.py` (emits `output.wasm` + `output_linked.wasm`; linked requires `wasm-ld` + `wasm-tools`).
-- WASM build (custom linked output): `python3 -m molt.cli build --target wasm --linked --linked-output dist/app_linked.wasm examples/hello.py`.
-- WASM build (require linked): `python3 -m molt.cli build --target wasm --require-linked examples/hello.py` (linked output is primary; unlinked artifact removed).
+- WASM build (linked): `uv run --python 3.12 python3 -m molt.cli build --target wasm --linked examples/hello.py` (emits `output.wasm` + `output_linked.wasm`; linked requires `wasm-ld` + `wasm-tools`).
+- WASM build (custom linked output): `uv run --python 3.12 python3 -m molt.cli build --target wasm --linked --linked-output dist/app_linked.wasm examples/hello.py`.
+- WASM build (require linked): `uv run --python 3.12 python3 -m molt.cli build --target wasm --require-linked examples/hello.py` (linked output is primary; unlinked artifact removed).
 - WASM run (Node/WASI): `node run_wasm.js /path/to/output.wasm` (prefers `*_linked.wasm` when present; disable with `MOLT_WASM_PREFER_LINKED=0`).
 - WASM bench: `uv run --python 3.14 python3 tools/bench_wasm.py --json-out bench/results/bench_wasm.json`, then compare against the native CPython baselines in `bench/results/bench.json`.
 - WASM linked bench: `uv run --python 3.14 python3 tools/bench_wasm.py --linked --json-out bench/results/bench_wasm_linked.json` (requires `wasm-ld` + `wasm-tools`; add `--require-linked` to fail fast when linking is unavailable).

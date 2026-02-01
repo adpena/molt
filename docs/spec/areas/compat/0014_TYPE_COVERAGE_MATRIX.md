@@ -12,7 +12,7 @@
 | bool | truthiness, ops, repr | Supported | P0 | TC0 | runtime |
 | int | arithmetic, comparisons, hash | Supported | P0 | TC0 | runtime |
 | float | arithmetic, comparisons, repr | Supported | P0 | TC0 | runtime |
-| complex | arithmetic, comparisons, repr | Planned | P1 | TC2 | runtime |
+| complex | arithmetic, comparisons, repr | Supported | P1 | TC2 | runtime |
 | str | len, index/slice via `__index__`, iter, find/split/splitlines/partition/rpartition/replace/startswith/endswith/count/join/strip/lstrip/rstrip/lower/upper/capitalize/encode, concat, repr | Partial | P0 | TC1 | runtime/frontend |
 | bytes | len, index/slice via `__index__`, iter, find (bytes-like/int needles)/count/startswith/endswith/split/splitlines/partition/rpartition/replace (start/end slices)/decode, concat | Partial | P0 | TC1 | runtime |
 | bytearray | mutability, index/slice via `__index__`, slice assign/delete, iter, find (bytes-like/int needles)/count/startswith/endswith/split/splitlines/partition/rpartition/replace (start/end slices)/decode, concat, in-place concat/repeat | Partial | P0 | TC1 | runtime |
@@ -51,7 +51,7 @@
 | chr | int to Unicode char | Supported | P2 | TC3 | runtime |
 | classmethod | descriptor constructor | Partial | P1 | TC2 | runtime |
 | compile | code object (restricted) | Planned | P2 | TC3 | stdlib |
-| complex | complex constructor | Planned | P1 | TC2 | frontend/runtime |
+| complex | complex constructor | Supported | P1 | TC2 | frontend/runtime |
 | delattr | attribute deletion | Partial | P2 | TC3 | runtime |
 | dict | dict constructor | Partial | P1 | TC2 | frontend/runtime |
 | dir | attribute listing | Planned | P2 | TC3 | runtime |
@@ -135,7 +135,7 @@
   - TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:missing): async comprehensions (async for/await in comprehensions).
   - Implemented (partial): builtin iterators (`iter` with sentinel, `next`, `reversed`, `zip`, `map`, `filter`).
   - Implemented (partial): builtin numeric ops (`abs`, `divmod`, `min`, `max`, `sum`) for numeric types.
-  - TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:partial): builtin conversions (`complex`, `str`, `bool`).
+  - TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:partial): builtin conversions (`str`, `bool`).
   - Implemented (partial): `round`/`trunc` lowering with `__round__`/`__trunc__` hooks.
   - Implemented (partial): `int` conversion from int/float/str/bytes + `__int__`/`__index__` hooks.
 - Implemented: `aiter`/`anext` lowering + async-for parity with `__aiter__`/`__anext__` support (sync-iter fallback retained for now).
@@ -171,7 +171,7 @@
 - Implemented: descriptor deleter semantics (`__delete__`, property deleter) + attribute deletion wiring.
 
 ## 4. Frontend + IR Coverage
-- Lower set literals/constructors + set algebra + frozenset; complex and exceptions remain.
+- Lower set literals/constructors + set algebra + frozenset; exceptions remain.
 - Add IR ops for raise, try/except, unpacking, and dunder dispatch.
 - Implemented: `list.extend` consumes generic iterables via the iter protocol (range/generator/etc.).
 - Implemented: augmented assignment lowers to in-place list/bytearray/set ops (`+=`, `*=`, `|=`, `&=`, `^=`, `-=`) with attribute/subscript targets.

@@ -1,4 +1,4 @@
-use cranelift::codegen::ir::FuncRef;
+use cranelift::codegen::ir::{FuncRef, Function};
 use cranelift::codegen::isa;
 use cranelift::codegen::Context;
 use cranelift::prelude::*;
@@ -7,6 +7,7 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
+use std::sync::OnceLock;
 
 pub mod wasm;
 
@@ -31,6 +32,67 @@ const HEADER_SIZE_BYTES: i32 = 40;
 const HEADER_STATE_OFFSET: i32 = -(HEADER_SIZE_BYTES - 16);
 const HEADER_FLAGS_OFFSET: i32 = -8;
 const HEADER_HAS_PTRS_FLAG: i64 = 1;
+const HEADER_COROUTINE_FLAG: i64 = 1 << 12;
+
+fn find_zero_pred_blocks(func: &Function) -> Vec<Block> {
+    let mut preds: HashMap<Block, usize> = HashMap::new();
+    for block in func.layout.blocks() {
+        preds.entry(block).or_insert(0);
+    }
+    for block in func.layout.blocks() {
+        for inst in func.layout.block_insts(block) {
+            for dest in func.dfg.insts[inst].branch_destination(&func.dfg.jump_tables) {
+                let dest_block = dest.block(&func.dfg.value_lists);
+                *preds.entry(dest_block).or_insert(0) += 1;
+            }
+        }
+    }
+    let entry = func.layout.entry_block();
+    preds
+        .into_iter()
+        .filter(|(block, count)| Some(*block) != entry && *count == 0)
+        .map(|(block, _)| block)
+        .collect()
+}
+
+fn ensure_block_in_layout(builder: &mut FunctionBuilder, block: Block) {
+    if builder.func.layout.is_block_inserted(block) {
+        return;
+    }
+    if let Some(current) = builder.current_block() {
+        if builder.func.layout.is_block_inserted(current) {
+            builder.insert_block_after(block, current);
+            return;
+        }
+    }
+    builder.func.layout.append_block(block);
+}
+
+fn block_has_terminator(builder: &FunctionBuilder, block: Block) -> bool {
+    builder
+        .func
+        .layout
+        .last_inst(block)
+        .map(|inst| builder.func.dfg.insts[inst].opcode().is_terminator())
+        .unwrap_or(false)
+}
+
+fn sync_block_filled(builder: &FunctionBuilder, is_block_filled: &mut bool) {
+    if let Some(block) = builder.current_block() {
+        if block_has_terminator(builder, block) {
+            *is_block_filled = true;
+        }
+    }
+}
+
+fn switch_to_block_tracking(
+    builder: &mut FunctionBuilder,
+    block: Block,
+    is_block_filled: &mut bool,
+) {
+    builder.switch_to_block(block);
+    *is_block_filled = block_has_terminator(builder, block);
+}
 
 fn box_int(val: i64) -> i64 {
     let masked = (val as u64) & POINTER_MASK;
@@ -175,6 +237,41 @@ struct TrackedValue {
     value: Value,
 }
 
+#[derive(Clone, Copy)]
+struct VarValue(Value);
+
+impl std::ops::Deref for VarValue {
+    type Target = Value;
+
+    fn deref(&self) -> &Value {
+        &self.0
+    }
+}
+
+fn var_get(
+    builder: &mut FunctionBuilder,
+    vars: &HashMap<String, Variable>,
+    name: &str,
+) -> Option<VarValue> {
+    vars.get(name).map(|var| VarValue(builder.use_var(*var)))
+}
+
+fn def_var_named(
+    builder: &mut FunctionBuilder,
+    vars: &HashMap<String, Variable>,
+    name: impl AsRef<str>,
+    val: Value,
+) {
+    let name_ref = name.as_ref();
+    if name_ref == "none" {
+        return;
+    }
+    let var = *vars
+        .get(name_ref)
+        .unwrap_or_else(|| panic!("Var not found: {name_ref}"));
+    builder.def_var(var, val);
+}
+
 fn parse_inst_id(text: &str) -> Option<usize> {
     let bytes = text.as_bytes();
     let mut i = 0;
@@ -240,6 +337,39 @@ fn dump_ir_matches(config: &DumpIrConfig, func_name: &str) -> bool {
         return true;
     }
     func_name == filter || func_name.contains(filter)
+}
+
+struct TraceOpsConfig {
+    stride: usize,
+}
+
+fn should_trace_ops(func_name: &str) -> Option<TraceOpsConfig> {
+    static RAW: OnceLock<Option<String>> = OnceLock::new();
+    let raw = RAW
+        .get_or_init(|| {
+            std::env::var("MOLT_TRACE_OP_PROGRESS")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .as_ref()?;
+    let (filter_part, stride_part) = match raw.split_once(':') {
+        Some((left, right)) => (left.trim(), Some(right.trim())),
+        None => (raw.as_str(), None),
+    };
+    let stride = stride_part
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(5_000);
+    let matches = filter_part == "1"
+        || filter_part.eq_ignore_ascii_case("all")
+        || func_name == filter_part
+        || func_name.contains(filter_part);
+    if matches {
+        Some(TraceOpsConfig { stride })
+    } else {
+        None
+    }
 }
 
 fn dump_ir_ops(func_ir: &FunctionIR, mode: &str) {
@@ -379,102 +509,39 @@ fn compute_last_use(ops: &[OpIR]) -> HashMap<String, usize> {
     last_use
 }
 
-fn compute_first_def(ops: &[OpIR], params: &[String]) -> HashMap<String, usize> {
-    let mut first_def = HashMap::new();
+fn collect_var_names(params: &[String], ops: &[OpIR]) -> Vec<String> {
+    let mut names: HashSet<String> = HashSet::new();
     for name in params {
-        first_def.entry(name.clone()).or_insert(0);
+        if name != "none" {
+            names.insert(name.clone());
+        }
     }
-    for (idx, op) in ops.iter().enumerate() {
+    for op in ops {
         if let Some(out) = &op.out {
             if out != "none" {
-                first_def.entry(out.clone()).or_insert(idx);
+                names.insert(out.clone());
+                if op.kind == "const_str" || op.kind == "const_bytes" {
+                    names.insert(format!("{}_ptr", out));
+                    names.insert(format!("{}_len", out));
+                }
+            }
+        }
+        if let Some(var) = &op.var {
+            if var != "none" {
+                names.insert(var.clone());
+            }
+        }
+        if let Some(args) = &op.args {
+            for name in args {
+                if name != "none" {
+                    names.insert(name.clone());
+                }
             }
         }
     }
-    first_def
-}
-
-#[allow(clippy::too_many_arguments)]
-fn ensure_label_params(
-    label_id: i64,
-    label_ids: &HashSet<i64>,
-    label_op_idx: &HashMap<i64, usize>,
-    first_def: &HashMap<String, usize>,
-    last_use: &HashMap<String, usize>,
-    exclude_names: &HashSet<String>,
-    label_param_names: &mut HashMap<i64, Vec<String>>,
-    state_blocks: &HashMap<i64, Block>,
-    builder: &mut FunctionBuilder,
-    vars_filter: Option<&HashMap<String, Value>>,
-) -> Vec<String> {
-    if !label_ids.contains(&label_id) {
-        return Vec::new();
-    }
-    if let Some(names) = label_param_names.get(&label_id) {
-        return names.clone();
-    }
-    let label_idx = label_op_idx.get(&label_id).copied().unwrap_or(0);
-    let mut names: Vec<String> = last_use
-        .iter()
-        .filter(|(name, last_idx)| {
-            !exclude_names.contains(*name)
-                && **last_idx > label_idx
-                && first_def.get(*name).copied().unwrap_or(usize::MAX) <= label_idx
-                && vars_filter.is_none_or(|vars| vars.contains_key(*name))
-        })
-        .map(|(name, _)| name.clone())
-        .collect();
+    let mut names: Vec<String> = names.into_iter().collect();
     names.sort();
-    let block = state_blocks[&label_id];
-    if !names.is_empty() {
-        for _ in &names {
-            builder.append_block_param(block, types::I64);
-        }
-    }
-    label_param_names.insert(label_id, names.clone());
     names
-}
-
-#[allow(clippy::too_many_arguments)]
-fn build_label_jump_args(
-    label_id: i64,
-    label_ids: &HashSet<i64>,
-    label_op_idx: &HashMap<i64, usize>,
-    first_def: &HashMap<String, usize>,
-    last_use: &HashMap<String, usize>,
-    exclude_names: &HashSet<String>,
-    label_param_names: &mut HashMap<i64, Vec<String>>,
-    state_blocks: &HashMap<i64, Block>,
-    builder: &mut FunctionBuilder,
-    vars_for_args: &HashMap<String, Value>,
-    vars_filter: Option<&HashMap<String, Value>>,
-) -> Vec<Value> {
-    if !label_ids.contains(&label_id) {
-        return Vec::new();
-    }
-    let names = ensure_label_params(
-        label_id,
-        label_ids,
-        label_op_idx,
-        first_def,
-        last_use,
-        exclude_names,
-        label_param_names,
-        state_blocks,
-        builder,
-        Some(vars_filter.unwrap_or(vars_for_args)),
-    );
-    if names.is_empty() {
-        return Vec::new();
-    }
-    names
-        .iter()
-        .map(|name| {
-            *vars_for_args
-                .get(name)
-                .unwrap_or_else(|| panic!("label arg not found: {name}"))
-        })
-        .collect()
 }
 
 fn drain_cleanup_tracked(
@@ -512,6 +579,26 @@ fn collect_cleanup_tracked(
         .collect()
 }
 
+fn drain_cleanup_entry_tracked(
+    names: &mut Vec<String>,
+    entry_vars: &HashMap<String, Value>,
+    last_use: &HashMap<String, usize>,
+    op_idx: usize,
+) -> Vec<Value> {
+    let mut cleanup = Vec::new();
+    names.retain(|name| {
+        let last = last_use.get(name).copied().unwrap_or(op_idx);
+        if last <= op_idx {
+            if let Some(val) = entry_vars.get(name) {
+                cleanup.push(*val);
+            }
+            return false;
+        }
+        true
+    });
+    cleanup
+}
+
 #[derive(Clone, Hash, Eq, PartialEq)]
 struct TrampolineKey {
     name: String,
@@ -540,13 +627,9 @@ struct IfFrame {
     else_block: Block,
     merge_block: Block,
     has_else: bool,
-    then_exit: Option<(Block, bool)>,
-    else_exit: Option<(Block, bool)>,
     then_terminal: bool,
     else_terminal: bool,
-    phi_ops: Option<Vec<(String, String, String)>>,
-    vars_snapshot: HashMap<String, Value>,
-    vars_then: Option<HashMap<String, Value>>,
+    phi_ops: Vec<(String, String, String)>,
 }
 
 struct LoopFrame {
@@ -883,34 +966,32 @@ impl SimpleBackend {
             )
         });
 
-        let mut vars = HashMap::new();
+        let mut vars: HashMap<String, Variable> = HashMap::new();
+        let var_names = collect_var_names(&func_ir.params, &func_ir.ops);
+        for (idx, name) in var_names.iter().enumerate() {
+            let var = Variable::new(idx);
+            builder.declare_var(var, types::I64);
+            vars.insert(name.clone(), var);
+        }
+        let trace_ops = should_trace_ops(&func_ir.name);
+        let trace_stride = trace_ops.as_ref().map(|cfg| cfg.stride);
+        let mut trace_name_var: Option<Variable> = None;
+        let mut trace_len_var: Option<Variable> = None;
+        let mut trace_func: Option<FuncRef> = None;
+        let mut next_var_index = var_names.len();
         let mut tracked_vars = Vec::new();
         let mut tracked_obj_vars = Vec::new();
         let mut entry_vars: HashMap<String, Value> = HashMap::new();
         let mut state_blocks = HashMap::new();
         let mut resume_states: HashSet<i64> = HashSet::new();
+        let mut reachable_blocks: HashSet<Block> = HashSet::new();
         let mut is_block_filled = false;
         let mut if_stack: Vec<IfFrame> = Vec::new();
-        let mut exception_vars_stack: Vec<HashMap<String, Value>> = Vec::new();
         let mut loop_stack: Vec<LoopFrame> = Vec::new();
         let mut loop_depth: i32 = 0;
         let mut block_tracked_obj: HashMap<Block, Vec<TrackedValue>> = HashMap::new();
         let mut block_tracked_ptr: HashMap<Block, Vec<TrackedValue>> = HashMap::new();
         let last_use = compute_last_use(&func_ir.ops);
-        let first_def = compute_first_def(&func_ir.ops, &func_ir.params);
-        let mut label_ids: HashSet<i64> = HashSet::new();
-        let mut label_op_idx: HashMap<i64, usize> = HashMap::new();
-        let mut label_param_names: HashMap<i64, Vec<String>> = HashMap::new();
-        let param_names: HashSet<String> = func_ir.params.iter().cloned().collect();
-        let mut param_vars: HashMap<String, Value> = HashMap::new();
-
-        for (idx, op) in func_ir.ops.iter().enumerate() {
-            if op.kind == "label" || op.kind == "state_label" {
-                let label_id = op.value.expect("label missing value");
-                label_ids.insert(label_id);
-                label_op_idx.entry(label_id).or_insert(idx);
-            }
-        }
 
         let entry_block = builder.create_block();
         let master_return_block = builder.create_block();
@@ -918,6 +999,7 @@ impl SimpleBackend {
             builder.append_block_param(master_return_block, types::I64);
         }
 
+        reachable_blocks.insert(entry_block);
         builder.switch_to_block(entry_block);
 
         let mut dec_ref_sig = self.module.make_signature();
@@ -977,24 +1059,69 @@ impl SimpleBackend {
             .module
             .declare_func_in_func(profile_enabled_callee, builder.func);
 
+        if trace_stride.is_some() {
+            let trace_suffix: String = func_ir
+                .name
+                .chars()
+                .map(|ch| {
+                    if ch.is_ascii_alphanumeric() || ch == '_' {
+                        ch
+                    } else {
+                        '_'
+                    }
+                })
+                .collect();
+            let data_id = self
+                .module
+                .declare_data(
+                    &format!("trace_fn_{trace_suffix}"),
+                    Linkage::Local,
+                    false,
+                    false,
+                )
+                .unwrap();
+            let mut data_ctx = DataDescription::new();
+            data_ctx.define(func_ir.name.as_bytes().to_vec().into_boxed_slice());
+            self.module.define_data(data_id, &data_ctx).unwrap();
+            let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
+            let name_ptr = builder.ins().symbol_value(types::I64, global_ptr);
+            let name_len = builder.ins().iconst(types::I64, func_ir.name.len() as i64);
+
+            let name_var = Variable::new(next_var_index);
+            next_var_index += 1;
+            builder.declare_var(name_var, types::I64);
+            builder.def_var(name_var, name_ptr);
+            trace_name_var = Some(name_var);
+
+            let len_var = Variable::new(next_var_index);
+            builder.declare_var(len_var, types::I64);
+            builder.def_var(len_var, name_len);
+            trace_len_var = Some(len_var);
+
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            let callee = self
+                .module
+                .declare_function("molt_debug_trace", Linkage::Import, &sig)
+                .unwrap();
+            trace_func = Some(self.module.declare_func_in_func(callee, builder.func));
+        }
+
         for (i, ty) in param_types.iter().enumerate() {
             let val = builder.append_block_param(entry_block, *ty);
 
             let name = &func_ir.params[i];
 
-            vars.insert(name.clone(), val);
+            def_var_named(&mut builder, &vars, name, val);
         }
 
-        if stateful {
-            if let Some(self_ptr) = vars.get("self").copied() {
-                let self_bits = box_ptr_value(&mut builder, self_ptr);
-                vars.insert("self".to_string(), self_bits);
-            }
-        }
-        for name in &func_ir.params {
-            if let Some(val) = vars.get(name).copied() {
-                param_vars.insert(name.clone(), val);
-            }
+        if stateful && vars.contains_key("self") {
+            let self_ptr = var_get(&mut builder, &vars, "self").expect("Self not found");
+            let self_bits = box_ptr_value(&mut builder, *self_ptr);
+            def_var_named(&mut builder, &vars, "self", self_bits);
         }
 
         let profile_enabled_val = {
@@ -1025,6 +1152,28 @@ impl SimpleBackend {
             }
         }
 
+        let exception_label_ids: HashSet<i64> = func_ir
+            .ops
+            .iter()
+            .filter(|op| op.kind == "check_exception")
+            .filter_map(|op| op.value)
+            .collect();
+        let function_exception_label_id = func_ir
+            .ops
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, op)| {
+                if matches!(op.kind.as_str(), "label" | "state_label") {
+                    let id = op.value?;
+                    if exception_label_ids.contains(&id) {
+                        return Some((idx, id));
+                    }
+                }
+                None
+            })
+            .max_by_key(|(idx, _)| *idx)
+            .map(|(_, id)| id);
+
         // 2. Implementation
         let ops = &func_ir.ops;
         let mut skip_ops: HashSet<usize> = HashSet::new();
@@ -1033,6 +1182,7 @@ impl SimpleBackend {
                 continue;
             }
             let op = ops[op_idx].clone();
+            sync_block_filled(&builder, &mut is_block_filled);
             if is_block_filled {
                 if op.kind == "if" {
                     let mut depth = 0usize;
@@ -1072,6 +1222,22 @@ impl SimpleBackend {
                     _ => continue,
                 }
             }
+            if !is_block_filled {
+                if let Some(stride) = trace_stride {
+                    if op_idx % stride == 0 {
+                        if let (Some(name_var), Some(len_var), Some(trace_fn)) =
+                            (trace_name_var, trace_len_var, trace_func)
+                        {
+                            let name_bits = builder.use_var(name_var);
+                            let len_bits = builder.use_var(len_var);
+                            let idx_bits = builder.ins().iconst(types::I64, op_idx as i64);
+                            builder
+                                .ins()
+                                .call(trace_fn, &[name_bits, len_bits, idx_bits]);
+                        }
+                    }
+                }
+            }
             let out_name = op.out.clone();
             let mut output_is_ptr = false;
 
@@ -1080,7 +1246,7 @@ impl SimpleBackend {
                     let val = op.value.unwrap();
                     let boxed = box_int(val);
                     let iconst = builder.ins().iconst(types::I64, boxed);
-                    vars.insert(op.out.unwrap(), iconst);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), iconst);
                 }
                 "const_bigint" => {
                     let s = op.s_value.as_ref().expect("BigInt string not found");
@@ -1113,17 +1279,17 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[ptr, len]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(out_name, res);
+                    def_var_named(&mut builder, &vars, out_name, res);
                 }
                 "const_bool" => {
                     let val = op.value.unwrap();
                     let boxed = box_bool(val);
                     let iconst = builder.ins().iconst(types::I64, boxed);
-                    vars.insert(op.out.unwrap(), iconst);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), iconst);
                 }
                 "const_none" => {
                     let iconst = builder.ins().iconst(types::I64, box_none());
-                    vars.insert(op.out.unwrap(), iconst);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), iconst);
                 }
                 "const_not_implemented" => {
                     let mut sig = self.module.make_signature();
@@ -1135,7 +1301,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "const_ellipsis" => {
                     let mut sig = self.module.make_signature();
@@ -1147,13 +1313,13 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "const_float" => {
                     let val = op.f_value.expect("Float value not found");
                     let boxed = box_float(val);
                     let iconst = builder.ins().iconst(types::I64, boxed);
-                    vars.insert(op.out.unwrap(), iconst);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), iconst);
                 }
                 "const_str" => {
                     let s = op.s_value.as_ref().unwrap();
@@ -1175,8 +1341,8 @@ impl SimpleBackend {
                     let ptr = builder.ins().symbol_value(types::I64, global_ptr);
                     let len = builder.ins().iconst(types::I64, s.len() as i64);
 
-                    vars.insert(format!("{}_ptr", out_name), ptr);
-                    vars.insert(format!("{}_len", out_name), len);
+                    def_var_named(&mut builder, &vars, format!("{}_ptr", out_name), ptr);
+                    def_var_named(&mut builder, &vars, format!("{}_len", out_name), len);
 
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64)); // bytes ptr
@@ -1197,7 +1363,7 @@ impl SimpleBackend {
                     builder.ins().call(local_callee, &[ptr, len, out_ptr]);
                     let boxed = builder.ins().load(types::I64, MemFlags::new(), out_ptr, 0);
 
-                    vars.insert(out_name, boxed);
+                    def_var_named(&mut builder, &vars, out_name, boxed);
                 }
                 "const_bytes" => {
                     let bytes = op.bytes.as_ref().expect("Bytes not found");
@@ -1219,8 +1385,8 @@ impl SimpleBackend {
                     let ptr = builder.ins().symbol_value(types::I64, global_ptr);
                     let len = builder.ins().iconst(types::I64, bytes.len() as i64);
 
-                    vars.insert(format!("{}_ptr", out_name), ptr);
-                    vars.insert(format!("{}_len", out_name), len);
+                    def_var_named(&mut builder, &vars, format!("{}_ptr", out_name), ptr);
+                    def_var_named(&mut builder, &vars, format!("{}_len", out_name), len);
 
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64)); // bytes ptr
@@ -1241,12 +1407,12 @@ impl SimpleBackend {
                     builder.ins().call(local_callee, &[ptr, len, out_ptr]);
                     let boxed = builder.ins().load(types::I64, MemFlags::new(), out_ptr, 0);
 
-                    vars.insert(out_name, boxed);
+                    def_var_named(&mut builder, &vars, out_name, boxed);
                 }
                 "add" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).expect("LHS not found");
-                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
                         let lhs_val = unbox_int(&mut builder, *lhs);
                         let rhs_val = unbox_int(&mut builder, *rhs);
@@ -1291,12 +1457,12 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "inplace_add" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).expect("LHS not found");
-                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
                         let lhs_val = unbox_int(&mut builder, *lhs);
                         let rhs_val = unbox_int(&mut builder, *rhs);
@@ -1341,12 +1507,12 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "vec_sum_int" => {
                     let args = op.args.as_ref().unwrap();
-                    let seq = vars.get(&args[0]).expect("Seq arg not found");
-                    let acc = vars.get(&args[1]).expect("Acc arg not found");
+                    let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
+                    let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -1358,12 +1524,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "vec_sum_int_trusted" => {
                     let args = op.args.as_ref().unwrap();
-                    let seq = vars.get(&args[0]).expect("Seq arg not found");
-                    let acc = vars.get(&args[1]).expect("Acc arg not found");
+                    let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
+                    let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -1375,13 +1541,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "vec_sum_int_range" => {
                     let args = op.args.as_ref().unwrap();
-                    let seq = vars.get(&args[0]).expect("Seq arg not found");
-                    let acc = vars.get(&args[1]).expect("Acc arg not found");
-                    let start = vars.get(&args[2]).expect("Start arg not found");
+                    let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
+                    let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
+                    let start =
+                        var_get(&mut builder, &vars, &args[2]).expect("Start arg not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -1394,13 +1561,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "vec_sum_int_range_trusted" => {
                     let args = op.args.as_ref().unwrap();
-                    let seq = vars.get(&args[0]).expect("Seq arg not found");
-                    let acc = vars.get(&args[1]).expect("Acc arg not found");
-                    let start = vars.get(&args[2]).expect("Start arg not found");
+                    let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
+                    let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
+                    let start =
+                        var_get(&mut builder, &vars, &args[2]).expect("Start arg not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -1413,12 +1581,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "vec_prod_int" => {
                     let args = op.args.as_ref().unwrap();
-                    let seq = vars.get(&args[0]).expect("Seq arg not found");
-                    let acc = vars.get(&args[1]).expect("Acc arg not found");
+                    let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
+                    let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -1430,12 +1598,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "vec_prod_int_trusted" => {
                     let args = op.args.as_ref().unwrap();
-                    let seq = vars.get(&args[0]).expect("Seq arg not found");
-                    let acc = vars.get(&args[1]).expect("Acc arg not found");
+                    let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
+                    let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -1447,13 +1615,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "vec_prod_int_range" => {
                     let args = op.args.as_ref().unwrap();
-                    let seq = vars.get(&args[0]).expect("Seq arg not found");
-                    let acc = vars.get(&args[1]).expect("Acc arg not found");
-                    let start = vars.get(&args[2]).expect("Start arg not found");
+                    let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
+                    let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
+                    let start =
+                        var_get(&mut builder, &vars, &args[2]).expect("Start arg not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -1466,13 +1635,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "vec_prod_int_range_trusted" => {
                     let args = op.args.as_ref().unwrap();
-                    let seq = vars.get(&args[0]).expect("Seq arg not found");
-                    let acc = vars.get(&args[1]).expect("Acc arg not found");
-                    let start = vars.get(&args[2]).expect("Start arg not found");
+                    let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
+                    let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
+                    let start =
+                        var_get(&mut builder, &vars, &args[2]).expect("Start arg not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -1485,12 +1655,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "vec_min_int" => {
                     let args = op.args.as_ref().unwrap();
-                    let seq = vars.get(&args[0]).expect("Seq arg not found");
-                    let acc = vars.get(&args[1]).expect("Acc arg not found");
+                    let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
+                    let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -1502,12 +1672,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "vec_min_int_trusted" => {
                     let args = op.args.as_ref().unwrap();
-                    let seq = vars.get(&args[0]).expect("Seq arg not found");
-                    let acc = vars.get(&args[1]).expect("Acc arg not found");
+                    let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
+                    let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -1519,13 +1689,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "vec_min_int_range" => {
                     let args = op.args.as_ref().unwrap();
-                    let seq = vars.get(&args[0]).expect("Seq arg not found");
-                    let acc = vars.get(&args[1]).expect("Acc arg not found");
-                    let start = vars.get(&args[2]).expect("Start arg not found");
+                    let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
+                    let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
+                    let start =
+                        var_get(&mut builder, &vars, &args[2]).expect("Start arg not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -1538,13 +1709,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "vec_min_int_range_trusted" => {
                     let args = op.args.as_ref().unwrap();
-                    let seq = vars.get(&args[0]).expect("Seq arg not found");
-                    let acc = vars.get(&args[1]).expect("Acc arg not found");
-                    let start = vars.get(&args[2]).expect("Start arg not found");
+                    let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
+                    let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
+                    let start =
+                        var_get(&mut builder, &vars, &args[2]).expect("Start arg not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -1557,12 +1729,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "vec_max_int" => {
                     let args = op.args.as_ref().unwrap();
-                    let seq = vars.get(&args[0]).expect("Seq arg not found");
-                    let acc = vars.get(&args[1]).expect("Acc arg not found");
+                    let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
+                    let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -1574,12 +1746,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "vec_max_int_trusted" => {
                     let args = op.args.as_ref().unwrap();
-                    let seq = vars.get(&args[0]).expect("Seq arg not found");
-                    let acc = vars.get(&args[1]).expect("Acc arg not found");
+                    let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
+                    let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -1591,13 +1763,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "vec_max_int_range" => {
                     let args = op.args.as_ref().unwrap();
-                    let seq = vars.get(&args[0]).expect("Seq arg not found");
-                    let acc = vars.get(&args[1]).expect("Acc arg not found");
-                    let start = vars.get(&args[2]).expect("Start arg not found");
+                    let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
+                    let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
+                    let start =
+                        var_get(&mut builder, &vars, &args[2]).expect("Start arg not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -1610,13 +1783,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "vec_max_int_range_trusted" => {
                     let args = op.args.as_ref().unwrap();
-                    let seq = vars.get(&args[0]).expect("Seq arg not found");
-                    let acc = vars.get(&args[1]).expect("Acc arg not found");
-                    let start = vars.get(&args[2]).expect("Start arg not found");
+                    let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
+                    let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
+                    let start =
+                        var_get(&mut builder, &vars, &args[2]).expect("Start arg not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -1629,14 +1803,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "sub" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).unwrap_or_else(|| {
+                    let lhs = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("LHS not found in {} op {}", func_ir.name, op_idx)
                     });
-                    let rhs = vars.get(&args[1]).unwrap_or_else(|| {
+                    let rhs = var_get(&mut builder, &vars, &args[1]).unwrap_or_else(|| {
                         panic!("RHS not found in {} op {}", func_ir.name, op_idx)
                     });
                     let res = if op.fast_int.unwrap_or(false) {
@@ -1683,14 +1857,14 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "inplace_sub" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).unwrap_or_else(|| {
+                    let lhs = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("LHS not found in {} op {}", func_ir.name, op_idx)
                     });
-                    let rhs = vars.get(&args[1]).unwrap_or_else(|| {
+                    let rhs = var_get(&mut builder, &vars, &args[1]).unwrap_or_else(|| {
                         panic!("RHS not found in {} op {}", func_ir.name, op_idx)
                     });
                     let res = if op.fast_int.unwrap_or(false) {
@@ -1737,12 +1911,12 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "mul" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).expect("LHS not found");
-                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
                         let lhs_val = unbox_int(&mut builder, *lhs);
                         let rhs_val = unbox_int(&mut builder, *rhs);
@@ -1787,12 +1961,12 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "inplace_mul" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).expect("LHS not found");
-                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
                         let lhs_val = unbox_int(&mut builder, *lhs);
                         let rhs_val = unbox_int(&mut builder, *rhs);
@@ -1837,12 +2011,12 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bit_or" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).expect("LHS not found");
-                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -1854,12 +2028,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "inplace_bit_or" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).expect("LHS not found");
-                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -1871,12 +2045,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bit_and" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).expect("LHS not found");
-                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -1888,12 +2062,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "inplace_bit_and" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).expect("LHS not found");
-                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -1905,12 +2079,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bit_xor" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).expect("LHS not found");
-                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -1922,12 +2096,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "inplace_bit_xor" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).expect("LHS not found");
-                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -1939,12 +2113,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "lshift" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).expect("LHS not found");
-                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -1956,12 +2130,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "rshift" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).expect("LHS not found");
-                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -1973,12 +2147,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "matmul" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).expect("LHS not found");
-                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -1990,12 +2164,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "div" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).expect("LHS not found");
-                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -2007,12 +2181,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "floordiv" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).expect("LHS not found");
-                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -2024,12 +2198,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "mod" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).expect("LHS not found");
-                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -2041,12 +2215,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "pow" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).expect("LHS not found");
-                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -2058,13 +2232,13 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "pow_mod" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).expect("LHS not found");
-                    let rhs = vars.get(&args[1]).expect("RHS not found");
-                    let modulus = vars.get(&args[2]).expect("Mod not found");
+                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
+                    let modulus = var_get(&mut builder, &vars, &args[2]).expect("Mod not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -2077,13 +2251,15 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs, *modulus]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "round" => {
                     let args = op.args.as_ref().unwrap();
-                    let val = vars.get(&args[0]).expect("Round arg not found");
-                    let ndigits = vars.get(&args[1]).expect("Round ndigits not found");
-                    let has_ndigits = vars.get(&args[2]).expect("Round ndigits flag not found");
+                    let val = var_get(&mut builder, &vars, &args[0]).expect("Round arg not found");
+                    let ndigits =
+                        var_get(&mut builder, &vars, &args[1]).expect("Round ndigits not found");
+                    let has_ndigits = var_get(&mut builder, &vars, &args[2])
+                        .expect("Round ndigits flag not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -2098,11 +2274,11 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*val, *ndigits, *has_ndigits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "trunc" => {
                     let args = op.args.as_ref().unwrap();
-                    let val = vars.get(&args[0]).expect("Trunc arg not found");
+                    let val = var_get(&mut builder, &vars, &args[0]).expect("Trunc arg not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -2113,11 +2289,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*val]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "len" => {
                     let args = op.args.as_ref().unwrap();
-                    let val = vars.get(&args[0]).expect("Len arg not found");
+                    let val = var_get(&mut builder, &vars, &args[0]).expect("Len arg not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -2128,11 +2304,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*val]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "id" => {
                     let args = op.args.as_ref().unwrap();
-                    let val = vars.get(&args[0]).expect("Id arg not found");
+                    let val = var_get(&mut builder, &vars, &args[0]).expect("Id arg not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -2143,11 +2319,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*val]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "ord" => {
                     let args = op.args.as_ref().unwrap();
-                    let val = vars.get(&args[0]).expect("Ord arg not found");
+                    let val = var_get(&mut builder, &vars, &args[0]).expect("Ord arg not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -2158,11 +2334,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*val]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "chr" => {
                     let args = op.args.as_ref().unwrap();
-                    let val = vars.get(&args[0]).expect("Chr arg not found");
+                    let val = var_get(&mut builder, &vars, &args[0]).expect("Chr arg not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -2173,7 +2349,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*val]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "callargs_new" => {
                     let out_name = op.out.unwrap();
@@ -2189,7 +2365,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[zero, zero]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(out_name, res);
+                    def_var_named(&mut builder, &vars, out_name, res);
                 }
                 "list_new" => {
                     let args = op.args.as_ref().unwrap();
@@ -2218,7 +2394,7 @@ impl SimpleBackend {
                         .module
                         .declare_func_in_func(append_callee, builder.func);
                     for name in args {
-                        let val = vars.get(name).unwrap_or_else(|| {
+                        let val = var_get(&mut builder, &vars, name).unwrap_or_else(|| {
                             panic!("List elem not found in {} op {}", func_ir.name, op_idx)
                         });
                         builder.ins().call(append_local, &[builder_ptr, *val]);
@@ -2236,12 +2412,14 @@ impl SimpleBackend {
                         .declare_func_in_func(finish_callee, builder.func);
                     let finish_call = builder.ins().call(finish_local, &[builder_ptr]);
                     let list_bits = builder.inst_results(finish_call)[0];
-                    vars.insert(out_name, list_bits);
+                    def_var_named(&mut builder, &vars, out_name, list_bits);
                 }
                 "callargs_push_pos" => {
                     let args = op.args.as_ref().unwrap();
-                    let builder_ptr = vars.get(&args[0]).expect("Callargs builder not found");
-                    let val = vars.get(&args[1]).expect("Callargs value not found");
+                    let builder_ptr =
+                        var_get(&mut builder, &vars, &args[0]).expect("Callargs builder not found");
+                    let val =
+                        var_get(&mut builder, &vars, &args[1]).expect("Callargs value not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -2255,9 +2433,12 @@ impl SimpleBackend {
                 }
                 "callargs_push_kw" => {
                     let args = op.args.as_ref().unwrap();
-                    let builder_ptr = vars.get(&args[0]).expect("Callargs builder not found");
-                    let name = vars.get(&args[1]).expect("Callargs name not found");
-                    let val = vars.get(&args[2]).expect("Callargs value not found");
+                    let builder_ptr =
+                        var_get(&mut builder, &vars, &args[0]).expect("Callargs builder not found");
+                    let name =
+                        var_get(&mut builder, &vars, &args[1]).expect("Callargs name not found");
+                    let val =
+                        var_get(&mut builder, &vars, &args[2]).expect("Callargs value not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -2274,8 +2455,10 @@ impl SimpleBackend {
                 }
                 "callargs_expand_star" => {
                     let args = op.args.as_ref().unwrap();
-                    let builder_ptr = vars.get(&args[0]).expect("Callargs builder not found");
-                    let iterable = vars.get(&args[1]).expect("Callargs iterable not found");
+                    let builder_ptr =
+                        var_get(&mut builder, &vars, &args[0]).expect("Callargs builder not found");
+                    let iterable = var_get(&mut builder, &vars, &args[1])
+                        .expect("Callargs iterable not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -2289,8 +2472,10 @@ impl SimpleBackend {
                 }
                 "callargs_expand_kwstar" => {
                     let args = op.args.as_ref().unwrap();
-                    let builder_ptr = vars.get(&args[0]).expect("Callargs builder not found");
-                    let mapping = vars.get(&args[1]).expect("Callargs mapping not found");
+                    let builder_ptr =
+                        var_get(&mut builder, &vars, &args[0]).expect("Callargs builder not found");
+                    let mapping =
+                        var_get(&mut builder, &vars, &args[1]).expect("Callargs mapping not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -2304,9 +2489,12 @@ impl SimpleBackend {
                 }
                 "range_new" => {
                     let args = op.args.as_ref().unwrap();
-                    let start = vars.get(&args[0]).expect("Range start not found");
-                    let stop = vars.get(&args[1]).expect("Range stop not found");
-                    let step = vars.get(&args[2]).expect("Range step not found");
+                    let start =
+                        var_get(&mut builder, &vars, &args[0]).expect("Range start not found");
+                    let stop =
+                        var_get(&mut builder, &vars, &args[1]).expect("Range stop not found");
+                    let step =
+                        var_get(&mut builder, &vars, &args[2]).expect("Range step not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -2319,7 +2507,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*start, *stop, *step]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "tuple_new" => {
                     let args = op.args.as_ref().unwrap();
@@ -2348,7 +2536,7 @@ impl SimpleBackend {
                         .module
                         .declare_func_in_func(append_callee, builder.func);
                     for name in args {
-                        let val = vars.get(name).expect("Tuple elem not found");
+                        let val = var_get(&mut builder, &vars, name).expect("Tuple elem not found");
                         builder.ins().call(append_local, &[builder_ptr, *val]);
                     }
 
@@ -2364,12 +2552,13 @@ impl SimpleBackend {
                         .declare_func_in_func(finish_callee, builder.func);
                     let finish_call = builder.ins().call(finish_local, &[builder_ptr]);
                     let tuple_bits = builder.inst_results(finish_call)[0];
-                    vars.insert(out_name, tuple_bits);
+                    def_var_named(&mut builder, &vars, out_name, tuple_bits);
                 }
                 "list_append" => {
                     let args = op.args.as_ref().unwrap();
-                    let list = vars.get(&args[0]).expect("List not found");
-                    let val = vars.get(&args[1]).expect("List append value not found");
+                    let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
+                    let val = var_get(&mut builder, &vars, &args[1])
+                        .expect("List append value not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -2381,12 +2570,13 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list, *val]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "list_pop" => {
                     let args = op.args.as_ref().unwrap();
-                    let list = vars.get(&args[0]).expect("List not found");
-                    let idx = vars.get(&args[1]).expect("List pop index not found");
+                    let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
+                    let idx =
+                        var_get(&mut builder, &vars, &args[1]).expect("List pop index not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -2398,12 +2588,13 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list, *idx]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "list_extend" => {
                     let args = op.args.as_ref().unwrap();
-                    let list = vars.get(&args[0]).expect("List not found");
-                    let other = vars.get(&args[1]).expect("List extend iterable not found");
+                    let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
+                    let other = var_get(&mut builder, &vars, &args[1])
+                        .expect("List extend iterable not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -2415,13 +2606,15 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list, *other]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "list_insert" => {
                     let args = op.args.as_ref().unwrap();
-                    let list = vars.get(&args[0]).expect("List not found");
-                    let idx = vars.get(&args[1]).expect("List insert index not found");
-                    let val = vars.get(&args[2]).expect("List insert value not found");
+                    let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
+                    let idx = var_get(&mut builder, &vars, &args[1])
+                        .expect("List insert index not found");
+                    let val = var_get(&mut builder, &vars, &args[2])
+                        .expect("List insert value not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -2434,12 +2627,13 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list, *idx, *val]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "list_remove" => {
                     let args = op.args.as_ref().unwrap();
-                    let list = vars.get(&args[0]).expect("List not found");
-                    let val = vars.get(&args[1]).expect("List remove value not found");
+                    let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
+                    let val = var_get(&mut builder, &vars, &args[1])
+                        .expect("List remove value not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -2451,11 +2645,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list, *val]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "list_clear" => {
                     let args = op.args.as_ref().unwrap();
-                    let list = vars.get(&args[0]).expect("List not found");
+                    let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -2466,11 +2660,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "list_copy" => {
                     let args = op.args.as_ref().unwrap();
-                    let list = vars.get(&args[0]).expect("List not found");
+                    let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -2481,11 +2675,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "list_reverse" => {
                     let args = op.args.as_ref().unwrap();
-                    let list = vars.get(&args[0]).expect("List not found");
+                    let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -2496,12 +2690,13 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "list_count" => {
                     let args = op.args.as_ref().unwrap();
-                    let list = vars.get(&args[0]).expect("List not found");
-                    let val = vars.get(&args[1]).expect("List count value not found");
+                    let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
+                    let val =
+                        var_get(&mut builder, &vars, &args[1]).expect("List count value not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -2513,12 +2708,13 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list, *val]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "list_index" => {
                     let args = op.args.as_ref().unwrap();
-                    let list = vars.get(&args[0]).expect("List not found");
-                    let val = vars.get(&args[1]).expect("List index value not found");
+                    let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
+                    let val =
+                        var_get(&mut builder, &vars, &args[1]).expect("List index value not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -2530,14 +2726,17 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list, *val]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "list_index_range" => {
                     let args = op.args.as_ref().unwrap();
-                    let list = vars.get(&args[0]).expect("List not found");
-                    let val = vars.get(&args[1]).expect("List index value not found");
-                    let start = vars.get(&args[2]).expect("List index start not found");
-                    let stop = vars.get(&args[3]).expect("List index stop not found");
+                    let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
+                    let val =
+                        var_get(&mut builder, &vars, &args[1]).expect("List index value not found");
+                    let start =
+                        var_get(&mut builder, &vars, &args[2]).expect("List index start not found");
+                    let stop =
+                        var_get(&mut builder, &vars, &args[3]).expect("List index stop not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -2553,11 +2752,12 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*list, *val, *start, *stop]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "tuple_from_list" => {
                     let args = op.args.as_ref().unwrap();
-                    let list = vars.get(&args[0]).expect("Tuple source not found");
+                    let list =
+                        var_get(&mut builder, &vars, &args[0]).expect("Tuple source not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -2568,7 +2768,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "dict_new" => {
                     let args = op.args.as_ref().unwrap();
@@ -2598,16 +2798,19 @@ impl SimpleBackend {
                     let set_local = self.module.declare_func_in_func(set_callee, builder.func);
                     let mut current = dict_bits;
                     for pair in args.chunks(2) {
-                        let key = vars.get(&pair[0]).expect("Dict key not found");
-                        let val = vars.get(&pair[1]).expect("Dict val not found");
+                        let key =
+                            var_get(&mut builder, &vars, &pair[0]).expect("Dict key not found");
+                        let val =
+                            var_get(&mut builder, &vars, &pair[1]).expect("Dict val not found");
                         let set_call = builder.ins().call(set_local, &[current, *key, *val]);
                         current = builder.inst_results(set_call)[0];
                     }
-                    vars.insert(out_name, current);
+                    def_var_named(&mut builder, &vars, out_name, current);
                 }
                 "dict_from_obj" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Dict source not found");
+                    let obj =
+                        var_get(&mut builder, &vars, &args[0]).expect("Dict source not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -2618,7 +2821,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "set_new" => {
                     let args = op.args.as_ref().unwrap();
@@ -2647,14 +2850,14 @@ impl SimpleBackend {
                             .unwrap();
                         let add_local = self.module.declare_func_in_func(add_callee, builder.func);
                         for name in args {
-                            let val = vars.get(name).unwrap_or_else(|| {
+                            let val = var_get(&mut builder, &vars, name).unwrap_or_else(|| {
                                 panic!("Set elem not found in {} op {}", func_ir.name, op_idx)
                             });
                             builder.ins().call(add_local, &[set_bits, *val]);
                         }
                     }
 
-                    vars.insert(out_name, set_bits);
+                    def_var_named(&mut builder, &vars, out_name, set_bits);
                 }
                 "frozenset_new" => {
                     let args = op.args.as_ref().unwrap();
@@ -2683,20 +2886,21 @@ impl SimpleBackend {
                             .unwrap();
                         let add_local = self.module.declare_func_in_func(add_callee, builder.func);
                         for name in args {
-                            let val = vars.get(name).unwrap_or_else(|| {
+                            let val = var_get(&mut builder, &vars, name).unwrap_or_else(|| {
                                 panic!("Frozenset elem not found in {} op {}", func_ir.name, op_idx)
                             });
                             builder.ins().call(add_local, &[set_bits, *val]);
                         }
                     }
 
-                    vars.insert(out_name, set_bits);
+                    def_var_named(&mut builder, &vars, out_name, set_bits);
                 }
                 "dict_get" => {
                     let args = op.args.as_ref().unwrap();
-                    let dict = vars.get(&args[0]).expect("Dict not found");
-                    let key = vars.get(&args[1]).expect("Dict key not found");
-                    let default = vars.get(&args[2]).expect("Dict default not found");
+                    let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
+                    let key = var_get(&mut builder, &vars, &args[1]).expect("Dict key not found");
+                    let default =
+                        var_get(&mut builder, &vars, &args[2]).expect("Dict default not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -2709,14 +2913,16 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict, *key, *default]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "dict_pop" => {
                     let args = op.args.as_ref().unwrap();
-                    let dict = vars.get(&args[0]).expect("Dict not found");
-                    let key = vars.get(&args[1]).expect("Dict key not found");
-                    let default = vars.get(&args[2]).expect("Dict default not found");
-                    let has_default = vars.get(&args[3]).expect("Dict default flag not found");
+                    let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
+                    let key = var_get(&mut builder, &vars, &args[1]).expect("Dict key not found");
+                    let default =
+                        var_get(&mut builder, &vars, &args[2]).expect("Dict default not found");
+                    let has_default = var_get(&mut builder, &vars, &args[3])
+                        .expect("Dict default flag not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -2732,13 +2938,14 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*dict, *key, *default, *has_default]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "dict_setdefault" => {
                     let args = op.args.as_ref().unwrap();
-                    let dict = vars.get(&args[0]).expect("Dict not found");
-                    let key = vars.get(&args[1]).expect("Dict key not found");
-                    let default = vars.get(&args[2]).expect("Dict default not found");
+                    let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
+                    let key = var_get(&mut builder, &vars, &args[1]).expect("Dict key not found");
+                    let default =
+                        var_get(&mut builder, &vars, &args[2]).expect("Dict default not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -2751,12 +2958,13 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict, *key, *default]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "dict_update" => {
                     let args = op.args.as_ref().unwrap();
-                    let dict = vars.get(&args[0]).expect("Dict not found");
-                    let other = vars.get(&args[1]).expect("Dict update iterable not found");
+                    let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
+                    let other = var_get(&mut builder, &vars, &args[1])
+                        .expect("Dict update iterable not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -2768,11 +2976,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict, *other]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "dict_clear" => {
                     let args = op.args.as_ref().unwrap();
-                    let dict = vars.get(&args[0]).expect("Dict not found");
+                    let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -2783,11 +2991,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "dict_copy" => {
                     let args = op.args.as_ref().unwrap();
-                    let dict = vars.get(&args[0]).expect("Dict not found");
+                    let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -2798,11 +3006,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "dict_popitem" => {
                     let args = op.args.as_ref().unwrap();
-                    let dict = vars.get(&args[0]).expect("Dict not found");
+                    let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -2813,12 +3021,13 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "dict_update_kwstar" => {
                     let args = op.args.as_ref().unwrap();
-                    let dict = vars.get(&args[0]).expect("Dict not found");
-                    let other = vars.get(&args[1]).expect("Dict update mapping not found");
+                    let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
+                    let other = var_get(&mut builder, &vars, &args[1])
+                        .expect("Dict update mapping not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -2830,12 +3039,13 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict, *other]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "set_add" => {
                     let args = op.args.as_ref().unwrap();
-                    let set_bits = vars.get(&args[0]).expect("Set not found");
-                    let key_bits = vars.get(&args[1]).expect("Set key not found");
+                    let set_bits = var_get(&mut builder, &vars, &args[0]).expect("Set not found");
+                    let key_bits =
+                        var_get(&mut builder, &vars, &args[1]).expect("Set key not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -2847,12 +3057,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*set_bits, *key_bits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "frozenset_add" => {
                     let args = op.args.as_ref().unwrap();
-                    let set_bits = vars.get(&args[0]).expect("Frozenset not found");
-                    let key_bits = vars.get(&args[1]).expect("Frozenset key not found");
+                    let set_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("Frozenset not found");
+                    let key_bits =
+                        var_get(&mut builder, &vars, &args[1]).expect("Frozenset key not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -2864,12 +3076,13 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*set_bits, *key_bits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "set_discard" => {
                     let args = op.args.as_ref().unwrap();
-                    let set_bits = vars.get(&args[0]).expect("Set not found");
-                    let key_bits = vars.get(&args[1]).expect("Set key not found");
+                    let set_bits = var_get(&mut builder, &vars, &args[0]).expect("Set not found");
+                    let key_bits =
+                        var_get(&mut builder, &vars, &args[1]).expect("Set key not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -2881,12 +3094,13 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*set_bits, *key_bits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "set_remove" => {
                     let args = op.args.as_ref().unwrap();
-                    let set_bits = vars.get(&args[0]).expect("Set not found");
-                    let key_bits = vars.get(&args[1]).expect("Set key not found");
+                    let set_bits = var_get(&mut builder, &vars, &args[0]).expect("Set not found");
+                    let key_bits =
+                        var_get(&mut builder, &vars, &args[1]).expect("Set key not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -2898,11 +3112,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*set_bits, *key_bits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "set_pop" => {
                     let args = op.args.as_ref().unwrap();
-                    let set_bits = vars.get(&args[0]).expect("Set not found");
+                    let set_bits = var_get(&mut builder, &vars, &args[0]).expect("Set not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -2913,12 +3127,13 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*set_bits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "set_update" => {
                     let args = op.args.as_ref().unwrap();
-                    let set_bits = vars.get(&args[0]).expect("Set not found");
-                    let other_bits = vars.get(&args[1]).expect("Set update arg not found");
+                    let set_bits = var_get(&mut builder, &vars, &args[0]).expect("Set not found");
+                    let other_bits =
+                        var_get(&mut builder, &vars, &args[1]).expect("Set update arg not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -2930,13 +3145,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*set_bits, *other_bits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "set_intersection_update" => {
                     let args = op.args.as_ref().unwrap();
-                    let set_bits = vars.get(&args[0]).expect("Set not found");
-                    let other_bits = vars
-                        .get(&args[1])
+                    let set_bits = var_get(&mut builder, &vars, &args[0]).expect("Set not found");
+                    let other_bits = var_get(&mut builder, &vars, &args[1])
                         .expect("Set intersection update arg not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -2949,13 +3163,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*set_bits, *other_bits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "set_difference_update" => {
                     let args = op.args.as_ref().unwrap();
-                    let set_bits = vars.get(&args[0]).expect("Set not found");
-                    let other_bits = vars
-                        .get(&args[1])
+                    let set_bits = var_get(&mut builder, &vars, &args[0]).expect("Set not found");
+                    let other_bits = var_get(&mut builder, &vars, &args[1])
                         .expect("Set difference update arg not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -2968,13 +3181,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*set_bits, *other_bits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "set_symdiff_update" => {
                     let args = op.args.as_ref().unwrap();
-                    let set_bits = vars.get(&args[0]).expect("Set not found");
-                    let other_bits = vars
-                        .get(&args[1])
+                    let set_bits = var_get(&mut builder, &vars, &args[0]).expect("Set not found");
+                    let other_bits = var_get(&mut builder, &vars, &args[1])
                         .expect("Set symdiff update arg not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -2987,11 +3199,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*set_bits, *other_bits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "dict_keys" => {
                     let args = op.args.as_ref().unwrap();
-                    let dict = vars.get(&args[0]).expect("Dict not found");
+                    let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -3002,11 +3214,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "dict_values" => {
                     let args = op.args.as_ref().unwrap();
-                    let dict = vars.get(&args[0]).expect("Dict not found");
+                    let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -3017,11 +3229,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "dict_items" => {
                     let args = op.args.as_ref().unwrap();
-                    let dict = vars.get(&args[0]).expect("Dict not found");
+                    let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -3032,12 +3244,13 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "tuple_count" => {
                     let args = op.args.as_ref().unwrap();
-                    let tuple = vars.get(&args[0]).expect("Tuple not found");
-                    let val = vars.get(&args[1]).expect("Tuple count value not found");
+                    let tuple = var_get(&mut builder, &vars, &args[0]).expect("Tuple not found");
+                    let val = var_get(&mut builder, &vars, &args[1])
+                        .expect("Tuple count value not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -3049,12 +3262,13 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*tuple, *val]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "tuple_index" => {
                     let args = op.args.as_ref().unwrap();
-                    let tuple = vars.get(&args[0]).expect("Tuple not found");
-                    let val = vars.get(&args[1]).expect("Tuple index value not found");
+                    let tuple = var_get(&mut builder, &vars, &args[0]).expect("Tuple not found");
+                    let val = var_get(&mut builder, &vars, &args[1])
+                        .expect("Tuple index value not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -3066,11 +3280,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*tuple, *val]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "iter" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Iter source not found");
+                    let obj =
+                        var_get(&mut builder, &vars, &args[0]).expect("Iter source not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -3081,13 +3296,16 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "enumerate" => {
                     let args = op.args.as_ref().unwrap();
-                    let iterable = vars.get(&args[0]).expect("Enumerate iterable not found");
-                    let start = vars.get(&args[1]).expect("Enumerate start not found");
-                    let has_start = vars.get(&args[2]).expect("Enumerate has_start not found");
+                    let iterable = var_get(&mut builder, &vars, &args[0])
+                        .expect("Enumerate iterable not found");
+                    let start =
+                        var_get(&mut builder, &vars, &args[1]).expect("Enumerate start not found");
+                    let has_start = var_get(&mut builder, &vars, &args[2])
+                        .expect("Enumerate has_start not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -3102,11 +3320,12 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*iterable, *start, *has_start]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "aiter" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Async iter source not found");
+                    let obj = var_get(&mut builder, &vars, &args[0])
+                        .expect("Async iter source not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -3117,11 +3336,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "iter_next" => {
                     let args = op.args.as_ref().unwrap();
-                    let iter = vars.get(&args[0]).expect("Iter not found");
+                    let iter = var_get(&mut builder, &vars, &args[0]).expect("Iter not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -3132,11 +3351,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*iter]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "anext" => {
                     let args = op.args.as_ref().unwrap();
-                    let iter = vars.get(&args[0]).expect("Async iter not found");
+                    let iter =
+                        var_get(&mut builder, &vars, &args[0]).expect("Async iter not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -3147,11 +3367,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*iter]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "asyncgen_new" => {
                     let args = op.args.as_ref().unwrap();
-                    let gen = vars.get(&args[0]).expect("Generator not found");
+                    let gen = var_get(&mut builder, &vars, &args[0]).expect("Generator not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -3162,7 +3382,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*gen]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "asyncgen_shutdown" => {
                     let mut sig = self.module.make_signature();
@@ -3174,12 +3394,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "gen_send" => {
                     let args = op.args.as_ref().unwrap();
-                    let gen = vars.get(&args[0]).expect("Generator not found");
-                    let val = vars.get(&args[1]).expect("Send value not found");
+                    let gen = var_get(&mut builder, &vars, &args[0]).expect("Generator not found");
+                    let val = var_get(&mut builder, &vars, &args[1]).expect("Send value not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -3191,12 +3411,13 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*gen, *val]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "gen_throw" => {
                     let args = op.args.as_ref().unwrap();
-                    let gen = vars.get(&args[0]).expect("Generator not found");
-                    let val = vars.get(&args[1]).expect("Throw value not found");
+                    let gen = var_get(&mut builder, &vars, &args[0]).expect("Generator not found");
+                    let val =
+                        var_get(&mut builder, &vars, &args[1]).expect("Throw value not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -3208,11 +3429,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*gen, *val]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "gen_close" => {
                     let args = op.args.as_ref().unwrap();
-                    let gen = vars.get(&args[0]).expect("Generator not found");
+                    let gen = var_get(&mut builder, &vars, &args[0]).expect("Generator not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -3223,11 +3444,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*gen]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "is_generator" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Obj not found");
+                    let obj = var_get(&mut builder, &vars, &args[0]).expect("Obj not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -3238,11 +3459,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "is_bound_method" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Obj not found");
+                    let obj = var_get(&mut builder, &vars, &args[0]).expect("Obj not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -3253,11 +3474,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "is_callable" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Obj not found");
+                    let obj = var_get(&mut builder, &vars, &args[0]).expect("Obj not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -3268,12 +3489,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "index" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Obj not found");
-                    let idx = vars.get(&args[1]).expect("Index not found");
+                    let obj = var_get(&mut builder, &vars, &args[0]).expect("Obj not found");
+                    let idx = var_get(&mut builder, &vars, &args[1]).expect("Index not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -3285,17 +3506,17 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *idx]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "store_index" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).unwrap_or_else(|| {
+                    let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Obj not found in {} op {}", func_ir.name, op_idx)
                     });
-                    let idx = vars.get(&args[1]).unwrap_or_else(|| {
+                    let idx = var_get(&mut builder, &vars, &args[1]).unwrap_or_else(|| {
                         panic!("Index not found in {} op {}", func_ir.name, op_idx)
                     });
-                    let val = vars.get(&args[2]).unwrap_or_else(|| {
+                    let val = var_get(&mut builder, &vars, &args[2]).unwrap_or_else(|| {
                         panic!("Value not found in {} op {}", func_ir.name, op_idx)
                     });
                     let mut sig = self.module.make_signature();
@@ -3310,14 +3531,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *idx, *val]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "del_index" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).unwrap_or_else(|| {
+                    let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Obj not found in {} op {}", func_ir.name, op_idx)
                     });
-                    let idx = vars.get(&args[1]).unwrap_or_else(|| {
+                    let idx = var_get(&mut builder, &vars, &args[1]).unwrap_or_else(|| {
                         panic!("Index not found in {} op {}", func_ir.name, op_idx)
                     });
                     let mut sig = self.module.make_signature();
@@ -3331,13 +3552,15 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *idx]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "slice" => {
                     let args = op.args.as_ref().unwrap();
-                    let target = vars.get(&args[0]).expect("Slice target not found");
-                    let start = vars.get(&args[1]).expect("Slice start not found");
-                    let end = vars.get(&args[2]).expect("Slice end not found");
+                    let target =
+                        var_get(&mut builder, &vars, &args[0]).expect("Slice target not found");
+                    let start =
+                        var_get(&mut builder, &vars, &args[1]).expect("Slice start not found");
+                    let end = var_get(&mut builder, &vars, &args[2]).expect("Slice end not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -3350,13 +3573,16 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*target, *start, *end]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "slice_new" => {
                     let args = op.args.as_ref().unwrap();
-                    let start = vars.get(&args[0]).expect("Slice start not found");
-                    let stop = vars.get(&args[1]).expect("Slice stop not found");
-                    let step = vars.get(&args[2]).expect("Slice step not found");
+                    let start =
+                        var_get(&mut builder, &vars, &args[0]).expect("Slice start not found");
+                    let stop =
+                        var_get(&mut builder, &vars, &args[1]).expect("Slice stop not found");
+                    let step =
+                        var_get(&mut builder, &vars, &args[2]).expect("Slice step not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -3369,12 +3595,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*start, *stop, *step]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bytes_find" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Find haystack not found");
-                    let needle = vars.get(&args[1]).expect("Find needle not found");
+                    let hay =
+                        var_get(&mut builder, &vars, &args[0]).expect("Find haystack not found");
+                    let needle =
+                        var_get(&mut builder, &vars, &args[1]).expect("Find needle not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -3386,16 +3614,21 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bytes_find_slice" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Find haystack not found");
-                    let needle = vars.get(&args[1]).expect("Find needle not found");
-                    let start = vars.get(&args[2]).expect("Find start not found");
-                    let end = vars.get(&args[3]).expect("Find end not found");
-                    let has_start = vars.get(&args[4]).expect("Find has_start not found");
-                    let has_end = vars.get(&args[5]).expect("Find has_end not found");
+                    let hay =
+                        var_get(&mut builder, &vars, &args[0]).expect("Find haystack not found");
+                    let needle =
+                        var_get(&mut builder, &vars, &args[1]).expect("Find needle not found");
+                    let start =
+                        var_get(&mut builder, &vars, &args[2]).expect("Find start not found");
+                    let end = var_get(&mut builder, &vars, &args[3]).expect("Find end not found");
+                    let has_start =
+                        var_get(&mut builder, &vars, &args[4]).expect("Find has_start not found");
+                    let has_end =
+                        var_get(&mut builder, &vars, &args[5]).expect("Find has_end not found");
                     let mut sig = self.module.make_signature();
                     for _ in 0..6 {
                         sig.params.push(AbiParam::new(types::I64));
@@ -3411,12 +3644,14 @@ impl SimpleBackend {
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bytearray_find" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Find haystack not found");
-                    let needle = vars.get(&args[1]).expect("Find needle not found");
+                    let hay =
+                        var_get(&mut builder, &vars, &args[0]).expect("Find haystack not found");
+                    let needle =
+                        var_get(&mut builder, &vars, &args[1]).expect("Find needle not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -3428,16 +3663,21 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bytearray_find_slice" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Find haystack not found");
-                    let needle = vars.get(&args[1]).expect("Find needle not found");
-                    let start = vars.get(&args[2]).expect("Find start not found");
-                    let end = vars.get(&args[3]).expect("Find end not found");
-                    let has_start = vars.get(&args[4]).expect("Find has_start not found");
-                    let has_end = vars.get(&args[5]).expect("Find has_end not found");
+                    let hay =
+                        var_get(&mut builder, &vars, &args[0]).expect("Find haystack not found");
+                    let needle =
+                        var_get(&mut builder, &vars, &args[1]).expect("Find needle not found");
+                    let start =
+                        var_get(&mut builder, &vars, &args[2]).expect("Find start not found");
+                    let end = var_get(&mut builder, &vars, &args[3]).expect("Find end not found");
+                    let has_start =
+                        var_get(&mut builder, &vars, &args[4]).expect("Find has_start not found");
+                    let has_end =
+                        var_get(&mut builder, &vars, &args[5]).expect("Find has_end not found");
                     let mut sig = self.module.make_signature();
                     for _ in 0..6 {
                         sig.params.push(AbiParam::new(types::I64));
@@ -3453,12 +3693,14 @@ impl SimpleBackend {
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "string_find" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Find haystack not found");
-                    let needle = vars.get(&args[1]).expect("Find needle not found");
+                    let hay =
+                        var_get(&mut builder, &vars, &args[0]).expect("Find haystack not found");
+                    let needle =
+                        var_get(&mut builder, &vars, &args[1]).expect("Find needle not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -3470,16 +3712,21 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "string_find_slice" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Find haystack not found");
-                    let needle = vars.get(&args[1]).expect("Find needle not found");
-                    let start = vars.get(&args[2]).expect("Find start not found");
-                    let end = vars.get(&args[3]).expect("Find end not found");
-                    let has_start = vars.get(&args[4]).expect("Find has_start not found");
-                    let has_end = vars.get(&args[5]).expect("Find has_end not found");
+                    let hay =
+                        var_get(&mut builder, &vars, &args[0]).expect("Find haystack not found");
+                    let needle =
+                        var_get(&mut builder, &vars, &args[1]).expect("Find needle not found");
+                    let start =
+                        var_get(&mut builder, &vars, &args[2]).expect("Find start not found");
+                    let end = var_get(&mut builder, &vars, &args[3]).expect("Find end not found");
+                    let has_start =
+                        var_get(&mut builder, &vars, &args[4]).expect("Find has_start not found");
+                    let has_end =
+                        var_get(&mut builder, &vars, &args[5]).expect("Find has_end not found");
                     let mut sig = self.module.make_signature();
                     for _ in 0..6 {
                         sig.params.push(AbiParam::new(types::I64));
@@ -3495,29 +3742,33 @@ impl SimpleBackend {
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "string_format" => {
                     let args = op.args.as_ref().unwrap();
-                    let val = vars.get(&args[0]).expect("Format value not found");
-                    let spec = vars.get(&args[1]).expect("Format spec not found");
+                    let val =
+                        var_get(&mut builder, &vars, &args[0]).expect("Format value not found");
+                    let spec =
+                        var_get(&mut builder, &vars, &args[1]).expect("Format spec not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
                     let callee = self
                         .module
-                        .declare_function("molt_string_format", Linkage::Import, &sig)
+                        .declare_function("molt_format_builtin", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*val, *spec]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "string_startswith" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Startswith haystack not found");
-                    let needle = vars.get(&args[1]).expect("Startswith needle not found");
+                    let hay = var_get(&mut builder, &vars, &args[0])
+                        .expect("Startswith haystack not found");
+                    let needle = var_get(&mut builder, &vars, &args[1])
+                        .expect("Startswith needle not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -3529,16 +3780,22 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "string_startswith_slice" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Startswith haystack not found");
-                    let needle = vars.get(&args[1]).expect("Startswith needle not found");
-                    let start = vars.get(&args[2]).expect("Startswith start not found");
-                    let end = vars.get(&args[3]).expect("Startswith end not found");
-                    let has_start = vars.get(&args[4]).expect("Startswith has_start not found");
-                    let has_end = vars.get(&args[5]).expect("Startswith has_end not found");
+                    let hay = var_get(&mut builder, &vars, &args[0])
+                        .expect("Startswith haystack not found");
+                    let needle = var_get(&mut builder, &vars, &args[1])
+                        .expect("Startswith needle not found");
+                    let start =
+                        var_get(&mut builder, &vars, &args[2]).expect("Startswith start not found");
+                    let end =
+                        var_get(&mut builder, &vars, &args[3]).expect("Startswith end not found");
+                    let has_start = var_get(&mut builder, &vars, &args[4])
+                        .expect("Startswith has_start not found");
+                    let has_end = var_get(&mut builder, &vars, &args[5])
+                        .expect("Startswith has_end not found");
                     let mut sig = self.module.make_signature();
                     for _ in 0..6 {
                         sig.params.push(AbiParam::new(types::I64));
@@ -3554,12 +3811,14 @@ impl SimpleBackend {
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bytes_startswith" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Startswith haystack not found");
-                    let needle = vars.get(&args[1]).expect("Startswith needle not found");
+                    let hay = var_get(&mut builder, &vars, &args[0])
+                        .expect("Startswith haystack not found");
+                    let needle = var_get(&mut builder, &vars, &args[1])
+                        .expect("Startswith needle not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -3571,16 +3830,22 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bytes_startswith_slice" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Startswith haystack not found");
-                    let needle = vars.get(&args[1]).expect("Startswith needle not found");
-                    let start = vars.get(&args[2]).expect("Startswith start not found");
-                    let end = vars.get(&args[3]).expect("Startswith end not found");
-                    let has_start = vars.get(&args[4]).expect("Startswith has_start not found");
-                    let has_end = vars.get(&args[5]).expect("Startswith has_end not found");
+                    let hay = var_get(&mut builder, &vars, &args[0])
+                        .expect("Startswith haystack not found");
+                    let needle = var_get(&mut builder, &vars, &args[1])
+                        .expect("Startswith needle not found");
+                    let start =
+                        var_get(&mut builder, &vars, &args[2]).expect("Startswith start not found");
+                    let end =
+                        var_get(&mut builder, &vars, &args[3]).expect("Startswith end not found");
+                    let has_start = var_get(&mut builder, &vars, &args[4])
+                        .expect("Startswith has_start not found");
+                    let has_end = var_get(&mut builder, &vars, &args[5])
+                        .expect("Startswith has_end not found");
                     let mut sig = self.module.make_signature();
                     for _ in 0..6 {
                         sig.params.push(AbiParam::new(types::I64));
@@ -3596,12 +3861,14 @@ impl SimpleBackend {
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bytearray_startswith" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Startswith haystack not found");
-                    let needle = vars.get(&args[1]).expect("Startswith needle not found");
+                    let hay = var_get(&mut builder, &vars, &args[0])
+                        .expect("Startswith haystack not found");
+                    let needle = var_get(&mut builder, &vars, &args[1])
+                        .expect("Startswith needle not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -3613,16 +3880,22 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bytearray_startswith_slice" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Startswith haystack not found");
-                    let needle = vars.get(&args[1]).expect("Startswith needle not found");
-                    let start = vars.get(&args[2]).expect("Startswith start not found");
-                    let end = vars.get(&args[3]).expect("Startswith end not found");
-                    let has_start = vars.get(&args[4]).expect("Startswith has_start not found");
-                    let has_end = vars.get(&args[5]).expect("Startswith has_end not found");
+                    let hay = var_get(&mut builder, &vars, &args[0])
+                        .expect("Startswith haystack not found");
+                    let needle = var_get(&mut builder, &vars, &args[1])
+                        .expect("Startswith needle not found");
+                    let start =
+                        var_get(&mut builder, &vars, &args[2]).expect("Startswith start not found");
+                    let end =
+                        var_get(&mut builder, &vars, &args[3]).expect("Startswith end not found");
+                    let has_start = var_get(&mut builder, &vars, &args[4])
+                        .expect("Startswith has_start not found");
+                    let has_end = var_get(&mut builder, &vars, &args[5])
+                        .expect("Startswith has_end not found");
                     let mut sig = self.module.make_signature();
                     for _ in 0..6 {
                         sig.params.push(AbiParam::new(types::I64));
@@ -3638,12 +3911,14 @@ impl SimpleBackend {
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "string_endswith" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Endswith haystack not found");
-                    let needle = vars.get(&args[1]).expect("Endswith needle not found");
+                    let hay = var_get(&mut builder, &vars, &args[0])
+                        .expect("Endswith haystack not found");
+                    let needle =
+                        var_get(&mut builder, &vars, &args[1]).expect("Endswith needle not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -3655,16 +3930,22 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "string_endswith_slice" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Endswith haystack not found");
-                    let needle = vars.get(&args[1]).expect("Endswith needle not found");
-                    let start = vars.get(&args[2]).expect("Endswith start not found");
-                    let end = vars.get(&args[3]).expect("Endswith end not found");
-                    let has_start = vars.get(&args[4]).expect("Endswith has_start not found");
-                    let has_end = vars.get(&args[5]).expect("Endswith has_end not found");
+                    let hay = var_get(&mut builder, &vars, &args[0])
+                        .expect("Endswith haystack not found");
+                    let needle =
+                        var_get(&mut builder, &vars, &args[1]).expect("Endswith needle not found");
+                    let start =
+                        var_get(&mut builder, &vars, &args[2]).expect("Endswith start not found");
+                    let end =
+                        var_get(&mut builder, &vars, &args[3]).expect("Endswith end not found");
+                    let has_start = var_get(&mut builder, &vars, &args[4])
+                        .expect("Endswith has_start not found");
+                    let has_end =
+                        var_get(&mut builder, &vars, &args[5]).expect("Endswith has_end not found");
                     let mut sig = self.module.make_signature();
                     for _ in 0..6 {
                         sig.params.push(AbiParam::new(types::I64));
@@ -3680,12 +3961,14 @@ impl SimpleBackend {
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bytes_endswith" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Endswith haystack not found");
-                    let needle = vars.get(&args[1]).expect("Endswith needle not found");
+                    let hay = var_get(&mut builder, &vars, &args[0])
+                        .expect("Endswith haystack not found");
+                    let needle =
+                        var_get(&mut builder, &vars, &args[1]).expect("Endswith needle not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -3697,16 +3980,22 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bytes_endswith_slice" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Endswith haystack not found");
-                    let needle = vars.get(&args[1]).expect("Endswith needle not found");
-                    let start = vars.get(&args[2]).expect("Endswith start not found");
-                    let end = vars.get(&args[3]).expect("Endswith end not found");
-                    let has_start = vars.get(&args[4]).expect("Endswith has_start not found");
-                    let has_end = vars.get(&args[5]).expect("Endswith has_end not found");
+                    let hay = var_get(&mut builder, &vars, &args[0])
+                        .expect("Endswith haystack not found");
+                    let needle =
+                        var_get(&mut builder, &vars, &args[1]).expect("Endswith needle not found");
+                    let start =
+                        var_get(&mut builder, &vars, &args[2]).expect("Endswith start not found");
+                    let end =
+                        var_get(&mut builder, &vars, &args[3]).expect("Endswith end not found");
+                    let has_start = var_get(&mut builder, &vars, &args[4])
+                        .expect("Endswith has_start not found");
+                    let has_end =
+                        var_get(&mut builder, &vars, &args[5]).expect("Endswith has_end not found");
                     let mut sig = self.module.make_signature();
                     for _ in 0..6 {
                         sig.params.push(AbiParam::new(types::I64));
@@ -3722,12 +4011,14 @@ impl SimpleBackend {
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bytearray_endswith" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Endswith haystack not found");
-                    let needle = vars.get(&args[1]).expect("Endswith needle not found");
+                    let hay = var_get(&mut builder, &vars, &args[0])
+                        .expect("Endswith haystack not found");
+                    let needle =
+                        var_get(&mut builder, &vars, &args[1]).expect("Endswith needle not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -3739,16 +4030,22 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bytearray_endswith_slice" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Endswith haystack not found");
-                    let needle = vars.get(&args[1]).expect("Endswith needle not found");
-                    let start = vars.get(&args[2]).expect("Endswith start not found");
-                    let end = vars.get(&args[3]).expect("Endswith end not found");
-                    let has_start = vars.get(&args[4]).expect("Endswith has_start not found");
-                    let has_end = vars.get(&args[5]).expect("Endswith has_end not found");
+                    let hay = var_get(&mut builder, &vars, &args[0])
+                        .expect("Endswith haystack not found");
+                    let needle =
+                        var_get(&mut builder, &vars, &args[1]).expect("Endswith needle not found");
+                    let start =
+                        var_get(&mut builder, &vars, &args[2]).expect("Endswith start not found");
+                    let end =
+                        var_get(&mut builder, &vars, &args[3]).expect("Endswith end not found");
+                    let has_start = var_get(&mut builder, &vars, &args[4])
+                        .expect("Endswith has_start not found");
+                    let has_end =
+                        var_get(&mut builder, &vars, &args[5]).expect("Endswith has_end not found");
                     let mut sig = self.module.make_signature();
                     for _ in 0..6 {
                         sig.params.push(AbiParam::new(types::I64));
@@ -3764,12 +4061,14 @@ impl SimpleBackend {
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "string_count" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Count haystack not found");
-                    let needle = vars.get(&args[1]).expect("Count needle not found");
+                    let hay =
+                        var_get(&mut builder, &vars, &args[0]).expect("Count haystack not found");
+                    let needle =
+                        var_get(&mut builder, &vars, &args[1]).expect("Count needle not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -3781,12 +4080,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bytes_count" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Count haystack not found");
-                    let needle = vars.get(&args[1]).expect("Count needle not found");
+                    let hay =
+                        var_get(&mut builder, &vars, &args[0]).expect("Count haystack not found");
+                    let needle =
+                        var_get(&mut builder, &vars, &args[1]).expect("Count needle not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -3798,12 +4099,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bytearray_count" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Count haystack not found");
-                    let needle = vars.get(&args[1]).expect("Count needle not found");
+                    let hay =
+                        var_get(&mut builder, &vars, &args[0]).expect("Count haystack not found");
+                    let needle =
+                        var_get(&mut builder, &vars, &args[1]).expect("Count needle not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -3815,16 +4118,21 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "string_count_slice" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Count haystack not found");
-                    let needle = vars.get(&args[1]).expect("Count needle not found");
-                    let start = vars.get(&args[2]).expect("Count start not found");
-                    let end = vars.get(&args[3]).expect("Count end not found");
-                    let has_start = vars.get(&args[4]).expect("Count has_start not found");
-                    let has_end = vars.get(&args[5]).expect("Count has_end not found");
+                    let hay =
+                        var_get(&mut builder, &vars, &args[0]).expect("Count haystack not found");
+                    let needle =
+                        var_get(&mut builder, &vars, &args[1]).expect("Count needle not found");
+                    let start =
+                        var_get(&mut builder, &vars, &args[2]).expect("Count start not found");
+                    let end = var_get(&mut builder, &vars, &args[3]).expect("Count end not found");
+                    let has_start =
+                        var_get(&mut builder, &vars, &args[4]).expect("Count has_start not found");
+                    let has_end =
+                        var_get(&mut builder, &vars, &args[5]).expect("Count has_end not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -3843,16 +4151,21 @@ impl SimpleBackend {
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bytes_count_slice" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Count haystack not found");
-                    let needle = vars.get(&args[1]).expect("Count needle not found");
-                    let start = vars.get(&args[2]).expect("Count start not found");
-                    let end = vars.get(&args[3]).expect("Count end not found");
-                    let has_start = vars.get(&args[4]).expect("Count has_start not found");
-                    let has_end = vars.get(&args[5]).expect("Count has_end not found");
+                    let hay =
+                        var_get(&mut builder, &vars, &args[0]).expect("Count haystack not found");
+                    let needle =
+                        var_get(&mut builder, &vars, &args[1]).expect("Count needle not found");
+                    let start =
+                        var_get(&mut builder, &vars, &args[2]).expect("Count start not found");
+                    let end = var_get(&mut builder, &vars, &args[3]).expect("Count end not found");
+                    let has_start =
+                        var_get(&mut builder, &vars, &args[4]).expect("Count has_start not found");
+                    let has_end =
+                        var_get(&mut builder, &vars, &args[5]).expect("Count has_end not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -3871,16 +4184,21 @@ impl SimpleBackend {
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bytearray_count_slice" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Count haystack not found");
-                    let needle = vars.get(&args[1]).expect("Count needle not found");
-                    let start = vars.get(&args[2]).expect("Count start not found");
-                    let end = vars.get(&args[3]).expect("Count end not found");
-                    let has_start = vars.get(&args[4]).expect("Count has_start not found");
-                    let has_end = vars.get(&args[5]).expect("Count has_end not found");
+                    let hay =
+                        var_get(&mut builder, &vars, &args[0]).expect("Count haystack not found");
+                    let needle =
+                        var_get(&mut builder, &vars, &args[1]).expect("Count needle not found");
+                    let start =
+                        var_get(&mut builder, &vars, &args[2]).expect("Count start not found");
+                    let end = var_get(&mut builder, &vars, &args[3]).expect("Count end not found");
+                    let has_start =
+                        var_get(&mut builder, &vars, &args[4]).expect("Count has_start not found");
+                    let has_end =
+                        var_get(&mut builder, &vars, &args[5]).expect("Count has_end not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -3899,12 +4217,13 @@ impl SimpleBackend {
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "env_get" => {
                     let args = op.args.as_ref().unwrap();
-                    let key = vars.get(&args[0]).expect("Env key not found");
-                    let default = vars.get(&args[1]).expect("Env default not found");
+                    let key = var_get(&mut builder, &vars, &args[0]).expect("Env key not found");
+                    let default =
+                        var_get(&mut builder, &vars, &args[1]).expect("Env default not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -3916,12 +4235,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*key, *default]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "string_join" => {
                     let args = op.args.as_ref().unwrap();
-                    let sep = vars.get(&args[0]).expect("Join separator not found");
-                    let items = vars.get(&args[1]).expect("Join items not found");
+                    let sep =
+                        var_get(&mut builder, &vars, &args[0]).expect("Join separator not found");
+                    let items =
+                        var_get(&mut builder, &vars, &args[1]).expect("Join items not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -3933,12 +4254,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*sep, *items]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "string_split" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Split haystack not found");
-                    let needle = vars.get(&args[1]).expect("Split needle not found");
+                    let hay =
+                        var_get(&mut builder, &vars, &args[0]).expect("Split haystack not found");
+                    let needle =
+                        var_get(&mut builder, &vars, &args[1]).expect("Split needle not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -3950,13 +4273,16 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "string_split_max" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Split haystack not found");
-                    let needle = vars.get(&args[1]).expect("Split needle not found");
-                    let maxsplit = vars.get(&args[2]).expect("Split maxsplit not found");
+                    let hay =
+                        var_get(&mut builder, &vars, &args[0]).expect("Split haystack not found");
+                    let needle =
+                        var_get(&mut builder, &vars, &args[1]).expect("Split needle not found");
+                    let maxsplit =
+                        var_get(&mut builder, &vars, &args[2]).expect("Split maxsplit not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -3971,11 +4297,12 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*hay, *needle, *maxsplit]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "string_lower" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Lower string not found");
+                    let hay =
+                        var_get(&mut builder, &vars, &args[0]).expect("Lower string not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -3986,11 +4313,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "string_upper" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Upper string not found");
+                    let hay =
+                        var_get(&mut builder, &vars, &args[0]).expect("Upper string not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -4001,11 +4329,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "string_capitalize" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Capitalize string not found");
+                    let hay = var_get(&mut builder, &vars, &args[0])
+                        .expect("Capitalize string not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -4016,12 +4345,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "string_strip" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Strip string not found");
-                    let chars = vars.get(&args[1]).expect("Strip chars not found");
+                    let hay =
+                        var_get(&mut builder, &vars, &args[0]).expect("Strip string not found");
+                    let chars =
+                        var_get(&mut builder, &vars, &args[1]).expect("Strip chars not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4033,12 +4364,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *chars]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "string_lstrip" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Lstrip string not found");
-                    let chars = vars.get(&args[1]).expect("Lstrip chars not found");
+                    let hay =
+                        var_get(&mut builder, &vars, &args[0]).expect("Lstrip string not found");
+                    let chars =
+                        var_get(&mut builder, &vars, &args[1]).expect("Lstrip chars not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4050,12 +4383,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *chars]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "string_rstrip" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Rstrip string not found");
-                    let chars = vars.get(&args[1]).expect("Rstrip chars not found");
+                    let hay =
+                        var_get(&mut builder, &vars, &args[0]).expect("Rstrip string not found");
+                    let chars =
+                        var_get(&mut builder, &vars, &args[1]).expect("Rstrip chars not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4067,14 +4402,18 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *chars]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "string_replace" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Replace haystack not found");
-                    let needle = vars.get(&args[1]).expect("Replace needle not found");
-                    let replacement = vars.get(&args[2]).expect("Replace replacement not found");
-                    let count = vars.get(&args[3]).expect("Replace count not found");
+                    let hay =
+                        var_get(&mut builder, &vars, &args[0]).expect("Replace haystack not found");
+                    let needle =
+                        var_get(&mut builder, &vars, &args[1]).expect("Replace needle not found");
+                    let replacement = var_get(&mut builder, &vars, &args[2])
+                        .expect("Replace replacement not found");
+                    let count =
+                        var_get(&mut builder, &vars, &args[3]).expect("Replace count not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4090,12 +4429,14 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*hay, *needle, *replacement, *count]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bytes_split" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Split haystack not found");
-                    let needle = vars.get(&args[1]).expect("Split needle not found");
+                    let hay =
+                        var_get(&mut builder, &vars, &args[0]).expect("Split haystack not found");
+                    let needle =
+                        var_get(&mut builder, &vars, &args[1]).expect("Split needle not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4107,13 +4448,16 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bytes_split_max" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Split haystack not found");
-                    let needle = vars.get(&args[1]).expect("Split needle not found");
-                    let maxsplit = vars.get(&args[2]).expect("Split maxsplit not found");
+                    let hay =
+                        var_get(&mut builder, &vars, &args[0]).expect("Split haystack not found");
+                    let needle =
+                        var_get(&mut builder, &vars, &args[1]).expect("Split needle not found");
+                    let maxsplit =
+                        var_get(&mut builder, &vars, &args[2]).expect("Split maxsplit not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4128,12 +4472,14 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*hay, *needle, *maxsplit]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bytearray_split" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Split haystack not found");
-                    let needle = vars.get(&args[1]).expect("Split needle not found");
+                    let hay =
+                        var_get(&mut builder, &vars, &args[0]).expect("Split haystack not found");
+                    let needle =
+                        var_get(&mut builder, &vars, &args[1]).expect("Split needle not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4145,13 +4491,16 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bytearray_split_max" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Split haystack not found");
-                    let needle = vars.get(&args[1]).expect("Split needle not found");
-                    let maxsplit = vars.get(&args[2]).expect("Split maxsplit not found");
+                    let hay =
+                        var_get(&mut builder, &vars, &args[0]).expect("Split haystack not found");
+                    let needle =
+                        var_get(&mut builder, &vars, &args[1]).expect("Split needle not found");
+                    let maxsplit =
+                        var_get(&mut builder, &vars, &args[2]).expect("Split maxsplit not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4166,14 +4515,18 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*hay, *needle, *maxsplit]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bytes_replace" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Replace haystack not found");
-                    let needle = vars.get(&args[1]).expect("Replace needle not found");
-                    let replacement = vars.get(&args[2]).expect("Replace replacement not found");
-                    let count = vars.get(&args[3]).expect("Replace count not found");
+                    let hay =
+                        var_get(&mut builder, &vars, &args[0]).expect("Replace haystack not found");
+                    let needle =
+                        var_get(&mut builder, &vars, &args[1]).expect("Replace needle not found");
+                    let replacement = var_get(&mut builder, &vars, &args[2])
+                        .expect("Replace replacement not found");
+                    let count =
+                        var_get(&mut builder, &vars, &args[3]).expect("Replace count not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4189,14 +4542,18 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*hay, *needle, *replacement, *count]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bytearray_replace" => {
                     let args = op.args.as_ref().unwrap();
-                    let hay = vars.get(&args[0]).expect("Replace haystack not found");
-                    let needle = vars.get(&args[1]).expect("Replace needle not found");
-                    let replacement = vars.get(&args[2]).expect("Replace replacement not found");
-                    let count = vars.get(&args[3]).expect("Replace count not found");
+                    let hay =
+                        var_get(&mut builder, &vars, &args[0]).expect("Replace haystack not found");
+                    let needle =
+                        var_get(&mut builder, &vars, &args[1]).expect("Replace needle not found");
+                    let replacement = var_get(&mut builder, &vars, &args[2])
+                        .expect("Replace replacement not found");
+                    let count =
+                        var_get(&mut builder, &vars, &args[3]).expect("Replace count not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4212,11 +4569,12 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*hay, *needle, *replacement, *count]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bytes_from_obj" => {
                     let args = op.args.as_ref().unwrap();
-                    let src = vars.get(&args[0]).expect("Bytes source not found");
+                    let src =
+                        var_get(&mut builder, &vars, &args[0]).expect("Bytes source not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -4227,13 +4585,16 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*src]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bytes_from_str" => {
                     let args = op.args.as_ref().unwrap();
-                    let src = vars.get(&args[0]).expect("Bytes source not found");
-                    let encoding = vars.get(&args[1]).expect("Bytes encoding not found");
-                    let errors = vars.get(&args[2]).expect("Bytes errors not found");
+                    let src =
+                        var_get(&mut builder, &vars, &args[0]).expect("Bytes source not found");
+                    let encoding =
+                        var_get(&mut builder, &vars, &args[1]).expect("Bytes encoding not found");
+                    let errors =
+                        var_get(&mut builder, &vars, &args[2]).expect("Bytes errors not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4248,11 +4609,12 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*src, *encoding, *errors]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bytearray_from_obj" => {
                     let args = op.args.as_ref().unwrap();
-                    let src = vars.get(&args[0]).expect("Bytearray source not found");
+                    let src =
+                        var_get(&mut builder, &vars, &args[0]).expect("Bytearray source not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -4263,13 +4625,16 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*src]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bytearray_from_str" => {
                     let args = op.args.as_ref().unwrap();
-                    let src = vars.get(&args[0]).expect("Bytearray source not found");
-                    let encoding = vars.get(&args[1]).expect("Bytearray encoding not found");
-                    let errors = vars.get(&args[2]).expect("Bytearray errors not found");
+                    let src =
+                        var_get(&mut builder, &vars, &args[0]).expect("Bytearray source not found");
+                    let encoding = var_get(&mut builder, &vars, &args[1])
+                        .expect("Bytearray encoding not found");
+                    let errors =
+                        var_get(&mut builder, &vars, &args[2]).expect("Bytearray errors not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4284,11 +4649,12 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*src, *encoding, *errors]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "float_from_obj" => {
                     let args = op.args.as_ref().unwrap();
-                    let src = vars.get(&args[0]).expect("Float source not found");
+                    let src =
+                        var_get(&mut builder, &vars, &args[0]).expect("Float source not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -4299,13 +4665,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*src]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "int_from_obj" => {
                     let args = op.args.as_ref().unwrap();
-                    let val = vars.get(&args[0]).expect("Int value not found");
-                    let base = vars.get(&args[1]).expect("Int base not found");
-                    let has_base = vars.get(&args[2]).expect("Int base flag not found");
+                    let val = var_get(&mut builder, &vars, &args[0]).expect("Int value not found");
+                    let base = var_get(&mut builder, &vars, &args[1]).expect("Int base not found");
+                    let has_base =
+                        var_get(&mut builder, &vars, &args[2]).expect("Int base flag not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4318,11 +4685,34 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*val, *base, *has_base]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                }
+                "complex_from_obj" => {
+                    let args = op.args.as_ref().unwrap();
+                    let val =
+                        var_get(&mut builder, &vars, &args[0]).expect("Complex value not found");
+                    let imag =
+                        var_get(&mut builder, &vars, &args[1]).expect("Complex imag not found");
+                    let has_imag =
+                        var_get(&mut builder, &vars, &args[2]).expect("Complex flag not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_complex_from_obj", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*val, *imag, *has_imag]);
+                    let res = builder.inst_results(call)[0];
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "intarray_from_seq" => {
                     let args = op.args.as_ref().unwrap();
-                    let src = vars.get(&args[0]).expect("Intarray source not found");
+                    let src =
+                        var_get(&mut builder, &vars, &args[0]).expect("Intarray source not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -4333,11 +4723,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*src]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "memoryview_new" => {
                     let args = op.args.as_ref().unwrap();
-                    let src = vars.get(&args[0]).expect("Memoryview source not found");
+                    let src = var_get(&mut builder, &vars, &args[0])
+                        .expect("Memoryview source not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -4348,11 +4739,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*src]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "memoryview_tobytes" => {
                     let args = op.args.as_ref().unwrap();
-                    let src = vars.get(&args[0]).expect("Memoryview value not found");
+                    let src =
+                        var_get(&mut builder, &vars, &args[0]).expect("Memoryview value not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -4363,14 +4755,18 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*src]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "memoryview_cast" => {
                     let args = op.args.as_ref().unwrap();
-                    let view = vars.get(&args[0]).expect("Memoryview not found");
-                    let format = vars.get(&args[1]).expect("Memoryview format not found");
-                    let shape = vars.get(&args[2]).expect("Memoryview shape not found");
-                    let has_shape = vars.get(&args[3]).expect("Memoryview shape flag not found");
+                    let view =
+                        var_get(&mut builder, &vars, &args[0]).expect("Memoryview not found");
+                    let format = var_get(&mut builder, &vars, &args[1])
+                        .expect("Memoryview format not found");
+                    let shape =
+                        var_get(&mut builder, &vars, &args[2]).expect("Memoryview shape not found");
+                    let has_shape = var_get(&mut builder, &vars, &args[3])
+                        .expect("Memoryview shape flag not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4386,13 +4782,16 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*view, *format, *shape, *has_shape]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "buffer2d_new" => {
                     let args = op.args.as_ref().unwrap();
-                    let rows = vars.get(&args[0]).expect("Buffer2D rows not found");
-                    let cols = vars.get(&args[1]).expect("Buffer2D cols not found");
-                    let init = vars.get(&args[2]).expect("Buffer2D init not found");
+                    let rows =
+                        var_get(&mut builder, &vars, &args[0]).expect("Buffer2D rows not found");
+                    let cols =
+                        var_get(&mut builder, &vars, &args[1]).expect("Buffer2D cols not found");
+                    let init =
+                        var_get(&mut builder, &vars, &args[2]).expect("Buffer2D init not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4405,13 +4804,15 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*rows, *cols, *init]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "buffer2d_get" => {
                     let args = op.args.as_ref().unwrap();
-                    let buf = vars.get(&args[0]).expect("Buffer2D not found");
-                    let row = vars.get(&args[1]).expect("Buffer2D row not found");
-                    let col = vars.get(&args[2]).expect("Buffer2D col not found");
+                    let buf = var_get(&mut builder, &vars, &args[0]).expect("Buffer2D not found");
+                    let row =
+                        var_get(&mut builder, &vars, &args[1]).expect("Buffer2D row not found");
+                    let col =
+                        var_get(&mut builder, &vars, &args[2]).expect("Buffer2D col not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4424,14 +4825,17 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*buf, *row, *col]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "buffer2d_set" => {
                     let args = op.args.as_ref().unwrap();
-                    let buf = vars.get(&args[0]).expect("Buffer2D not found");
-                    let row = vars.get(&args[1]).expect("Buffer2D row not found");
-                    let col = vars.get(&args[2]).expect("Buffer2D col not found");
-                    let val = vars.get(&args[3]).expect("Buffer2D val not found");
+                    let buf = var_get(&mut builder, &vars, &args[0]).expect("Buffer2D not found");
+                    let row =
+                        var_get(&mut builder, &vars, &args[1]).expect("Buffer2D row not found");
+                    let col =
+                        var_get(&mut builder, &vars, &args[2]).expect("Buffer2D col not found");
+                    let val =
+                        var_get(&mut builder, &vars, &args[3]).expect("Buffer2D val not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4445,12 +4849,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*buf, *row, *col, *val]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "buffer2d_matmul" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).expect("Buffer2D lhs not found");
-                    let rhs = vars.get(&args[1]).expect("Buffer2D rhs not found");
+                    let lhs =
+                        var_get(&mut builder, &vars, &args[0]).expect("Buffer2D lhs not found");
+                    let rhs =
+                        var_get(&mut builder, &vars, &args[1]).expect("Buffer2D rhs not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4462,11 +4868,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "str_from_obj" => {
                     let args = op.args.as_ref().unwrap();
-                    let src = vars.get(&args[0]).expect("Str source not found");
+                    let src = var_get(&mut builder, &vars, &args[0]).expect("Str source not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -4477,11 +4883,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*src]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "repr_from_obj" => {
                     let args = op.args.as_ref().unwrap();
-                    let src = vars.get(&args[0]).expect("Repr source not found");
+                    let src =
+                        var_get(&mut builder, &vars, &args[0]).expect("Repr source not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -4492,11 +4899,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*src]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "ascii_from_obj" => {
                     let args = op.args.as_ref().unwrap();
-                    let src = vars.get(&args[0]).expect("Ascii source not found");
+                    let src =
+                        var_get(&mut builder, &vars, &args[0]).expect("Ascii source not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -4507,14 +4915,18 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*src]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "dataclass_new" => {
                     let args = op.args.as_ref().unwrap();
-                    let name = vars.get(&args[0]).expect("Dataclass name not found");
-                    let fields = vars.get(&args[1]).expect("Dataclass fields not found");
-                    let values = vars.get(&args[2]).expect("Dataclass values not found");
-                    let flags = vars.get(&args[3]).expect("Dataclass flags not found");
+                    let name =
+                        var_get(&mut builder, &vars, &args[0]).expect("Dataclass name not found");
+                    let fields =
+                        var_get(&mut builder, &vars, &args[1]).expect("Dataclass fields not found");
+                    let values =
+                        var_get(&mut builder, &vars, &args[2]).expect("Dataclass values not found");
+                    let flags =
+                        var_get(&mut builder, &vars, &args[3]).expect("Dataclass flags not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4530,12 +4942,14 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*name, *fields, *values, *flags]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "dataclass_get" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Dataclass object not found");
-                    let idx = vars.get(&args[1]).expect("Dataclass index not found");
+                    let obj =
+                        var_get(&mut builder, &vars, &args[0]).expect("Dataclass object not found");
+                    let idx =
+                        var_get(&mut builder, &vars, &args[1]).expect("Dataclass index not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4547,13 +4961,16 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *idx]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "dataclass_set" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Dataclass object not found");
-                    let idx = vars.get(&args[1]).expect("Dataclass index not found");
-                    let val = vars.get(&args[2]).expect("Dataclass value not found");
+                    let obj =
+                        var_get(&mut builder, &vars, &args[0]).expect("Dataclass object not found");
+                    let idx =
+                        var_get(&mut builder, &vars, &args[1]).expect("Dataclass index not found");
+                    let val =
+                        var_get(&mut builder, &vars, &args[2]).expect("Dataclass value not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4566,12 +4983,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *idx, *val]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "dataclass_set_class" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Dataclass object not found");
-                    let class_bits = vars.get(&args[1]).expect("Class not found");
+                    let obj =
+                        var_get(&mut builder, &vars, &args[0]).expect("Dataclass object not found");
+                    let class_bits =
+                        var_get(&mut builder, &vars, &args[1]).expect("Class not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4583,12 +5002,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *class_bits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "lt" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).expect("LHS not found");
-                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
                         let lhs_val = unbox_int(&mut builder, *lhs);
                         let rhs_val = unbox_int(&mut builder, *rhs);
@@ -4633,12 +5052,12 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "le" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).expect("LHS not found");
-                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4650,12 +5069,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "gt" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).expect("LHS not found");
-                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4667,12 +5086,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "ge" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).expect("LHS not found");
-                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4684,12 +5103,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "eq" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).expect("LHS not found");
-                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
                         let lhs_val = unbox_int(&mut builder, *lhs);
                         let rhs_val = unbox_int(&mut builder, *rhs);
@@ -4734,12 +5153,12 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "ne" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).expect("LHS not found");
-                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
                         let lhs_val = unbox_int(&mut builder, *lhs);
                         let rhs_val = unbox_int(&mut builder, *rhs);
@@ -4784,12 +5203,12 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "string_eq" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).expect("LHS not found");
-                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4801,12 +5220,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "is" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).expect("LHS not found");
-                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4818,11 +5237,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "not" => {
                     let args = op.args.as_ref().unwrap();
-                    let val = vars.get(&args[0]).expect("Value not found");
+                    let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -4833,11 +5252,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*val]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "invert" => {
                     let args = op.args.as_ref().unwrap();
-                    let val = vars.get(&args[0]).expect("Value not found");
+                    let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -4848,12 +5267,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*val]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "and" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).expect("LHS not found");
-                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -4869,12 +5288,12 @@ impl SimpleBackend {
                     let and_val = builder.ins().band(lhs_val, rhs_val);
                     let cond = builder.ins().icmp_imm(IntCC::NotEqual, and_val, 0);
                     let res = box_bool_value(&mut builder, cond);
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "or" => {
                     let args = op.args.as_ref().unwrap();
-                    let lhs = vars.get(&args[0]).expect("LHS not found");
-                    let rhs = vars.get(&args[1]).expect("RHS not found");
+                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -4890,12 +5309,13 @@ impl SimpleBackend {
                     let or_val = builder.ins().bor(lhs_val, rhs_val);
                     let cond = builder.ins().icmp_imm(IntCC::NotEqual, or_val, 0);
                     let res = box_bool_value(&mut builder, cond);
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "contains" => {
                     let args = op.args.as_ref().unwrap();
-                    let container = vars.get(&args[0]).expect("Container not found");
-                    let item = vars.get(&args[1]).expect("Item not found");
+                    let container =
+                        var_get(&mut builder, &vars, &args[0]).expect("Container not found");
+                    let item = var_get(&mut builder, &vars, &args[1]).expect("Item not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -4907,11 +5327,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*container, *item]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "print" => {
                     let args = op.args.as_ref().unwrap();
-                    let val = if let Some(val) = vars.get(&args[0]) {
+                    let val = if let Some(val) = var_get(&mut builder, &vars, &args[0]) {
                         *val
                     } else {
                         builder.ins().iconst(types::I64, box_none())
@@ -4938,10 +5358,9 @@ impl SimpleBackend {
                 "json_parse" => {
                     let args = op.args.as_ref().unwrap();
                     let arg_name = &args[0];
-                    if let Some(len) = vars.get(&format!("{}_len", arg_name)) {
-                        let ptr = vars
-                            .get(&format!("{}_ptr", arg_name))
-                            .or_else(|| vars.get(arg_name))
+                    if let Some(len) = var_get(&mut builder, &vars, &format!("{}_len", arg_name)) {
+                        let ptr = var_get(&mut builder, &vars, &format!("{}_ptr", arg_name))
+                            .or_else(|| var_get(&mut builder, &vars, arg_name))
                             .expect("String ptr not found");
 
                         let mut sig = self.module.make_signature();
@@ -4978,7 +5397,8 @@ impl SimpleBackend {
 
                         builder.switch_to_block(err_block);
                         builder.seal_block(err_block);
-                        let arg_bits = vars.get(arg_name).expect("String arg not found");
+                        let arg_bits =
+                            var_get(&mut builder, &vars, arg_name).expect("String arg not found");
                         let mut err_sig = self.module.make_signature();
                         err_sig.params.push(AbiParam::new(types::I64));
                         err_sig.returns.push(AbiParam::new(types::I64));
@@ -4998,9 +5418,10 @@ impl SimpleBackend {
                         builder.switch_to_block(merge_block);
                         builder.seal_block(merge_block);
                         let res = builder.block_params(merge_block)[0];
-                        vars.insert(op.out.unwrap(), res);
+                        def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                     } else {
-                        let arg_bits = vars.get(arg_name).expect("String arg not found");
+                        let arg_bits =
+                            var_get(&mut builder, &vars, arg_name).expect("String arg not found");
                         let mut sig = self.module.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
                         sig.returns.push(AbiParam::new(types::I64));
@@ -5011,16 +5432,15 @@ impl SimpleBackend {
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*arg_bits]);
                         let res = builder.inst_results(call)[0];
-                        vars.insert(op.out.unwrap(), res);
+                        def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                     }
                 }
                 "msgpack_parse" => {
                     let args = op.args.as_ref().unwrap();
                     let arg_name = &args[0];
-                    if let Some(len) = vars.get(&format!("{}_len", arg_name)) {
-                        let ptr = vars
-                            .get(&format!("{}_ptr", arg_name))
-                            .or_else(|| vars.get(arg_name))
+                    if let Some(len) = var_get(&mut builder, &vars, &format!("{}_len", arg_name)) {
+                        let ptr = var_get(&mut builder, &vars, &format!("{}_ptr", arg_name))
+                            .or_else(|| var_get(&mut builder, &vars, arg_name))
                             .expect("Bytes ptr not found");
 
                         let mut sig = self.module.make_signature();
@@ -5057,7 +5477,8 @@ impl SimpleBackend {
 
                         builder.switch_to_block(err_block);
                         builder.seal_block(err_block);
-                        let arg_bits = vars.get(arg_name).expect("Bytes arg not found");
+                        let arg_bits =
+                            var_get(&mut builder, &vars, arg_name).expect("Bytes arg not found");
                         let mut err_sig = self.module.make_signature();
                         err_sig.params.push(AbiParam::new(types::I64));
                         err_sig.returns.push(AbiParam::new(types::I64));
@@ -5077,9 +5498,10 @@ impl SimpleBackend {
                         builder.switch_to_block(merge_block);
                         builder.seal_block(merge_block);
                         let res = builder.block_params(merge_block)[0];
-                        vars.insert(op.out.unwrap(), res);
+                        def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                     } else {
-                        let arg_bits = vars.get(arg_name).expect("Bytes arg not found");
+                        let arg_bits =
+                            var_get(&mut builder, &vars, arg_name).expect("Bytes arg not found");
                         let mut sig = self.module.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
                         sig.returns.push(AbiParam::new(types::I64));
@@ -5094,16 +5516,15 @@ impl SimpleBackend {
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*arg_bits]);
                         let res = builder.inst_results(call)[0];
-                        vars.insert(op.out.unwrap(), res);
+                        def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                     }
                 }
                 "cbor_parse" => {
                     let args = op.args.as_ref().unwrap();
                     let arg_name = &args[0];
-                    if let Some(len) = vars.get(&format!("{}_len", arg_name)) {
-                        let ptr = vars
-                            .get(&format!("{}_ptr", arg_name))
-                            .or_else(|| vars.get(arg_name))
+                    if let Some(len) = var_get(&mut builder, &vars, &format!("{}_len", arg_name)) {
+                        let ptr = var_get(&mut builder, &vars, &format!("{}_ptr", arg_name))
+                            .or_else(|| var_get(&mut builder, &vars, arg_name))
                             .expect("Bytes ptr not found");
 
                         let mut sig = self.module.make_signature();
@@ -5140,7 +5561,8 @@ impl SimpleBackend {
 
                         builder.switch_to_block(err_block);
                         builder.seal_block(err_block);
-                        let arg_bits = vars.get(arg_name).expect("Bytes arg not found");
+                        let arg_bits =
+                            var_get(&mut builder, &vars, arg_name).expect("Bytes arg not found");
                         let mut err_sig = self.module.make_signature();
                         err_sig.params.push(AbiParam::new(types::I64));
                         err_sig.returns.push(AbiParam::new(types::I64));
@@ -5160,9 +5582,10 @@ impl SimpleBackend {
                         builder.switch_to_block(merge_block);
                         builder.seal_block(merge_block);
                         let res = builder.block_params(merge_block)[0];
-                        vars.insert(op.out.unwrap(), res);
+                        def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                     } else {
-                        let arg_bits = vars.get(arg_name).expect("Bytes arg not found");
+                        let arg_bits =
+                            var_get(&mut builder, &vars, arg_name).expect("Bytes arg not found");
                         let mut sig = self.module.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
                         sig.returns.push(AbiParam::new(types::I64));
@@ -5173,12 +5596,12 @@ impl SimpleBackend {
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*arg_bits]);
                         let res = builder.inst_results(call)[0];
-                        vars.insert(op.out.unwrap(), res);
+                        def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                     }
                 }
                 "block_on" => {
                     let args = op.args.as_ref().unwrap();
-                    let task = vars.get(&args[0]).expect("Task not found");
+                    let task = var_get(&mut builder, &vars, &args[0]).expect("Task not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64)); // boxed task
                     sig.returns.push(AbiParam::new(types::I64));
@@ -5190,7 +5613,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*task]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "state_switch" => {
                     let self_ptr = builder.block_params(entry_block)[0];
@@ -5201,55 +5624,44 @@ impl SimpleBackend {
                         HEADER_STATE_OFFSET,
                     );
                     let self_bits = box_ptr_value(&mut builder, self_ptr);
-                    vars.insert("self".to_string(), self_bits);
+                    def_var_named(&mut builder, &vars, "self", self_bits);
 
                     let mut sorted_states: Vec<_> = resume_states.iter().copied().collect();
                     sorted_states.sort();
 
                     for id in sorted_states {
-                        let mut label_exclude = param_names.clone();
-                        label_exclude.extend(entry_vars.keys().cloned());
                         let block = state_blocks[&id];
-                        let target_args = build_label_jump_args(
-                            id,
-                            &label_ids,
-                            &label_op_idx,
-                            &first_def,
-                            &last_use,
-                            &label_exclude,
-                            &mut label_param_names,
-                            &state_blocks,
-                            &mut builder,
-                            &vars,
-                            None,
-                        );
                         let id_const = builder.ins().iconst(types::I64, id);
                         let is_state = builder.ins().icmp(IntCC::Equal, state, id_const);
                         let next_check = builder.create_block();
-                        if let Some(current_block) = builder.current_block() {
-                            builder.insert_block_after(next_check, current_block);
-                        }
-                        builder
-                            .ins()
-                            .brif(is_state, block, &target_args, next_check, &[]);
-                        builder.switch_to_block(next_check);
-                        builder.seal_block(next_check);
+                        reachable_blocks.insert(block);
+                        reachable_blocks.insert(next_check);
+                        builder.ins().brif(is_state, block, &[], next_check, &[]);
+                        switch_to_block_tracking(&mut builder, next_check, &mut is_block_filled);
                     }
                 }
                 "state_transition" => {
                     let args = op.args.as_ref().unwrap();
-                    let future = vars.get(&args[0]).expect("Future not found");
+                    let future = var_get(&mut builder, &vars, &args[0]).expect("Future not found");
                     let future_ptr = unbox_ptr_value(&mut builder, *future);
                     let (slot_bits, pending_state_bits) = if args.len() == 2 {
-                        (None, *vars.get(&args[1]).expect("Pending state not found"))
+                        (
+                            None,
+                            *var_get(&mut builder, &vars, &args[1])
+                                .expect("Pending state not found"),
+                        )
                     } else {
                         (
-                            Some(*vars.get(&args[1]).expect("Await slot not found")),
-                            *vars.get(&args[2]).expect("Pending state not found"),
+                            Some(
+                                *var_get(&mut builder, &vars, &args[1])
+                                    .expect("Await slot not found"),
+                            ),
+                            *var_get(&mut builder, &vars, &args[2])
+                                .expect("Pending state not found"),
                         )
                     };
                     let next_state_id = op.value.unwrap();
-                    let self_bits = *vars.get("self").expect("Self not found");
+                    let self_bits = *var_get(&mut builder, &vars, "self").expect("Self not found");
                     let self_ptr = unbox_ptr_value(&mut builder, self_bits);
 
                     let pending_state_id = unbox_int(&mut builder, pending_state_bits);
@@ -5280,11 +5692,13 @@ impl SimpleBackend {
                     if let Some(current_block) = builder.current_block() {
                         builder.insert_block_after(ready_path, current_block);
                     }
+                    reachable_blocks.insert(pending_path);
+                    reachable_blocks.insert(ready_path);
                     builder
                         .ins()
                         .brif(is_pending, pending_path, &[], ready_path, &[]);
 
-                    builder.switch_to_block(pending_path);
+                    switch_to_block_tracking(&mut builder, pending_path, &mut is_block_filled);
                     builder.seal_block(pending_path);
                     let mut sleep_sig = self.module.make_signature();
                     sleep_sig.params.push(AbiParam::new(types::I64));
@@ -5296,9 +5710,10 @@ impl SimpleBackend {
                         .unwrap();
                     let local_sleep = self.module.declare_func_in_func(sleep_callee, builder.func);
                     builder.ins().call(local_sleep, &[self_ptr, future_ptr]);
+                    reachable_blocks.insert(master_return_block);
                     builder.ins().jump(master_return_block, &[pending_const]);
 
-                    builder.switch_to_block(ready_path);
+                    switch_to_block_tracking(&mut builder, ready_path, &mut is_block_filled);
                     builder.seal_block(ready_path);
                     if let Some(bits) = slot_bits {
                         let offset = unbox_int(&mut builder, bits);
@@ -5319,34 +5734,23 @@ impl SimpleBackend {
                         .ins()
                         .store(MemFlags::new(), state_val, self_ptr, HEADER_STATE_OFFSET);
                     if args.len() <= 1 {
-                        vars.insert(op.out.unwrap(), res);
+                        def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                     }
-                    let mut label_exclude = param_names.clone();
-                    label_exclude.extend(entry_vars.keys().cloned());
-                    let target_args = build_label_jump_args(
-                        next_state_id,
-                        &label_ids,
-                        &label_op_idx,
-                        &first_def,
-                        &last_use,
-                        &label_exclude,
-                        &mut label_param_names,
-                        &state_blocks,
-                        &mut builder,
-                        &vars,
-                        None,
-                    );
-                    builder.ins().jump(next_block, &target_args);
+                    reachable_blocks.insert(next_block);
+                    builder.ins().jump(next_block, &[]);
 
-                    builder.switch_to_block(next_block);
-                    builder.seal_block(next_block);
-                    is_block_filled = false;
+                    if reachable_blocks.contains(&next_block) {
+                        switch_to_block_tracking(&mut builder, next_block, &mut is_block_filled);
+                    } else {
+                        is_block_filled = true;
+                    }
                 }
                 "state_yield" => {
                     let args = op.args.as_ref().unwrap();
-                    let pair = vars.get(&args[0]).expect("Yield pair not found");
+                    let pair =
+                        var_get(&mut builder, &vars, &args[0]).expect("Yield pair not found");
                     let next_state_id = op.value.unwrap();
-                    let self_bits = *vars.get("self").expect("Self not found");
+                    let self_bits = *var_get(&mut builder, &vars, "self").expect("Self not found");
                     let self_ptr = unbox_ptr_value(&mut builder, self_bits);
 
                     let state_val = builder.ins().iconst(types::I64, next_state_id);
@@ -5354,6 +5758,7 @@ impl SimpleBackend {
                         .ins()
                         .store(MemFlags::new(), state_val, self_ptr, HEADER_STATE_OFFSET);
 
+                    reachable_blocks.insert(master_return_block);
                     if has_ret {
                         builder.ins().jump(master_return_block, &[*pair]);
                     } else {
@@ -5361,17 +5766,20 @@ impl SimpleBackend {
                     }
 
                     let next_block = state_blocks[&next_state_id];
-                    builder.switch_to_block(next_block);
-                    builder.seal_block(next_block);
-                    is_block_filled = false;
+                    if reachable_blocks.contains(&next_block) {
+                        switch_to_block_tracking(&mut builder, next_block, &mut is_block_filled);
+                    } else {
+                        is_block_filled = true;
+                    }
                 }
                 "chan_send_yield" => {
                     let args = op.args.as_ref().unwrap();
-                    let chan = vars.get(&args[0]).expect("Chan not found");
-                    let val = vars.get(&args[1]).expect("Val not found");
-                    let pending_state_bits = *vars.get(&args[2]).expect("Pending state not found");
+                    let chan = var_get(&mut builder, &vars, &args[0]).expect("Chan not found");
+                    let val = var_get(&mut builder, &vars, &args[1]).expect("Val not found");
+                    let pending_state_bits =
+                        *var_get(&mut builder, &vars, &args[2]).expect("Pending state not found");
                     let next_state_id = op.value.unwrap();
-                    let self_bits = *vars.get("self").expect("Self not found");
+                    let self_bits = *var_get(&mut builder, &vars, "self").expect("Self not found");
                     let self_ptr = unbox_ptr_value(&mut builder, self_bits);
 
                     let pending_state_id = unbox_int(&mut builder, pending_state_bits);
@@ -5402,6 +5810,8 @@ impl SimpleBackend {
                     if let Some(current_block) = builder.current_block() {
                         builder.insert_block_after(ready_path, current_block);
                     }
+                    reachable_blocks.insert(master_return_block);
+                    reachable_blocks.insert(ready_path);
                     builder.ins().brif(
                         is_pending,
                         master_return_block,
@@ -5410,40 +5820,28 @@ impl SimpleBackend {
                         &[],
                     );
 
-                    builder.switch_to_block(ready_path);
-                    builder.seal_block(ready_path);
+                    switch_to_block_tracking(&mut builder, ready_path, &mut is_block_filled);
                     let state_val = builder.ins().iconst(types::I64, next_state_id);
                     builder
                         .ins()
                         .store(MemFlags::new(), state_val, self_ptr, HEADER_STATE_OFFSET);
-                    vars.insert(op.out.unwrap(), res);
-                    let mut label_exclude = param_names.clone();
-                    label_exclude.extend(entry_vars.keys().cloned());
-                    let target_args = build_label_jump_args(
-                        next_state_id,
-                        &label_ids,
-                        &label_op_idx,
-                        &first_def,
-                        &last_use,
-                        &label_exclude,
-                        &mut label_param_names,
-                        &state_blocks,
-                        &mut builder,
-                        &vars,
-                        None,
-                    );
-                    builder.ins().jump(next_block, &target_args);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    reachable_blocks.insert(next_block);
+                    builder.ins().jump(next_block, &[]);
 
-                    builder.switch_to_block(next_block);
-                    builder.seal_block(next_block);
-                    is_block_filled = false;
+                    if reachable_blocks.contains(&next_block) {
+                        switch_to_block_tracking(&mut builder, next_block, &mut is_block_filled);
+                    } else {
+                        is_block_filled = true;
+                    }
                 }
                 "chan_recv_yield" => {
                     let args = op.args.as_ref().unwrap();
-                    let chan = vars.get(&args[0]).expect("Chan not found");
-                    let pending_state_bits = *vars.get(&args[1]).expect("Pending state not found");
+                    let chan = var_get(&mut builder, &vars, &args[0]).expect("Chan not found");
+                    let pending_state_bits =
+                        *var_get(&mut builder, &vars, &args[1]).expect("Pending state not found");
                     let next_state_id = op.value.unwrap();
-                    let self_bits = *vars.get("self").expect("Self not found");
+                    let self_bits = *var_get(&mut builder, &vars, "self").expect("Self not found");
                     let self_ptr = unbox_ptr_value(&mut builder, self_bits);
 
                     let pending_state_id = unbox_int(&mut builder, pending_state_bits);
@@ -5473,6 +5871,8 @@ impl SimpleBackend {
                     if let Some(current_block) = builder.current_block() {
                         builder.insert_block_after(ready_path, current_block);
                     }
+                    reachable_blocks.insert(master_return_block);
+                    reachable_blocks.insert(ready_path);
                     builder.ins().brif(
                         is_pending,
                         master_return_block,
@@ -5481,37 +5881,25 @@ impl SimpleBackend {
                         &[],
                     );
 
-                    builder.switch_to_block(ready_path);
-                    builder.seal_block(ready_path);
+                    switch_to_block_tracking(&mut builder, ready_path, &mut is_block_filled);
                     let state_val = builder.ins().iconst(types::I64, next_state_id);
                     builder
                         .ins()
                         .store(MemFlags::new(), state_val, self_ptr, HEADER_STATE_OFFSET);
-                    vars.insert(op.out.unwrap(), res);
-                    let mut label_exclude = param_names.clone();
-                    label_exclude.extend(entry_vars.keys().cloned());
-                    let target_args = build_label_jump_args(
-                        next_state_id,
-                        &label_ids,
-                        &label_op_idx,
-                        &first_def,
-                        &last_use,
-                        &label_exclude,
-                        &mut label_param_names,
-                        &state_blocks,
-                        &mut builder,
-                        &vars,
-                        None,
-                    );
-                    builder.ins().jump(next_block, &target_args);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    reachable_blocks.insert(next_block);
+                    builder.ins().jump(next_block, &[]);
 
-                    builder.switch_to_block(next_block);
-                    builder.seal_block(next_block);
-                    is_block_filled = false;
+                    if reachable_blocks.contains(&next_block) {
+                        switch_to_block_tracking(&mut builder, next_block, &mut is_block_filled);
+                    } else {
+                        is_block_filled = true;
+                    }
                 }
                 "chan_new" => {
                     let args = op.args.as_ref().unwrap();
-                    let capacity = vars.get(&args[0]).expect("Capacity not found");
+                    let capacity =
+                        var_get(&mut builder, &vars, &args[0]).expect("Capacity not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -5522,11 +5910,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*capacity]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "chan_drop" => {
                     let args = op.args.as_ref().unwrap();
-                    let chan = vars.get(&args[0]).expect("Chan not found");
+                    let chan = var_get(&mut builder, &vars, &args[0]).expect("Chan not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     let callee = self
@@ -5538,7 +5926,7 @@ impl SimpleBackend {
                 }
                 "spawn" => {
                     let args = op.args.as_ref().unwrap();
-                    let task = vars.get(&args[0]).expect("Task not found");
+                    let task = var_get(&mut builder, &vars, &args[0]).expect("Task not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     let callee = self
@@ -5550,7 +5938,8 @@ impl SimpleBackend {
                 }
                 "cancel_token_new" => {
                     let args = op.args.as_ref().unwrap();
-                    let parent = vars.get(&args[0]).expect("Parent token not found");
+                    let parent =
+                        var_get(&mut builder, &vars, &args[0]).expect("Parent token not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -5561,11 +5950,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*parent]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "cancel_token_clone" => {
                     let args = op.args.as_ref().unwrap();
-                    let token = vars.get(&args[0]).expect("Token not found");
+                    let token = var_get(&mut builder, &vars, &args[0]).expect("Token not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -5578,7 +5967,7 @@ impl SimpleBackend {
                 }
                 "cancel_token_drop" => {
                     let args = op.args.as_ref().unwrap();
-                    let token = vars.get(&args[0]).expect("Token not found");
+                    let token = var_get(&mut builder, &vars, &args[0]).expect("Token not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -5591,7 +5980,7 @@ impl SimpleBackend {
                 }
                 "cancel_token_cancel" => {
                     let args = op.args.as_ref().unwrap();
-                    let token = vars.get(&args[0]).expect("Token not found");
+                    let token = var_get(&mut builder, &vars, &args[0]).expect("Token not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -5604,7 +5993,7 @@ impl SimpleBackend {
                 }
                 "future_cancel" => {
                     let args = op.args.as_ref().unwrap();
-                    let future = vars.get(&args[0]).expect("Future not found");
+                    let future = var_get(&mut builder, &vars, &args[0]).expect("Future not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -5617,8 +6006,9 @@ impl SimpleBackend {
                 }
                 "future_cancel_msg" => {
                     let args = op.args.as_ref().unwrap();
-                    let future = vars.get(&args[0]).expect("Future not found");
-                    let msg = vars.get(&args[1]).expect("Cancel message not found");
+                    let future = var_get(&mut builder, &vars, &args[0]).expect("Future not found");
+                    let msg =
+                        var_get(&mut builder, &vars, &args[1]).expect("Cancel message not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -5632,7 +6022,7 @@ impl SimpleBackend {
                 }
                 "future_cancel_clear" => {
                     let args = op.args.as_ref().unwrap();
-                    let future = vars.get(&args[0]).expect("Future not found");
+                    let future = var_get(&mut builder, &vars, &args[0]).expect("Future not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -5653,12 +6043,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "promise_set_result" => {
                     let args = op.args.as_ref().unwrap();
-                    let future = vars.get(&args[0]).expect("Promise not found");
-                    let result = vars.get(&args[1]).expect("Result not found");
+                    let future = var_get(&mut builder, &vars, &args[0]).expect("Promise not found");
+                    let result = var_get(&mut builder, &vars, &args[1]).expect("Result not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -5672,8 +6062,8 @@ impl SimpleBackend {
                 }
                 "promise_set_exception" => {
                     let args = op.args.as_ref().unwrap();
-                    let future = vars.get(&args[0]).expect("Promise not found");
-                    let exc = vars.get(&args[1]).expect("Exception not found");
+                    let future = var_get(&mut builder, &vars, &args[0]).expect("Promise not found");
+                    let exc = var_get(&mut builder, &vars, &args[1]).expect("Exception not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -5687,9 +6077,11 @@ impl SimpleBackend {
                 }
                 "thread_submit" => {
                     let args = op.args.as_ref().unwrap();
-                    let callable = vars.get(&args[0]).expect("Callable not found");
-                    let call_args = vars.get(&args[1]).expect("Args not found");
-                    let call_kwargs = vars.get(&args[2]).expect("Kwargs not found");
+                    let callable =
+                        var_get(&mut builder, &vars, &args[0]).expect("Callable not found");
+                    let call_args = var_get(&mut builder, &vars, &args[1]).expect("Args not found");
+                    let call_kwargs =
+                        var_get(&mut builder, &vars, &args[2]).expect("Kwargs not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -5704,12 +6096,12 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*callable, *call_args, *call_kwargs]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "task_register_token_owned" => {
                     let args = op.args.as_ref().unwrap();
-                    let task = vars.get(&args[0]).expect("Task not found");
-                    let token = vars.get(&args[1]).expect("Token not found");
+                    let task = var_get(&mut builder, &vars, &args[0]).expect("Task not found");
+                    let token = var_get(&mut builder, &vars, &args[1]).expect("Token not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -5723,7 +6115,7 @@ impl SimpleBackend {
                 }
                 "cancel_token_is_cancelled" => {
                     let args = op.args.as_ref().unwrap();
-                    let token = vars.get(&args[0]).expect("Token not found");
+                    let token = var_get(&mut builder, &vars, &args[0]).expect("Token not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -5734,11 +6126,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*token]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "cancel_token_set_current" => {
                     let args = op.args.as_ref().unwrap();
-                    let token = vars.get(&args[0]).expect("Token not found");
+                    let token = var_get(&mut builder, &vars, &args[0]).expect("Token not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -5749,7 +6141,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*token]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "cancel_token_get_current" => {
                     let mut sig = self.module.make_signature();
@@ -5761,7 +6153,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "cancelled" => {
                     let mut sig = self.module.make_signature();
@@ -5773,7 +6165,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "cancel_current" => {
                     let mut sig = self.module.make_signature();
@@ -5791,11 +6183,11 @@ impl SimpleBackend {
                         let arg_names = op.args.as_deref().unwrap_or(&[]);
                         let delay_val = arg_names
                             .first()
-                            .map(|name| *vars.get(name).expect("Arg not found"))
+                            .map(|name| *var_get(&mut builder, &vars, name).expect("Arg not found"))
                             .unwrap_or_else(|| builder.ins().iconst(types::I64, box_float(0.0)));
                         let result_val = arg_names
                             .get(1)
-                            .map(|name| *vars.get(name).expect("Arg not found"))
+                            .map(|name| *var_get(&mut builder, &vars, name).expect("Arg not found"))
                             .unwrap_or_else(|| builder.ins().iconst(types::I64, box_none()));
                         let mut sig = self.module.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
@@ -5809,7 +6201,7 @@ impl SimpleBackend {
                         let call = builder.ins().call(local_callee, &[delay_val, result_val]);
                         let res = builder.inst_results(call)[0];
                         let out_name = op.out.unwrap();
-                        vars.insert(out_name, res);
+                        def_var_named(&mut builder, &vars, out_name, res);
                     } else {
                         let args = op.args.as_deref();
                         let payload_len = args.map(|vals| vals.len()).unwrap_or(0);
@@ -5844,7 +6236,8 @@ impl SimpleBackend {
                         if let Some(arg_names) = args {
                             if !arg_names.is_empty() {
                                 for (idx, arg_name) in arg_names.iter().enumerate() {
-                                    let val = vars.get(arg_name).expect("Arg not found");
+                                    let val = var_get(&mut builder, &vars, arg_name)
+                                        .expect("Arg not found");
                                     builder.ins().store(
                                         MemFlags::new(),
                                         *val,
@@ -5856,7 +6249,7 @@ impl SimpleBackend {
                             }
                         }
                         let out_name = op.out.unwrap();
-                        vars.insert(out_name, obj);
+                        def_var_named(&mut builder, &vars, out_name, obj);
                     }
                 }
                 "builtin_func" => {
@@ -5903,7 +6296,7 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[func_addr, tramp_addr, arity_val]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "func_new" => {
                     let func_name = op.s_value.as_ref().unwrap();
@@ -5961,7 +6354,7 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[func_addr, tramp_addr, arity_val]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "func_new_closure" => {
                     let func_name = op.s_value.as_ref().unwrap();
@@ -5979,7 +6372,8 @@ impl SimpleBackend {
                         .as_ref()
                         .and_then(|args| args.first())
                         .expect("func_new_closure expects closure arg");
-                    let closure_bits = *vars.get(closure_name).expect("closure arg not found");
+                    let closure_bits =
+                        *var_get(&mut builder, &vars, closure_name).expect("closure arg not found");
                     let mut func_sig = self.module.make_signature();
                     if func_name.ends_with("_poll") {
                         func_sig.params.push(AbiParam::new(types::I64));
@@ -6028,14 +6422,17 @@ impl SimpleBackend {
                         &[func_addr, tramp_addr, arity_val, closure_bits],
                     );
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "code_new" => {
                     let args = op.args.as_ref().unwrap();
-                    let filename_bits = vars.get(&args[0]).expect("filename not found");
-                    let name_bits = vars.get(&args[1]).expect("name not found");
-                    let firstlineno_bits = vars.get(&args[2]).expect("firstlineno not found");
-                    let linetable_bits = vars.get(&args[3]).expect("linetable not found");
+                    let filename_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("filename not found");
+                    let name_bits = var_get(&mut builder, &vars, &args[1]).expect("name not found");
+                    let firstlineno_bits =
+                        var_get(&mut builder, &vars, &args[2]).expect("firstlineno not found");
+                    let linetable_bits =
+                        var_get(&mut builder, &vars, &args[3]).expect("linetable not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -6057,11 +6454,12 @@ impl SimpleBackend {
                         ],
                     );
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "code_slot_set" => {
                     let args = op.args.as_ref().unwrap();
-                    let code_bits = vars.get(&args[0]).expect("code bits not found");
+                    let code_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("code bits not found");
                     let code_id = op.value.unwrap_or(0);
                     let code_id_val = builder.ins().iconst(types::I64, code_id);
                     let mut sig = self.module.make_signature();
@@ -6077,7 +6475,8 @@ impl SimpleBackend {
                 }
                 "fn_ptr_code_set" => {
                     let args = op.args.as_ref().unwrap();
-                    let code_bits = vars.get(&args[0]).expect("code bits not found");
+                    let code_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("code bits not found");
                     let func_name = op.s_value.as_ref().expect("fn_ptr_code_set expects symbol");
                     let mut func_sig = self.module.make_signature();
                     if func_name.ends_with("_poll") {
@@ -6108,8 +6507,10 @@ impl SimpleBackend {
                 }
                 "asyncgen_locals_register" => {
                     let args = op.args.as_ref().unwrap();
-                    let names_bits = vars.get(&args[0]).expect("names tuple not found");
-                    let offsets_bits = vars.get(&args[1]).expect("offsets tuple not found");
+                    let names_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("names tuple not found");
+                    let offsets_bits =
+                        var_get(&mut builder, &vars, &args[1]).expect("offsets tuple not found");
                     let func_name = op
                         .s_value
                         .as_ref()
@@ -6144,6 +6545,46 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[func_addr, *names_bits, *offsets_bits]);
                 }
+                "gen_locals_register" => {
+                    let args = op.args.as_ref().unwrap();
+                    let names_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("names tuple not found");
+                    let offsets_bits =
+                        var_get(&mut builder, &vars, &args[1]).expect("offsets tuple not found");
+                    let func_name = op
+                        .s_value
+                        .as_ref()
+                        .expect("gen_locals_register expects symbol");
+                    let mut func_sig = self.module.make_signature();
+                    if func_name.ends_with("_poll") {
+                        func_sig.params.push(AbiParam::new(types::I64));
+                    } else {
+                        let arity = op.value.unwrap_or(0);
+                        for _ in 0..arity {
+                            func_sig.params.push(AbiParam::new(types::I64));
+                        }
+                    }
+                    func_sig.returns.push(AbiParam::new(types::I64));
+                    let func_id = self
+                        .module
+                        .declare_function(func_name, Linkage::Export, &func_sig)
+                        .unwrap();
+                    let func_ref = self.module.declare_func_in_func(func_id, builder.func);
+                    let func_addr = builder.ins().func_addr(types::I64, func_ref);
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_gen_locals_register", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let _ = builder
+                        .ins()
+                        .call(local_callee, &[func_addr, *names_bits, *offsets_bits]);
+                }
                 "code_slots_init" => {
                     let count = op.value.unwrap_or(0);
                     let count_val = builder.ins().iconst(types::I64, count);
@@ -6169,6 +6610,42 @@ impl SimpleBackend {
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let _ = builder.ins().call(local_callee, &[line_val]);
+                    if !is_block_filled {
+                        if let Some(block) = builder.current_block() {
+                            if let Some(names) = block_tracked_obj.get_mut(&block) {
+                                let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
+                                for tracked in cleanup {
+                                    builder.ins().call(local_dec_ref_obj, &[tracked.value]);
+                                }
+                            }
+                            if let Some(names) = block_tracked_ptr.get_mut(&block) {
+                                let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
+                                for tracked in cleanup {
+                                    builder.ins().call(local_dec_ref, &[tracked.value]);
+                                }
+                            }
+                            if block == entry_block && loop_depth == 0 {
+                                let cleanup = drain_cleanup_entry_tracked(
+                                    &mut tracked_obj_vars,
+                                    &entry_vars,
+                                    &last_use,
+                                    op_idx,
+                                );
+                                for val in cleanup {
+                                    builder.ins().call(local_dec_ref_obj, &[val]);
+                                }
+                                let cleanup = drain_cleanup_entry_tracked(
+                                    &mut tracked_vars,
+                                    &entry_vars,
+                                    &last_use,
+                                    op_idx,
+                                );
+                                for val in cleanup {
+                                    builder.ins().call(local_dec_ref, &[val]);
+                                }
+                            }
+                        }
+                    }
                 }
                 "missing" => {
                     let mut sig = self.module.make_signature();
@@ -6180,11 +6657,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "function_closure_bits" => {
                     let args = op.args.as_ref().unwrap();
-                    let func_bits = vars.get(&args[0]).expect("Func not found");
+                    let func_bits = var_get(&mut builder, &vars, &args[0]).expect("Func not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -6196,12 +6673,12 @@ impl SimpleBackend {
                     let call = builder.ins().call(local_callee, &[*func_bits]);
                     let res = builder.inst_results(call)[0];
                     emit_maybe_ref_adjust(&mut builder, res, local_inc_ref_obj);
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bound_method_new" => {
                     let args = op.args.as_ref().unwrap();
-                    let func_bits = vars.get(&args[0]).expect("Func not found");
-                    let self_bits = vars.get(&args[1]).expect("Self not found");
+                    let func_bits = var_get(&mut builder, &vars, &args[0]).expect("Func not found");
+                    let self_bits = var_get(&mut builder, &vars, &args[1]).expect("Self not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -6213,14 +6690,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*func_bits, *self_bits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "call" => {
                     let target_name = op.s_value.as_ref().unwrap();
                     let args_names = op.args.as_ref().unwrap();
                     let mut args = Vec::new();
                     for name in args_names {
-                        args.push(*vars.get(name).expect("Arg not found"));
+                        args.push(*var_get(&mut builder, &vars, name).expect("Arg not found"));
                     }
 
                     let mut sig = self.module.make_signature();
@@ -6299,15 +6776,16 @@ impl SimpleBackend {
                     builder.switch_to_block(merge_block);
                     builder.seal_block(merge_block);
                     let res = builder.block_params(merge_block)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "call_guarded" => {
                     let target_name = op.s_value.as_ref().unwrap();
                     let args_names = op.args.as_ref().unwrap();
-                    let callee_bits = vars.get(&args_names[0]).expect("Callee not found");
+                    let callee_bits =
+                        var_get(&mut builder, &vars, &args_names[0]).expect("Callee not found");
                     let mut args = Vec::new();
                     for name in &args_names[1..] {
-                        args.push(*vars.get(name).expect("Arg not found"));
+                        args.push(*var_get(&mut builder, &vars, name).expect("Arg not found"));
                     }
 
                     let mut sig = self.module.make_signature();
@@ -6511,14 +6989,15 @@ impl SimpleBackend {
                     builder.switch_to_block(merge_block);
                     builder.seal_block(merge_block);
                     let res = builder.block_params(merge_block)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "call_func" => {
                     let args_names = op.args.as_ref().unwrap();
-                    let func_bits = vars.get(&args_names[0]).expect("Func not found");
+                    let func_bits =
+                        var_get(&mut builder, &vars, &args_names[0]).expect("Func not found");
                     let mut args = Vec::new();
                     for name in &args_names[1..] {
-                        args.push(*vars.get(name).expect("Arg not found"));
+                        args.push(*var_get(&mut builder, &vars, name).expect("Arg not found"));
                     }
 
                     let mut resolve_sig = self.module.make_signature();
@@ -7372,12 +7851,14 @@ impl SimpleBackend {
                     builder.switch_to_block(merge_block);
                     builder.seal_block(merge_block);
                     let res = builder.block_params(merge_block)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "call_bind" => {
                     let args_names = op.args.as_ref().unwrap();
-                    let func_bits = vars.get(&args_names[0]).expect("Func not found");
-                    let builder_ptr = vars.get(&args_names[1]).expect("Callargs not found");
+                    let func_bits =
+                        var_get(&mut builder, &vars, &args_names[0]).expect("Func not found");
+                    let builder_ptr =
+                        var_get(&mut builder, &vars, &args_names[1]).expect("Callargs not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -7391,14 +7872,16 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*func_bits, *builder_ptr]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "call_method" => {
                     let args_names = op.args.as_ref().unwrap();
-                    let method_bits = vars.get(&args_names[0]).expect("Method not found");
+                    let method_bits =
+                        var_get(&mut builder, &vars, &args_names[0]).expect("Method not found");
                     let mut extra_args = Vec::new();
                     for name in &args_names[1..] {
-                        extra_args.push(*vars.get(name).expect("Arg not found"));
+                        extra_args
+                            .push(*var_get(&mut builder, &vars, name).expect("Arg not found"));
                     }
                     let mut new_sig = self.module.make_signature();
                     new_sig.params.push(AbiParam::new(types::I64));
@@ -7445,11 +7928,12 @@ impl SimpleBackend {
                         .ins()
                         .call(call_bind_local, &[*method_bits, callargs_ptr]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "module_new" => {
                     let args = op.args.as_ref().unwrap();
-                    let name_bits = vars.get(&args[0]).expect("Module name not found");
+                    let name_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("Module name not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -7460,11 +7944,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*name_bits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "class_new" => {
                     let args = op.args.as_ref().unwrap();
-                    let name_bits = vars.get(&args[0]).expect("Class name not found");
+                    let name_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("Class name not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -7475,11 +7960,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*name_bits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "builtin_type" => {
                     let args = op.args.as_ref().unwrap();
-                    let tag_bits = vars.get(&args[0]).expect("Tag not found");
+                    let tag_bits = var_get(&mut builder, &vars, &args[0]).expect("Tag not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -7490,11 +7975,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*tag_bits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "type_of" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj_bits = vars.get(&args[0]).expect("Object not found");
+                    let obj_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("Object not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -7505,11 +7991,28 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj_bits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                }
+                "is_native_awaitable" => {
+                    let args = op.args.as_ref().unwrap();
+                    let obj_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("Object not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_is_native_awaitable", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*obj_bits]);
+                    let res = builder.inst_results(call)[0];
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "class_layout_version" => {
                     let args = op.args.as_ref().unwrap();
-                    let class_bits = vars.get(&args[0]).expect("Class not found");
+                    let class_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("Class not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -7520,12 +8023,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*class_bits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "class_set_layout_version" => {
                     let args = op.args.as_ref().unwrap();
-                    let class_bits = vars.get(&args[0]).expect("Class not found");
-                    let version_bits = vars.get(&args[1]).expect("Version not found");
+                    let class_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("Class not found");
+                    let version_bits =
+                        var_get(&mut builder, &vars, &args[1]).expect("Version not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -7541,14 +8046,16 @@ impl SimpleBackend {
                     if let Some(out_name) = op.out.as_ref() {
                         if out_name != "none" {
                             let res = builder.inst_results(call)[0];
-                            vars.insert(out_name.clone(), res);
+                            def_var_named(&mut builder, &vars, out_name.clone(), res);
                         }
                     }
                 }
                 "isinstance" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj_bits = vars.get(&args[0]).expect("Object not found");
-                    let class_bits = vars.get(&args[1]).expect("Class not found");
+                    let obj_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("Object not found");
+                    let class_bits =
+                        var_get(&mut builder, &vars, &args[1]).expect("Class not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -7560,12 +8067,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj_bits, *class_bits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "issubclass" => {
                     let args = op.args.as_ref().unwrap();
-                    let sub_bits = vars.get(&args[0]).expect("Subclass not found");
-                    let class_bits = vars.get(&args[1]).expect("Class not found");
+                    let sub_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("Subclass not found");
+                    let class_bits =
+                        var_get(&mut builder, &vars, &args[1]).expect("Class not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -7577,7 +8086,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*sub_bits, *class_bits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "object_new" => {
                     let mut sig = self.module.make_signature();
@@ -7589,12 +8098,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "class_set_base" => {
                     let args = op.args.as_ref().unwrap();
-                    let class_bits = vars.get(&args[0]).expect("Class not found");
-                    let base_bits = vars.get(&args[1]).expect("Base class not found");
+                    let class_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("Class not found");
+                    let base_bits =
+                        var_get(&mut builder, &vars, &args[1]).expect("Base class not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -7606,11 +8117,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*class_bits, *base_bits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "class_apply_set_name" => {
                     let args = op.args.as_ref().unwrap();
-                    let class_bits = vars.get(&args[0]).expect("Class not found");
+                    let class_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("Class not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -7621,12 +8133,13 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*class_bits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "super_new" => {
                     let args = op.args.as_ref().unwrap();
-                    let type_bits = vars.get(&args[0]).expect("Type not found");
-                    let obj_bits = vars.get(&args[1]).expect("Object not found");
+                    let type_bits = var_get(&mut builder, &vars, &args[0]).expect("Type not found");
+                    let obj_bits =
+                        var_get(&mut builder, &vars, &args[1]).expect("Object not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -7638,11 +8151,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*type_bits, *obj_bits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "classmethod_new" => {
                     let args = op.args.as_ref().unwrap();
-                    let func_bits = vars.get(&args[0]).expect("Func not found");
+                    let func_bits = var_get(&mut builder, &vars, &args[0]).expect("Func not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -7653,11 +8166,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*func_bits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "staticmethod_new" => {
                     let args = op.args.as_ref().unwrap();
-                    let func_bits = vars.get(&args[0]).expect("Func not found");
+                    let func_bits = var_get(&mut builder, &vars, &args[0]).expect("Func not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -7668,13 +8181,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*func_bits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "property_new" => {
                     let args = op.args.as_ref().unwrap();
-                    let getter = vars.get(&args[0]).expect("Getter not found");
-                    let setter = vars.get(&args[1]).expect("Setter not found");
-                    let deleter = vars.get(&args[2]).expect("Deleter not found");
+                    let getter = var_get(&mut builder, &vars, &args[0]).expect("Getter not found");
+                    let setter = var_get(&mut builder, &vars, &args[1]).expect("Setter not found");
+                    let deleter =
+                        var_get(&mut builder, &vars, &args[2]).expect("Deleter not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -7689,13 +8203,15 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*getter, *setter, *deleter]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "object_set_class" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj_bits = vars.get(&args[0]).expect("Object not found");
+                    let obj_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("Object not found");
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj_bits);
-                    let class_bits = vars.get(&args[1]).expect("Class not found");
+                    let class_bits =
+                        var_get(&mut builder, &vars, &args[1]).expect("Class not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -7707,11 +8223,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[obj_ptr, *class_bits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "module_cache_get" => {
                     let args = op.args.as_ref().unwrap();
-                    let name_bits = vars.get(&args[0]).expect("Module name not found");
+                    let name_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("Module name not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -7722,12 +8239,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*name_bits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "module_cache_set" => {
                     let args = op.args.as_ref().unwrap();
-                    let name_bits = vars.get(&args[0]).expect("Module name not found");
-                    let module_bits = vars.get(&args[1]).expect("Module not found");
+                    let name_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("Module name not found");
+                    let module_bits =
+                        var_get(&mut builder, &vars, &args[1]).expect("Module not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -7741,10 +8260,34 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*name_bits, *module_bits]);
                 }
+                "module_cache_del" => {
+                    let args = op.args.as_ref().unwrap();
+                    let name_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("Module name not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_module_cache_del", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    builder.ins().call(local_callee, &[*name_bits]);
+                }
                 "module_get_attr" => {
                     let args = op.args.as_ref().unwrap();
-                    let module_bits = vars.get(&args[0]).expect("Module not found");
-                    let attr_bits = vars.get(&args[1]).expect("Attr not found");
+                    let module_bits = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
+                        panic!(
+                            "Module not found in {} op {} ({:?})",
+                            func_ir.name, op_idx, op.args
+                        )
+                    });
+                    let attr_bits = var_get(&mut builder, &vars, &args[1]).unwrap_or_else(|| {
+                        panic!(
+                            "Attr not found in {} op {} ({:?})",
+                            func_ir.name, op_idx, op.args
+                        )
+                    });
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -7758,12 +8301,13 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*module_bits, *attr_bits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "module_get_global" => {
                     let args = op.args.as_ref().unwrap();
-                    let module_bits = vars.get(&args[0]).expect("Module not found");
-                    let attr_bits = vars.get(&args[1]).expect("Attr not found");
+                    let module_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("Module not found");
+                    let attr_bits = var_get(&mut builder, &vars, &args[1]).expect("Attr not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -7777,12 +8321,13 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*module_bits, *attr_bits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "module_del_global" => {
                     let args = op.args.as_ref().unwrap();
-                    let module_bits = vars.get(&args[0]).expect("Module not found");
-                    let attr_bits = vars.get(&args[1]).expect("Attr not found");
+                    let module_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("Module not found");
+                    let attr_bits = var_get(&mut builder, &vars, &args[1]).expect("Attr not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -7798,14 +8343,15 @@ impl SimpleBackend {
                     if let Some(out_name) = op.out.as_ref() {
                         if out_name != "none" {
                             let res = builder.inst_results(call)[0];
-                            vars.insert(out_name.clone(), res);
+                            def_var_named(&mut builder, &vars, out_name.clone(), res);
                         }
                     }
                 }
                 "module_get_name" => {
                     let args = op.args.as_ref().unwrap();
-                    let module_bits = vars.get(&args[0]).expect("Module not found");
-                    let attr_bits = vars.get(&args[1]).expect("Attr not found");
+                    let module_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("Module not found");
+                    let attr_bits = var_get(&mut builder, &vars, &args[1]).expect("Attr not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -7819,13 +8365,14 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*module_bits, *attr_bits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "module_set_attr" => {
                     let args = op.args.as_ref().unwrap();
-                    let module_bits = vars.get(&args[0]).expect("Module not found");
-                    let attr_bits = vars.get(&args[1]).expect("Attr not found");
-                    let val_bits = vars.get(&args[2]).unwrap_or_else(|| {
+                    let module_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("Module not found");
+                    let attr_bits = var_get(&mut builder, &vars, &args[1]).expect("Attr not found");
+                    let val_bits = var_get(&mut builder, &vars, &args[2]).unwrap_or_else(|| {
                         panic!(
                             "Value not found for module_set_attr in {} op {}",
                             func_ir.name, op_idx
@@ -7847,8 +8394,10 @@ impl SimpleBackend {
                 }
                 "module_import_star" => {
                     let args = op.args.as_ref().unwrap();
-                    let src_bits = vars.get(&args[0]).expect("Module not found");
-                    let dst_bits = vars.get(&args[1]).expect("Module not found");
+                    let src_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("Module not found");
+                    let dst_bits =
+                        var_get(&mut builder, &vars, &args[1]).expect("Module not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -7862,7 +8411,8 @@ impl SimpleBackend {
                 }
                 "context_null" => {
                     let args = op.args.as_ref().unwrap();
-                    let payload = vars.get(&args[0]).expect("Payload not found");
+                    let payload =
+                        var_get(&mut builder, &vars, &args[0]).expect("Payload not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -7873,11 +8423,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*payload]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "context_enter" => {
                     let args = op.args.as_ref().unwrap();
-                    let ctx = vars.get(&args[0]).expect("Context not found");
+                    let ctx = var_get(&mut builder, &vars, &args[0]).expect("Context not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -7888,12 +8438,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*ctx]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "context_exit" => {
                     let args = op.args.as_ref().unwrap();
-                    let ctx = vars.get(&args[0]).expect("Context not found");
-                    let exc = vars.get(&args[1]).expect("Exception not found");
+                    let ctx = var_get(&mut builder, &vars, &args[0]).expect("Context not found");
+                    let exc = var_get(&mut builder, &vars, &args[1]).expect("Exception not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -7905,11 +8455,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*ctx, *exc]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "context_closing" => {
                     let args = op.args.as_ref().unwrap();
-                    let payload = vars.get(&args[0]).expect("Payload not found");
+                    let payload =
+                        var_get(&mut builder, &vars, &args[0]).expect("Payload not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -7920,11 +8471,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*payload]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "context_unwind" => {
                     let args = op.args.as_ref().unwrap();
-                    let exc = vars.get(&args[0]).expect("Exception not found");
+                    let exc = var_get(&mut builder, &vars, &args[0]).expect("Exception not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -7935,7 +8486,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*exc]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "context_depth" => {
                     let mut sig = self.module.make_signature();
@@ -7947,12 +8498,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "context_unwind_to" => {
                     let args = op.args.as_ref().unwrap();
-                    let depth = vars.get(&args[0]).expect("Depth not found");
-                    let exc = vars.get(&args[1]).expect("Exception not found");
+                    let depth = var_get(&mut builder, &vars, &args[0]).expect("Depth not found");
+                    let exc = var_get(&mut builder, &vars, &args[1]).expect("Exception not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -7964,7 +8515,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*depth, *exc]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "exception_push" => {
                     let mut sig = self.module.make_signature();
@@ -7976,8 +8527,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
-                    exception_vars_stack.push(vars.clone());
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "exception_pop" => {
                     let mut sig = self.module.make_signature();
@@ -7989,8 +8539,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
-                    let _ = exception_vars_stack.pop();
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "exception_stack_clear" => {
                     let mut sig = self.module.make_signature();
@@ -8002,8 +8551,71 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
-                    exception_vars_stack.clear();
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                }
+                "exception_stack_depth" => {
+                    let mut sig = self.module.make_signature();
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_exception_stack_depth", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[]);
+                    let res = builder.inst_results(call)[0];
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                }
+                "exception_stack_enter" => {
+                    let mut sig = self.module.make_signature();
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_exception_stack_enter", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[]);
+                    let res = builder.inst_results(call)[0];
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                }
+                "exception_stack_exit" => {
+                    let args = op.args.as_ref().unwrap();
+                    let prev = var_get(&mut builder, &vars, &args[0])
+                        .expect("exception baseline not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_exception_stack_exit", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*prev]);
+                    if let Some(out_name) = op.out.as_ref() {
+                        if out_name != "none" {
+                            let res = builder.inst_results(call)[0];
+                            def_var_named(&mut builder, &vars, out_name.clone(), res);
+                        }
+                    }
+                }
+                "exception_stack_set_depth" => {
+                    let args = op.args.as_ref().unwrap();
+                    let depth =
+                        var_get(&mut builder, &vars, &args[0]).expect("exception depth not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_exception_stack_set_depth", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*depth]);
+                    if let Some(out_name) = op.out.as_ref() {
+                        if out_name != "none" {
+                            let res = builder.inst_results(call)[0];
+                            def_var_named(&mut builder, &vars, out_name.clone(), res);
+                        }
+                    }
                 }
                 "exception_last" => {
                     let mut sig = self.module.make_signature();
@@ -8015,12 +8627,36 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                }
+                "getargv" => {
+                    let mut sig = self.module.make_signature();
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_getargv", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[]);
+                    let res = builder.inst_results(call)[0];
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                }
+                "sys_executable" => {
+                    let mut sig = self.module.make_signature();
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_sys_executable", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[]);
+                    let res = builder.inst_results(call)[0];
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "exception_new" => {
                     let args = op.args.as_ref().unwrap();
-                    let kind = vars.get(&args[0]).expect("Kind not found");
-                    let args_bits = vars.get(&args[1]).expect("Args not found");
+                    let kind = var_get(&mut builder, &vars, &args[0]).expect("Kind not found");
+                    let args_bits = var_get(&mut builder, &vars, &args[1]).expect("Args not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -8032,12 +8668,13 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*kind, *args_bits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "exception_new_from_class" => {
                     let args = op.args.as_ref().unwrap();
-                    let class_bits = vars.get(&args[0]).expect("Class not found");
-                    let args_bits = vars.get(&args[1]).expect("Args not found");
+                    let class_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("Class not found");
+                    let args_bits = var_get(&mut builder, &vars, &args[1]).expect("Args not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -8049,12 +8686,13 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*class_bits, *args_bits]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "exceptiongroup_match" => {
                     let args = op.args.as_ref().unwrap();
-                    let exc = vars.get(&args[0]).expect("Exception not found");
-                    let matcher = vars.get(&args[1]).expect("Matcher not found");
+                    let exc = var_get(&mut builder, &vars, &args[0]).expect("Exception not found");
+                    let matcher =
+                        var_get(&mut builder, &vars, &args[1]).expect("Matcher not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -8066,11 +8704,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*exc, *matcher]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "exceptiongroup_combine" => {
                     let args = op.args.as_ref().unwrap();
-                    let items = vars.get(&args[0]).expect("Exception list not found");
+                    let items =
+                        var_get(&mut builder, &vars, &args[0]).expect("Exception list not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -8081,7 +8720,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*items]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "exception_clear" => {
                     let mut sig = self.module.make_signature();
@@ -8093,11 +8732,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "exception_kind" => {
                     let args = op.args.as_ref().unwrap();
-                    let exc = vars.get(&args[0]).expect("Exception not found");
+                    let exc = var_get(&mut builder, &vars, &args[0]).expect("Exception not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -8108,11 +8747,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*exc]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "exception_class" => {
                     let args = op.args.as_ref().unwrap();
-                    let kind = vars.get(&args[0]).expect("Exception kind not found");
+                    let kind =
+                        var_get(&mut builder, &vars, &args[0]).expect("Exception kind not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -8123,11 +8763,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*kind]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "exception_message" => {
                     let args = op.args.as_ref().unwrap();
-                    let exc = vars.get(&args[0]).expect("Exception not found");
+                    let exc = var_get(&mut builder, &vars, &args[0]).expect("Exception not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -8138,12 +8778,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*exc]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "exception_set_cause" => {
                     let args = op.args.as_ref().unwrap();
-                    let exc = vars.get(&args[0]).expect("Exception not found");
-                    let cause = vars.get(&args[1]).expect("Cause not found");
+                    let exc = var_get(&mut builder, &vars, &args[0]).expect("Exception not found");
+                    let cause = var_get(&mut builder, &vars, &args[1]).expect("Cause not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -8155,11 +8795,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*exc, *cause]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "exception_set_last" => {
                     let args = op.args.as_ref().unwrap();
-                    let exc = vars.get(&args[0]).expect("Exception not found");
+                    let exc = var_get(&mut builder, &vars, &args[0]).expect("Exception not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -8170,12 +8810,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*exc]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "exception_set_value" => {
                     let args = op.args.as_ref().unwrap();
-                    let exc = vars.get(&args[0]).expect("Exception not found");
-                    let value = vars.get(&args[1]).expect("Value not found");
+                    let exc = var_get(&mut builder, &vars, &args[0]).expect("Exception not found");
+                    let value = var_get(&mut builder, &vars, &args[1]).expect("Value not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -8187,11 +8827,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*exc, *value]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "exception_context_set" => {
                     let args = op.args.as_ref().unwrap();
-                    let exc = vars.get(&args[0]).expect("Exception not found");
+                    let exc = var_get(&mut builder, &vars, &args[0]).expect("Exception not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -8202,11 +8842,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*exc]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "raise" => {
                     let args = op.args.as_ref().unwrap();
-                    let exc = vars.get(&args[0]).expect("Exception not found");
+                    let exc = var_get(&mut builder, &vars, &args[0]).expect("Exception not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -8217,11 +8857,33 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*exc]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "check_exception" => {
                     let target_id = op.value.unwrap();
                     let target_block = state_blocks[&target_id];
+                    let mut carry_obj: Vec<TrackedValue> = Vec::new();
+                    let mut carry_ptr: Vec<TrackedValue> = Vec::new();
+                    if let Some(block) = builder.current_block() {
+                        if let Some(names) = block_tracked_obj.remove(&block) {
+                            carry_obj.extend(names);
+                        }
+                        if let Some(names) = block_tracked_ptr.remove(&block) {
+                            carry_ptr.extend(names);
+                        }
+                        if block == entry_block && loop_depth == 0 {
+                            for name in tracked_obj_vars.drain(..) {
+                                if let Some(val) = entry_vars.get(&name) {
+                                    carry_obj.push(TrackedValue { name, value: *val });
+                                }
+                            }
+                            for name in tracked_vars.drain(..) {
+                                if let Some(val) = entry_vars.get(&name) {
+                                    carry_ptr.push(TrackedValue { name, value: *val });
+                                }
+                            }
+                        }
+                    }
                     let mut sig = self.module.make_signature();
                     sig.returns.push(AbiParam::new(types::I64));
                     let callee = self
@@ -8233,35 +8895,30 @@ impl SimpleBackend {
                     let pending = builder.inst_results(call)[0];
                     let cond = builder.ins().icmp_imm(IntCC::NotEqual, pending, 0);
                     let fallthrough = builder.create_block();
-                    let vars_for_exc = exception_vars_stack.last().unwrap_or(&vars);
-                    let mut label_exclude = param_names.clone();
-                    label_exclude.extend(entry_vars.keys().cloned());
-                    let target_args = build_label_jump_args(
-                        target_id,
-                        &label_ids,
-                        &label_op_idx,
-                        &first_def,
-                        &last_use,
-                        &label_exclude,
-                        &mut label_param_names,
-                        &state_blocks,
-                        &mut builder,
-                        vars_for_exc,
-                        Some(vars_for_exc),
-                    );
+                    reachable_blocks.insert(target_block);
+                    reachable_blocks.insert(fallthrough);
                     builder
                         .ins()
-                        .brif(cond, target_block, &target_args, fallthrough, &[]);
-                    if let Some(current_block) = builder.current_block() {
-                        builder.insert_block_after(fallthrough, current_block);
-                    }
-                    builder.switch_to_block(fallthrough);
+                        .brif(cond, target_block, &[], fallthrough, &[]);
+                    switch_to_block_tracking(&mut builder, fallthrough, &mut is_block_filled);
                     builder.seal_block(fallthrough);
+                    if !carry_obj.is_empty() {
+                        block_tracked_obj
+                            .entry(fallthrough)
+                            .or_default()
+                            .extend(carry_obj);
+                    }
+                    if !carry_ptr.is_empty() {
+                        block_tracked_ptr
+                            .entry(fallthrough)
+                            .or_default()
+                            .extend(carry_ptr);
+                    }
                 }
                 "file_open" => {
                     let args = op.args.as_ref().unwrap();
-                    let path = vars.get(&args[0]).expect("Path not found");
-                    let mode = vars.get(&args[1]).expect("Mode not found");
+                    let path = var_get(&mut builder, &vars, &args[0]).expect("Path not found");
+                    let mode = var_get(&mut builder, &vars, &args[1]).expect("Mode not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -8273,12 +8930,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*path, *mode]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "file_read" => {
                     let args = op.args.as_ref().unwrap();
-                    let handle = vars.get(&args[0]).expect("Handle not found");
-                    let size = vars.get(&args[1]).expect("Size not found");
+                    let handle = var_get(&mut builder, &vars, &args[0]).expect("Handle not found");
+                    let size = var_get(&mut builder, &vars, &args[1]).expect("Size not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -8290,12 +8947,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*handle, *size]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "file_write" => {
                     let args = op.args.as_ref().unwrap();
-                    let handle = vars.get(&args[0]).expect("Handle not found");
-                    let data = vars.get(&args[1]).expect("Data not found");
+                    let handle = var_get(&mut builder, &vars, &args[0]).expect("Handle not found");
+                    let data = var_get(&mut builder, &vars, &args[1]).expect("Data not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -8307,11 +8964,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*handle, *data]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "file_close" => {
                     let args = op.args.as_ref().unwrap();
-                    let handle = vars.get(&args[0]).expect("Handle not found");
+                    let handle = var_get(&mut builder, &vars, &args[0]).expect("Handle not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -8322,11 +8979,26 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*handle]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                }
+                "file_flush" => {
+                    let args = op.args.as_ref().unwrap();
+                    let handle = var_get(&mut builder, &vars, &args[0]).expect("Handle not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_file_flush", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*handle]);
+                    let res = builder.inst_results(call)[0];
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "bridge_unavailable" => {
                     let args = op.args.as_ref().unwrap();
-                    let msg = vars.get(&args[0]).expect("Message not found");
+                    let msg = var_get(&mut builder, &vars, &args[0]).expect("Message not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -8337,11 +9009,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*msg]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "if" => {
                     let args = op.args.as_ref().unwrap();
-                    let cond = vars.get(&args[0]).expect("Cond not found");
+                    let cond = var_get(&mut builder, &vars, &args[0]).expect("Cond not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -8359,89 +9031,68 @@ impl SimpleBackend {
                     if let Some(current_block) = builder.current_block() {
                         builder.insert_block_after(then_block, current_block);
                         builder.insert_block_after(else_block, then_block);
-                        builder.insert_block_after(merge_block, else_block);
                     }
+                    reachable_blocks.insert(then_block);
+                    reachable_blocks.insert(else_block);
                     builder
                         .ins()
                         .brif(cond_bool, then_block, &[], else_block, &[]);
-                    builder.switch_to_block(then_block);
-                    builder.seal_block(then_block);
-                    is_block_filled = false;
+                    switch_to_block_tracking(&mut builder, then_block, &mut is_block_filled);
                     if_stack.push(IfFrame {
                         else_block,
                         merge_block,
                         has_else: false,
-                        then_exit: None,
-                        else_exit: None,
                         then_terminal: false,
                         else_terminal: false,
-                        phi_ops: None,
-                        vars_snapshot: vars.clone(),
-                        vars_then: None,
+                        phi_ops: Vec::new(),
                     });
                 }
                 "else" => {
                     let frame = if_stack.last_mut().expect("No if on stack");
-                    if let Some(block) = builder.current_block() {
-                        frame.then_exit = Some((block, is_block_filled));
-                    }
                     frame.then_terminal = is_block_filled;
-                    let then_vars = vars.clone();
-                    frame.vars_then = Some(then_vars.clone());
-                    if !is_block_filled {
-                        if frame.phi_ops.is_none() {
-                            let mut depth = 0usize;
-                            let mut scan = op_idx + 1;
-                            let mut end_if_idx = None;
-                            while scan < ops.len() {
-                                match ops[scan].kind.as_str() {
-                                    "if" => depth += 1,
-                                    "end_if" => {
-                                        if depth == 0 {
-                                            end_if_idx = Some(scan);
-                                            break;
-                                        }
-                                        depth -= 1;
+                    if frame.phi_ops.is_empty() {
+                        let mut depth = 0usize;
+                        let mut scan = op_idx + 1;
+                        let mut end_if_idx = None;
+                        while scan < ops.len() {
+                            match ops[scan].kind.as_str() {
+                                "if" => depth += 1,
+                                "end_if" => {
+                                    if depth == 0 {
+                                        end_if_idx = Some(scan);
+                                        break;
                                     }
-                                    _ => {}
+                                    depth -= 1;
                                 }
-                                scan += 1;
+                                _ => {}
                             }
-                            let end_if_idx = end_if_idx.expect("else without matching end_if");
-                            let mut phi_ops: Vec<(String, String, String)> = Vec::new();
-                            let mut scan_idx = end_if_idx + 1;
-                            while scan_idx < ops.len() {
-                                let next = &ops[scan_idx];
-                                if next.kind != "phi" {
-                                    break;
-                                }
-                                let args = next.args.as_ref().expect("phi args missing");
-                                if args.len() != 2 {
-                                    panic!("phi expects exactly two args");
-                                }
-                                let out = next.out.clone().expect("phi output missing");
-                                phi_ops.push((out, args[0].clone(), args[1].clone()));
-                                skip_ops.insert(scan_idx);
-                                scan_idx += 1;
-                            }
-                            if !phi_ops.is_empty() {
-                                for _ in 0..phi_ops.len() {
-                                    builder.append_block_param(frame.merge_block, types::I64);
-                                }
-                                for (idx, (out, _, _)) in phi_ops.iter().enumerate() {
-                                    let param = builder.block_params(frame.merge_block)[idx];
-                                    vars.insert(out.clone(), param);
-                                }
-                            }
-                            frame.phi_ops = Some(phi_ops);
+                            scan += 1;
                         }
-                        let phi_ops = frame.phi_ops.clone().unwrap_or_default();
-                        let mut then_args: Vec<Value> = Vec::new();
-                        for (_, then_name, _) in &phi_ops {
-                            let then_val = *then_vars
-                                .get(then_name)
+                        let end_if_idx = end_if_idx.expect("else without matching end_if");
+                        let mut phi_ops: Vec<(String, String, String)> = Vec::new();
+                        let mut scan_idx = end_if_idx + 1;
+                        while scan_idx < ops.len() {
+                            let next = &ops[scan_idx];
+                            if next.kind != "phi" {
+                                break;
+                            }
+                            let args = next.args.as_ref().expect("phi args missing");
+                            if args.len() != 2 {
+                                panic!("phi expects exactly two args");
+                            }
+                            let out = next.out.clone().expect("phi output missing");
+                            phi_ops.push((out, args[0].clone(), args[1].clone()));
+                            skip_ops.insert(scan_idx);
+                            scan_idx += 1;
+                        }
+                        frame.phi_ops = phi_ops;
+                    }
+
+                    if !is_block_filled {
+                        for (out, then_name, _) in &frame.phi_ops {
+                            let then_val = var_get(&mut builder, &vars, then_name)
                                 .unwrap_or_else(|| panic!("phi arg not found: {then_name}"));
-                            then_args.push(then_val);
+                            def_var_named(&mut builder, &vars, out, *then_val);
                         }
                         if let Some(block) = builder.current_block() {
                             if let Some(names) = block_tracked_obj.get_mut(&block) {
@@ -8456,174 +9107,136 @@ impl SimpleBackend {
                                     builder.ins().call(local_dec_ref, &[tracked.value]);
                                 }
                             }
-                            builder.ins().jump(frame.merge_block, &then_args);
-                            frame.then_exit = Some((block, true));
+                            ensure_block_in_layout(&mut builder, frame.merge_block);
+                            reachable_blocks.insert(frame.merge_block);
+                            builder.ins().jump(frame.merge_block, &[]);
                         }
                     }
-                    vars = frame.vars_snapshot.clone();
-                    if let Some(phi_ops) = frame.phi_ops.as_ref() {
-                        if !phi_ops.is_empty() {
-                            for (idx, (out, _, _)) in phi_ops.iter().enumerate() {
-                                let param = builder.block_params(frame.merge_block)[idx];
-                                vars.insert(out.clone(), param);
-                            }
-                        }
-                    }
-                    builder.switch_to_block(frame.else_block);
-                    builder.seal_block(frame.else_block);
-                    is_block_filled = false;
+
+                    switch_to_block_tracking(&mut builder, frame.else_block, &mut is_block_filled);
                     frame.has_else = true;
                 }
                 "end_if" => {
                     let mut frame = if_stack.pop().expect("No if on stack");
-                    let current_block = builder
-                        .current_block()
-                        .expect("end_if requires an active block");
+                    if frame.phi_ops.is_empty() {
+                        let mut phi_ops: Vec<(String, String, String)> = Vec::new();
+                        let mut scan_idx = op_idx + 1;
+                        while scan_idx < ops.len() {
+                            let next = &ops[scan_idx];
+                            if next.kind != "phi" {
+                                break;
+                            }
+                            let args = next.args.as_ref().expect("phi args missing");
+                            if args.len() != 2 {
+                                panic!("phi expects exactly two args");
+                            }
+                            let out = next.out.clone().expect("phi output missing");
+                            phi_ops.push((out, args[0].clone(), args[1].clone()));
+                            skip_ops.insert(scan_idx);
+                            scan_idx += 1;
+                        }
+                        frame.phi_ops = phi_ops;
+                    }
 
                     if frame.has_else {
-                        frame.else_exit = Some((current_block, is_block_filled));
                         frame.else_terminal = is_block_filled;
+                        if !is_block_filled {
+                            for (out, _, else_name) in &frame.phi_ops {
+                                let else_val = var_get(&mut builder, &vars, else_name)
+                                    .unwrap_or_else(|| panic!("phi arg not found: {else_name}"));
+                                def_var_named(&mut builder, &vars, out, *else_val);
+                            }
+                            if let Some(block) = builder.current_block() {
+                                if let Some(names) = block_tracked_obj.get_mut(&block) {
+                                    let cleanup =
+                                        drain_cleanup_tracked(names, &last_use, op_idx, None);
+                                    for tracked in cleanup {
+                                        builder.ins().call(local_dec_ref_obj, &[tracked.value]);
+                                    }
+                                }
+                                if let Some(names) = block_tracked_ptr.get_mut(&block) {
+                                    let cleanup =
+                                        drain_cleanup_tracked(names, &last_use, op_idx, None);
+                                    for tracked in cleanup {
+                                        builder.ins().call(local_dec_ref, &[tracked.value]);
+                                    }
+                                }
+                                ensure_block_in_layout(&mut builder, frame.merge_block);
+                                reachable_blocks.insert(frame.merge_block);
+                                builder.ins().jump(frame.merge_block, &[]);
+                            }
+                        }
                     } else {
-                        frame.then_exit = Some((current_block, is_block_filled));
-                        frame.else_exit = Some((frame.else_block, false));
                         frame.then_terminal = is_block_filled;
                         frame.else_terminal = false;
-                    }
-
-                    let then_vars = frame.vars_then.take().unwrap_or_else(|| vars.clone());
-                    let else_vars = if frame.has_else {
-                        vars.clone()
-                    } else {
-                        frame.vars_snapshot.clone()
-                    };
-                    let phi_prepared = frame.phi_ops.is_some();
-                    let phi_ops: Vec<(String, String, String)> =
-                        if let Some(phi_ops) = frame.phi_ops.take() {
-                            phi_ops
-                        } else {
-                            let mut phi_ops: Vec<(String, String, String)> = Vec::new();
-                            let mut scan_idx = op_idx + 1;
-                            while scan_idx < ops.len() {
-                                let next = &ops[scan_idx];
-                                if next.kind != "phi" {
-                                    break;
-                                }
-                                let args = next.args.as_ref().expect("phi args missing");
-                                if args.len() != 2 {
-                                    panic!("phi expects exactly two args");
-                                }
-                                let out = next.out.clone().expect("phi output missing");
-                                phi_ops.push((out, args[0].clone(), args[1].clone()));
-                                skip_ops.insert(scan_idx);
-                                scan_idx += 1;
+                        if !is_block_filled {
+                            for (out, then_name, _) in &frame.phi_ops {
+                                let then_val = var_get(&mut builder, &vars, then_name)
+                                    .unwrap_or_else(|| panic!("phi arg not found: {then_name}"));
+                                def_var_named(&mut builder, &vars, out, *then_val);
                             }
-                            phi_ops
-                        };
-
-                    if !phi_prepared && !phi_ops.is_empty() {
-                        for _ in 0..phi_ops.len() {
-                            builder.append_block_param(frame.merge_block, types::I64);
+                            if let Some(block) = builder.current_block() {
+                                if let Some(names) = block_tracked_obj.get_mut(&block) {
+                                    let cleanup =
+                                        drain_cleanup_tracked(names, &last_use, op_idx, None);
+                                    for tracked in cleanup {
+                                        builder.ins().call(local_dec_ref_obj, &[tracked.value]);
+                                    }
+                                }
+                                if let Some(names) = block_tracked_ptr.get_mut(&block) {
+                                    let cleanup =
+                                        drain_cleanup_tracked(names, &last_use, op_idx, None);
+                                    for tracked in cleanup {
+                                        builder.ins().call(local_dec_ref, &[tracked.value]);
+                                    }
+                                }
+                                ensure_block_in_layout(&mut builder, frame.merge_block);
+                                reachable_blocks.insert(frame.merge_block);
+                                builder.ins().jump(frame.merge_block, &[]);
+                            }
                         }
-                        for (idx, (out, _, _)) in phi_ops.iter().enumerate() {
-                            let param = builder.block_params(frame.merge_block)[idx];
-                            vars.insert(out.clone(), param);
-                        }
-                    }
 
-                    let mut then_args: Vec<Value> = Vec::new();
-                    let mut else_args: Vec<Value> = Vec::new();
-                    for (_, then_name, else_name) in &phi_ops {
-                        let then_val = *then_vars
-                            .get(then_name)
-                            .unwrap_or_else(|| panic!("phi arg not found: {then_name}"));
-                        let else_val = *else_vars
-                            .get(else_name)
-                            .unwrap_or_else(|| panic!("phi arg not found: {else_name}"));
-                        then_args.push(then_val);
-                        else_args.push(else_val);
+                        switch_to_block_tracking(
+                            &mut builder,
+                            frame.else_block,
+                            &mut is_block_filled,
+                        );
+                        for (out, _, else_name) in &frame.phi_ops {
+                            let else_val = var_get(&mut builder, &vars, else_name)
+                                .unwrap_or_else(|| panic!("phi arg not found: {else_name}"));
+                            def_var_named(&mut builder, &vars, out, *else_val);
+                        }
+                        ensure_block_in_layout(&mut builder, frame.merge_block);
+                        reachable_blocks.insert(frame.merge_block);
+                        builder.ins().jump(frame.merge_block, &[]);
                     }
 
                     let both_filled = frame.then_terminal && frame.else_terminal;
-
-                    let current_block = builder.current_block();
-                    let mut emit_jump = |block: Block, filled: bool, args: &[Value]| {
-                        if filled {
-                            return;
-                        }
-                        if let Some(names) = block_tracked_obj.get_mut(&block) {
-                            let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
-                            for tracked in cleanup {
-                                builder.ins().call(local_dec_ref_obj, &[tracked.value]);
-                            }
-                        }
-                        if let Some(names) = block_tracked_ptr.get_mut(&block) {
-                            let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
-                            for tracked in cleanup {
-                                builder.ins().call(local_dec_ref, &[tracked.value]);
-                            }
-                        }
-                        if builder.current_block() != Some(block) {
-                            builder.switch_to_block(block);
-                        }
-                        builder.ins().jump(frame.merge_block, args);
-                    };
-
-                    if let Some(current_block) = current_block {
-                        if let Some((block, filled)) = frame.then_exit {
-                            if block == current_block {
-                                emit_jump(block, filled, &then_args);
-                                frame.then_exit = None;
-                            }
-                        }
-                        if let Some((block, filled)) = frame.else_exit {
-                            if block == current_block {
-                                emit_jump(block, filled, &else_args);
-                                frame.else_exit = None;
-                            }
-                        }
-                    }
-
-                    if let Some((block, filled)) = frame.then_exit {
-                        emit_jump(block, filled, &then_args);
-                    }
-                    if let Some((block, filled)) = frame.else_exit {
-                        emit_jump(block, filled, &else_args);
-                        if !frame.has_else && block == frame.else_block {
-                            builder.seal_block(block);
-                        }
-                    }
-
-                    builder.switch_to_block(frame.merge_block);
                     if both_filled {
-                        builder.ins().trap(TrapCode::unwrap_user(1));
-                        builder.seal_block(frame.merge_block);
                         is_block_filled = true;
+                    } else if reachable_blocks.contains(&frame.merge_block) {
+                        ensure_block_in_layout(&mut builder, frame.merge_block);
+                        switch_to_block_tracking(
+                            &mut builder,
+                            frame.merge_block,
+                            &mut is_block_filled,
+                        );
                     } else {
-                        builder.seal_block(frame.merge_block);
-                        is_block_filled = false;
-                    }
-                    vars = frame.vars_snapshot;
-                    if !phi_ops.is_empty() {
-                        for (idx, (out, _, _)) in phi_ops.iter().enumerate() {
-                            let param = builder.block_params(frame.merge_block)[idx];
-                            vars.insert(out.clone(), param);
-                        }
+                        is_block_filled = true;
                     }
                 }
                 "loop_start" => {
-                    let current_block = builder
-                        .current_block()
-                        .expect("loop_start requires an active block");
                     let loop_block = builder.create_block();
                     let body_block = builder.create_block();
                     let after_block = builder.create_block();
-                    builder.insert_block_after(loop_block, current_block);
-                    builder.insert_block_after(body_block, loop_block);
-                    builder.insert_block_after(after_block, body_block);
                     if !is_block_filled {
+                        ensure_block_in_layout(&mut builder, loop_block);
+                        reachable_blocks.insert(loop_block);
                         builder.ins().jump(loop_block, &[]);
+                        switch_to_block_tracking(&mut builder, loop_block, &mut is_block_filled);
+                    } else {
+                        is_block_filled = true;
                     }
-                    builder.switch_to_block(loop_block);
                     loop_stack.push(LoopFrame {
                         loop_block,
                         body_block,
@@ -8632,27 +9245,27 @@ impl SimpleBackend {
                         next_index: None,
                     });
                     loop_depth += 1;
-                    is_block_filled = false;
                 }
                 "loop_index_start" => {
                     let args = op.args.as_ref().unwrap();
-                    let start = vars.get(&args[0]).expect("Loop index start not found");
-                    let current_block = builder
-                        .current_block()
-                        .expect("loop_index_start requires an active block");
+                    let start =
+                        var_get(&mut builder, &vars, &args[0]).expect("Loop index start not found");
                     let loop_block = builder.create_block();
                     let body_block = builder.create_block();
                     let after_block = builder.create_block();
                     let idx_param = builder.append_block_param(loop_block, types::I64);
-                    builder.insert_block_after(loop_block, current_block);
-                    builder.insert_block_after(body_block, loop_block);
-                    builder.insert_block_after(after_block, body_block);
                     if !is_block_filled {
+                        ensure_block_in_layout(&mut builder, loop_block);
+                        reachable_blocks.insert(loop_block);
                         builder.ins().jump(loop_block, &[*start]);
+                        switch_to_block_tracking(&mut builder, loop_block, &mut is_block_filled);
+                    } else {
+                        is_block_filled = true;
                     }
-                    builder.switch_to_block(loop_block);
                     let out_name = op.out.unwrap();
-                    vars.insert(out_name.clone(), idx_param);
+                    if reachable_blocks.contains(&loop_block) {
+                        def_var_named(&mut builder, &vars, out_name.clone(), idx_param);
+                    }
                     loop_stack.push(LoopFrame {
                         loop_block,
                         body_block,
@@ -8661,11 +9274,11 @@ impl SimpleBackend {
                         next_index: None,
                     });
                     loop_depth += 1;
-                    is_block_filled = false;
                 }
                 "loop_break_if_true" => {
                     let args = op.args.as_ref().unwrap();
-                    let cond = vars.get(&args[0]).expect("Loop break cond not found");
+                    let cond =
+                        var_get(&mut builder, &vars, &args[0]).expect("Loop break cond not found");
                     let frame = loop_stack.last().expect("No loop on stack");
                     let current_block = builder
                         .current_block()
@@ -8693,10 +9306,12 @@ impl SimpleBackend {
                     if let Some(current_block) = builder.current_block() {
                         builder.insert_block_after(cleanup_block, current_block);
                     }
+                    reachable_blocks.insert(cleanup_block);
+                    reachable_blocks.insert(frame.body_block);
                     builder
                         .ins()
                         .brif(cond_bool, cleanup_block, &[], frame.body_block, &[]);
-                    builder.switch_to_block(cleanup_block);
+                    switch_to_block_tracking(&mut builder, cleanup_block, &mut is_block_filled);
                     builder.seal_block(cleanup_block);
                     for tracked in tracked_obj_snapshot {
                         builder.ins().call(local_dec_ref_obj, &[tracked.value]);
@@ -8704,14 +9319,14 @@ impl SimpleBackend {
                     for tracked in tracked_ptr_snapshot {
                         builder.ins().call(local_dec_ref, &[tracked.value]);
                     }
+                    reachable_blocks.insert(frame.after_block);
                     builder.ins().jump(frame.after_block, &[]);
-                    builder.switch_to_block(frame.body_block);
-                    builder.seal_block(frame.body_block);
-                    is_block_filled = false;
+                    switch_to_block_tracking(&mut builder, frame.body_block, &mut is_block_filled);
                 }
                 "loop_break_if_false" => {
                     let args = op.args.as_ref().unwrap();
-                    let cond = vars.get(&args[0]).expect("Loop break cond not found");
+                    let cond =
+                        var_get(&mut builder, &vars, &args[0]).expect("Loop break cond not found");
                     let frame = loop_stack.last().expect("No loop on stack");
                     let current_block = builder
                         .current_block()
@@ -8739,10 +9354,12 @@ impl SimpleBackend {
                     if let Some(current_block) = builder.current_block() {
                         builder.insert_block_after(cleanup_block, current_block);
                     }
+                    reachable_blocks.insert(frame.body_block);
+                    reachable_blocks.insert(cleanup_block);
                     builder
                         .ins()
                         .brif(cond_bool, frame.body_block, &[], cleanup_block, &[]);
-                    builder.switch_to_block(cleanup_block);
+                    switch_to_block_tracking(&mut builder, cleanup_block, &mut is_block_filled);
                     builder.seal_block(cleanup_block);
                     for tracked in tracked_obj_snapshot {
                         builder.ins().call(local_dec_ref_obj, &[tracked.value]);
@@ -8750,10 +9367,9 @@ impl SimpleBackend {
                     for tracked in tracked_ptr_snapshot {
                         builder.ins().call(local_dec_ref, &[tracked.value]);
                     }
+                    reachable_blocks.insert(frame.after_block);
                     builder.ins().jump(frame.after_block, &[]);
-                    builder.switch_to_block(frame.body_block);
-                    builder.seal_block(frame.body_block);
-                    is_block_filled = false;
+                    switch_to_block_tracking(&mut builder, frame.body_block, &mut is_block_filled);
                 }
                 "loop_break" => {
                     let frame = loop_stack.last().unwrap_or_else(|| {
@@ -8774,18 +9390,20 @@ impl SimpleBackend {
                             builder.ins().call(local_dec_ref, &[tracked.value]);
                         }
                     }
+                    reachable_blocks.insert(frame.after_block);
                     builder.ins().jump(frame.after_block, &[]);
                     is_block_filled = true;
                 }
                 "loop_index_next" => {
                     let args = op.args.as_ref().unwrap();
-                    let next_idx = vars.get(&args[0]).expect("Loop index next not found");
+                    let next_idx =
+                        var_get(&mut builder, &vars, &args[0]).expect("Loop index next not found");
                     let frame = loop_stack.last_mut().unwrap_or_else(|| {
                         panic!("No loop on stack in {} at op {}", func_ir.name, op_idx)
                     });
                     frame.next_index = Some(*next_idx);
                     let out_name = op.out.unwrap();
-                    vars.insert(out_name, *next_idx);
+                    def_var_named(&mut builder, &vars, out_name, *next_idx);
                 }
                 "loop_continue" => {
                     let frame = loop_stack.last_mut().unwrap_or_else(|| {
@@ -8806,10 +9424,12 @@ impl SimpleBackend {
                             builder.ins().call(local_dec_ref, &[tracked.value]);
                         }
                     }
+                    reachable_blocks.insert(frame.loop_block);
                     if let Some(next_idx) = frame.next_index.take() {
                         builder.ins().jump(frame.loop_block, &[next_idx]);
                     } else if let Some(name) = frame.index_name.as_ref() {
-                        let current_idx = vars.get(name).expect("Loop index not found");
+                        let current_idx =
+                            var_get(&mut builder, &vars, name).expect("Loop index not found");
                         builder.ins().jump(frame.loop_block, &[*current_idx]);
                     } else {
                         builder.ins().jump(frame.loop_block, &[]);
@@ -8817,22 +9437,39 @@ impl SimpleBackend {
                     is_block_filled = true;
                 }
                 "loop_end" => {
-                    let frame = loop_stack.pop().unwrap_or_else(|| {
+                    let mut frame = loop_stack.pop().unwrap_or_else(|| {
                         panic!("No loop on stack in {} at op {}", func_ir.name, op_idx)
                     });
                     loop_depth -= 1;
                     if !is_block_filled {
-                        if let Some(name) = frame.index_name.as_ref() {
-                            let current_idx = vars.get(name).expect("Loop index not found");
+                        ensure_block_in_layout(&mut builder, frame.loop_block);
+                        reachable_blocks.insert(frame.loop_block);
+                        if let Some(next_idx) = frame.next_index.take() {
+                            builder.ins().jump(frame.loop_block, &[next_idx]);
+                        } else if let Some(name) = frame.index_name.as_ref() {
+                            let current_idx =
+                                var_get(&mut builder, &vars, name).expect("Loop index not found");
                             builder.ins().jump(frame.loop_block, &[*current_idx]);
                         } else {
                             builder.ins().jump(frame.loop_block, &[]);
                         }
                     }
-                    builder.seal_block(frame.loop_block);
-                    builder.switch_to_block(frame.after_block);
-                    builder.seal_block(frame.after_block);
-                    is_block_filled = false;
+                    if builder.func.layout.is_block_inserted(frame.loop_block) {
+                        builder.seal_block(frame.loop_block);
+                    }
+                    if reachable_blocks.contains(&frame.after_block) {
+                        ensure_block_in_layout(&mut builder, frame.after_block);
+                        switch_to_block_tracking(
+                            &mut builder,
+                            frame.after_block,
+                            &mut is_block_filled,
+                        );
+                        if builder.func.layout.is_block_inserted(frame.after_block) {
+                            builder.seal_block(frame.after_block);
+                        }
+                    } else {
+                        is_block_filled = true;
+                    }
                 }
                 "alloc" => {
                     let size = op.value.unwrap();
@@ -8849,12 +9486,13 @@ impl SimpleBackend {
                     let call = builder.ins().call(local_callee, &[iconst]);
                     let res = builder.inst_results(call)[0];
                     let out_name = op.out.unwrap();
-                    vars.insert(out_name, res);
+                    def_var_named(&mut builder, &vars, out_name, res);
                 }
                 "alloc_class" => {
                     let size = op.value.unwrap();
                     let args = op.args.as_ref().unwrap();
-                    let class_bits = vars.get(&args[0]).expect("Class not found");
+                    let class_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("Class not found");
                     let iconst = builder.ins().iconst(types::I64, size);
 
                     let mut sig = self.module.make_signature();
@@ -8869,12 +9507,13 @@ impl SimpleBackend {
                     let call = builder.ins().call(local_callee, &[iconst, *class_bits]);
                     let res = builder.inst_results(call)[0];
                     let out_name = op.out.unwrap();
-                    vars.insert(out_name, res);
+                    def_var_named(&mut builder, &vars, out_name, res);
                 }
                 "alloc_class_trusted" => {
                     let size = op.value.unwrap();
                     let args = op.args.as_ref().unwrap();
-                    let class_bits = vars.get(&args[0]).expect("Class not found");
+                    let class_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("Class not found");
                     let iconst = builder.ins().iconst(types::I64, size);
 
                     let mut sig = self.module.make_signature();
@@ -8889,12 +9528,13 @@ impl SimpleBackend {
                     let call = builder.ins().call(local_callee, &[iconst, *class_bits]);
                     let res = builder.inst_results(call)[0];
                     let out_name = op.out.unwrap();
-                    vars.insert(out_name, res);
+                    def_var_named(&mut builder, &vars, out_name, res);
                 }
                 "alloc_class_static" => {
                     let size = op.value.unwrap();
                     let args = op.args.as_ref().unwrap();
-                    let class_bits = vars.get(&args[0]).expect("Class not found");
+                    let class_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("Class not found");
                     let iconst = builder.ins().iconst(types::I64, size);
 
                     let mut sig = self.module.make_signature();
@@ -8909,14 +9549,15 @@ impl SimpleBackend {
                     let call = builder.ins().call(local_callee, &[iconst, *class_bits]);
                     let res = builder.inst_results(call)[0];
                     let out_name = op.out.unwrap();
-                    vars.insert(out_name, res);
+                    def_var_named(&mut builder, &vars, out_name, res);
                 }
                 "alloc_task" => {
                     let closure_size = op.value.unwrap();
                     let task_kind = op.task_kind.as_deref().unwrap_or("future");
-                    let (kind_bits, payload_base) = match task_kind {
-                        "generator" => (TASK_KIND_GENERATOR, GENERATOR_CONTROL_BYTES),
-                        "future" => (TASK_KIND_FUTURE, 0),
+                    let (kind_bits, payload_base, mark_coroutine) = match task_kind {
+                        "generator" => (TASK_KIND_GENERATOR, GENERATOR_CONTROL_BYTES, false),
+                        "future" => (TASK_KIND_FUTURE, 0, false),
+                        "coroutine" => (TASK_KIND_FUTURE, 0, true),
                         _ => panic!("unknown task kind: {task_kind}"),
                     };
                     let size = builder.ins().iconst(types::I64, closure_size);
@@ -8948,10 +9589,23 @@ impl SimpleBackend {
                     let call = builder.ins().call(task_local, &[poll_addr, size, kind_val]);
                     let obj = builder.inst_results(call)[0];
                     let obj_ptr = unbox_ptr_value(&mut builder, obj);
+                    if mark_coroutine {
+                        let flags_ptr = builder
+                            .ins()
+                            .iadd_imm(obj_ptr, i64::from(HEADER_FLAGS_OFFSET));
+                        let flags = builder
+                            .ins()
+                            .load(types::I64, MemFlags::new(), flags_ptr, 0);
+                        let new_flags = builder.ins().bor_imm(flags, HEADER_COROUTINE_FLAG);
+                        builder
+                            .ins()
+                            .store(MemFlags::new(), new_flags, flags_ptr, 0);
+                    }
 
                     if let Some(args_names) = &op.args {
                         for (i, name) in args_names.iter().enumerate() {
-                            let arg_val = vars.get(name).expect("Arg not found for alloc_task");
+                            let arg_val = var_get(&mut builder, &vars, name)
+                                .expect("Arg not found for alloc_task");
                             let offset = payload_base + (i * 8) as i32;
                             builder
                                 .ins()
@@ -8959,7 +9613,7 @@ impl SimpleBackend {
                             emit_maybe_ref_adjust(&mut builder, *arg_val, local_inc_ref_obj);
                         }
                     }
-                    if task_kind == "future" {
+                    if matches!(task_kind, "future" | "coroutine") {
                         let mut get_sig = self.module.make_signature();
                         get_sig.returns.push(AbiParam::new(types::I64));
                         let get_callee = self
@@ -9003,12 +9657,12 @@ impl SimpleBackend {
 
                     output_is_ptr = false;
                     let out_name = op.out.unwrap();
-                    vars.insert(out_name, obj);
+                    def_var_named(&mut builder, &vars, out_name, obj);
                 }
                 "store" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Object not found");
-                    let val = vars.get(&args[1]).expect("Value not found");
+                    let obj = var_get(&mut builder, &vars, &args[0]).expect("Object not found");
+                    let val = var_get(&mut builder, &vars, &args[1]).expect("Value not found");
                     let offset = op.value.unwrap() as i32;
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj);
                     let profile_block = builder.create_block();
@@ -9076,14 +9730,14 @@ impl SimpleBackend {
                     if let Some(out_name) = op.out.as_ref() {
                         if out_name != "none" {
                             let res = builder.ins().iconst(types::I64, box_none());
-                            vars.insert(out_name.clone(), res);
+                            def_var_named(&mut builder, &vars, out_name.clone(), res);
                         }
                     }
                 }
                 "store_init" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Object not found");
-                    let val = vars.get(&args[1]).expect("Value not found");
+                    let obj = var_get(&mut builder, &vars, &args[0]).expect("Object not found");
+                    let val = var_get(&mut builder, &vars, &args[1]).expect("Value not found");
                     let offset = op.value.unwrap() as i32;
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj);
                     let new_is_ptr = is_ptr_tag(&mut builder, *val);
@@ -9105,16 +9759,17 @@ impl SimpleBackend {
                     builder.switch_to_block(cont_block);
                     builder.seal_block(cont_block);
                     builder.ins().store(MemFlags::new(), *val, obj_ptr, offset);
+                    emit_maybe_ref_adjust(&mut builder, *val, local_inc_ref_obj);
                     if let Some(out_name) = op.out.as_ref() {
                         if out_name != "none" {
                             let res = builder.ins().iconst(types::I64, box_none());
-                            vars.insert(out_name.clone(), res);
+                            def_var_named(&mut builder, &vars, out_name.clone(), res);
                         }
                     }
                 }
                 "load" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Object not found");
+                    let obj = var_get(&mut builder, &vars, &args[0]).expect("Object not found");
                     let offset = op.value.unwrap() as i32;
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj);
                     let res = builder
@@ -9122,11 +9777,11 @@ impl SimpleBackend {
                         .load(types::I64, MemFlags::new(), obj_ptr, offset);
                     emit_maybe_ref_adjust(&mut builder, res, local_inc_ref_obj);
                     let out_name = op.out.unwrap();
-                    vars.insert(out_name, res);
+                    def_var_named(&mut builder, &vars, out_name, res);
                 }
                 "closure_load" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Object not found");
+                    let obj = var_get(&mut builder, &vars, &args[0]).expect("Object not found");
                     let offset = builder.ins().iconst(types::I64, op.value.unwrap());
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj);
                     let mut sig = self.module.make_signature();
@@ -9141,12 +9796,12 @@ impl SimpleBackend {
                     let call = builder.ins().call(local_callee, &[obj_ptr, offset]);
                     let res = builder.inst_results(call)[0];
                     let out_name = op.out.unwrap();
-                    vars.insert(out_name, res);
+                    def_var_named(&mut builder, &vars, out_name, res);
                 }
                 "closure_store" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Object not found");
-                    let val = vars.get(&args[1]).expect("Value not found");
+                    let obj = var_get(&mut builder, &vars, &args[0]).expect("Object not found");
+                    let val = var_get(&mut builder, &vars, &args[1]).expect("Value not found");
                     let offset = builder.ins().iconst(types::I64, op.value.unwrap());
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj);
                     let mut sig = self.module.make_signature();
@@ -9162,12 +9817,12 @@ impl SimpleBackend {
                     let call = builder.ins().call(local_callee, &[obj_ptr, offset, *val]);
                     if let Some(out_name) = op.out {
                         let res = builder.inst_results(call)[0];
-                        vars.insert(out_name, res);
+                        def_var_named(&mut builder, &vars, out_name, res);
                     }
                 }
                 "guarded_load" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Object not found");
+                    let obj = var_get(&mut builder, &vars, &args[0]).expect("Object not found");
                     let offset = op.value.unwrap() as i32;
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj);
                     let res = builder
@@ -9175,14 +9830,16 @@ impl SimpleBackend {
                         .load(types::I64, MemFlags::new(), obj_ptr, offset);
                     emit_maybe_ref_adjust(&mut builder, res, local_inc_ref_obj);
                     let out_name = op.out.unwrap();
-                    vars.insert(out_name, res);
+                    def_var_named(&mut builder, &vars, out_name, res);
                 }
                 "guarded_field_get" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Object not found");
+                    let obj = var_get(&mut builder, &vars, &args[0]).expect("Object not found");
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj);
-                    let class_bits = vars.get(&args[1]).expect("Class not found");
-                    let expected_version = vars.get(&args[2]).expect("Expected version not found");
+                    let class_bits =
+                        var_get(&mut builder, &vars, &args[1]).expect("Class not found");
+                    let expected_version =
+                        var_get(&mut builder, &vars, &args[2]).expect("Expected version not found");
                     let attr_name = op.s_value.as_ref().unwrap();
                     let data_id = self
                         .module
@@ -9227,15 +9884,17 @@ impl SimpleBackend {
                     );
                     let res = builder.inst_results(call)[0];
                     let out_name = op.out.unwrap();
-                    vars.insert(out_name, res);
+                    def_var_named(&mut builder, &vars, out_name, res);
                 }
                 "guarded_field_set" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Object not found");
+                    let obj = var_get(&mut builder, &vars, &args[0]).expect("Object not found");
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj);
-                    let class_bits = vars.get(&args[1]).expect("Class not found");
-                    let expected_version = vars.get(&args[2]).expect("Expected version not found");
-                    let val = vars.get(&args[3]).expect("Value not found");
+                    let class_bits =
+                        var_get(&mut builder, &vars, &args[1]).expect("Class not found");
+                    let expected_version =
+                        var_get(&mut builder, &vars, &args[2]).expect("Expected version not found");
+                    let val = var_get(&mut builder, &vars, &args[3]).expect("Value not found");
                     let attr_name = op.s_value.as_ref().unwrap();
                     let data_id = self
                         .module
@@ -9283,17 +9942,19 @@ impl SimpleBackend {
                     if let Some(out_name) = op.out.as_ref() {
                         if out_name != "none" {
                             let res = builder.inst_results(call)[0];
-                            vars.insert(out_name.clone(), res);
+                            def_var_named(&mut builder, &vars, out_name.clone(), res);
                         }
                     }
                 }
                 "guarded_field_init" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Object not found");
+                    let obj = var_get(&mut builder, &vars, &args[0]).expect("Object not found");
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj);
-                    let class_bits = vars.get(&args[1]).expect("Class not found");
-                    let expected_version = vars.get(&args[2]).expect("Expected version not found");
-                    let val = vars.get(&args[3]).expect("Value not found");
+                    let class_bits =
+                        var_get(&mut builder, &vars, &args[1]).expect("Class not found");
+                    let expected_version =
+                        var_get(&mut builder, &vars, &args[2]).expect("Expected version not found");
+                    let val = var_get(&mut builder, &vars, &args[3]).expect("Value not found");
                     let attr_name = op.s_value.as_ref().unwrap();
                     let data_id = self
                         .module
@@ -9341,14 +10002,16 @@ impl SimpleBackend {
                     if let Some(out_name) = op.out.as_ref() {
                         if out_name != "none" {
                             let res = builder.inst_results(call)[0];
-                            vars.insert(out_name.clone(), res);
+                            def_var_named(&mut builder, &vars, out_name.clone(), res);
                         }
                     }
                 }
                 "guard_type" => {
                     let args = op.args.as_ref().unwrap();
-                    let val = vars.get(&args[0]).expect("Guard value not found");
-                    let expected = vars.get(&args[1]).expect("Guard expected tag not found");
+                    let val =
+                        var_get(&mut builder, &vars, &args[0]).expect("Guard value not found");
+                    let expected = var_get(&mut builder, &vars, &args[1])
+                        .expect("Guard expected tag not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -9362,10 +10025,13 @@ impl SimpleBackend {
                 }
                 "guard_layout" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).expect("Guard object not found");
+                    let obj =
+                        var_get(&mut builder, &vars, &args[0]).expect("Guard object not found");
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj);
-                    let class_bits = vars.get(&args[1]).expect("Guard class not found");
-                    let expected_version = vars.get(&args[2]).expect("Guard version not found");
+                    let class_bits =
+                        var_get(&mut builder, &vars, &args[1]).expect("Guard class not found");
+                    let expected_version =
+                        var_get(&mut builder, &vars, &args[2]).expect("Guard version not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -9380,11 +10046,11 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[obj_ptr, *class_bits, *expected_version]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "get_attr_generic_ptr" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).unwrap_or_else(|| {
+                    let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj);
@@ -9419,11 +10085,11 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[obj_ptr, attr_ptr, attr_len]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "get_attr_generic_obj" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).unwrap_or_else(|| {
+                    let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
                     let attr_name = op.s_value.as_ref().unwrap();
@@ -9457,11 +10123,11 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*obj, attr_ptr, attr_len]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "get_attr_special_obj" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).unwrap_or_else(|| {
+                    let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
                     let attr_name = op.s_value.as_ref().unwrap();
@@ -9495,14 +10161,14 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*obj, attr_ptr, attr_len]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "get_attr_name" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).unwrap_or_else(|| {
+                    let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
-                    let name = vars.get(&args[1]).expect("Attr name not found");
+                    let name = var_get(&mut builder, &vars, &args[1]).expect("Attr name not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -9514,15 +10180,16 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *name]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "get_attr_name_default" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).unwrap_or_else(|| {
+                    let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
-                    let name = vars.get(&args[1]).expect("Attr name not found");
-                    let default = vars.get(&args[2]).expect("Attr default not found");
+                    let name = var_get(&mut builder, &vars, &args[1]).expect("Attr name not found");
+                    let default =
+                        var_get(&mut builder, &vars, &args[2]).expect("Attr default not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -9535,14 +10202,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *name, *default]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "has_attr_name" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).unwrap_or_else(|| {
+                    let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
-                    let name = vars.get(&args[1]).expect("Attr name not found");
+                    let name = var_get(&mut builder, &vars, &args[1]).expect("Attr name not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -9554,15 +10221,15 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *name]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "set_attr_name" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).unwrap_or_else(|| {
+                    let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
-                    let name = vars.get(&args[1]).expect("Attr name not found");
-                    let val = vars.get(&args[2]).expect("Attr value not found");
+                    let name = var_get(&mut builder, &vars, &args[1]).expect("Attr name not found");
+                    let val = var_get(&mut builder, &vars, &args[2]).expect("Attr value not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -9575,15 +10242,15 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *name, *val]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "set_attr_generic_ptr" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).unwrap_or_else(|| {
+                    let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj);
-                    let val = vars.get(&args[1]).expect("Attr value not found");
+                    let val = var_get(&mut builder, &vars, &args[1]).expect("Attr value not found");
                     let attr_name = op.s_value.as_ref().unwrap();
                     let data_id = self
                         .module
@@ -9616,14 +10283,14 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[obj_ptr, attr_ptr, attr_len, *val]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "set_attr_generic_obj" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).unwrap_or_else(|| {
+                    let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
-                    let val = vars.get(&args[1]).expect("Attr value not found");
+                    let val = var_get(&mut builder, &vars, &args[1]).expect("Attr value not found");
                     let attr_name = op.s_value.as_ref().unwrap();
                     let data_id = self
                         .module
@@ -9656,11 +10323,11 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*obj, attr_ptr, attr_len, *val]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "del_attr_generic_ptr" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).unwrap_or_else(|| {
+                    let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj);
@@ -9695,11 +10362,11 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[obj_ptr, attr_ptr, attr_len]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "del_attr_generic_obj" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).unwrap_or_else(|| {
+                    let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
                     let attr_name = op.s_value.as_ref().unwrap();
@@ -9733,14 +10400,14 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*obj, attr_ptr, attr_len]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "del_attr_name" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = vars.get(&args[0]).unwrap_or_else(|| {
+                    let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
-                    let name = vars.get(&args[1]).expect("Attr name not found");
+                    let name = var_get(&mut builder, &vars, &args[1]).expect("Attr name not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -9752,11 +10419,46 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *name]);
                     let res = builder.inst_results(call)[0];
-                    vars.insert(op.out.unwrap(), res);
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "ret" => {
-                    let var_name = op.var.as_ref().unwrap();
-                    let ret_val = *vars.get(var_name).expect("Return variable not found");
+                    let Some(var_name) = op.var.as_ref() else {
+                        if let Some(block) = builder.current_block() {
+                            if let Some(names) = block_tracked_obj.get_mut(&block) {
+                                let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
+                                for tracked in cleanup {
+                                    builder.ins().call(local_dec_ref_obj, &[tracked.value]);
+                                }
+                            }
+                            if let Some(names) = block_tracked_ptr.get_mut(&block) {
+                                let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
+                                for tracked in cleanup {
+                                    builder.ins().call(local_dec_ref, &[tracked.value]);
+                                }
+                            }
+                        }
+                        for name in &tracked_vars {
+                            if let Some(val) = entry_vars.get(name) {
+                                builder.ins().call(local_dec_ref, &[*val]);
+                            }
+                        }
+                        for name in &tracked_obj_vars {
+                            if let Some(val) = entry_vars.get(name) {
+                                builder.ins().call(local_dec_ref_obj, &[*val]);
+                            }
+                        }
+                        reachable_blocks.insert(master_return_block);
+                        if has_ret {
+                            let zero = builder.ins().iconst(types::I64, 0);
+                            builder.ins().jump(master_return_block, &[zero]);
+                        } else {
+                            builder.ins().jump(master_return_block, &[]);
+                        }
+                        is_block_filled = true;
+                        continue;
+                    };
+                    let ret_val =
+                        *var_get(&mut builder, &vars, var_name).expect("Return variable not found");
                     if let Some(block) = builder.current_block() {
                         if let Some(names) = block_tracked_obj.get_mut(&block) {
                             let cleanup =
@@ -9785,6 +10487,7 @@ impl SimpleBackend {
                             builder.ins().call(local_dec_ref_obj, &[*val]);
                         }
                     }
+                    reachable_blocks.insert(master_return_block);
                     if has_ret {
                         builder.ins().jump(master_return_block, &[ret_val]);
                     } else {
@@ -9817,6 +10520,7 @@ impl SimpleBackend {
                             builder.ins().call(local_dec_ref_obj, &[*val]);
                         }
                     }
+                    reachable_blocks.insert(master_return_block);
                     if has_ret {
                         let zero = builder.ins().iconst(types::I64, 0);
                         builder.ins().jump(master_return_block, &[zero]);
@@ -9842,27 +10546,13 @@ impl SimpleBackend {
                             }
                         }
                     }
-                    let mut label_exclude = param_names.clone();
-                    label_exclude.extend(entry_vars.keys().cloned());
-                    let target_args = build_label_jump_args(
-                        target_id,
-                        &label_ids,
-                        &label_op_idx,
-                        &first_def,
-                        &last_use,
-                        &label_exclude,
-                        &mut label_param_names,
-                        &state_blocks,
-                        &mut builder,
-                        &vars,
-                        None,
-                    );
-                    builder.ins().jump(target_block, &target_args);
+                    reachable_blocks.insert(target_block);
+                    builder.ins().jump(target_block, &[]);
                     is_block_filled = true;
                 }
                 "br_if" => {
                     let args = op.args.as_ref().unwrap();
-                    let cond = vars.get(&args[0]).expect("Cond not found");
+                    let cond = var_get(&mut builder, &vars, &args[0]).expect("Cond not found");
                     let target_id = op.value.unwrap();
                     let target_block = state_blocks[&target_id];
 
@@ -9876,91 +10566,44 @@ impl SimpleBackend {
                     // Actually, let's play safe and check != 0.
                     let cond_bool = builder.ins().icmp_imm(IntCC::NotEqual, *cond, 0);
 
-                    let mut label_exclude = param_names.clone();
-                    label_exclude.extend(entry_vars.keys().cloned());
-                    let target_args = build_label_jump_args(
-                        target_id,
-                        &label_ids,
-                        &label_op_idx,
-                        &first_def,
-                        &last_use,
-                        &label_exclude,
-                        &mut label_param_names,
-                        &state_blocks,
-                        &mut builder,
-                        &vars,
-                        None,
-                    );
-                    builder.ins().brif(
-                        cond_bool,
-                        target_block,
-                        &target_args,
-                        fallthrough_block,
-                        &[],
-                    );
-
-                    if let Some(current_block) = builder.current_block() {
-                        builder.insert_block_after(fallthrough_block, current_block);
-                    }
-                    builder.switch_to_block(fallthrough_block);
+                    reachable_blocks.insert(target_block);
+                    reachable_blocks.insert(fallthrough_block);
+                    builder
+                        .ins()
+                        .brif(cond_bool, target_block, &[], fallthrough_block, &[]);
+                    switch_to_block_tracking(&mut builder, fallthrough_block, &mut is_block_filled);
                     builder.seal_block(fallthrough_block);
                 }
                 "label" | "state_label" => {
                     let label_id = op.value.unwrap();
                     let block = state_blocks[&label_id];
-                    let is_param_label = op.kind == "label" || op.kind == "state_label";
-                    let mut label_exclude = param_names.clone();
-                    label_exclude.extend(entry_vars.keys().cloned());
+                    let is_function_exception_label = Some(label_id) == function_exception_label_id;
 
-                    if !is_block_filled {
-                        let jump_args = if is_param_label {
-                            build_label_jump_args(
-                                label_id,
-                                &label_ids,
-                                &label_op_idx,
-                                &first_def,
-                                &last_use,
-                                &label_exclude,
-                                &mut label_param_names,
-                                &state_blocks,
-                                &mut builder,
-                                &vars,
-                                None,
-                            )
+                    // Prevent normal fallthrough into the function-level exception handler.
+                    if is_function_exception_label && !is_block_filled {
+                        reachable_blocks.insert(master_return_block);
+                        if has_ret {
+                            let zero = builder.ins().iconst(types::I64, 0);
+                            builder.ins().jump(master_return_block, &[zero]);
                         } else {
-                            Vec::new()
-                        };
-                        builder.ins().jump(block, &jump_args);
+                            builder.ins().jump(master_return_block, &[]);
+                        }
+                        is_block_filled = true;
                     }
 
-                    builder.switch_to_block(block);
-                    if is_param_label {
-                        let names = ensure_label_params(
-                            label_id,
-                            &label_ids,
-                            &label_op_idx,
-                            &first_def,
-                            &last_use,
-                            &label_exclude,
-                            &mut label_param_names,
-                            &state_blocks,
-                            &mut builder,
-                            Some(&vars),
-                        );
-                        let params = builder.block_params(block);
-                        let mut new_vars = param_vars.clone();
-                        for (name, value) in entry_vars.iter() {
-                            if !new_vars.contains_key(name) {
-                                new_vars.insert(name.clone(), *value);
-                            }
-                        }
-                        for (idx, name) in names.iter().enumerate() {
-                            new_vars.insert(name.clone(), params[idx]);
-                        }
-                        vars = new_vars;
+                    if is_function_exception_label {
+                        ensure_block_in_layout(&mut builder, block);
+                        reachable_blocks.insert(block);
+                        switch_to_block_tracking(&mut builder, block, &mut is_block_filled);
+                    } else if !is_block_filled {
+                        reachable_blocks.insert(block);
+                        builder.ins().jump(block, &[]);
+                        switch_to_block_tracking(&mut builder, block, &mut is_block_filled);
+                    } else if reachable_blocks.contains(&block) {
+                        switch_to_block_tracking(&mut builder, block, &mut is_block_filled);
+                    } else {
+                        is_block_filled = true;
                     }
-                    builder.seal_block(block);
-                    is_block_filled = false;
                 }
                 "phi" => {}
                 _ => {}
@@ -9975,10 +10618,10 @@ impl SimpleBackend {
                             } else {
                                 tracked_obj_vars.push(name.clone());
                             }
-                            if let Some(val) = vars.get(&name) {
+                            if let Some(val) = var_get(&mut builder, &vars, &name) {
                                 entry_vars.insert(name.clone(), *val);
                             }
-                        } else if let Some(val) = vars.get(&name) {
+                        } else if let Some(val) = var_get(&mut builder, &vars, &name) {
                             let tracked = TrackedValue {
                                 name: name.to_string(),
                                 value: *val,
@@ -10030,8 +10673,25 @@ impl SimpleBackend {
             builder.ins().return_(&[]);
         }
 
-        builder.seal_all_blocks();
-        builder.finalize();
+        let zero_pred_blocks = find_zero_pred_blocks(builder.func);
+        if !zero_pred_blocks.is_empty() {
+            eprintln!(
+                "Backend CFG issue in {}: zero-predecessor blocks {:?}",
+                func_ir.name, zero_pred_blocks
+            );
+            if std::env::var_os("MOLT_DUMP_CLIF_ON_CFG_ERROR").is_some() {
+                eprintln!("CLIF {}:\n{}", func_ir.name, builder.func.display());
+            }
+        }
+
+        let finalize_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            builder.seal_all_blocks();
+            builder.finalize();
+        }));
+        if let Err(payload) = finalize_result {
+            eprintln!("Backend panic while finalizing function {}", func_ir.name);
+            std::panic::resume_unwind(payload);
+        }
 
         if let Some(config) = should_dump_ir() {
             if dump_ir_matches(&config, &func_ir.name) {
@@ -10049,45 +10709,60 @@ impl SimpleBackend {
             .module
             .declare_function(&func_ir.name, Linkage::Export, &self.ctx.func.signature)
             .unwrap();
-        if let Err(err) = self.module.define_function(id, &mut self.ctx) {
-            let err_text = format!("{err:?}");
-            eprintln!(
-                "Backend verification failed in {}: {err_text}",
-                func_ir.name
-            );
-            if let Some(config) = should_dump_ir() {
-                if dump_ir_matches(&config, &func_ir.name) {
-                    dump_ir_ops(&func_ir, &config.mode);
-                }
-            }
-            if let Ok(flag) = std::env::var("MOLT_DUMP_CLIF_ON_ERROR") {
-                let clif = self.ctx.func.display().to_string();
-                if let Some(inst) = parse_inst_id(&err_text) {
-                    let needle = format!("inst{inst}");
-                    let lines: Vec<&str> = clif.lines().collect();
-                    let mut hit = None;
-                    for (idx, line) in lines.iter().enumerate() {
-                        if line.contains(&needle) {
-                            hit = Some(idx);
-                            break;
-                        }
+        let define_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.module.define_function(id, &mut self.ctx)
+        }));
+        match define_result {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                let err_text = format!("{err:?}");
+                eprintln!(
+                    "Backend verification failed in {}: {err_text}",
+                    func_ir.name
+                );
+                if let Some(config) = should_dump_ir() {
+                    if dump_ir_matches(&config, &func_ir.name) {
+                        dump_ir_ops(&func_ir, &config.mode);
                     }
-                    if let Some(center) = hit {
-                        let start = center.saturating_sub(3);
-                        let end = (center + 3).min(lines.len().saturating_sub(1));
-                        eprintln!("CLIF snippet for {} around {}:", func_ir.name, needle);
-                        for (offset, line) in lines[start..=end].iter().enumerate() {
-                            let idx = start + offset;
-                            eprintln!("{:04}: {}", idx + 1, line);
+                }
+                if let Ok(flag) = std::env::var("MOLT_DUMP_CLIF_ON_ERROR") {
+                    let clif = self.ctx.func.display().to_string();
+                    if let Some(inst) = parse_inst_id(&err_text) {
+                        let needle = format!("inst{inst}");
+                        let lines: Vec<&str> = clif.lines().collect();
+                        let mut hit = None;
+                        for (idx, line) in lines.iter().enumerate() {
+                            if line.contains(&needle) {
+                                hit = Some(idx);
+                                break;
+                            }
+                        }
+                        if let Some(center) = hit {
+                            let start = center.saturating_sub(3);
+                            let end = (center + 3).min(lines.len().saturating_sub(1));
+                            eprintln!("CLIF snippet for {} around {}:", func_ir.name, needle);
+                            for (offset, line) in lines[start..=end].iter().enumerate() {
+                                let idx = start + offset;
+                                eprintln!("{:04}: {}", idx + 1, line);
+                            }
+                        } else if flag == "full" {
+                            eprintln!("CLIF {}:\n{}", func_ir.name, clif);
                         }
                     } else if flag == "full" {
                         eprintln!("CLIF {}:\n{}", func_ir.name, clif);
                     }
-                } else if flag == "full" {
-                    eprintln!("CLIF {}:\n{}", func_ir.name, clif);
                 }
+                panic!("Backend compilation failed");
             }
-            panic!("Backend compilation failed");
+            Err(payload) => {
+                eprintln!("Backend panic while defining function {}", func_ir.name);
+                if let Ok(filter) = std::env::var("MOLT_DUMP_CLIF") {
+                    if filter == "1" || filter == func_ir.name || func_ir.name.contains(&filter) {
+                        eprintln!("CLIF {}:\n{}", func_ir.name, self.ctx.func.display());
+                    }
+                }
+                std::panic::resume_unwind(payload);
+            }
         }
         self.module.clear_context(&mut self.ctx);
     }

@@ -11,4 +11,9 @@ async def work(count: int) -> int:
     return total
 
 
-print(asyncio.run(work(1_000)))
+def main() -> None:
+    print(asyncio.run(work(1_000)))
+
+
+if __name__ == "__main__":
+    main()

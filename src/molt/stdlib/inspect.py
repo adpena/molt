@@ -11,6 +11,10 @@ __all__ = [
     "AGEN_CREATED",
     "AGEN_RUNNING",
     "AGEN_SUSPENDED",
+    "CORO_CLOSED",
+    "CORO_CREATED",
+    "CORO_RUNNING",
+    "CORO_SUSPENDED",
     "GEN_CLOSED",
     "GEN_CREATED",
     "GEN_RUNNING",
@@ -19,10 +23,13 @@ __all__ = [
     "Signature",
     "cleandoc",
     "getdoc",
+    "getgeneratorlocals",
     "getasyncgenlocals",
     "getasyncgenstate",
+    "getcoroutinestate",
     "getgeneratorstate",
     "isclass",
+    "isawaitable",
     "isfunction",
     "ismodule",
     "iscoroutinefunction",
@@ -43,6 +50,11 @@ AGEN_RUNNING = "AGEN_RUNNING"
 AGEN_SUSPENDED = "AGEN_SUSPENDED"
 AGEN_CLOSED = "AGEN_CLOSED"
 
+CORO_CREATED = "CORO_CREATED"
+CORO_RUNNING = "CORO_RUNNING"
+CORO_SUSPENDED = "CORO_SUSPENDED"
+CORO_CLOSED = "CORO_CLOSED"
+
 
 def _load_intrinsic(name: str) -> Any | None:
     direct = globals().get(name)
@@ -52,6 +64,7 @@ def _load_intrinsic(name: str) -> Any | None:
 
 
 _MOLT_ASYNCGEN_LOCALS = _load_intrinsic("_molt_asyncgen_locals")
+_MOLT_GEN_LOCALS = _load_intrinsic("_molt_gen_locals")
 
 
 class _Empty:
@@ -209,6 +222,15 @@ def isgeneratorfunction(obj: Any) -> bool:
     return bool(flags & 0x20)
 
 
+def isawaitable(obj: Any) -> bool:
+    if getattr(obj, "__molt_is_coroutine__", False):
+        return True
+    if hasattr(obj, "__await__"):
+        return True
+    flags = getattr(getattr(obj, "gi_code", None), "co_flags", 0)
+    return bool(flags & 0x100)
+
+
 def getgeneratorstate(gen: Any) -> str:
     if getattr(gen, "gi_running", False):
         return GEN_RUNNING
@@ -233,6 +255,17 @@ def getasyncgenstate(agen: Any) -> str:
     return AGEN_SUSPENDED
 
 
+def getgeneratorlocals(gen: Any) -> dict[str, Any]:
+    if callable(_MOLT_GEN_LOCALS):
+        return _MOLT_GEN_LOCALS(gen)
+    if not hasattr(gen, "gi_frame"):
+        raise TypeError("expected generator")
+    frame = getattr(gen, "gi_frame", None)
+    if frame is None:
+        return {}
+    return getattr(frame, "f_locals", {}) or {}
+
+
 def getasyncgenlocals(agen: Any) -> dict[str, Any]:
     if callable(_MOLT_ASYNCGEN_LOCALS):
         return _MOLT_ASYNCGEN_LOCALS(agen)
@@ -242,6 +275,22 @@ def getasyncgenlocals(agen: Any) -> dict[str, Any]:
     if frame is None:
         return {}
     return getattr(frame, "f_locals", {}) or {}
+
+
+def getcoroutinestate(coro: Any) -> str:
+    if getattr(coro, "cr_running", False):
+        return CORO_RUNNING
+    frame = getattr(coro, "cr_frame", None)
+    if frame is None:
+        if getattr(coro, "gi_running", False):
+            return CORO_RUNNING
+        frame = getattr(coro, "gi_frame", None)
+    if frame is None:
+        return CORO_CLOSED
+    lasti = getattr(frame, "f_lasti", -1)
+    if lasti == -1:
+        return CORO_CREATED
+    return CORO_SUSPENDED
 
 
 def _signature_from_molt(obj: Any) -> Signature | None:

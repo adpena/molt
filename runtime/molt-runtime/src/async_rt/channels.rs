@@ -1,13 +1,16 @@
-use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
+use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TryRecvError, TrySendError};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 
 use super::sockets::{send_data_from_bits, SendData};
 use super::{cancel_tokens, current_token_id, token_id_from_bits};
 use crate::{
-    alloc_bytes, bits_from_ptr, obj_from_bits, pending_bits_i64, ptr_from_bits, raise_exception,
-    release_ptr, runtime_state, to_i64, usize_from_bits, MoltObject, PyToken,
+    alloc_bytes, bits_from_ptr, dec_ref_bits, inc_ref_bits, obj_from_bits, pending_bits_i64,
+    ptr_from_bits, raise_exception, release_ptr, runtime_state, to_i64, usize_from_bits,
+    GilReleaseGuard, MoltObject, PyToken,
 };
+#[cfg(target_arch = "wasm32")]
+use crate::libc_compat as libc;
 #[cfg(target_arch = "wasm32")]
 use crate::{molt_db_exec_host, molt_db_query_host};
 
@@ -23,6 +26,9 @@ pub struct MoltStream {
     pub receiver: Receiver<Vec<u8>>,
     pub closed: AtomicBool,
     pub refs: AtomicUsize,
+    pub send_hook: Option<extern "C" fn(*mut u8, *const u8, usize) -> i64>,
+    pub close_hook: Option<extern "C" fn(*mut u8)>,
+    pub hook_ctx: *mut u8,
 }
 
 pub struct MoltWebSocket {
@@ -33,6 +39,70 @@ pub struct MoltWebSocket {
     pub recv_hook: Option<extern "C" fn(*mut u8) -> i64>,
     pub close_hook: Option<extern "C" fn(*mut u8)>,
     pub hook_ctx: *mut u8,
+}
+
+fn chan_try_send_impl(_py: &PyToken<'_>, chan: &MoltChannel, val: i64) -> i64 {
+    let bits = val as u64;
+    inc_ref_bits(_py, bits);
+    match chan.sender.try_send(val) {
+        Ok(_) => 0,
+        Err(TrySendError::Full(_)) => {
+            dec_ref_bits(_py, bits);
+            pending_bits_i64()
+        }
+        Err(TrySendError::Disconnected(_)) => {
+            dec_ref_bits(_py, bits);
+            raise_exception::<i64>(_py, "RuntimeError", "channel disconnected")
+        }
+    }
+}
+
+fn chan_try_recv_impl(_py: &PyToken<'_>, chan: &MoltChannel) -> i64 {
+    match chan.receiver.try_recv() {
+        Ok(val) => val,
+        Err(TryRecvError::Empty) => pending_bits_i64(),
+        Err(TryRecvError::Disconnected) => {
+            raise_exception::<i64>(_py, "RuntimeError", "channel disconnected")
+        }
+    }
+}
+
+fn chan_send_blocking_impl(_py: &PyToken<'_>, chan: &MoltChannel, val: i64) -> i64 {
+    let bits = val as u64;
+    inc_ref_bits(_py, bits);
+    match chan.sender.try_send(val) {
+        Ok(_) => 0,
+        Err(TrySendError::Full(_)) => {
+            let _release = GilReleaseGuard::new();
+            match chan.sender.send(val) {
+                Ok(_) => 0,
+                Err(_) => {
+                    dec_ref_bits(_py, bits);
+                    raise_exception::<i64>(_py, "RuntimeError", "channel send failed")
+                }
+            }
+        }
+        Err(TrySendError::Disconnected(_)) => {
+            dec_ref_bits(_py, bits);
+            raise_exception::<i64>(_py, "RuntimeError", "channel disconnected")
+        }
+    }
+}
+
+fn chan_recv_blocking_impl(_py: &PyToken<'_>, chan: &MoltChannel) -> i64 {
+    match chan.receiver.try_recv() {
+        Ok(val) => val,
+        Err(TryRecvError::Empty) => {
+            let _release = GilReleaseGuard::new();
+            match chan.receiver.recv() {
+                Ok(val) => val,
+                Err(_) => raise_exception::<i64>(_py, "RuntimeError", "channel recv failed"),
+            }
+        }
+        Err(TryRecvError::Disconnected) => {
+            raise_exception::<i64>(_py, "RuntimeError", "channel disconnected")
+        }
+    }
 }
 
 // TODO(runtime, owner:runtime, milestone:RT1, priority:P3, status:planned): consolidate
@@ -118,7 +188,11 @@ pub unsafe extern "C" fn molt_chan_drop(chan_ptr: *mut u8) {
         if chan_ptr.is_null() {
             return;
         }
-        drop(Box::from_raw(chan_ptr as *mut MoltChannel));
+        let chan = Box::from_raw(chan_ptr as *mut MoltChannel);
+        while let Ok(val) = chan.receiver.try_recv() {
+            dec_ref_bits(_py, val as u64);
+        }
+        drop(chan);
     })
 }
 
@@ -132,8 +206,12 @@ pub unsafe extern "C" fn molt_chan_drop(chan_bits: u64) {
         if chan_ptr.is_null() {
             return;
         }
+        let chan = Box::from_raw(chan_ptr as *mut MoltChannel);
+        while let Ok(val) = chan.receiver.try_recv() {
+            dec_ref_bits(_py, val as u64);
+        }
         release_ptr(chan_ptr);
-        drop(Box::from_raw(chan_ptr as *mut MoltChannel));
+        drop(chan);
     })
 }
 
@@ -144,10 +222,7 @@ pub unsafe extern "C" fn molt_chan_drop(chan_bits: u64) {
 pub unsafe extern "C" fn molt_chan_send(chan_ptr: *mut u8, val: i64) -> i64 {
     crate::with_gil_entry!(_py, {
         let chan = &*(chan_ptr as *mut MoltChannel);
-        match chan.sender.try_send(val) {
-            Ok(_) => 0,                   // Ready(None)
-            Err(_) => pending_bits_i64(), // PENDING
-        }
+        chan_try_send_impl(_py, chan)
     })
 }
 
@@ -159,10 +234,53 @@ pub unsafe extern "C" fn molt_chan_send(chan_bits: u64, val: i64) -> i64 {
     crate::with_gil_entry!(_py, {
         let chan_ptr = ptr_from_bits(chan_bits);
         let chan = &*(chan_ptr as *mut MoltChannel);
-        match chan.sender.try_send(val) {
-            Ok(_) => 0,                   // Ready(None)
-            Err(_) => pending_bits_i64(), // PENDING
-        }
+        chan_try_send_impl(_py, chan, val)
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+/// # Safety
+/// Caller must ensure `chan_ptr` is a valid channel pointer.
+pub unsafe extern "C" fn molt_chan_try_send(chan_ptr: *mut u8, val: i64) -> i64 {
+    crate::with_gil_entry!(_py, {
+        let chan = &*(chan_ptr as *mut MoltChannel);
+        chan_try_send_impl(_py, chan, val)
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+/// # Safety
+/// Caller must ensure `chan_bits` is a valid channel pointer.
+pub unsafe extern "C" fn molt_chan_try_send(chan_bits: u64, val: i64) -> i64 {
+    crate::with_gil_entry!(_py, {
+        let chan_ptr = ptr_from_bits(chan_bits);
+        let chan = &*(chan_ptr as *mut MoltChannel);
+        chan_try_send_impl(_py, chan, val)
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+/// # Safety
+/// Caller must ensure `chan_ptr` is a valid channel pointer.
+pub unsafe extern "C" fn molt_chan_send_blocking(chan_ptr: *mut u8, val: i64) -> i64 {
+    crate::with_gil_entry!(_py, {
+        let chan = &*(chan_ptr as *mut MoltChannel);
+        chan_send_blocking_impl(_py, chan, val)
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+/// # Safety
+/// Caller must ensure `chan_bits` is a valid channel pointer.
+pub unsafe extern "C" fn molt_chan_send_blocking(chan_bits: u64, val: i64) -> i64 {
+    crate::with_gil_entry!(_py, {
+        let chan_ptr = ptr_from_bits(chan_bits);
+        let chan = &*(chan_ptr as *mut MoltChannel);
+        chan_send_blocking_impl(_py, chan, val)
     })
 }
 
@@ -173,10 +291,7 @@ pub unsafe extern "C" fn molt_chan_send(chan_bits: u64, val: i64) -> i64 {
 pub unsafe extern "C" fn molt_chan_recv(chan_ptr: *mut u8) -> i64 {
     crate::with_gil_entry!(_py, {
         let chan = &*(chan_ptr as *mut MoltChannel);
-        match chan.receiver.try_recv() {
-            Ok(val) => val,
-            Err(_) => pending_bits_i64(), // PENDING
-        }
+        chan_try_recv_impl(_py, chan)
     })
 }
 
@@ -188,10 +303,53 @@ pub unsafe extern "C" fn molt_chan_recv(chan_bits: u64) -> i64 {
     crate::with_gil_entry!(_py, {
         let chan_ptr = ptr_from_bits(chan_bits);
         let chan = &*(chan_ptr as *mut MoltChannel);
-        match chan.receiver.try_recv() {
-            Ok(val) => val,
-            Err(_) => pending_bits_i64(), // PENDING
-        }
+        chan_try_recv_impl(_py, chan)
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+/// # Safety
+/// Caller must ensure `chan_ptr` is a valid channel pointer.
+pub unsafe extern "C" fn molt_chan_try_recv(chan_ptr: *mut u8) -> i64 {
+    crate::with_gil_entry!(_py, {
+        let chan = &*(chan_ptr as *mut MoltChannel);
+        chan_try_recv_impl(_py, chan)
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+/// # Safety
+/// Caller must ensure `chan_bits` is a valid channel pointer.
+pub unsafe extern "C" fn molt_chan_try_recv(chan_bits: u64) -> i64 {
+    crate::with_gil_entry!(_py, {
+        let chan_ptr = ptr_from_bits(chan_bits);
+        let chan = &*(chan_ptr as *mut MoltChannel);
+        chan_try_recv_impl(_py, chan)
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+/// # Safety
+/// Caller must ensure `chan_ptr` is a valid channel pointer.
+pub unsafe extern "C" fn molt_chan_recv_blocking(chan_ptr: *mut u8) -> i64 {
+    crate::with_gil_entry!(_py, {
+        let chan = &*(chan_ptr as *mut MoltChannel);
+        chan_try_recv_impl(_py, chan)
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+/// # Safety
+/// Caller must ensure `chan_bits` is a valid channel pointer.
+pub unsafe extern "C" fn molt_chan_recv_blocking(chan_bits: u64) -> i64 {
+    crate::with_gil_entry!(_py, {
+        let chan_ptr = ptr_from_bits(chan_bits);
+        let chan = &*(chan_ptr as *mut MoltChannel);
+        chan_recv_blocking_impl(_py, chan)
     })
 }
 
@@ -213,8 +371,46 @@ pub extern "C" fn molt_stream_new(capacity_bits: u64) -> u64 {
             receiver: r,
             closed: AtomicBool::new(false),
             refs: AtomicUsize::new(1),
+            send_hook: None,
+            close_hook: None,
+            hook_ctx: std::ptr::null_mut(),
         });
         bits_from_ptr(Box::into_raw(stream) as *mut u8)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_stream_new_with_hooks(
+    send_hook: usize,
+    close_hook: usize,
+    hook_ctx: *mut u8,
+) -> *mut u8 {
+    crate::with_gil_entry!(_py, {
+        let send_hook = if send_hook == 0 {
+            None
+        } else {
+            Some(unsafe {
+                std::mem::transmute::<usize, extern "C" fn(*mut u8, *const u8, usize) -> i64>(
+                    send_hook,
+                )
+            })
+        };
+        let close_hook = if close_hook == 0 {
+            None
+        } else {
+            Some(unsafe { std::mem::transmute::<usize, extern "C" fn(*mut u8)>(close_hook) })
+        };
+        let (s, r) = bytes_channel(0);
+        let stream = Box::new(MoltStream {
+            sender: s,
+            receiver: r,
+            closed: AtomicBool::new(false),
+            refs: AtomicUsize::new(1),
+            send_hook,
+            close_hook,
+            hook_ctx,
+        });
+        Box::into_raw(stream) as *mut u8
     })
 }
 
@@ -248,6 +444,9 @@ pub unsafe extern "C" fn molt_stream_send(
             return pending_bits_i64();
         }
         let stream = &*(stream_ptr as *mut MoltStream);
+        if let Some(hook) = stream.send_hook {
+            return hook(stream.hook_ctx, data_ptr, len);
+        }
         let bytes = std::slice::from_raw_parts(data_ptr, len).to_vec();
         match stream.sender.try_send(bytes) {
             Ok(_) => 0,
@@ -301,6 +500,22 @@ pub unsafe extern "C" fn molt_stream_recv(stream_bits: u64) -> i64 {
                 if stream.closed.load(AtomicOrdering::Relaxed) {
                     MoltObject::none().bits() as i64
                 } else {
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        let _ = crate::molt_db_host_poll();
+                        let _ = crate::molt_process_host_poll();
+                        if let Ok(bytes) = stream.receiver.try_recv() {
+                            let ptr = alloc_bytes(_py, &bytes);
+                            return if ptr.is_null() {
+                                MoltObject::none().bits() as i64
+                            } else {
+                                MoltObject::from_ptr(ptr).bits() as i64
+                            };
+                        }
+                        if stream.closed.load(AtomicOrdering::Relaxed) {
+                            return MoltObject::none().bits() as i64;
+                        }
+                    }
                     pending_bits_i64()
                 }
             }
@@ -318,6 +533,9 @@ pub unsafe extern "C" fn molt_stream_close(stream_bits: u64) {
             return;
         }
         let stream = &*(stream_ptr as *mut MoltStream);
+        if let Some(hook) = stream.close_hook {
+            hook(stream.hook_ctx);
+        }
         stream.closed.store(true, AtomicOrdering::Relaxed);
     })
 }
@@ -409,6 +627,81 @@ static WS_CONNECT_HOOK: std::sync::atomic::AtomicUsize = std::sync::atomic::Atom
 static DB_QUERY_HOOK: AtomicUsize = AtomicUsize::new(0);
 static DB_EXEC_HOOK: AtomicUsize = AtomicUsize::new(0);
 
+#[cfg(target_arch = "wasm32")]
+extern "C" fn ws_send_host_hook(ctx: *mut u8, data_ptr: *const u8, len: usize) -> i64 {
+    if ctx.is_null() {
+        return pending_bits_i64();
+    }
+    let handle = unsafe { *(ctx as *mut i64) };
+    let rc = unsafe { crate::molt_ws_send_host(handle, data_ptr, len as u64) };
+    if rc == 0 {
+        0
+    } else if rc == -(libc::EWOULDBLOCK as i32) || rc == -(libc::EAGAIN as i32) {
+        pending_bits_i64()
+    } else {
+        // Treat send errors as a closed socket for now.
+        MoltObject::none().bits() as i64
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+extern "C" fn ws_recv_host_hook(ctx: *mut u8) -> i64 {
+    if ctx.is_null() {
+        return MoltObject::none().bits() as i64;
+    }
+    let handle = unsafe { *(ctx as *mut i64) };
+    let mut cap = 65536usize;
+    let mut buf = vec![0u8; cap];
+    loop {
+        let mut out_len: u32 = 0;
+        let rc = unsafe {
+            crate::molt_ws_recv_host(
+                handle,
+                buf.as_mut_ptr(),
+                buf.len() as u32,
+                (&mut out_len) as *mut u32,
+            )
+        };
+        if rc == 0 {
+            let len = out_len as usize;
+            if len == 0 {
+                return MoltObject::none().bits() as i64;
+            }
+            if len > buf.len() {
+                cap = len;
+                buf.resize(cap, 0);
+                continue;
+            }
+            let ptr = alloc_bytes(&crate::GilGuard::new().token(), &buf[..len]);
+            if ptr.is_null() {
+                return MoltObject::none().bits() as i64;
+            }
+            return MoltObject::from_ptr(ptr).bits() as i64;
+        }
+        if rc == -(libc::EWOULDBLOCK as i32) || rc == -(libc::EAGAIN as i32) {
+            return pending_bits_i64();
+        }
+        if rc == -(libc::ENOMEM as i32) && out_len as usize > buf.len() {
+            cap = out_len as usize;
+            buf.resize(cap, 0);
+            continue;
+        }
+        return MoltObject::none().bits() as i64;
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+extern "C" fn ws_close_host_hook(ctx: *mut u8) {
+    if ctx.is_null() {
+        return;
+    }
+    let handle = unsafe { *(ctx as *mut i64) };
+    let _ = unsafe { crate::molt_ws_close_host(handle) };
+    unsafe {
+        drop(Box::from_raw(ctx as *mut i64));
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn molt_ws_set_connect_hook(ptr: usize) {
     crate::with_gil_entry!(_py, {
@@ -442,13 +735,31 @@ fn load_capabilities() -> HashSet<String> {
     set
 }
 
+fn load_trusted() -> bool {
+    match std::env::var("MOLT_TRUSTED") {
+        Ok(val) => matches!(
+            val.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => false,
+    }
+}
+
+pub(crate) fn is_trusted(_py: &PyToken<'_>) -> bool {
+    *runtime_state(_py).trusted.get_or_init(load_trusted)
+}
+
 pub(crate) fn has_capability(_py: &PyToken<'_>, name: &str) -> bool {
+    if is_trusted(_py) {
+        return true;
+    }
     let caps = runtime_state(_py)
         .capabilities
         .get_or_init(load_capabilities);
     caps.contains(name)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 /// # Safety
 /// Caller must ensure `url_ptr` is valid for `url_len` bytes and `out` is writable.
@@ -484,6 +795,52 @@ pub unsafe extern "C" fn molt_ws_connect(
     })
 }
 
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+/// # Safety
+/// Caller must ensure `url_ptr` is valid for `url_len` bytes and `out` is writable.
+pub unsafe extern "C" fn molt_ws_connect(
+    url_ptr: *const u8,
+    url_len_bits: u64,
+    out: *mut u64,
+) -> i32 {
+    crate::with_gil_entry!(_py, {
+        if out.is_null() {
+            return 2;
+        }
+        let url_len = usize_from_bits(url_len_bits);
+        if url_ptr.is_null() && url_len != 0 {
+            return 1;
+        }
+        if !has_capability(_py, "websocket.connect") {
+            return 6;
+        }
+        let mut handle: i64 = 0;
+        let rc = unsafe {
+            crate::molt_ws_connect_host(url_ptr as u32, url_len_bits, &mut handle as *mut i64)
+        };
+        if rc != 0 || handle == 0 {
+            return 7;
+        }
+        let ctx_ptr = Box::into_raw(Box::new(handle)) as *mut u8;
+        let ws_ptr = molt_ws_new_with_hooks(
+            ws_send_host_hook as usize,
+            ws_recv_host_hook as usize,
+            ws_close_host_hook as usize,
+            ctx_ptr,
+        );
+        if ws_ptr.is_null() {
+            let _ = unsafe { crate::molt_ws_close_host(handle) };
+            unsafe {
+                drop(Box::from_raw(ctx_ptr as *mut i64));
+            }
+            return 7;
+        }
+        *out = bits_from_ptr(ws_ptr);
+        0
+    })
+}
+
 #[no_mangle]
 /// # Safety
 /// Caller must ensure `req_ptr` is valid for `len_bits` bytes and `out` is writable.
@@ -494,35 +851,7 @@ pub unsafe extern "C" fn molt_db_query(
     token_bits: u64,
 ) -> i32 {
     crate::with_gil_entry!(_py, {
-        let len = usize_from_bits(len_bits);
-        if out.is_null() {
-            return 2;
-        }
-        if req_ptr.is_null() && len != 0 {
-            return 1;
-        }
-        if !has_capability(_py, "db.read") {
-            return 6;
-        }
-        cancel_tokens(_py);
-        let token_id = match token_id_from_bits(token_bits) {
-            Some(0) => current_token_id(),
-            Some(id) => id,
-            None => return 1,
-        };
-        #[cfg(target_arch = "wasm32")]
-        {
-            return molt_db_query_host(req_ptr as u64, len_bits, out as u64, token_id);
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let hook_ptr = DB_QUERY_HOOK.load(AtomicOrdering::Acquire);
-            if hook_ptr == 0 {
-                return 7;
-            }
-            let hook: DbHostHook = std::mem::transmute(hook_ptr);
-            hook(req_ptr, len, out, token_id)
-        }
+        db_query_impl(_py, req_ptr, len_bits, out, token_bits)
     })
 }
 
@@ -536,35 +865,143 @@ pub unsafe extern "C" fn molt_db_exec(
     token_bits: u64,
 ) -> i32 {
     crate::with_gil_entry!(_py, {
-        let len = usize_from_bits(len_bits);
-        if out.is_null() {
-            return 2;
+        db_exec_impl(_py, req_ptr, len_bits, out, token_bits)
+    })
+}
+
+fn db_query_impl(
+    _py: &PyToken<'_>,
+    req_ptr: *const u8,
+    len_bits: u64,
+    out: *mut u64,
+    token_bits: u64,
+) -> i32 {
+    let len = usize_from_bits(len_bits);
+    if out.is_null() {
+        return 2;
+    }
+    if req_ptr.is_null() && len != 0 {
+        return 1;
+    }
+    if !has_capability(_py, "db.read") {
+        return 6;
+    }
+    cancel_tokens(_py);
+    let token_id = match token_id_from_bits(token_bits) {
+        Some(0) => current_token_id(),
+        Some(id) => id,
+        None => return 1,
+    };
+    #[cfg(target_arch = "wasm32")]
+    {
+        return unsafe { molt_db_query_host(req_ptr as u64, len_bits, out as u64, token_id) };
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let hook_ptr = DB_QUERY_HOOK.load(AtomicOrdering::Acquire);
+        if hook_ptr == 0 {
+            return 7;
         }
-        if req_ptr.is_null() && len != 0 {
-            return 1;
+        let hook: DbHostHook = unsafe { std::mem::transmute(hook_ptr) };
+        hook(req_ptr, len, out, token_id)
+    }
+}
+
+fn db_exec_impl(
+    _py: &PyToken<'_>,
+    req_ptr: *const u8,
+    len_bits: u64,
+    out: *mut u64,
+    token_bits: u64,
+) -> i32 {
+    let len = usize_from_bits(len_bits);
+    if out.is_null() {
+        return 2;
+    }
+    if req_ptr.is_null() && len != 0 {
+        return 1;
+    }
+    if !has_capability(_py, "db.write") {
+        return 6;
+    }
+    cancel_tokens(_py);
+    let token_id = match token_id_from_bits(token_bits) {
+        Some(0) => current_token_id(),
+        Some(id) => id,
+        None => return 1,
+    };
+    #[cfg(target_arch = "wasm32")]
+    {
+        return unsafe { molt_db_exec_host(req_ptr as u64, len_bits, out as u64, token_id) };
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let hook_ptr = DB_EXEC_HOOK.load(AtomicOrdering::Acquire);
+        if hook_ptr == 0 {
+            return 7;
         }
-        if !has_capability(_py, "db.write") {
-            return 6;
-        }
-        cancel_tokens(_py);
-        let token_id = match token_id_from_bits(token_bits) {
-            Some(0) => current_token_id(),
-            Some(id) => id,
-            None => return 1,
+        let hook: DbHostHook = unsafe { std::mem::transmute(hook_ptr) };
+        hook(req_ptr, len, out, token_id)
+    }
+}
+
+fn db_error(_py: &PyToken<'_>, op: &str, code: i32, cap: &str) -> u64 {
+    match code {
+        1 => raise_exception::<_>(_py, "ValueError", &format!("{op} invalid input")),
+        2 => raise_exception::<_>(_py, "RuntimeError", &format!("{op} output pointer invalid")),
+        6 => raise_exception::<_>(_py, "PermissionError", &format!("missing {cap} capability")),
+        7 => raise_exception::<_>(_py, "RuntimeError", &format!("{op} host unavailable")),
+        _ => raise_exception::<_>(_py, "RuntimeError", &format!("{op} failed")),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_db_query_obj(req_bits: u64, token_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let send_data = match send_data_from_bits(req_bits) {
+            Ok(data) => data,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
         };
-        #[cfg(target_arch = "wasm32")]
-        {
-            return molt_db_exec_host(req_ptr as u64, len_bits, out as u64, token_id);
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let hook_ptr = DB_EXEC_HOOK.load(AtomicOrdering::Acquire);
-            if hook_ptr == 0 {
-                return 7;
+        let (data_ptr, data_len, owned): (*const u8, usize, Option<Vec<u8>>) = match send_data {
+            SendData::Borrowed(ptr, len) => (ptr, len, None),
+            SendData::Owned(vec) => {
+                let ptr = vec.as_ptr();
+                let len = vec.len();
+                (ptr, len, Some(vec))
             }
-            let hook: DbHostHook = std::mem::transmute(hook_ptr);
-            hook(req_ptr, len, out, token_id)
+        };
+        let _owned_guard = owned;
+        let mut out = 0u64;
+        let rc = db_query_impl(_py, data_ptr, data_len as u64, &mut out, token_bits);
+        if rc != 0 {
+            return db_error(_py, "db_query", rc, "db.read");
         }
+        out
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_db_exec_obj(req_bits: u64, token_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let send_data = match send_data_from_bits(req_bits) {
+            Ok(data) => data,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let (data_ptr, data_len, owned): (*const u8, usize, Option<Vec<u8>>) = match send_data {
+            SendData::Borrowed(ptr, len) => (ptr, len, None),
+            SendData::Owned(vec) => {
+                let ptr = vec.as_ptr();
+                let len = vec.len();
+                (ptr, len, Some(vec))
+            }
+        };
+        let _owned_guard = owned;
+        let mut out = 0u64;
+        let rc = db_exec_impl(_py, data_ptr, data_len as u64, &mut out, token_bits);
+        if rc != 0 {
+            return db_error(_py, "db_exec", rc, "db.write");
+        }
+        out
     })
 }
 
@@ -652,6 +1089,11 @@ pub unsafe extern "C" fn molt_stream_drop(stream_bits: u64) {
         let stream = &*(stream_ptr as *mut MoltStream);
         if stream.refs.fetch_sub(1, AtomicOrdering::AcqRel) > 1 {
             return;
+        }
+        if !stream.closed.load(AtomicOrdering::Relaxed) {
+            if let Some(hook) = stream.close_hook {
+                hook(stream.hook_ctx);
+            }
         }
         release_ptr(stream_ptr);
         drop(Box::from_raw(stream_ptr as *mut MoltStream));

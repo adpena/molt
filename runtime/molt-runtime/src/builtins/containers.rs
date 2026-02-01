@@ -21,10 +21,10 @@ use crate::{
     molt_set_intersection_update_multi, molt_set_isdisjoint, molt_set_issubset,
     molt_set_issuperset, molt_set_new, molt_set_pop, molt_set_remove,
     molt_set_symmetric_difference, molt_set_symmetric_difference_update, molt_set_union_multi,
-    molt_set_update_multi, molt_setitem_method, obj_from_bits, object_type_id, runtime_state,
-    seq_vec_ref, set_add_in_place, MoltObject, PyToken, FUNC_DEFAULT_DICT_POP,
-    FUNC_DEFAULT_DICT_UPDATE, FUNC_DEFAULT_MISSING, FUNC_DEFAULT_NONE, TYPE_ID_DICT,
-    TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW, TYPE_ID_FROZENSET, TYPE_ID_SET,
+    molt_set_update_multi, molt_setitem_method, molt_tuple_new_bound, obj_from_bits,
+    object_type_id, runtime_state, seq_vec_ref, set_add_in_place, MoltObject, PyToken,
+    FUNC_DEFAULT_DICT_POP, FUNC_DEFAULT_DICT_UPDATE, FUNC_DEFAULT_MISSING, FUNC_DEFAULT_NONE,
+    TYPE_ID_DICT, TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW, TYPE_ID_FROZENSET, TYPE_ID_SET,
 };
 
 pub(crate) fn is_set_like_type(type_id: u32) -> bool {
@@ -506,6 +506,19 @@ pub(crate) fn list_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             &runtime_state(_py).method_cache.list_reversed,
             fn_addr!(molt_reversed_builtin),
             1,
+        )),
+        _ => None,
+    }
+}
+
+pub(crate) fn tuple_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
+    match name {
+        "__new__" => Some(builtin_func_bits_with_default(
+            _py,
+            &runtime_state(_py).method_cache.tuple_new,
+            fn_addr!(molt_tuple_new_bound),
+            2,
+            FUNC_DEFAULT_MISSING,
         )),
         _ => None,
     }

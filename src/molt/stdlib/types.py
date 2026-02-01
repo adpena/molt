@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-import sys as _sys
 from typing import Any, Iterable
+
+import sys as _sys
 
 __all__ = [
     "SimpleNamespace",
     "MappingProxyType",
     "NotImplementedType",
     "GenericAlias",
+    "UnionType",
     "ModuleType",
 ]
 
@@ -17,6 +19,7 @@ __all__ = [
 
 NotImplementedType = type(NotImplemented)
 GenericAlias = type(list[int])
+UnionType = type(int | str)
 ModuleType = type(_sys)
 
 

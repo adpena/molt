@@ -33,7 +33,9 @@ SYMBOL_DUMP_RE = re.compile(
     r'Func\s+\{\s+flags:\s+SymbolFlags\(([^)]*)\),\s+index:\s+(\d+),\s+name:\s+Some\("([^"]+)"\)'
 )
 CALL_INDIRECT_RE = re.compile(r"molt_call_indirect(\d+)")
-CALL_INDIRECT_MANGLED_RE = re.compile(r"molt_call_indirect(\d+?)(?=\d+h[0-9a-fA-F]+E)")
+# Rust wasm symbol names include a hash suffix like "17h<hex...>E". Capture the arity
+# digits that precede the 2-digit hash-length tag so 10+ arities don't get truncated.
+CALL_INDIRECT_MANGLED_RE = re.compile(r"molt_call_indirect(\d+)(?=\d{2}h[0-9a-fA-F]+E)")
 
 
 def _find_tool(names: list[str]) -> str | None:
@@ -437,6 +439,66 @@ def _collect_exports(data: bytes) -> set[str]:
     return exports
 
 
+def _has_table(data: bytes) -> bool:
+    for module, name, kind, _ in _collect_imports(data):
+        if kind == 1 and name == "__indirect_function_table":
+            return True
+    for section_id, _ in _parse_sections(data):
+        if section_id == 4:
+            return True
+    return False
+
+
+def _ensure_table_export(data: bytes, export_name: str = "molt_table") -> bytes | None:
+    if not _has_table(data):
+        return None
+    sections = _parse_sections(data)
+    new_sections: list[tuple[int, bytes]] = []
+    modified = False
+    saw_export = False
+    for section_id, payload in sections:
+        if section_id != 7:
+            new_sections.append((section_id, payload))
+            continue
+        saw_export = True
+        offset = 0
+        count, offset = _read_varuint(payload, offset)
+        entries_offset = offset
+        has_table_export = False
+        while offset < len(payload):
+            name, offset = _read_string(payload, offset)
+            if offset >= len(payload):
+                break
+            kind = payload[offset]
+            offset += 1
+            _, offset = _read_varuint(payload, offset)
+            if kind == 1 and name in (export_name, "__indirect_function_table"):
+                has_table_export = True
+                break
+        if has_table_export:
+            new_sections.append((section_id, payload))
+            continue
+        entry = _write_string(export_name) + bytes([1]) + _write_varuint(0)
+        new_payload = _write_varuint(count + 1) + payload[entries_offset:] + entry
+        new_sections.append((section_id, new_payload))
+        modified = True
+    if not saw_export:
+        entry = _write_string(export_name) + bytes([1]) + _write_varuint(0)
+        export_payload = _write_varuint(1) + entry
+        inserted = False
+        for idx, (section_id, payload) in enumerate(new_sections):
+            if section_id > 7:
+                new_sections.insert(idx, (7, export_payload))
+                inserted = True
+                break
+        if not inserted:
+            new_sections.append((7, export_payload))
+        modified = True
+    if not modified:
+        return None
+    return _build_sections(new_sections)
+
+
 def _collect_imports(data: bytes) -> list[tuple[str, str, int, bytes]]:
     for section_id, payload in _parse_sections(data):
         if section_id != 2:
@@ -456,6 +518,85 @@ def _collect_imports(data: bytes) -> list[tuple[str, str, int, bytes]]:
             imports.append((module, name, kind, payload[desc_start:offset]))
         return imports
     return []
+
+
+def _collect_custom_names(data: bytes) -> list[str]:
+    names: list[str] = []
+    for section_id, payload in _parse_sections(data):
+        if section_id != 0:
+            continue
+        try:
+            name, _ = _parse_custom_section(payload)
+        except ValueError:
+            continue
+        names.append(name)
+    return names
+
+
+def _skip_init_expr(data: bytes, offset: int) -> int:
+    while offset < len(data):
+        opcode = data[offset]
+        offset += 1
+        if opcode == 0x0B:
+            return offset
+        if opcode == 0x41 or opcode == 0x42:
+            _, offset = _read_varuint(data, offset)
+            continue
+        if opcode == 0x43 or opcode == 0x44:
+            offset += 4 if opcode == 0x43 else 8
+            continue
+        if opcode == 0x23:  # global.get
+            _, offset = _read_varuint(data, offset)
+            continue
+        if opcode == 0xD0:  # ref.null
+            if offset >= len(data):
+                raise ValueError("Unexpected EOF while reading ref.null")
+            offset += 1
+            continue
+        if opcode == 0xD2:  # ref.func
+            _, offset = _read_varuint(data, offset)
+            continue
+        raise ValueError(f"Unsupported init expr opcode 0x{opcode:02x}")
+    raise ValueError("Unexpected EOF while reading init expr")
+
+
+def _validate_elements(data: bytes) -> tuple[bool, str | None]:
+    for section_id, payload in _parse_sections(data):
+        if section_id != 9:
+            continue
+        offset = 0
+        count, offset = _read_varuint(payload, offset)
+        for _ in range(count):
+            flags, offset = _read_varuint(payload, offset)
+            if flags in (0x02, 0x06):
+                table_index, offset = _read_varuint(payload, offset)
+                if table_index != 0:
+                    return False, f"element segment targets table {table_index}"
+                offset = _skip_init_expr(payload, offset)
+            elif flags in (0x00, 0x04):
+                offset = _skip_init_expr(payload, offset)
+            elif flags in (0x01, 0x03, 0x05, 0x07):
+                pass
+            else:
+                return False, f"unsupported element segment flags 0x{flags:x}"
+            if flags in (0x00, 0x01, 0x02, 0x03):
+                if offset >= len(payload):
+                    return False, "unexpected EOF reading elemkind"
+                # Some toolchains omit the legacy elemkind byte; tolerate both.
+                if payload[offset] == 0x00:
+                    offset += 1
+                elem_count, offset = _read_varuint(payload, offset)
+                for _ in range(elem_count):
+                    _, offset = _read_varuint(payload, offset)
+            else:
+                if offset >= len(payload):
+                    return False, "unexpected EOF reading elemtype"
+                offset += 1
+                expr_count, offset = _read_varuint(payload, offset)
+                for _ in range(expr_count):
+                    offset = _skip_init_expr(payload, offset)
+        break
+    return True, None
 
 
 def _table_import_min(data: bytes) -> int | None:
@@ -590,6 +731,67 @@ def _validate_linked(linked: Path) -> bool:
             file=sys.stderr,
         )
         return False
+    call_indirect = [
+        name
+        for module, name, kind, _ in imports
+        if module == "env" and kind == 0 and name.startswith("molt_call_indirect")
+    ]
+    if call_indirect:
+        print(
+            f"Linked wasm still imports {', '.join(sorted(call_indirect))}; "
+            "remove JS call_indirect stubs.",
+            file=sys.stderr,
+        )
+        return False
+    table_imports = [
+        (module, name)
+        for module, name, kind, _ in imports
+        if kind == 1 and name == "__indirect_function_table"
+    ]
+    if table_imports:
+        print(
+            "Linked wasm imports a function table; host will supply it.",
+            file=sys.stderr,
+        )
+    memory_imports = [(module, name) for module, name, kind, _ in imports if kind == 2]
+    if memory_imports:
+        print("Linked wasm still imports memory.", file=sys.stderr)
+        return False
+    try:
+        custom_names = _collect_custom_names(data)
+    except ValueError as exc:
+        print(f"Failed to parse linked wasm custom sections: {exc}", file=sys.stderr)
+        return False
+    reloc_sections = [name for name in custom_names if name.startswith("reloc.")]
+    if reloc_sections:
+        print(
+            f"Linked wasm still has reloc sections ({', '.join(reloc_sections)}); "
+            "link step incomplete.",
+            file=sys.stderr,
+        )
+        return False
+    if "linking" in custom_names or "dylink.0" in custom_names:
+        print("Linked wasm still has linking metadata sections.", file=sys.stderr)
+        return False
+    try:
+        exports = _collect_exports(data)
+    except ValueError as exc:
+        print(f"Failed to parse linked wasm exports: {exc}", file=sys.stderr)
+        return False
+    if "molt_memory" not in exports and "memory" not in exports:
+        print("Linked wasm missing exported memory.", file=sys.stderr)
+        return False
+    if "molt_table" not in exports and "__indirect_function_table" not in exports:
+        print("Linked wasm missing exported table.", file=sys.stderr)
+        return False
+    try:
+        ok, err = _validate_elements(data)
+    except ValueError as exc:
+        print(f"Failed to parse linked wasm element section: {exc}", file=sys.stderr)
+        return False
+    if not ok:
+        print(f"Linked wasm element validation failed: {err}", file=sys.stderr)
+        return False
     return True
 
 
@@ -643,6 +845,13 @@ def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int
             updated = _append_table_ref_elements(linked.read_bytes())
         except ValueError as exc:
             print(f"Failed to append table ref elements: {exc}", file=sys.stderr)
+            return 1
+        if updated is not None:
+            linked.write_bytes(updated)
+        try:
+            updated = _ensure_table_export(linked.read_bytes())
+        except ValueError as exc:
+            print(f"Failed to ensure table export: {exc}", file=sys.stderr)
             return 1
         if updated is not None:
             linked.write_bytes(updated)

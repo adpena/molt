@@ -3,13 +3,13 @@
 See `README.md` for quick-start testing commands and CI parity job summaries.
 
 ## 1. Differential Testing: The `molt-diff` Harness
-`molt-diff` is a specialized tool that ensures Molt semantics match CPython. The current harness lives in `tests/molt_diff.py` and builds + runs binaries via `python3 -m molt.cli build`.
+`molt-diff` is a specialized tool that ensures Molt semantics match CPython. The current harness lives in `tests/molt_diff.py` and builds + runs binaries via `uv run --python 3.12 python3 -m molt.cli build`.
 
 ### 1.1 Methodology
 1.  **Input**: A Python source file `test_case.py`.
 2.  **Execution**:
-    - Run `python3 test_case.py` -> Capture `stdout`, `stderr`, `exit_code`.
-    - Run `python tests/molt_diff.py test_case.py` -> Build with Molt, run the binary, capture outputs.
+    - Run `uv run --python 3.12 python3 test_case.py` -> Capture `stdout`, `stderr`, `exit_code`.
+    - Run `uv run --python 3.12 python3 tests/molt_diff.py test_case.py` -> Build with Molt, run the binary, capture outputs.
 3.  **Comparison**: Assert that all captured outputs are identical.
 
 ### 1.2 State Snapshoting
@@ -18,10 +18,17 @@ For complex tests, we use `molt.dump_state()` to export a JSON representation of
 ### 1.3 Curated Parity Suite
 Basic parity cases live in `tests/differential/basic/`. Run the full suite via:
 ```
-python tests/molt_diff.py tests/differential/basic
+uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic
 ```
 The verified subset contract uses `tools/verified_subset.py` to validate and run
 these suites in CI.
+
+### 1.4 Differential coverage reporting
+Generate metadata coverage summaries from `# MOLT_META` headers:
+```
+uv run --python 3.12 python3 tools/diff_coverage.py
+```
+The report is written to `tests/differential/COVERAGE_REPORT.md` by default.
 
 ## 2. Automated Test Generation (Hypothesis)
 We use `Hypothesis` to generate random Python ASTs that fall within the Molt Tier 0 subset.
@@ -44,6 +51,6 @@ To test Tier 1:
 
 ## 5. Continuous Integration Gates
 - **Rust**: `cargo test` (runtime + core unit tests).
-- **Python**: `pytest` (unit and integration tests under `tests/`).
-- **Differential**: run `python tests/molt_diff.py <case.py>` for curated parity cases (expand over time).
+- **Python**: `uv run --python 3.12 pytest` (unit and integration tests under `tests/`).
+- **Differential**: run `uv run --python 3.12 python3 tests/molt_diff.py <case.py>` for curated parity cases (expand over time).
 - **Benchmarks**: `tools/bench.py` for local validation; add CI regression gates as they stabilize.

@@ -1,0 +1,551 @@
+# Differential coverage index (incremental).
+# This file is a curated map from specs/PEPs/modules to test files.
+
+core:
+  peps:
+    "448":
+      tests:
+        - tests/differential/basic/pep448_unpacking_generalizations.py
+    "526":
+      tests:
+        - tests/differential/basic/pep526_variable_annotations.py
+    "563":
+      tests:
+        - tests/differential/basic/pep563_future_annotations.py
+        - tests/differential/basic/pep563_future_annotations_types.py
+    "570":
+      tests:
+        - tests/differential/basic/pep570_posonly_args.py
+    "572":
+      tests:
+        - tests/differential/basic/pep572_walrus_edges.py
+    "584":
+      tests:
+        - tests/differential/basic/pep584_dict_union.py
+    "585-604":
+      tests:
+        - tests/differential/basic/pep585_604_generics_union.py
+    "618":
+      tests:
+        - tests/differential/basic/pep618_zip_strict.py
+    "634":
+      tests:
+        - tests/differential/basic/pattern_matching_basic.py
+        - tests/differential/basic/pattern_matching_core_matrix.py
+        - tests/differential/basic/pep634_pattern_matching_more.py
+    "657":
+      tests:
+        - tests/differential/basic/pep657_error_locations.py
+    "649":
+      tests:
+        - tests/differential/basic/pep649_lazy_annotations.py
+    "695":
+      tests:
+        - tests/differential/basic/pep695_type_params_syntax.py
+    "701":
+      tests:
+        - tests/differential/basic/pep701_fstrings_full_grammar.py
+
+stdlib:
+  collections:
+    tests:
+      - tests/differential/stdlib/collections_deque.py
+      - tests/differential/planned/collections_counter_basic.py
+      - tests/differential/planned/collections_defaultdict_basic.py
+      - tests/differential/planned/collections_deque_rotate.py
+  fnmatch:
+    tests:
+      - tests/differential/stdlib/fnmatch_basic.py
+  functools:
+    tests:
+      - tests/differential/stdlib/functools_more.py
+      - tests/differential/planned/functools_wraps_basic.py
+      - tests/differential/planned/functools_partial_kwargs.py
+      - tests/differential/planned/functools_lru_cache_basic_more.py
+  heapq:
+    tests:
+      - tests/differential/stdlib/heapq_basic.py
+      - tests/differential/stdlib/heapq_more.py
+      - tests/differential/planned/heapq_merge_basic.py
+      - tests/differential/planned/heapq_stability_basic.py
+      - tests/differential/planned/heapq_nlargest_nsmallest.py
+      - tests/differential/planned/heapq_merge_key_basic.py
+  itertools:
+    tests:
+      - tests/differential/stdlib/itertools_core.py
+      - tests/differential/planned/itertools_accumulate_basic.py
+      - tests/differential/planned/itertools_product_permutations.py
+      - tests/differential/planned/itertools_pairwise_basic.py
+      - tests/differential/planned/itertools_lazy_basic.py
+      - tests/differential/planned/itertools_tee_independence_basic.py
+      - tests/differential/planned/itertools_groupby_reuse.py
+      - tests/differential/planned/itertools_chain_from_iterable_basic.py
+      - tests/differential/planned/itertools_zip_longest_basic.py
+      - tests/differential/planned/itertools_islice_edge_cases_more.py
+      - tests/differential/planned/itertools_cycle_basic_more.py
+      - tests/differential/planned/itertools_repeat_count_basic.py
+      - tests/differential/planned/itertools_takewhile_dropwhile_basic.py
+      - tests/differential/planned/itertools_compress_filterfalse_starmap.py
+      - tests/differential/planned/itertools_accumulate_edge_cases.py
+      - tests/differential/planned/itertools_batched_basic.py
+      - tests/differential/planned/itertools_chain_error_cases.py
+      - tests/differential/planned/itertools_chain_from_iterable_errors.py
+      - tests/differential/planned/itertools_repeat_times_zero.py
+      - tests/differential/planned/itertools_groupby_keyfunc.py
+      - tests/differential/planned/itertools_cycle_empty.py
+      - tests/differential/planned/itertools_product_empty.py
+      - tests/differential/planned/itertools_accumulate_error_cases.py
+      - tests/differential/planned/itertools_permutations_errors.py
+      - tests/differential/planned/itertools_combinations_with_replacement_basic.py
+  operator:
+    tests:
+      - tests/differential/stdlib/operator_basic.py
+      - tests/differential/planned/operator_getters_extended.py
+      - tests/differential/planned/operator_itemgetter_error.py
+  unittest:
+    tests:
+      - tests/differential/stdlib/test_unittest_basic.py
+  __future__:
+    tests:
+      - tests/differential/stdlib/future_module.py
+
+  annotationlib:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_314.py
+  bdb:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_tty.py
+  calendar:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_core_a.py
+  cmath:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_core_a.py
+  cmd:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_tty.py
+      - tests/differential/planned/cmd_basic.py
+  code:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_tty.py
+      - tests/differential/planned/code_basic.py
+  codecs:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_codec.py
+      - tests/differential/planned/codecs_basic.py
+      - tests/differential/planned/codecs_error_handlers_basic.py
+  codeop:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_introspection.py
+      - tests/differential/planned/codeop_basic.py
+  colorsys:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_core_a.py
+  compileall:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_fs_a.py
+      - tests/differential/planned/compileall_basic.py
+  compression:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_314.py
+  configparser:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_core_a.py
+      - tests/differential/planned/configparser_basic.py
+  copyreg:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_codec.py
+      - tests/differential/planned/copyreg_basic.py
+  cProfile:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_profiler.py
+  curses:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_platform_posix.py
+  dbm:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_fs_a.py
+  difflib:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_core_b.py
+  dis:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_introspection.py
+      - tests/differential/planned/dis_basic.py
+      - tests/differential/planned/dis_edge_cases.py
+  encodings:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_codec.py
+      - tests/differential/planned/encodings_basic.py
+  ensurepip:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_fs_b.py
+  faulthandler:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_runtime.py
+  fcntl:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_platform_posix.py
+      - tests/differential/planned/posix_platform_basic.py
+  filecmp:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_fs_a.py
+      - tests/differential/planned/filecmp_basic.py
+      - tests/differential/planned/filecmp_dircmp_basic.py
+  fileinput:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_fs_a.py
+      - tests/differential/planned/fileinput_basic.py
+  ftplib:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_net.py
+      - tests/differential/planned/ftplib_basic.py
+  genericpath:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_fs_a.py
+  getpass:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_tty.py
+      - tests/differential/planned/getpass_basic.py
+  graphlib:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_core_b.py
+      - tests/differential/planned/graphlib_basic.py
+  grp:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_platform_posix.py
+      - tests/differential/planned/posix_userdb_basic.py
+  imaplib:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_net.py
+      - tests/differential/planned/imaplib_basic.py
+  linecache:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_fs_a.py
+      - tests/differential/planned/linecache_basic.py
+  mailbox:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_fs_a.py
+      - tests/differential/planned/mailbox_basic.py
+  marshal:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_runtime.py
+      - tests/differential/planned/marshal_basic.py
+      - tests/differential/planned/marshal_edge_cases.py
+      - tests/differential/planned/marshal_version_basic.py
+  mmap:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_fs_b.py
+  modulefinder:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_fs_a.py
+  msvcrt:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_platform_windows.py
+      - tests/differential/planned/windows_platform_basic.py
+  netrc:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_fs_a.py
+      - tests/differential/planned/netrc_basic.py
+  nt:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_platform_windows.py
+  ntpath:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_platform_windows.py
+      - tests/differential/planned/windows_platform_basic.py
+  nturl2path:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_platform_windows.py
+      - tests/differential/planned/windows_platform_basic.py
+  opcode:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_introspection.py
+      - tests/differential/planned/opcode_basic.py
+      - tests/differential/planned/opcode_tables_basic.py
+  optparse:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_core_b.py
+  pdb:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_tty.py
+      - tests/differential/planned/pdb_basic.py
+  pickletools:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_core_c.py
+  pkgutil:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_fs_a.py
+      - tests/differential/planned/pkgutil_basic.py
+  plistlib:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_fs_b.py
+      - tests/differential/planned/plistlib_basic.py
+  poplib:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_net.py
+      - tests/differential/planned/poplib_basic.py
+  posix:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_platform_posix.py
+  posixpath:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_platform_posix.py
+  profile:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_profiler.py
+  pstats:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_profiler.py
+  pty:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_platform_posix.py
+  pwd:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_platform_posix.py
+      - tests/differential/planned/posix_userdb_basic.py
+  py_compile:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_fs_b.py
+      - tests/differential/planned/py_compile_basic.py
+  pyclbr:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_fs_b.py
+  pydoc:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_fs_b.py
+  pydoc_data:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_fs_b.py
+  pyexpat:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_runtime.py
+  quopri:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_core_c.py
+  readline:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_readline.py
+  reprlib:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_core_b.py
+  resource:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_platform_posix.py
+      - tests/differential/planned/posix_platform_basic.py
+  rlcompleter:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_tty.py
+  runpy:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_fs_b.py
+      - tests/differential/planned/runpy_basic.py
+      - tests/differential/planned/runpy_run_module_basic.py
+  sched:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_core_b.py
+  shelve:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_fs_b.py
+      - tests/differential/planned/shelve_basic.py
+  smtplib:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_net.py
+      - tests/differential/planned/smtplib_basic.py
+  sre_compile:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_internal_regex.py
+      - tests/differential/planned/sre_internal_basic.py
+  sre_constants:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_internal_regex.py
+      - tests/differential/planned/sre_internal_basic.py
+  sre_parse:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_internal_regex.py
+      - tests/differential/planned/sre_internal_basic.py
+  stringprep:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_core_b.py
+  symtable:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_introspection.py
+      - tests/differential/planned/symtable_basic.py
+      - tests/differential/planned/symtable_edge_cases.py
+  syslog:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_platform_posix.py
+      - tests/differential/planned/posix_platform_basic.py
+  tabnanny:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_fs_b.py
+      - tests/differential/planned/tabnanny_basic.py
+  termios:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_platform_posix.py
+      - tests/differential/planned/posix_platform_basic.py
+  this:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_core_c.py
+  timeit:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_core_c.py
+  token:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_core_c.py
+  tokenize:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_core_c.py
+      - tests/differential/planned/tokenize_basic.py
+      - tests/differential/planned/tokenize_edge_cases.py
+  trace:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_fs_b.py
+      - tests/differential/planned/trace_basic.py
+  tracemalloc:
+    tests:
+      - tests/differential/planned/stdlib_import_smoke_runtime.py
+  tty:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_platform_posix.py
+      - tests/differential/planned/posix_platform_basic.py
+  venv:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_fs_b.py
+  wave:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_fs_b.py
+  webbrowser:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_net.py
+  winreg:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_platform_windows.py
+      - tests/differential/planned/windows_platform_basic.py
+  winsound:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_platform_windows.py
+      - tests/differential/planned/windows_sound_basic.py
+  xmlrpc:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_net.py
+      - tests/differential/planned/xmlrpc_basic.py
+  zipapp:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_fs_b.py
+      - tests/differential/planned/zipapp_basic.py
+  zipimport:
+    tests:
+      - tests/differential/planned/stdlib_capability_smoke_fs_b.py
+      - tests/differential/planned/zipimport_basic.py
+  math:
+    tests:
+      - tests/differential/planned/math_predicates_basic.py
+      - tests/differential/planned/math_floor_ceil_basic.py
+      - tests/differential/planned/math_isclose_specials.py
+      - tests/differential/planned/math_fsum_prod_basic.py
+      - tests/differential/planned/math_copysign_modf_frexp.py
+      - tests/differential/planned/math_factorial_errors.py
+      - tests/differential/planned/math_domain_errors.py
+      - tests/differential/planned/math_log_zero_pow_overflow.py
+      - tests/differential/planned/math_gamma_lgamma_errors.py
+      - tests/differential/planned/math_negative_zero_rounding.py
+      - tests/differential/planned/math_ldexp_frexp_roundtrip.py
+      - tests/differential/planned/math_hypot_dist_basic.py
+      - tests/differential/planned/math_isfinite_decimal.py
+  bisect:
+    tests:
+      - tests/differential/planned/bisect_key_basic.py
+      - tests/differential/planned/bisect_edge_cases.py
+  io:
+    tests:
+      - tests/differential/planned/io_bytesio_basic.py
+      - tests/differential/planned/io_stringio_newline.py
+      - tests/differential/planned/io_bytesio_getbuffer.py
+      - tests/differential/planned/io_stringio_seek_tell.py
+      - tests/differential/planned/io_textiowrapper_basic.py
+      - tests/differential/planned/io_bufferedreader_readinto.py
+      - tests/differential/planned/io_bufferedwriter_flush_basic.py
+      - tests/differential/planned/io_textiowrapper_newlines.py
+      - tests/differential/planned/io_textiowrapper_newline_none.py
+      - tests/differential/planned/io_textiowrapper_newline_variants.py
+      - tests/differential/planned/io_textiowrapper_write_newline_none.py
+      - tests/differential/planned/io_newline_windows_crlf.py
+  os:
+    tests:
+      - tests/differential/planned/os_path_more.py
+  pathlib:
+    tests:
+      - tests/differential/planned/pathlib_basic_ops.py
+  tempfile:
+    tests:
+      - tests/differential/planned/tempfile_namedtempfile_basic.py
+  logging:
+    tests:
+      - tests/differential/planned/logging_level_basic.py
+  traceback:
+    tests:
+      - tests/differential/planned/traceback_format_exception_basic.py
+  warnings:
+    tests:
+      - tests/differential/planned/warnings_filter_basic_more.py
+  importlib:
+    tests:
+      - tests/differential/planned/importlib_import_module_basic.py
+      - tests/differential/planned/importlib_util_spec_module.py
+      - tests/differential/planned/importlib_util_exec_module.py
+      - tests/differential/planned/importlib_spec_fields_basic.py
+      - tests/differential/planned/importlib_resources_files_read.py
+      - tests/differential/planned/importlib_resources_read_text_basic.py
+      - tests/differential/planned/importlib_resources_as_file_basic.py
+      - tests/differential/planned/importlib_resources_errors_basic.py
+      - tests/differential/planned/importlib_resources_traversal_basic.py
+      - tests/differential/planned/importlib_resources_is_file_basic.py
+      - tests/differential/planned/importlib_resources_read_binary_basic.py
+      - tests/differential/planned/importlib_resources_open_text_basic.py
+      - tests/differential/planned/importlib_resources_open_binary_basic.py
+      - tests/differential/planned/importlib_resources_open_errors_basic.py
+      - tests/differential/planned/importlib_resources_contents_is_resource.py
+      - tests/differential/planned/importlib_resources_path_errors.py
+      - tests/differential/planned/importlib_resources_subdir_traversal.py
+      - tests/differential/planned/importlib_resources_as_file_cleanup.py
+      - tests/differential/planned/importlib_resources_files_error_basic.py
+      - tests/differential/planned/importlib_resources_subdir_read_binary.py
+      - tests/differential/planned/importlib_resources_subdir_files.py
+      - tests/differential/planned/importlib_resources_invalid_package.py
+      - tests/differential/planned/importlib_resources_missing_subpackage.py
+      - tests/differential/planned/importlib_resources_namespace_pkg.py
+      - tests/differential/planned/importlib_resources_read_text_errors.py
+      - tests/differential/planned/importlib_resources_module_object_files.py
+      - tests/differential/planned/importlib_resources_path_decoding.py
+  urllib.parse:
+    tests:
+      - tests/differential/planned/urllib_parse_quote_basic.py
+      - tests/differential/planned/urllib_parse_edge_cases.py
+      - tests/differential/planned/urllib_parse_urlsplit.py
+      - tests/differential/planned/urllib_parse_urljoin.py
+      - tests/differential/planned/urllib_parse_urlencode_edge_cases.py
+      - tests/differential/planned/urllib_parse_urldefrag.py
+  http.client:
+    tests:
+      - tests/differential/planned/http_client_server_basic_more.py
+      - tests/differential/planned/http_client_timeout_error.py
+      - tests/differential/planned/http_client_connection_reset.py
+  urllib.request:
+    tests:
+      - tests/differential/planned/urllib_request_basic_more.py
+      - tests/differential/planned/urllib_request_timeout_error.py
+  http.cookies:
+    tests:
+      - tests/differential/planned/http_cookies_basic_more.py
+      - tests/differential/planned/http_cookies_parse_multiple.py
+      - tests/differential/planned/http_cookies_output_format.py
+      - tests/differential/planned/http_cookies_morsel_attrs.py
+      - tests/differential/planned/http_cookies_morsel_flags.py
+      - tests/differential/planned/http_cookies_maxage_expires.py
+  wsgiref:
+    tests:
+      - tests/differential/planned/wsgiref_simple_server_basic.py
+  urllib.error:
+    tests:
+      - tests/differential/planned/urllib_error_basic_more.py

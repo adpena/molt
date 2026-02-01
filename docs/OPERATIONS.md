@@ -121,6 +121,12 @@ Benchmarks that cannot survive a disconnect are not acceptable.
 
 ## Progress Reporting
 
+### Task scaffolding
+Use the helper to create a per-task log + report skeleton:
+```bash
+tools/new-agent-task.sh <task-name>
+```
+
 ### Minimal “micro-report” (for frequent updates)
 Use this when updating every 10–20 minutes.
 
@@ -151,6 +157,13 @@ Use this when updating every 10–20 minutes.
 <command>
 ```
 
+### Coverage reporting helpers
+Generate differential coverage summaries and keep spec TODOs in sync:
+```bash
+uv run --python 3.12 python3 tools/diff_coverage.py
+uv run --python 3.12 python3 tools/check_type_coverage_todos.py
+```
+
 ## Multi-Agent Workflow
 This section standardizes parallel agent work on Molt.
 
@@ -175,7 +188,8 @@ This section standardizes parallel agent work on Molt.
 
 ### Quality gates
 - Run extensive linting and tests before PRs or merges.
-- Prefer `tools/dev.py lint` + `tools/dev.py test`, plus relevant `cargo`
+- Prefer `uv run --python 3.12 python3 tools/dev.py lint` +
+  `uv run --python 3.12 python3 tools/dev.py test`, plus relevant `cargo`
   check/test.
 - Do not merge if tests are failing unless explicitly approved.
 

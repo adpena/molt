@@ -82,4 +82,4 @@ Import errors must include:
 - Policy for namespace packages.
 - Editable installs and dev-mode behaviors.
 
-TODO(import-system, owner:frontend, milestone:TC3, priority:P1, status:partial): populate `__spec__` for compiled modules once ModuleSpec support lands.
+`__spec__` is populated for compiled modules using `importlib.machinery.ModuleSpec` with Molt loader metadata.

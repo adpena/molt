@@ -2,10 +2,12 @@ use molt_obj_model::MoltObject;
 
 use crate::{
     exception_context_align_depth, exception_context_fallback_pop, exception_context_fallback_push,
-    exception_stack_depth, exception_stack_set_depth, set_task_raise_active,
-    task_exception_depth_store, task_exception_depth_take, task_exception_handler_stack_store,
-    task_exception_handler_stack_take, task_exception_stack_store, task_exception_stack_take,
-    task_raise_active, PyToken, ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK,
+    exception_stack_baseline_get, exception_stack_baseline_set, exception_stack_depth,
+    exception_stack_set_depth, set_task_raise_active, task_exception_baseline_store,
+    task_exception_baseline_take, task_exception_depth_store, task_exception_depth_take,
+    task_exception_handler_stack_store, task_exception_handler_stack_take,
+    task_exception_stack_store, task_exception_stack_take, task_raise_active, PyToken,
+    ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -129,12 +131,20 @@ pub(crate) unsafe fn poll_future_with_task_stack(
     task_ptr: *mut u8,
     poll_fn_addr: u64,
 ) -> i64 {
+    let debug_task = std::env::var("MOLT_DEBUG_CURRENT_TASK").as_deref() == Ok("1");
     let prev_task = CURRENT_TASK.with(|cell| {
         let prev = cell.get();
         cell.set(task_ptr);
         prev
     });
+    if debug_task && prev_task.is_null() {
+        eprintln!(
+            "molt task trace: prev_task=null set task=0x{:x}",
+            task_ptr as usize
+        );
+    }
     let caller_depth = exception_stack_depth();
+    let caller_baseline = exception_stack_baseline_get();
     let caller_handlers = EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
     let caller_active =
         ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
@@ -143,6 +153,8 @@ pub(crate) unsafe fn poll_future_with_task_stack(
         .copied()
         .unwrap_or(MoltObject::none().bits());
     exception_context_fallback_push(caller_context);
+    let task_baseline = task_exception_baseline_take(_py, task_ptr);
+    exception_stack_baseline_set(task_baseline);
     let task_handlers = task_exception_handler_stack_take(_py, task_ptr);
     EXCEPTION_STACK.with(|stack| {
         *stack.borrow_mut() = task_handlers;
@@ -160,6 +172,9 @@ pub(crate) unsafe fn poll_future_with_task_stack(
     let new_depth = exception_stack_depth();
     task_exception_depth_store(_py, task_ptr, new_depth);
     exception_context_align_depth(_py, new_depth);
+    let new_baseline = exception_stack_baseline_get();
+    task_exception_baseline_store(_py, task_ptr, new_baseline);
+    exception_stack_baseline_set(caller_baseline);
     let task_handlers = EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
     task_exception_handler_stack_store(_py, task_ptr, task_handlers);
     let task_active = ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
@@ -172,6 +187,12 @@ pub(crate) unsafe fn poll_future_with_task_stack(
     });
     exception_stack_set_depth(_py, caller_depth);
     exception_context_fallback_pop();
+    if debug_task && prev_task.is_null() {
+        eprintln!(
+            "molt task trace: restoring prev_task=null after task=0x{:x}",
+            task_ptr as usize
+        );
+    }
     CURRENT_TASK.with(|cell| cell.set(prev_task));
     res
 }

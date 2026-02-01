@@ -188,7 +188,7 @@ fn memchr_fast(needle: u8, hay: &[u8]) -> Option<usize> {
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn memchr_simd128(needle: u8, hay: &[u8]) -> (bool, Option<usize>) {
-    if !std::arch::is_wasm_feature_detected!("simd128") {
+    if !cfg!(target_feature = "simd128") {
         return (false, None);
     }
     unsafe {

@@ -13,6 +13,7 @@ pub(crate) mod memoryview;
 pub(crate) mod ops;
 pub(crate) mod type_ids;
 pub(crate) mod utf8_cache;
+pub(crate) mod weakref;
 
 #[allow(unused_imports)]
 pub(crate) use type_ids::*;
@@ -21,10 +22,9 @@ use crate::call::bind::callargs_drop;
 use crate::provenance::{register_ptr, release_ptr, resolve_ptr};
 use crate::{
     asyncgen_call_finalizer, asyncgen_gen_bits, asyncgen_pending_bits, asyncgen_registry_remove,
-    asyncgen_running_bits,
-    bound_method_func_bits, bound_method_self_bits, bytearray_data, bytearray_len,
-    bytearray_vec_ptr, call_iter_callable_bits, call_iter_sentinel_bits, callargs_ptr,
-    classmethod_func_bits, code_filename_bits, code_linetable_bits, code_name_bits,
+    asyncgen_running_bits, bound_method_func_bits, bound_method_self_bits, bytearray_data,
+    bytearray_len, bytearray_vec_ptr, call_iter_callable_bits, call_iter_sentinel_bits,
+    callargs_ptr, classmethod_func_bits, code_filename_bits, code_linetable_bits, code_name_bits,
     context_payload_bits, dict_order_ptr, dict_table_ptr, dict_view_dict_bits,
     enumerate_index_bits, enumerate_target_bits, exception_args_bits, exception_cause_bits,
     exception_class_bits, exception_context_bits, exception_kind_bits, exception_msg_bits,
@@ -33,22 +33,22 @@ use crate::{
     function_code_bits, function_dict_bits, generator_exception_stack_drop,
     generic_alias_args_bits, generic_alias_origin_bits, io_wait_poll_fn_addr,
     io_wait_release_socket, iter_target_bits, map_func_bits, map_iters_ptr, module_dict_bits,
-    module_name_bits, process_poll_fn_addr, profile_hit, property_del_bits,
-    property_get_bits, property_set_bits, reversed_target_bits, runtime_state, seq_vec_ptr,
-    set_order_ptr, set_table_ptr, slice_start_bits, slice_step_bits, slice_stop_bits,
-    staticmethod_func_bits, task_cancel_message_clear, thread_poll_fn_addr,
-    utf8_cache_remove, zip_iters_ptr, PyToken, ALLOC_CALLARGS_COUNT, ALLOC_COUNT,
-    ALLOC_DICT_COUNT, ALLOC_EXCEPTION_COUNT, ALLOC_OBJECT_COUNT, ALLOC_STRING_COUNT,
-    ALLOC_TUPLE_COUNT, GEN_CLOSED_OFFSET,
-    GEN_EXC_DEPTH_OFFSET, GEN_SEND_OFFSET, GEN_THROW_OFFSET, TYPE_ID_ASYNC_GENERATOR,
-    TYPE_ID_BIGINT, TYPE_ID_BOUND_METHOD, TYPE_ID_BUFFER2D, TYPE_ID_BYTEARRAY, TYPE_ID_CALLARGS,
-    TYPE_ID_CALL_ITER, TYPE_ID_CLASSMETHOD, TYPE_ID_CODE, TYPE_ID_CONTEXT_MANAGER,
-    TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW,
-    TYPE_ID_DICT_VALUES_VIEW, TYPE_ID_ENUMERATE, TYPE_ID_EXCEPTION, TYPE_ID_FILE_HANDLE,
-    TYPE_ID_FILTER, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_GENERATOR, TYPE_ID_GENERIC_ALIAS,
-    TYPE_ID_ITER, TYPE_ID_LIST, TYPE_ID_MAP, TYPE_ID_MEMORYVIEW, TYPE_ID_MODULE,
-    TYPE_ID_NOT_IMPLEMENTED, TYPE_ID_OBJECT, TYPE_ID_PROPERTY, TYPE_ID_REVERSED, TYPE_ID_SET,
-    TYPE_ID_SLICE, TYPE_ID_STATICMETHOD, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_ZIP,
+    module_name_bits, process_poll_fn_addr, profile_hit, property_del_bits, property_get_bits,
+    property_set_bits, reversed_target_bits, runtime_state, seq_vec_ptr, set_order_ptr,
+    set_table_ptr, slice_start_bits, slice_step_bits, slice_stop_bits, staticmethod_func_bits,
+    task_cancel_message_clear, thread_poll_fn_addr, union_type_args_bits, utf8_cache_remove,
+    weakref_clear_for_ptr, zip_iters_ptr, zip_strict_bits, PyToken, ALLOC_CALLARGS_COUNT,
+    ALLOC_COUNT, ALLOC_DICT_COUNT, ALLOC_EXCEPTION_COUNT, ALLOC_OBJECT_COUNT, ALLOC_STRING_COUNT,
+    ALLOC_TUPLE_COUNT, GEN_CLOSED_OFFSET, GEN_EXC_DEPTH_OFFSET, GEN_SEND_OFFSET, GEN_THROW_OFFSET,
+    TYPE_ID_ASYNC_GENERATOR, TYPE_ID_BIGINT, TYPE_ID_BOUND_METHOD, TYPE_ID_BUFFER2D,
+    TYPE_ID_BYTEARRAY, TYPE_ID_CALLARGS, TYPE_ID_CALL_ITER, TYPE_ID_CLASSMETHOD, TYPE_ID_CODE,
+    TYPE_ID_CONTEXT_MANAGER, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_DICT_ITEMS_VIEW,
+    TYPE_ID_DICT_KEYS_VIEW, TYPE_ID_DICT_VALUES_VIEW, TYPE_ID_ENUMERATE, TYPE_ID_EXCEPTION,
+    TYPE_ID_FILE_HANDLE, TYPE_ID_FILTER, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_GENERATOR,
+    TYPE_ID_GENERIC_ALIAS, TYPE_ID_ITER, TYPE_ID_LIST, TYPE_ID_MAP, TYPE_ID_MEMORYVIEW,
+    TYPE_ID_MODULE, TYPE_ID_NOT_IMPLEMENTED, TYPE_ID_OBJECT, TYPE_ID_PROPERTY, TYPE_ID_REVERSED,
+    TYPE_ID_SET, TYPE_ID_SLICE, TYPE_ID_STATICMETHOD, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_UNION,
+    TYPE_ID_ZIP,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -165,6 +165,7 @@ pub(crate) const HEADER_FLAG_TASK_RUNNING: u64 = 1 << 8;
 pub(crate) const HEADER_FLAG_TASK_WAKE_PENDING: u64 = 1 << 9;
 pub(crate) const HEADER_FLAG_TASK_DONE: u64 = 1 << 10;
 pub(crate) const HEADER_FLAG_TRACEBACK_SUPPRESSED: u64 = 1 << 11;
+pub(crate) const HEADER_FLAG_COROUTINE: u64 = 1 << 12;
 
 thread_local! {
     pub(crate) static OBJECT_POOL_TLS: RefCell<Vec<Vec<PtrSlot>>> =
@@ -388,7 +389,19 @@ pub(crate) unsafe fn instance_set_dict_bits(_py: &PyToken<'_>, ptr: *mut u8, bit
 }
 
 pub(crate) unsafe fn object_class_bits(ptr: *mut u8) -> u64 {
-    (*header_from_obj_ptr(ptr)).state as u64
+    let bits = (*header_from_obj_ptr(ptr)).state as u64;
+    if bits == 0 {
+        return 0;
+    }
+    // Some TYPE_ID_OBJECT futures/tasks repurpose `state` for runtime state.
+    // Treat it as a class only when it points to an actual type object.
+    let Some(class_ptr) = obj_from_bits(bits).as_ptr() else {
+        return 0;
+    };
+    if object_type_id(class_ptr) != TYPE_ID_TYPE {
+        return 0;
+    }
+    bits
 }
 
 pub(crate) unsafe fn object_set_class_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
@@ -641,9 +654,16 @@ pub(crate) unsafe fn inc_ref_ptr(_py: &PyToken<'_>, ptr: *mut u8) {
         return;
     }
     let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
-    (*header_ptr)
+    let new_count = (*header_ptr)
         .ref_count
-        .fetch_add(1, AtomicOrdering::Relaxed);
+        .fetch_add(1, AtomicOrdering::Relaxed)
+        + 1;
+    if std::env::var("MOLT_DEBUG_RC_OBJECT").as_deref() == Ok("1") {
+        let header = &*header_ptr;
+        if header.type_id == TYPE_ID_OBJECT && (header.flags & HEADER_FLAG_SKIP_CLASS_DECREF) != 0 {
+            eprintln!("molt rc inc ptr=0x{:x} count={}", ptr as usize, new_count);
+        }
+    }
 }
 
 /// # Safety
@@ -658,8 +678,26 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
     if header.type_id == TYPE_ID_NOT_IMPLEMENTED {
         return;
     }
-    if header.ref_count.fetch_sub(1, AtomicOrdering::AcqRel) == 1 {
+    let prev = header.ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
+    if std::env::var("MOLT_DEBUG_RC_OBJECT").as_deref() == Ok("1")
+        && header.type_id == TYPE_ID_OBJECT
+        && (header.flags & HEADER_FLAG_SKIP_CLASS_DECREF) != 0
+    {
+        eprintln!(
+            "molt rc dec ptr=0x{:x} count={}",
+            ptr as usize,
+            prev.saturating_sub(1)
+        );
+    }
+    if prev == 1 {
         std::sync::atomic::fence(AtomicOrdering::Acquire);
+        if std::env::var("MOLT_DEBUG_DECREF_ZERO").as_deref() == Ok("1") {
+            eprintln!(
+                "molt dec_ref_zero ptr=0x{:x} type_id={}",
+                ptr as usize, header.type_id
+            );
+        }
+        weakref_clear_for_ptr(py, ptr);
         match header.type_id {
             TYPE_ID_STRING => {
                 utf8_cache_remove(py, ptr as usize);
@@ -823,6 +861,12 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     dec_ref_bits(py, args_bits);
                 }
             }
+            TYPE_ID_UNION => {
+                let args_bits = union_type_args_bits(ptr);
+                if args_bits != 0 && !obj_from_bits(args_bits).is_none() {
+                    dec_ref_bits(py, args_bits);
+                }
+            }
             TYPE_ID_DICT_KEYS_VIEW | TYPE_ID_DICT_VALUES_VIEW | TYPE_ID_DICT_ITEMS_VIEW => {
                 let dict_bits = dict_view_dict_bits(ptr);
                 if dict_bits != 0 && !obj_from_bits(dict_bits).is_none() {
@@ -939,6 +983,10 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     for bits in iters.iter() {
                         dec_ref_bits(py, *bits);
                     }
+                }
+                let strict_bits = zip_strict_bits(ptr);
+                if strict_bits != 0 && !obj_from_bits(strict_bits).is_none() {
+                    dec_ref_bits(py, strict_bits);
                 }
             }
             TYPE_ID_GENERATOR => {

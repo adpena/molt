@@ -4,12 +4,17 @@ class Point:
         self.y = y
 
 
-p = Point(1, 2)
-i = 0
-total = 0
-while i < 500_000:
-    p.x = i
-    total += p.x
-    i += 1
+def main() -> None:
+    p = Point(1, 2)
+    i = 0
+    total = 0
+    while i < 500_000:
+        p.x = i
+        total += p.x
+        i += 1
 
-print(total)
+    print(total)
+
+
+if __name__ == "__main__":
+    main()

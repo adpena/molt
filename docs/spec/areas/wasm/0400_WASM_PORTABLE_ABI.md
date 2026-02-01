@@ -153,16 +153,37 @@ Example:
 - `molt_fetch(cap_id, req_ptr, req_len, resp_ptr_ptr, resp_len_ptr) -> i32`
 
 **v0.1 recommendation:** keep I/O out of portable modules; focus on shared logic and compute.
-TODO(wasm-parity, owner:runtime, milestone:SL1, priority:P1, status:partial): extend host imports/ABI for remaining file methods (readinto1) once implemented so wasm builds stay in lockstep with native file I/O.
 
-### 5.4 DB host interface (capability-gated)
+### 5.4 Socket host interface (capability-gated)
+WASM socket intrinsics mirror POSIX-style sockets and feed the runtime io_poller:
+- `molt_socket_*` imports (see `wit/molt-runtime.wit` for full list)
+- `molt_socket_poll_host(handle, events) -> i32` returns a bitmask of
+  `IO_EVENT_READ|IO_EVENT_WRITE|IO_EVENT_ERROR`
+- `molt_socket_wait_host(handle, events, timeout_ms) -> i32` blocks until readiness or timeout
+
+Capability policy:
+- `net.connect` (or `net`) required for outbound connects
+- `net.listen`/`net.bind` (or `net`) required for bind/listen/accept
+
+Browser mapping:
+- `AF_INET`/`AF_INET6` + `SOCK_STREAM` map to WebSocket-backed streams
+- `SOCK_DGRAM`, `listen`, `accept`, and server sockets return `EOPNOTSUPP`
+- Readiness: `READ` when the receive queue has data or the socket is closed/error;
+  `WRITE` when open/closed/error; `ERROR` when the socket is in error state
+
+Server mapping:
+- Node/WASI and wasmtime hosts use native sockets with io_poller-backed readiness.
+
+### 5.5 DB host interface (capability-gated)
 For wasm builds that need database access, the host must expose:
 - `db_query(ptr, len, out, cancel_token) -> i32`
 - `db_exec(ptr, len, out, cancel_token) -> i32`
+- `db_host_poll() -> i32` (non-blocking pump for pending DB responses/cancellation)
 
 These accept MsgPack-encoded requests (see `docs/spec/areas/db/0915_MOLT_DB_IPC_CONTRACT.md`)
 and return a stream handle for response bytes. Access is gated by `db.read` and
-`db.write` capabilities.
+`db.write` capabilities. `db_host_poll` lets the runtime explicitly ask the host
+to deliver any queued responses while the wasm scheduler is running.
 
 ---
 

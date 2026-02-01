@@ -88,6 +88,14 @@ pub(crate) unsafe fn zip_iters_ptr(ptr: *mut u8) -> *mut Vec<u64> {
     *(ptr as *mut *mut Vec<u64>)
 }
 
+pub(crate) unsafe fn zip_strict_bits(ptr: *mut u8) -> u64 {
+    *(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *const u64)
+}
+
+pub(crate) unsafe fn zip_set_strict_bits(ptr: *mut u8, bits: u64) {
+    *(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut u64) = bits;
+}
+
 pub(crate) unsafe fn map_func_bits(ptr: *mut u8) -> u64 {
     *(ptr as *const u64)
 }
@@ -134,6 +142,10 @@ pub(crate) unsafe fn generic_alias_origin_bits(ptr: *mut u8) -> u64 {
 
 pub(crate) unsafe fn generic_alias_args_bits(ptr: *mut u8) -> u64 {
     *(ptr.add(std::mem::size_of::<u64>()) as *const u64)
+}
+
+pub(crate) unsafe fn union_type_args_bits(ptr: *mut u8) -> u64 {
+    *(ptr as *const u64)
 }
 
 #[allow(dead_code)]
@@ -332,6 +344,17 @@ pub(crate) unsafe fn class_name_bits(ptr: *mut u8) -> u64 {
     *(ptr as *const u64)
 }
 
+pub(crate) unsafe fn class_set_name_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
+    crate::gil_assert();
+    let slot = ptr as *mut u64;
+    let old_bits = *slot;
+    if old_bits != bits {
+        dec_ref_bits(_py, old_bits);
+        inc_ref_bits(_py, bits);
+        *slot = bits;
+    }
+}
+
 pub(crate) unsafe fn class_dict_bits(ptr: *mut u8) -> u64 {
     *(ptr.add(std::mem::size_of::<u64>()) as *const u64)
 }
@@ -391,6 +414,21 @@ pub(crate) unsafe fn class_set_annotate_bits(_py: &PyToken<'_>, ptr: *mut u8, bi
     *slot = bits;
     if bits != 0 {
         inc_ref_bits(_py, bits);
+    }
+}
+
+pub(crate) unsafe fn class_qualname_bits(ptr: *mut u8) -> u64 {
+    *(ptr.add(7 * std::mem::size_of::<u64>()) as *const u64)
+}
+
+pub(crate) unsafe fn class_set_qualname_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
+    crate::gil_assert();
+    let slot = ptr.add(7 * std::mem::size_of::<u64>()) as *mut u64;
+    let old_bits = *slot;
+    if old_bits != bits {
+        dec_ref_bits(_py, old_bits);
+        inc_ref_bits(_py, bits);
+        *slot = bits;
     }
 }
 

@@ -10,22 +10,22 @@ To exercise single-module linking, add `--linked` (requires `wasm-ld` and
 For performance parity work, prefer linked WASM artifacts (`tools/bench_wasm.py --linked`)
 and use the linked runner path by default.
 If you build standalone WASM artifacts for perf validation, use
-`python3 -m molt.cli build --target wasm --require-linked` to ensure only linked
-output is produced.
+`uv run --python 3.12 python3 -m molt.cli build --target wasm --require-linked`
+to ensure only linked output is produced.
 Use `tools/bench_wasm.py --require-linked` to fail fast when linking is unavailable.
 
 ```bash
 # Basic run
-uv run python3 tools/bench.py
+uv run --python 3.14 python3 tools/bench.py
 
 # Record results to JSON (standard for PRs)
-uv run python3 tools/bench.py --json-out bench/results/my_change.json
+uv run --python 3.14 python3 tools/bench.py --json-out bench/results/my_change.json
 
 # Increase warmup runs (default: 1, or 0 for --smoke)
-uv run python3 tools/bench.py --warmup 2
+uv run --python 3.14 python3 tools/bench.py --warmup 2
 
 # Comparison vs CPython
-uv run python3 tools/bench.py --compare cpython
+uv run --python 3.14 python3 tools/bench.py --compare cpython
 ```
 
 ## Native Baselines (Optional)
@@ -54,6 +54,18 @@ uv run --python 3.14 python3 tools/bench_report.py
 This writes `docs/benchmarks/bench_summary.md` by default. Commit the report alongside
 the JSON results to keep native and WASM performance tracking aligned.
 Add `--update-readme` to refresh the Performance & Comparisons block in `README.md`.
+
+## Binary Size & Cold-Start (Optional)
+
+See `docs/spec/areas/perf/0604_BINARY_SIZE_AND_COLD_START.md` for required metrics.
+Common tools:
+- `cargo bloat -p molt-runtime --release`
+- `cargo llvm-lines -p molt-runtime`
+- `llvm-size <binary>` (native size)
+- `twiggy top output.wasm` (WASM size drivers)
+- `wasm-opt -Oz -o output.opt.wasm output.wasm`
+- `wasm-tools strip output.opt.wasm -o output.stripped.wasm`
+- `gzip -k output.wasm` / `brotli -f output.wasm` (compressed size)
 
 ## Performance Gates
 

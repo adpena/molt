@@ -63,33 +63,33 @@
 | pathlib | Stdlib | Partial | P2 | SL2 | stdlib | Basic `Path` wrapper with gated `open`/read/write/exists/unlink; `iterdir` + richer Path ops pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): pathlib iterdir + full Path parity) |
 | enum | Stdlib | Planned | P2 | SL2 | stdlib | Enum base types. |
 | dataclasses | Stdlib | Partial | P2 | SL2 | stdlib | Dataclass lowering (frozen/eq/repr/field order, slots flag, defaults + default_factory); kw-only/order pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): dataclasses pending parity) |
-| typing | Stdlib | Partial | P3 | SL3 | stdlib | Minimal shim: `Any`/`Union`/`Optional`/`Callable` + `TypeVar`/`Generic`/`Protocol` + `cast`/`get_origin`/`get_args`. |
+| typing | Stdlib | Supported | P2 | SL3 | stdlib | Deterministic runtime typing helpers: `Annotated`/`Literal`/`Union`/`Optional`/`Callable`, `TypeVar`/`ParamSpec`/`TypeVarTuple`, `NewType`/`TypedDict`, `Protocol` + `@runtime_checkable`, `get_origin`/`get_args`/`get_type_hints` (explicit eval only). |
 | abc | Stdlib | Planned | P3 | SL3 | stdlib | Abstract base classes. |
-| contextlib | Stdlib | Partial | P2 | SL2 | stdlib | `nullcontext` + `closing` lowered; `contextmanager` pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): contextlib pending parity) |
+| contextlib | Stdlib | Partial | P2 | SL2 | stdlib | `contextmanager`/`ContextDecorator` + `ExitStack`/`AsyncExitStack`, `suppress`, `redirect_stdout`/`redirect_stderr`, `nullcontext`, `closing` implemented; `aclosing`/`AbstractContextManager`/full parity pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): contextlib pending parity) |
 | contextvars | Stdlib | Partial | P2 | SL3 | stdlib/runtime | `ContextVar`/`Token`/`Context` + `copy_context`; task context propagation via cancel tokens; `Context.run` implemented. |
 | gc | Stdlib | Partial | P2 | SL2 | stdlib/runtime | Minimal `collect`/enable/disable shim for test support; cycle collector wiring + full API pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): implement full gc module API + runtime cycle collector hook.) |
 | weakref | Stdlib | Partial | P3 | SL3 | stdlib | Minimal `ref` shim (cleared on `gc.collect`); GC-aware semantics pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): implement GC-aware weakrefs + full weakref API.) |
-| logging | Stdlib | Planned | P2 | SL2 | stdlib | Structured logging; gated sinks. |
+| logging | Stdlib | Partial | P2 | SL2 | stdlib | Deterministic logging core (Logger/Handler/Formatter/LogRecord + Stream/File/Null handlers + basicConfig); sinks gated by `fs.write`. |
 | logging.config | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; config parsing pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): logging.config pending parity) |
 | logging.handlers | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; handler wiring pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): logging.handlers pending parity) |
 | json | Stdlib | Partial | P1 | SL2 | stdlib | Shim supports `loads`/`dumps`/`load`/`dump` with parse hooks, indent, separators, and `allow_nan`; runtime fast-path + full encoder/decoder parity pending. |
 | csv | Stdlib | Planned | P3 | SL3 | stdlib | Deterministic CSV parsing. |
 | io | Capability-gated | Partial | P2 | SL3 | stdlib | Native `open` supports full signature + fd-based open; file objects expose core methods/attrs (read/readinto/write/writelines/seek/tell/fileno/readline(s)/truncate/iteration/flush/close). `io.UnsupportedOperation` exported. utf-8/ascii/latin-1 text encoding only, text-mode seek/tell cookies partial, and Windows fileno/isatty parity still pending. (TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P2, status:partial): io pending parity) |
 | os | Capability-gated | Partial | P2 | SL3 | stdlib | Minimal shim: env access gated via `env.read`/`env.write`; path helpers plus `exists`/`unlink`. |
-| sys | Capability-gated | Partial | P2 | SL3 | stdlib | Minimal shim: argv/version/version_info/path/modules (synced from runtime module cache) + recursion limits; `sys.version` + `sys.version_info` are stamped by the toolchain intrinsic; `sys.exc_info()` reads the active exception context; compiled argv now sourced from runtime; host info gated via `env.read` (argv encoding parity TODO, `sys._getframe` TODO). |
+| sys | Capability-gated | Partial | P2 | SL3 | stdlib | Minimal shim: argv/version/version_info/path/modules (synced from runtime module cache) + recursion limits; stdio uses runtime intrinsics or fd-based fallback and defaults to NullIO when unavailable; `sys.version` + `sys.version_info` are stamped by the toolchain intrinsic; `sys.exc_info()` reads the active exception context; compiled argv now sourced from runtime; host info gated via `env.read` (argv encoding parity TODO, `sys._getframe` TODO). |
 | errno | Stdlib | Partial | P2 | SL2 | stdlib | Core errno constants + errorcode mapping (expand to full CPython table). |
 | stat | Stdlib | Planned | P3 | SL3 | stdlib | Stat constants; import-only allowlist stub. |
 | signal | Capability-gated | Planned | P3 | SL3 | stdlib/runtime | Signal handling; gated by `process.signal`. |
-| select | Capability-gated | Partial | P3 | SL3 | stdlib/runtime | `select.select` wired via `selectors` + io_poller for sockets; poll/epoll/kqueue objects and fd-based polling pending; wasm parity missing. |
+| select | Capability-gated | Partial | P3 | SL3 | stdlib/runtime | `select.select` wired via `selectors` + io_poller for sockets; poll/epoll/kqueue objects and fd-based polling pending; wasmtime host parity implemented, Node/WASI/browser pending. |
 | site | Capability-gated | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; path config gated via `env.read`/`fs.read`. |
 | sysconfig | Capability-gated | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; host/path data gated via `env.read`/`fs.read`. |
 | subprocess | Capability-gated | Planned | P3 | SL3 | stdlib | Process spawn control. |
-| socket | Capability-gated | Partial | P2 | SL3 | stdlib/runtime | Runtime-backed socket API (AF_INET/AF_INET6/AF_UNIX, connect/bind/listen/accept/send/recv, getaddrinfo/nameinfo, inet_pton/ntop); advanced options, full constant table, SSL, and wasm host parity pending. |
+| socket | Capability-gated | Partial | P2 | SL3 | stdlib/runtime | Runtime-backed socket API (AF_INET/AF_INET6/AF_UNIX, connect/bind/listen/accept/send/recv, getaddrinfo/nameinfo, inet_pton/ntop); advanced options, full constant table, SSL, and Node/WASI/browser parity pending (wasmtime host implemented). |
 | ssl | Capability-gated | Planned | P3 | SL3 | stdlib | TLS primitives. |
 | asyncio | Capability-gated | Partial | P2 | SL3 | stdlib/runtime | Shim exposes `run`/`sleep`, `EventLoop`, `Task`/`Future`, `create_task`/`ensure_future`/`current_task`, `Event`, `wait_for`, and basic `gather`; advanced loop APIs and I/O adapters pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): asyncio pending parity) |
-| selectors | Capability-gated | Partial | P3 | SL3 | stdlib/runtime | Selector shim backed by io_poller; poller variants and fd-based registrations pending; wasm parity missing. |
-| threading | Capability-gated | Partial | P3 | SL3 | stdlib/runtime | Minimal `Thread` stub (start/join) for import compatibility; runtime thread model integration pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): threading pending parity) |
-| multiprocessing | Capability-gated | Planned | P3 | SL3 | stdlib/runtime | Process model integration. |
+| selectors | Capability-gated | Partial | P3 | SL3 | stdlib/runtime | Selector shim backed by io_poller; poller variants and fd-based registrations pending; wasmtime host parity implemented, Node/WASI/browser pending. |
+| threading | Capability-gated | Partial | P3 | SL3 | stdlib/runtime | Isolate-backed `Thread` (spawn/join/is_alive/ident/native_id) with serialized payloads; cross-thread shared objects and most sync primitives remain unsupported. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): threading parity with shared-memory semantics + full primitives.) |
+| multiprocessing | Capability-gated | Partial | P3 | SL3 | stdlib/runtime | Spawn-based Process/Pool/Queue/Pipe/SharedValue/SharedArray; `maxtasksperchild` supported; `fork`/`forkserver` map to spawn semantics (TODO(runtime, owner:runtime, milestone:RT3, priority:P1, status:divergent): implement true fork support). |
 | concurrent.futures | Capability-gated | Planned | P3 | SL3 | stdlib/runtime | Executor interfaces. |
 | sqlite3 | Capability-gated | Planned | P3 | SL3 | stdlib/runtime | DB integration. |
 | http | Capability-gated | Planned | P3 | SL3 | stdlib | HTTP parsing/client. |
@@ -127,9 +127,10 @@
 | collections.abc | Stdlib | Partial | P3 | SL3 | stdlib | Import-only stub with minimal ABC shells; registration pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): collections.abc pending parity) |
 | importlib | Stdlib | Partial | P3 | SL3 | stdlib | Import-only stub; dynamic import hooks pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): importlib pending parity) |
 | importlib.util | Stdlib | Partial | P3 | SL3 | stdlib | Import-only stub; loader helpers pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): importlib.util pending parity) |
+| importlib.machinery | Stdlib | Partial | P3 | SL3 | stdlib | Minimal `ModuleSpec` + loader stub for `__spec__` metadata; loader/finder parity pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): importlib.machinery pending parity) |
 | importlib.metadata | Capability-gated | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; distribution metadata requires `fs.read`. |
 | queue | Stdlib | Planned | P3 | SL3 | stdlib/runtime | Import-only allowlist stub; threading integration pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): queue pending parity) |
-| shlex | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; POSIX parsing parity pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): shlex pending parity) |
+| shlex | Stdlib | Partial | P3 | SL3 | stdlib | `shlex.quote` implemented without regex dependency to unblock subprocess shell quoting; full lexer/split parity pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): implement shlex lexer/split/parsing parity beyond `quote`.) |
 | shutil | Capability-gated | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; `fs.read`/`fs.write` gating. |
 | textwrap | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; wrapping/indent parity pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): textwrap pending parity) |
 | time | Capability-gated | Partial | P3 | SL3 | stdlib/runtime | `monotonic`/`perf_counter` + `sleep` wired; `time`/`time_ns` gated by `time.wall` (or legacy `time`). Missing timezone/tzname/struct_time/get_clock_info/process_time. (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): expand time module surface + deterministic clock policy) |
@@ -146,7 +147,7 @@
 | xml | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; parser/tree APIs pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): xml pending parity) |
 | warnings | Stdlib | Partial | P3 | SL3 | stdlib | `warn` + filters/once/capture shim; regex filters + full registry pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): warnings pending parity) |
 | traceback | Stdlib | Partial | P3 | SL3 | stdlib | `format_exc`/`format_tb`/`print_exception` with best-effort frames (CPython traceback objects or Molt (filename, line, name) tuples); full parity pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): traceback pending parity) |
-| types | Stdlib | Partial | P3 | SL3 | stdlib | `SimpleNamespace` + mapping proxy shim; full type helpers pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): types pending parity) |
+| types | Stdlib | Partial | P3 | SL3 | stdlib | `SimpleNamespace` + `UnionType` alias + mapping proxy shim; full type helpers pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): types pending parity) |
 | inspect | Stdlib | Partial | P3 | SL3 | stdlib | `getdoc`/`cleandoc` + `signature` (Molt metadata/`__code__`); broader introspection pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): inspect pending parity) |
 | tempfile | Capability-gated | Partial | P3 | SL3 | stdlib | `gettempdir`/`gettempdirb` shim; full tempfile parity pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): tempfile parity) |
 | glob | Capability-gated | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; `fs.read` gating. |
@@ -156,6 +157,115 @@
 | string | Stdlib | Partial | P3 | SL3 | stdlib | ASCII constants + `capwords`; locale/formatter helpers pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): string pending parity) |
 | numbers | Stdlib | Planned | P3 | SL3 | stdlib | ABCs + numeric tower registration pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): numbers pending parity) |
 | unicodedata | Stdlib | Planned | P3 | SL3 | stdlib/runtime | Unicode database helpers pending. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): unicodedata pending parity) |
+
+### 3.0b Additional stdlib modules (3.12+ coverage)
+This list fills out CPython 3.12+ stdlib modules not yet tracked above.
+Default status is Planned and import-only stubs unless noted; capability-gated
+entries must obey the policy in Section 0.
+
+#### 3.0b.1 Stdlib (planned/import-only)
+| Module | Tier | Status | Priority | Milestone | Owner | Notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| annotationlib | Stdlib | Planned | P3 | SL3 | stdlib | 3.14+; annotation helpers; import-only stub. |
+| cProfile | Stdlib | Planned | P3 | SL3 | stdlib/runtime | Profiling hooks; runtime integration pending. |
+| calendar | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub. |
+| cmath | Stdlib | Planned | P3 | SL3 | stdlib/runtime | Math intrinsics; parity pending. |
+| codecs | Stdlib | Planned | P3 | SL3 | stdlib/runtime | Codec registry + encoders/decoders pending. |
+| codeop | Stdlib | Planned | P3 | SL3 | stdlib | Compilation helpers; parity pending. |
+| colorsys | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub. |
+| compression | Stdlib | Planned | P3 | SL3 | stdlib | 3.14+; import-only allowlist stub. |
+| configparser | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub. |
+| copyreg | Stdlib | Planned | P3 | SL3 | stdlib | Pickle registry helpers; parity pending. |
+| difflib | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub. |
+| dis | Stdlib | Planned | P3 | SL3 | stdlib | Bytecode disassembly; parity pending. |
+| encodings | Stdlib | Planned | P3 | SL3 | stdlib/runtime | Encoding package import hooks pending. |
+| faulthandler | Stdlib | Planned | P3 | SL3 | runtime | Runtime hooks pending; import-only stub. |
+| graphlib | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub. |
+| marshal | Stdlib | Planned | P3 | SL3 | runtime | Marshal format parity pending. |
+| opcode | Stdlib | Planned | P3 | SL3 | stdlib | Opcode tables; import-only stub. |
+| optparse | Stdlib | Planned | P3 | SL3 | stdlib | Legacy CLI parser; parity pending. |
+| pickletools | Stdlib | Planned | P3 | SL3 | stdlib | Pickle analysis helpers; import-only stub. |
+| profile | Stdlib | Planned | P3 | SL3 | stdlib/runtime | Profiling hooks; parity pending. |
+| quopri | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub. |
+| reprlib | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub. |
+| sched | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub. |
+| sre_compile | Stdlib | Planned | P3 | SL3 | stdlib | Internal regex compiler; import-only stub. |
+| sre_constants | Stdlib | Planned | P3 | SL3 | stdlib | Internal regex constants; import-only stub. |
+| sre_parse | Stdlib | Planned | P3 | SL3 | stdlib | Internal regex parser; import-only stub. |
+| stringprep | Stdlib | Planned | P3 | SL3 | stdlib | Unicode stringprep tables; import-only stub. |
+| symtable | Stdlib | Planned | P3 | SL3 | stdlib/runtime | Symbol table introspection; parity pending. |
+| this | Stdlib | Planned | P3 | SL3 | stdlib | Import-only allowlist stub. |
+| timeit | Stdlib | Planned | P3 | SL3 | stdlib | Timing helpers; parity pending. |
+| token | Stdlib | Planned | P3 | SL3 | stdlib | Token constants; import-only stub. |
+| tokenize | Stdlib | Planned | P3 | SL3 | stdlib | Tokenizer helpers; parity pending. |
+| tracemalloc | Stdlib | Planned | P3 | SL3 | runtime | Runtime hooks pending; import-only stub. |
+| pyexpat | Stdlib | Planned | P3 | SL3 | runtime | Expat bindings pending. |
+
+#### 3.0b.2 Capability-gated (planned/import-only)
+| Module | Tier | Status | Priority | Milestone | Owner | Notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| antigravity | Capability-gated | Planned | P3 | SL3 | stdlib | Launches browser; `process.spawn`/`net` gating. |
+| bdb | Capability-gated | Planned | P3 | SL3 | stdlib | Debugger base; `fs.read`/`tty` gating. |
+| cmd | Capability-gated | Planned | P3 | SL3 | stdlib | CLI loop; `tty` gating. |
+| code | Capability-gated | Planned | P3 | SL3 | stdlib | Interactive console; `tty` gating. |
+| compileall | Capability-gated | Planned | P3 | SL3 | stdlib | `fs.read`/`fs.write` gating. |
+| curses | Capability-gated | Planned | P3 | SL3 | runtime | Platform-specific (posix); `tty` gating. |
+| dbm | Capability-gated | Planned | P3 | SL3 | stdlib/runtime | `fs.read`/`fs.write` gating. |
+| ensurepip | Capability-gated | Planned | P3 | SL3 | stdlib | `fs.read`/`fs.write` + `process.spawn` gating. |
+| fcntl | Capability-gated | Planned | P3 | SL3 | runtime | Platform-specific (posix); `fs.read` gating. |
+| filecmp | Capability-gated | Planned | P3 | SL3 | stdlib | `fs.read` gating. |
+| fileinput | Capability-gated | Planned | P3 | SL3 | stdlib | `fs.read` gating. |
+| ftplib | Capability-gated | Planned | P3 | SL3 | stdlib | `net` gating. |
+| genericpath | Capability-gated | Planned | P3 | SL3 | stdlib | Path helpers; `fs.read` gating. |
+| getpass | Capability-gated | Planned | P3 | SL3 | stdlib | `tty` gating. |
+| gettext | Capability-gated | Planned | P3 | SL3 | stdlib | `fs.read` gating. |
+| grp | Capability-gated | Planned | P3 | SL3 | runtime | Platform-specific (posix); `env.read` gating. |
+| idlelib | Capability-gated | Planned | P3 | SL3 | stdlib | GUI; Tk required; `process.spawn` gating. |
+| imaplib | Capability-gated | Planned | P3 | SL3 | stdlib | `net` gating. |
+| linecache | Capability-gated | Planned | P3 | SL3 | stdlib | `fs.read` gating. |
+| mailbox | Capability-gated | Planned | P3 | SL3 | stdlib | `fs.read`/`fs.write` gating. |
+| mmap | Capability-gated | Planned | P3 | SL3 | runtime | `fs.read`/`fs.write` gating. |
+| modulefinder | Capability-gated | Planned | P3 | SL3 | stdlib | `fs.read` gating. |
+| msvcrt | Capability-gated | Planned | P3 | SL3 | runtime | Platform-specific (windows). |
+| netrc | Capability-gated | Planned | P3 | SL3 | stdlib | `fs.read` gating. |
+| nt | Capability-gated | Planned | P3 | SL3 | runtime | Platform-specific (windows). |
+| ntpath | Capability-gated | Planned | P3 | SL3 | stdlib | Platform-specific (windows); `fs.read` gating. |
+| nturl2path | Capability-gated | Planned | P3 | SL3 | stdlib | Platform-specific (windows). |
+| pdb | Capability-gated | Planned | P3 | SL3 | stdlib | `fs.read`/`tty` gating. |
+| pkgutil | Capability-gated | Planned | P3 | SL3 | stdlib | `fs.read` gating. |
+| plistlib | Capability-gated | Planned | P3 | SL3 | stdlib | `fs.read`/`fs.write` gating. |
+| poplib | Capability-gated | Planned | P3 | SL3 | stdlib | `net` gating. |
+| posix | Capability-gated | Planned | P3 | SL3 | runtime | Platform-specific (posix). |
+| posixpath | Capability-gated | Planned | P3 | SL3 | stdlib | Platform-specific (posix); `fs.read` gating. |
+| pstats | Capability-gated | Planned | P3 | SL3 | stdlib | `fs.read`/`fs.write` gating. |
+| pty | Capability-gated | Planned | P3 | SL3 | runtime | Platform-specific (posix); `tty` gating. |
+| pwd | Capability-gated | Planned | P3 | SL3 | runtime | Platform-specific (posix); `env.read` gating. |
+| py_compile | Capability-gated | Planned | P3 | SL3 | stdlib | `fs.read`/`fs.write` gating. |
+| pyclbr | Capability-gated | Planned | P3 | SL3 | stdlib | `fs.read` gating. |
+| pydoc | Capability-gated | Planned | P3 | SL3 | stdlib | `fs.read`/`tty` gating. |
+| pydoc_data | Capability-gated | Planned | P3 | SL3 | stdlib | `fs.read` gating. |
+| readline | Capability-gated | Planned | P3 | SL3 | runtime | Platform-specific; `tty` gating. |
+| resource | Capability-gated | Planned | P3 | SL3 | runtime | Platform-specific (posix). |
+| rlcompleter | Capability-gated | Planned | P3 | SL3 | stdlib | `tty` gating. |
+| runpy | Capability-gated | Planned | P3 | SL3 | stdlib | `fs.read` gating. |
+| shelve | Capability-gated | Planned | P3 | SL3 | stdlib | `fs.read`/`fs.write` gating. |
+| smtplib | Capability-gated | Planned | P3 | SL3 | stdlib | `net` gating. |
+| syslog | Capability-gated | Planned | P3 | SL3 | runtime | Platform-specific (posix). |
+| tabnanny | Capability-gated | Planned | P3 | SL3 | stdlib | `fs.read` gating. |
+| termios | Capability-gated | Planned | P3 | SL3 | runtime | Platform-specific (posix); `tty` gating. |
+| tkinter | Capability-gated | Planned | P3 | SL3 | stdlib | GUI; Tk required; `process.spawn` gating. |
+| trace | Capability-gated | Planned | P3 | SL3 | stdlib | `fs.read`/`fs.write` gating. |
+| tty | Capability-gated | Planned | P3 | SL3 | runtime | Platform-specific (posix); `tty` gating. |
+| turtle | Capability-gated | Planned | P3 | SL3 | stdlib | GUI; Tk required; `process.spawn` gating. |
+| turtledemo | Capability-gated | Planned | P3 | SL3 | stdlib | GUI; Tk required; `process.spawn` gating. |
+| venv | Capability-gated | Planned | P3 | SL3 | stdlib | `fs.read`/`fs.write` + `process.spawn` gating. |
+| wave | Capability-gated | Planned | P3 | SL3 | stdlib | `fs.read`/`fs.write` gating. |
+| webbrowser | Capability-gated | Planned | P3 | SL3 | stdlib | `process.spawn`/`net` gating. |
+| winreg | Capability-gated | Planned | P3 | SL3 | runtime | Platform-specific (windows). |
+| winsound | Capability-gated | Planned | P3 | SL3 | runtime | Platform-specific (windows). |
+| xmlrpc | Capability-gated | Planned | P3 | SL3 | stdlib | `net` gating. |
+| zipapp | Capability-gated | Planned | P3 | SL3 | stdlib | `fs.read`/`fs.write` gating. |
+| zipimport | Capability-gated | Planned | P3 | SL3 | stdlib | `fs.read` gating. |
 
 ### 3.1 Ten-Item Stdlib Parity Plan (Fully Specced)
 Scope is based on the compatibility matrix and current stubs in `src/molt/stdlib/`.
@@ -294,7 +404,6 @@ Modules that touch the host require explicit capabilities. Tokens are additive a
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:planned): `datetime` + `zoneinfo` time handling policy.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): finish `json` parity plan (Encoder/Decoder classes, JSONDecodeError details, full cls support) and add a runtime fast-path parser for dynamic strings.
 - TODO(stdlib-compat, owner:frontend, milestone:SL1, priority:P2, status:planned): decorator whitelist + compile-time lowering for `@lru_cache`.
-- TODO(stdlib-compat, owner:frontend, milestone:SL2, priority:P2, status:missing): `contextlib.contextmanager` lowering (generator-based context managers).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): `dataclasses` transform (kw-only, order, `__annotations__`).
 - TODO(stdlib-compat, owner:runtime, milestone:SL2, priority:P2, status:planned): `hashlib` deterministic hashing policy.
 - TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P2, status:planned): expand `io` to buffered/text wrappers and streaming helpers.
@@ -303,7 +412,6 @@ Modules that touch the host require explicit capabilities. Tokens are additive a
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): capability-gated I/O (`io`, `os`, `sys`, `pathlib`).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): network/process gating (`socket`, `ssl`, `subprocess`, `asyncio`).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): expand `asyncio` shim to full loop/task APIs (task groups, wait, shields) and I/O adapters.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): `typing` runtime helpers + `__annotations__` preservation.
 
 ## 7. Matrix Audit (2026-01-16)
 Coverage evidence (selected):

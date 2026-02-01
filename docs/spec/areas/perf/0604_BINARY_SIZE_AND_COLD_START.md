@@ -35,6 +35,21 @@ Define cold start as:
 
 ---
 
-## 4. Reporting
+## 4. Tooling
+
+### 4.1 Native size
+- `llvm-size <binary>` for section breakdowns.
+- `cargo bloat -p molt-runtime --release` for symbol-level size drivers.
+- `cargo llvm-lines -p molt-runtime` for line-level size attribution.
+
+### 4.2 WASM size
+- `twiggy top output.wasm` for top-level WASM size attribution.
+- `wasm-opt -Oz -o output.opt.wasm output.wasm` for size-focused optimization.
+- `wasm-tools strip output.opt.wasm -o output.stripped.wasm` to remove debug names.
+- `gzip -k output.wasm` / `brotli -f output.wasm` for compressed sizes.
+
+---
+
+## 5. Reporting
 - Include size and cold-start metrics in `bench/results/`.
 - Summaries must be updated in `README.md` for releases.

@@ -511,6 +511,19 @@ pub(crate) fn alloc_generic_alias(_py: &PyToken<'_>, origin_bits: u64, args_bits
     ptr
 }
 
+pub(crate) fn alloc_union_type(_py: &PyToken<'_>, args_bits: u64) -> *mut u8 {
+    let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<u64>();
+    let ptr = alloc_object(_py, total, TYPE_ID_UNION);
+    if ptr.is_null() {
+        return ptr;
+    }
+    unsafe {
+        *(ptr as *mut u64) = args_bits;
+        inc_ref_bits(_py, args_bits);
+    }
+    ptr
+}
+
 // Context manager alloc moved to runtime/molt-runtime/src/builtins/context.rs.
 
 pub(crate) fn alloc_function_obj(_py: &PyToken<'_>, fn_ptr: u64, arity: u64) -> *mut u8 {
@@ -608,12 +621,13 @@ pub(crate) fn alloc_class_obj(_py: &PyToken<'_>, name_bits: u64) -> *mut u8 {
     let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
     let bases_bits = MoltObject::none().bits();
     let mro_bits = MoltObject::none().bits();
-    let total = std::mem::size_of::<MoltHeader>() + 7 * std::mem::size_of::<u64>();
+    let total = std::mem::size_of::<MoltHeader>() + 8 * std::mem::size_of::<u64>();
     let ptr = alloc_object(_py, total, TYPE_ID_TYPE);
     if ptr.is_null() {
         dec_ref_bits(_py, dict_bits);
         return ptr;
     }
+    let qualname_bits = name_bits;
     unsafe {
         *(ptr as *mut u64) = name_bits;
         *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = dict_bits;
@@ -623,10 +637,12 @@ pub(crate) fn alloc_class_obj(_py: &PyToken<'_>, name_bits: u64) -> *mut u8 {
         *(ptr.add(5 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         let none_bits = MoltObject::none().bits();
         *(ptr.add(6 * std::mem::size_of::<u64>()) as *mut u64) = none_bits;
+        *(ptr.add(7 * std::mem::size_of::<u64>()) as *mut u64) = qualname_bits;
         inc_ref_bits(_py, name_bits);
         inc_ref_bits(_py, bases_bits);
         inc_ref_bits(_py, mro_bits);
         inc_ref_bits(_py, none_bits);
+        inc_ref_bits(_py, qualname_bits);
     }
     ptr
 }
@@ -803,6 +819,7 @@ pub(crate) fn alloc_intarray(_py: &PyToken<'_>, values: &[i64]) -> *mut u8 {
     ptr
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn alloc_memoryview(
     _py: &PyToken<'_>,
     owner_bits: u64,
@@ -839,6 +856,7 @@ pub(crate) fn alloc_memoryview(
     ptr
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn alloc_memoryview_shaped(
     _py: &PyToken<'_>,
     owner_bits: u64,

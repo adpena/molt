@@ -228,7 +228,7 @@ and regression control.
   - Native: use `cargo flamegraph`/`perf` (or macOS Instruments) on `bench_deeply_nested_loop`, `bench_sum_list`, `bench_str_find*`, `bench_dict_ops`, `bench_attr_access`.
   - Python frontend: `py-spy`/`scalene` on compiler CLI for compile-time hotspots.
   - WASM: capture wasm-level profiles (wasmtime `--profile`, `perf` on AOT, or node `--prof` for `run_wasm.js`).
-  - TODO(wasm-host, owner:runtime, milestone:RT3, priority:P2, status:planned): resolve wasmtime execution blockers (ABI imports/memory/table + WASI config) so wasm benches can run under wasmtime for profiling.
+  - TODO(wasm-host, owner:runtime, milestone:RT3, priority:P2, status:partial): wasmtime runner is available for profiling; make DB host delivery non-blocking while preserving streaming + cancellation parity before treating it as full parity with Node.
 - Phase 2: Targeted optimizations (ranked by impact)
   - Dispatch: inline cache for method/attribute lookup; fast-path for common builtins.
   - Containers: iterator+index fast paths (range/list/tuple) and avoid temporary boxing.

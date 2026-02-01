@@ -240,6 +240,9 @@ fn call_thread_callable(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// `callable_bits`, `args_bits`, and `kwargs_bits` must be valid runtime objects.
+/// The runtime must be initialized and the call must be allowed to enter the GIL.
 #[no_mangle]
 pub unsafe extern "C" fn molt_thread_submit(
     callable_bits: u64,
@@ -275,6 +278,8 @@ pub unsafe extern "C" fn molt_thread_submit(
 }
 
 #[cfg(target_arch = "wasm32")]
+/// # Safety
+/// `callable_bits`, `args_bits`, and `kwargs_bits` must be valid runtime objects.
 #[no_mangle]
 pub unsafe extern "C" fn molt_thread_submit(
     _callable_bits: u64,
@@ -287,6 +292,8 @@ pub unsafe extern "C" fn molt_thread_submit(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// `obj_bits` must be a valid thread wait future object from this runtime.
 #[no_mangle]
 pub unsafe extern "C" fn molt_thread_poll(obj_bits: u64) -> i64 {
     crate::with_gil_entry!(_py, {
