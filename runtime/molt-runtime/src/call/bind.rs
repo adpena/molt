@@ -12,17 +12,20 @@ use crate::{
     function_fn_ptr, inc_ref_bits, init_atomic_bits, intern_static_name, is_builtin_class_bits,
     is_truthy, isinstance_bits, issubclass_bits, lookup_call_attr, missing_bits,
     molt_bytearray_count_slice, molt_bytearray_decode, molt_bytearray_endswith_slice,
-    molt_bytearray_find_slice, molt_bytearray_rfind_slice, molt_bytearray_rsplit_max,
-    molt_bytearray_split_max, molt_bytearray_splitlines, molt_bytearray_startswith_slice,
+    molt_bytearray_find_slice, molt_bytearray_hex, molt_bytearray_rfind_slice,
+    molt_bytearray_rsplit_max, molt_bytearray_split_max, molt_bytearray_splitlines,
+    molt_bytearray_startswith_slice,
     molt_bytes_count_slice, molt_bytes_decode, molt_bytes_endswith_slice, molt_bytes_find_slice,
-    molt_bytes_rfind_slice, molt_bytes_rsplit_max, molt_bytes_split_max, molt_bytes_splitlines,
-    molt_bytes_startswith_slice, molt_class_set_base, molt_dict_from_obj, molt_dict_new,
+    molt_bytes_hex, molt_bytes_rfind_slice, molt_bytes_rsplit_max, molt_bytes_split_max,
+    molt_bytes_splitlines, molt_bytes_startswith_slice, molt_class_set_base, molt_dict_from_obj,
+    molt_dict_new,
     molt_file_reconfigure, molt_frozenset_copy_method, molt_frozenset_difference_multi,
     molt_frozenset_intersection_multi, molt_frozenset_isdisjoint, molt_frozenset_issubset,
     molt_frozenset_issuperset, molt_frozenset_symmetric_difference, molt_frozenset_union_multi,
     molt_function_default_kind, molt_generator_new, molt_iter, molt_iter_next,
-    molt_list_index_range, molt_list_pop, molt_list_sort, molt_memoryview_cast, molt_object_init,
-    molt_object_init_subclass, molt_object_new_bound, molt_open_builtin, molt_set_clear,
+    molt_int_new, molt_list_index_range, molt_list_pop, molt_list_sort, molt_memoryview_cast,
+    molt_object_init, molt_object_init_subclass, molt_object_new_bound, molt_open_builtin,
+    molt_set_clear,
     molt_set_copy_method, molt_set_difference_multi, molt_set_difference_update_multi,
     molt_set_intersection_multi, molt_set_intersection_update_multi, molt_set_isdisjoint,
     molt_set_issubset, molt_set_issuperset, molt_set_symmetric_difference,
@@ -1202,6 +1205,9 @@ unsafe fn bind_builtin_call(
             .unwrap_or_else(|| MoltObject::none().bits());
         return Some(vec![self_bits]);
     }
+    if fn_ptr == fn_addr!(molt_int_new) {
+        return bind_builtin_int_new(_py, args);
+    }
     if fn_ptr == fn_addr!(molt_open_builtin) {
         return bind_builtin_open(_py, args);
     }
@@ -1296,6 +1302,9 @@ unsafe fn bind_builtin_call(
         || fn_ptr == fn_addr!(molt_bytearray_endswith_slice)
     {
         return bind_builtin_prefix_check(_py, args, "endswith", "suffix");
+    }
+    if fn_ptr == fn_addr!(molt_bytes_hex) || fn_ptr == fn_addr!(molt_bytearray_hex) {
+        return bind_builtin_bytes_hex(_py, args);
     }
     if fn_ptr == fn_addr!(molt_string_format_method) {
         return bind_builtin_string_format(_py, args);
@@ -1490,6 +1499,50 @@ unsafe fn bind_builtin_exception_args(_py: &PyToken<'_>, args: &CallArgs) -> Opt
     Some(vec![head, tuple_bits])
 }
 
+unsafe fn bind_builtin_int_new(_py: &PyToken<'_>, args: &CallArgs) -> Option<Vec<u64>> {
+    if args.pos.is_empty() {
+        return raise_exception::<_>(_py, "TypeError", "missing required argument 'cls'");
+    }
+    if args.pos.len() > 3 {
+        return raise_exception::<_>(_py, "TypeError", "too many positional arguments");
+    }
+    let cls_bits = args.pos[0];
+    let mut value_bits = args.pos.get(1).copied();
+    let mut base_bits = args.pos.get(2).copied();
+    for (name_bits, val_bits) in args
+        .kw_names
+        .iter()
+        .copied()
+        .zip(args.kw_values.iter().copied())
+    {
+        let name_obj = obj_from_bits(name_bits);
+        let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
+        match name_str.as_str() {
+            "x" => {
+                if value_bits.is_some() {
+                    let msg = format!("got multiple values for argument '{name_str}'");
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+                value_bits = Some(val_bits);
+            }
+            "base" => {
+                if base_bits.is_some() {
+                    let msg = format!("got multiple values for argument '{name_str}'");
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+                base_bits = Some(val_bits);
+            }
+            _ => {
+                let msg = format!("got an unexpected keyword '{name_str}'");
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            }
+        }
+    }
+    let value_bits = value_bits.unwrap_or_else(|| MoltObject::from_int(0).bits());
+    let base_bits = base_bits.unwrap_or_else(|| missing_bits(_py));
+    Some(vec![cls_bits, value_bits, base_bits])
+}
+
 unsafe fn bind_builtin_dict_update(_py: &PyToken<'_>, args: &CallArgs) -> u64 {
     if args.pos.is_empty() {
         return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
@@ -1552,6 +1605,50 @@ fn default_open_mode_bits(_py: &PyToken<'_>) -> u64 {
             }
         },
     )
+}
+
+unsafe fn bind_builtin_bytes_hex(_py: &PyToken<'_>, args: &CallArgs) -> Option<Vec<u64>> {
+    if args.pos.is_empty() {
+        return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
+    }
+    if args.pos.len() > 3 {
+        return raise_exception::<_>(_py, "TypeError", "too many positional arguments");
+    }
+    let self_bits = args.pos[0];
+    let mut sep_bits = args.pos.get(1).copied();
+    let mut bytes_per_sep_bits = args.pos.get(2).copied();
+    for (name_bits, val_bits) in args
+        .kw_names
+        .iter()
+        .copied()
+        .zip(args.kw_values.iter().copied())
+    {
+        let name_obj = obj_from_bits(name_bits);
+        let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
+        match name_str.as_str() {
+            "sep" => {
+                if sep_bits.is_some() {
+                    let msg = format!("got multiple values for argument '{name_str}'");
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+                sep_bits = Some(val_bits);
+            }
+            "bytes_per_sep" => {
+                if bytes_per_sep_bits.is_some() {
+                    let msg = format!("got multiple values for argument '{name_str}'");
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+                bytes_per_sep_bits = Some(val_bits);
+            }
+            _ => {
+                let msg = format!("got an unexpected keyword '{name_str}'");
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            }
+        }
+    }
+    let sep_bits = sep_bits.unwrap_or_else(|| missing_bits(_py));
+    let bytes_per_sep_bits = bytes_per_sep_bits.unwrap_or_else(|| missing_bits(_py));
+    Some(vec![self_bits, sep_bits, bytes_per_sep_bits])
 }
 
 unsafe fn bind_builtin_keywords(

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import builtins as _builtins
+import sys as _sys
 
 __all__ = [
     "AGEN_CLOSED",
@@ -22,6 +23,7 @@ __all__ = [
     "Parameter",
     "Signature",
     "cleandoc",
+    "currentframe",
     "getdoc",
     "getgeneratorlocals",
     "getasyncgenlocals",
@@ -38,7 +40,7 @@ __all__ = [
     "signature",
 ]
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL3): add full signature/introspection parity.
+# TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): add full signature/introspection parity.
 
 GEN_CREATED = "GEN_CREATED"
 GEN_RUNNING = "GEN_RUNNING"
@@ -159,7 +161,7 @@ class Signature:
 def cleandoc(doc: str | None) -> str:
     if not doc:
         return ""
-    lines = doc.expandtabs().splitlines()
+    lines = _expandtabs(doc).splitlines()
     while lines and not lines[0].strip():
         lines.pop(0)
     while lines and not lines[-1].strip():
@@ -167,7 +169,7 @@ def cleandoc(doc: str | None) -> str:
     if not lines:
         return ""
     indent = None
-    for line in lines[1:]:
+    for line in lines:
         stripped = line.lstrip()
         if not stripped:
             continue
@@ -176,10 +178,34 @@ def cleandoc(doc: str | None) -> str:
             indent = margin
     if indent is None:
         indent = 0
-    trimmed = [lines[0].strip()]
-    for line in lines[1:]:
-        trimmed.append(line[indent:])
+    trimmed = [line[indent:] for line in lines]
     return "\n".join(trimmed)
+
+
+def _expandtabs(text: str, tabsize: int = 8) -> str:
+    parts: list[str] = []
+    col = 0
+    for ch in text:
+        if ch == "\t":
+            spaces = tabsize - (col % tabsize)
+            parts.append(" " * spaces)
+            col += spaces
+        elif ch in "\r\n":
+            parts.append(ch)
+            col = 0
+        else:
+            parts.append(ch)
+            col += 1
+    return "".join(parts)
+
+
+def currentframe() -> object | None:
+    if hasattr(_sys, "_getframe"):
+        try:
+            return _sys._getframe(1)
+        except Exception:
+            return None
+    return None
 
 
 def getdoc(obj: Any) -> str | None:

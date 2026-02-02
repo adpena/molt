@@ -468,6 +468,16 @@ class NullHandler(Handler):
 
 
 class Logger(Filterer):
+    __slots__ = (
+        "name",
+        "level",
+        "parent",
+        "handlers",
+        "propagate",
+        "disabled",
+        "__dict__",
+        "__weakref__",
+    )
     manager: "Manager"
 
     def __init__(self, name: str, level: int = NOTSET) -> None:

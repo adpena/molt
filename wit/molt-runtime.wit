@@ -17,6 +17,7 @@ interface intrinsics {
     sys_version_info: func() -> molt-object;
     sys_version: func() -> molt-object;
     os_name: func() -> molt-object;
+    os_close: func(fd: molt-object) -> molt-object;
     sys_platform: func() -> molt-object;
     print_obj: func(val: molt-object);
     print_newline: func();

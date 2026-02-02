@@ -14,6 +14,8 @@ use std::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::builtins::attr::attr_name_bits_from_bytes;
 #[cfg(not(target_arch = "wasm32"))]
+use crate::builtins::modules::molt_module_cache_get;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::call::dispatch::call_callable1;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::state::{
@@ -162,7 +164,10 @@ fn run_thread_payload(payload: Vec<u8>) {
             return;
         }
         let module_bits = MoltObject::from_ptr(module_ptr).bits();
-        let loaded_bits = unsafe { molt_isolate_import(module_bits) };
+        let mut loaded_bits = molt_module_cache_get(module_bits);
+        if obj_from_bits(loaded_bits).is_none() {
+            loaded_bits = unsafe { molt_isolate_import(module_bits) };
+        }
         dec_ref_bits(_py, module_bits);
         if obj_from_bits(loaded_bits).is_none() {
             log_thread_exception(_py);
@@ -227,19 +232,42 @@ fn thread_main(payload: Vec<u8>, handle: Arc<MoltThreadHandle>) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+fn thread_main_shared(
+    payload: Vec<u8>,
+    handle: Arc<MoltThreadHandle>,
+    state_ptr: usize,
+) {
+    let thread_id = current_thread_id();
+    handle.mark_started(thread_id, thread_id);
+    let state_ptr = state_ptr as *mut RuntimeState;
+    set_thread_runtime_state(state_ptr);
+    touch_tls_guard();
+    run_thread_payload(payload);
+    clear_thread_runtime_state();
+    handle.mark_done();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn molt_thread_spawn(payload_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "thread") && !has_capability(_py, "thread.spawn") {
             return raise_exception::<_>(_py, "PermissionError", "missing thread capability");
         }
+        let shared_runtime = has_capability(_py, "thread.shared");
         let payload = match payload_from_bits(_py, payload_bits) {
             Ok(val) => val,
             Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
         };
         let handle = Arc::new(MoltThreadHandle::new());
         let thread_handle = handle.clone();
-        let join = thread::spawn(move || thread_main(payload, thread_handle));
+        let join = if shared_runtime {
+            let state_ptr = crate::state::runtime_state::runtime_state(_py)
+                as *const RuntimeState as usize;
+            thread::spawn(move || thread_main_shared(payload, thread_handle, state_ptr))
+        } else {
+            thread::spawn(move || thread_main(payload, thread_handle))
+        };
         handle.set_join_handle(join);
         let raw = Arc::into_raw(handle) as *mut u8;
         bits_from_ptr(raw)

@@ -844,6 +844,26 @@ fn socket_wait_ready(
     events: u32,
 ) -> Result<(), std::io::Error> {
     let timeout = socket_timeout(socket_ptr);
+    #[cfg(unix)]
+    {
+        let poll_params = with_socket_mut(socket_ptr, |inner| {
+            let use_poll = matches!(
+                inner.kind,
+                MoltSocketKind::UnixStream(_)
+                    | MoltSocketKind::UnixListener(_)
+                    | MoltSocketKind::UnixDatagram(_)
+            );
+            let fd = inner.raw_fd().ok_or_else(|| {
+                std::io::Error::new(ErrorKind::NotConnected, "socket closed")
+            })?;
+            Ok((use_poll, fd))
+        });
+        match poll_params {
+            Ok((true, fd)) => return socket_wait_ready_poll(fd, events, timeout),
+            Ok((false, _)) => {}
+            Err(err) => return Err(err),
+        }
+    }
     if let Some(timeout) = timeout {
         if timeout == Duration::ZERO {
             return Err(std::io::Error::from_raw_os_error(libc::EWOULDBLOCK));
@@ -858,6 +878,41 @@ fn socket_wait_ready(
             .wait_blocking(socket_ptr, events, None)
             .map(|_| ())
     }
+}
+
+#[cfg(unix)]
+fn socket_wait_ready_poll(
+    fd: RawFd,
+    events: u32,
+    timeout: Option<Duration>,
+) -> Result<(), std::io::Error> {
+    let mut poll_events = 0;
+    if (events & IO_EVENT_READ) != 0 {
+        poll_events |= libc::POLLIN;
+    }
+    if (events & IO_EVENT_WRITE) != 0 {
+        poll_events |= libc::POLLOUT;
+    }
+    let timeout_ms = match timeout {
+        Some(val) if val == Duration::ZERO => {
+            return Err(std::io::Error::from_raw_os_error(libc::EWOULDBLOCK));
+        }
+        Some(val) => val.as_millis().min(i32::MAX as u128) as i32,
+        None => -1,
+    };
+    let mut poll_fd = libc::pollfd {
+        fd,
+        events: poll_events,
+        revents: 0,
+    };
+    let rc = unsafe { libc::poll(&mut poll_fd, 1, timeout_ms) };
+    if rc < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if rc == 0 {
+        return Err(std::io::Error::new(ErrorKind::TimedOut, "timed out"));
+    }
+    Ok(())
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -959,6 +1014,16 @@ fn libc_socket(fd: RawSocket) -> LibcSocket {
     fd as LibcSocket
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn connect_raw_socket(fd: SocketFd, sockaddr: &SockAddr) -> std::io::Result<()> {
+    let ret = unsafe { libc::connect(libc_socket(fd), sockaddr.as_ptr(), sockaddr.len()) };
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
 #[cfg(unix)]
 fn socket_is_acceptor(socket: &Socket) -> bool {
     let fd = socket.as_raw_fd();
@@ -979,6 +1044,26 @@ fn socket_is_acceptor(socket: &Socket) -> bool {
 #[cfg(windows)]
 fn socket_is_acceptor(_socket: &Socket) -> bool {
     false
+}
+
+#[cfg(unix)]
+fn socket_relisten(fd: RawFd, backlog: i32) -> std::io::Result<()> {
+    let rc = unsafe { libc::listen(fd, backlog) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+fn socket_relisten(socket: RawSocket, backlog: i32) -> std::io::Result<()> {
+    let rc = unsafe { libc::listen(socket, backlog) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
 }
 
 #[cfg(unix)]
@@ -1546,6 +1631,26 @@ pub unsafe extern "C" fn molt_socket_listen(sock_bits: u64, backlog_bits: u64) -
                         Err(err)
                     }
                 },
+                MoltSocketKind::TcpListener(listener) => {
+                    let res = {
+                        #[cfg(unix)]
+                        {
+                            socket_relisten(listener.as_raw_fd(), backlog)
+                        }
+                        #[cfg(windows)]
+                        {
+                            socket_relisten(listener.as_raw_socket(), backlog)
+                        }
+                    };
+                    inner.kind = MoltSocketKind::TcpListener(listener);
+                    res
+                }
+                #[cfg(unix)]
+                MoltSocketKind::UnixListener(listener) => {
+                    let res = socket_relisten(listener.as_raw_fd(), backlog);
+                    inner.kind = MoltSocketKind::UnixListener(listener);
+                    res
+                }
                 other => {
                     inner.kind = other;
                     Err(std::io::Error::new(
@@ -1753,6 +1858,34 @@ pub unsafe extern "C" fn molt_socket_connect(sock_bits: u64, addr_bits: u64) -> 
                         Err(err)
                     }
                 },
+                MoltSocketKind::UdpSocket(sock) => {
+                    #[cfg(unix)]
+                    let fd = sock.as_raw_fd();
+                    #[cfg(windows)]
+                    let fd = sock.as_raw_socket();
+                    let res = connect_raw_socket(fd, &sockaddr);
+                    inner.kind = MoltSocketKind::UdpSocket(sock);
+                    match res {
+                        Ok(()) => {
+                            inner.connect_pending = false;
+                            Ok(false)
+                        }
+                        Err(err) => Err(err),
+                    }
+                }
+                #[cfg(unix)]
+                MoltSocketKind::UnixDatagram(sock) => {
+                    let fd = sock.as_raw_fd();
+                    let res = connect_raw_socket(fd, &sockaddr);
+                    inner.kind = MoltSocketKind::UnixDatagram(sock);
+                    match res {
+                        Ok(()) => {
+                            inner.connect_pending = false;
+                            Ok(false)
+                        }
+                        Err(err) => Err(err),
+                    }
+                }
                 other => {
                     inner.kind = other;
                     Err(std::io::Error::new(
@@ -1767,7 +1900,11 @@ pub unsafe extern "C" fn molt_socket_connect(sock_bits: u64, addr_bits: u64) -> 
                 if pending {
                     if let Err(err) = socket_wait_ready(_py, socket_ptr, IO_EVENT_WRITE) {
                         if err.kind() == ErrorKind::TimedOut {
-                            return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                            return raise_os_error_errno::<u64>(
+                                _py,
+                                libc::ETIMEDOUT as i64,
+                                "timed out",
+                            );
                         }
                         if err.kind() == ErrorKind::WouldBlock {
                             return raise_os_error_errno::<u64>(
@@ -1806,7 +1943,11 @@ pub unsafe extern "C" fn molt_socket_connect(sock_bits: u64, addr_bits: u64) -> 
                     _ => {
                         if let Err(wait_err) = socket_wait_ready(_py, socket_ptr, IO_EVENT_WRITE) {
                             if wait_err.kind() == ErrorKind::TimedOut {
-                                return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                                return raise_os_error_errno::<u64>(
+                                    _py,
+                                    libc::ETIMEDOUT as i64,
+                                    "timed out",
+                                );
                             }
                             return raise_os_error::<u64>(_py, wait_err, "connect");
                         }
@@ -1851,6 +1992,11 @@ pub unsafe extern "C" fn molt_socket_connect_ex(sock_bits: u64, addr_bits: u64) 
             Ok(addr) => addr,
             Err(_msg) => return MoltObject::from_int(libc::EAFNOSUPPORT as i64).bits(),
         };
+        let timeout = socket_timeout(socket_ptr);
+        enum ConnectExOutcome {
+            Done(i64),
+            Pending(i64),
+        }
         let res = with_socket_mut(socket_ptr, |inner| {
             if inner.connect_pending {
                 let err = match &inner.kind {
@@ -1862,13 +2008,17 @@ pub unsafe extern "C" fn molt_socket_connect_ex(sock_bits: u64, addr_bits: u64) 
                 return match err {
                     Ok(None) => {
                         inner.connect_pending = false;
-                        Ok(0)
+                        Ok(ConnectExOutcome::Done(0))
                     }
                     Ok(Some(err)) => {
                         inner.connect_pending = false;
-                        Ok(err.raw_os_error().unwrap_or(libc::EIO) as i64)
+                        Ok(ConnectExOutcome::Done(
+                            err.raw_os_error().unwrap_or(libc::EIO) as i64,
+                        ))
                     }
-                    Err(err) => Ok(err.raw_os_error().unwrap_or(libc::EIO) as i64),
+                    Err(err) => Ok(ConnectExOutcome::Done(
+                        err.raw_os_error().unwrap_or(libc::EIO) as i64,
+                    )),
                 };
             }
             match std::mem::replace(&mut inner.kind, MoltSocketKind::Closed) {
@@ -1899,7 +2049,7 @@ pub unsafe extern "C" fn molt_socket_connect_ex(sock_bits: u64, addr_bits: u64) 
                             ));
                         }
                         inner.connect_pending = false;
-                        Ok(0)
+                        Ok(ConnectExOutcome::Done(0))
                     }
                     Err(err) => {
                         let errno = err.raw_os_error().unwrap_or(libc::EIO);
@@ -1932,20 +2082,85 @@ pub unsafe extern "C" fn molt_socket_connect_ex(sock_bits: u64, addr_bits: u64) 
                                 );
                             }
                             inner.connect_pending = true;
+                            Ok(ConnectExOutcome::Pending(errno as i64))
                         } else {
                             inner.kind = MoltSocketKind::Pending(sock);
+                            Ok(ConnectExOutcome::Done(errno as i64))
                         }
-                        Ok(errno as i64)
                     }
                 },
+                MoltSocketKind::UdpSocket(sock) => {
+                    #[cfg(unix)]
+                    let fd = sock.as_raw_fd();
+                    #[cfg(windows)]
+                    let fd = sock.as_raw_socket();
+                    let res = connect_raw_socket(fd, &sockaddr);
+                    inner.kind = MoltSocketKind::UdpSocket(sock);
+                    match res {
+                        Ok(()) => Ok(ConnectExOutcome::Done(0)),
+                        Err(err) => Ok(ConnectExOutcome::Done(
+                            err.raw_os_error().unwrap_or(libc::EIO) as i64,
+                        )),
+                    }
+                }
+                #[cfg(unix)]
+                MoltSocketKind::UnixDatagram(sock) => {
+                    let fd = sock.as_raw_fd();
+                    let res = connect_raw_socket(fd, &sockaddr);
+                    inner.kind = MoltSocketKind::UnixDatagram(sock);
+                    match res {
+                        Ok(()) => Ok(ConnectExOutcome::Done(0)),
+                        Err(err) => Ok(ConnectExOutcome::Done(
+                            err.raw_os_error().unwrap_or(libc::EIO) as i64,
+                        )),
+                    }
+                }
                 other => {
                     inner.kind = other;
-                    Ok(libc::EISCONN as i64)
+                    Ok(ConnectExOutcome::Done(libc::EISCONN as i64))
                 }
             }
         });
         match res {
-            Ok(val) => MoltObject::from_int(val).bits(),
+            Ok(ConnectExOutcome::Done(val)) => MoltObject::from_int(val).bits(),
+            Ok(ConnectExOutcome::Pending(val)) => {
+                if matches!(timeout, Some(val) if val == Duration::ZERO) {
+                    return MoltObject::from_int(val).bits();
+                }
+                if let Err(wait_err) = socket_wait_ready(_py, socket_ptr, IO_EVENT_WRITE) {
+                    if wait_err.kind() == ErrorKind::TimedOut {
+                        return MoltObject::from_int(libc::ETIMEDOUT as i64).bits();
+                    }
+                    if wait_err.kind() == ErrorKind::WouldBlock {
+                        return MoltObject::from_int(libc::EINPROGRESS as i64).bits();
+                    }
+                    return MoltObject::from_int(
+                        wait_err.raw_os_error().unwrap_or(libc::EIO) as i64,
+                    )
+                    .bits();
+                }
+                let err = with_socket_mut(socket_ptr, |inner| {
+                    let err = match &inner.kind {
+                        MoltSocketKind::TcpStream(stream) => take_error_mio(stream),
+                        #[cfg(unix)]
+                        MoltSocketKind::UnixStream(stream) => take_error_mio(stream),
+                        _ => Ok(None),
+                    };
+                    inner.connect_pending = false;
+                    err
+                });
+                match err {
+                    Ok(None) => MoltObject::from_int(0).bits(),
+                    Ok(Some(err)) => MoltObject::from_int(
+                        err.raw_os_error().unwrap_or(libc::EIO) as i64,
+                    )
+                    .bits(),
+                    Err(err) => MoltObject::from_int(
+                        err.raw_os_error().unwrap_or(libc::EIO) as i64,
+                    )
+                    .bits(),
+                }
+            }
             Err(err) => MoltObject::from_int(err.raw_os_error().unwrap_or(libc::EIO) as i64).bits(),
         }
     })
@@ -3214,6 +3429,7 @@ pub extern "C" fn molt_socket_connect_ex(_sock_bits: u64, _addr_bits: u64) -> u6
             Ok(val) => val,
             Err(_) => return MoltObject::from_int(libc::EBADF as i64).bits(),
         };
+        let timeout = socket_timeout(handle);
         if socket_connect_pending(handle) {
             let rc = unsafe { crate::molt_socket_connect_ex_host(handle) };
             let errno = errno_from_rc(rc);
@@ -3240,6 +3456,25 @@ pub extern "C" fn molt_socket_connect_ex(_sock_bits: u64, _addr_bits: u64) -> u6
         let errno = errno_from_rc(rc);
         if errno == libc::EINPROGRESS || errno == libc::EWOULDBLOCK {
             let _ = socket_set_connect_pending(handle, true);
+            if matches!(timeout, Some(val) if val == Duration::ZERO) {
+                return MoltObject::from_int(errno as i64).bits();
+            }
+            if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_WRITE) {
+                if wait_err.kind() == ErrorKind::TimedOut {
+                    return MoltObject::from_int(libc::ETIMEDOUT as i64).bits();
+                }
+                if wait_err.kind() == ErrorKind::WouldBlock {
+                    return MoltObject::from_int(libc::EINPROGRESS as i64).bits();
+                }
+                return MoltObject::from_int(
+                    wait_err.raw_os_error().unwrap_or(libc::EIO) as i64,
+                )
+                .bits();
+            }
+            let rc = unsafe { crate::molt_socket_connect_ex_host(handle) };
+            let err = errno_from_rc(rc);
+            let _ = socket_set_connect_pending(handle, false);
+            return MoltObject::from_int(err as i64).bits();
         }
         MoltObject::from_int(errno as i64).bits()
     })

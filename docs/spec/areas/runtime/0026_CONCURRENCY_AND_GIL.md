@@ -28,8 +28,11 @@ ordered to avoid deadlocks and performance regressions.
   are not `Send`/`Sync` unless explicitly stated in the object model spec.
 - Cross-thread sharing of live Python objects is unsupported; data must be
   serialized or frozen before crossing threads.
-- `threading.Thread` spawns isolated runtime instances; thread targets/args are
+- `threading.Thread` defaults to isolated runtime instances; thread targets/args are
   serialized and the thread object is not shared across runtimes.
+- `threading.Thread` may opt into **shared-runtime** semantics when the
+  `thread.shared` capability is enabled; threads then see shared module globals
+  but still use serialized targets/args (no arbitrary object passing yet).
 - WASM is single-threaded and runs a single scheduler loop; host calls must be
   non-blocking when holding the GIL.
 

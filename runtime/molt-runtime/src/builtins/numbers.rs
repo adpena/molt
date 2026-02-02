@@ -1,6 +1,7 @@
 use crate::PyToken;
 use std::cmp::Ordering;
 use std::mem;
+use std::sync::atomic::Ordering as AtomicOrdering;
 
 use molt_obj_model::MoltObject;
 use num_bigint::BigInt;
@@ -8,9 +9,10 @@ use num_traits::{Signed, ToPrimitive};
 
 use crate::{
     alloc_object, attr_lookup_ptr_allow_missing, call_callable0, class_name_for_error,
-    dec_ref_bits, exception_pending, intern_static_name, maybe_ptr_from_bits, obj_from_bits,
-    object_type_id, raise_exception, runtime_state, type_of_bits, MoltHeader, INLINE_INT_MAX_I128,
-    INLINE_INT_MIN_I128, TYPE_ID_BIGINT, TYPE_ID_COMPLEX,
+    class_mro_vec, dec_ref_bits, exception_pending, intern_static_name, maybe_ptr_from_bits,
+    obj_from_bits, object_class_bits, object_type_id, raise_exception, runtime_state,
+    runtime_state_for_gil, type_of_bits, MoltHeader, INLINE_INT_MAX_I128, INLINE_INT_MIN_I128,
+    TYPE_ID_BIGINT, TYPE_ID_COMPLEX, TYPE_ID_OBJECT,
 };
 
 #[repr(C)]
@@ -20,12 +22,59 @@ pub(crate) struct ComplexParts {
     pub(crate) im: f64,
 }
 
+fn builtin_int_bits_for_gil() -> Option<u64> {
+    let state = runtime_state_for_gil()?;
+    let ptr = state.builtin_classes.load(AtomicOrdering::Acquire);
+    if ptr.is_null() {
+        None
+    } else {
+        Some(unsafe { (*ptr).int })
+    }
+}
+
+fn is_int_subclass_bits(class_bits: u64) -> bool {
+    let Some(int_bits) = builtin_int_bits_for_gil() else {
+        return false;
+    };
+    if class_bits == int_bits {
+        return true;
+    }
+    class_mro_vec(class_bits).iter().any(|&bits| bits == int_bits)
+}
+
+pub(crate) fn int_subclass_value_bits_raw(obj_bits: u64) -> Option<u64> {
+    let obj = obj_from_bits(obj_bits);
+    let ptr = obj.as_ptr()?;
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_OBJECT {
+            return None;
+        }
+        let class_bits = object_class_bits(ptr);
+        if class_bits == 0 || !is_int_subclass_bits(class_bits) {
+            return None;
+        }
+        Some(*(ptr as *const u64))
+    }
+}
+
 pub(crate) fn to_i64(obj: MoltObject) -> Option<i64> {
     if obj.is_int() {
         return obj.as_int();
     }
     if obj.is_bool() {
         return Some(if obj.as_bool().unwrap_or(false) { 1 } else { 0 });
+    }
+    if let Some(bits) = int_subclass_value_bits_raw(obj.bits()) {
+        let val_obj = obj_from_bits(bits);
+        if let Some(i) = val_obj.as_int() {
+            return Some(i);
+        }
+        if val_obj.is_bool() {
+            return Some(if val_obj.as_bool().unwrap_or(false) { 1 } else { 0 });
+        }
+        if let Some(ptr) = bigint_ptr_from_bits(bits) {
+            return unsafe { bigint_ref(ptr) }.to_i64();
+        }
     }
     None
 }
@@ -118,8 +167,22 @@ pub(crate) fn to_bigint(obj: MoltObject) -> Option<BigInt> {
     if let Some(i) = to_i64(obj) {
         return Some(BigInt::from(i));
     }
-    let ptr = bigint_ptr_from_bits(obj.bits())?;
-    Some(unsafe { bigint_ref(ptr).clone() })
+    if let Some(ptr) = bigint_ptr_from_bits(obj.bits()) {
+        return Some(unsafe { bigint_ref(ptr).clone() });
+    }
+    if let Some(bits) = int_subclass_value_bits_raw(obj.bits()) {
+        let val_obj = obj_from_bits(bits);
+        if let Some(i) = val_obj.as_int() {
+            return Some(BigInt::from(i));
+        }
+        if val_obj.is_bool() {
+            return Some(BigInt::from(if val_obj.as_bool().unwrap_or(false) { 1 } else { 0 }));
+        }
+        if let Some(ptr) = bigint_ptr_from_bits(bits) {
+            return Some(unsafe { bigint_ref(ptr).clone() });
+        }
+    }
+    None
 }
 
 pub(crate) fn bigint_to_inline(value: &BigInt) -> Option<i64> {

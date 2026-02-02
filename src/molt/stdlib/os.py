@@ -18,8 +18,16 @@ def _load_intrinsic(name: str) -> Any | None:
 _MOLT_ENV_GET_RAW = _load_intrinsic("_molt_env_get_raw")
 _MOLT_OS_NAME = _load_intrinsic("_molt_os_name")
 _MOLT_PATH_EXISTS = _load_intrinsic("_molt_path_exists")
+_MOLT_PATH_LISTDIR = _load_intrinsic("_molt_path_listdir")
+_MOLT_PATH_MKDIR = _load_intrinsic("_molt_path_mkdir")
 _MOLT_PATH_UNLINK = _load_intrinsic("_molt_path_unlink")
+_MOLT_PATH_RMDIR = _load_intrinsic("_molt_path_rmdir")
+_MOLT_PATH_CHMOD = _load_intrinsic("_molt_path_chmod")
 _MOLT_GETCWD = _load_intrinsic("_molt_getcwd")
+_MOLT_OS_CLOSE = _load_intrinsic("_molt_os_close")
+_MOLT_OS_DUP = _load_intrinsic("_molt_os_dup")
+_MOLT_OS_GET_INHERITABLE = _load_intrinsic("_molt_os_get_inheritable")
+_MOLT_OS_SET_INHERITABLE = _load_intrinsic("_molt_os_set_inheritable")
 
 
 def _should_load_py_os() -> bool:
@@ -27,7 +35,11 @@ def _should_load_py_os() -> bool:
         _MOLT_ENV_GET_RAW is None
         and _MOLT_OS_NAME is None
         and _MOLT_PATH_EXISTS is None
+        and _MOLT_PATH_LISTDIR is None
+        and _MOLT_PATH_MKDIR is None
         and _MOLT_PATH_UNLINK is None
+        and _MOLT_PATH_RMDIR is None
+        and _MOLT_PATH_CHMOD is None
         and _MOLT_GETCWD is None
     )
 
@@ -84,9 +96,20 @@ __all__ = [
     "getcwd",
     "getpid",
     "getenv",
+    "listdir",
+    "mkdir",
+    "chmod",
+    "makedirs",
+    "rmdir",
+    "close",
+    "dup",
+    "get_inheritable",
+    "set_inheritable",
     "unlink",
     "environ",
     "path",
+    "PathLike",
+    "fspath",
 ]
 
 
@@ -126,6 +149,9 @@ if TYPE_CHECKING:
         return False
 
     def _molt_path_unlink(path: Any) -> None:
+        return None
+
+    def _molt_path_rmdir(path: Any) -> None:
         return None
 
 
@@ -220,6 +246,29 @@ class _Environ:
     def values(self) -> ValuesView[str]:
         _require_cap("env.read")
         return self._backend().values()
+
+
+class PathLike:
+    __slots__ = ()
+
+    def __fspath__(self) -> str | bytes:
+        raise NotImplementedError
+
+
+def fspath(path: Any) -> str | bytes:
+    if isinstance(path, (str, bytes)):
+        return path
+    method = getattr(path, "__fspath__", None)
+    if method is None:
+        raise TypeError(
+            f"expected str, bytes or os.PathLike object, not {type(path).__name__}"
+        )
+    value = method()
+    if isinstance(value, (str, bytes)):
+        return value
+    raise TypeError(
+        f"expected str, bytes or os.PathLike object, not {type(path).__name__}"
+    )
 
 
 class _Path:
@@ -350,6 +399,40 @@ class _Path:
         return False
 
     @staticmethod
+    def isdir(path: Any) -> bool:
+        _require_cap("fs.read")
+        if callable(_MOLT_PATH_LISTDIR):
+            try:
+                _MOLT_PATH_LISTDIR(path)
+                return True
+            except Exception:
+                return False
+        if _py_os is not None:
+            try:
+                return _py_os.path.isdir(path)
+            except Exception:
+                return False
+        return False
+
+    @staticmethod
+    def isfile(path: Any) -> bool:
+        _require_cap("fs.read")
+        if callable(_MOLT_PATH_LISTDIR):
+            try:
+                _MOLT_PATH_LISTDIR(path)
+                return False
+            except FileNotFoundError:
+                return False
+            except Exception:
+                return True
+        if _py_os is not None:
+            try:
+                return _py_os.path.isfile(path)
+            except Exception:
+                return False
+        return False
+
+    @staticmethod
     def unlink(path: Any) -> None:
         _require_cap("fs.write")
         if callable(_MOLT_PATH_UNLINK):
@@ -363,8 +446,36 @@ class _Path:
             return
         raise FileNotFoundError(path)
 
+    @staticmethod
+    def rmdir(path: Any) -> None:
+        _require_cap("fs.write")
+        if callable(_MOLT_PATH_RMDIR):
+            try:
+                _MOLT_PATH_RMDIR(path)
+                return
+            except Exception:
+                pass
+        if _py_os is not None:
+            _py_os.rmdir(path)
+            return
+        raise FileNotFoundError(path)
+
 
 path = _Path()
+
+
+def listdir(path: Any = ".") -> list[str]:
+    _require_cap("fs.read")
+    if callable(_MOLT_PATH_LISTDIR):
+        try:
+            res = _MOLT_PATH_LISTDIR(path)
+            if isinstance(res, list):
+                return res
+        except Exception:
+            raise
+    if _py_os is not None:
+        return list(_py_os.listdir(path))
+    raise FileNotFoundError(path)
 
 
 environ = _Environ()
@@ -403,3 +514,93 @@ def getenv(key: str, default: Any = None) -> Any:
 
 def unlink(path: Any) -> None:
     _Path.unlink(path)
+
+
+def rmdir(path: Any) -> None:
+    _Path.rmdir(path)
+
+
+def mkdir(path: Any, mode: int = 0o777) -> None:
+    _require_cap("fs.write")
+    if callable(_MOLT_PATH_MKDIR):
+        _MOLT_PATH_MKDIR(path)
+        return
+    if _py_os is not None:
+        _py_os.mkdir(path, mode)
+        return
+    raise FileNotFoundError(path)
+
+
+def chmod(path: Any, mode: int) -> None:
+    _require_cap("fs.write")
+    if callable(_MOLT_PATH_CHMOD):
+        _MOLT_PATH_CHMOD(path, mode)
+        return
+    if _py_os is not None:
+        _py_os.chmod(path, mode)
+        return
+    raise FileNotFoundError(path)
+
+
+def makedirs(name: Any, mode: int = 0o777, exist_ok: bool = False) -> None:
+    path = fspath(name)
+    if not path:
+        return
+    if isinstance(path, bytes):
+        path = path.decode("utf-8", "surrogateescape")
+    parts: list[str] = []
+    for part in path.split(sep):
+        if not part:
+            if not parts:
+                parts.append(sep)
+            continue
+        parts.append(part)
+        current = parts[0]
+        if len(parts) > 1:
+            for extra in parts[1:]:
+                current = _Path.join(current, extra)
+        if _Path.exists(current):
+            continue
+        try:
+            mkdir(current, mode)
+        except FileExistsError:
+            if not exist_ok:
+                raise
+    if not exist_ok and not _Path.exists(path):
+        raise FileNotFoundError(path)
+
+
+def close(fd: int) -> None:
+    if callable(_MOLT_OS_CLOSE):
+        _MOLT_OS_CLOSE(fd)
+        return
+    if _py_os is not None:
+        _py_os.close(fd)
+        return
+    raise NotImplementedError("os.close unavailable")
+
+
+def dup(fd: int) -> int:
+    if callable(_MOLT_OS_DUP):
+        return int(_MOLT_OS_DUP(fd))
+    if _py_os is not None:
+        return int(_py_os.dup(fd))
+    raise NotImplementedError("os.dup unavailable")
+
+
+def get_inheritable(fd: int) -> bool:
+    if callable(_MOLT_OS_GET_INHERITABLE):
+        return bool(_MOLT_OS_GET_INHERITABLE(fd))
+    if _py_os is not None and hasattr(_py_os, "get_inheritable"):
+        return bool(_py_os.get_inheritable(fd))
+    raise NotImplementedError("os.get_inheritable unavailable")
+
+
+def set_inheritable(fd: int, inheritable: bool) -> None:
+    if callable(_MOLT_OS_SET_INHERITABLE):
+        _MOLT_OS_SET_INHERITABLE(fd, bool(inheritable))
+        return
+    if _py_os is not None and hasattr(_py_os, "set_inheritable"):
+        _py_os.set_inheritable(fd, bool(inheritable))
+        return
+    raise NotImplementedError("os.set_inheritable unavailable")

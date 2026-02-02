@@ -43,6 +43,7 @@ pub const ECONNABORTED: i32 = 103;
 pub const ECONNREFUSED: i32 = 111;
 pub const ECONNRESET: i32 = 104;
 pub const EEXIST: i32 = 17;
+pub const EHOSTUNREACH: i32 = 113;
 pub const EINPROGRESS: i32 = 115;
 pub const EINTR: i32 = 4;
 pub const EIO: i32 = 5;

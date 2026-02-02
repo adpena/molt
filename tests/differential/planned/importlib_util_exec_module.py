@@ -8,8 +8,7 @@ import tempfile
 root = tempfile.mkdtemp()
 path = os.path.join(root, 'mod_c.py')
 with open(path, 'w', encoding='utf-8') as handle:
-    handle.write('value = 12
-')
+    handle.write('value = 12\n')
 
 spec = importlib.util.spec_from_file_location('mod_c', path)
 module = importlib.util.module_from_spec(spec)

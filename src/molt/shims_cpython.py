@@ -1088,7 +1088,11 @@ def molt_io_wait_new(sock: Any, events: int, timeout: float | None) -> Any:
 def _molt_class_new(name: str) -> type:
     if not isinstance(name, str):
         raise TypeError("class name must be str")
-    return type(name, (), {})
+
+    def _body(ns: dict[str, object]) -> None:
+        del ns
+
+    return __build_class__(_body, name, object)
 
 
 def _molt_class_set_base(cls: type, base: object) -> type | None:
@@ -1117,7 +1121,11 @@ def _molt_class_set_base(cls: type, base: object) -> type | None:
             for key, value in cls.__dict__.items()
             if key not in {"__dict__", "__weakref__"}
         }
-        return type(cls.__name__, bases, namespace)
+
+        def _body(ns: dict[str, object]) -> None:
+            ns.update(namespace)
+
+        return __build_class__(_body, cls.__name__, *bases)
 
 
 def _molt_class_apply_set_name(cls: type) -> None:

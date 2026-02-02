@@ -5,10 +5,12 @@ use std::borrow::Cow;
 
 use crate::async_rt::generators::{generator_locals_dict, generator_yieldfrom_bits};
 use crate::builtins::annotations::pep649_enabled;
-use crate::builtins::attr::{awaitable_await_func_bits, class_slots_info};
+use crate::builtins::attr::{
+    awaitable_await_func_bits, class_slots_info, exception_is_attribute_error,
+};
 use crate::builtins::methods::{
-    asyncgen_method_bits, complex_method_bits, generator_method_bits, int_method_bits,
-    object_method_bits, property_method_bits,
+    asyncgen_method_bits, complex_method_bits, coroutine_method_bits, generator_method_bits,
+    int_method_bits, object_method_bits, property_method_bits,
 };
 use crate::*;
 
@@ -1593,6 +1595,11 @@ pub(crate) unsafe fn attr_lookup_ptr(
                     }
                     _ => {}
                 }
+                if let Some(func_bits) = coroutine_method_bits(_py, name.as_str()) {
+                    let self_bits = MoltObject::from_ptr(obj_ptr).bits();
+                    let bound_bits = molt_bound_method_new(func_bits, self_bits);
+                    return Some(bound_bits);
+                }
             }
         }
         let class_bits = object_class_bits(obj_ptr);
@@ -1672,11 +1679,14 @@ pub(crate) unsafe fn attr_lookup_ptr(
                                         Some(obj_ptr),
                                         getattr_bits,
                                     ) {
+                                        exception_stack_push();
                                         let getattr_res =
                                             call_callable1(_py, getattr_call_bits, attr_bits);
                                         if exception_pending(_py) {
+                                            exception_stack_pop(_py);
                                             return None;
                                         }
+                                        exception_stack_pop(_py);
                                         return Some(getattr_res);
                                     }
                                 }
@@ -3899,6 +3909,7 @@ pub extern "C" fn molt_get_attr_name_default(
             return raise_attr_name_type_error(_py, name_bits);
         };
         if exception_pending(_py) {
+            inc_ref_bits(_py, default_bits);
             return default_bits;
         }
         unsafe {
@@ -3911,22 +3922,22 @@ pub extern "C" fn molt_get_attr_name_default(
                 }
                 if exception_pending(_py) {
                     let exc_bits = molt_exception_last();
-                    let kind_bits = molt_exception_kind(exc_bits);
-                    let kind = string_obj_to_owned(obj_from_bits(kind_bits));
-                    dec_ref_bits(_py, kind_bits);
-                    if kind.as_deref() == Some("AttributeError") {
-                        molt_exception_clear();
+                    if exception_is_attribute_error(_py, exc_bits) {
+                        clear_exception(_py);
                         dec_ref_bits(_py, exc_bits);
+                        inc_ref_bits(_py, default_bits);
                         return default_bits;
                     }
-                    molt_exception_clear();
+                    clear_exception(_py);
                     let _ = molt_raise(exc_bits);
                     dec_ref_bits(_py, exc_bits);
                     return MoltObject::none().bits();
                 }
+                inc_ref_bits(_py, default_bits);
                 return default_bits;
             }
         }
+        inc_ref_bits(_py, default_bits);
         default_bits
     })
 }

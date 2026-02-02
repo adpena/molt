@@ -108,6 +108,157 @@ stdlib:
   __future__:
     tests:
       - tests/differential/stdlib/future_module.py
+  abc:
+    tests:
+      - tests/differential/basic/abc_basic.py
+  ast:
+    tests:
+      - tests/differential/basic/ast_basic.py
+  asyncio:
+    tests:
+      - tests/differential/basic/asyncio_api_surface_core.py
+      - tests/differential/basic/asyncio_api_surface_modules.py
+  builtins:
+    tests:
+      - tests/differential/basic/builtins_basic.py
+  contextlib:
+    tests:
+      - tests/differential/basic/contextlib_contextmanager_basic.py
+      - tests/differential/basic/contextlib_exitstack.py
+      - tests/differential/basic/contextlib_asynccontextmanager.py
+  contextvars:
+    tests:
+      - tests/differential/basic/contextvars_basic.py
+      - tests/differential/basic/contextvars_task_propagation.py
+  copy:
+    tests:
+      - tests/differential/basic/copy_basic.py
+  ctypes:
+    tests:
+      - tests/differential/basic/ctypes_basic.py
+  datetime:
+    tests:
+      - tests/differential/planned/datetime_basic.py
+  enum:
+    tests:
+      - tests/differential/basic/enum_basic.py
+  errno:
+    tests:
+      - tests/differential/planned/errno_basic.py
+      - tests/differential/basic/oserror_errno.py
+  gc:
+    tests:
+      - tests/differential/basic/gc_collect.py
+      - tests/differential/planned/gc_cycle_collector.py
+  gettext:
+    tests:
+      - tests/differential/planned/gettext_basic.py
+  glob:
+    tests:
+      - tests/differential/planned/glob_basic.py
+  hmac:
+    tests:
+      - tests/differential/planned/hmac_basic.py
+  inspect:
+    tests:
+      - tests/differential/planned/inspect_basic.py
+      - tests/differential/basic/inspect_cleandoc_currentframe.py
+      - tests/differential/planned/inspect_getmembers_basic.py
+  ipaddress:
+    tests:
+      - tests/differential/planned/ipaddress_basic.py
+  json:
+    tests:
+      - tests/differential/basic/stdlib_json_basic.py
+      - tests/differential/basic/stdlib_json_extended.py
+  locale:
+    tests:
+      - tests/differential/planned/locale_basic.py
+  pickle:
+    tests:
+      - tests/differential/basic/pickle_basic.py
+  pprint:
+    tests:
+      - tests/differential/planned/pprint_basic.py
+  queue:
+    tests:
+      - tests/differential/planned/queue_basic.py
+      - tests/differential/planned/queue_timeout_basic.py
+  random:
+    tests:
+      - tests/differential/basic/random_basic.py
+      - tests/differential/planned/random_state_basic.py
+  re:
+    tests:
+      - tests/differential/planned/re_split_maxsplit.py
+      - tests/differential/planned/re_unicode_flags.py
+  select:
+    tests:
+      - tests/differential/basic/select_basic.py
+      - tests/differential/planned/select_poll_basic.py
+  shlex:
+    tests:
+      - tests/differential/planned/shlex_basic.py
+  shutil:
+    tests:
+      - tests/differential/planned/shutil_basic.py
+  signal:
+    tests:
+      - tests/differential/planned/signal_basic.py
+      - tests/differential/planned/signal_keyboardinterrupt.py
+  socket:
+    tests:
+      - tests/differential/basic/socket_getaddrinfo.py
+      - tests/differential/basic/socket_nonblocking_connect.py
+      - tests/differential/basic/socket_tcp_echo.py
+  ssl:
+    tests:
+      - tests/differential/planned/ssl_context_basic.py
+      - tests/differential/planned/ssl_handshake_basic.py
+  stat:
+    tests:
+      - tests/differential/planned/stat_basic.py
+  struct:
+    tests:
+      - tests/differential/planned/struct_basic.py
+      - tests/differential/basic/struct_layout_mutation.py
+  subprocess:
+    tests:
+      - tests/differential/planned/subprocess_run_basic.py
+      - tests/differential/planned/subprocess_shell_args.py
+  sys:
+    tests:
+      - tests/differential/basic/sys_basic.py
+      - tests/differential/basic/sys_encoding_basic.py
+      - tests/differential/planned/sys_exc_info_nested.py
+  textwrap:
+    tests:
+      - tests/differential/planned/textwrap_basic.py
+  threading:
+    tests:
+      - tests/differential/basic/threading_basic.py
+      - tests/differential/basic/threading_local_isolation.py
+      - tests/differential/planned/threading_primitives_basic.py
+  time:
+    tests:
+      - tests/differential/basic/time_basic.py
+  types:
+    tests:
+      - tests/differential/basic/types_basic.py
+      - tests/differential/basic/types_advanced.py
+  typing:
+    tests:
+      - tests/differential/planned/typing_protocol.py
+      - tests/differential/planned/typing_basic_surface.py
+      - tests/differential/basic/typing_runtime_checkable_error.py
+  uuid:
+    tests:
+      - tests/differential/basic/uuid_basic.py
+  weakref:
+    tests:
+      - tests/differential/basic/weakref_basic.py
+      - tests/differential/basic/weakref_basic_gc_collect.py
+      - tests/differential/basic/weakref_weakkeydict_basic.py
 
   annotationlib:
     tests:
@@ -520,12 +671,13 @@ stdlib:
       - tests/differential/planned/importlib_resources_path_decoding.py
   urllib.parse:
     tests:
-      - tests/differential/planned/urllib_parse_quote_basic.py
-      - tests/differential/planned/urllib_parse_edge_cases.py
-      - tests/differential/planned/urllib_parse_urlsplit.py
-      - tests/differential/planned/urllib_parse_urljoin.py
-      - tests/differential/planned/urllib_parse_urlencode_edge_cases.py
-      - tests/differential/planned/urllib_parse_urldefrag.py
+      - tests/differential/basic/urllib_parse_basic.py
+      - tests/differential/basic/urllib_parse_quote_basic.py
+      - tests/differential/basic/urllib_parse_edge_cases.py
+      - tests/differential/basic/urllib_parse_urlsplit.py
+      - tests/differential/basic/urllib_parse_urljoin.py
+      - tests/differential/basic/urllib_parse_urlencode_edge_cases.py
+      - tests/differential/basic/urllib_parse_urldefrag.py
   http.client:
     tests:
       - tests/differential/planned/http_client_server_basic_more.py

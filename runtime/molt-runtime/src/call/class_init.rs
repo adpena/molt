@@ -10,14 +10,23 @@ unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
         &runtime_state(_py).interned.molt_layout_size,
         b"__molt_layout_size__",
     );
+    let mut size = 0usize;
     if let Some(size_bits) = class_attr_lookup_raw_mro(_py, class_ptr, size_name_bits) {
-        if let Some(size) = obj_from_bits(size_bits).as_int() {
-            if size > 0 {
-                return size as usize;
+        if let Some(val) = obj_from_bits(size_bits).as_int() {
+            if val > 0 {
+                size = val as usize;
             }
         }
     }
-    8
+    if size == 0 {
+        size = 8;
+    }
+    let class_bits = MoltObject::from_ptr(class_ptr).bits();
+    let builtins = builtin_classes(_py);
+    if issubclass_bits(class_bits, builtins.int) && size < 16 {
+        size = 16;
+    }
+    size
 }
 
 pub(crate) unsafe fn alloc_instance_for_class(_py: &PyToken<'_>, class_ptr: *mut u8) -> u64 {

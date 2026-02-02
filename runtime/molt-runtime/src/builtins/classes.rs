@@ -5,13 +5,15 @@ use molt_obj_model::MoltObject;
 
 use crate::state::runtime_state::runtime_state_lock;
 use crate::{
-    alloc_class_obj, alloc_string, alloc_tuple, class_break_cycles, class_name_bits, dec_ref_bits,
-    inc_ref_bits, molt_class_set_base, obj_from_bits, object_set_class_bits, object_type_id,
-    runtime_state, string_obj_to_owned, RuntimeState, BUILTIN_TAG_BASE_EXCEPTION,
-    BUILTIN_TAG_EXCEPTION, BUILTIN_TAG_OBJECT, BUILTIN_TAG_TYPE, TYPE_ID_TYPE, TYPE_TAG_BOOL,
-    TYPE_TAG_BYTEARRAY, TYPE_TAG_BYTES, TYPE_TAG_COMPLEX, TYPE_TAG_DICT, TYPE_TAG_FLOAT,
-    TYPE_TAG_FROZENSET, TYPE_TAG_INT, TYPE_TAG_LIST, TYPE_TAG_MEMORYVIEW, TYPE_TAG_NONE,
-    TYPE_TAG_RANGE, TYPE_TAG_SET, TYPE_TAG_SLICE, TYPE_TAG_STR, TYPE_TAG_TUPLE,
+    alloc_class_obj, alloc_dict_with_pairs, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
+    class_break_cycles, class_bump_layout_version, class_dict_bits, class_name_bits, dec_ref_bits,
+    dict_set_in_place, inc_ref_bits, intern_static_name, molt_class_set_base, obj_from_bits,
+    object_set_class_bits, object_type_id, runtime_state, string_obj_to_owned, RuntimeState,
+    BUILTIN_TAG_BASE_EXCEPTION, BUILTIN_TAG_EXCEPTION, BUILTIN_TAG_OBJECT, BUILTIN_TAG_TYPE,
+    TYPE_ID_DICT, TYPE_ID_TYPE, TYPE_TAG_BOOL, TYPE_TAG_BYTEARRAY, TYPE_TAG_BYTES,
+    TYPE_TAG_COMPLEX, TYPE_TAG_DICT, TYPE_TAG_FLOAT, TYPE_TAG_FROZENSET, TYPE_TAG_INT,
+    TYPE_TAG_LIST, TYPE_TAG_MEMORYVIEW, TYPE_TAG_NONE, TYPE_TAG_RANGE, TYPE_TAG_SET,
+    TYPE_TAG_SLICE, TYPE_TAG_STR, TYPE_TAG_TUPLE,
 };
 
 pub(crate) struct BuiltinClasses {
@@ -131,6 +133,55 @@ fn make_builtin_class(_py: &PyToken<'_>, name: &str) -> u64 {
         return MoltObject::none().bits();
     }
     MoltObject::from_ptr(class_ptr).bits()
+}
+
+fn init_int_subclass_layout(_py: &PyToken<'_>, int_bits: u64) {
+    let Some(int_ptr) = obj_from_bits(int_bits).as_ptr() else {
+        return;
+    };
+    unsafe {
+        if object_type_id(int_ptr) != TYPE_ID_TYPE {
+            return;
+        }
+    }
+    let dict_bits = unsafe { class_dict_bits(int_ptr) };
+    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+        return;
+    };
+    unsafe {
+        if object_type_id(dict_ptr) != TYPE_ID_DICT {
+            return;
+        }
+    }
+    let offsets_name_bits = intern_static_name(
+        _py,
+        &runtime_state(_py).interned.field_offsets_name,
+        b"__molt_field_offsets__",
+    );
+    let layout_name_bits = intern_static_name(
+        _py,
+        &runtime_state(_py).interned.molt_layout_size,
+        b"__molt_layout_size__",
+    );
+    let Some(slot_name_bits) = attr_name_bits_from_bytes(_py, b"__molt_int_value__") else {
+        return;
+    };
+    let offset_bits = MoltObject::from_int(0).bits();
+    let offsets_ptr = alloc_dict_with_pairs(_py, &[slot_name_bits, offset_bits]);
+    if offsets_ptr.is_null() {
+        return;
+    }
+    let offsets_bits = MoltObject::from_ptr(offsets_ptr).bits();
+    unsafe {
+        dict_set_in_place(_py, dict_ptr, offsets_name_bits, offsets_bits);
+    }
+    let layout_bits = MoltObject::from_int(16).bits();
+    unsafe {
+        dict_set_in_place(_py, dict_ptr, layout_name_bits, layout_bits);
+        class_bump_layout_version(int_ptr);
+    }
+    dec_ref_bits(_py, offsets_bits);
+    dec_ref_bits(_py, slot_name_bits);
 }
 
 fn union_type_class_name() -> &'static str {
@@ -271,6 +322,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
     let _ = molt_class_set_base(float, object);
     let _ = molt_class_set_base(complex, object);
     let _ = molt_class_set_base(bool, int);
+    init_int_subclass_layout(_py, int);
     let _ = molt_class_set_base(str, object);
     let _ = molt_class_set_base(bytes, object);
     let _ = molt_class_set_base(bytearray, object);

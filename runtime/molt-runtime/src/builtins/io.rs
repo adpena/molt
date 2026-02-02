@@ -4,6 +4,8 @@ use crate::*;
 use crate::libc_compat as libc;
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Read, Seek, Write};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::sync::{Arc, Mutex};
 
 macro_rules! file_handle_require_attached {
@@ -407,10 +409,22 @@ fn dup_fd(_fd: i64) -> Option<i64> {
 const FILE_TYPE_CHAR: u32 = 0x0002;
 
 #[cfg(windows)]
+const HANDLE_FLAG_INHERIT: u32 = 0x00000001;
+
+#[cfg(windows)]
 #[link(name = "kernel32")]
 extern "system" {
     fn GetFileType(hFile: *mut std::ffi::c_void) -> u32;
     fn GetConsoleMode(hConsoleHandle: *mut std::ffi::c_void, lpMode: *mut u32) -> i32;
+    fn GetHandleInformation(
+        hObject: *mut std::ffi::c_void,
+        lpdwFlags: *mut u32,
+    ) -> i32;
+    fn SetHandleInformation(
+        hObject: *mut std::ffi::c_void,
+        dwMask: u32,
+        dwFlags: u32,
+    ) -> i32;
 }
 
 #[cfg(windows)]
@@ -1127,6 +1141,99 @@ pub extern "C" fn molt_path_exists(path_bits: u64) -> u64 {
 }
 
 #[no_mangle]
+pub extern "C" fn molt_path_listdir(path_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "fs.read") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+        }
+        let path = match path_from_bits(_py, path_bits) {
+            Ok(path) => path,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let mut entries: Vec<u64> = Vec::new();
+        let read_dir = match std::fs::read_dir(&path) {
+            Ok(dir) => dir,
+            Err(err) => {
+                let msg = err.to_string();
+                return match err.kind() {
+                    ErrorKind::NotFound => {
+                        raise_exception::<_>(_py, "FileNotFoundError", &msg)
+                    }
+                    ErrorKind::PermissionDenied => {
+                        raise_exception::<_>(_py, "PermissionError", &msg)
+                    }
+                    ErrorKind::NotADirectory => {
+                        raise_exception::<_>(_py, "NotADirectoryError", &msg)
+                    }
+                    _ => raise_exception::<_>(_py, "OSError", &msg),
+                };
+            }
+        };
+        for entry in read_dir {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) => {
+                    let msg = err.to_string();
+                    return raise_exception::<_>(_py, "OSError", &msg);
+                }
+            };
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let name_ptr = alloc_string(_py, name.as_bytes());
+            if name_ptr.is_null() {
+                for bits in entries {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
+            }
+            entries.push(MoltObject::from_ptr(name_ptr).bits());
+        }
+        let list_ptr = alloc_list(_py, entries.as_slice());
+        if list_ptr.is_null() {
+            for bits in entries {
+                dec_ref_bits(_py, bits);
+            }
+            return MoltObject::none().bits();
+        }
+        for bits in entries {
+            dec_ref_bits(_py, bits);
+        }
+        MoltObject::from_ptr(list_ptr).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_path_mkdir(path_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "fs.write") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
+        }
+        let path = match path_from_bits(_py, path_bits) {
+            Ok(path) => path,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        match std::fs::create_dir(&path) {
+            Ok(()) => MoltObject::none().bits(),
+            Err(err) => {
+                let msg = err.to_string();
+                match err.kind() {
+                    ErrorKind::AlreadyExists => {
+                        raise_exception::<_>(_py, "FileExistsError", &msg)
+                    }
+                    ErrorKind::NotFound => {
+                        raise_exception::<_>(_py, "FileNotFoundError", &msg)
+                    }
+                    ErrorKind::PermissionDenied => {
+                        raise_exception::<_>(_py, "PermissionError", &msg)
+                    }
+                    _ => raise_exception::<_>(_py, "OSError", &msg),
+                }
+            }
+        }
+    })
+}
+
+#[no_mangle]
 pub extern "C" fn molt_path_unlink(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.write") {
@@ -1151,6 +1258,109 @@ pub extern "C" fn molt_path_unlink(path_bits: u64) -> u64 {
                         raise_exception::<_>(_py, "IsADirectoryError", &msg)
                     }
                     _ => raise_exception::<_>(_py, "OSError", &msg),
+                }
+            }
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_path_rmdir(path_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "fs.write") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
+        }
+        let path = match path_from_bits(_py, path_bits) {
+            Ok(path) => path,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        match std::fs::remove_dir(&path) {
+            Ok(()) => MoltObject::none().bits(),
+            Err(err) => {
+                let msg = err.to_string();
+                match err.kind() {
+                    ErrorKind::NotFound => {
+                        raise_exception::<_>(_py, "FileNotFoundError", &msg)
+                    }
+                    ErrorKind::PermissionDenied => {
+                        raise_exception::<_>(_py, "PermissionError", &msg)
+                    }
+                    ErrorKind::DirectoryNotEmpty => {
+                        raise_exception::<_>(_py, "OSError", &msg)
+                    }
+                    _ => raise_exception::<_>(_py, "OSError", &msg),
+                }
+            }
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_path_chmod(path_bits: u64, mode_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "fs.write") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
+        }
+        let path = match path_from_bits(_py, path_bits) {
+            Ok(path) => path,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let mode = index_i64_from_obj(_py, mode_bits, "chmod() mode must be int");
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        #[cfg(unix)]
+        {
+            let perms = std::fs::Permissions::from_mode(mode as u32);
+            match std::fs::set_permissions(&path, perms) {
+                Ok(()) => MoltObject::none().bits(),
+                Err(err) => {
+                    let msg = err.to_string();
+                    match err.kind() {
+                        ErrorKind::NotFound => {
+                            raise_exception::<_>(_py, "FileNotFoundError", &msg)
+                        }
+                        ErrorKind::PermissionDenied => {
+                            raise_exception::<_>(_py, "PermissionError", &msg)
+                        }
+                        _ => raise_exception::<_>(_py, "OSError", &msg),
+                    }
+                }
+            }
+        }
+        #[cfg(windows)]
+        {
+            let readonly = ((mode as u32) & 0o222) == 0;
+            let meta = match std::fs::metadata(&path) {
+                Ok(meta) => meta,
+                Err(err) => {
+                    let msg = err.to_string();
+                    return match err.kind() {
+                        ErrorKind::NotFound => {
+                            raise_exception::<_>(_py, "FileNotFoundError", &msg)
+                        }
+                        ErrorKind::PermissionDenied => {
+                            raise_exception::<_>(_py, "PermissionError", &msg)
+                        }
+                        _ => raise_exception::<_>(_py, "OSError", &msg),
+                    };
+                }
+            };
+            let mut perms = meta.permissions();
+            perms.set_readonly(readonly);
+            match std::fs::set_permissions(&path, perms) {
+                Ok(()) => MoltObject::none().bits(),
+                Err(err) => {
+                    let msg = err.to_string();
+                    match err.kind() {
+                        ErrorKind::NotFound => {
+                            raise_exception::<_>(_py, "FileNotFoundError", &msg)
+                        }
+                        ErrorKind::PermissionDenied => {
+                            raise_exception::<_>(_py, "PermissionError", &msg)
+                        }
+                        _ => raise_exception::<_>(_py, "OSError", &msg),
+                    }
                 }
             }
         }
@@ -1185,6 +1395,233 @@ pub extern "C" fn molt_getcwd() -> u64 {
                     }
                     _ => raise_exception::<_>(_py, "OSError", &msg),
                 }
+            }
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_os_close(fd_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
+            let type_name = class_name_for_error(type_of_bits(_py, fd_bits));
+            let msg = format!("an integer is required (got {type_name})");
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        };
+        if fd < 0 {
+            return raise_os_error_errno::<u64>(_py, libc::EBADF as i64, "close");
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let rc = unsafe { crate::molt_os_close_host(fd) };
+            if rc < 0 {
+                return raise_os_error_errno::<u64>(_py, (-rc) as i64, "close");
+            }
+            return MoltObject::none().bits();
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            #[cfg(unix)]
+            {
+                let rc = unsafe { libc::close(fd as libc::c_int) };
+                if rc == 0 {
+                    return MoltObject::none().bits();
+                }
+                let err = std::io::Error::last_os_error();
+                if let Some(errno) = err.raw_os_error() {
+                    return raise_os_error_errno::<u64>(_py, errno as i64, "close");
+                }
+                return raise_os_error::<u64>(_py, err, "close");
+            }
+            #[cfg(windows)]
+            {
+                let sock_rc = unsafe { libc::closesocket(fd as libc::SOCKET) };
+                if sock_rc == 0 {
+                    return MoltObject::none().bits();
+                }
+                let sock_err = unsafe { libc::WSAGetLastError() };
+                if sock_err == libc::WSAENOTSOCK {
+                    let rc = unsafe { libc::_close(fd as libc::c_int) };
+                    if rc == 0 {
+                        return MoltObject::none().bits();
+                    }
+                    let err = std::io::Error::last_os_error();
+                    if let Some(errno) = err.raw_os_error() {
+                        return raise_os_error_errno::<u64>(_py, errno as i64, "close");
+                    }
+                    return raise_os_error::<u64>(_py, err, "close");
+                }
+                return raise_os_error_errno::<u64>(_py, sock_err as i64, "close");
+            }
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_os_dup(fd_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
+            let type_name = class_name_for_error(type_of_bits(_py, fd_bits));
+            let msg = format!("an integer is required (got {type_name})");
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        };
+        if fd < 0 {
+            return raise_os_error_errno::<u64>(_py, libc::EBADF as i64, "dup");
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            return raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "dup");
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let duped = dup_fd(fd);
+            if let Some(new_fd) = duped {
+                return int_bits_from_i64(_py, new_fd);
+            }
+            let err = std::io::Error::last_os_error();
+            if let Some(errno) = err.raw_os_error() {
+                return raise_os_error_errno::<u64>(_py, errno as i64, "dup");
+            }
+            raise_os_error::<u64>(_py, err, "dup")
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_os_get_inheritable(fd_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
+            let type_name = class_name_for_error(type_of_bits(_py, fd_bits));
+            let msg = format!("an integer is required (got {type_name})");
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        };
+        if fd < 0 {
+            return raise_os_error_errno::<u64>(_py, libc::EBADF as i64, "get_inheritable");
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            return raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "get_inheritable");
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            #[cfg(unix)]
+            {
+                let flags = unsafe { libc::fcntl(fd as libc::c_int, libc::F_GETFD) };
+                if flags < 0 {
+                    let err = std::io::Error::last_os_error();
+                    if let Some(errno) = err.raw_os_error() {
+                        return raise_os_error_errno::<u64>(_py, errno as i64, "get_inheritable");
+                    }
+                    return raise_os_error::<u64>(_py, err, "get_inheritable");
+                }
+                let inheritable = (flags & libc::FD_CLOEXEC) == 0;
+                return MoltObject::from_bool(inheritable).bits();
+            }
+            #[cfg(windows)]
+            {
+                let handle = unsafe { libc::_get_osfhandle(fd as libc::c_int) };
+                if handle == -1 {
+                    let err = std::io::Error::last_os_error();
+                    if let Some(errno) = err.raw_os_error() {
+                        return raise_os_error_errno::<u64>(_py, errno as i64, "get_inheritable");
+                    }
+                    return raise_os_error::<u64>(_py, err, "get_inheritable");
+                }
+                let mut flags: u32 = 0;
+                let ok = unsafe {
+                    GetHandleInformation(handle as *mut std::ffi::c_void, &mut flags)
+                };
+                if ok == 0 {
+                    let err = std::io::Error::last_os_error();
+                    if let Some(errno) = err.raw_os_error() {
+                        return raise_os_error_errno::<u64>(_py, errno as i64, "get_inheritable");
+                    }
+                    return raise_os_error::<u64>(_py, err, "get_inheritable");
+                }
+                return MoltObject::from_bool((flags & HANDLE_FLAG_INHERIT) != 0).bits();
+            }
+            #[cfg(not(any(unix, windows)))]
+            {
+                raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "get_inheritable")
+            }
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_os_set_inheritable(fd_bits: u64, inheritable_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
+            let type_name = class_name_for_error(type_of_bits(_py, fd_bits));
+            let msg = format!("an integer is required (got {type_name})");
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        };
+        if fd < 0 {
+            return raise_os_error_errno::<u64>(_py, libc::EBADF as i64, "set_inheritable");
+        }
+        let inheritable = is_truthy(_py, obj_from_bits(inheritable_bits));
+        #[cfg(target_arch = "wasm32")]
+        {
+            return raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "set_inheritable");
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            #[cfg(unix)]
+            {
+                let flags = unsafe { libc::fcntl(fd as libc::c_int, libc::F_GETFD) };
+                if flags < 0 {
+                    let err = std::io::Error::last_os_error();
+                    if let Some(errno) = err.raw_os_error() {
+                        return raise_os_error_errno::<u64>(_py, errno as i64, "set_inheritable");
+                    }
+                    return raise_os_error::<u64>(_py, err, "set_inheritable");
+                }
+                let mut new_flags = flags;
+                if inheritable {
+                    new_flags &= !libc::FD_CLOEXEC;
+                } else {
+                    new_flags |= libc::FD_CLOEXEC;
+                }
+                let rc = unsafe { libc::fcntl(fd as libc::c_int, libc::F_SETFD, new_flags) };
+                if rc < 0 {
+                    let err = std::io::Error::last_os_error();
+                    if let Some(errno) = err.raw_os_error() {
+                        return raise_os_error_errno::<u64>(_py, errno as i64, "set_inheritable");
+                    }
+                    return raise_os_error::<u64>(_py, err, "set_inheritable");
+                }
+                return MoltObject::none().bits();
+            }
+            #[cfg(windows)]
+            {
+                let handle = unsafe { libc::_get_osfhandle(fd as libc::c_int) };
+                if handle == -1 {
+                    let err = std::io::Error::last_os_error();
+                    if let Some(errno) = err.raw_os_error() {
+                        return raise_os_error_errno::<u64>(_py, errno as i64, "set_inheritable");
+                    }
+                    return raise_os_error::<u64>(_py, err, "set_inheritable");
+                }
+                let flags = if inheritable { HANDLE_FLAG_INHERIT } else { 0 };
+                let ok = unsafe {
+                    SetHandleInformation(
+                        handle as *mut std::ffi::c_void,
+                        HANDLE_FLAG_INHERIT,
+                        flags,
+                    )
+                };
+                if ok == 0 {
+                    let err = std::io::Error::last_os_error();
+                    if let Some(errno) = err.raw_os_error() {
+                        return raise_os_error_errno::<u64>(_py, errno as i64, "set_inheritable");
+                    }
+                    return raise_os_error::<u64>(_py, err, "set_inheritable");
+                }
+                return MoltObject::none().bits();
+            }
+            #[cfg(not(any(unix, windows)))]
+            {
+                raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "set_inheritable")
             }
         }
     })

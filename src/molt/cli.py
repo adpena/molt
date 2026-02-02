@@ -14,11 +14,12 @@ import shutil
 import subprocess
 import sys
 import tomllib
+import time
 import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from packaging.markers import InvalidMarker, Marker
 from packaging.requirements import InvalidRequirement, Requirement
@@ -201,12 +202,23 @@ def _resolve_python_exe(python_exe: str | None) -> str:
     return python_exe
 
 
+def _vendor_roots(project_root: Path) -> list[Path]:
+    vendor_root = project_root / "vendor"
+    roots: list[Path] = []
+    for name in ("packages", "local"):
+        candidate = vendor_root / name
+        if candidate.exists():
+            roots.append(candidate)
+    return roots
+
+
 def _base_env(root: Path, script_path: Path | None = None) -> dict[str, str]:
     env = os.environ.copy()
     paths = [env.get("PYTHONPATH", "")]
     if script_path is not None:
         paths.append(str(script_path.parent))
     paths.extend([str(root / "src"), str(root)])
+    paths.extend(str(path) for path in _vendor_roots(root))
     env["PYTHONPATH"] = os.pathsep.join(p for p in paths if p)
     return env
 
@@ -246,6 +258,53 @@ def _run_command(
         )
         _emit_json(payload, json_output=True)
     return result.returncode
+
+
+class _TimedResult(NamedTuple):
+    returncode: int
+    stdout: str
+    stderr: str
+    duration_s: float
+
+
+def _run_command_timed(
+    cmd: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    cwd: Path | None = None,
+    verbose: bool = False,
+    capture_output: bool = False,
+) -> _TimedResult:
+    cmd = [str(part) for part in cmd]
+    if verbose:
+        print(f"Running: {shlex.join(cmd)}")
+    start = time.perf_counter()
+    result = subprocess.run(
+        cmd,
+        env=env,
+        cwd=cwd,
+        capture_output=capture_output,
+        text=True,
+    )
+    duration = time.perf_counter() - start
+    return _TimedResult(
+        result.returncode,
+        result.stdout or "",
+        result.stderr or "",
+        duration,
+    )
+
+
+def _format_duration(seconds: float) -> str:
+    if seconds < 0:
+        seconds = 0.0
+    if seconds < 0.001:
+        return f"{seconds * 1_000_000:.0f} µs"
+    if seconds < 1:
+        return f"{seconds * 1000:.1f} ms"
+    if seconds < 60:
+        return f"{seconds:.3f} s"
+    return f"{seconds / 60:.2f} min"
 
 
 def _sha256_file(path: Path) -> str:
@@ -391,6 +450,69 @@ def _resolve_module_path(module_name: str, roots: list[Path]) -> Path | None:
     return None
 
 
+def _resolve_entry_module(
+    module_name: str, roots: list[Path]
+) -> tuple[str, Path] | None:
+    stripped = module_name.strip()
+    if not stripped:
+        return None
+    main_name = f"{stripped}.__main__"
+    main_path = _resolve_module_path(main_name, roots)
+    if main_path is not None:
+        return main_name, main_path
+    mod_path = _resolve_module_path(stripped, roots)
+    if mod_path is not None:
+        return stripped, mod_path
+    return None
+
+
+def _output_base_for_entry(entry_module: str, source_path: Path) -> str:
+    base = entry_module.rsplit(".", 1)[-1] or source_path.stem
+    if base == "__main__" and "." in entry_module:
+        base = entry_module.rsplit(".", 2)[-2]
+    return base
+
+
+def _resolve_module_roots(
+    project_root: Path,
+    cwd_root: Path,
+    *,
+    respect_pythonpath: bool,
+) -> list[Path]:
+    module_roots: list[Path] = []
+    extra_roots = os.environ.get("MOLT_MODULE_ROOTS", "")
+    if extra_roots:
+        for entry in extra_roots.split(os.pathsep):
+            if not entry:
+                continue
+            entry_path = Path(entry).expanduser()
+            if entry_path.exists():
+                module_roots.append(entry_path)
+    for root in (project_root, cwd_root):
+        if root.exists():
+            module_roots.append(root)
+        src_root = root / "src"
+        if src_root.exists():
+            module_roots.append(src_root)
+        module_roots.extend(_vendor_roots(root))
+    if respect_pythonpath:
+        pythonpath = os.environ.get("PYTHONPATH", "")
+        if pythonpath:
+            for entry in pythonpath.split(os.pathsep):
+                if not entry:
+                    continue
+                entry_path = Path(entry).expanduser()
+                if entry_path.exists():
+                    module_roots.append(entry_path)
+    return list(dict.fromkeys(root.resolve() for root in module_roots))
+
+
+def _build_args_respect_pythonpath(args: list[str]) -> bool:
+    if any(arg == "--no-respect-pythonpath" for arg in args):
+        return False
+    return any(arg == "--respect-pythonpath" for arg in args)
+
+
 def _has_namespace_dir(module_name: str, roots: list[Path]) -> bool:
     rel = Path(*module_name.split("."))
     for root in roots:
@@ -401,26 +523,101 @@ def _has_namespace_dir(module_name: str, roots: list[Path]) -> bool:
 
 
 def _collect_namespace_parents(
-    module_graph: dict[str, Path], roots: list[Path]
+    module_graph: dict[str, Path],
+    roots: list[Path],
+    explicit_imports: set[str] | None = None,
 ) -> set[str]:
     namespace_parents: set[str] = set()
+
+    def maybe_add(name: str) -> None:
+        if name in module_graph:
+            return
+        if _resolve_module_path(name, roots) is not None:
+            return
+        if _has_namespace_dir(name, roots):
+            namespace_parents.add(name)
+
     for module_name in module_graph:
         parts = module_name.split(".")
         for idx in range(1, len(parts)):
-            parent = ".".join(parts[:idx])
-            if parent in module_graph:
-                continue
-            if _resolve_module_path(parent, roots) is not None:
-                continue
-            if _has_namespace_dir(parent, roots):
-                namespace_parents.add(parent)
+            maybe_add(".".join(parts[:idx]))
+
+    if explicit_imports:
+        for name in explicit_imports:
+            for candidate in _expand_module_chain(name):
+                maybe_add(candidate)
     return namespace_parents
+
+
+def _namespace_paths(name: str, roots: list[Path]) -> list[str]:
+    rel = Path(*name.split("."))
+    paths: list[str] = []
+    for root in roots:
+        candidate = root / rel
+        if candidate.exists() and candidate.is_dir():
+            paths.append(str(candidate))
+    return list(dict.fromkeys(paths))
+
+
+def _write_namespace_module(name: str, paths: list[str], output_dir: Path) -> Path:
+    safe = name.replace(".", "_")
+    stub_path = output_dir / f"namespace_{safe}.py"
+    lines = [
+        '"""Auto-generated namespace package stub for Molt."""',
+        "",
+        f"__package__ = {name!r}",
+        f"__path__ = {paths!r}",
+        "try:",
+        "    spec = __spec__",
+        "except NameError:",
+        "    spec = None",
+        "if spec is not None:",
+        "    try:",
+        "        spec.submodule_search_locations = list(__path__)",
+        "    except Exception:",
+        "        pass",
+        "",
+    ]
+    stub_path.write_text("\n".join(lines))
+    return stub_path
+
+
+def _collect_package_parents(module_graph: dict[str, Path], roots: list[Path]) -> None:
+    changed = True
+    while changed:
+        changed = False
+        for module_name in list(module_graph):
+            parts = module_name.split(".")
+            for idx in range(1, len(parts)):
+                parent = ".".join(parts[:idx])
+                if parent in module_graph:
+                    continue
+                resolved = _resolve_module_path(parent, roots)
+                if resolved is None:
+                    continue
+                if resolved.name != "__init__.py":
+                    continue
+                module_graph[parent] = resolved
+                changed = True
 
 
 def _collect_imports(tree: ast.AST) -> list[str]:
     imports: list[str] = []
     needs_typing = False
     type_alias_cls = getattr(ast, "TypeAlias", None)
+
+    def _importlib_target(func: ast.expr) -> str | None:
+        if isinstance(func, ast.Attribute):
+            parts: list[str] = []
+            current: ast.expr | None = func
+            while isinstance(current, ast.Attribute):
+                parts.append(current.attr)
+                current = current.value
+            if isinstance(current, ast.Name):
+                parts.append(current.id)
+                return ".".join(reversed(parts))
+        return None
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -441,6 +638,13 @@ def _collect_imports(tree: ast.AST) -> list[str]:
             continue
         if type_alias_cls is not None and isinstance(node, type_alias_cls):
             needs_typing = True
+            continue
+        if isinstance(node, ast.Call) and node.args:
+            target = _importlib_target(node.func)
+            if target in {"importlib.import_module", "importlib.util.find_spec"}:
+                first = node.args[0]
+                if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                    imports.append(first.value)
             continue
     if needs_typing:
         imports.append("typing")
@@ -1266,6 +1470,9 @@ def _resolve_output_roots(
 ) -> tuple[Path, Path]:
     if out_dir is not None:
         return out_dir, out_dir
+    # TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): refactor
+    # build output defaults and flags to mirror Go's go build UX (single visible output,
+    # hide intermediates, and align -o semantics).
     artifacts_root = _default_build_root(output_base)
     bin_root = _default_molt_bin()
     artifacts_root.mkdir(parents=True, exist_ok=True)
@@ -1443,7 +1650,7 @@ def _detect_macos_deployment_target() -> str | None:
 
 
 def build(
-    file_path: str,
+    file_path: str | None,
     target: Target = "native",
     parse_codec: ParseCodec = "msgpack",
     type_hint_policy: TypeHintPolicy = "ignore",
@@ -1467,34 +1674,24 @@ def build(
     linked_output: str | None = None,
     require_linked: bool = False,
     respect_pythonpath: bool = False,
+    module: str | None = None,
 ) -> int:
     if profile not in {"dev", "release"}:
         return _fail(f"Invalid build profile: {profile}", json_output, command="build")
-    source_path = Path(file_path)
-    if not source_path.exists():
-        return _fail(f"File not found: {source_path}", json_output, command="build")
+    if file_path and module:
+        return _fail(
+            "Use a file path or --module, not both.", json_output, command="build"
+        )
+    if not file_path and not module:
+        return _fail("Missing entry file or module.", json_output, command="build")
 
     stdlib_root = Path("src/molt/stdlib")
     warnings: list[str] = []
-    try:
-        entry_source = source_path.read_text()
-    except OSError as exc:
-        return _fail(
-            f"Failed to read entry module {source_path}: {exc}",
-            json_output,
-            command="build",
-        )
-    try:
-        entry_tree = ast.parse(entry_source)
-    except SyntaxError as exc:
-        return _fail(
-            f"Syntax error in {source_path}: {exc}",
-            json_output,
-            command="build",
-        )
-    entry_imports = set(_collect_imports(entry_tree))
-    stub_parents = STUB_PARENT_MODULES - entry_imports
-    project_root = _find_project_root(source_path.resolve())
+    project_root = (
+        _find_project_root(Path(file_path).resolve())
+        if file_path
+        else _find_project_root(Path.cwd())
+    )
     lock_error = _check_lockfiles(
         project_root,
         json_output,
@@ -1530,10 +1727,22 @@ def build(
             if entry_path.exists():
                 module_roots.append(entry_path)
     for root in (project_root, cwd_root):
+        if root.exists():
+            module_roots.append(root)
         src_root = root / "src"
         if src_root.exists():
             module_roots.append(src_root)
-    module_roots.append(source_path.parent)
+        module_roots.extend(_vendor_roots(root))
+    source_path: Path | None = None
+    entry_module_name: str | None = None
+    entry_module_name: str | None = None
+    entry_module_name: str | None = None
+    entry_module: str | None = None
+    if file_path:
+        source_path = Path(file_path)
+        if not source_path.exists():
+            return _fail(f"File not found: {source_path}", json_output, command="build")
+        module_roots.append(source_path.parent)
     if respect_pythonpath:
         pythonpath = os.environ.get("PYTHONPATH", "")
         if pythonpath:
@@ -1544,14 +1753,48 @@ def build(
                 if entry_path.exists():
                     module_roots.append(entry_path)
     module_roots = list(dict.fromkeys(root.resolve() for root in module_roots))
+    if module:
+        resolved = _resolve_entry_module(module, module_roots)
+        if resolved is None:
+            return _fail(
+                f"Entry module not found: {module}",
+                json_output,
+                command="build",
+            )
+        entry_module, source_path = resolved
+        module_roots.append(source_path.parent.resolve())
+        module_roots = list(dict.fromkeys(module_roots))
+    elif source_path is not None:
+        entry_module = _module_name_from_path(source_path, module_roots, stdlib_root)
+    if source_path is None or entry_module is None:
+        return _fail("Failed to resolve entry module.", json_output, command="build")
+    try:
+        entry_source = source_path.read_text()
+    except OSError as exc:
+        return _fail(
+            f"Failed to read entry module {source_path}: {exc}",
+            json_output,
+            command="build",
+        )
+    try:
+        entry_tree = ast.parse(entry_source)
+    except SyntaxError as exc:
+        return _fail(
+            f"Syntax error in {source_path}: {exc}",
+            json_output,
+            command="build",
+        )
+    entry_imports = set(_collect_imports(entry_tree))
+    stub_parents = STUB_PARENT_MODULES - entry_imports
     roots = module_roots + [stdlib_root]
-    module_graph, _explicit_imports = _discover_module_graph(
+    module_graph, explicit_imports = _discover_module_graph(
         source_path,
         roots,
         module_roots,
         skip_modules=STUB_MODULES,
         stub_parents=stub_parents,
     )
+    _collect_package_parents(module_graph, roots)
     _ensure_core_stdlib_modules(module_graph, stdlib_root)
     spawn_enabled = False
     spawn_path = _resolve_module_path(ENTRY_OVERRIDE_SPAWN, [stdlib_root])
@@ -1566,19 +1809,28 @@ def build(
         )
         for name, path in spawn_graph.items():
             module_graph.setdefault(name, path)
-    namespace_parents = _collect_namespace_parents(module_graph, roots)
-    if namespace_parents:
-        stub_parents = stub_parents.union(namespace_parents)
+    namespace_parents = _collect_namespace_parents(
+        module_graph, roots, explicit_imports
+    )
     if verbose and not json_output:
         print(f"Project root: {project_root}")
         print(f"Module roots: {', '.join(str(root) for root in module_roots)}")
         print(f"Modules discovered: {len(module_graph)}")
-    entry_module = _module_name_from_path(source_path, module_roots, stdlib_root)
-    output_base = entry_module.rsplit(".", 1)[-1] or source_path.stem
+    output_base = _output_base_for_entry(entry_module, source_path)
     out_dir_path = _resolve_out_dir(project_root, out_dir)
     artifacts_root, bin_root = _resolve_output_roots(
         project_root, out_dir_path, output_base
     )
+    if namespace_parents:
+        namespace_modules: dict[str, Path] = {}
+        for name in sorted(namespace_parents):
+            paths = _namespace_paths(name, roots)
+            if not paths:
+                continue
+            stub_path = _write_namespace_module(name, paths, artifacts_root)
+            namespace_modules[name] = stub_path
+        if namespace_modules:
+            module_graph.update(namespace_modules)
     is_wasm = target == "wasm"
     if trusted and is_wasm:
         return _fail(
@@ -2782,24 +3034,54 @@ int main(int argc, char** argv) {
 
 
 def run_script(
-    file_path: str,
+    file_path: str | None,
+    module: str | None,
     python_exe: str | None,
     script_args: list[str],
     json_output: bool = False,
     verbose: bool = False,
     no_shims: bool = False,
     compiled: bool = False,
-    compiled_args: bool = False,
+    timing: bool = False,
     trusted: bool = False,
     capabilities: str | list[str] | None = None,
     build_args: list[str] | None = None,
 ) -> int:
-    source_path = Path(file_path)
-    if not source_path.exists():
-        return _fail(f"File not found: {source_path}", json_output, command="run")
-    root = _find_project_root(source_path.resolve())
+    if file_path and module:
+        return _fail(
+            "Use a file path or --module, not both.", json_output, command="run"
+        )
+    if not file_path and not module:
+        return _fail("Missing entry file or module.", json_output, command="run")
+    root = (
+        _find_project_root(Path(file_path).resolve())
+        if file_path
+        else _find_project_root(Path.cwd())
+    )
+    source_path: Path | None = None
+    entry_module_name: str | None = None
+    if file_path:
+        source_path = Path(file_path)
+        if not source_path.exists():
+            return _fail(f"File not found: {source_path}", json_output, command="run")
+    elif module and compiled:
+        cwd_root = _find_project_root(Path.cwd())
+        module_roots = _resolve_module_roots(
+            root,
+            cwd_root,
+            respect_pythonpath=_build_args_respect_pythonpath(build_args or []),
+        )
+        resolved = _resolve_entry_module(module, module_roots)
+        if resolved is None:
+            return _fail(
+                f"Entry module not found: {module}",
+                json_output,
+                command="run",
+            )
+        entry_module_name, source_path = resolved
     env = _base_env(root, source_path)
-    env.update(_collect_env_overrides(file_path))
+    if file_path:
+        env.update(_collect_env_overrides(file_path))
     if trusted:
         env["MOLT_TRUSTED"] = "1"
     if capabilities:
@@ -2823,33 +3105,64 @@ def run_script(
             else:
                 cap_arg = capabilities
             build_args.extend(["--capabilities", cap_arg])
-        build_cmd = [sys.executable, "-m", "molt.cli", "build", *build_args, file_path]
-        build_res = subprocess.run(
-            build_cmd,
-            env=env,
-            cwd=root,
-            capture_output=json_output,
-            text=json_output,
-        )
-        if build_res.returncode != 0:
-            if json_output:
-                data: dict[str, Any] = {"returncode": build_res.returncode}
-                if build_res.stdout:
-                    data["build_stdout"] = build_res.stdout
-                if build_res.stderr:
-                    data["build_stderr"] = build_res.stderr
-                payload = _json_payload(
-                    "run",
-                    "error",
-                    data=data,
-                    errors=["build failed"],
-                )
-                _emit_json(payload, json_output=True)
-            elif build_res.stdout:
-                print(build_res.stdout, end="")
-                if build_res.stderr:
-                    print(build_res.stderr, end="", file=sys.stderr)
-            return build_res.returncode
+        build_cmd = [sys.executable, "-m", "molt.cli", "build", *build_args]
+        if module:
+            build_cmd.extend(["--module", module])
+        else:
+            build_cmd.append(file_path)
+        if timing:
+            build_res = _run_command_timed(
+                build_cmd,
+                env=env,
+                cwd=root,
+                verbose=verbose,
+                capture_output=json_output,
+            )
+            if build_res.returncode != 0:
+                if json_output:
+                    data: dict[str, Any] = {
+                        "returncode": build_res.returncode,
+                        "timing": {"build_s": build_res.duration_s},
+                    }
+                    if build_res.stdout:
+                        data["build_stdout"] = build_res.stdout
+                    if build_res.stderr:
+                        data["build_stderr"] = build_res.stderr
+                    payload = _json_payload(
+                        "run",
+                        "error",
+                        data=data,
+                        errors=["build failed"],
+                    )
+                    _emit_json(payload, json_output=True)
+                return build_res.returncode
+        else:
+            build_res = subprocess.run(
+                build_cmd,
+                env=env,
+                cwd=root,
+                capture_output=json_output,
+                text=json_output,
+            )
+            if build_res.returncode != 0:
+                if json_output:
+                    data = {"returncode": build_res.returncode}
+                    if build_res.stdout:
+                        data["build_stdout"] = build_res.stdout
+                    if build_res.stderr:
+                        data["build_stderr"] = build_res.stderr
+                    payload = _json_payload(
+                        "run",
+                        "error",
+                        data=data,
+                        errors=["build failed"],
+                    )
+                    _emit_json(payload, json_output=True)
+                elif build_res.stdout:
+                    print(build_res.stdout, end="")
+                    if build_res.stderr:
+                        print(build_res.stderr, end="", file=sys.stderr)
+                return build_res.returncode
         emit_arg = _extract_emit_arg(build_args)
         if emit_arg and emit_arg != "bin":
             return _fail(
@@ -2860,36 +3173,93 @@ def run_script(
         output_binary = _extract_output_arg(build_args)
         out_dir = _extract_out_dir_arg(build_args)
         out_dir_path = _resolve_out_dir(root, out_dir)
+        if entry_module_name is None:
+            cwd_root = _find_project_root(Path.cwd())
+            module_roots = _resolve_module_roots(
+                root,
+                cwd_root,
+                respect_pythonpath=_build_args_respect_pythonpath(build_args),
+            )
+            if source_path is not None:
+                module_roots.append(source_path.parent.resolve())
+                module_roots = list(dict.fromkeys(module_roots))
+                entry_module_name = _module_name_from_path(
+                    source_path, module_roots, Path("src/molt/stdlib")
+                )
+        if entry_module_name is None or source_path is None:
+            return _fail("Failed to resolve entry module.", json_output, command="run")
+        output_base = _output_base_for_entry(entry_module_name, source_path)
         _artifacts_root, bin_root = _resolve_output_roots(
-            root, out_dir_path, source_path.stem
+            root, out_dir_path, output_base
         )
         output_binary = _resolve_output_path(
             str(output_binary) if output_binary is not None else None,
-            bin_root / f"{source_path.stem}_molt",
+            bin_root / f"{output_base}_molt",
             out_dir=out_dir_path,
             project_root=root,
         )
-        # TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): plumb argv support for compiled
-        # binaries once the runtime exposes argument handling.
-        ignored_warning = None
-        if script_args and not compiled_args:
-            ignored_warning = "Ignoring script args for compiled binary run."
-            if verbose and not json_output:
-                print(ignored_warning)
+        if timing:
+            run_res = _run_command_timed(
+                [str(output_binary), *script_args],
+                env=env,
+                cwd=root,
+                verbose=verbose,
+                capture_output=json_output,
+            )
+            if json_output:
+                data = {
+                    "returncode": run_res.returncode,
+                    "timing": {
+                        "build_s": build_res.duration_s,
+                        "run_s": run_res.duration_s,
+                        "total_s": build_res.duration_s + run_res.duration_s,
+                    },
+                }
+                if run_res.stdout:
+                    data["stdout"] = run_res.stdout
+                if run_res.stderr:
+                    data["stderr"] = run_res.stderr
+                payload = _json_payload(
+                    "run",
+                    "ok" if run_res.returncode == 0 else "error",
+                    data=data,
+                )
+                _emit_json(payload, json_output=True)
+            else:
+                print("Timing (compiled):", file=sys.stderr)
+                print(
+                    f"- build: {_format_duration(build_res.duration_s)}",
+                    file=sys.stderr,
+                )
+                print(
+                    f"- run: {_format_duration(run_res.duration_s)}",
+                    file=sys.stderr,
+                )
+                total = build_res.duration_s + run_res.duration_s
+                print(f"- total: {_format_duration(total)}", file=sys.stderr)
+            return run_res.returncode
         return _run_command(
-            [str(output_binary), *script_args]
-            if compiled_args
-            else [str(output_binary)],
+            [str(output_binary), *script_args],
             env=env,
             cwd=root,
             json_output=json_output,
             verbose=verbose,
             label="run",
-            warnings=[ignored_warning] if ignored_warning else None,
         )
 
     python_exe = _resolve_python_exe(python_exe)
-    if no_shims:
+    if module:
+        if no_shims:
+            cmd = [python_exe, "-m", module, *script_args]
+        else:
+            bootstrap = (
+                "import runpy, sys; "
+                "import molt.shims as shims; "
+                "shims.install(); "
+                "runpy.run_module(sys.argv[1], run_name='__main__')"
+            )
+            cmd = [python_exe, "-c", bootstrap, module, *script_args]
+    elif no_shims:
         cmd = [python_exe, str(source_path), *script_args]
     else:
         bootstrap = (
@@ -2899,6 +3269,34 @@ def run_script(
             "runpy.run_path(sys.argv[1], run_name='__main__')"
         )
         cmd = [python_exe, "-c", bootstrap, str(source_path), *script_args]
+    if timing:
+        run_res = _run_command_timed(
+            cmd,
+            env=env,
+            cwd=root,
+            verbose=verbose,
+            capture_output=json_output,
+        )
+        if json_output:
+            data = {
+                "returncode": run_res.returncode,
+                "timing": {"run_s": run_res.duration_s},
+            }
+            if run_res.stdout:
+                data["stdout"] = run_res.stdout
+            if run_res.stderr:
+                data["stderr"] = run_res.stderr
+            payload = _json_payload(
+                "run",
+                "ok" if run_res.returncode == 0 else "error",
+                data=data,
+            )
+            _emit_json(payload, json_output=True)
+        else:
+            label = "CPython (shims)" if not no_shims else "CPython"
+            print(f"Timing ({label}):", file=sys.stderr)
+            print(f"- run: {_format_duration(run_res.duration_s)}", file=sys.stderr)
+        return run_res.returncode
     return _run_command(
         cmd,
         env=env,
@@ -2907,6 +3305,270 @@ def run_script(
         verbose=verbose,
         label="run",
     )
+
+
+def compare(
+    file_path: str | None,
+    module: str | None,
+    python_exe: str | None,
+    script_args: list[str],
+    json_output: bool = False,
+    verbose: bool = False,
+    shims: bool = False,
+    trusted: bool = False,
+    capabilities: str | list[str] | None = None,
+    build_args: list[str] | None = None,
+    rebuild: bool = False,
+) -> int:
+    if file_path and module:
+        return _fail(
+            "Use a file path or --module, not both.",
+            json_output,
+            command="compare",
+        )
+    if not file_path and not module:
+        return _fail("Missing entry file or module.", json_output, command="compare")
+    source_path: Path | None = None
+    if file_path:
+        source_path = Path(file_path)
+        if not source_path.exists():
+            return _fail(
+                f"File not found: {source_path}", json_output, command="compare"
+            )
+    root = (
+        _find_project_root(Path(file_path).resolve())
+        if file_path
+        else _find_project_root(Path.cwd())
+    )
+    env = _base_env(root, source_path)
+    if file_path:
+        env.update(_collect_env_overrides(file_path))
+    if trusted:
+        env["MOLT_TRUSTED"] = "1"
+    if capabilities:
+        parsed, _profiles, _source, errors = _parse_capabilities(capabilities)
+        if errors:
+            return _fail(
+                "Invalid capabilities: " + ", ".join(errors),
+                json_output,
+                command="compare",
+            )
+        if parsed is not None:
+            env["MOLT_CAPABILITIES"] = ",".join(parsed)
+
+    python_exe = _resolve_python_exe(python_exe)
+    if module:
+        if shims:
+            bootstrap = (
+                "import runpy, sys; "
+                "import molt.shims as shims; "
+                "shims.install(); "
+                "runpy.run_module(sys.argv[1], run_name='__main__')"
+            )
+            cpy_cmd = [python_exe, "-c", bootstrap, module, *script_args]
+        else:
+            cpy_cmd = [python_exe, "-m", module, *script_args]
+    elif shims:
+        bootstrap = (
+            "import runpy, sys; "
+            "import molt.shims as shims; "
+            "shims.install(); "
+            "runpy.run_path(sys.argv[1], run_name='__main__')"
+        )
+        cpy_cmd = [python_exe, "-c", bootstrap, str(source_path), *script_args]
+    else:
+        cpy_cmd = [python_exe, str(source_path), *script_args]
+    cpy_res = _run_command_timed(
+        cpy_cmd,
+        env=env,
+        cwd=root,
+        verbose=verbose,
+        capture_output=True,
+    )
+
+    build_args = list(build_args or [])
+    if rebuild and not _build_args_has_cache_flag(build_args):
+        build_args.append("--no-cache")
+    if trusted and not _build_args_has_trusted_flag(build_args):
+        build_args.append("--trusted")
+    if capabilities and not _build_args_has_capabilities_flag(build_args):
+        if isinstance(capabilities, list):
+            cap_arg = ",".join(capabilities)
+        else:
+            cap_arg = capabilities
+        build_args.extend(["--capabilities", cap_arg])
+    emit_arg = _extract_emit_arg(build_args)
+    if emit_arg and emit_arg != "bin":
+        return _fail(
+            f"Compare requires emit=bin (got {emit_arg})",
+            json_output,
+            command="compare",
+        )
+    build_cmd = [
+        sys.executable,
+        "-m",
+        "molt.cli",
+        "build",
+        "--json",
+        *build_args,
+    ]
+    if module:
+        build_cmd.extend(["--module", module])
+    else:
+        build_cmd.append(file_path)
+    build_res = _run_command_timed(
+        build_cmd,
+        env=env,
+        cwd=root,
+        verbose=verbose,
+        capture_output=True,
+    )
+    if build_res.returncode != 0:
+        if json_output:
+            data: dict[str, Any] = {
+                "returncode": build_res.returncode,
+                "timing": {"build_s": build_res.duration_s},
+            }
+            if build_res.stdout:
+                data["build_stdout"] = build_res.stdout
+            if build_res.stderr:
+                data["build_stderr"] = build_res.stderr
+            payload = _json_payload(
+                "compare",
+                "error",
+                data=data,
+                errors=["build failed"],
+            )
+            _emit_json(payload, json_output=True)
+        else:
+            err = build_res.stderr or build_res.stdout
+            if err:
+                print(err, end="", file=sys.stderr)
+        return build_res.returncode
+
+    try:
+        build_payload = json.loads(build_res.stdout.strip() or "{}")
+    except json.JSONDecodeError:
+        return _fail(
+            "Failed to parse build JSON output.", json_output, command="compare"
+        )
+    output_str = build_payload.get("data", {}).get("output") or build_payload.get(
+        "output"
+    )
+    if not output_str:
+        return _fail(
+            "Build output missing in JSON payload.", json_output, command="compare"
+        )
+    output_path = _resolve_binary_output(output_str)
+    if output_path is None:
+        return _fail(
+            f"Compiled binary not found at {output_str}.",
+            json_output,
+            command="compare",
+        )
+
+    molt_res = _run_command_timed(
+        [str(output_path), *script_args],
+        env=env,
+        cwd=root,
+        verbose=verbose,
+        capture_output=True,
+    )
+
+    stdout_match = cpy_res.stdout == molt_res.stdout
+    stderr_match = cpy_res.stderr == molt_res.stderr
+    exit_match = cpy_res.returncode == molt_res.returncode
+    compare_ok = stdout_match and stderr_match and exit_match
+
+    if json_output:
+        data = {
+            "entry": str(source_path),
+            "python": python_exe,
+            "output": str(output_path),
+            "returncodes": {
+                "cpython": cpy_res.returncode,
+                "molt": molt_res.returncode,
+                "build": build_res.returncode,
+            },
+            "match": {
+                "stdout": stdout_match,
+                "stderr": stderr_match,
+                "exitcode": exit_match,
+            },
+            "timing": {
+                "cpython_run_s": cpy_res.duration_s,
+                "molt_build_s": build_res.duration_s,
+                "molt_run_s": molt_res.duration_s,
+                "molt_total_s": build_res.duration_s + molt_res.duration_s,
+            },
+            "cpython_stdout": cpy_res.stdout,
+            "cpython_stderr": cpy_res.stderr,
+            "molt_stdout": molt_res.stdout,
+            "molt_stderr": molt_res.stderr,
+        }
+        payload = _json_payload(
+            "compare",
+            "ok" if compare_ok else "error",
+            data=data,
+        )
+        _emit_json(payload, json_output=True)
+        return 0 if compare_ok else 1
+
+    print("Compare (CPython vs Molt):")
+    print(
+        f"- CPython run: {_format_duration(cpy_res.duration_s)} "
+        f"(rc={cpy_res.returncode})"
+    )
+    print(f"- Molt build: {_format_duration(build_res.duration_s)}")
+    print(
+        f"- Molt run: {_format_duration(molt_res.duration_s)} "
+        f"(rc={molt_res.returncode})"
+    )
+    total = build_res.duration_s + molt_res.duration_s
+    print(f"- Molt total: {_format_duration(total)}")
+    if cpy_res.duration_s > 0 and molt_res.duration_s > 0:
+        speedup = cpy_res.duration_s / molt_res.duration_s
+        print(f"- Molt speedup (run): {speedup:.2f}x")
+    print(
+        "- Output match: "
+        f"stdout={'yes' if stdout_match else 'no'}, "
+        f"stderr={'yes' if stderr_match else 'no'}, "
+        f"exitcode={'yes' if exit_match else 'no'}"
+    )
+    if not compare_ok:
+        if not stdout_match:
+            print(
+                f"- Stdout mismatch: CPython={len(cpy_res.stdout)} bytes, "
+                f"Molt={len(molt_res.stdout)} bytes"
+            )
+        if not stderr_match:
+            print(
+                f"- Stderr mismatch: CPython={len(cpy_res.stderr)} bytes, "
+                f"Molt={len(molt_res.stderr)} bytes"
+            )
+        if not exit_match:
+            print(
+                f"- Exitcode mismatch: CPython={cpy_res.returncode}, "
+                f"Molt={molt_res.returncode}"
+            )
+        if verbose:
+            print("CPython stdout:")
+            print(cpy_res.stdout, end="" if cpy_res.stdout.endswith("\n") else "\n")
+            print("Molt stdout:")
+            print(molt_res.stdout, end="" if molt_res.stdout.endswith("\n") else "\n")
+            print("CPython stderr:", file=sys.stderr)
+            print(
+                cpy_res.stderr,
+                end="" if cpy_res.stderr.endswith("\n") else "\n",
+                file=sys.stderr,
+            )
+            print("Molt stderr:", file=sys.stderr)
+            print(
+                molt_res.stderr,
+                end="" if molt_res.stderr.endswith("\n") else "\n",
+                file=sys.stderr,
+            )
+    return 0 if compare_ok else 1
 
 
 def diff(
@@ -2986,12 +3648,16 @@ def test(
 def bench(
     wasm: bool,
     bench_args: list[str],
+    bench_script: list[str] | None = None,
     json_output: bool = False,
     verbose: bool = False,
 ) -> int:
     root = _find_project_root(Path.cwd())
     tool = "tools/bench_wasm.py" if wasm else "tools/bench.py"
-    cmd = [sys.executable, tool, *bench_args]
+    cmd = [sys.executable, tool]
+    for script in bench_script or []:
+        cmd.extend(["--script", script])
+    cmd.extend(bench_args)
     return _run_command(
         cmd,
         cwd=root,
@@ -3910,6 +4576,7 @@ def show_config(
     pyproject = config_root / "pyproject.toml"
     build_cfg = _resolve_build_config(config)
     run_cfg = _resolve_command_config(config, "run")
+    compare_cfg = _resolve_command_config(config, "compare")
     test_cfg = _resolve_command_config(config, "test")
     diff_cfg = _resolve_command_config(config, "diff")
     caps_cfg = _resolve_capabilities_config(config)
@@ -3921,6 +4588,7 @@ def show_config(
         },
         "build": build_cfg,
         "run": run_cfg,
+        "compare": compare_cfg,
         "test": test_cfg,
         "diff": diff_cfg,
         "capabilities": caps_cfg,
@@ -3958,6 +4626,12 @@ def show_config(
             print(f"- {key}: {run_cfg[key]}")
     else:
         print("Run defaults: none")
+    if compare_cfg:
+        print("Compare defaults:")
+        for key in sorted(compare_cfg):
+            print(f"- {key}: {compare_cfg[key]}")
+    else:
+        print("Compare defaults: none")
     if test_cfg:
         print("Test defaults:")
         for key in sorted(test_cfg):
@@ -3985,6 +4659,7 @@ def _completion_script(shell: str) -> str:
         "build",
         "check",
         "run",
+        "compare",
         "test",
         "diff",
         "bench",
@@ -4002,6 +4677,7 @@ def _completion_script(shell: str) -> str:
     ]
     options = {
         "build": [
+            "--module",
             "--target",
             "--codec",
             "--type-hints",
@@ -4033,11 +4709,26 @@ def _completion_script(shell: str) -> str:
         "run": [
             "--python",
             "--python-version",
+            "--module",
             "--no-shims",
             "--compiled",
             "--build-arg",
             "--rebuild",
-            "--compiled-args",
+            "--timing",
+            "--capabilities",
+            "--trusted",
+            "--no-trusted",
+            "--json",
+            "--verbose",
+        ],
+        "compare": [
+            "--python",
+            "--python-version",
+            "--module",
+            "--shims",
+            "--no-shims",
+            "--build-arg",
+            "--rebuild",
             "--capabilities",
             "--trusted",
             "--no-trusted",
@@ -4059,7 +4750,7 @@ def _completion_script(shell: str) -> str:
             "--json",
             "--verbose",
         ],
-        "bench": ["--wasm", "--json", "--verbose"],
+        "bench": ["--wasm", "--script", "--json", "--verbose"],
         "profile": ["--json", "--verbose"],
         "lint": ["--json", "--verbose"],
         "doctor": ["--strict", "--json", "--verbose"],
@@ -4242,6 +4933,16 @@ def _build_args_has_cache_flag(args: list[str]) -> bool:
     return False
 
 
+def _resolve_binary_output(path_str: str) -> Path | None:
+    path = Path(path_str)
+    if path.exists():
+        return path
+    fallback = path.with_suffix(".exe")
+    if fallback.exists():
+        return fallback
+    return None
+
+
 def _build_args_has_trusted_flag(args: list[str]) -> bool:
     for arg in args:
         if arg in {"--trusted", "--no-trusted"}:
@@ -4261,7 +4962,11 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     build_parser = subparsers.add_parser("build", help="Compile a Python file")
-    build_parser.add_argument("file", help="Path to Python source")
+    build_parser.add_argument("file", nargs="?", help="Path to Python source")
+    build_parser.add_argument(
+        "--module",
+        help="Entry module name (uses pkg.__main__ when present).",
+    )
     build_parser.add_argument(
         "--target",
         default=None,
@@ -4418,7 +5123,11 @@ def main() -> int:
     run_parser = subparsers.add_parser(
         "run", help="Run Python via CPython with Molt shims"
     )
-    run_parser.add_argument("file", help="Path to Python source")
+    run_parser.add_argument("file", nargs="?", help="Path to Python source")
+    run_parser.add_argument(
+        "--module",
+        help="Entry module name (uses pkg.__main__ when present).",
+    )
     run_parser.add_argument(
         "--python",
         help="Python interpreter (path) or version (e.g. 3.12).",
@@ -4449,9 +5158,9 @@ def main() -> int:
         help="Disable build cache when using --compiled.",
     )
     run_parser.add_argument(
-        "--compiled-args",
+        "--timing",
         action="store_true",
-        help="Pass argv through to compiled binaries (runtime support pending).",
+        help="Emit timing summary (compile + run for --compiled).",
     )
     run_parser.add_argument(
         "--capabilities",
@@ -4470,6 +5179,61 @@ def main() -> int:
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
     run_parser.add_argument(
+        "script_args",
+        nargs=argparse.REMAINDER,
+        help="Arguments passed to the script (use -- to separate).",
+    )
+
+    compare_parser = subparsers.add_parser(
+        "compare", help="Compare CPython vs Molt outputs and timing"
+    )
+    compare_parser.add_argument("file", nargs="?", help="Path to Python source")
+    compare_parser.add_argument(
+        "--module",
+        help="Entry module name (uses pkg.__main__ when present).",
+    )
+    compare_parser.add_argument(
+        "--python",
+        help="Python interpreter (path) or version (e.g. 3.12).",
+    )
+    compare_parser.add_argument(
+        "--python-version",
+        help="Python version alias (e.g. 3.12).",
+    )
+    compare_parser.add_argument(
+        "--shims",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable Molt shims for the CPython run.",
+    )
+    compare_parser.add_argument(
+        "--build-arg",
+        action="append",
+        default=[],
+        help="Extra args passed to `molt build` for the Molt side.",
+    )
+    compare_parser.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="Disable build cache for the Molt build.",
+    )
+    compare_parser.add_argument(
+        "--capabilities",
+        help="Capability profiles/tokens or path to manifest (toml/json).",
+    )
+    compare_parser.add_argument(
+        "--trusted",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Disable capability checks for trusted deployments.",
+    )
+    compare_parser.add_argument(
+        "--json", action="store_true", help="Emit JSON output for tooling."
+    )
+    compare_parser.add_argument(
+        "--verbose", action="store_true", help="Emit verbose diagnostics."
+    )
+    compare_parser.add_argument(
         "script_args",
         nargs=argparse.REMAINDER,
         help="Arguments passed to the script (use -- to separate).",
@@ -4528,6 +5292,13 @@ def main() -> int:
     bench_parser = subparsers.add_parser("bench", help="Run benchmark suites")
     bench_parser.add_argument(
         "--wasm", action="store_true", help="Use the WASM bench harness."
+    )
+    bench_parser.add_argument(
+        "--script",
+        action="append",
+        dest="bench_script",
+        default=[],
+        help="Benchmark a custom script path (repeatable).",
     )
     bench_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."
@@ -4870,6 +5641,12 @@ def main() -> int:
         capabilities = (
             args.capabilities or build_cfg.get("capabilities") or cfg_capabilities
         )
+        if args.file and args.module:
+            return _fail(
+                "Use a file path or --module, not both.", args.json, command="build"
+            )
+        if not args.file and not args.module:
+            return _fail("Missing entry file or module.", args.json, command="build")
         return build(
             args.file,
             target,
@@ -4895,6 +5672,7 @@ def main() -> int:
             linked_output_path,
             require_linked,
             respect_pythonpath,
+            args.module,
         )
     if args.command == "check":
         return check(args.path, args.output, args.strict, args.json, args.verbose)
@@ -4911,16 +5689,39 @@ def main() -> int:
         )
         return run_script(
             args.file,
+            args.module,
             python_exe,
             _strip_leading_double_dash(args.script_args),
             args.json,
             args.verbose,
             args.no_shims,
             args.compiled,
-            args.compiled_args,
+            args.timing,
             trusted,
             capabilities,
             build_args,
+        )
+    if args.command == "compare":
+        python_exe = args.python or args.python_version
+        build_args = _strip_leading_double_dash(args.build_arg)
+        trusted = args.trusted
+        if trusted is None:
+            trusted = _coerce_bool(run_cfg.get("trusted"), False)
+        capabilities = (
+            args.capabilities or run_cfg.get("capabilities") or cfg_capabilities
+        )
+        return compare(
+            args.file,
+            args.module,
+            python_exe,
+            _strip_leading_double_dash(args.script_args),
+            args.json,
+            args.verbose,
+            args.shims,
+            trusted,
+            capabilities,
+            build_args,
+            args.rebuild,
         )
     if args.command == "test":
         pytest_args = _strip_leading_double_dash(args.pytest_args)
@@ -4953,6 +5754,7 @@ def main() -> int:
         return bench(
             args.wasm,
             _strip_leading_double_dash(args.bench_args),
+            args.bench_script,
             args.json,
             args.verbose,
         )

@@ -6,9 +6,33 @@ while keeping implementation small, explicit, and deterministic.
 
 from __future__ import annotations
 
-import collections.abc as _abc
+try:
+    import _collections_abc as _abc
+except Exception:
+
+    class _FallbackABC:
+        __slots__ = ()
+
+    class _Iterable(_FallbackABC):
+        pass
+
+    class _Iterator(_Iterable):
+        pass
+
+    class _MutableMapping(_FallbackABC):
+        pass
+
+    class _Callable(_FallbackABC):
+        pass
+
+    class _abc:
+        Iterable = _Iterable
+        Iterator = _Iterator
+        MutableMapping = _MutableMapping
+        Callable = _Callable
+
+
 import sys as _sys
-import types as _types
 
 TYPE_CHECKING = False
 
@@ -59,7 +83,10 @@ __all__ = [
 ]
 
 _NoneType = type(None)
-_UnionType = getattr(_types, "UnionType", None)
+try:
+    _UnionType = type(int | str)
+except Exception:
+    _UnionType = None
 
 
 def _as_tuple(params: object) -> tuple[object, ...]:
@@ -311,6 +338,14 @@ NotRequired = _SpecialForm(
 Iterable = _SpecialGenericAlias(_abc.Iterable, "Iterable")
 Iterator = _SpecialGenericAlias(_abc.Iterator, "Iterator")
 MutableMapping = _SpecialGenericAlias(_abc.MutableMapping, "MutableMapping")
+
+_types_mod = _sys.modules.get("types")
+if _types_mod is not None:
+    try:
+        _types_mod.Any = Any
+        _types_mod.Iterable = Iterable
+    except Exception:
+        pass
 
 List = _SpecialGenericAlias(list, "List")
 Dict = _SpecialGenericAlias(dict, "Dict")

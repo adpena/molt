@@ -40,6 +40,7 @@
 - Automated generation of Markdown tables and graphs in `docs/benchmarks/`.
 - Regression alerts in CI.
 - `tools/bench.py` writes JSON results under `bench/results/` and supports baseline comparisons via `bench/baseline.json`.
+- `tools/bench.py --script <path>` (or `molt bench --script <path>`) benchmarks a custom script outside the curated suite.
 - `tools/bench.py` runs warmup iterations (default 1, or 0 for `--smoke`) and records Molt compile time in `molt_build_s` separate from `molt_time_s` run time.
 - `tools/bench_wasm.py` uses the same warmup defaults and records wasm compile time in `molt_wasm_build_s`.
 - `tools/bench_report.py` combines `bench/results/bench.json` and `bench/results/bench_wasm.json` into `docs/benchmarks/bench_summary.md`.

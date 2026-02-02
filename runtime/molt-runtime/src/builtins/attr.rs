@@ -12,19 +12,20 @@ use crate::{
     class_bases_vec, class_dict_bits, class_layout_version_bits, class_mro_ref, class_mro_vec,
     class_name_bits, class_name_for_error, classmethod_func_bits, dataclass_desc_ptr,
     dataclass_dict_bits, dataclass_fields_ref, dataclass_set_dict_bits, dec_ref_bits,
-    dict_get_in_place, dict_order, dict_set_in_place, exception_dict_bits, exception_pending,
-    header_from_obj_ptr, inc_ref_bits, instance_dict_bits, instance_set_dict_bits,
-    intern_static_name, is_builtin_class_bits, is_missing_bits, is_truthy, maybe_ptr_from_bits,
-    module_dict_bits, molt_awaitable_await,
-    molt_bound_method_new, molt_exception_clear, molt_exception_kind, molt_exception_last,
+    dict_get_in_place, dict_order, dict_set_in_place, exception_class_bits, exception_dict_bits,
+    exception_kind_bits, exception_pending, exception_type_bits_from_name, header_from_obj_ptr,
+    inc_ref_bits, instance_dict_bits, instance_set_dict_bits, intern_static_name,
+    is_builtin_class_bits, is_missing_bits, is_truthy, issubclass_bits, maybe_ptr_from_bits,
+    module_dict_bits, molt_awaitable_await, molt_bound_method_new, molt_exception_last,
+    clear_exception,
     molt_iter, molt_iter_next, obj_eq, obj_from_bits, object_class_bits, object_field_get_ptr_raw,
     object_type_id, property_get_bits, raise_exception, runtime_state, seq_vec_ref,
     staticmethod_func_bits, string_obj_to_owned, type_name, type_of_bits, TYPE_ID_CALL_ITER,
     TYPE_ID_CLASSMETHOD, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_DICT_ITEMS_VIEW,
-    TYPE_ID_DICT_KEYS_VIEW, TYPE_ID_DICT_VALUES_VIEW, TYPE_ID_ENUMERATE, TYPE_ID_FILE_HANDLE,
-    TYPE_ID_FILTER, TYPE_ID_FUNCTION, TYPE_ID_GENERATOR, TYPE_ID_ITER, TYPE_ID_LIST, TYPE_ID_MAP,
-    TYPE_ID_OBJECT, TYPE_ID_PROPERTY, TYPE_ID_REVERSED, TYPE_ID_STATICMETHOD, TYPE_ID_STRING,
-    TYPE_ID_TUPLE, TYPE_ID_TYPE, TYPE_ID_ZIP,
+    TYPE_ID_DICT_KEYS_VIEW, TYPE_ID_DICT_VALUES_VIEW, TYPE_ID_ENUMERATE, TYPE_ID_EXCEPTION,
+    TYPE_ID_FILE_HANDLE, TYPE_ID_FILTER, TYPE_ID_FUNCTION, TYPE_ID_GENERATOR, TYPE_ID_ITER,
+    TYPE_ID_LIST, TYPE_ID_MAP, TYPE_ID_OBJECT, TYPE_ID_PROPERTY, TYPE_ID_REVERSED,
+    TYPE_ID_STATICMETHOD, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE, TYPE_ID_ZIP,
 };
 
 struct AttrNameCacheEntry {
@@ -305,17 +306,38 @@ pub(crate) fn raise_attr_name_type_error(_py: &PyToken<'_>, name_bits: u64) -> u
     raise_exception(_py, "TypeError", &msg)
 }
 
+pub(crate) fn exception_is_attribute_error(_py: &PyToken<'_>, exc_bits: u64) -> bool {
+    crate::gil_assert();
+    let exc_obj = obj_from_bits(exc_bits);
+    let Some(exc_ptr) = exc_obj.as_ptr() else {
+        return false;
+    };
+    unsafe {
+        if object_type_id(exc_ptr) != TYPE_ID_EXCEPTION {
+            return false;
+        }
+        let class_bits = exception_class_bits(exc_ptr);
+        if class_bits != 0 {
+            let attr_error_bits = exception_type_bits_from_name(_py, "AttributeError");
+            if attr_error_bits != 0 && issubclass_bits(class_bits, attr_error_bits) {
+                return true;
+            }
+        }
+        let kind_bits = exception_kind_bits(exc_ptr);
+        let kind = string_obj_to_owned(obj_from_bits(kind_bits));
+        kind.as_deref() == Some("AttributeError")
+    }
+}
+
 pub(crate) fn clear_attribute_error_if_pending(_py: &PyToken<'_>) -> bool {
     crate::gil_assert();
     if !exception_pending(_py) {
         return false;
     }
     let exc_bits = molt_exception_last();
-    let kind_bits = molt_exception_kind(exc_bits);
-    let kind = string_obj_to_owned(obj_from_bits(kind_bits));
-    dec_ref_bits(_py, kind_bits);
-    if kind.as_deref() == Some("AttributeError") {
-        molt_exception_clear();
+    let is_attr = exception_is_attribute_error(_py, exc_bits);
+    if is_attr {
+        clear_exception(_py);
         dec_ref_bits(_py, exc_bits);
         return true;
     }
@@ -585,31 +607,51 @@ pub(crate) unsafe fn class_field_offset(
     attr_bits: u64,
 ) -> Option<usize> {
     crate::gil_assert();
-    let dict_bits = class_dict_bits(class_ptr);
-    let dict_ptr = obj_from_bits(dict_bits).as_ptr()?;
-    if object_type_id(dict_ptr) != TYPE_ID_DICT {
-        return None;
-    }
     let fields_bits = intern_static_name(
         _py,
         &runtime_state(_py).interned.field_offsets_name,
         b"__molt_field_offsets__",
     );
-    let offsets_bits = dict_get_in_place(_py, dict_ptr, fields_bits)?;
-    let offsets_ptr = obj_from_bits(offsets_bits).as_ptr()?;
-    if object_type_id(offsets_ptr) != TYPE_ID_DICT {
-        return None;
-    }
-    let offset_bits = dict_get_in_place(_py, offsets_ptr, attr_bits)?;
-    obj_from_bits(offset_bits).as_int().and_then(
-        |val| {
+    let mro: Cow<'_, [u64]> = if let Some(mro) = class_mro_ref(class_ptr) {
+        Cow::Borrowed(mro.as_slice())
+    } else {
+        Cow::Owned(class_mro_vec(MoltObject::from_ptr(class_ptr).bits()))
+    };
+    for class_bits in mro.iter().copied() {
+        let Some(current_ptr) = obj_from_bits(class_bits).as_ptr() else {
+            continue;
+        };
+        if object_type_id(current_ptr) != TYPE_ID_TYPE {
+            continue;
+        }
+        let dict_bits = class_dict_bits(current_ptr);
+        let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+            continue;
+        };
+        if object_type_id(dict_ptr) != TYPE_ID_DICT {
+            continue;
+        }
+        let Some(offsets_bits) = dict_get_in_place(_py, dict_ptr, fields_bits) else {
+            continue;
+        };
+        let Some(offsets_ptr) = obj_from_bits(offsets_bits).as_ptr() else {
+            continue;
+        };
+        if object_type_id(offsets_ptr) != TYPE_ID_DICT {
+            continue;
+        }
+        let Some(offset_bits) = dict_get_in_place(_py, offsets_ptr, attr_bits) else {
+            continue;
+        };
+        return obj_from_bits(offset_bits).as_int().and_then(|val| {
             if val >= 0 {
                 Some(val as usize)
             } else {
                 None
             }
-        },
-    )
+        });
+    }
+    None
 }
 
 pub(crate) unsafe fn is_iterator_bits(_py: &PyToken<'_>, bits: u64) -> bool {

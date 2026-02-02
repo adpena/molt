@@ -2,7 +2,21 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Iterator, TYPE_CHECKING, cast
+try:
+    from typing import TYPE_CHECKING
+except Exception:
+    TYPE_CHECKING = False
+
+if TYPE_CHECKING:
+    from typing import Any, Iterable, Iterator, cast
+else:
+    Any = object()
+    Iterable = object()
+    Iterator = object()
+
+    def cast(_tp, value):
+        return value
+
 
 import collections.abc as abc
 import builtins as _builtins
