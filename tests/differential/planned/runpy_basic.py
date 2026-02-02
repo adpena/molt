@@ -8,8 +8,7 @@ import runpy
 root = tempfile.mkdtemp()
 path = os.path.join(root, 'mod.py')
 with open(path, 'w', encoding='utf-8') as handle:
-    handle.write('value = 7
-')
+    handle.write('value = 7\n')
 
 ns = runpy.run_path(path)
 print(ns.get('value'))

@@ -95,6 +95,7 @@ Ten-item parity plan details live in `docs/spec/areas/compat/0015_STDLIB_COMPATI
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): implement full `re` syntax/flags + group semantics (literal-only `search`/`match`/`fullmatch` are supported).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:planned): `datetime` + `zoneinfo` time handling policy.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:planned): `json` parity plan (interop with `molt_json`).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): `enum` parity (aliases, functional API, Flag/IntFlag edge cases).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): `random` module API + CPython-compatible RNG parity.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): `gc` module API + runtime cycle collector hook.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): threading parity with shared-memory semantics + full primitives.
@@ -110,7 +111,11 @@ Ten-item parity plan details live in `docs/spec/areas/compat/0015_STDLIB_COMPATI
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): os.environ parity (mapping methods + backend).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): network/process gating (`socket`, `ssl`, `subprocess`, `asyncio`).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): socket/select shims expose error classes only; implement full capability-gated APIs.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): import-only allowlisted stdlib modules (`argparse`, `ast`, `atexit`, `collections.abc`, `importlib`, `platform`, `queue`, `shlex`, `shutil`, `textwrap`, `time`, `tomllib`, `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pprint`, `string`, `numbers`, `unicodedata`, `glob`, `tempfile`, `ctypes`) to minimal parity.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib meta_path/path_hooks + namespace/extension/zip loader parity.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib.resources loader-backed readers + namespace/zip parity.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib.metadata full parsing + dependency/entry point semantics.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): import-only allowlisted stdlib modules (`argparse`, `ast`, `atexit`, `collections.abc`, `platform`, `queue`, `shlex`, `shutil`, `textwrap`, `time`, `tomllib`, `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pprint`, `string`, `numbers`, `unicodedata`, `glob`, `tempfile`, `ctypes`) to minimal parity.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): finish abc registry + cache invalidation parity.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): unittest/test/doctest stubs for regrtest (support: captured_output/captured_stdout/captured_stderr, warnings_helper.check_warnings, cpython_only, requires, swap_attr/swap_item, import_helper.import_module/import_fresh_module, os_helper.temp_dir/unlink); doctest blocked on eval/exec/compile gating, full unittest parity pending.
 
 ---

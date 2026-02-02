@@ -1982,6 +1982,20 @@ const socketWorkerMain = () => {
         detached.set(detachedHandle.toString(), entry);
         return { status: 0, handle1: detachedHandle };
       }
+      case 'close_detached': {
+        const { handle } = request;
+        const entry = removeDetached(handle);
+        if (!entry) return { status: -EBADF };
+        entry.refCount -= 1;
+        if (entry.refCount > 0) return { status: 0 };
+        if (entry.kind === 'server') {
+          entry.server.close();
+        } else if (entry.socket) {
+          entry.socket.destroy();
+        }
+        entry.closed = true;
+        return { status: 0 };
+      }
       case 'socketpair': {
         const { family, sockType } = request;
         if (family !== AF_INET && family !== AF_INET6) {
@@ -2504,6 +2518,20 @@ const socketHostDetach = (handle) => {
   const res = socketCall('detach', { handle: Number(handle) }, 0);
   if (res.status < 0) return BigInt(res.status);
   return res.handle1;
+};
+
+const osCloseHost = (fd) => {
+  const fdNum = typeof fd === 'bigint' ? Number(fd) : Number(fd);
+  if (!Number.isFinite(fdNum)) return -EINVAL;
+  const res = socketCall('close_detached', { handle: fdNum }, 0);
+  if (res.status === 0) return 0;
+  if (res.status !== -EBADF) return res.status;
+  try {
+    fs.closeSync(fdNum);
+    return 0;
+  } catch (err) {
+    return -mapSocketError(err);
+  }
 };
 
 const socketHostSocketpair = (family, sockType, proto, outLeftPtr, outRightPtr) => {
@@ -3357,6 +3385,7 @@ const runDirectLink = async () => {
     molt_db_host_poll: dbHostPoll,
     molt_getpid_host: () =>
       BigInt(typeof process !== 'undefined' && process.pid ? process.pid : 0),
+    molt_os_close_host: osCloseHost,
     molt_socket_new_host: socketHostNew,
     molt_socket_close_host: socketHostClose,
     molt_socket_clone_host: socketHostClone,
@@ -3503,6 +3532,7 @@ const runLinked = async () => {
   importObject.env.molt_db_host_poll = dbHostPoll;
   importObject.env.molt_getpid_host = () =>
     BigInt(typeof process !== 'undefined' && process.pid ? process.pid : 0);
+  importObject.env.molt_os_close_host = osCloseHost;
   importObject.env.molt_socket_new_host = socketHostNew;
   importObject.env.molt_socket_close_host = socketHostClose;
   importObject.env.molt_socket_clone_host = socketHostClone;

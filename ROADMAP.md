@@ -88,7 +88,6 @@ Planned milestones:
 - Implemented: compiled `sys.argv` initialization for native + wasm harness; TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P2, status:partial): filesystem-encoding + surrogateescape decoding parity.
 - Implemented: `sys.executable` override via `MOLT_SYS_EXECUTABLE` (diff harness pins it to the host Python to avoid recursive `-c` subprocess spawns).
 - TODO(introspection, owner:runtime, milestone:TC2, priority:P2, status:partial): fill out code object fields (`co_varnames`, arg counts, `co_linetable`) for parity.
-- TODO(introspection, owner:runtime, milestone:TC2, priority:P2, status:partial): implement `sys._getframe` for compiled runtimes.
 - TODO(introspection, owner:frontend, milestone:TC2, priority:P2, status:partial): implement `globals`/`locals`/`vars`/`dir` builtins with correct scope semantics + callable parity.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): importlib.machinery pending parity
 - TODO(stdlib-compat, owner:runtime, milestone:TC1, priority:P2, status:partial): bootstrap `sys.stdout` so print(file=None) always honors the sys stream.
@@ -146,22 +145,26 @@ Sign-off criteria:
 - Partial: importable `builtins` module binding supported builtins (attribute gaps tracked in the matrix).
   (TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): fill `builtins` module attribute coverage.)
 - Partial: asyncio shim (`run`/`sleep` lowered to runtime with delay/result semantics; `wait`/`wait_for`/`shield` + basic `gather` supported; `set_event_loop`/`new_event_loop` stubs); loop/task APIs still pending (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): asyncio loop/task API parity).
-- Partial: shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pickle` (protocol 0 only), `pprint`, `string`, `typing`, `sys`, `os`, `json`, `asyncio`, `shlex` (`quote`), `threading`, `weakref`, `bisect`, `heapq`, `functools`, `itertools`, and `collections` (capability-gated env access).
+- Partial: shims for `warnings`, `traceback`, `types`, `inspect`, `ast`, `ctypes`, `uuid`, `urllib.parse`, `fnmatch`, `copy`, `pickle` (protocol 0 only), `pprint`, `string`, `struct`, `typing`, `sys`, `os`, `json`, `asyncio`, `shlex` (`quote`), `threading`, `weakref`, `bisect`, `heapq`, `functools`, `itertools`, and `collections` (capability-gated env access).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): close parity gaps for `ast`, `ctypes`, `urllib.parse`, and `uuid` (see stdlib matrix).
   (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): advance partial shims to parity per matrix.)
 - TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P3, status:partial): process model integration for `multiprocessing`/`subprocess`/`concurrent.futures` (spawn-based partial; IPC + lifecycle parity pending).
 - TODO(runtime, owner:runtime, milestone:RT3, priority:P1, status:divergent): Fork/forkserver currently map to spawn semantics; implement true fork support.
 - Partial: capability-gated `socket`/`select`/`selectors` backed by runtime sockets + io_poller (native + wasmtime host implemented); Node/WASI host bindings now wired in `run_wasm.js`, browser host supports WebSocket-backed stream sockets + io_poller readiness while UDP/listen/server sockets remain unsupported.
   (TODO(wasm-parity, owner:runtime, milestone:RT2, priority:P0, status:partial): expand browser socket coverage (UDP/listen/server sockets) + parity tests.)
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): `json` shim parity (Encoder/Decoder classes, JSONDecodeError details, runtime fast-path parser).
-- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): expand `time` module surface (timezone/tzname/struct_time/get_clock_info/process_time) + deterministic clock policy.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): `weakref` shim supports `ref` cleared on `gc.collect`; add GC-aware semantics + full weakref API.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): base64 full parity (b16/b32/a85/b85 + API surface).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): hashlib/hmac full parity + deterministic hashing policy.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): `struct` shim supports `pack`/`unpack`/`calcsize` for `i`/`d` only; expand to full format/alignment parity plus `pack_into`/`unpack_from`/`iter_unpack`.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): expand `time` module surface (timezone/tzname/struct_time/process_time) + deterministic clock policy.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): `weakref` shim supports `ref` (cleared on `gc.collect`) + `WeakKeyDictionary`; add GC-aware semantics + full weakref API + runtime intrinsics.
 - TODO(stdlib-compat, owner:runtime, milestone:TC1, priority:P2, status:partial): codec error handlers (surrogateescape/backslashreplace/etc) pending; blocked on surrogate-capable string representation.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): `pickle` protocol 1+ and broader type coverage (bytes/bytearray, memo cycles).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): expand `math` shim beyond constants + `isfinite`/`isnan`/`isinf`; add intrinsics + determinism policy.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): fill out `types` shims (TracebackType, FrameType, FunctionType, MethodType, etc).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): fill out `types` shims (TracebackType, FrameType, FunctionType, coroutine/asyncgen types, etc).
 - TODO(tests, owner:runtime, milestone:SL1, priority:P1, status:partial): expand native+wasm codec parity coverage for binary/floats/large ints/tagged values + deeper container shapes.
 - TODO(tests, owner:stdlib, milestone:SL1, priority:P2, status:planned): wasm parity coverage for core stdlib shims (`heapq`, `itertools`, `functools`, `bisect`, `collections`).
-- Import-only allowlist expanded for `base64`, `binascii`, `unittest`, `site`, `sysconfig`, `collections.abc`, `importlib`, and `importlib.util`; planned additions now cover the remaining CPython 3.12+ stdlib surface (see `docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md` Section 3.0b), including `annotationlib`, `codecs`, `compileall`, `configparser`, `difflib`, `dis`, `encodings`, `tokenize`, `trace`, `xmlrpc`, and `zipapp` (API parity pending; TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): add import-only stubs + tests).
+- Import-only allowlist expanded for `binascii`, `unittest`, `site`, `sysconfig`, `collections.abc`, `importlib`, and `importlib.util`; planned additions now cover the remaining CPython 3.12+ stdlib surface (see `docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md` Section 3.0b), including `annotationlib`, `codecs`, `compileall`, `configparser`, `difflib`, `dis`, `encodings`, `tokenize`, `trace`, `xmlrpc`, and `zipapp` (API parity pending; TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): add import-only stubs + tests).
 
 ## Compatibility Matrix Execution Plan (Next 8 Steps)
 1) Done: TC2 iterable unpacking + starred targets in assignment/for targets (tests + spec/status updates).

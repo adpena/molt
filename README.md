@@ -230,13 +230,16 @@ export MOLT_WORKER_CMD="molt-worker --stdio --exports demo/molt_worker_app/molt_
 
 ## CLI overview
 
-- `molt run <file.py>`: run CPython with Molt shims for parity checks (`--trusted` disables capability checks).
+- `molt run <file.py>`: run CPython with Molt shims for parity checks (`--trusted` disables capability checks). Use `--timing` for run/compile timing; compiled runs forward script args by default (use `--` to separate).
+- `molt build --module pkg` / `molt run --module pkg`: compile or run a package entrypoint (`pkg.__main__` when present).
+- `molt compare <file.py>`: compare CPython vs Molt compiled output with separate build/run timing.
 - `molt test`: run the dev test suite (wraps `uv run --python 3.12 python3 tools/dev.py test`); `--suite diff|pytest` available (`--trusted` disables capability checks).
 - `molt diff <path>`: differential testing via `uv run --python 3.12 python3 tests/molt_diff.py` (`--trusted` disables capability checks).
 - `molt build --target <triple> --cache --deterministic --capabilities <file|profile>`: cross-target builds with lockfile + capability checks (`--trusted` for trusted native deployments).
-- `molt bench` / `molt profile`: wrappers over `tools/bench.py` and `tools/profile.py`.
+- `molt bench` / `molt profile`: wrappers over `tools/bench.py` and `tools/profile.py` (`molt bench --script <path>` for one-off scripts).
 - `molt doctor`: toolchain readiness checks (uv/cargo/clang/locks).
 - `molt vendor --extras <name>`: materialize Tier A sources into `vendor/` with a manifest.
+- Vendored deps under `vendor/` are added to module roots and `PYTHONPATH` automatically (or set `MOLT_MODULE_ROOTS` explicitly).
 - `molt clean`: remove build caches (`MOLT_CACHE`) and transient artifacts (`MOLT_HOME/build`).
 - `molt completion --shell bash|zsh|fish`: emit shell completions.
 - `molt package` / `molt publish` / `molt verify`: bundle and verify `.moltpkg` archives (local registry only).

@@ -132,11 +132,13 @@ pub(crate) use crate::builtins::numbers::{
     bigint_bits, bigint_from_f64_trunc, bigint_ptr_from_bits, bigint_ref, bigint_to_inline,
     compare_numbers, complex_bits, complex_from_obj_lossy, complex_from_obj_strict,
     complex_ptr_from_bits, complex_ref, float_pair_from_obj, index_bigint_from_obj,
-    index_i64_from_obj, index_i64_with_overflow, inline_int_from_i128, int_bits_from_bigint,
-    int_bits_from_i128, int_bits_from_i64, round_float_ndigits, round_half_even,
-    split_maxsplit_from_obj, to_bigint, to_f64, to_i64, ComplexParts,
+    index_i64_from_obj, index_i64_with_overflow, inline_int_from_i128,
+    int_bits_from_bigint, int_bits_from_i128, int_bits_from_i64, int_subclass_value_bits_raw,
+    round_float_ndigits, round_half_even, split_maxsplit_from_obj, to_bigint, to_f64, to_i64,
+    ComplexParts,
 };
 pub use crate::builtins::platform::*;
+pub use crate::builtins::structs::*;
 pub(crate) use crate::builtins::strings::{
     bytes_count_impl, bytes_find_impl, bytes_rfind_impl, bytes_strip_range, replace_bytes_impl,
     replace_bytes_impl_limit, replace_string_impl, rsplit_bytes_to_list_maxsplit,
@@ -398,6 +400,8 @@ extern "C" {
     fn molt_db_host_poll() -> i32;
     #[link_name = "molt_getpid_host"]
     fn molt_getpid_host() -> i64;
+    #[link_name = "molt_os_close_host"]
+    pub(crate) fn molt_os_close_host(fd: i64) -> i32;
     #[link_name = "molt_socket_new_host"]
     pub(crate) fn molt_socket_new_host(family: i32, sock_type: i32, proto: i32, fileno: i64)
         -> i64;

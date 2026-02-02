@@ -8,7 +8,11 @@ from __future__ import annotations
 
 import builtins as _py_builtins
 
+from molt import intrinsics as _intrinsics
+
 TYPE_CHECKING = False
+
+_ORIG_COMPILE = getattr(_py_builtins, "compile", None)
 
 
 def cast(_type, value):
@@ -29,6 +33,18 @@ else:
     Callable = _TypingAlias()
     Optional = _TypingAlias()
 
+_builtin_property = getattr(_py_builtins, "property", None)
+if _builtin_property is None or _builtin_property is object:
+
+    class _PropertyProbe:
+        @property
+        def value(self):
+            return None
+
+    property = type(_PropertyProbe.value)
+else:
+    property = _builtin_property
+
 try:
     import _molt_importer as _molt_importer
 
@@ -39,6 +55,7 @@ except Exception:
 
 if TYPE_CHECKING:
     _molt_getargv: Callable[[], list[str]]
+    _molt_getframe: Callable[[object], object]
     _molt_getrecursionlimit: Callable[[], int]
     _molt_setrecursionlimit: Callable[[int], None]
     _molt_sys_version_info: Callable[[], tuple[int, int, int, str, int]]
@@ -62,13 +79,28 @@ if TYPE_CHECKING:
     _molt_class_apply_set_name: Callable[[object], object]
     _molt_os_name: Callable[[], str]
     _molt_sys_platform: Callable[[], str]
+    _molt_time_monotonic: Callable[[], float]
+    _molt_time_monotonic_ns: Callable[[], int]
+    _molt_time_time: Callable[[], float]
+    _molt_time_time_ns: Callable[[], int]
     _molt_getpid: Callable[[], int]
     _molt_getcwd: Callable[[], str]
+    _molt_os_close: Callable[[object], object]
+    _molt_os_dup: Callable[[object], object]
+    _molt_os_get_inheritable: Callable[[object], object]
+    _molt_os_set_inheritable: Callable[[object, object], object]
+    _molt_struct_pack: Callable[[object, object], object]
+    _molt_struct_unpack: Callable[[object, object], object]
+    _molt_struct_calcsize: Callable[[object], object]
     _molt_env_get_raw: Callable[..., object]
     _molt_env_snapshot: Callable[[], object]
     _molt_errno_constants: Callable[[], tuple[dict[str, int], dict[int, str]]]
     _molt_path_exists: Callable[[object], bool]
+    _molt_path_listdir: Callable[[object], object]
+    _molt_path_mkdir: Callable[[object], object]
     _molt_path_unlink: Callable[[object], None]
+    _molt_path_rmdir: Callable[[object], None]
+    _molt_path_chmod: Callable[[object, object], None]
     _molt_io_wait_new: Callable[[object, int, object], object]
     molt_block_on: Callable[[object], object]
     molt_asyncgen_shutdown: Callable[[], object]
@@ -107,6 +139,7 @@ if TYPE_CHECKING:
 
 _INTRINSIC_NAMES = [
     "_molt_getargv",
+    "_molt_getframe",
     "_molt_getrecursionlimit",
     "_molt_setrecursionlimit",
     "_molt_sys_version_info",
@@ -130,13 +163,28 @@ _INTRINSIC_NAMES = [
     "_molt_class_apply_set_name",
     "_molt_os_name",
     "_molt_sys_platform",
+    "_molt_time_monotonic",
+    "_molt_time_monotonic_ns",
+    "_molt_time_time",
+    "_molt_time_time_ns",
     "_molt_getpid",
     "_molt_getcwd",
+    "_molt_os_close",
+    "_molt_os_dup",
+    "_molt_os_get_inheritable",
+    "_molt_os_set_inheritable",
+    "_molt_struct_pack",
+    "_molt_struct_unpack",
+    "_molt_struct_calcsize",
     "_molt_env_get_raw",
     "_molt_env_snapshot",
     "_molt_errno_constants",
     "_molt_path_exists",
+    "_molt_path_listdir",
+    "_molt_path_mkdir",
     "_molt_path_unlink",
+    "_molt_path_rmdir",
+    "_molt_path_chmod",
     "_molt_io_wait_new",
     "molt_block_on",
     "molt_asyncgen_shutdown",
@@ -166,6 +214,7 @@ _INTRINSIC_NAMES = [
     "molt_chan_send_blocking",
     "molt_chan_recv_blocking",
     "molt_chan_drop",
+    "molt_pending",
     "molt_lock_new",
     "molt_lock_acquire",
     "molt_lock_release",
@@ -188,14 +237,21 @@ _INTRINSIC_NAMES = [
     "molt_weakref_register",
     "molt_weakref_get",
     "molt_weakref_drop",
+    "molt_module_cache_set",
 ]
 
 
 def _install_intrinsic(name: str, value: Any) -> None:
-    try:
-        setattr(_py_builtins, name, value)
-    except Exception:
-        pass
+    if value is None:
+        try:
+            existing = getattr(_py_builtins, name)
+        except Exception:
+            return
+        if existing is None:
+            return
+        _intrinsics.register(name, existing)
+        return
+    _intrinsics.register(name, value)
 
 
 # Force builtin_func emission for intrinsics referenced by string lookups while
@@ -212,6 +268,10 @@ try:
     _install_intrinsic("molt_asyncgen_shutdown", molt_asyncgen_shutdown)  # type: ignore[name-defined]  # noqa: F821
 except NameError:  # pragma: no cover - absent in host CPython
     _install_intrinsic("molt_asyncgen_shutdown", None)
+try:
+    _install_intrinsic("molt_pending", molt_pending)  # type: ignore[name-defined]  # noqa: F821
+except NameError:  # pragma: no cover - absent in host CPython
+    _install_intrinsic("molt_pending", None)
 try:
     _install_intrinsic("_molt_asyncgen_hooks_get", _molt_asyncgen_hooks_get)  # type: ignore[name-defined]  # noqa: F821
 except NameError:  # pragma: no cover - absent in host CPython
@@ -249,9 +309,12 @@ def compile(
     intrinsic = _load_intrinsic("molt_compile_builtin")
     if callable(intrinsic):
         return intrinsic(source, filename, mode, flags, dont_inherit, optimize)
+    compile_func = _ORIG_COMPILE
+    if compile_func is None or compile_func is compile:
+        raise NotImplementedError("compile() intrinsic unavailable")
     compile_func = cast(
         Callable[[object, object, object, int, bool, int], object],
-        _py_builtins.compile,
+        compile_func,
     )
     return compile_func(source, filename, mode, flags, dont_inherit, optimize)
 
@@ -268,6 +331,10 @@ try:
     _install_intrinsic("_molt_getargv", _molt_getargv)  # type: ignore[name-defined]  # noqa: F821
 except NameError:  # pragma: no cover - absent in host CPython
     _install_intrinsic("_molt_getargv", None)
+try:
+    _install_intrinsic("_molt_getframe", _molt_getframe)  # type: ignore[name-defined]  # noqa: F821
+except NameError:  # pragma: no cover - absent in host CPython
+    _install_intrinsic("_molt_getframe", None)
 try:
     _install_intrinsic("_molt_getrecursionlimit", _molt_getrecursionlimit)  # type: ignore[name-defined]  # noqa: F821
 except NameError:  # pragma: no cover - absent in host CPython
@@ -304,6 +371,64 @@ try:
     _install_intrinsic("_molt_env_snapshot", _molt_env_snapshot)  # type: ignore[name-defined]  # noqa: F821
 except NameError:  # pragma: no cover - absent in host CPython
     _install_intrinsic("_molt_env_snapshot", None)
+try:
+    _install_intrinsic("_molt_path_exists", _molt_path_exists)  # type: ignore[name-defined]  # noqa: F821
+except NameError:  # pragma: no cover - absent in host CPython
+    _install_intrinsic("_molt_path_exists", None)
+try:
+    _install_intrinsic("_molt_path_listdir", _molt_path_listdir)  # type: ignore[name-defined]  # noqa: F821
+except NameError:  # pragma: no cover - absent in host CPython
+    _install_intrinsic("_molt_path_listdir", None)
+try:
+    _install_intrinsic("_molt_path_mkdir", _molt_path_mkdir)  # type: ignore[name-defined]  # noqa: F821
+except NameError:  # pragma: no cover - absent in host CPython
+    _install_intrinsic("_molt_path_mkdir", None)
+try:
+    _install_intrinsic("_molt_path_unlink", _molt_path_unlink)  # type: ignore[name-defined]  # noqa: F821
+except NameError:  # pragma: no cover - absent in host CPython
+    _install_intrinsic("_molt_path_unlink", None)
+try:
+    _install_intrinsic("_molt_path_rmdir", _molt_path_rmdir)  # type: ignore[name-defined]  # noqa: F821
+except NameError:  # pragma: no cover - absent in host CPython
+    _install_intrinsic("_molt_path_rmdir", None)
+try:
+    _install_intrinsic("_molt_path_chmod", _molt_path_chmod)  # type: ignore[name-defined]  # noqa: F821
+except NameError:  # pragma: no cover - absent in host CPython
+    _install_intrinsic("_molt_path_chmod", None)
+try:
+    _install_intrinsic("_molt_os_close", _molt_os_close)  # type: ignore[name-defined]  # noqa: F821
+except NameError:  # pragma: no cover - absent in host CPython
+    _install_intrinsic("_molt_os_close", None)
+try:
+    _install_intrinsic("_molt_os_dup", _molt_os_dup)  # type: ignore[name-defined]  # noqa: F821
+except NameError:  # pragma: no cover - absent in host CPython
+    _install_intrinsic("_molt_os_dup", None)
+try:
+    _install_intrinsic(
+        "_molt_os_get_inheritable",
+        _molt_os_get_inheritable,  # type: ignore[name-defined]  # noqa: F821
+    )
+except NameError:  # pragma: no cover - absent in host CPython
+    _install_intrinsic("_molt_os_get_inheritable", None)
+try:
+    _install_intrinsic(
+        "_molt_os_set_inheritable",
+        _molt_os_set_inheritable,  # type: ignore[name-defined]  # noqa: F821
+    )
+except NameError:  # pragma: no cover - absent in host CPython
+    _install_intrinsic("_molt_os_set_inheritable", None)
+try:
+    _install_intrinsic("_molt_struct_pack", _molt_struct_pack)  # type: ignore[name-defined]  # noqa: F821
+except NameError:  # pragma: no cover - absent in host CPython
+    _install_intrinsic("_molt_struct_pack", None)
+try:
+    _install_intrinsic("_molt_struct_unpack", _molt_struct_unpack)  # type: ignore[name-defined]  # noqa: F821
+except NameError:  # pragma: no cover - absent in host CPython
+    _install_intrinsic("_molt_struct_unpack", None)
+try:
+    _install_intrinsic("_molt_struct_calcsize", _molt_struct_calcsize)  # type: ignore[name-defined]  # noqa: F821
+except NameError:  # pragma: no cover - absent in host CPython
+    _install_intrinsic("_molt_struct_calcsize", None)
 try:
     _install_intrinsic("_molt_socket_constants", _molt_socket_constants)  # type: ignore[name-defined]  # noqa: F821
 except NameError:  # pragma: no cover - absent in host CPython
@@ -559,6 +684,10 @@ try:
 except NameError:  # pragma: no cover - absent in host CPython
     _install_intrinsic("molt_chan_drop", None)
 try:
+    _install_intrinsic("molt_module_cache_set", molt_module_cache_set)  # type: ignore[name-defined]  # noqa: F821
+except NameError:  # pragma: no cover - absent in host CPython
+    _install_intrinsic("molt_module_cache_set", None)
+try:
     _install_intrinsic("molt_lock_new", molt_lock_new)  # type: ignore[name-defined]  # noqa: F821
 except NameError:  # pragma: no cover - absent in host CPython
     _install_intrinsic("molt_lock_new", None)
@@ -646,21 +775,13 @@ try:
     _install_intrinsic("molt_weakref_drop", molt_weakref_drop)  # type: ignore[name-defined]  # noqa: F821
 except NameError:  # pragma: no cover - absent in host CPython
     _install_intrinsic("molt_weakref_drop", None)
-_INTRINSICS = {
-    name: value
-    for name in _INTRINSIC_NAMES
-    if (value := globals().get(name)) is not None
-}
 
 
 def _load_intrinsic(name: str) -> Any | None:
-    direct = _INTRINSICS.get(name)
-    if direct is not None:
-        return direct
-    direct = globals().get(name)
-    if direct is not None:
-        return direct
-    return getattr(_py_builtins, name, None)
+    return _intrinsics.load(name, globals())
+
+
+_intrinsics.register_from_builtins(_INTRINSIC_NAMES)
 
 
 # TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:missing): implement eval/exec builtins with sandboxing rules.
@@ -952,6 +1073,7 @@ EncodingWarning = EncodingWarning
 WindowsError = getattr(_py_builtins, "WindowsError", OSError)
 
 _molt_getargv = cast(Callable[[], list[str]], _load_intrinsic("_molt_getargv"))
+_molt_getframe = cast(Callable[[object], object], _load_intrinsic("_molt_getframe"))
 _molt_getrecursionlimit = cast(
     Callable[[], int],
     _load_intrinsic("_molt_getrecursionlimit"),
@@ -1004,6 +1126,14 @@ _molt_class_apply_set_name = cast(
 )
 _molt_os_name = cast(Callable[[], str], _load_intrinsic("_molt_os_name"))
 _molt_sys_platform = cast(Callable[[], str], _load_intrinsic("_molt_sys_platform"))
+_molt_time_monotonic = cast(
+    Callable[[], float], _load_intrinsic("_molt_time_monotonic")
+)
+_molt_time_monotonic_ns = cast(
+    Callable[[], int], _load_intrinsic("_molt_time_monotonic_ns")
+)
+_molt_time_time = cast(Callable[[], float], _load_intrinsic("_molt_time_time"))
+_molt_time_time_ns = cast(Callable[[], int], _load_intrinsic("_molt_time_time_ns"))
 _molt_getpid = cast(Callable[[], int], _load_intrinsic("_molt_getpid"))
 _molt_getcwd = cast(Callable[[], str], _load_intrinsic("_molt_getcwd"))
 _molt_env_get_raw = cast(Callable[..., object], _load_intrinsic("_molt_env_get_raw"))
@@ -1016,7 +1146,42 @@ _molt_path_exists = cast(
     Callable[[object], bool],
     _load_intrinsic("_molt_path_exists"),
 )
+_molt_path_listdir = cast(
+    Callable[[object], object],
+    _load_intrinsic("_molt_path_listdir"),
+)
+_molt_path_mkdir = cast(
+    Callable[[object], object],
+    _load_intrinsic("_molt_path_mkdir"),
+)
 _molt_path_unlink = cast(
     Callable[[object], None],
     _load_intrinsic("_molt_path_unlink"),
+)
+_molt_path_rmdir = cast(
+    Callable[[object], None],
+    _load_intrinsic("_molt_path_rmdir"),
+)
+_molt_path_chmod = cast(
+    Callable[[object, object], None],
+    _load_intrinsic("_molt_path_chmod"),
+)
+_molt_os_close = cast(Callable[[object], object], _load_intrinsic("_molt_os_close"))
+_molt_os_dup = cast(Callable[[object], object], _load_intrinsic("_molt_os_dup"))
+_molt_os_get_inheritable = cast(
+    Callable[[object], object],
+    _load_intrinsic("_molt_os_get_inheritable"),
+)
+_molt_os_set_inheritable = cast(
+    Callable[[object, object], object],
+    _load_intrinsic("_molt_os_set_inheritable"),
+)
+_molt_struct_pack = cast(
+    Callable[[object, object], object], _load_intrinsic("_molt_struct_pack")
+)
+_molt_struct_unpack = cast(
+    Callable[[object, object], object], _load_intrinsic("_molt_struct_unpack")
+)
+_molt_struct_calcsize = cast(
+    Callable[[object], object], _load_intrinsic("_molt_struct_calcsize")
 )

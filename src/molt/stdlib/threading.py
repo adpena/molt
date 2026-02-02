@@ -30,6 +30,7 @@ _MOLT_RLOCK_ACQUIRE = _load_intrinsic("molt_rlock_acquire", globals())
 _MOLT_RLOCK_RELEASE = _load_intrinsic("molt_rlock_release", globals())
 _MOLT_RLOCK_LOCKED = _load_intrinsic("molt_rlock_locked", globals())
 _MOLT_RLOCK_DROP = _load_intrinsic("molt_rlock_drop", globals())
+_MOLT_MODULE_CACHE_SET = _load_intrinsic("molt_module_cache_set", globals())
 
 
 def _require_callable(value: object, name: str) -> Callable[..., object]:
@@ -65,6 +66,24 @@ _HAVE_INTRINSICS = all(
         _MOLT_RLOCK_DROP,
     )
 )
+
+
+def _register_module_cache() -> None:
+    if not callable(_MOLT_MODULE_CACHE_SET):
+        return
+    module = sys.modules.get(__name__)
+    if module is None:
+        return
+    try:
+        _MOLT_MODULE_CACHE_SET(__name__, module)
+    except Exception:
+        pass
+    if __name__ != "threading":
+        try:
+            _MOLT_MODULE_CACHE_SET("threading", module)
+        except Exception:
+            pass
+
 
 if not _HAVE_INTRINSICS:
     import importlib.util
@@ -130,6 +149,8 @@ if not _HAVE_INTRINSICS:
         )
     )
 else:
+    _register_module_cache()
+
     __all__ = [
         "Thread",
         "Lock",
@@ -149,6 +170,11 @@ else:
         "active_count",
         "enumerate",
         "TIMEOUT_MAX",
+        "ExceptHookArgs",
+        "excepthook",
+        "settrace",
+        "setprofile",
+        "stack_size",
     ]
 
     _thread_spawn = _require_callable(_MOLT_THREAD_SPAWN, "molt_thread_spawn")
@@ -195,10 +221,74 @@ else:
 
     _THREAD_COUNTER = 0
     _THREAD_TOKEN_COUNTER = 0
+    _TIMER_TOKEN_COUNTER = 0
     _THREADS: list["Thread"] = []
     _MAIN_THREAD: "Thread" | None = None
     _THREAD_BY_IDENT: dict[int, "Thread"] = {}
     _THREAD_BY_TOKEN: dict[int, "Thread"] = {}
+    _TIMER_BY_TOKEN: dict[int, "Timer"] = {}
+    _THREAD_SHARED_PAYLOADS: dict[
+        int, tuple[Callable[..., Any], tuple[Any, ...], dict[str, Any]]
+    ] = {}
+
+    def _shared_runtime_enabled() -> bool:
+        trusted = os.getenv("MOLT_TRUSTED", "").strip().lower()
+        if trusted in {"1", "true", "yes", "on"}:
+            return True
+        caps = os.getenv("MOLT_CAPABILITIES", "")
+        return "thread.shared" in {
+            cap.strip() for cap in caps.split(",") if cap.strip()
+        }
+
+    _THREAD_SHARED_RUNTIME = _shared_runtime_enabled()
+
+    _TRACE_HOOK: Callable[[Any, str, Any], Any] | None = None
+    _PROFILE_HOOK: Callable[[Any, str, Any], Any] | None = None
+    _STACK_SIZE = 0
+    _NO_CONTEXT = object()
+
+    class ExceptHookArgs:
+        def __init__(
+            self,
+            exc_type: type[BaseException],
+            exc_value: BaseException,
+            exc_traceback: Any,
+            thread: "Thread",
+        ) -> None:
+            self.exc_type = exc_type
+            self.exc_value = exc_value
+            self.exc_traceback = exc_traceback
+            self.thread = thread
+
+    def _default_excepthook(args: ExceptHookArgs) -> None:
+        import traceback
+
+        print(f"Exception in thread {args.thread.name}:", file=sys.stderr)
+        traceback.print_exception(args.exc_type, args.exc_value, args.exc_traceback)
+
+    excepthook: Callable[[ExceptHookArgs], Any] | None = _default_excepthook
+
+    def settrace(func: Callable[[Any, str, Any], Any] | None) -> None:
+        global _TRACE_HOOK
+        _TRACE_HOOK = func
+
+    def setprofile(func: Callable[[Any, str, Any], Any] | None) -> None:
+        global _PROFILE_HOOK
+        _PROFILE_HOOK = func
+
+    def stack_size(size: int | None = None) -> int:
+        global _STACK_SIZE
+        if size is None:
+            return _STACK_SIZE
+        try:
+            new_size = int(size)
+        except (TypeError, ValueError) as exc:
+            raise TypeError("size must be 0 or a positive integer") from exc
+        if new_size < 0:
+            raise ValueError("size must be 0 or a positive integer")
+        prev = _STACK_SIZE
+        _STACK_SIZE = new_size
+        return prev
 
     def _next_thread_name() -> str:
         global _THREAD_COUNTER
@@ -209,6 +299,11 @@ else:
         global _THREAD_TOKEN_COUNTER
         _THREAD_TOKEN_COUNTER += 1
         return _THREAD_TOKEN_COUNTER
+
+    def _next_timer_token() -> int:
+        global _TIMER_TOKEN_COUNTER
+        _TIMER_TOKEN_COUNTER += 1
+        return _TIMER_TOKEN_COUNTER
 
     def _encode_varint(value: int, out: bytearray) -> None:
         while True:
@@ -470,12 +565,33 @@ else:
             return None, None
         if not callable(target):
             raise TypeError("thread target must be callable")
+        if _THREAD_SHARED_RUNTIME:
+            return None, None
         module = getattr(target, "__module__", None)
         qualname = getattr(target, "__qualname__", None)
         if module == "__main__":
-            resolved = _resolve_entry_module_name()
-            if resolved != "__main__":
-                module = resolved
+            if not _THREAD_SHARED_RUNTIME:
+                resolved = _resolve_entry_module_name()
+                if resolved != "__main__":
+                    module = resolved
+        elif _THREAD_SHARED_RUNTIME:
+            main_mod = sys.modules.get("__main__")
+            main_file = (
+                getattr(main_mod, "__file__", None) if main_mod is not None else None
+            )
+            code = getattr(target, "__code__", None)
+            target_file = (
+                getattr(code, "co_filename", None) if code is not None else None
+            )
+            if isinstance(main_file, str) and isinstance(target_file, str):
+                try:
+                    if os.path.samefile(main_file, target_file):
+                        module = "__main__"
+                except Exception:
+                    if main_file == target_file:
+                        module = "__main__"
+            if module != "__main__" and main_mod is not None and module is not None:
+                sys.modules.setdefault(str(module), main_mod)
         if not isinstance(module, str) or not isinstance(qualname, str):
             raise TypeError("thread target must be a module-level callable")
         if "<locals>" in qualname:
@@ -483,7 +599,12 @@ else:
         return module, qualname
 
     def _resolve_qualname(module: str, qualname: str) -> Callable[..., Any]:
-        mod = __import__(module, fromlist=["*"])
+        if module == "__main__" and _THREAD_SHARED_RUNTIME:
+            mod = sys.modules.get("__main__")
+            if mod is None:
+                raise ModuleNotFoundError("module '__main__' not found")
+        else:
+            mod = __import__(module, fromlist=["*"])
         obj: Any = mod
         for part in qualname.split("."):
             obj = getattr(obj, part)
@@ -496,6 +617,35 @@ else:
 
     def get_native_id() -> int:
         return _expect_int(_thread_current_native_id())
+
+    def _check_timeout_max(timeout_val: float) -> None:
+        if timeout_val > TIMEOUT_MAX:
+            raise OverflowError("timestamp out of range for platform time_t")
+
+    def _invoke_thread_hooks() -> None:
+        if _TRACE_HOOK is not None:
+            try:
+                _TRACE_HOOK(None, "call", None)
+            except Exception:
+                pass
+        if _PROFILE_HOOK is not None:
+            try:
+                _PROFILE_HOOK(None, "call", None)
+            except Exception:
+                pass
+
+    def _call_excepthook(thread: "Thread", exc: BaseException) -> None:
+        hook = excepthook
+        if hook is None:
+            return
+        args = ExceptHookArgs(type(exc), exc, exc.__traceback__, thread)
+        try:
+            hook(args)
+        except Exception:
+            try:
+                _default_excepthook(args)
+            except Exception:
+                pass
 
     class Lock:
         def __init__(self) -> None:
@@ -517,6 +667,8 @@ else:
                     raise ValueError("can't specify a timeout for a non-blocking call")
             elif timeout_val < 0.0 and timeout_val != -1.0:
                 raise ValueError("timeout value must be a non-negative number")
+            if blocking and timeout_val != -1.0:
+                _check_timeout_max(timeout_val)
             if self._handle is None:
                 raise RuntimeError("lock is not initialized")
             acquired = bool(_lock_acquire(self._handle, bool(blocking), timeout_val))
@@ -582,6 +734,8 @@ else:
                     raise ValueError("can't specify a timeout for a non-blocking call")
             elif timeout_val < 0.0 and timeout_val != -1.0:
                 raise ValueError("timeout value must be a non-negative number")
+            if blocking and timeout_val != -1.0:
+                _check_timeout_max(timeout_val)
             if self._handle is None:
                 raise RuntimeError("rlock is not initialized")
             acquired = bool(_rlock_acquire(self._handle, bool(blocking), timeout_val))
@@ -604,11 +758,6 @@ else:
                 self._count -= 1
             if self._count == 0:
                 self._owner = None
-
-        def locked(self) -> bool:
-            if self._handle is None:
-                return False
-            return bool(_rlock_locked(self._handle))
 
         def _is_owned(self) -> bool:
             return self._owner == get_ident()
@@ -700,6 +849,7 @@ else:
                     ) from exc
                 if timeout_val < 0.0:
                     raise ValueError("timeout value must be a non-negative number")
+                _check_timeout_max(timeout_val)
             from molt.concurrency import channel
 
             waiter = channel(1)
@@ -809,6 +959,7 @@ else:
                     ) from exc
                 if timeout_val < 0.0:
                     raise ValueError("timeout value must be a non-negative number")
+                _check_timeout_max(timeout_val)
             if not blocking:
                 if timeout_val not in (None, 0.0):
                     raise ValueError("can't specify a timeout for a non-blocking call")
@@ -846,11 +997,14 @@ else:
         def release(self, n: int = 1) -> None:
             if n < 1:
                 raise ValueError("semaphore release count must be >= 1")
-            with self._cond:
+            self._cond.acquire()
+            try:
                 if self._value + n > self._initial:
-                    raise ValueError("semaphore released too many times")
+                    raise ValueError("Semaphore released too many times")
                 self._value += n
                 self._cond.notify(n)
+            finally:
+                self._cond.release()
 
     class BrokenBarrierError(RuntimeError):
         pass
@@ -872,6 +1026,8 @@ else:
             self._count = 0
             self._generation = 0
             self._broken = False
+            self._release_count = 0
+            self._release_gen = 0
 
         @property
         def parties(self) -> int:
@@ -916,7 +1072,11 @@ else:
                         except Exception:
                             self._break()
                             raise
+                    self._release_count = self._parties - 1
+                    self._release_gen = gen
                     self._next_generation()
+                    while self._release_count > 0:
+                        self._cond.wait()
                     return 0
                 end = None if timeout_val is None else time.monotonic() + timeout_val
                 while True:
@@ -931,10 +1091,15 @@ else:
                     if self._broken:
                         raise BrokenBarrierError
                     if gen != self._generation:
+                        if self._release_gen == gen and self._release_count > 0:
+                            self._release_count -= 1
+                            if self._release_count == 0:
+                                self._cond.notify_all()
                         return index
 
         def _break(self) -> None:
             self._broken = True
+            self._release_count = 0
             self._cond.notify_all()
 
         def _next_generation(self) -> None:
@@ -991,9 +1156,14 @@ else:
             kwargs: dict[str, Any] | None = None,
             *,
             daemon: bool | None = None,
+            context: Any = _NO_CONTEXT,
         ) -> None:
             if _group is not None:
                 raise ValueError("group argument must be None for now")
+            if context is not _NO_CONTEXT:
+                raise TypeError(
+                    "Thread.__init__() got an unexpected keyword argument 'context'"
+                )
             self._target = target
             self._args = tuple(args)
             self._kwargs = dict(kwargs) if kwargs else {}
@@ -1079,12 +1249,23 @@ else:
             token = _next_thread_token()
             self._token = token
             _THREAD_BY_TOKEN[token] = self
+            if _THREAD_SHARED_RUNTIME and self._target is not None:
+                _THREAD_SHARED_PAYLOADS[token] = (
+                    self._target,
+                    self._args,
+                    self._kwargs,
+                )
+            payload_args = self._args
+            payload_kwargs = self._kwargs
+            if _THREAD_SHARED_RUNTIME:
+                payload_args = ()
+                payload_kwargs = {}
             payload = (
                 token,
                 module,
                 qualname,
-                self._args,
-                self._kwargs,
+                payload_args,
+                payload_kwargs,
                 self._name,
                 self._daemon,
             )
@@ -1152,6 +1333,28 @@ else:
         def setName(self, name: str) -> None:
             self.name = name
 
+    def _timer_worker(
+        token: int,
+        interval: float,
+        module: str,
+        qualname: str,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> None:
+        timer = _TIMER_BY_TOKEN.pop(token, None)
+        if timer is not None:
+            if not timer.finished.wait(timer.interval):
+                timer.function(*timer.args, **timer.kwargs)
+            timer.finished.set()
+            return
+        time.sleep(float(interval))
+        target = _resolve_qualname(str(module), str(qualname))
+        if not isinstance(args, tuple):
+            args = tuple(args)
+        if not isinstance(kwargs, dict):
+            kwargs = dict(kwargs)
+        target(*args, **kwargs)
+
     class Timer(Thread):
         def __init__(
             self,
@@ -1166,9 +1369,27 @@ else:
             self.args = tuple(args) if args else ()
             self.kwargs = dict(kwargs) if kwargs else {}
             self.finished = Event()
+            self._timer_token: int | None = None
 
         def cancel(self) -> None:
             self.finished.set()
+
+        def start(self) -> None:
+            module, qualname = _resolve_target(self.function)
+            token = _next_timer_token()
+            self._timer_token = token
+            _TIMER_BY_TOKEN[token] = self
+            self._target = _timer_worker
+            self._args = (
+                token,
+                self.interval,
+                module,
+                qualname,
+                self.args,
+                self.kwargs,
+            )
+            self._kwargs = {}
+            super().start()
 
         def run(self) -> None:
             if not self.finished.wait(self.interval):
@@ -1242,8 +1463,25 @@ else:
         _register_thread_ident(thread, ident, get_native_id())
         if created:
             _THREADS.append(thread)
+        entry = None
+        if _THREAD_SHARED_RUNTIME and token is not None:
+            entry = _THREAD_SHARED_PAYLOADS.pop(token, None)
         try:
+            _invoke_thread_hooks()
             if module is None or qualname is None:
+                if thread is not None:
+                    if (
+                        entry is not None
+                        and thread._target is None
+                        and type(thread) is Thread
+                    ):
+                        target, args, kwargs = entry
+                        target(*args, **kwargs)
+                    else:
+                        thread.run()
+                elif entry is not None:
+                    target, args, kwargs = entry
+                    target(*args, **kwargs)
                 return None
             if not isinstance(args, tuple):
                 raise TypeError("thread args must be a tuple")
@@ -1251,6 +1489,8 @@ else:
                 raise TypeError("thread kwargs must be a dict")
             target = _resolve_qualname(str(module), str(qualname))
             target(*args, **kwargs)
+        except BaseException as exc:
+            _call_excepthook(thread, exc)
         finally:
             if thread is not _MAIN_THREAD:
                 _THREAD_BY_IDENT.pop(ident, None)

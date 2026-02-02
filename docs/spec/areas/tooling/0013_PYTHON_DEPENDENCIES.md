@@ -53,6 +53,8 @@ Each dependency should declare:
   `manifest.json` and hashed artifacts; supports `--dry-run`, `--output`,
   `--allow-non-tier-a`, `--extras`, `--json`, and `--verbose` (markers/extras
   are evaluated against the host environment).
+- Build/run tooling treats `vendor/packages` and `vendor/local` as module roots
+  (and adds them to `PYTHONPATH`) when present; override with `MOLT_MODULE_ROOTS`.
 - `molt verify`: confirm hashes and capability declarations (initial; manifest + checksum
   validation implemented, capability gating enforcement still pending).
   (TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): capability gating enforcement in `molt verify`.)

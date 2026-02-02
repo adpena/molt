@@ -1,6 +1,6 @@
 # STATUS (Canonical)
 
-Last updated: 2026-01-30
+Last updated: 2026-02-02
 
 This document is the source of truth for Molt's current capabilities and
 limitations. Update this file whenever behavior or scope changes, and keep
@@ -29,6 +29,7 @@ README/ROADMAP in sync.
 - Molt packages for Rust-backed deps using MsgPack/CBOR and Arrow IPC.
 - Sets: literals + constructor with add/contains/iter/len + algebra (`|`, `&`, `-`, `^`) over set/frozenset/dict view RHS; `frozenset` constructor + algebra; set/frozenset method attributes for union/intersection/difference/symmetric_difference, update variants, copy/clear, and isdisjoint/issubset/issuperset.
 - Numeric builtins: `int()`/`abs()`/`divmod()`/`round()`/`math.trunc()` with `__int__`/`__index__`/`__round__`/`__trunc__` hooks and base parsing for string/bytes.
+- `int()` accepts keyword arguments (`x`, `base`), and int subclasses preserve integer payloads for `__int__`/`__index__` (used by `IntEnum`/`IntFlag`).
 - Formatting builtins: `ascii()`/`bin()`/`oct()`/`hex()` with `__index__` fallback and CPython parity errors for non-integers.
 - `chr()` and `ord()` parity errors for type/range checks; `chr()` accepts `__index__` and `ord()` enforces length-1 for `str`/`bytes`/`bytearray`.
 - BigInt heap fallback for ints beyond inline range (arithmetic/bitwise/shift parity for large ints).
@@ -90,6 +91,8 @@ README/ROADMAP in sync.
 - `itertools` core iterators are available (`chain`, `islice`, `repeat`, `count`, `cycle`, `accumulate`, `pairwise`, `product`, `permutations`, `combinations`, `groupby`, `tee`).
 - `heapq` includes `merge` plus max-heap helpers alongside runtime fast paths.
 - `collections.deque` supports rotate/index/insert/remove; `Counter`/`defaultdict` are dict subclasses with arithmetic/default factories, `Counter` keys/values/items/total, repr/equality parity, and in-place arithmetic ops.
+- Stdlib `enum` provides minimal `Enum`/`IntEnum`/`Flag`/`IntFlag` support with `auto`, name/value accessors, and member maps.
+- Stdlib `abc` provides minimal `ABCMeta`/`ABC` and `abstractmethod` with instantiation guards.
 - C3 MRO + multiple inheritance for attribute lookup, `super()` resolution, and descriptor precedence for
   `__get__`/`__set__`/`__delete__`.
 - Descriptor protocol supports callable non-function `__get__`/`__set__`/`__delete__` implementations (callable objects).
@@ -128,8 +131,6 @@ README/ROADMAP in sync.
   (TODO(semantics, owner:frontend, milestone:TC2, priority:P1, status:partial): lower builtin arity checks to runtime `TypeError` instead of compile-time rejection.)
 - List membership/count/index snapshot list elements to guard against mutation during `__eq__`/`__contains__`, which allocates on hot paths.
   (TODO(perf, owner:runtime, milestone:TC1, priority:P2, status:planned): avoid list_snapshot allocations in membership/count/index by using a list mutation version or iterator guard.)
-- `int()` keyword arguments (`x`, `base`) are not accepted.
-  (TODO(type-coverage, owner:frontend, milestone:TC2, priority:P1, status:partial): support keyword arguments for `int()` with CPython parity.)
 - `range()` rejects some arguments that fail lowering (e.g., oversized ints) instead of deferring to runtime errors.
   (TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:partial): lower unsupported `range()` arguments to runtime parity errors.)
 - f-string conversion flags (`!r`, `!s`, `!a`) are not supported in format placeholders.
@@ -138,6 +139,7 @@ README/ROADMAP in sync.
   (TODO(async-runtime, owner:frontend, milestone:TC2, priority:P1, status:missing): implement async generator lowering and runtime parity.)
 - `contextlib` parity is partial: `contextmanager`/`ContextDecorator` + `ExitStack`/`AsyncExitStack`, `suppress`, and `redirect_stdout`/`redirect_stderr` are supported; gaps remain for `aclosing`/`AbstractContextManager` and full parity.
   (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): finish contextlib parity.)
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): finish abc registry + cache invalidation parity.
 - `str()` decoding with `encoding`/`errors` arguments is not supported; only 0/1-arg `str(obj)` conversion is available.
   (TODO(stdlib-compat, owner:runtime, milestone:TC2, priority:P2, status:missing): implement `str(bytes, encoding, errors)` parity.)
 - File I/O parity is partial: `open()` supports the full signature (mode/buffering/encoding/errors/newline/closefd/opener), fd-based `open`, and file objects now expose read/readinto/readinto1/write/writelines/seek/tell/fileno/readline(s)/truncate/iteration/flush/close + core attrs. Remaining gaps include broader codec support + full error handlers (utf-8/ascii/latin-1 only), partial text-mode seek/tell cookie semantics, and Windows fileno/isatty accuracy.
@@ -169,8 +171,7 @@ README/ROADMAP in sync.
 - `sys.argv` is initialized from compiled argv (native + wasm harness); decoding currently uses lossy UTF-8/UTF-16 until surrogateescape/fs-encoding parity lands.
   (TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P2, status:partial): decode argv via filesystem encoding + surrogateescape once Molt strings can represent surrogate escapes.)
 - `sys.executable` now honors `MOLT_SYS_EXECUTABLE` when set (the diff harness pins it to the host Python to avoid recursive `-c` subprocess spawns); otherwise it falls back to the compiled argv[0].
-- `sys.modules` mirrors the runtime module cache for compiled code; `sys._getframe` is still unavailable in compiled runtimes.
-  (TODO(introspection, owner:runtime, milestone:TC2, priority:P2, status:partial): implement `sys._getframe` for compiled runtimes.)
+- `sys.modules` mirrors the runtime module cache for compiled code; `sys._getframe` is available in compiled runtimes with partial frame objects (see introspection TODOs).
 - `globals()` can be referenced as a first-class callable (module-bound) and returns the defining module globals; `locals()`/`vars()`/`dir()` remain lowered as direct calls,
   and no-arg callable parity for these builtins is still limited.
   (TODO(introspection, owner:frontend, milestone:TC2, priority:P2, status:partial): implement `globals`/`locals`/`vars`/`dir` builtins with correct scope semantics + callable parity.)
@@ -178,12 +179,12 @@ README/ROADMAP in sync.
 - Hashing: SipHash13 + `PYTHONHASHSEED` parity (randomized by default; deterministic when seed=0); see `docs/spec/areas/compat/0023_SEMANTIC_BEHAVIOR_MATRIX.md`.
 - GC: reference counting only; cycle collector pending (see `docs/spec/areas/compat/0023_SEMANTIC_BEHAVIOR_MATRIX.md`).
   (TODO(semantics, owner:runtime, milestone:TC3, priority:P2, status:missing): implement cycle collector.)
-- Imports: static module graph only; no dynamic import hooks or full package
-  resolution.
-  (TODO(import-system, owner:stdlib, milestone:TC3, priority:P2, status:missing): dynamic import hooks + package resolution.)
+- Imports: file-based sys.path resolution and `spec_from_file_location` are supported;
+  meta_path/path_hooks/namespace packages remain unsupported.
+  (TODO(import-system, owner:stdlib, milestone:TC3, priority:P2, status:partial): meta_path/path_hooks + namespace packages + extension loaders.)
 - Entry modules execute under `__main__` while remaining importable under their real module name (distinct module objects).
-- Module metadata: compiled modules set `__file__`/`__package__`/`__spec__` (ModuleSpec + Molt loader) and package `__path__`.
-  TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): importlib.machinery pending parity
+- Module metadata: compiled modules set `__file__`/`__package__`/`__spec__` (ModuleSpec + filesystem loader) and package `__path__`.
+  TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib.machinery loader parity (namespace/extension/zip).
 - Imports: module-level `from x import *` honors `__all__` (with strict name checks) and otherwise skips underscore-prefixed names.
 - TODO(import-system, owner:stdlib, milestone:TC3, priority:P1, status:partial): project-root builds (namespace packages + PYTHONPATH roots supported; remaining: package discovery hardening, `__init__` edge cases, deterministic dependency graph caching).
 - TODO(import-system, owner:stdlib, milestone:TC3, priority:P1, status:planned): relative imports (explicit and implicit) with deterministic package resolution.
@@ -260,10 +261,11 @@ README/ROADMAP in sync.
   execute Python/runtime code at a time within the process.
 - Runtime state and object headers are not thread-safe; `Value` and heap objects
   are not `Send`/`Sync` unless explicitly documented otherwise.
-- Cross-thread sharing of live Python objects is unsupported; serialize or
+- Cross-thread sharing of live Python objects is unsupported by default; serialize or
   freeze data before crossing threads.
-- `threading.Thread` spawns isolated runtimes; thread targets/args are serialized
-  and the thread object is not shared across runtimes.
+- `threading.Thread` defaults to isolated runtimes with serialized targets/args; when the
+  `thread.shared` capability is enabled, threads share module globals but still use
+  serialized targets/args (no arbitrary object passing yet).
 - Handle table and pointer registry may use internal locks; lock ordering rules
   are defined in `docs/spec/areas/runtime/0026_CONCURRENCY_AND_GIL.md`.
 - TODO(runtime, owner:runtime, milestone:RT2, priority:P1, status:planned): define
@@ -282,33 +284,40 @@ README/ROADMAP in sync.
   (TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): pre-size `dict.fromkeys` to reduce rehashing.)
 
 ## Stdlib Coverage
-- Partial shims: `warnings`, `traceback`, `types`, `inspect`, `fnmatch` (`*`/`?`
+- Partial shims: `warnings`, `traceback`, `types`, `inspect`, `ast`, `ctypes`, `uuid`, `urllib.parse`, `fnmatch` (`*`/`?`
   + bracket class/range matching; literal `[]`/`[[]`/`[]]` escapes (no backslash
-  quoting)), `copy`, `pprint`, `string`, `typing`, `sys`, `os`, `pathlib`,
-  `tempfile`, `gc`, `weakref`, `random` (`seed`, `randrange`, `shuffle`), `time` (`monotonic`, `perf_counter`, `sleep`, `time`/`time_ns` gated by `time.wall`), `json` (loads/dumps with parse hooks, indent, separators, allow_nan), `pickle` (protocol 0 only),
+  quoting)), `copy`, `pprint`, `string`, `struct`, `typing`, `sys`, `os`, `pathlib`,
+  `tempfile`, `gc`, `weakref`, `random` (`seed`, `randrange`, `shuffle`), `time` (`monotonic`, `perf_counter`, `sleep`, `get_clock_info`, `time`/`time_ns` gated by `time.wall`), `json` (loads/dumps with parse hooks, indent, separators, allow_nan), `base64` (b64 encode/decode + urlsafe), `hashlib` (sha1), `pickle` (protocol 0 only),
   `socket` (runtime-backed, capability-gated; advanced options + wasm parity pending), `select` (selectors-backed for sockets only),
   `selectors` (io_wait-backed readiness), `asyncio`, `contextvars`, `contextlib`, `threading`,
   `functools`, `itertools`, `operator`, `bisect`, `heapq`, `collections`.
   Supported shim: `keyword` (`kwlist`/`softkwlist`, `iskeyword`, `issoftkeyword`).
   (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): advance partial shims to parity per matrix.)
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): close parity gaps for `ast`, `ctypes`, `urllib.parse`, and `uuid` per matrix coverage.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): complete socket/select/selectors parity (poll/epoll/select objects, fd inheritance, error mapping, cancellation) and align with asyncio adapters.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): threading parity with shared-memory semantics + full primitives.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): unittest/test/doctest stubs exist for regrtest (support: captured_output/captured_stdout/captured_stderr, warnings_helper.check_warnings, cpython_only, requires, swap_attr/swap_item, import_helper.import_module/import_fresh_module, os_helper.temp_dir/unlink); doctest is blocked on eval/exec/compile gating and full unittest parity is pending.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): os.environ parity (mapping methods + backend).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): `json` shim parity (Encoder/Decoder classes, JSONDecodeError details, runtime fast-path parser).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): base64 full parity (b16/b32/a85/b85 + API surface).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): hashlib/hmac full parity + deterministic hashing policy.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): `gc` module exposes only minimal toggles/collect; wire to runtime cycle collector and implement full API.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): `weakref` shim supports `ref` cleared on `gc.collect`; add GC-aware semantics + full weakref API.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): `weakref` shim supports `ref` (cleared on `gc.collect`) + `WeakKeyDictionary`; add GC-aware semantics + full weakref API + runtime intrinsics.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): `random` shim exposes seed/randrange/shuffle; expand to CPython-compatible Random API + algorithm.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): expand `time` module surface (timezone/tzname/struct_time/get_clock_info/process_time) + deterministic clock policy.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): `struct` shim supports `pack`/`unpack`/`calcsize` for `i`/`d` only; expand to full format/alignment parity plus `pack_into`/`unpack_from`/`iter_unpack`.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): expand `time` module surface (timezone/tzname/struct_time/process_time) + deterministic clock policy.
 - TODO(stdlib-compat, owner:runtime, milestone:TC1, priority:P2, status:partial): codec error handlers (surrogateescape/backslashreplace/etc) pending; blocked on surrogate-capable string representation.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): `pickle` protocol 1+ and broader type coverage (bytes/bytearray, memo cycles).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): `math` shim only covers constants + `isfinite`/`isnan`/`isinf`; intrinsics pending.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): expand `types` shims (TracebackType, FrameType, FunctionType, MethodType, etc).
-- Import-only stubs: `collections.abc`, `importlib`, `importlib.util`.
-  (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): implement core importlib/collections.abc surfaces.)
-- Planned import-only stubs: `importlib.metadata`, `html`, `html.parser`, `http.cookies`, `http.client`, `http.server`,
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): expand `types` shims (TracebackType, FrameType, FunctionType, coroutine/asyncgen types, etc).
+- Import-only stubs: `collections.abc`.
+  (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): implement core collections.abc surfaces.)
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib meta_path/namespace/extension loader parity.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib.resources loader/namespace/zip resource readers.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib.metadata full parsing + dependency/entry point semantics.
+- Planned import-only stubs: `html`, `html.parser`, `http.cookies`, `http.client`, `http.server`,
   `ipaddress`, `mimetypes`, `socketserver`, `wsgiref`, `xml`, `email.policy`, `email.message`, `email.parser`,
-  `email.utils`, `email.header`, `urllib.parse`, `urllib.request`, `urllib.error`, `urllib.robotparser`,
+  `email.utils`, `email.header`, `urllib.request`, `urllib.error`, `urllib.robotparser`,
   `logging.config`, `logging.handlers`, `cgi`, `zlib`.
   Additional 3.12+ planned/import-only modules (e.g., `annotationlib`, `codecs`, `compileall`, `configparser`,
   `difflib`, `dis`, `encodings`, `tokenize`, `trace`, `xmlrpc`, `zipapp`) are tracked in

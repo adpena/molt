@@ -1,10 +1,12 @@
 """Capability-gated socket module for Molt."""
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): implement full socket module surface (makefile, dup, sendmsg/recvmsg, ancillary data, timeouts, and error subclasses) with CPython parity.
+# TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): implement full socket module surface (sendmsg/recvmsg, ancillary data, timeouts, and error subclasses) with CPython parity.
 
 from __future__ import annotations
 
+import errno
 import importlib as _importlib
+import os as _os
 from typing import TYPE_CHECKING, Any
 
 import builtins as _builtins
@@ -27,14 +29,20 @@ except Exception:  # pragma: no cover - CPython-only fallback
 __all__ = [
     "socket",
     "socketpair",
+    "fromfd",
     "create_connection",
     "create_server",
     "getaddrinfo",
     "getnameinfo",
     "gethostname",
+    "gethostbyname",
+    "gethostbyaddr",
+    "getfqdn",
     "getservbyname",
     "getservbyport",
+    "inet_aton",
     "inet_pton",
+    "inet_ntoa",
     "inet_ntop",
     "getdefaulttimeout",
     "setdefaulttimeout",
@@ -194,6 +202,144 @@ def _require_intrinsic(fn: Any | None, name: str) -> Any:
     return fn
 
 
+class _SocketFile:
+    def __init__(
+        self,
+        sock: "socket",
+        mode: str = "r",
+        buffering: int | None = None,
+        encoding: str | None = None,
+        errors: str | None = None,
+        newline: str | None = None,
+    ) -> None:
+        self._sock = sock
+        self._mode = mode
+        self._binary = "b" in mode
+        self._readable = "r" in mode or "+" in mode
+        self._writable = "w" in mode or "a" in mode or "+" in mode
+        self._encoding = encoding or "utf-8"
+        self._errors = errors or "strict"
+        self._newline = newline
+        self._buffering = buffering
+        self._closed = False
+        self._read_buf: bytearray = bytearray()
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def close(self) -> None:
+        self._closed = True
+
+    def flush(self) -> None:
+        if self._closed:
+            raise ValueError("I/O operation on closed file.")
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise ValueError("I/O operation on closed file.")
+
+    def _ensure_readable(self) -> None:
+        if not self._readable:
+            raise OSError("File not open for reading")
+
+    def _ensure_writable(self) -> None:
+        if not self._writable:
+            raise OSError("File not open for writing")
+
+    def _coerce_bytes(self, data: Any) -> bytes:
+        if self._binary:
+            if isinstance(data, (bytes, bytearray, memoryview)):
+                return bytes(data)
+            name = type(data).__name__
+            raise TypeError(f"a bytes-like object is required, not '{name}'")
+        if not isinstance(data, str):
+            name = type(data).__name__
+            raise TypeError(f"write() argument must be str, not {name}")
+        return data.encode(self._encoding, self._errors)
+
+    def _recv(self, size: int) -> bytes:
+        handle = getattr(self._sock, "_handle", None)
+        if _HAVE_INTRINSICS and handle is not None:
+            return _require_intrinsic(_molt_socket_recv, "recv")(handle, int(size), 0)
+        return self._sock.recv(size)
+
+    def _sendall(self, payload: bytes) -> None:
+        handle = getattr(self._sock, "_handle", None)
+        if _HAVE_INTRINSICS and handle is not None:
+            _require_intrinsic(_molt_socket_sendall, "sendall")(handle, payload, 0)
+            return
+        self._sock.sendall(payload)
+
+    def write(self, data: Any) -> int:
+        self._ensure_open()
+        self._ensure_writable()
+        payload = self._coerce_bytes(data)
+        self._sendall(payload)
+        return len(payload)
+
+    def read(self, size: int | None = -1) -> bytes | str:
+        self._ensure_open()
+        self._ensure_readable()
+        if size is None:
+            size = -1
+        if size < 0:
+            chunks = [bytes(self._read_buf)]
+            self._read_buf.clear()
+            while True:
+                chunk = self._recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            data = b"".join(chunks)
+        else:
+            while len(self._read_buf) < size:
+                chunk = self._recv(4096)
+                if not chunk:
+                    break
+                self._read_buf.extend(chunk)
+            data = bytes(self._read_buf[:size])
+            del self._read_buf[:size]
+        if self._binary:
+            return data
+        return data.decode(self._encoding, self._errors)
+
+    def readline(self, size: int | None = -1) -> bytes | str:
+        self._ensure_open()
+        self._ensure_readable()
+        if size is None:
+            size = -1
+        while True:
+            idx = self._read_buf.find(b"\n")
+            if idx != -1:
+                end = idx + 1
+                if size >= 0:
+                    end = min(end, size)
+                data = bytes(self._read_buf[:end])
+                del self._read_buf[:end]
+                break
+            if size >= 0 and len(self._read_buf) >= size:
+                data = bytes(self._read_buf[:size])
+                del self._read_buf[:size]
+                break
+            chunk = self._recv(4096)
+            if not chunk:
+                data = bytes(self._read_buf)
+                self._read_buf.clear()
+                break
+            self._read_buf.extend(chunk)
+        if self._binary:
+            return data
+        return data.decode(self._encoding, self._errors)
+
+    def __enter__(self) -> "_SocketFile":
+        self._ensure_open()
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        self.close()
+
+
 class socket:
     def __init__(
         self,
@@ -252,15 +398,25 @@ class socket:
             raise RuntimeError("socket backing not available")
         return sock
 
+    def _require_handle(self) -> Any:
+        handle = self._handle
+        if handle is None:
+            raise OSError(errno.EBADF, "Bad file descriptor")
+        return handle
+
     def fileno(self) -> int:
         if _HAVE_INTRINSICS:
-            return int(_require_intrinsic(_molt_socket_fileno, "fileno")(self._handle))
+            handle = self._handle
+            if handle is None:
+                return -1
+            return int(_require_intrinsic(_molt_socket_fileno, "fileno")(handle))
         return self._require_sock().fileno()
 
     def detach(self) -> int:
         if _HAVE_INTRINSICS:
-            raw = int(_require_intrinsic(_molt_socket_detach, "detach")(self._handle))
-            _require_intrinsic(_molt_socket_drop, "drop")(self._handle)
+            handle = self._require_handle()
+            raw = int(_require_intrinsic(_molt_socket_detach, "detach")(handle))
+            _require_intrinsic(_molt_socket_drop, "drop")(handle)
             self._handle = None
             return raw
         return self._require_sock().detach()
@@ -268,7 +424,7 @@ class socket:
     def gettimeout(self) -> float | None:
         if _HAVE_INTRINSICS:
             return _require_intrinsic(_molt_socket_gettimeout, "gettimeout")(
-                self._handle
+                self._require_handle()
             )
         return self._require_sock().gettimeout()
 
@@ -276,7 +432,7 @@ class socket:
         self._timeout = timeout
         if _HAVE_INTRINSICS:
             _require_intrinsic(_molt_socket_settimeout, "settimeout")(
-                self._handle, timeout
+                self._require_handle(), timeout
             )
         else:
             self._require_sock().settimeout(timeout)
@@ -284,7 +440,7 @@ class socket:
     def setblocking(self, flag: bool) -> None:
         if _HAVE_INTRINSICS:
             _require_intrinsic(_molt_socket_setblocking, "setblocking")(
-                self._handle, bool(flag)
+                self._require_handle(), bool(flag)
             )
         else:
             self._require_sock().setblocking(flag)
@@ -293,21 +449,21 @@ class socket:
         if _HAVE_INTRINSICS:
             return bool(
                 _require_intrinsic(_molt_socket_getblocking, "getblocking")(
-                    self._handle
+                    self._require_handle()
                 )
             )
         return self._require_sock().getblocking()
 
     def bind(self, addr: Any) -> None:
         if _HAVE_INTRINSICS:
-            _require_intrinsic(_molt_socket_bind, "bind")(self._handle, addr)
+            _require_intrinsic(_molt_socket_bind, "bind")(self._require_handle(), addr)
         else:
             self._require_sock().bind(addr)
 
     def listen(self, backlog: int = 0) -> None:
         if _HAVE_INTRINSICS:
             _require_intrinsic(_molt_socket_listen, "listen")(
-                self._handle, int(backlog)
+                self._require_handle(), int(backlog)
             )
         else:
             self._require_sock().listen(backlog)
@@ -315,7 +471,7 @@ class socket:
     def accept(self) -> tuple["socket", Any]:
         if _HAVE_INTRINSICS:
             handle, addr = _require_intrinsic(_molt_socket_accept, "accept")(
-                self._handle
+                self._require_handle()
             )
             sock = socket.__new__(socket)
             sock.family = self.family
@@ -330,7 +486,9 @@ class socket:
 
     def connect(self, addr: Any) -> None:
         if _HAVE_INTRINSICS:
-            _require_intrinsic(_molt_socket_connect, "connect")(self._handle, addr)
+            _require_intrinsic(_molt_socket_connect, "connect")(
+                self._require_handle(), addr
+            )
         else:
             self._require_sock().connect(addr)
 
@@ -338,7 +496,7 @@ class socket:
         if _HAVE_INTRINSICS:
             return int(
                 _require_intrinsic(_molt_socket_connect_ex, "connect_ex")(
-                    self._handle, addr
+                    self._require_handle(), addr
                 )
             )
         return self._require_sock().connect_ex(addr)
@@ -346,15 +504,20 @@ class socket:
     def recv(self, bufsize: int, flags: int = 0) -> bytes:
         if _HAVE_INTRINSICS:
             return _require_intrinsic(_molt_socket_recv, "recv")(
-                self._handle, int(bufsize), int(flags)
+                self._require_handle(), int(bufsize), int(flags)
             )
         return self._require_sock().recv(bufsize, flags)
 
     def recv_into(self, buffer: Any, nbytes: int = 0, flags: int = 0) -> int:
         if _HAVE_INTRINSICS:
+            size = int(nbytes)
+            if size < 0:
+                raise ValueError("negative buffersize in recv_into")
+            if size == 0:
+                size = -1
             return int(
                 _require_intrinsic(_molt_socket_recv_into, "recv_into")(
-                    self._handle, buffer, int(nbytes), int(flags)
+                    self._require_handle(), buffer, size, int(flags)
                 )
             )
         return self._require_sock().recv_into(buffer, nbytes, flags)
@@ -363,7 +526,7 @@ class socket:
         if _HAVE_INTRINSICS:
             return int(
                 _require_intrinsic(_molt_socket_send, "send")(
-                    self._handle, data, int(flags)
+                    self._require_handle(), data, int(flags)
                 )
             )
         return self._require_sock().send(data, flags)
@@ -371,16 +534,24 @@ class socket:
     def sendall(self, data: Any, flags: int = 0) -> None:
         if _HAVE_INTRINSICS:
             _require_intrinsic(_molt_socket_sendall, "sendall")(
-                self._handle, data, int(flags)
+                self._require_handle(), data, int(flags)
             )
         else:
             self._require_sock().sendall(data, flags)
 
-    def sendto(self, data: Any, flags: int, addr: Any) -> int:
+    def sendto(self, data: Any, *args: Any) -> int:
+        if len(args) == 1:
+            flags = 0
+            addr = args[0]
+        elif len(args) == 2:
+            flags = int(args[0])
+            addr = args[1]
+        else:
+            raise TypeError("sendto() takes 2 or 3 positional arguments")
         if _HAVE_INTRINSICS:
             return int(
                 _require_intrinsic(_molt_socket_sendto, "sendto")(
-                    self._handle, data, int(flags), addr
+                    self._require_handle(), data, int(flags), addr
                 )
             )
         return self._require_sock().sendto(data, flags, addr)
@@ -388,14 +559,14 @@ class socket:
     def recvfrom(self, bufsize: int, flags: int = 0) -> tuple[bytes, Any]:
         if _HAVE_INTRINSICS:
             return _require_intrinsic(_molt_socket_recvfrom, "recvfrom")(
-                self._handle, int(bufsize), int(flags)
+                self._require_handle(), int(bufsize), int(flags)
             )
         return self._require_sock().recvfrom(bufsize, flags)
 
     def shutdown(self, how: int) -> None:
         if _HAVE_INTRINSICS:
             _require_intrinsic(_molt_socket_shutdown, "shutdown")(
-                self._handle, int(how)
+                self._require_handle(), int(how)
             )
         else:
             self._require_sock().shutdown(how)
@@ -403,33 +574,84 @@ class socket:
     def getsockname(self) -> Any:
         if _HAVE_INTRINSICS:
             return _require_intrinsic(_molt_socket_getsockname, "getsockname")(
-                self._handle
+                self._require_handle()
             )
         return self._require_sock().getsockname()
 
     def getpeername(self) -> Any:
         if _HAVE_INTRINSICS:
             return _require_intrinsic(_molt_socket_getpeername, "getpeername")(
-                self._handle
+                self._require_handle()
             )
         return self._require_sock().getpeername()
 
     def setsockopt(self, level: int, optname: int, value: Any) -> None:
         if _HAVE_INTRINSICS:
             _require_intrinsic(_molt_socket_setsockopt, "setsockopt")(
-                self._handle, int(level), int(optname), value
+                self._require_handle(), int(level), int(optname), value
             )
         else:
             self._require_sock().setsockopt(level, optname, value)
 
     def getsockopt(self, level: int, optname: int, buflen: int = 0) -> Any:
         if _HAVE_INTRINSICS:
+            length = int(buflen)
+            if length <= 0:
+                return _require_intrinsic(_molt_socket_getsockopt, "getsockopt")(
+                    self._require_handle(), int(level), int(optname), None
+                )
             return _require_intrinsic(_molt_socket_getsockopt, "getsockopt")(
-                self._handle, int(level), int(optname), int(buflen)
+                self._require_handle(), int(level), int(optname), length
             )
         if buflen:
             return self._require_sock().getsockopt(level, optname, buflen)
         return self._require_sock().getsockopt(level, optname)
+
+    def get_inheritable(self) -> bool:
+        return bool(_os.get_inheritable(self.fileno()))
+
+    def set_inheritable(self, inheritable: bool) -> None:
+        _os.set_inheritable(self.fileno(), bool(inheritable))
+
+    def dup(self) -> "socket":
+        fd = _os.dup(self.fileno())
+        try:
+            return socket(self.family, self.type, self.proto, fileno=fd)
+        except Exception:
+            try:
+                _os.close(fd)
+            except Exception:
+                pass
+            raise
+
+    def makefile(
+        self,
+        mode: str = "r",
+        buffering: int | None = None,
+        encoding: str | None = None,
+        errors: str | None = None,
+        newline: str | None = None,
+    ) -> _SocketFile:
+        return _SocketFile(
+            self,
+            mode=mode,
+            buffering=buffering,
+            encoding=encoding,
+            errors=errors,
+            newline=newline,
+        )
+
+
+def fromfd(fd: int, family: int, type: int, proto: int = 0) -> socket:
+    duped = _os.dup(fd)
+    try:
+        return socket(family, type, proto, fileno=duped)
+    except Exception:
+        try:
+            _os.close(duped)
+        except Exception:
+            pass
+        raise
 
 
 def socketpair(
@@ -496,6 +718,45 @@ def gethostname() -> str:
     return _require_intrinsic(_molt_socket_gethostname, "gethostname")()
 
 
+def gethostbyname(hostname: str) -> str:
+    if not _HAVE_INTRINSICS and _socket_mod is not None:
+        return _socket_mod.gethostbyname(hostname)
+    _ensure_intrinsics()
+    info = getaddrinfo(hostname, None, _CONSTANTS.get("AF_INET", 2), 0, 0, 0)
+    for _af, _socktype, _proto, _canon, sa in info:
+        if isinstance(sa, tuple) and sa:
+            return sa[0]
+    if info:
+        sa = info[0][4]
+        if isinstance(sa, tuple) and sa:
+            return sa[0]
+    raise gaierror(_CONSTANTS.get("EAI_NONAME", 0), "gethostbyname failed")
+
+
+def gethostbyaddr(hostname: str) -> tuple[str, list[str], list[str]]:
+    if not _HAVE_INTRINSICS and _socket_mod is not None:
+        return _socket_mod.gethostbyaddr(hostname)
+    _ensure_intrinsics()
+    try:
+        host, _serv = getnameinfo((hostname, 0), 0)
+    except Exception:
+        host = hostname
+    return host, [], [hostname]
+
+
+def getfqdn(name: str | None = None) -> str:
+    target = name or ""
+    if not target or target == "0.0.0.0":
+        try:
+            target = gethostname()
+        except Exception:
+            return ""
+    try:
+        return gethostbyaddr(target)[0]
+    except Exception:
+        return target
+
+
 def getservbyname(name: str, proto: str | None = None) -> int:
     _ensure_intrinsics()
     return int(
@@ -510,9 +771,17 @@ def getservbyport(port: int, proto: str | None = None) -> str:
     )
 
 
+def inet_aton(address: str) -> bytes:
+    return inet_pton(AF_INET, address)
+
+
 def inet_pton(family: int, address: str) -> bytes:
     _ensure_intrinsics()
     return _require_intrinsic(_molt_socket_inet_pton, "inet_pton")(int(family), address)
+
+
+def inet_ntoa(packed: bytes) -> str:
+    return inet_ntop(AF_INET, packed)
 
 
 def inet_ntop(family: int, packed: bytes) -> str:

@@ -992,6 +992,7 @@ impl SimpleBackend {
         let mut block_tracked_obj: HashMap<Block, Vec<TrackedValue>> = HashMap::new();
         let mut block_tracked_ptr: HashMap<Block, Vec<TrackedValue>> = HashMap::new();
         let last_use = compute_last_use(&func_ir.ops);
+        let mut last_out: Option<(String, Value)> = None;
 
         let entry_block = builder.create_block();
         let master_return_block = builder.create_block();
@@ -8641,6 +8642,22 @@ impl SimpleBackend {
                     let res = builder.inst_results(call)[0];
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
+                "getframe" => {
+                    let args = op.args.as_ref().unwrap();
+                    let depth =
+                        var_get(&mut builder, &vars, &args[0]).expect("depth not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_getframe", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*depth]);
+                    let res = builder.inst_results(call)[0];
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                }
                 "sys_executable" => {
                     let mut sig = self.module.make_signature();
                     sig.returns.push(AbiParam::new(types::I64));
@@ -8864,6 +8881,7 @@ impl SimpleBackend {
                     let target_block = state_blocks[&target_id];
                     let mut carry_obj: Vec<TrackedValue> = Vec::new();
                     let mut carry_ptr: Vec<TrackedValue> = Vec::new();
+                    let mut preserved_last_out: Option<(String, Value)> = None;
                     if let Some(block) = builder.current_block() {
                         if let Some(names) = block_tracked_obj.remove(&block) {
                             carry_obj.extend(names);
@@ -8883,6 +8901,22 @@ impl SimpleBackend {
                                 }
                             }
                         }
+                        if let Some((name, value)) = last_out.as_ref() {
+                            let last = last_use.get(name).copied().unwrap_or(op_idx);
+                            if last > op_idx {
+                                preserved_last_out = Some((name.clone(), *value));
+                            }
+                        }
+                        if std::env::var("MOLT_DEBUG_CHECK_EXCEPTION").as_deref() == Ok("1")
+                            && func_ir.name.contains("_tmp_compress_repro11b__f")
+                        {
+                            eprintln!(
+                                "check_exception {} op={} preserved_last_out={:?}",
+                                func_ir.name,
+                                op_idx,
+                                preserved_last_out.as_ref().map(|(name, _)| name)
+                            );
+                        }
                     }
                     let mut sig = self.module.make_signature();
                     sig.returns.push(AbiParam::new(types::I64));
@@ -8895,13 +8929,27 @@ impl SimpleBackend {
                     let pending = builder.inst_results(call)[0];
                     let cond = builder.ins().icmp_imm(IntCC::NotEqual, pending, 0);
                     let fallthrough = builder.create_block();
+                    let mut fallthrough_args: Vec<Value> = Vec::new();
+                    let mut preserved_param: Option<(String, Value)> = None;
+                    if let Some((name, value)) = preserved_last_out {
+                        let param = builder.append_block_param(fallthrough, types::I64);
+                        let arg = builder.ins().iadd_imm(value, 0);
+                        fallthrough_args.push(arg);
+                        preserved_param = Some((name, param));
+                    }
                     reachable_blocks.insert(target_block);
                     reachable_blocks.insert(fallthrough);
-                    builder
-                        .ins()
-                        .brif(cond, target_block, &[], fallthrough, &[]);
+                    builder.ins().brif(
+                        cond,
+                        target_block,
+                        &[],
+                        fallthrough,
+                        &fallthrough_args,
+                    );
                     switch_to_block_tracking(&mut builder, fallthrough, &mut is_block_filled);
-                    builder.seal_block(fallthrough);
+                    if let Some((name, param)) = preserved_param {
+                        def_var_named(&mut builder, &vars, name, param);
+                    }
                     if !carry_obj.is_empty() {
                         block_tracked_obj
                             .entry(fallthrough)
@@ -10609,7 +10657,23 @@ impl SimpleBackend {
                 _ => {}
             }
 
-            if let Some(name) = out_name {
+            if op.kind != "check_exception" {
+                if let Some(name) = out_name.as_ref() {
+                    if name != "none" {
+                        if let Some(val) = var_get(&mut builder, &vars, name) {
+                            last_out = Some((name.clone(), *val));
+                        } else {
+                            last_out = None;
+                        }
+                    } else {
+                        last_out = None;
+                    }
+                } else {
+                    last_out = None;
+                }
+            }
+
+            if let Some(name) = out_name.as_ref() {
                 if name != "none" {
                     if let Some(block) = builder.current_block() {
                         if block == entry_block && loop_depth == 0 {

@@ -564,6 +564,7 @@ impl WasmBackend {
         add_import("socket_getservbyport", 3, &mut self.import_ids);
         add_import("socket_inet_pton", 3, &mut self.import_ids);
         add_import("socket_inet_ntop", 3, &mut self.import_ids);
+        add_import("os_close", 2, &mut self.import_ids);
         add_import("sleep_register", 27, &mut self.import_ids);
         add_import("block_on", 2, &mut self.import_ids);
         add_import("spawn", 1, &mut self.import_ids);
@@ -860,13 +861,17 @@ impl WasmBackend {
         add_import("sys_platform", 0, &mut self.import_ids);
         add_import("errno_constants", 0, &mut self.import_ids);
         add_import("getpid", 0, &mut self.import_ids);
+        add_import("getframe", 2, &mut self.import_ids);
         add_import("getcwd", 0, &mut self.import_ids);
         add_import("time_monotonic", 0, &mut self.import_ids);
         add_import("time_monotonic_ns", 0, &mut self.import_ids);
         add_import("time_time", 0, &mut self.import_ids);
         add_import("time_time_ns", 0, &mut self.import_ids);
         add_import("path_exists", 2, &mut self.import_ids);
+        add_import("path_listdir", 2, &mut self.import_ids);
+        add_import("path_mkdir", 2, &mut self.import_ids);
         add_import("path_unlink", 2, &mut self.import_ids);
+        add_import("path_rmdir", 2, &mut self.import_ids);
         add_import("string_join", 3, &mut self.import_ids);
         add_import("string_split", 3, &mut self.import_ids);
         add_import("string_split_max", 5, &mut self.import_ids);
@@ -1135,6 +1140,7 @@ impl WasmBackend {
             ("molt_divmod_builtin", "divmod_builtin", 2),
             ("molt_open_builtin", "open_builtin", 8),
             ("molt_getargv", "getargv", 0),
+            ("molt_getframe", "getframe", 1),
             ("molt_sys_version_info", "sys_version_info", 0),
             ("molt_sys_version", "sys_version", 0),
             ("molt_sys_stdin", "sys_stdin", 0),
@@ -1145,6 +1151,7 @@ impl WasmBackend {
             ("molt_env_get", "env_get", 2),
             ("molt_env_snapshot", "env_snapshot", 0),
             ("molt_os_name", "os_name", 0),
+            ("molt_os_close", "os_close", 1),
             ("molt_sys_platform", "sys_platform", 0),
             ("molt_errno_constants", "errno_constants", 0),
             ("molt_socket_constants", "socket_constants", 0),
@@ -1190,7 +1197,10 @@ impl WasmBackend {
             ("molt_time_time", "time_time", 0),
             ("molt_time_time_ns", "time_time_ns", 0),
             ("molt_path_exists", "path_exists", 1),
+            ("molt_path_listdir", "path_listdir", 1),
+            ("molt_path_mkdir", "path_mkdir", 1),
             ("molt_path_unlink", "path_unlink", 1),
+            ("molt_path_rmdir", "path_rmdir", 1),
             ("molt_getrecursionlimit", "getrecursionlimit", 0),
             ("molt_setrecursionlimit", "setrecursionlimit", 1),
             ("molt_exception_last", "exception_last", 0),

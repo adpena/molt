@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any
+try:
+    from typing import TYPE_CHECKING
+except Exception:
+    TYPE_CHECKING = False
+
+if TYPE_CHECKING:
+    from typing import Any
+else:
+    Any = object()
 
 __all__ = ["kwlist", "softkwlist", "iskeyword", "issoftkeyword"]
 

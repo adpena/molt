@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from molt.stdlib import os as _os
 
-__all__ = ["gettempdir", "gettempdirb"]
+__all__ = ["TemporaryDirectory", "gettempdir", "gettempdirb", "mkdtemp"]
 
 _TEMP_DIR: str | None = None
+_TEMP_COUNTER = 0
 
 
 def _pick_tempdir() -> str:
@@ -38,3 +39,59 @@ def gettempdir() -> str:
 
 def gettempdirb() -> bytes:
     return gettempdir().encode("utf-8")
+
+
+def mkdtemp(suffix: str = "", prefix: str = "tmp", dir: str | None = None) -> str:
+    global _TEMP_COUNTER
+    base = dir or gettempdir()
+    for _ in range(10000):
+        name = f"{prefix}{_TEMP_COUNTER}"
+        _TEMP_COUNTER += 1
+        candidate = _os.path.join(base, f"{name}{suffix}")
+        try:
+            _os.makedirs(candidate)
+            return candidate
+        except FileExistsError:
+            continue
+    raise FileExistsError("No usable temporary directory name")
+
+
+def _rmtree(path: str) -> None:
+    try:
+        entries = _os.listdir(path)
+    except Exception:
+        entries = []
+    for name in entries:
+        entry = _os.path.join(path, name)
+        try:
+            if _os.path.isdir(entry):
+                _rmtree(entry)
+                _os.rmdir(entry)
+            else:
+                _os.unlink(entry)
+        except Exception:
+            pass
+    try:
+        _os.rmdir(path)
+    except Exception:
+        pass
+
+
+class TemporaryDirectory:
+    def __init__(
+        self, suffix: str = "", prefix: str = "tmp", dir: str | None = None
+    ) -> None:
+        self.name = mkdtemp(suffix=suffix, prefix=prefix, dir=dir)
+        self._closed = False
+
+    def cleanup(self) -> None:
+        if self._closed:
+            return
+        _rmtree(self.name)
+        self._closed = True
+
+    def __enter__(self) -> str:
+        return self.name
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.cleanup()

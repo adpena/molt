@@ -18,6 +18,10 @@ Use `tools/bench_wasm.py --require-linked` to fail fast when linking is unavaila
 # Basic run
 uv run --python 3.14 python3 tools/bench.py
 
+# One-off script (CLI wrapper or direct harness)
+molt bench --script path/to/script.py
+uv run --python 3.14 python3 tools/bench.py --script path/to/script.py
+
 # Record results to JSON (standard for PRs)
 uv run --python 3.14 python3 tools/bench.py --json-out bench/results/my_change.json
 

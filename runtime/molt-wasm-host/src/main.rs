@@ -2339,6 +2339,35 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
             }
         },
     );
+    let os_close = Func::wrap(&mut *store, |_caller: Caller<'_, HostState>, fd: i64| -> i32 {
+        if fd < 0 {
+            return -(libc::EBADF as i32);
+        }
+        #[cfg(unix)]
+        {
+            let rc = unsafe { libc::close(fd as libc::c_int) };
+            if rc == 0 {
+                return 0;
+            }
+            return -map_io_error(&std::io::Error::last_os_error());
+        }
+        #[cfg(windows)]
+        {
+            let sock_rc = unsafe { libc::closesocket(fd as libc::SOCKET) };
+            if sock_rc == 0 {
+                return 0;
+            }
+            let sock_err = unsafe { libc::WSAGetLastError() };
+            if sock_err == libc::WSAENOTSOCK {
+                let rc = unsafe { libc::_close(fd as libc::c_int) };
+                if rc == 0 {
+                    return 0;
+                }
+                return -map_io_error(&std::io::Error::last_os_error());
+            }
+            return -(sock_err as i32);
+        }
+    });
     let socketpair = Func::wrap(
         &mut *store,
         |mut caller: Caller<'_, HostState>,
@@ -2764,6 +2793,7 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
         socket_getsockopt,
     )?;
     linker.define(&mut *store, "env", "molt_socket_detach_host", socket_detach)?;
+    linker.define(&mut *store, "env", "molt_os_close_host", os_close)?;
     linker.define(
         &mut *store,
         "env",

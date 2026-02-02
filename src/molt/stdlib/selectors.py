@@ -115,10 +115,13 @@ class BaseSelector:
 
         # TODO(perf, owner:stdlib, milestone:SL2, priority:P2, status:planned): implement a shared poller path to avoid allocating per-fd futures on each select().
         async def _wait_ready() -> list[tuple[SelectorKey, int]]:
+            ensure_future = getattr(_asyncio, "ensure_future", None)
             futures: list[tuple[SelectorKey, Any]] = []
             for key in self._map.values():
                 handle = _fileobj_to_handle(key.fileobj)
                 fut = io_wait(handle, key.events, None)
+                if ensure_future is not None:
+                    fut = ensure_future(fut)
                 futures.append((key, fut))
             done, pending = await _asyncio.wait(
                 [f for _, f in futures],

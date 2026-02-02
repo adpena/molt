@@ -1,5 +1,8 @@
 # Repository Guidelines
 
+## Mission (Non-Negotiable)
+Build relentlessly with high productivity, velocity, and vision in the spirit and honor of Jeff Dean. Always build fully, completely, correctly, and performantly; avoid workarounds. Guiding question: "What would Jeff Dean do?"
+
 ## Project Structure & Module Organization
 - `src/molt/` contains the Python compiler frontend and CLI (`cli.py`).
 - `runtime/` hosts Rust crates for the runtime and object model (`molt-runtime`, `molt-obj-model`, `molt-backend`).
@@ -29,6 +32,11 @@
 - `python3 -m molt.cli build --target wasm --linked examples/hello.py`: emit `output.wasm` and `output_linked.wasm` for wasm targets (linked requires `wasm-ld` + `wasm-tools`).
 - `python3 -m molt.cli build --target wasm --linked --linked-output dist/app.wasm examples/hello.py`: customize the linked output path.
 - `python3 -m molt.cli build --target wasm --require-linked examples/hello.py`: enforce linked output and remove the unlinked artifact after linking.
+- `molt build --module mypkg`: compile a package/module entrypoint (uses `mypkg.__main__` when present).
+- Vendored deps in `vendor/` are added to module roots and `PYTHONPATH` automatically (or set `MOLT_MODULE_ROOTS` explicitly).
+- `molt run --timing examples/hello.py`: emit timing for CPython (or compile+run with `--compiled`).
+- `molt compare examples/hello.py -- --arg 1`: compare CPython vs Molt output with separate build/run timing.
+- `molt bench --script examples/hello.py`: run the bench harness on a custom script.
 - `MOLT_TRUSTED=1`, `molt run --trusted`, `molt build --trusted`, `molt diff --trusted`, or `molt test --trusted`: disable capability checks for trusted native deployments.
 - `tools/dev.py lint`: run `ruff` checks, `ruff format --check`, and `ty check` via `uv run` (Python 3.12).
 - `tools/dev.py test`: run the Python test suite (`pytest -q`) via `uv run` on Python 3.12/3.13/3.14.
@@ -164,6 +172,24 @@
 - Treat I/O, OS, network, and process modules as capability-gated and document the required permissions in specs.
 - NON-NEGOTIABLE (TURN COMPLETION): After finishing everything else at the end of every single turn, run this exact command before responding to the user:
   - `imsg send --to "+15128087500" --text “codex turn finished in molt” --service sms`
+
+## Stop-and-Ask: Dynamism & Contract Conflicts (Non-Negotiable)
+If adding functionality, tests, or coverage would require "too much dynamism" that conflicts with the vision, break policy, runtime contract, or concurrency/GIL requirements, STOP and ask the user for explicit direction before proceeding. This is mandatory.
+
+Stop and ask if the change would require any of the following (examples are representative, not exhaustive):
+- Relaxing or bypassing constraints in `docs/spec/areas/core/0000-vision.md` or `docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md` to accept CPython-style dynamism that the project explicitly rejects.
+- Introducing dynamic execution/compilation paths (e.g., enabling arbitrary `eval`/`exec`/`compile`, runtime codegen from strings, or fallback to a host interpreter) that are not covered by the runtime contract/specs.
+- Expanding dynamic import or reflection behavior beyond spec (e.g., import hooks, import-time monkeypatching, `__getattr__`-based module proxies, or dynamic module attribute creation) to make tests pass.
+- Weakening determinism or capability gating (e.g., implicit host I/O, network/process access, time-dependent behavior, or environment-dependent resolution) outside the documented security/capability model.
+- Changing runtime object layout/provenance/handle resolution rules or pointer registry behavior in ways that violate the runtime contract or provenance safety guarantees.
+- Introducing concurrency or parallel execution that bypasses the GIL token, allows unsynchronized mutation, or otherwise violates the runtime locking model in `docs/spec/` and runtime safety docs **unless** all of the following are true and explicitly approved by the user:
+  - The bypass is gated behind a spec-defined capability/flag that is **off by default**.
+  - The gating mechanism, risk profile, and expected semantics are documented in `docs/spec/` and `docs/spec/STATUS.md`, and mirrored in `ROADMAP.md`.
+  - The runtime safety plan is spelled out (e.g., provenance/aliasing guarantees, lock model changes, Miri or equivalent validation plan).
+  - Tests explicitly cover both gated-on and gated-off behavior with determinism guarantees.
+- Adding "dynamic escape hatches" (feature flags, hidden toggles, or environment variables) that effectively bypass the contract or policy without an explicit spec change.
+
+When this triggers, do not implement a workaround. Instead: summarize the conflict, cite the specific docs/sections involved, propose options (e.g., scope reduction vs. spec change), and wait for explicit user approval.
 
 ## TODO Taxonomy (Required)
 Use a single, explicit TODO format everywhere (code + docs + tests). This is how we track gaps safely.

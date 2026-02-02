@@ -2104,6 +2104,18 @@ pub(crate) fn raise_os_error_errno<T: ExceptionSentinel>(
     let ptr = alloc_exception_from_class_bits(_py, class_bits, args_bits);
     dec_ref_bits(_py, args_bits);
     if !ptr.is_null() {
+        let dict_bits = unsafe { exception_dict_bits(ptr) };
+        if !obj_from_bits(dict_bits).is_none() && dict_bits != 0 {
+            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+                unsafe {
+                    if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                        let errno_name = intern_static_name(_py, &ERRNO_ATTR_NAME, b"errno");
+                        let errno_bits = MoltObject::from_int(errno).bits();
+                        dict_set_in_place(_py, dict_ptr, errno_name, errno_bits);
+                    }
+                }
+            }
+        }
         record_exception(_py, ptr);
     }
     T::exception_sentinel()
@@ -2720,6 +2732,48 @@ pub(crate) fn frame_stack_trace_bits(_py: &PyToken<'_>) -> Option<u64> {
         TRACEBACK_BUILD_FRAMES.fetch_add(frames_built, AtomicOrdering::Relaxed);
     }
     Some(next_bits)
+}
+
+#[no_mangle]
+pub extern "C" fn molt_getframe(depth_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let depth_val = obj_from_bits(depth_bits);
+        let Some(depth) = to_i64(depth_val) else {
+            return raise_exception::<u64>(_py, "TypeError", "depth must be an integer");
+        };
+        if depth < 0 {
+            return raise_exception::<u64>(_py, "ValueError", "depth must be >= 0");
+        }
+        let depth = depth as usize;
+        let entry = FRAME_STACK.with(|stack| {
+            let stack = stack.borrow();
+            if depth >= stack.len() {
+                None
+            } else {
+                Some(stack[stack.len() - 1 - depth])
+            }
+        });
+        let Some(entry) = entry else {
+            return MoltObject::none().bits();
+        };
+        if entry.code_bits == 0 {
+            return MoltObject::none().bits();
+        }
+        unsafe {
+            let mut line = entry.line;
+            if line <= 0 {
+                if let Some(code_ptr) = obj_from_bits(entry.code_bits).as_ptr() {
+                    if object_type_id(code_ptr) == TYPE_ID_CODE {
+                        line = code_firstlineno(code_ptr);
+                    }
+                }
+            }
+            if let Some(frame_bits) = alloc_frame_obj(_py, entry.code_bits, line) {
+                return frame_bits;
+            }
+        }
+        MoltObject::none().bits()
+    })
 }
 
 #[no_mangle]

@@ -9,8 +9,7 @@ import runpy
 root = tempfile.mkdtemp()
 path = os.path.join(root, 'mod_a.py')
 with open(path, 'w', encoding='utf-8') as handle:
-    handle.write('value = 11
-')
+    handle.write('value = 11\n')
 
 sys.path.insert(0, root)
 try:

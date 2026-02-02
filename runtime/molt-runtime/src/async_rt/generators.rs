@@ -870,6 +870,18 @@ pub extern "C" fn molt_generator_close_method(gen_bits: u64) -> u64 {
     })
 }
 
+#[no_mangle]
+pub extern "C" fn molt_coroutine_close_method(coro_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(task_ptr) = resolve_task_ptr(coro_bits) else {
+            return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
+        };
+        cancel_future_task(_py, task_ptr, None);
+        task_mark_done(task_ptr);
+        MoltObject::none().bits()
+    })
+}
+
 fn asyncgen_registry_insert(_py: &PyToken<'_>, ptr: *mut u8) {
     crate::gil_assert();
     if ptr.is_null() {

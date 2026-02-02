@@ -8,8 +8,7 @@ import tempfile
 root = tempfile.mkdtemp()
 path = os.path.join(root, 'mod_d.py')
 with open(path, 'w', encoding='utf-8') as handle:
-    handle.write('value = 4
-')
+    handle.write('value = 4\n')
 
 spec = importlib.util.spec_from_file_location('mod_d', path)
 print(spec.name)

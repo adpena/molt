@@ -21,6 +21,7 @@
 Purpose: Compile Python source to native or WASM artifacts.
 
 Key flags:
+- `--module <name>` (use `name.__main__` when present)
 - `--target {native,wasm,<triple>}`
 - `--codec {msgpack,cbor,json}` (default: `msgpack`)
 - `--type-hints {ignore,trust,check}` (default: `ignore`)
@@ -85,14 +86,29 @@ Purpose: Run Python code via CPython with Molt shims for parity testing.
 
 Key flags:
 - `--python <exe|version>`
+- `--module <name>` (use `name.__main__` when present)
 - `--no-shims`
 - `--compiled` + `--build-arg <arg>`
 - `--rebuild` (disable cache for `--compiled`)
-- `--compiled-args` (pass argv through to compiled binary; initializes `sys.argv`).
+- `--timing` (emit compile/run timing when used with `--compiled`)
 - `--capabilities <file|profile|list>` (capability profiles/tokens or manifest path)
 - `--trusted/--no-trusted` (disable capability checks for trusted deployments).
+- Compiled runs forward script args by default; use `--` to separate.
 
-### 2.4 `molt test`
+### 2.4 `molt compare`
+**Status:** Implemented (initial).
+
+Purpose: Compare CPython vs Molt compiled output and timings (separates build vs run).
+
+Key flags:
+- `--python <exe|version>`
+- `--module <name>` (use `name.__main__` when present)
+- `--shims/--no-shims` (toggle Molt shims for the CPython run; default is raw CPython)
+- `--build-arg <arg>` + `--rebuild` (forward to the Molt build)
+- `--capabilities <file|profile|list>`
+- `--trusted/--no-trusted`
+
+### 2.5 `molt test`
 **Status:** Implemented (initial).
 
 Purpose: Run Molt-aware test suites (`tools/dev.py test` by default, or diff/pytest suites).
@@ -102,7 +118,7 @@ Key flags:
 - `--python-version <ver>` (diff suite)
 - `--trusted/--no-trusted` (disable capability checks for trusted deployments).
 
-### 2.5 `molt diff`
+### 2.6 `molt diff`
 **Status:** Implemented (initial; wraps `tests/molt_diff.py`).
 
 Purpose: Differential testing against CPython using the Molt compiler.
@@ -111,15 +127,18 @@ Key flags:
 - `--python-version <ver>`
 - `--trusted/--no-trusted` (disable capability checks for trusted deployments).
 
-### 2.6 `molt profile`
+### 2.7 `molt profile`
 **Status:** Implemented (initial; wraps `tools/profile.py`).
 
 Purpose: Capture runtime traces into `molt_profile.json` for PGO and guard synthesis.
 
-### 2.7 `molt bench`
+### 2.8 `molt bench`
 **Status:** Implemented (initial; wraps `tools/bench.py` or `tools/bench_wasm.py`).
 
 Purpose: Run curated benchmarks with regression tracking.
+
+Key flags:
+- `--script <path>` (benchmark one or more custom scripts; repeatable)
 
 ---
 

@@ -3,7 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from typing import cast
+import os as _os
+
+try:
+    from typing import cast
+except Exception:
+
+    def cast(_tp, value):  # type: ignore[override]
+        return value
+
 
 import builtins as _builtins
 
@@ -64,6 +72,8 @@ _MOLT_SYS_PLATFORM = _as_callable(_load_intrinsic("_molt_sys_platform"))
 _MOLT_SYS_STDIN = _as_callable(_load_intrinsic("_molt_sys_stdin"))
 _MOLT_SYS_STDOUT = _as_callable(_load_intrinsic("_molt_sys_stdout"))
 _MOLT_SYS_STDERR = _as_callable(_load_intrinsic("_molt_sys_stderr"))
+_MOLT_ENV_GET_RAW = _as_callable(_load_intrinsic("_molt_env_get_raw"))
+_MOLT_GETFRAME = _as_callable(_load_intrinsic("_molt_getframe"))
 
 if _MOLT_GETARGV is not None:
     try:
@@ -160,6 +170,102 @@ else:
     if version_info is None:
         version_info = (3, 12, 0, "final", 0)
     path = []
+    if _MOLT_ENV_GET_RAW is not None:
+        try:
+            raw_path = _MOLT_ENV_GET_RAW("PYTHONPATH", "")
+        except Exception:
+            raw_path = ""
+    else:
+        try:
+            raw_path = _os.environ.get("PYTHONPATH", "")
+        except Exception:
+            raw_path = ""
+    if isinstance(raw_path, str) and raw_path:
+        sep = ";" if platform.startswith("win") else ":"
+        path = [part for part in raw_path.split(sep) if part]
+
+    def _append_stdlib_path(paths: list[str]) -> None:
+        file_path = globals().get("__file__")
+        if isinstance(file_path, str) and file_path:
+            stdlib_root = _os.path.dirname(file_path)
+            if stdlib_root and stdlib_root not in paths:
+                paths.append(stdlib_root)
+
+    def _read_env_flag(name: str) -> str:
+        if _MOLT_ENV_GET_RAW is not None:
+            try:
+                value = _MOLT_ENV_GET_RAW(name, "")
+            except Exception:
+                value = ""
+        else:
+            try:
+                value = _os.environ.get(name, "")
+            except Exception:
+                value = ""
+        return str(value) if value is not None else ""
+
+    def _append_module_roots(paths: list[str]) -> None:
+        raw = _read_env_flag("MOLT_MODULE_ROOTS")
+        if not raw:
+            return
+        sep = ";" if platform.startswith("win") else ":"
+        for entry in raw.split(sep):
+            if entry and entry not in paths:
+                paths.append(entry)
+
+    def _append_cwd_path(paths: list[str]) -> None:
+        dev_trusted = _read_env_flag("MOLT_DEV_TRUSTED").strip().lower()
+        if dev_trusted in {"0", "false", "no"}:
+            return
+        if "" not in paths:
+            paths.insert(0, "")
+
+    def _append_host_site_packages(paths: list[str]) -> None:
+        if _MOLT_ENV_GET_RAW is not None:
+            try:
+                trusted = str(_MOLT_ENV_GET_RAW("MOLT_TRUSTED", ""))
+            except Exception:
+                trusted = ""
+        else:
+            try:
+                trusted = str(_os.environ.get("MOLT_TRUSTED", ""))
+            except Exception:
+                trusted = ""
+        if trusted.strip().lower() not in {"1", "true", "yes", "on"}:
+            return
+        exe_path = executable
+        if not exe_path:
+            return
+        exe_dir = _os.path.dirname(exe_path)
+        candidates: list[str] = []
+        if platform.startswith("win"):
+            base = (
+                _os.path.dirname(exe_dir)
+                if _os.path.basename(exe_dir).lower() == "scripts"
+                else exe_dir
+            )
+            candidates.append(_os.path.join(base, "Lib", "site-packages"))
+        else:
+            base = (
+                _os.path.dirname(exe_dir)
+                if _os.path.basename(exe_dir) == "bin"
+                else exe_dir
+            )
+            major, minor = int(version_info[0]), int(version_info[1])
+            candidates.append(
+                _os.path.join(base, "lib", f"python{major}.{minor}", "site-packages")
+            )
+            candidates.append(
+                _os.path.join(base, "lib", f"python{major}.{minor}", "dist-packages")
+            )
+        for candidate in candidates:
+            if candidate and candidate not in paths:
+                paths.append(candidate)
+
+    _append_stdlib_path(path)
+    _append_module_roots(path)
+    _append_cwd_path(path)
+    _append_host_site_packages(path)
     if _existing_modules is None:
         modules: dict[str, object] = {}
     else:
@@ -291,6 +397,11 @@ def exc_info() -> tuple[object, object, object]:
 
 
 def _getframe(depth: int = 0) -> object | None:
+    if _MOLT_GETFRAME is not None:
+        try:
+            return _MOLT_GETFRAME(depth + 2)
+        except Exception:
+            return None
     # TODO(introspection, owner:runtime, milestone:TC2, priority:P2, status:partial): implement sys._getframe for compiled runtimes.
     if _py_sys is not None and hasattr(_py_sys, "_getframe"):
         try:

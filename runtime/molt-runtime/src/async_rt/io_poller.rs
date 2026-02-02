@@ -15,8 +15,8 @@ use crate::require_net_capability;
 use crate::{
     dec_ref_bits, header_from_obj_ptr, inc_ref_bits, io_wait_poll_fn_addr, molt_future_new,
     monotonic_now_secs, obj_from_bits, pending_bits_i64, ptr_from_bits, raise_exception,
-    resolve_obj_ptr, runtime_state, to_f64, to_i64, GilGuard, MoltHeader, MoltObject, PtrSlot,
-    PyToken,
+    resolve_obj_ptr, runtime_state, to_f64, to_i64, GilGuard, GilReleaseGuard, MoltHeader,
+    MoltObject, PtrSlot, PyToken,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{raise_os_error, IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE};
@@ -511,9 +511,11 @@ impl IoPoller {
                     break;
                 }
                 let timeout = deadline - now;
+                let _release = GilReleaseGuard::new();
                 let (next, _) = waiter.condvar.wait_timeout(guard, timeout).unwrap();
                 guard = next;
             } else {
+                let _release = GilReleaseGuard::new();
                 guard = waiter.condvar.wait(guard).unwrap();
             }
         }

@@ -2,7 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable
+try:
+    from typing import TYPE_CHECKING
+except Exception:
+    TYPE_CHECKING = False
+
+if TYPE_CHECKING:
+    from typing import Any, Callable
+else:
+    Any = object()
+    Callable = object()
 
 __all__ = [
     "add",

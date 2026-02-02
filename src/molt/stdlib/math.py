@@ -12,6 +12,7 @@ __all__ = [
     "isnan",
     "nan",
     "pi",
+    "sqrt",
 ]
 
 pi = 3.141592653589793
@@ -45,3 +46,10 @@ def isinf(x: object) -> bool:
 def isnan(x: object) -> bool:
     value = _coerce_real("isnan", x)
     return value != value
+
+
+def sqrt(x: object) -> float:
+    value = _coerce_real("sqrt", x)
+    if value < 0.0:
+        raise ValueError("math domain error")
+    return value**0.5

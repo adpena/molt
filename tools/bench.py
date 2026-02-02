@@ -850,6 +850,11 @@ def main():
     parser.add_argument("--no-codon", action="store_true")
     parser.add_argument("--no-depyler", action="store_true")
     parser.add_argument(
+        "--script",
+        action="append",
+        help="Benchmark a custom script path (repeatable).",
+    )
+    parser.add_argument(
         "--super",
         action="store_true",
         help="Run all benchmarks 10x and emit mean/median/variance/range stats.",
@@ -866,7 +871,15 @@ def main():
     if args.super and args.samples is not None:
         parser.error("--super cannot be combined with --samples")
 
-    benchmarks = SMOKE_BENCHMARKS if args.smoke else BENCHMARKS
+    if args.script:
+        if args.smoke:
+            parser.error("--script cannot be combined with --smoke")
+        benchmarks = [str(Path(path)) for path in args.script]
+        missing = [path for path in benchmarks if not Path(path).exists()]
+        if missing:
+            parser.error(f"Script(s) not found: {', '.join(missing)}")
+    else:
+        benchmarks = SMOKE_BENCHMARKS if args.smoke else BENCHMARKS
     samples = (
         SUPER_SAMPLES
         if args.super

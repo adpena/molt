@@ -302,6 +302,7 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
     "_molt_getrecursionlimit": BuiltinFuncSpec("molt_getrecursionlimit", ()),
     "_molt_setrecursionlimit": BuiltinFuncSpec("molt_setrecursionlimit", ("limit",)),
     "_molt_getargv": BuiltinFuncSpec("molt_getargv", ()),
+    "_molt_getframe": BuiltinFuncSpec("molt_getframe", ("depth",)),
     "_molt_sys_version_info": BuiltinFuncSpec("molt_sys_version_info", ()),
     "_molt_sys_version": BuiltinFuncSpec("molt_sys_version", ()),
     "_molt_sys_stdin": BuiltinFuncSpec("molt_sys_stdin", ()),
@@ -341,6 +342,15 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
     "_molt_getpid": BuiltinFuncSpec("molt_getpid", ()),
     "_molt_getcwd": BuiltinFuncSpec("molt_getcwd", ()),
     "_molt_os_name": BuiltinFuncSpec("molt_os_name", ()),
+    "_molt_os_close": BuiltinFuncSpec("molt_os_close", ("fd",)),
+    "_molt_os_dup": BuiltinFuncSpec("molt_os_dup", ("fd",)),
+    "_molt_os_get_inheritable": BuiltinFuncSpec("molt_os_get_inheritable", ("fd",)),
+    "_molt_os_set_inheritable": BuiltinFuncSpec(
+        "molt_os_set_inheritable", ("fd", "inheritable")
+    ),
+    "_molt_struct_pack": BuiltinFuncSpec("molt_struct_pack", ("format", "values")),
+    "_molt_struct_unpack": BuiltinFuncSpec("molt_struct_unpack", ("format", "buffer")),
+    "_molt_struct_calcsize": BuiltinFuncSpec("molt_struct_calcsize", ("format",)),
     "_molt_sys_platform": BuiltinFuncSpec("molt_sys_platform", ()),
     "_molt_time_monotonic": BuiltinFuncSpec("molt_time_monotonic", ()),
     "_molt_time_monotonic_ns": BuiltinFuncSpec("molt_time_monotonic_ns", ()),
@@ -441,6 +451,16 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
     "molt_stream_recv": BuiltinFuncSpec("molt_stream_recv", ("stream",)),
     "molt_stream_close": BuiltinFuncSpec("molt_stream_close", ("stream",)),
     "molt_stream_drop": BuiltinFuncSpec("molt_stream_drop", ("stream",)),
+    "molt_pending": BuiltinFuncSpec("molt_pending", ()),
+    "molt_chan_new": BuiltinFuncSpec("molt_chan_new", ("maxsize",), (ast.Constant(0),)),
+    "molt_chan_send": BuiltinFuncSpec("molt_chan_send", ("chan", "val")),
+    "molt_chan_recv": BuiltinFuncSpec("molt_chan_recv", ("chan",)),
+    "molt_chan_try_send": BuiltinFuncSpec("molt_chan_try_send", ("chan", "val")),
+    "molt_chan_try_recv": BuiltinFuncSpec("molt_chan_try_recv", ("chan",)),
+    "molt_chan_send_blocking": BuiltinFuncSpec(
+        "molt_chan_send_blocking", ("chan", "val")
+    ),
+    "molt_chan_recv_blocking": BuiltinFuncSpec("molt_chan_recv_blocking", ("chan",)),
     "molt_thread_spawn": BuiltinFuncSpec("molt_thread_spawn", ("payload",)),
     "molt_thread_join": BuiltinFuncSpec("molt_thread_join", ("handle", "timeout")),
     "molt_thread_is_alive": BuiltinFuncSpec("molt_thread_is_alive", ("handle",)),
@@ -451,6 +471,9 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
         "molt_thread_current_native_id", ()
     ),
     "molt_thread_drop": BuiltinFuncSpec("molt_thread_drop", ("handle",)),
+    "molt_module_cache_set": BuiltinFuncSpec(
+        "molt_module_cache_set", ("name", "module")
+    ),
     "molt_lock_new": BuiltinFuncSpec("molt_lock_new", ()),
     "molt_lock_acquire": BuiltinFuncSpec(
         "molt_lock_acquire", ("handle", "blocking", "timeout")
@@ -471,7 +494,10 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
     "molt_weakref_get": BuiltinFuncSpec("molt_weakref_get", ("weakref",)),
     "molt_weakref_drop": BuiltinFuncSpec("molt_weakref_drop", ("weakref",)),
     "_molt_path_exists": BuiltinFuncSpec("molt_path_exists", ("path",)),
+    "_molt_path_listdir": BuiltinFuncSpec("molt_path_listdir", ("path",)),
+    "_molt_path_mkdir": BuiltinFuncSpec("molt_path_mkdir", ("path",)),
     "_molt_path_unlink": BuiltinFuncSpec("molt_path_unlink", ("path",)),
+    "_molt_path_rmdir": BuiltinFuncSpec("molt_path_rmdir", ("path",)),
     "vars": BuiltinFuncSpec("molt_vars_builtin", ("obj",)),
     "_molt_heapq_heapify": BuiltinFuncSpec("molt_heapq_heapify", ("list_obj",)),
     "_molt_heapq_heappush": BuiltinFuncSpec(
@@ -671,6 +697,7 @@ class ClassInfo(TypedDict, total=False):
     layout_version: int
     exception_subclass: bool
     needs_classcell: bool
+    custom_metaclass: bool
 
 
 class FuncInfo(TypedDict):
@@ -9461,7 +9488,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if base_name is not None:
                     base_names.append(base_name)
 
+        has_metaclass_kw = False
+        if node.keywords:
+            for kw in node.keywords:
+                if kw.arg == "metaclass":
+                    has_metaclass_kw = True
+                    break
+
         dynamic_build = False
+        inherits_custom_meta = False
         if node.keywords:
             dynamic_build = True
         for base_name in base_name_lookup:
@@ -9472,6 +9507,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if base_info is None and base_name not in BUILTIN_TYPE_TAGS:
                 dynamic_build = True
                 continue
+            if base_info and base_info.get("custom_metaclass"):
+                inherits_custom_meta = True
+                dynamic_build = True
             if base_info and "__mro_entries__" in base_info.get("methods", {}):
                 dynamic_build = True
         if not has_explicit_bases:
@@ -9571,6 +9609,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 "methods": methods,
                 "pending_methods": pending_methods,
                 "needs_classcell": needs_classcell,
+                "custom_metaclass": has_metaclass_kw or inherits_custom_meta,
             }
         else:
             fields: dict[str, int] = {}
@@ -9698,6 +9737,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 dynamic=dynamic,
                 static=is_static,
                 needs_classcell=needs_classcell,
+                custom_metaclass=has_metaclass_kw or inherits_custom_meta,
             )
 
         method_names = {
@@ -11420,44 +11460,107 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         method_attr = func_val
                         descriptor = method_info["descriptor"]
                         if descriptor == "decorated":
-                            method_decorator_vals: list[MoltValue] = []
-                            for deco in item.decorator_list:
-                                decorator_val = self.visit(deco)
-                                if decorator_val is None:
-                                    raise NotImplementedError(
-                                        "Unsupported method decorator"
+                            property_outer = (
+                                item.decorator_list
+                                and isinstance(item.decorator_list[0], ast.Name)
+                                and item.decorator_list[0].id == "property"
+                            )
+                            if property_outer:
+                                method_decorator_vals: list[MoltValue] = []
+                                for deco in item.decorator_list[1:]:
+                                    decorator_val = self.visit(deco)
+                                    if decorator_val is None:
+                                        raise NotImplementedError(
+                                            "Unsupported method decorator"
+                                        )
+                                    method_decorator_vals.append(decorator_val)
+                                decorated = method_attr
+                                for decorator_val in reversed(method_decorator_vals):
+                                    callargs = MoltValue(
+                                        self.next_var(), type_hint="callargs"
                                     )
-                                method_decorator_vals.append(decorator_val)
-                            decorated = method_attr
-                            for decorator_val in reversed(method_decorator_vals):
-                                callargs = MoltValue(
-                                    self.next_var(), type_hint="callargs"
+                                    self.emit(
+                                        MoltOp(
+                                            kind="CALLARGS_NEW",
+                                            args=[],
+                                            result=callargs,
+                                        )
+                                    )
+                                    push_res = MoltValue(
+                                        self.next_var(), type_hint="None"
+                                    )
+                                    self.emit(
+                                        MoltOp(
+                                            kind="CALLARGS_PUSH_POS",
+                                            args=[callargs, decorated],
+                                            result=push_res,
+                                        )
+                                    )
+                                    res = MoltValue(self.next_var(), type_hint="Any")
+                                    self.emit(
+                                        MoltOp(
+                                            kind="CALL_BIND",
+                                            args=[decorator_val, callargs],
+                                            result=res,
+                                        )
+                                    )
+                                    decorated = res
+                                none_val = MoltValue(self.next_var(), type_hint="None")
+                                self.emit(
+                                    MoltOp(kind="CONST_NONE", args=[], result=none_val)
+                                )
+                                wrapped = MoltValue(
+                                    self.next_var(), type_hint="property"
                                 )
                                 self.emit(
                                     MoltOp(
-                                        kind="CALLARGS_NEW",
-                                        args=[],
-                                        result=callargs,
+                                        kind="PROPERTY_NEW",
+                                        args=[decorated, none_val, none_val],
+                                        result=wrapped,
                                     )
                                 )
-                                push_res = MoltValue(self.next_var(), type_hint="None")
-                                self.emit(
-                                    MoltOp(
-                                        kind="CALLARGS_PUSH_POS",
-                                        args=[callargs, decorated],
-                                        result=push_res,
+                                method_attr = wrapped
+                            else:
+                                method_decorator_vals = []
+                                for deco in item.decorator_list:
+                                    decorator_val = self.visit(deco)
+                                    if decorator_val is None:
+                                        raise NotImplementedError(
+                                            "Unsupported method decorator"
+                                        )
+                                    method_decorator_vals.append(decorator_val)
+                                decorated = method_attr
+                                for decorator_val in reversed(method_decorator_vals):
+                                    callargs = MoltValue(
+                                        self.next_var(), type_hint="callargs"
                                     )
-                                )
-                                res = MoltValue(self.next_var(), type_hint="Any")
-                                self.emit(
-                                    MoltOp(
-                                        kind="CALL_BIND",
-                                        args=[decorator_val, callargs],
-                                        result=res,
+                                    self.emit(
+                                        MoltOp(
+                                            kind="CALLARGS_NEW",
+                                            args=[],
+                                            result=callargs,
+                                        )
                                     )
-                                )
-                                decorated = res
-                            method_attr = decorated
+                                    push_res = MoltValue(
+                                        self.next_var(), type_hint="None"
+                                    )
+                                    self.emit(
+                                        MoltOp(
+                                            kind="CALLARGS_PUSH_POS",
+                                            args=[callargs, decorated],
+                                            result=push_res,
+                                        )
+                                    )
+                                    res = MoltValue(self.next_var(), type_hint="Any")
+                                    self.emit(
+                                        MoltOp(
+                                            kind="CALL_BIND",
+                                            args=[decorator_val, callargs],
+                                            result=res,
+                                        )
+                                    )
+                                    decorated = res
+                                method_attr = decorated
                         elif descriptor == "classmethod":
                             wrapped = MoltValue(
                                 self.next_var(), type_hint="classmethod"
@@ -12233,6 +12336,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             receiver = self.visit(node.func.value)
             if receiver is None:
                 receiver = MoltValue("unknown_obj", type_hint="Unknown")
+            obj_name = None
+            exact_class = None
+            if isinstance(node.func.value, ast.Name):
+                obj_name = node.func.value.id
+                exact_class = self.exact_locals.get(obj_name)
+
+            def load_attr_callee() -> MoltValue:
+                return self._emit_attribute_load(
+                    node.func, receiver, obj_name, exact_class
+                )
+
             method = node.func.attr
             if method == "sort" and receiver.type_hint == "list":
                 needs_bind = True
@@ -12354,7 +12468,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 or method_info.get("has_varkw", False)
                 or method_info.get("has_closure", False)
             ):
-                callee = self.visit(node.func)
+                callee = load_attr_callee()
                 if callee is None:
                     raise NotImplementedError("Unsupported call target")
                 callargs = self._emit_call_args_builder(node)
@@ -12369,7 +12483,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return res
             if method_info and not needs_bind:
                 if class_name is None and receiver.type_hint not in self.classes:
-                    callee = self.visit(node.func)
+                    callee = load_attr_callee()
                     if callee is None:
                         raise NotImplementedError("Unsupported call target")
                     callargs = self._emit_call_args_builder(node)
@@ -12436,7 +12550,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                 else:
                                     func_obj = class_attr
                             else:
-                                callee = self.visit(node.func)
+                                callee = load_attr_callee()
                                 if callee is not None:
                                     if descriptor == "classmethod":
                                         func_obj = self._emit_bound_method_func(callee)
@@ -12469,7 +12583,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             positional_limit=positional_limit,
                         )
                         if args is None:
-                            callee = self.visit(node.func)
+                            callee = load_attr_callee()
                             if callee is None:
                                 raise NotImplementedError("Unsupported call target")
                             callargs = self._emit_call_args_builder(node)
@@ -13387,14 +13501,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     return res
             if method == "join":
                 if len(node.args) != 1:
-                    obj_name = None
-                    exact_class = None
-                    if isinstance(node.func.value, ast.Name):
-                        obj_name = node.func.value.id
-                        exact_class = self.exact_locals.get(obj_name)
-                    callee = self._emit_attribute_load(
-                        node.func, receiver, obj_name, exact_class
-                    )
+                    callee = load_attr_callee()
                     return self._emit_dynamic_call(node, callee, True)
                 items = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="str")
@@ -13691,6 +13798,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                     )
                     return res
+            module_name = self.imported_modules.get(obj_name) if obj_name else None
+            if module_name is None:
+                callee = load_attr_callee()
+                return self._emit_dynamic_call(node, callee, needs_bind)
 
         if isinstance(node.func, ast.Attribute):
             module_name = None
@@ -14636,6 +14747,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             elif func_id == "molt_chan_send":
                 chan = self.visit(node.args[0])
                 val = self.visit(node.args[1])
+                if not self.is_async():
+                    callee = self._emit_builtin_function("molt_chan_send")
+                    return self._emit_call_bound_or_func(callee, [chan, val])
                 chan_slot = None
                 val_slot = None
                 chan_for_send = chan
@@ -14728,6 +14842,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return res
             elif func_id == "molt_chan_recv":
                 chan = self.visit(node.args[0])
+                if not self.is_async():
+                    callee = self._emit_builtin_function("molt_chan_recv")
+                    return self._emit_call_bound_or_func(callee, [chan])
                 chan_slot = None
                 chan_for_recv = chan
                 if self.is_async():
