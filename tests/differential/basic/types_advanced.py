@@ -23,7 +23,10 @@ async def agen():
 
 print(isinstance(foo, types.FunctionType))
 print(isinstance(foo.__code__, types.CodeType))
-print(isinstance(sys._getframe(), types.FrameType))
+def frame_check():
+    return isinstance(sys._getframe(), types.FrameType)
+
+print(frame_check())
 
 mod = types.ModuleType("m")
 mod.answer = 42
@@ -64,3 +67,26 @@ def legacy():
 it = legacy()
 print(isinstance(it, types.GeneratorType))
 print(next(it))
+
+print(isinstance(len, types.BuiltinFunctionType))
+print(isinstance([].append, types.BuiltinMethodType))
+print(isinstance(object.__init__, types.WrapperDescriptorType))
+print(isinstance("".__str__, types.MethodWrapperType))
+print(isinstance(str.join, types.MethodDescriptorType))
+print(isinstance(dict.__dict__.get("fromkeys"), types.ClassMethodDescriptorType))
+print(isinstance(types.FunctionType.__code__, types.GetSetDescriptorType))
+print(isinstance(types.FunctionType.__globals__, types.MemberDescriptorType))
+
+def cell_maker():
+    value = 1
+
+    def inner():
+        return value
+
+    return inner
+
+cell = cell_maker().__closure__[0]
+print(isinstance(cell, types.CellType))
+print(types.NoneType is type(None))
+print(types.EllipsisType is type(...))
+print(types.LambdaType is types.FunctionType)

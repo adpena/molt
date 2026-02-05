@@ -2,12 +2,12 @@ use super::channels::has_capability;
 use crate::PyToken;
 use crate::*;
 
+#[cfg(target_arch = "wasm32")]
+use crate::libc_compat as libc;
 #[cfg(not(target_arch = "wasm32"))]
 use socket2::{Domain, Protocol, SockAddr, SockRef, Socket, Type};
 #[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashMap;
-#[cfg(target_arch = "wasm32")]
-use crate::libc_compat as libc;
 #[cfg(target_arch = "wasm32")]
 use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
@@ -424,10 +424,38 @@ pub(crate) fn io_wait_release_socket(_py: &PyToken<'_>, future_ptr: *mut u8) {
     if !socket_ptr.is_null() {
         socket_ref_dec(_py, socket_ptr);
     }
+    if payload_bytes >= 2 * std::mem::size_of::<u64>() {
+        let events_bits = unsafe { *payload_ptr.add(1) };
+        dec_ref_bits(_py, events_bits);
+    }
+    if payload_bytes >= 3 * std::mem::size_of::<u64>() {
+        let timeout_bits = unsafe { *payload_ptr.add(2) };
+        dec_ref_bits(_py, timeout_bits);
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn io_wait_release_socket(_py: &PyToken<'_>, _future_ptr: *mut u8) {}
+pub(crate) fn io_wait_release_socket(_py: &PyToken<'_>, future_ptr: *mut u8) {
+    if future_ptr.is_null() {
+        return;
+    }
+    let header = unsafe { header_from_obj_ptr(future_ptr) };
+    let payload_bytes = unsafe {
+        (*header)
+            .size
+            .saturating_sub(std::mem::size_of::<MoltHeader>())
+    };
+    if payload_bytes < 2 * std::mem::size_of::<u64>() {
+        return;
+    }
+    let payload_ptr = future_ptr as *mut u64;
+    let events_bits = unsafe { *payload_ptr.add(1) };
+    dec_ref_bits(_py, events_bits);
+    if payload_bytes >= 3 * std::mem::size_of::<u64>() {
+        let timeout_bits = unsafe { *payload_ptr.add(2) };
+        dec_ref_bits(_py, timeout_bits);
+    }
+}
 
 pub(crate) fn send_data_from_bits(bits: u64) -> Result<SendData, String> {
     let obj = obj_from_bits(bits);
@@ -586,12 +614,33 @@ fn service_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<Option<String>, Str
     Err(format!("service must be int or str, not {obj_type}"))
 }
 
+#[cfg(unix)]
+fn unix_path_from_bits(_py: &PyToken<'_>, addr_bits: u64) -> Result<std::path::PathBuf, String> {
+    let obj = obj_from_bits(addr_bits);
+    if let Some(text) = string_obj_to_owned(obj) {
+        return Ok(std::path::PathBuf::from(text));
+    }
+    if let Some(ptr) = obj.as_ptr() {
+        unsafe {
+            if object_type_id(ptr) == TYPE_ID_BYTES {
+                let len = bytes_len(ptr);
+                let bytes = std::slice::from_raw_parts(bytes_data(ptr), len);
+                use std::os::unix::ffi::OsStringExt;
+                let path = std::ffi::OsString::from_vec(bytes.to_vec());
+                return Ok(std::path::PathBuf::from(path));
+            }
+        }
+    }
+    let obj_type = class_name_for_error(type_of_bits(_py, addr_bits));
+    Err(format!("a bytes-like object is required, not '{obj_type}'"))
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn sockaddr_from_bits(_py: &PyToken<'_>, addr_bits: u64, family: i32) -> Result<SockAddr, String> {
     if family == libc::AF_UNIX {
         #[cfg(unix)]
         {
-            let path = path_from_bits(_py, addr_bits)?;
+            let path = unix_path_from_bits(_py, addr_bits)?;
             return SockAddr::unix(path).map_err(|err| err.to_string());
         }
         #[cfg(not(unix))]
@@ -853,9 +902,9 @@ fn socket_wait_ready(
                     | MoltSocketKind::UnixListener(_)
                     | MoltSocketKind::UnixDatagram(_)
             );
-            let fd = inner.raw_fd().ok_or_else(|| {
-                std::io::Error::new(ErrorKind::NotConnected, "socket closed")
-            })?;
+            let fd = inner
+                .raw_fd()
+                .ok_or_else(|| std::io::Error::new(ErrorKind::NotConnected, "socket closed"))?;
             Ok((use_poll, fd))
         });
         match poll_params {
@@ -2135,7 +2184,7 @@ pub unsafe extern "C" fn molt_socket_connect_ex(sock_bits: u64, addr_bits: u64) 
                         return MoltObject::from_int(libc::EINPROGRESS as i64).bits();
                     }
                     return MoltObject::from_int(
-                        wait_err.raw_os_error().unwrap_or(libc::EIO) as i64,
+                        wait_err.raw_os_error().unwrap_or(libc::EIO) as i64
                     )
                     .bits();
                 }
@@ -2151,14 +2200,12 @@ pub unsafe extern "C" fn molt_socket_connect_ex(sock_bits: u64, addr_bits: u64) 
                 });
                 match err {
                     Ok(None) => MoltObject::from_int(0).bits(),
-                    Ok(Some(err)) => MoltObject::from_int(
-                        err.raw_os_error().unwrap_or(libc::EIO) as i64,
-                    )
-                    .bits(),
-                    Err(err) => MoltObject::from_int(
-                        err.raw_os_error().unwrap_or(libc::EIO) as i64,
-                    )
-                    .bits(),
+                    Ok(Some(err)) => {
+                        MoltObject::from_int(err.raw_os_error().unwrap_or(libc::EIO) as i64).bits()
+                    }
+                    Err(err) => {
+                        MoltObject::from_int(err.raw_os_error().unwrap_or(libc::EIO) as i64).bits()
+                    }
                 }
             }
             Err(err) => MoltObject::from_int(err.raw_os_error().unwrap_or(libc::EIO) as i64).bits(),
@@ -2324,20 +2371,36 @@ pub unsafe extern "C" fn molt_socket_recv_into(
                     .raw_socket()
                     .ok_or_else(|| std::io::Error::new(ErrorKind::NotConnected, "socket closed"))?;
                 if use_memoryview {
-                    // TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): write directly into contiguous memoryview buffers to avoid temp allocation/copy on recv_into.
-                    let mut tmp = vec![0u8; size];
-                    let ret = unsafe {
-                        libc::recv(
-                            libc_socket(fd),
-                            tmp.as_mut_ptr() as *mut c_void,
-                            tmp.len(),
-                            flags,
-                        )
-                    };
-                    if ret >= 0 {
-                        Ok((ret as usize, Some(tmp)))
+                    if let Some(slice) = unsafe { memoryview_bytes_slice_mut(buffer_ptr) } {
+                        let len = size.min(slice.len());
+                        let ret = unsafe {
+                            libc::recv(
+                                libc_socket(fd),
+                                slice.as_mut_ptr() as *mut c_void,
+                                len,
+                                flags,
+                            )
+                        };
+                        if ret >= 0 {
+                            Ok((ret as usize, None))
+                        } else {
+                            Err(std::io::Error::last_os_error())
+                        }
                     } else {
-                        Err(std::io::Error::last_os_error())
+                        let mut tmp = vec![0u8; size];
+                        let ret = unsafe {
+                            libc::recv(
+                                libc_socket(fd),
+                                tmp.as_mut_ptr() as *mut c_void,
+                                tmp.len(),
+                                flags,
+                            )
+                        };
+                        if ret >= 0 {
+                            Ok((ret as usize, Some(tmp)))
+                        } else {
+                            Err(std::io::Error::last_os_error())
+                        }
                     }
                 } else {
                     let buf = bytearray_vec(buffer_ptr);
@@ -2359,9 +2422,10 @@ pub unsafe extern "C" fn molt_socket_recv_into(
             match res {
                 Ok((n, tmp)) => {
                     if use_memoryview {
-                        let bytes = tmp.as_ref().map(|v| &v[..n]).unwrap_or(&[]);
-                        if let Err(msg) = memoryview_write_bytes(buffer_ptr, bytes) {
-                            return raise_exception::<u64>(_py, "TypeError", &msg);
+                        if let Some(tmp) = tmp.as_ref() {
+                            if let Err(msg) = memoryview_write_bytes(buffer_ptr, &tmp[..n]) {
+                                return raise_exception::<u64>(_py, "TypeError", &msg);
+                            }
                         }
                     }
                     return MoltObject::from_int(n as i64).bits();
@@ -3466,10 +3530,8 @@ pub extern "C" fn molt_socket_connect_ex(_sock_bits: u64, _addr_bits: u64) -> u6
                 if wait_err.kind() == ErrorKind::WouldBlock {
                     return MoltObject::from_int(libc::EINPROGRESS as i64).bits();
                 }
-                return MoltObject::from_int(
-                    wait_err.raw_os_error().unwrap_or(libc::EIO) as i64,
-                )
-                .bits();
+                return MoltObject::from_int(wait_err.raw_os_error().unwrap_or(libc::EIO) as i64)
+                    .bits();
             }
             let rc = unsafe { crate::molt_socket_connect_ex_host(handle) };
             let err = errno_from_rc(rc);
@@ -3588,23 +3650,35 @@ pub extern "C" fn molt_socket_recv_into(
         let dontwait = false;
         loop {
             let rc = if use_memoryview {
-                let mut tmp = vec![0u8; size];
-                let res = unsafe {
-                    crate::molt_socket_recv_host(
-                        handle,
-                        tmp.as_mut_ptr() as u32,
-                        tmp.len() as u32,
-                        flags,
-                    )
-                };
-                if res >= 0 {
-                    if let Err(msg) =
-                        unsafe { memoryview_write_bytes(buffer_ptr, &tmp[..res as usize]) }
-                    {
-                        return raise_exception::<u64>(_py, "TypeError", &msg);
+                if let Some(slice) = unsafe { memoryview_bytes_slice_mut(buffer_ptr) } {
+                    let len = size.min(slice.len());
+                    unsafe {
+                        crate::molt_socket_recv_host(
+                            handle,
+                            slice.as_mut_ptr() as u32,
+                            len as u32,
+                            flags,
+                        )
                     }
+                } else {
+                    let mut tmp = vec![0u8; size];
+                    let res = unsafe {
+                        crate::molt_socket_recv_host(
+                            handle,
+                            tmp.as_mut_ptr() as u32,
+                            tmp.len() as u32,
+                            flags,
+                        )
+                    };
+                    if res >= 0 {
+                        if let Err(msg) =
+                            unsafe { memoryview_write_bytes(buffer_ptr, &tmp[..res as usize]) }
+                        {
+                            return raise_exception::<u64>(_py, "TypeError", &msg);
+                        }
+                    }
+                    res
                 }
-                res
             } else {
                 let buf = unsafe { bytearray_vec(buffer_ptr) };
                 unsafe {
@@ -4379,8 +4453,11 @@ pub unsafe extern "C" fn molt_socket_getaddrinfo(
             return raise_os_error_errno::<u64>(_py, err as i64, &msg);
         }
 
-        let mut out: Vec<u64> = Vec::new();
-        // TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): switch to a list builder to avoid extra refcount churn while assembling addrinfo results.
+        let builder_bits = molt_list_builder_new(MoltObject::from_int(0).bits());
+        if builder_bits == 0 {
+            libc::freeaddrinfo(res);
+            return MoltObject::none().bits();
+        }
         let mut cur = res;
         while !cur.is_null() {
             let ai = &*cur;
@@ -4421,26 +4498,19 @@ pub unsafe extern "C" fn molt_socket_getaddrinfo(
             );
             if tuple_ptr.is_null() {
                 dec_ref_bits(_py, canon_bits);
+                dec_ref_bits(_py, sockaddr_bits);
                 break;
             }
             let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
-            out.push(tuple_bits);
+            unsafe {
+                molt_list_builder_append(builder_bits, tuple_bits);
+            }
             dec_ref_bits(_py, canon_bits);
+            dec_ref_bits(_py, sockaddr_bits);
             cur = ai.ai_next;
         }
         libc::freeaddrinfo(res);
-        let list_ptr = alloc_list(_py, &out);
-        if list_ptr.is_null() {
-            for bits in out {
-                dec_ref_bits(_py, bits);
-            }
-            return MoltObject::none().bits();
-        }
-        let list_bits = MoltObject::from_ptr(list_ptr).bits();
-        for bits in out {
-            dec_ref_bits(_py, bits);
-        }
-        list_bits
+        unsafe { molt_list_builder_finish_owned(builder_bits) }
     })
 }
 

@@ -1,18 +1,33 @@
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TryRecvError, TrySendError};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Mutex;
 
-use super::sockets::{send_data_from_bits, SendData};
+use super::poll::ws_wait_poll_fn_addr;
+use super::sockets::{require_net_capability, send_data_from_bits, SendData};
 use super::{cancel_tokens, current_token_id, token_id_from_bits};
-use crate::{
-    alloc_bytes, bits_from_ptr, dec_ref_bits, inc_ref_bits, obj_from_bits, pending_bits_i64,
-    ptr_from_bits, raise_exception, release_ptr, runtime_state, to_i64, usize_from_bits,
-    GilReleaseGuard, MoltObject, PyToken,
-};
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
+use crate::{
+    alloc_bytes, alloc_tuple, bits_from_ptr, dec_ref_bits, header_from_obj_ptr, inc_ref_bits,
+    monotonic_now_secs, obj_from_bits, pending_bits_i64, ptr_from_bits, raise_exception,
+    raise_os_error, release_ptr, resolve_obj_ptr, runtime_state, string_obj_to_owned, to_f64,
+    to_i64, usize_from_bits, GilReleaseGuard, MoltObject, PyToken, IO_EVENT_ERROR, IO_EVENT_READ,
+    IO_EVENT_WRITE,
+};
 #[cfg(target_arch = "wasm32")]
 use crate::{molt_db_exec_host, molt_db_query_host};
+#[cfg(not(target_arch = "wasm32"))]
+use mio::net::TcpStream as MioTcpStream;
+#[cfg(not(target_arch = "wasm32"))]
+use std::net::TcpStream;
+#[cfg(not(target_arch = "wasm32"))]
+use tungstenite::stream::MaybeTlsStream;
+#[cfg(not(target_arch = "wasm32"))]
+use tungstenite::{connect, Message, WebSocket};
+#[cfg(not(target_arch = "wasm32"))]
+use url::Url;
 
 // --- Channels ---
 
@@ -35,10 +50,73 @@ pub struct MoltWebSocket {
     pub sender: Sender<Vec<u8>>,
     pub receiver: Receiver<Vec<u8>>,
     pub closed: AtomicBool,
+    pub refs: AtomicUsize,
+    pub is_native: bool,
     pub send_hook: Option<extern "C" fn(*mut u8, *const u8, usize) -> i64>,
     pub recv_hook: Option<extern "C" fn(*mut u8) -> i64>,
     pub close_hook: Option<extern "C" fn(*mut u8)>,
     pub hook_ctx: *mut u8,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct NativeWebSocket {
+    socket: WebSocket<MaybeTlsStream<TcpStream>>,
+    pending_pong: Option<Vec<u8>>,
+    closed: bool,
+    poll_stream_state: WsPollStreamState,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum WsPollStreamState {
+    Unregistered,
+    InFlight,
+    Registered,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct WsPollStream {
+    stream: MioTcpStream,
+    ctx: *const Mutex<NativeWebSocket>,
+}
+
+#[cfg(target_arch = "wasm32")]
+type ChanHandle = *mut u8;
+#[cfg(not(target_arch = "wasm32"))]
+type ChanHandle = u64;
+
+#[cfg(target_arch = "wasm32")]
+#[inline]
+fn chan_handle_from_ptr(ptr: *mut u8) -> ChanHandle {
+    ptr
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
+fn chan_handle_from_ptr(ptr: *mut u8) -> ChanHandle {
+    bits_from_ptr(ptr)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline]
+unsafe fn chan_ptr_from_handle(handle: ChanHandle) -> *mut u8 {
+    handle
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
+unsafe fn chan_ptr_from_handle(handle: ChanHandle) -> *mut u8 {
+    ptr_from_bits(handle)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline]
+unsafe fn chan_release_ptr(_ptr: *mut u8) {}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
+unsafe fn chan_release_ptr(ptr: *mut u8) {
+    release_ptr(ptr);
 }
 
 fn chan_try_send_impl(_py: &PyToken<'_>, chan: &MoltChannel, val: i64) -> i64 {
@@ -105,13 +183,8 @@ fn chan_recv_blocking_impl(_py: &PyToken<'_>, chan: &MoltChannel) -> i64 {
     }
 }
 
-// TODO(runtime, owner:runtime, milestone:RT1, priority:P3, status:planned): consolidate
-// channel creation/send/recv helpers once ExceptionSentinel supports channel pointers to
-// reduce duplication across wasm/native exports.
-
-#[cfg(target_arch = "wasm32")]
 #[no_mangle]
-pub extern "C" fn molt_chan_new(capacity_bits: u64) -> *mut u8 {
+pub extern "C" fn molt_chan_new(capacity_bits: u64) -> ChanHandle {
     crate::with_gil_entry!(_py, {
         let capacity = match to_i64(obj_from_bits(capacity_bits)) {
             Some(val) => val,
@@ -140,51 +213,16 @@ pub extern "C" fn molt_chan_new(capacity_bits: u64) -> *mut u8 {
             sender: s,
             receiver: r,
         });
-        Box::into_raw(chan) as *mut u8
+        chan_handle_from_ptr(Box::into_raw(chan) as *mut u8)
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
-pub extern "C" fn molt_chan_new(capacity_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let capacity = match to_i64(obj_from_bits(capacity_bits)) {
-            Some(val) => val,
-            None => {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "channel capacity must be an integer",
-                )
-            }
-        };
-        if capacity < 0 {
-            return raise_exception::<_>(
-                _py,
-                "ValueError",
-                "channel capacity must be non-negative",
-            );
-        }
-        let capacity = capacity as usize;
-        let (s, r) = if capacity == 0 {
-            unbounded()
-        } else {
-            bounded(capacity)
-        };
-        let chan = Box::new(MoltChannel {
-            sender: s,
-            receiver: r,
-        });
-        bits_from_ptr(Box::into_raw(chan) as *mut u8)
-    })
-}
-
-#[cfg(target_arch = "wasm32")]
 #[no_mangle]
 /// # Safety
-/// Caller must ensure `chan_ptr` is a valid channel pointer.
-pub unsafe extern "C" fn molt_chan_drop(chan_ptr: *mut u8) {
+/// Caller must ensure `chan_handle` is a valid channel pointer.
+pub unsafe extern "C" fn molt_chan_drop(chan_handle: ChanHandle) {
     crate::with_gil_entry!(_py, {
+        let chan_ptr = chan_ptr_from_handle(chan_handle);
         if chan_ptr.is_null() {
             return;
         }
@@ -192,116 +230,61 @@ pub unsafe extern "C" fn molt_chan_drop(chan_ptr: *mut u8) {
         while let Ok(val) = chan.receiver.try_recv() {
             dec_ref_bits(_py, val as u64);
         }
+        chan_release_ptr(chan_ptr);
         drop(chan);
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 /// # Safety
-/// Caller must ensure `chan_bits` is a valid channel pointer.
-pub unsafe extern "C" fn molt_chan_drop(chan_bits: u64) {
+/// Caller must ensure `chan_handle` is a valid channel pointer.
+pub unsafe extern "C" fn molt_chan_send(chan_handle: ChanHandle, val: i64) -> i64 {
     crate::with_gil_entry!(_py, {
-        let chan_ptr = ptr_from_bits(chan_bits);
-        if chan_ptr.is_null() {
-            return;
-        }
-        let chan = Box::from_raw(chan_ptr as *mut MoltChannel);
-        while let Ok(val) = chan.receiver.try_recv() {
-            dec_ref_bits(_py, val as u64);
-        }
-        release_ptr(chan_ptr);
-        drop(chan);
-    })
-}
-
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-/// # Safety
-/// Caller must ensure `chan_ptr` is a valid channel pointer.
-pub unsafe extern "C" fn molt_chan_send(chan_ptr: *mut u8, val: i64) -> i64 {
-    crate::with_gil_entry!(_py, {
-        let chan = &*(chan_ptr as *mut MoltChannel);
-        chan_try_send_impl(_py, chan)
-    })
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
-/// # Safety
-/// Caller must ensure `chan_bits` is a valid channel pointer.
-pub unsafe extern "C" fn molt_chan_send(chan_bits: u64, val: i64) -> i64 {
-    crate::with_gil_entry!(_py, {
-        let chan_ptr = ptr_from_bits(chan_bits);
+        let chan_ptr = chan_ptr_from_handle(chan_handle);
         let chan = &*(chan_ptr as *mut MoltChannel);
         chan_try_send_impl(_py, chan, val)
     })
 }
 
-#[cfg(target_arch = "wasm32")]
 #[no_mangle]
 /// # Safety
-/// Caller must ensure `chan_ptr` is a valid channel pointer.
-pub unsafe extern "C" fn molt_chan_try_send(chan_ptr: *mut u8, val: i64) -> i64 {
+/// Caller must ensure `chan_handle` is a valid channel pointer.
+pub unsafe extern "C" fn molt_chan_try_send(chan_handle: ChanHandle, val: i64) -> i64 {
     crate::with_gil_entry!(_py, {
+        let chan_ptr = chan_ptr_from_handle(chan_handle);
         let chan = &*(chan_ptr as *mut MoltChannel);
         chan_try_send_impl(_py, chan, val)
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 /// # Safety
-/// Caller must ensure `chan_bits` is a valid channel pointer.
-pub unsafe extern "C" fn molt_chan_try_send(chan_bits: u64, val: i64) -> i64 {
+/// Caller must ensure `chan_handle` is a valid channel pointer.
+pub unsafe extern "C" fn molt_chan_send_blocking(chan_handle: ChanHandle, val: i64) -> i64 {
     crate::with_gil_entry!(_py, {
-        let chan_ptr = ptr_from_bits(chan_bits);
-        let chan = &*(chan_ptr as *mut MoltChannel);
-        chan_try_send_impl(_py, chan, val)
-    })
-}
-
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-/// # Safety
-/// Caller must ensure `chan_ptr` is a valid channel pointer.
-pub unsafe extern "C" fn molt_chan_send_blocking(chan_ptr: *mut u8, val: i64) -> i64 {
-    crate::with_gil_entry!(_py, {
+        let chan_ptr = chan_ptr_from_handle(chan_handle);
         let chan = &*(chan_ptr as *mut MoltChannel);
         chan_send_blocking_impl(_py, chan, val)
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 /// # Safety
-/// Caller must ensure `chan_bits` is a valid channel pointer.
-pub unsafe extern "C" fn molt_chan_send_blocking(chan_bits: u64, val: i64) -> i64 {
+/// Caller must ensure `chan_handle` is a valid channel pointer.
+pub unsafe extern "C" fn molt_chan_recv(chan_handle: ChanHandle) -> i64 {
     crate::with_gil_entry!(_py, {
-        let chan_ptr = ptr_from_bits(chan_bits);
-        let chan = &*(chan_ptr as *mut MoltChannel);
-        chan_send_blocking_impl(_py, chan, val)
-    })
-}
-
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-/// # Safety
-/// Caller must ensure `chan_ptr` is a valid channel pointer.
-pub unsafe extern "C" fn molt_chan_recv(chan_ptr: *mut u8) -> i64 {
-    crate::with_gil_entry!(_py, {
+        let chan_ptr = chan_ptr_from_handle(chan_handle);
         let chan = &*(chan_ptr as *mut MoltChannel);
         chan_try_recv_impl(_py, chan)
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 /// # Safety
-/// Caller must ensure `chan_bits` is a valid channel pointer.
-pub unsafe extern "C" fn molt_chan_recv(chan_bits: u64) -> i64 {
+/// Caller must ensure `chan_handle` is a valid channel pointer.
+pub unsafe extern "C" fn molt_chan_try_recv(chan_handle: ChanHandle) -> i64 {
     crate::with_gil_entry!(_py, {
-        let chan_ptr = ptr_from_bits(chan_bits);
+        let chan_ptr = chan_ptr_from_handle(chan_handle);
         let chan = &*(chan_ptr as *mut MoltChannel);
         chan_try_recv_impl(_py, chan)
     })
@@ -310,9 +293,10 @@ pub unsafe extern "C" fn molt_chan_recv(chan_bits: u64) -> i64 {
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 /// # Safety
-/// Caller must ensure `chan_ptr` is a valid channel pointer.
-pub unsafe extern "C" fn molt_chan_try_recv(chan_ptr: *mut u8) -> i64 {
+/// Caller must ensure `chan_handle` is a valid channel pointer.
+pub unsafe extern "C" fn molt_chan_recv_blocking(chan_handle: ChanHandle) -> i64 {
     crate::with_gil_entry!(_py, {
+        let chan_ptr = chan_ptr_from_handle(chan_handle);
         let chan = &*(chan_ptr as *mut MoltChannel);
         chan_try_recv_impl(_py, chan)
     })
@@ -320,34 +304,9 @@ pub unsafe extern "C" fn molt_chan_try_recv(chan_ptr: *mut u8) -> i64 {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
-/// # Safety
-/// Caller must ensure `chan_bits` is a valid channel pointer.
-pub unsafe extern "C" fn molt_chan_try_recv(chan_bits: u64) -> i64 {
+pub unsafe extern "C" fn molt_chan_recv_blocking(chan_handle: ChanHandle) -> i64 {
     crate::with_gil_entry!(_py, {
-        let chan_ptr = ptr_from_bits(chan_bits);
-        let chan = &*(chan_ptr as *mut MoltChannel);
-        chan_try_recv_impl(_py, chan)
-    })
-}
-
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-/// # Safety
-/// Caller must ensure `chan_ptr` is a valid channel pointer.
-pub unsafe extern "C" fn molt_chan_recv_blocking(chan_ptr: *mut u8) -> i64 {
-    crate::with_gil_entry!(_py, {
-        let chan = &*(chan_ptr as *mut MoltChannel);
-        chan_try_recv_impl(_py, chan)
-    })
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
-/// # Safety
-/// Caller must ensure `chan_bits` is a valid channel pointer.
-pub unsafe extern "C" fn molt_chan_recv_blocking(chan_bits: u64) -> i64 {
-    crate::with_gil_entry!(_py, {
-        let chan_ptr = ptr_from_bits(chan_bits);
+        let chan_ptr = chan_ptr_from_handle(chan_handle);
         let chan = &*(chan_ptr as *mut MoltChannel);
         chan_recv_blocking_impl(_py, chan)
     })
@@ -559,6 +518,8 @@ pub unsafe extern "C" fn molt_ws_pair(
             sender: a_tx,
             receiver: b_rx,
             closed: AtomicBool::new(false),
+            refs: AtomicUsize::new(1),
+            is_native: false,
             send_hook: None,
             recv_hook: None,
             close_hook: None,
@@ -568,6 +529,8 @@ pub unsafe extern "C" fn molt_ws_pair(
             sender: b_tx,
             receiver: a_rx,
             closed: AtomicBool::new(false),
+            refs: AtomicUsize::new(1),
+            is_native: false,
             send_hook: None,
             recv_hook: None,
             close_hook: None,
@@ -576,6 +539,23 @@ pub unsafe extern "C" fn molt_ws_pair(
         *out_left = bits_from_ptr(Box::into_raw(left) as *mut u8);
         *out_right = bits_from_ptr(Box::into_raw(right) as *mut u8);
         0
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_ws_pair_obj(capacity_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let mut left = 0u64;
+        let mut right = 0u64;
+        let rc = unsafe { molt_ws_pair(capacity_bits, &mut left, &mut right) };
+        if rc != 0 {
+            return raise_exception::<_>(_py, "RuntimeError", "molt_ws_pair failed");
+        }
+        let tuple_ptr = alloc_tuple(_py, &[left, right]);
+        if tuple_ptr.is_null() {
+            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        }
+        MoltObject::from_ptr(tuple_ptr).bits()
     })
 }
 
@@ -611,6 +591,8 @@ pub extern "C" fn molt_ws_new_with_hooks(
             sender: s,
             receiver: r,
             closed: AtomicBool::new(false),
+            refs: AtomicUsize::new(1),
+            is_native: false,
             send_hook,
             recv_hook,
             close_hook,
@@ -626,6 +608,40 @@ type DbHostHook = extern "C" fn(*const u8, usize, *mut u64, u64) -> i32;
 static WS_CONNECT_HOOK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static DB_QUERY_HOOK: AtomicUsize = AtomicUsize::new(0);
 static DB_EXEC_HOOK: AtomicUsize = AtomicUsize::new(0);
+
+fn ws_ref_inc(ws_ptr: *mut MoltWebSocket) {
+    if ws_ptr.is_null() {
+        return;
+    }
+    let ws = unsafe { &*(ws_ptr as *mut MoltWebSocket) };
+    ws.refs.fetch_add(1, AtomicOrdering::Relaxed);
+}
+
+fn ws_ref_dec(_py: &PyToken<'_>, ws_ptr: *mut MoltWebSocket) {
+    if ws_ptr.is_null() {
+        return;
+    }
+    let ws = unsafe { &*(ws_ptr as *mut MoltWebSocket) };
+    if ws.refs.fetch_sub(1, AtomicOrdering::AcqRel) != 1 {
+        return;
+    }
+    if !ws.closed.load(AtomicOrdering::Relaxed) {
+        if let Some(hook) = ws.close_hook {
+            hook(ws.hook_ctx);
+        }
+        ws.closed.store(true, AtomicOrdering::Relaxed);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        runtime_state(_py)
+            .io_poller()
+            .deregister_socket(_py, ws_ptr as *mut u8);
+    }
+    release_ptr(ws_ptr as *mut u8);
+    unsafe {
+        drop(Box::from_raw(ws_ptr as *mut MoltWebSocket));
+    }
+}
 
 #[cfg(target_arch = "wasm32")]
 extern "C" fn ws_send_host_hook(ctx: *mut u8, data_ptr: *const u8, len: usize) -> i64 {
@@ -699,6 +715,338 @@ extern "C" fn ws_close_host_hook(ctx: *mut u8) {
     let _ = unsafe { crate::molt_ws_close_host(handle) };
     unsafe {
         drop(Box::from_raw(ctx as *mut i64));
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn ws_host_handle(ws: &MoltWebSocket) -> Option<i64> {
+    if ws.hook_ctx.is_null() {
+        return None;
+    }
+    let handle = unsafe { *(ws.hook_ctx as *const i64) };
+    if handle <= 0 {
+        None
+    } else {
+        Some(handle)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ws_set_nonblocking(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>) -> std::io::Result<()> {
+    match ws.get_mut() {
+        MaybeTlsStream::Plain(stream) => {
+            stream.set_nonblocking(true)?;
+        }
+        MaybeTlsStream::Rustls(stream) => {
+            stream.get_ref().set_nonblocking(true)?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ws_is_native(ws: &MoltWebSocket) -> bool {
+    ws.is_native && !ws.hook_ctx.is_null()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ws_prepare_poll_stream(ws: &MoltWebSocket) -> Option<WsPollStream> {
+    if !ws_is_native(ws) {
+        return None;
+    }
+    let ctx = ws.hook_ctx as *const Mutex<NativeWebSocket>;
+    if ctx.is_null() {
+        return None;
+    }
+    let mut guard = unsafe { &*ctx }.lock().unwrap();
+    if guard.closed {
+        return None;
+    }
+    if guard.poll_stream_state != WsPollStreamState::Unregistered {
+        return None;
+    }
+    guard.poll_stream_state = WsPollStreamState::InFlight;
+    let stream_ref = match guard.socket.get_ref() {
+        MaybeTlsStream::Plain(stream) => stream,
+        MaybeTlsStream::Rustls(stream) => stream.get_ref(),
+        _ => {
+            guard.poll_stream_state = WsPollStreamState::Unregistered;
+            return None;
+        }
+    };
+    let cloned = match stream_ref.try_clone() {
+        Ok(val) => val,
+        Err(_) => {
+            guard.poll_stream_state = WsPollStreamState::Unregistered;
+            return None;
+        }
+    };
+    let _ = cloned.set_nonblocking(true);
+    Some(WsPollStream {
+        stream: MioTcpStream::from_std(cloned),
+        ctx,
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ws_commit_poll_stream(ctx: *const Mutex<NativeWebSocket>, registered: bool) {
+    if ctx.is_null() {
+        return;
+    }
+    let mut guard = unsafe { &*ctx }.lock().unwrap();
+    if guard.poll_stream_state == WsPollStreamState::InFlight {
+        guard.poll_stream_state = if registered {
+            WsPollStreamState::Registered
+        } else {
+            WsPollStreamState::Unregistered
+        };
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ws_is_would_block(err: &tungstenite::Error) -> bool {
+    matches!(
+        err,
+        tungstenite::Error::Io(io_err)
+            if io_err.kind() == std::io::ErrorKind::WouldBlock
+    )
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ws_flush_pending_pong(ws: &mut NativeWebSocket) -> Result<(), tungstenite::Error> {
+    if let Some(payload) = ws.pending_pong.take() {
+        match ws.socket.send(Message::Pong(payload.clone())) {
+            Ok(_) => Ok(()),
+            Err(err) => {
+                if ws_is_would_block(&err) {
+                    ws.pending_pong = Some(payload);
+                }
+                Err(err)
+            }
+        }
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+extern "C" fn ws_send_native_hook(ctx: *mut u8, data_ptr: *const u8, len: usize) -> i64 {
+    if ctx.is_null() {
+        return pending_bits_i64();
+    }
+    if data_ptr.is_null() && len != 0 {
+        return MoltObject::none().bits() as i64;
+    }
+    let payload = unsafe { std::slice::from_raw_parts(data_ptr, len) };
+    let ctx = unsafe { &*(ctx as *mut Mutex<NativeWebSocket>) };
+    let mut guard = ctx.lock().unwrap();
+    if guard.closed {
+        return MoltObject::none().bits() as i64;
+    }
+    if let Err(err) = ws_flush_pending_pong(&mut guard) {
+        if ws_is_would_block(&err) {
+            return pending_bits_i64();
+        }
+        guard.closed = true;
+        return MoltObject::none().bits() as i64;
+    }
+    match guard.socket.send(Message::Binary(payload.to_vec())) {
+        Ok(_) => 0,
+        Err(err) if ws_is_would_block(&err) => pending_bits_i64(),
+        Err(_) => {
+            guard.closed = true;
+            MoltObject::none().bits() as i64
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+extern "C" fn ws_recv_native_hook(ctx: *mut u8) -> i64 {
+    if ctx.is_null() {
+        return MoltObject::none().bits() as i64;
+    }
+    let ctx = unsafe { &*(ctx as *mut Mutex<NativeWebSocket>) };
+    let mut guard = ctx.lock().unwrap();
+    if guard.closed {
+        return MoltObject::none().bits() as i64;
+    }
+    if let Err(err) = ws_flush_pending_pong(&mut guard) {
+        if ws_is_would_block(&err) {
+            return pending_bits_i64();
+        }
+        guard.closed = true;
+        return MoltObject::none().bits() as i64;
+    }
+    loop {
+        match guard.socket.read() {
+            Ok(Message::Binary(bytes)) => {
+                let ptr = alloc_bytes(&crate::GilGuard::new().token(), &bytes);
+                if ptr.is_null() {
+                    return MoltObject::none().bits() as i64;
+                }
+                return MoltObject::from_ptr(ptr).bits() as i64;
+            }
+            Ok(Message::Text(text)) => {
+                let ptr = alloc_bytes(&crate::GilGuard::new().token(), text.as_bytes());
+                if ptr.is_null() {
+                    return MoltObject::none().bits() as i64;
+                }
+                return MoltObject::from_ptr(ptr).bits() as i64;
+            }
+            Ok(Message::Ping(payload)) => match guard.socket.send(Message::Pong(payload.clone())) {
+                Ok(_) => continue,
+                Err(err) if ws_is_would_block(&err) => {
+                    guard.pending_pong = Some(payload);
+                    return pending_bits_i64();
+                }
+                Err(_) => {
+                    guard.closed = true;
+                    return MoltObject::none().bits() as i64;
+                }
+            },
+            Ok(Message::Pong(_)) => continue,
+            Ok(Message::Frame(_)) => continue,
+            Ok(Message::Close(_)) => {
+                guard.closed = true;
+                let _ = guard.socket.close(None);
+                return MoltObject::none().bits() as i64;
+            }
+            Err(err) if ws_is_would_block(&err) => return pending_bits_i64(),
+            Err(tungstenite::Error::ConnectionClosed) | Err(tungstenite::Error::AlreadyClosed) => {
+                guard.closed = true;
+                return MoltObject::none().bits() as i64;
+            }
+            Err(_) => {
+                guard.closed = true;
+                return MoltObject::none().bits() as i64;
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+extern "C" fn ws_close_native_hook(ctx: *mut u8) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = unsafe { Box::from_raw(ctx as *mut Mutex<NativeWebSocket>) };
+    let mut guard = ctx.lock().unwrap();
+    if !guard.closed {
+        guard.closed = true;
+        let _ = guard.socket.close(None);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ws_connect_native(url_ptr: *const u8, url_len: usize) -> *mut u8 {
+    if url_ptr.is_null() && url_len != 0 {
+        return std::ptr::null_mut();
+    }
+    let url_bytes = unsafe { std::slice::from_raw_parts(url_ptr, url_len) };
+    let url_str = match std::str::from_utf8(url_bytes) {
+        Ok(val) => val,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    let url = match Url::parse(url_str) {
+        Ok(val) => val,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    if url.scheme() != "ws" && url.scheme() != "wss" {
+        return std::ptr::null_mut();
+    }
+    let (mut socket, _) = {
+        let _release = GilReleaseGuard::new();
+        match connect(url) {
+            Ok(val) => val,
+            Err(_) => return std::ptr::null_mut(),
+        }
+    };
+    if ws_set_nonblocking(&mut socket).is_err() {
+        return std::ptr::null_mut();
+    }
+    let ctx_ptr = Box::into_raw(Box::new(Mutex::new(NativeWebSocket {
+        socket,
+        pending_pong: None,
+        closed: false,
+        poll_stream_state: WsPollStreamState::Unregistered,
+    }))) as *mut u8;
+    let ws_ptr = molt_ws_new_with_hooks(
+        ws_send_native_hook as usize,
+        ws_recv_native_hook as usize,
+        ws_close_native_hook as usize,
+        ctx_ptr,
+    );
+    if ws_ptr.is_null() {
+        unsafe {
+            drop(Box::from_raw(ctx_ptr as *mut Mutex<NativeWebSocket>));
+        }
+    } else {
+        unsafe {
+            let ws = &mut *(ws_ptr as *mut MoltWebSocket);
+            ws.is_native = true;
+        }
+    }
+    ws_ptr
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn ws_wait_release(_py: &PyToken<'_>, future_ptr: *mut u8) {
+    if future_ptr.is_null() {
+        return;
+    }
+    let header = unsafe { header_from_obj_ptr(future_ptr) };
+    let payload_bytes = unsafe {
+        (*header)
+            .size
+            .saturating_sub(std::mem::size_of::<crate::MoltHeader>())
+    };
+    if payload_bytes < std::mem::size_of::<u64>() {
+        return;
+    }
+    let payload_ptr = future_ptr as *mut u64;
+    let ws_bits = unsafe { *payload_ptr };
+    let ws_ptr = ptr_from_bits(ws_bits);
+    if !ws_ptr.is_null() {
+        ws_ref_dec(_py, ws_ptr as *mut MoltWebSocket);
+    }
+    if payload_bytes >= 2 * std::mem::size_of::<u64>() {
+        let events_bits = unsafe { *payload_ptr.add(1) };
+        dec_ref_bits(_py, events_bits);
+    }
+    if payload_bytes >= 3 * std::mem::size_of::<u64>() {
+        let timeout_bits = unsafe { *payload_ptr.add(2) };
+        dec_ref_bits(_py, timeout_bits);
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn ws_wait_release(_py: &PyToken<'_>, future_ptr: *mut u8) {
+    if future_ptr.is_null() {
+        return;
+    }
+    let header = unsafe { header_from_obj_ptr(future_ptr) };
+    let payload_bytes = unsafe {
+        (*header)
+            .size
+            .saturating_sub(std::mem::size_of::<crate::MoltHeader>())
+    };
+    if payload_bytes < std::mem::size_of::<u64>() {
+        return;
+    }
+    let payload_ptr = future_ptr as *mut u64;
+    let ws_bits = unsafe { *payload_ptr };
+    let ws_ptr = ptr_from_bits(ws_bits);
+    if !ws_ptr.is_null() {
+        ws_ref_dec(_py, ws_ptr as *mut MoltWebSocket);
+    }
+    if payload_bytes >= 2 * std::mem::size_of::<u64>() {
+        let events_bits = unsafe { *payload_ptr.add(1) };
+        dec_ref_bits(_py, events_bits);
+    }
+    if payload_bytes >= 3 * std::mem::size_of::<u64>() {
+        let timeout_bits = unsafe { *payload_ptr.add(2) };
+        dec_ref_bits(_py, timeout_bits);
     }
 }
 
@@ -781,9 +1129,12 @@ pub unsafe extern "C" fn molt_ws_connect(
         }
         let hook_ptr = WS_CONNECT_HOOK.load(AtomicOrdering::Acquire);
         if hook_ptr == 0 {
-            // TODO(runtime, owner:runtime, milestone:RT2, priority:P2, status:missing): provide
-            // a host-level connect hook for production websocket sockets.
-            return 7;
+            let ws_ptr = ws_connect_native(url_ptr, url_len);
+            if ws_ptr.is_null() {
+                return 7;
+            }
+            *out = bits_from_ptr(ws_ptr);
+            return 0;
         }
         let hook: WsConnectHook = std::mem::transmute(hook_ptr);
         let ws_ptr = hook(url_ptr, url_len);
@@ -792,6 +1143,26 @@ pub unsafe extern "C" fn molt_ws_connect(
         }
         *out = bits_from_ptr(ws_ptr);
         0
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_ws_connect_obj(url_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let url = match string_obj_to_owned(obj_from_bits(url_bits)) {
+            Some(val) => val,
+            None => {
+                return raise_exception::<_>(_py, "TypeError", "url must be str");
+            }
+        };
+        let mut handle: u64 = 0;
+        let rc = unsafe {
+            molt_ws_connect(url.as_ptr(), url.len() as u64, &mut handle as *mut u64)
+        };
+        if rc != 0 || handle == 0 {
+            return raise_exception::<_>(_py, "RuntimeError", "molt_ws_connect failed");
+        }
+        handle
     })
 }
 
@@ -838,6 +1209,294 @@ pub unsafe extern "C" fn molt_ws_connect(
         }
         *out = bits_from_ptr(ws_ptr);
         0
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub extern "C" fn molt_ws_wait_new(ws_bits: u64, events_bits: u64, timeout_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if require_net_capability::<u64>(_py, &["net", "net.poll"]).is_err() {
+            return MoltObject::none().bits();
+        }
+        let ws_ptr = ptr_from_bits(ws_bits);
+        if ws_ptr.is_null() {
+            return raise_exception::<_>(_py, "TypeError", "invalid websocket");
+        }
+        let ws = unsafe { &*(ws_ptr as *mut MoltWebSocket) };
+        if ws.closed.load(AtomicOrdering::Relaxed) || !ws_is_native(ws) {
+            return MoltObject::none().bits();
+        }
+        let events = match to_i64(obj_from_bits(events_bits)) {
+            Some(val) => val,
+            None => return raise_exception::<_>(_py, "TypeError", "events must be int"),
+        };
+        if events == 0 {
+            return raise_exception::<_>(_py, "ValueError", "events must be non-zero");
+        }
+        let obj_bits = crate::molt_future_new(
+            ws_wait_poll_fn_addr(),
+            (3 * std::mem::size_of::<u64>()) as u64,
+        );
+        let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            let payload_ptr = obj_ptr as *mut u64;
+            *payload_ptr = ws_bits;
+            *payload_ptr.add(1) = events_bits;
+            *payload_ptr.add(2) = timeout_bits;
+            inc_ref_bits(_py, events_bits);
+            inc_ref_bits(_py, timeout_bits);
+        }
+        ws_ref_inc(ws_ptr as *mut MoltWebSocket);
+        obj_bits
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn molt_ws_wait_new(ws_bits: u64, events_bits: u64, timeout_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if require_net_capability::<u64>(_py, &["net", "net.poll"]).is_err() {
+            return MoltObject::none().bits();
+        }
+        let ws_ptr = ptr_from_bits(ws_bits);
+        if ws_ptr.is_null() {
+            return raise_exception::<_>(_py, "TypeError", "invalid websocket");
+        }
+        let ws = unsafe { &*(ws_ptr as *mut MoltWebSocket) };
+        if ws.closed.load(AtomicOrdering::Relaxed) || ws_host_handle(ws).is_none() {
+            return MoltObject::none().bits();
+        }
+        let events = match to_i64(obj_from_bits(events_bits)) {
+            Some(val) => val,
+            None => return raise_exception::<_>(_py, "TypeError", "events must be int"),
+        };
+        if events == 0 {
+            return raise_exception::<_>(_py, "ValueError", "events must be non-zero");
+        }
+        let obj_bits = crate::molt_future_new(
+            ws_wait_poll_fn_addr(),
+            (3 * std::mem::size_of::<u64>()) as u64,
+        );
+        let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            let payload_ptr = obj_ptr as *mut u64;
+            *payload_ptr = ws_bits;
+            *payload_ptr.add(1) = events_bits;
+            *payload_ptr.add(2) = timeout_bits;
+            inc_ref_bits(_py, events_bits);
+            inc_ref_bits(_py, timeout_bits);
+        }
+        ws_ref_inc(ws_ptr as *mut MoltWebSocket);
+        obj_bits
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+/// # Safety
+/// Caller must pass a valid ws-wait awaitable object bits value.
+pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
+    crate::with_gil_entry!(_py, {
+        let obj_ptr = ptr_from_bits(obj_bits);
+        if obj_ptr.is_null() {
+            return MoltObject::none().bits() as i64;
+        }
+        let header = header_from_obj_ptr(obj_ptr);
+        let payload_bytes = (*header)
+            .size
+            .saturating_sub(std::mem::size_of::<crate::MoltHeader>());
+        let payload_len = payload_bytes / std::mem::size_of::<u64>();
+        if payload_len < 2 {
+            return raise_exception::<i64>(_py, "TypeError", "ws wait payload too small");
+        }
+        let payload_ptr = obj_ptr as *mut u64;
+        let ws_bits = *payload_ptr;
+        let events_bits = *payload_ptr.add(1);
+        let ws_ptr = ptr_from_bits(ws_bits);
+        if ws_ptr.is_null() {
+            return raise_exception::<i64>(_py, "TypeError", "invalid websocket");
+        }
+        let ws = &*(ws_ptr as *mut MoltWebSocket);
+        if ws.closed.load(AtomicOrdering::Relaxed) {
+            let mask = IO_EVENT_ERROR | IO_EVENT_READ | IO_EVENT_WRITE;
+            return MoltObject::from_int(mask as i64).bits() as i64;
+        }
+        let events = to_i64(obj_from_bits(events_bits)).unwrap_or(0) as u32;
+        if events == 0 {
+            return raise_exception::<i64>(_py, "ValueError", "events must be non-zero");
+        }
+        if (*header).state == 0 {
+            let mut timeout: Option<f64> = None;
+            if payload_len >= 3 {
+                let timeout_bits = *payload_ptr.add(2);
+                let timeout_obj = obj_from_bits(timeout_bits);
+                if !timeout_obj.is_none() {
+                    if let Some(val) = to_f64(timeout_obj) {
+                        if !val.is_finite() || val < 0.0 {
+                            return raise_exception::<i64>(
+                                _py,
+                                "ValueError",
+                                "timeout must be non-negative",
+                            );
+                        }
+                        timeout = Some(val);
+                    } else {
+                        return raise_exception::<i64>(
+                            _py,
+                            "TypeError",
+                            "timeout must be float or None",
+                        );
+                    }
+                }
+            }
+            if let Some(val) = timeout {
+                if val == 0.0 {
+                    return raise_exception::<i64>(_py, "TimeoutError", "timed out");
+                }
+                let deadline = monotonic_now_secs(_py) + val;
+                let deadline_bits = MoltObject::from_float(deadline).bits();
+                if payload_len >= 3 {
+                    dec_ref_bits(_py, *payload_ptr.add(2));
+                    *payload_ptr.add(2) = deadline_bits;
+                    inc_ref_bits(_py, deadline_bits);
+                }
+            }
+            if !ws_is_native(ws) {
+                return raise_exception::<i64>(_py, "RuntimeError", "websocket wait unavailable");
+            }
+            let poll_stream = ws_prepare_poll_stream(ws);
+            let (stream, poll_ctx) = match poll_stream {
+                Some(poll_stream) => (Some(poll_stream.stream), Some(poll_stream.ctx)),
+                None => (None, None),
+            };
+            let register_result = runtime_state(_py)
+                .io_poller()
+                .register_ws_wait(obj_ptr, ws_ptr, events, stream);
+            if let Some(ctx) = poll_ctx {
+                ws_commit_poll_stream(ctx, register_result.is_ok());
+            }
+            if let Err(err) = register_result {
+                return raise_os_error::<i64>(_py, err, "ws_wait");
+            }
+            (*header).state = 1;
+            return pending_bits_i64();
+        }
+        if let Some(mask) = runtime_state(_py).io_poller().take_ready(obj_ptr) {
+            let res_bits = MoltObject::from_int(mask as i64).bits();
+            return res_bits as i64;
+        }
+        if payload_len >= 3 {
+            let deadline_obj = obj_from_bits(*payload_ptr.add(2));
+            if let Some(deadline) = to_f64(deadline_obj) {
+                if deadline.is_finite() && monotonic_now_secs(_py) >= deadline {
+                    runtime_state(_py).io_poller().cancel_waiter(obj_ptr);
+                    return raise_exception::<i64>(_py, "TimeoutError", "timed out");
+                }
+            }
+        }
+        pending_bits_i64()
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
+    crate::with_gil_entry!(_py, {
+        let obj_ptr = ptr_from_bits(obj_bits);
+        if obj_ptr.is_null() {
+            return MoltObject::none().bits() as i64;
+        }
+        let header = header_from_obj_ptr(obj_ptr);
+        let payload_bytes = (*header)
+            .size
+            .saturating_sub(std::mem::size_of::<crate::MoltHeader>());
+        let payload_len = payload_bytes / std::mem::size_of::<u64>();
+        if payload_len < 2 {
+            return raise_exception::<i64>(_py, "TypeError", "ws wait payload too small");
+        }
+        let payload_ptr = obj_ptr as *mut u64;
+        let ws_bits = *payload_ptr;
+        let events_bits = *payload_ptr.add(1);
+        let ws_ptr = ptr_from_bits(ws_bits);
+        if ws_ptr.is_null() {
+            return raise_exception::<i64>(_py, "TypeError", "invalid websocket");
+        }
+        let ws = &*(ws_ptr as *mut MoltWebSocket);
+        if ws.closed.load(AtomicOrdering::Relaxed) {
+            let mask = IO_EVENT_ERROR | IO_EVENT_READ | IO_EVENT_WRITE;
+            return MoltObject::from_int(mask as i64).bits() as i64;
+        }
+        let events = to_i64(obj_from_bits(events_bits)).unwrap_or(0) as u32;
+        if events == 0 {
+            return raise_exception::<i64>(_py, "ValueError", "events must be non-zero");
+        }
+        if (*header).state == 0 {
+            let mut timeout: Option<f64> = None;
+            if payload_len >= 3 {
+                let timeout_bits = *payload_ptr.add(2);
+                let timeout_obj = obj_from_bits(timeout_bits);
+                if !timeout_obj.is_none() {
+                    if let Some(val) = to_f64(timeout_obj) {
+                        if !val.is_finite() || val < 0.0 {
+                            return raise_exception::<i64>(
+                                _py,
+                                "ValueError",
+                                "timeout must be non-negative",
+                            );
+                        }
+                        timeout = Some(val);
+                    } else {
+                        return raise_exception::<i64>(
+                            _py,
+                            "TypeError",
+                            "timeout must be float or None",
+                        );
+                    }
+                }
+            }
+            if let Some(val) = timeout {
+                if val == 0.0 {
+                    return raise_exception::<i64>(_py, "TimeoutError", "timed out");
+                }
+                let deadline = monotonic_now_secs(_py) + val;
+                let deadline_bits = MoltObject::from_float(deadline).bits();
+                if payload_len >= 3 {
+                    dec_ref_bits(_py, *payload_ptr.add(2));
+                    *payload_ptr.add(2) = deadline_bits;
+                    inc_ref_bits(_py, deadline_bits);
+                }
+            }
+            let Some(handle) = ws_host_handle(ws) else {
+                return raise_exception::<i64>(_py, "RuntimeError", "websocket wait unavailable");
+            };
+            if let Err(err) = runtime_state(_py)
+                .io_poller()
+                .register_ws_wait(obj_ptr, handle, events)
+            {
+                return raise_exception::<i64>(_py, "RuntimeError", &err.to_string());
+            }
+            (*header).state = 1;
+            return pending_bits_i64();
+        }
+        if let Some(mask) = runtime_state(_py).io_poller().take_ready(obj_ptr) {
+            let res_bits = MoltObject::from_int(mask as i64).bits();
+            return res_bits as i64;
+        }
+        if payload_len >= 3 {
+            let deadline_obj = obj_from_bits(*payload_ptr.add(2));
+            if let Some(deadline) = to_f64(deadline_obj) {
+                if deadline.is_finite() && monotonic_now_secs(_py) >= deadline {
+                    runtime_state(_py).io_poller().cancel_waiter(obj_ptr);
+                    return raise_exception::<i64>(_py, "TimeoutError", "timed out");
+                }
+            }
+        }
+        pending_bits_i64()
     })
 }
 
@@ -1016,6 +1675,9 @@ pub unsafe extern "C" fn molt_ws_send(ws_bits: u64, data_ptr: *const u8, len_bit
             return pending_bits_i64();
         }
         let ws = &*(ws_ptr as *mut MoltWebSocket);
+        if ws.send_hook.is_some() && ws.closed.load(AtomicOrdering::Relaxed) {
+            return MoltObject::none().bits() as i64;
+        }
         if let Some(hook) = ws.send_hook {
             return hook(ws.hook_ctx, data_ptr, len);
         }
@@ -1029,6 +1691,28 @@ pub unsafe extern "C" fn molt_ws_send(ws_bits: u64, data_ptr: *const u8, len_bit
 
 #[no_mangle]
 /// # Safety
+/// Caller must ensure `ws_bits` is valid; `data_bits` must be bytes-like.
+pub unsafe extern "C" fn molt_ws_send_obj(ws_bits: u64, data_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let send_data = match send_data_from_bits(data_bits) {
+            Ok(data) => data,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let (data_ptr, data_len, owned): (*const u8, usize, Option<Vec<u8>>) = match send_data {
+            SendData::Borrowed(ptr, len) => (ptr, len, None),
+            SendData::Owned(vec) => {
+                let ptr = vec.as_ptr();
+                let len = vec.len();
+                (ptr, len, Some(vec))
+            }
+        };
+        let _owned_guard = owned;
+        molt_ws_send(ws_bits, data_ptr, data_len as u64) as u64
+    })
+}
+
+#[no_mangle]
+/// # Safety
 /// Caller must ensure `ws_bits` is a valid websocket pointer.
 pub unsafe extern "C" fn molt_ws_recv(ws_bits: u64) -> i64 {
     crate::with_gil_entry!(_py, {
@@ -1037,6 +1721,9 @@ pub unsafe extern "C" fn molt_ws_recv(ws_bits: u64) -> i64 {
             return MoltObject::none().bits() as i64;
         }
         let ws = &*(ws_ptr as *mut MoltWebSocket);
+        if ws.recv_hook.is_some() && ws.closed.load(AtomicOrdering::Relaxed) {
+            return MoltObject::none().bits() as i64;
+        }
         if let Some(hook) = ws.recv_hook {
             return hook(ws.hook_ctx);
         }
@@ -1070,10 +1757,18 @@ pub unsafe extern "C" fn molt_ws_close(ws_bits: u64) {
             return;
         }
         let ws = &*(ws_ptr as *mut MoltWebSocket);
+        if ws.closed.swap(true, AtomicOrdering::AcqRel) {
+            return;
+        }
         if let Some(hook) = ws.close_hook {
             hook(ws.hook_ctx);
         }
-        ws.closed.store(true, AtomicOrdering::Relaxed);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            runtime_state(_py)
+                .io_poller()
+                .deregister_socket(_py, ws_ptr);
+        }
     })
 }
 
@@ -1109,13 +1804,6 @@ pub unsafe extern "C" fn molt_ws_drop(ws_bits: u64) {
         if ws_ptr.is_null() {
             return;
         }
-        let ws = &*(ws_ptr as *mut MoltWebSocket);
-        if !ws.closed.load(AtomicOrdering::Relaxed) {
-            if let Some(hook) = ws.close_hook {
-                hook(ws.hook_ctx);
-            }
-        }
-        release_ptr(ws_ptr);
-        drop(Box::from_raw(ws_ptr as *mut MoltWebSocket));
+        ws_ref_dec(_py, ws_ptr as *mut MoltWebSocket);
     })
 }

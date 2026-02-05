@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from molt.stdlib import os as _os
 
-__all__ = ["TemporaryDirectory", "gettempdir", "gettempdirb", "mkdtemp"]
+__all__ = [
+    "NamedTemporaryFile",
+    "TemporaryDirectory",
+    "gettempdir",
+    "gettempdirb",
+    "mkdtemp",
+]
 
 _TEMP_DIR: str | None = None
 _TEMP_COUNTER = 0
@@ -54,6 +60,70 @@ def mkdtemp(suffix: str = "", prefix: str = "tmp", dir: str | None = None) -> st
         except FileExistsError:
             continue
     raise FileExistsError("No usable temporary directory name")
+
+
+class _NamedTemporaryFile:
+    def __init__(self, handle, name: str, delete: bool) -> None:
+        self._handle = handle
+        self.name = name
+        self.delete = delete
+        self._closed = False
+
+    def __getattr__(self, name: str):
+        return getattr(self._handle, name)
+
+    def __enter__(self):
+        return self
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        try:
+            self._handle.close()
+        finally:
+            if self.delete:
+                try:
+                    _os.unlink(self.name)
+                except FileNotFoundError:
+                    pass
+            self._closed = True
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
+
+def NamedTemporaryFile(
+    mode: str = "w+b",
+    buffering: int = -1,
+    encoding: str | None = None,
+    newline: str | None = None,
+    suffix: str = "",
+    prefix: str = "tmp",
+    dir: str | None = None,
+    delete: bool = True,
+):
+    global _TEMP_COUNTER
+    base = dir or gettempdir()
+    open_mode = mode
+    if "x" not in open_mode:
+        if "w" in open_mode:
+            open_mode = open_mode.replace("w", "x", 1)
+        elif "a" in open_mode:
+            open_mode = open_mode.replace("a", "x", 1)
+        else:
+            open_mode = "x" + open_mode
+    for _ in range(10000):
+        name = f"{prefix}{_TEMP_COUNTER}"
+        _TEMP_COUNTER += 1
+        path = _os.path.join(base, f"{name}{suffix}")
+        try:
+            handle = open(
+                path, open_mode, buffering=buffering, encoding=encoding, newline=newline
+            )
+        except FileExistsError:
+            continue
+        return _NamedTemporaryFile(handle, path, delete)
+    raise FileExistsError("No usable temporary file name")
 
 
 def _rmtree(path: str) -> None:

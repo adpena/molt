@@ -1,11 +1,24 @@
 use molt_obj_model::MoltObject;
+use std::sync::OnceLock;
 
 use crate::{
     class_layout_version_bits, dec_ref_bits, header_from_obj_ptr, inc_ref_bits, is_missing_bits,
-    obj_from_bits, object_class_bits, object_mark_has_ptrs, object_type_id, profile_hit,
-    raise_exception, to_i64, usize_from_bits, PyToken, LAYOUT_GUARD_COUNT, LAYOUT_GUARD_FAIL,
-    STRUCT_FIELD_STORE_COUNT, TYPE_ID_OBJECT, TYPE_ID_TYPE,
+    obj_from_bits, object_class_bits, object_mark_has_ptrs, object_payload_size, object_type_id,
+    profile_hit, raise_exception, to_i64, usize_from_bits, PyToken, LAYOUT_GUARD_COUNT,
+    LAYOUT_GUARD_FAIL, STRUCT_FIELD_STORE_COUNT, TYPE_ID_OBJECT, TYPE_ID_TYPE,
 };
+
+fn debug_field_bounds_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("MOLT_DEBUG_FIELD_BOUNDS")
+                .ok()
+                .as_deref(),
+            Some("1")
+        )
+    })
+}
 
 pub(crate) fn resolve_obj_ptr(bits: u64) -> Option<*mut u8> {
     if let Some(ptr) = obj_from_bits(bits).as_ptr() {
@@ -24,6 +37,16 @@ pub(crate) unsafe fn object_field_get_ptr_raw(
     if obj_ptr.is_null() {
         return raise_exception::<_>(_py, "TypeError", "object field access on non-object");
     }
+    if debug_field_bounds_enabled() {
+        let payload = object_payload_size(obj_ptr);
+        if offset.saturating_add(std::mem::size_of::<u64>()) > payload {
+            return raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "object field offset out of range",
+            );
+        }
+    }
     let slot = obj_ptr.add(offset) as *const u64;
     let bits = *slot;
     inc_ref_bits(_py, bits);
@@ -40,6 +63,16 @@ pub(crate) unsafe fn object_field_set_ptr_raw(
 ) -> u64 {
     if obj_ptr.is_null() {
         return raise_exception::<_>(_py, "TypeError", "object field access on non-object");
+    }
+    if debug_field_bounds_enabled() {
+        let payload = object_payload_size(obj_ptr);
+        if offset.saturating_add(std::mem::size_of::<u64>()) > payload {
+            return raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "object field offset out of range",
+            );
+        }
     }
     profile_hit(_py, &STRUCT_FIELD_STORE_COUNT);
     let slot = obj_ptr.add(offset) as *mut u64;

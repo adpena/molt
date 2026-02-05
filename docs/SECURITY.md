@@ -6,7 +6,7 @@ Molt is built on the principle of **Secure by Default**. We treat Python as a hi
 
 ### A. Memory Safety (Rust)
 The Molt runtime and compiler are written in Rust with **minimal, audited `unsafe` blocks** (e.g., arena allocation and NaN-boxing internals), verified via tooling.
-- **No CPython C-extension ABI (yet)**: Molt does not ship a `Python.h`-compatible ABI today; any CPython bridge is planned to be capability-gated and opt-in (TODO(c-api, owner:runtime, milestone:SL3, priority:P2, status:missing): define `libmolt` C-extension ABI surface + bridge policy).
+- **No CPython C-extension ABI (yet)**: Molt does not ship a `Python.h`-compatible ABI today; the primary path is a `libmolt` C-API subset with recompiled extensions, and any CPython bridge is planned to be capability-gated and opt-in (TODO(c-api, owner:runtime, milestone:SL3, priority:P2, status:missing): define `libmolt` C-extension ABI surface + bridge policy).
 - **NaN-Boxing Invariants**: Our 64-bit object model uses strict NaN-boxing. We maintain pointer invariants (48-bit addresses) and sign-extension checks to prevent pointer manipulation attacks.
 - **Runtime Guards**: Molt inserts bounds checks on dynamic collection accesses; specialized paths use guards and fall back to runtime checks when safety cannot be proven.
 

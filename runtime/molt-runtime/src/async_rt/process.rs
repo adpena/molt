@@ -27,6 +27,8 @@ use std::time::Duration;
 const PROCESS_STDIO_INHERIT: i32 = 0;
 const PROCESS_STDIO_PIPE: i32 = 1;
 const PROCESS_STDIO_DEVNULL: i32 = 2;
+const PROCESS_STDIO_STDOUT: i32 = -2;
+const PROCESS_STDIO_FD_BASE: i32 = 1 << 30;
 
 #[cfg(not(target_arch = "wasm32"))]
 fn trace_process_spawn() -> bool {
@@ -58,6 +60,45 @@ fn ignore_sigpipe() {
     });
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn stdio_from_fd(fd: i32) -> Option<Stdio> {
+    if fd < 0 {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::fd::FromRawFd;
+        let duped = unsafe { libc::dup(fd as libc::c_int) };
+        if duped < 0 {
+            return None;
+        }
+        let file = unsafe { std::fs::File::from_raw_fd(duped) };
+        return Some(Stdio::from(file));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::FromRawHandle;
+        let duped = unsafe { libc::_dup(fd as libc::c_int) };
+        if duped < 0 {
+            return None;
+        }
+        let handle = unsafe { libc::_get_osfhandle(duped as libc::c_int) };
+        if handle == -1 {
+            unsafe {
+                libc::_close(duped as libc::c_int);
+            }
+            return None;
+        }
+        let file = unsafe { std::fs::File::from_raw_handle(handle as *mut _) };
+        return Some(Stdio::from(file));
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = fd;
+        None
+    }
+}
+
 fn process_stdio_mode(_py: &PyToken<'_>, bits: u64, name: &str) -> i32 {
     let obj = obj_from_bits(bits);
     if obj.is_none() {
@@ -65,15 +106,17 @@ fn process_stdio_mode(_py: &PyToken<'_>, bits: u64, name: &str) -> i32 {
     }
     match to_i64(obj) {
         Some(val) => {
-            let val = val as i32;
+            let Ok(val) = i32::try_from(val) else {
+                return raise_exception::<_>(_py, "ValueError", &format!("invalid {name} mode"));
+            };
             match val {
                 PROCESS_STDIO_INHERIT | PROCESS_STDIO_PIPE | PROCESS_STDIO_DEVNULL => val,
+                PROCESS_STDIO_STDOUT if name == "stderr" => val,
+                val if val >= PROCESS_STDIO_FD_BASE => val,
                 _ => raise_exception::<_>(_py, "ValueError", &format!("invalid {name} mode")),
             }
         }
-        None => {
-            raise_exception::<_>(_py, "TypeError", &format!("{name} must be int or None"))
-        }
+        None => raise_exception::<_>(_py, "TypeError", &format!("{name} must be int or None")),
     }
 }
 
@@ -441,27 +484,191 @@ pub unsafe extern "C" fn molt_process_spawn(
         } else {
             0
         };
-        let stderr_stream = if stderr_mode == PROCESS_STDIO_PIPE {
+        let mut stderr_stream = if stderr_mode == PROCESS_STDIO_PIPE {
             molt_stream_new(0)
         } else {
             0
         };
+        if stderr_mode == PROCESS_STDIO_STDOUT {
+            stderr_stream = 0;
+        }
+
+        let mut merged_stdout_reader = None;
 
         match stdin_mode {
-            PROCESS_STDIO_PIPE => cmd.stdin(Stdio::piped()),
-            PROCESS_STDIO_DEVNULL => cmd.stdin(Stdio::null()),
-            _ => cmd.stdin(Stdio::inherit()),
+            PROCESS_STDIO_PIPE => {
+                cmd.stdin(Stdio::piped());
+            }
+            PROCESS_STDIO_DEVNULL => {
+                cmd.stdin(Stdio::null());
+            }
+            val if val >= PROCESS_STDIO_FD_BASE => {
+                let fd = val - PROCESS_STDIO_FD_BASE;
+                let Some(stdio) = stdio_from_fd(fd) else {
+                    if stdin_stream != 0 {
+                        molt_stream_drop(stdin_stream);
+                    }
+                    if stdout_stream != 0 {
+                        molt_stream_drop(stdout_stream);
+                    }
+                    if stderr_stream != 0 {
+                        molt_stream_drop(stderr_stream);
+                    }
+                    return raise_exception::<_>(
+                        _py,
+                        "ValueError",
+                        "invalid stdin file descriptor",
+                    );
+                };
+                cmd.stdin(stdio);
+            }
+            _ => {
+                cmd.stdin(Stdio::inherit());
+            }
         };
-        match stdout_mode {
-            PROCESS_STDIO_PIPE => cmd.stdout(Stdio::piped()),
-            PROCESS_STDIO_DEVNULL => cmd.stdout(Stdio::null()),
-            _ => cmd.stdout(Stdio::inherit()),
-        };
-        match stderr_mode {
-            PROCESS_STDIO_PIPE => cmd.stderr(Stdio::piped()),
-            PROCESS_STDIO_DEVNULL => cmd.stderr(Stdio::null()),
-            _ => cmd.stderr(Stdio::inherit()),
-        };
+
+        if stderr_mode == PROCESS_STDIO_STDOUT {
+            if stdout_mode == PROCESS_STDIO_PIPE {
+                let (reader, writer) = match os_pipe::pipe() {
+                    Ok(val) => val,
+                    Err(err) => {
+                        if stdin_stream != 0 {
+                            molt_stream_drop(stdin_stream);
+                        }
+                        if stdout_stream != 0 {
+                            molt_stream_drop(stdout_stream);
+                        }
+                        if stderr_stream != 0 {
+                            molt_stream_drop(stderr_stream);
+                        }
+                        return raise_os_error::<u64>(_py, err, "pipe");
+                    }
+                };
+                let writer_err = match writer.try_clone() {
+                    Ok(val) => val,
+                    Err(err) => {
+                        if stdin_stream != 0 {
+                            molt_stream_drop(stdin_stream);
+                        }
+                        if stdout_stream != 0 {
+                            molt_stream_drop(stdout_stream);
+                        }
+                        if stderr_stream != 0 {
+                            molt_stream_drop(stderr_stream);
+                        }
+                        return raise_os_error::<u64>(_py, err, "pipe");
+                    }
+                };
+                cmd.stdout(writer);
+                cmd.stderr(writer_err);
+                merged_stdout_reader = Some(reader);
+            } else if stdout_mode == PROCESS_STDIO_DEVNULL {
+                cmd.stdout(Stdio::null());
+                cmd.stderr(Stdio::null());
+            } else if stdout_mode >= PROCESS_STDIO_FD_BASE {
+                let fd = stdout_mode - PROCESS_STDIO_FD_BASE;
+                let Some(stdout_stdio) = stdio_from_fd(fd) else {
+                    if stdin_stream != 0 {
+                        molt_stream_drop(stdin_stream);
+                    }
+                    if stdout_stream != 0 {
+                        molt_stream_drop(stdout_stream);
+                    }
+                    if stderr_stream != 0 {
+                        molt_stream_drop(stderr_stream);
+                    }
+                    return raise_exception::<_>(
+                        _py,
+                        "ValueError",
+                        "invalid stdout file descriptor",
+                    );
+                };
+                let Some(stderr_stdio) = stdio_from_fd(fd) else {
+                    if stdin_stream != 0 {
+                        molt_stream_drop(stdin_stream);
+                    }
+                    if stdout_stream != 0 {
+                        molt_stream_drop(stdout_stream);
+                    }
+                    if stderr_stream != 0 {
+                        molt_stream_drop(stderr_stream);
+                    }
+                    return raise_exception::<_>(
+                        _py,
+                        "ValueError",
+                        "invalid stderr file descriptor",
+                    );
+                };
+                cmd.stdout(stdout_stdio);
+                cmd.stderr(stderr_stdio);
+            } else {
+                cmd.stdout(Stdio::inherit());
+                cmd.stderr(Stdio::inherit());
+            }
+        } else {
+            match stdout_mode {
+                PROCESS_STDIO_PIPE => {
+                    cmd.stdout(Stdio::piped());
+                }
+                PROCESS_STDIO_DEVNULL => {
+                    cmd.stdout(Stdio::null());
+                }
+                val if val >= PROCESS_STDIO_FD_BASE => {
+                    let fd = val - PROCESS_STDIO_FD_BASE;
+                    let Some(stdio) = stdio_from_fd(fd) else {
+                        if stdin_stream != 0 {
+                            molt_stream_drop(stdin_stream);
+                        }
+                        if stdout_stream != 0 {
+                            molt_stream_drop(stdout_stream);
+                        }
+                        if stderr_stream != 0 {
+                            molt_stream_drop(stderr_stream);
+                        }
+                        return raise_exception::<_>(
+                            _py,
+                            "ValueError",
+                            "invalid stdout file descriptor",
+                        );
+                    };
+                    cmd.stdout(stdio);
+                }
+                _ => {
+                    cmd.stdout(Stdio::inherit());
+                }
+            };
+            match stderr_mode {
+                PROCESS_STDIO_PIPE => {
+                    cmd.stderr(Stdio::piped());
+                }
+                PROCESS_STDIO_DEVNULL => {
+                    cmd.stderr(Stdio::null());
+                }
+                val if val >= PROCESS_STDIO_FD_BASE => {
+                    let fd = val - PROCESS_STDIO_FD_BASE;
+                    let Some(stdio) = stdio_from_fd(fd) else {
+                        if stdin_stream != 0 {
+                            molt_stream_drop(stdin_stream);
+                        }
+                        if stdout_stream != 0 {
+                            molt_stream_drop(stdout_stream);
+                        }
+                        if stderr_stream != 0 {
+                            molt_stream_drop(stderr_stream);
+                        }
+                        return raise_exception::<_>(
+                            _py,
+                            "ValueError",
+                            "invalid stderr file descriptor",
+                        );
+                    };
+                    cmd.stderr(stdio);
+                }
+                _ => {
+                    cmd.stderr(Stdio::inherit());
+                }
+            };
+        }
 
         let mut child = match cmd.spawn() {
             Ok(child) => child,
@@ -485,7 +692,9 @@ pub unsafe extern "C" fn molt_process_spawn(
             }
         }
         if stdout_stream != 0 {
-            if let Some(stdout) = child.stdout.take() {
+            if let Some(reader) = merged_stdout_reader.take() {
+                spawn_process_reader(reader, stdout_stream);
+            } else if let Some(stdout) = child.stdout.take() {
                 spawn_process_reader(stdout, stdout_stream);
             }
         }

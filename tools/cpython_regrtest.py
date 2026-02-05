@@ -6,6 +6,7 @@ import csv
 import datetime as dt
 import json
 import os
+import platform
 import shlex
 import shutil
 import subprocess
@@ -389,7 +390,7 @@ def parse_args(argv: list[str]) -> RegrtestConfig:
 
     molt_cmd = args.molt_cmd
     if not molt_cmd:
-        molt_cmd = [args.host_python, "-m", "molt.cli", "run", "--compiled"]
+        molt_cmd = [args.host_python, "-m", "molt.cli", "run"]
     if len(molt_cmd) == 1:
         split_cmd = shlex.split(molt_cmd[0])
         if split_cmd:
@@ -490,6 +491,14 @@ def resolve_uv_deps(config: RegrtestConfig) -> list[str]:
     return sorted(set(deps))
 
 
+def _uv_requires_system_py314(python_version: str | None) -> bool:
+    if not python_version or not python_version.startswith("3.14"):
+        return False
+    if sys.platform != "darwin":
+        return False
+    return platform.machine().lower() in {"arm64", "aarch64"}
+
+
 def prepare_uv(
     config: RegrtestConfig,
     python_versions: Iterable[str],
@@ -499,6 +508,17 @@ def prepare_uv(
     if not config.use_uv or not config.uv_prepare:
         return
     for version in python_versions:
+        if _uv_requires_system_py314(version):
+            if not shutil.which("python3.14"):
+                raise RuntimeError(
+                    "uv-managed Python 3.14 hangs on arm64; install python3.14 "
+                    "or drop 3.14 from --uv-python."
+                )
+            log_line(
+                log_handle,
+                "skip=uv_python_install reason=use_system_py314 version=3.14",
+            )
+            continue
         cmd = ["uv", "python", "install", version]
         _ = run_command(
             cmd,
@@ -531,6 +551,13 @@ def host_python_cmd(config: RegrtestConfig, python_version: str | None) -> list[
             cmd.extend(["--project", str(project)])
         if python_version:
             cmd.extend(["--python", python_version])
+            if _uv_requires_system_py314(python_version):
+                if not shutil.which("python3.14"):
+                    raise RuntimeError(
+                        "uv-managed Python 3.14 hangs on arm64; install python3.14 "
+                        "or drop 3.14 from --uv-python."
+                    )
+                cmd.append("--no-managed-python")
         cmd.extend(["--", "python"])
         return cmd
     return [config.host_python]
@@ -1375,7 +1402,7 @@ def validate_molt_cmd(config: RegrtestConfig, *, log_handle) -> None:
         return
     message = (
         f"molt-cmd not found: {exe}. "
-        "Provide --molt-cmd (e.g. 'python -m molt.cli run --compiled') "
+        "Provide --molt-cmd (e.g. 'python -m molt.cli run') "
         "or ensure the command is on PATH."
     )
     log_line(log_handle, message)

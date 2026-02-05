@@ -2,8 +2,25 @@
 
 See `README.md` for quick-start testing commands and CI parity job summaries.
 
+## Version Policy
+Molt targets **Python 3.12+** semantics only. When 3.12/3.13/3.14 diverge,
+document the chosen target in specs/tests and keep the differential suite aligned.
+
 ## 1. Differential Testing: The `molt-diff` Harness
 `molt-diff` is a specialized tool that ensures Molt semantics match CPython. The current harness lives in `tests/molt_diff.py` and builds + runs binaries via `uv run --python 3.12 python3 -m molt.cli build`.
+
+### 1.0 Performance + Memory Controls
+- **Parallelism**: auto-selected based on CPU and available memory (default budget: 2 GB/worker).
+  - Override with `--jobs <n>` or `MOLT_DIFF_MAX_JOBS=<n>`.
+  - Tune memory budget with `MOLT_DIFF_MEM_PER_JOB_GB=<n>` or `MOLT_DIFF_MEM_AVAILABLE_GB=<n>`.
+- **Memory cap**: enforced per process by default (10 GB). Disable with `MOLT_DIFF_RLIMIT_GB=0`.
+- **OOM retry**: OOM failures are retried once with `--jobs 1` (disable via `--no-retry-oom` or `MOLT_DIFF_RETRY_OOM=0`).
+- **Warm cache**: `--warm-cache` or `MOLT_DIFF_WARM_CACHE=1` prebuilds all tests to seed `MOLT_CACHE`.
+- **Failure queue**: failed tests are written to `MOLT_DIFF_ROOT/failures.txt` (override with `--failures-output` or `MOLT_DIFF_FAILURES`).
+- **Summary sidecar**: `MOLT_DIFF_ROOT/summary.json` (or `MOLT_DIFF_SUMMARY=<path>`) includes run metadata and RSS aggregates when enabled.
+- **Memory report**: run `python3 tools/diff_memory_report.py --run-id <id>` to list top RSS offenders (uses `rss_metrics.jsonl`).
+- **Top offenders printout**: when `MOLT_DIFF_MEASURE_RSS=1`, the harness prints top 5 RSS offenders at the end (override with `MOLT_DIFF_RSS_TOP=<n>`).
+- **Summary top list**: `summary.json` includes `rss.top` with the top offenders (file + build/run RSS).
 
 ### 1.1 Methodology
 1.  **Input**: A Python source file `test_case.py`.

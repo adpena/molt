@@ -6,12 +6,20 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-import asyncio as _asyncio
 import selectors as _selectors
+import time as _time
+import molt.concurrency as _molt_concurrency
+
+from _intrinsics import require_intrinsic as _require_intrinsic
+
 
 __all__ = ["error", "select"]
 
 error = OSError
+
+_MOLT_IO_WAIT_NEW = _require_intrinsic("molt_io_wait_new", globals())
+_MOLT_BLOCK_ON = _require_intrinsic("molt_block_on", globals())
+_MOLT_ASYNC_SLEEP = _require_intrinsic("molt_async_sleep", globals())
 
 
 def select(
@@ -20,120 +28,88 @@ def select(
     xlist: Iterable[Any],
     timeout: float | None = None,
 ) -> tuple[list[Any], list[Any], list[Any]]:
-    io_wait = getattr(_selectors, "_molt_io_wait_new", None)
-    block_on = getattr(_selectors, "_molt_block_on", None)
+    io_wait = _MOLT_IO_WAIT_NEW
+    block_on = _MOLT_BLOCK_ON
     to_handle = getattr(_selectors, "_fileobj_to_handle", None)
-    if io_wait is not None and block_on is not None and to_handle is not None:
+    if to_handle is None:
+        raise RuntimeError("selectors._fileobj_to_handle unavailable")
 
-        async def _wait_ready() -> tuple[list[Any], list[Any], list[Any]]:
-            ensure_future = getattr(_asyncio, "ensure_future", None)
-            futures: list[tuple[Any, Any]] = []
-            for obj in rlist:
-                fut = io_wait(to_handle(obj), _selectors.EVENT_READ, None)
-                if ensure_future is not None:
-                    fut = ensure_future(fut)
-                futures.append((obj, fut))
-            for obj in wlist:
-                fut = io_wait(to_handle(obj), _selectors.EVENT_WRITE, None)
-                if ensure_future is not None:
-                    fut = ensure_future(fut)
-                futures.append((obj, fut))
-            for obj in xlist:
-                fut = io_wait(
-                    to_handle(obj),
-                    _selectors.EVENT_READ | _selectors.EVENT_WRITE,
-                    None,
-                )
-                if ensure_future is not None:
-                    fut = ensure_future(fut)
-                futures.append((obj, fut))
-            if not futures:
-                if timeout is None:
-                    return [], [], []
-                if timeout > 0:
-                    await _asyncio.sleep(timeout)
-                return [], [], []
-            done, pending = await _asyncio.wait(
-                [f for _, f in futures],
-                timeout=timeout,
-                return_when=_asyncio.FIRST_COMPLETED,
+    def _deadline_from_timeout(value: float | None):
+        if value is None:
+            return None
+        if value <= 0:
+            return _time.monotonic()
+        return _time.monotonic() + value
+
+    async def _wait_ready() -> tuple[list[Any], list[Any], list[Any]]:
+        deadline = _deadline_from_timeout(timeout)
+        chan = _molt_concurrency.channel()
+        futures: list[object] = []
+
+        async def _wait_one(obj: Any, fut: object) -> None:
+            try:
+                mask = int(await fut)
+            except TimeoutError:
+                mask = 0
+            try:
+                await chan.send_async((obj, mask))
+            except Exception:
+                pass
+
+        for obj in rlist:
+            fut = io_wait(to_handle(obj), _selectors.EVENT_READ, deadline)
+            futures.append(fut)
+            _molt_concurrency.spawn(_wait_one(obj, fut))
+        for obj in wlist:
+            fut = io_wait(to_handle(obj), _selectors.EVENT_WRITE, deadline)
+            futures.append(fut)
+            _molt_concurrency.spawn(_wait_one(obj, fut))
+        for obj in xlist:
+            fut = io_wait(
+                to_handle(obj),
+                _selectors.EVENT_READ | _selectors.EVENT_WRITE,
+                deadline,
             )
-            ready_r: list[Any] = []
-            ready_w: list[Any] = []
-            ready_x: list[Any] = []
-            for obj, fut in futures:
-                if fut not in done:
-                    continue
+            futures.append(fut)
+            _molt_concurrency.spawn(_wait_one(obj, fut))
+        if not futures:
+            if timeout is None:
+                return [], [], []
+            if timeout > 0:
+                await _MOLT_ASYNC_SLEEP(timeout, None)
+            return [], [], []
+        ready_r: list[Any] = []
+        ready_w: list[Any] = []
+        ready_x: list[Any] = []
+
+        def _apply_ready(obj: Any, mask: int) -> None:
+            if mask & _selectors.EVENT_READ:
+                ready_r.append(obj)
+            if mask & _selectors.EVENT_WRITE:
+                ready_w.append(obj)
+            if mask == 0:
+                ready_x.append(obj)
+
+        obj, mask = await chan.recv_async()
+        _apply_ready(obj, mask)
+        while True:
+            ok, payload = chan.try_recv()
+            if not ok:
+                break
+            obj, mask = payload
+            _apply_ready(obj, mask)
+
+        for fut in futures:
+            cancel = getattr(fut, "cancel", None)
+            if callable(cancel):
                 try:
-                    mask = int(fut.result())
-                except TimeoutError:
-                    mask = 0
-                if mask & _selectors.EVENT_READ:
-                    ready_r.append(obj)
-                if mask & _selectors.EVENT_WRITE:
-                    ready_w.append(obj)
-                if mask == 0:
-                    ready_x.append(obj)
-            for fut in pending:
-                try:
-                    fut.cancel()
+                    cancel()
                 except Exception:
                     pass
-            return ready_r, ready_w, ready_x
-
-        running = getattr(_asyncio, "_get_running_loop", None)
-        set_running = getattr(_asyncio, "_set_running_loop", None)
-        temp_loop = None
-        if running is not None and set_running is not None:
-            if running() is None:
-                temp_loop = _asyncio.new_event_loop()
-                _asyncio.set_event_loop(temp_loop)
-                set_running(temp_loop)
         try:
-            return block_on(_wait_ready())
-        finally:
-            if temp_loop is not None and set_running is not None:
-                set_running(None)
-                _asyncio.set_event_loop(None)
-                try:
-                    temp_loop.close()
-                except Exception:
-                    pass
+            chan.close()
+        except Exception:
+            pass
+        return ready_r, ready_w, ready_x
 
-    # TODO(perf, owner:stdlib, milestone:SL2, priority:P3, status:planned): reuse selectors across calls to reduce register/unregister churn.
-    selector = _selectors.DefaultSelector()
-    key_map: dict[int, Any] = {}
-
-    def _register(obj: Any, events: int) -> None:
-        try:
-            key = selector.get_key(obj)
-            selector.modify(obj, key.events | events)
-            key_map[key.fd] = obj
-        except KeyError:
-            key = selector.register(obj, events)
-            key_map[key.fd] = obj
-
-    for obj in rlist:
-        _register(obj, _selectors.EVENT_READ)
-    for obj in wlist:
-        _register(obj, _selectors.EVENT_WRITE)
-    for obj in xlist:
-        _register(obj, _selectors.EVENT_READ | _selectors.EVENT_WRITE)
-
-    try:
-        ready = selector.select(timeout)
-    finally:
-        selector.close()
-
-    ready_r: list[Any] = []
-    ready_w: list[Any] = []
-    ready_x: list[Any] = []
-    for key, mask in ready:
-        if mask & _selectors.EVENT_READ:
-            ready_r.append(key.fileobj)
-        if mask & _selectors.EVENT_WRITE:
-            ready_w.append(key.fileobj)
-        if mask == 0:
-            ready_x.append(key.fileobj)
-
-    return ready_r, ready_w, ready_x
+    return block_on(_wait_ready())

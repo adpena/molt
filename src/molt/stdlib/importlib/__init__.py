@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+_require_intrinsic("molt_stdlib_probe", globals())
+
 import builtins as _builtins
 import os as _os
 import sys as _sys
@@ -47,10 +51,7 @@ def import_module(name: str, package: str | None = None):
         return modules[resolved]
     importer = getattr(_builtins, "__import__", None)
     if callable(importer):
-        try:
-            mod = importer(resolved, {}, {}, ["_"], 0)
-        except Exception:
-            mod = None
+        mod = importer(resolved, {}, {}, ["_"], 0)
         if isinstance(modules, dict) and resolved in modules:
             return modules[resolved]
         if mod is not None:

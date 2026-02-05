@@ -1,40 +1,14 @@
-import os
-import shutil
-import subprocess
-import sys
 from pathlib import Path
 
-import pytest
-
-from tests.wasm_harness import write_wasm_runner
-
-
-EXTRA_JS = """\
-const DB_POLL_PAYLOAD = Uint8Array.from([0x70, 0x6f, 0x6c, 0x6c]);
-let dbPollStream = null;
-"""
-
-IMPORT_OVERRIDES = """\
-  stream_new: (capacity) => {
-    const handle = baseImports.stream_new(capacity);
-    if (dbPollStream === null) dbPollStream = handle;
-    return handle;
-  },
-  db_host_poll: () => {
-    if (!dbPollStream) return 0;
-    const stream = streamGet(dbPollStream);
-    if (!stream || stream.queue.length > 0 || stream.closed) return 0;
-    stream.queue.push(DB_POLL_PAYLOAD);
-    return 0;
-  },
-"""
+from tests.wasm_linked_runner import (
+    build_wasm_linked,
+    require_wasm_toolchain,
+    run_wasm_linked,
+)
 
 
 def test_wasm_db_host_poll_parity(tmp_path: Path) -> None:
-    if shutil.which("node") is None:
-        pytest.skip("node is required for wasm parity test")
-    if shutil.which("cargo") is None:
-        pytest.skip("cargo is required for wasm parity test")
+    require_wasm_toolchain()
 
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "db_host_poll.py"
@@ -52,40 +26,7 @@ def test_wasm_db_host_poll_parity(tmp_path: Path) -> None:
         "    main()\n"
     )
 
-    output_wasm = tmp_path / "output.wasm"
-    runner = write_wasm_runner(
-        tmp_path,
-        "run_wasm_db_host_poll.js",
-        extra_js=EXTRA_JS,
-        import_overrides=IMPORT_OVERRIDES,
-    )
-
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(root / "src")
-    build = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "molt.cli",
-            "build",
-            str(src),
-            "--target",
-            "wasm",
-            "--out-dir",
-            str(tmp_path),
-        ],
-        cwd=root,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-    assert build.returncode == 0, build.stderr
-
-    run = subprocess.run(
-        ["node", str(runner), str(output_wasm)],
-        cwd=root,
-        capture_output=True,
-        text=True,
-    )
+    output_wasm = build_wasm_linked(root, src, tmp_path)
+    run = run_wasm_linked(root, output_wasm)
     assert run.returncode == 0, run.stderr
     assert run.stdout.strip() == "\n".join(["b'poll'", "4"])

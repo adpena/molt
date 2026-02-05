@@ -8,29 +8,30 @@ import struct
 import sys
 import time
 
-from _intrinsics import load_intrinsic as _load_intrinsic
+from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_THREAD_SPAWN = _load_intrinsic("molt_thread_spawn", globals())
-_MOLT_THREAD_JOIN = _load_intrinsic("molt_thread_join", globals())
-_MOLT_THREAD_IS_ALIVE = _load_intrinsic("molt_thread_is_alive", globals())
-_MOLT_THREAD_IDENT = _load_intrinsic("molt_thread_ident", globals())
-_MOLT_THREAD_NATIVE_ID = _load_intrinsic("molt_thread_native_id", globals())
-_MOLT_THREAD_CURRENT_IDENT = _load_intrinsic("molt_thread_current_ident", globals())
-_MOLT_THREAD_CURRENT_NATIVE_ID = _load_intrinsic(
+
+_MOLT_THREAD_SPAWN = _require_intrinsic("molt_thread_spawn", globals())
+_MOLT_THREAD_JOIN = _require_intrinsic("molt_thread_join", globals())
+_MOLT_THREAD_IS_ALIVE = _require_intrinsic("molt_thread_is_alive", globals())
+_MOLT_THREAD_IDENT = _require_intrinsic("molt_thread_ident", globals())
+_MOLT_THREAD_NATIVE_ID = _require_intrinsic("molt_thread_native_id", globals())
+_MOLT_THREAD_CURRENT_IDENT = _require_intrinsic("molt_thread_current_ident", globals())
+_MOLT_THREAD_CURRENT_NATIVE_ID = _require_intrinsic(
     "molt_thread_current_native_id", globals()
 )
-_MOLT_THREAD_DROP = _load_intrinsic("molt_thread_drop", globals())
-_MOLT_LOCK_NEW = _load_intrinsic("molt_lock_new", globals())
-_MOLT_LOCK_ACQUIRE = _load_intrinsic("molt_lock_acquire", globals())
-_MOLT_LOCK_RELEASE = _load_intrinsic("molt_lock_release", globals())
-_MOLT_LOCK_LOCKED = _load_intrinsic("molt_lock_locked", globals())
-_MOLT_LOCK_DROP = _load_intrinsic("molt_lock_drop", globals())
-_MOLT_RLOCK_NEW = _load_intrinsic("molt_rlock_new", globals())
-_MOLT_RLOCK_ACQUIRE = _load_intrinsic("molt_rlock_acquire", globals())
-_MOLT_RLOCK_RELEASE = _load_intrinsic("molt_rlock_release", globals())
-_MOLT_RLOCK_LOCKED = _load_intrinsic("molt_rlock_locked", globals())
-_MOLT_RLOCK_DROP = _load_intrinsic("molt_rlock_drop", globals())
-_MOLT_MODULE_CACHE_SET = _load_intrinsic("molt_module_cache_set", globals())
+_MOLT_THREAD_DROP = _require_intrinsic("molt_thread_drop", globals())
+_MOLT_LOCK_NEW = _require_intrinsic("molt_lock_new", globals())
+_MOLT_LOCK_ACQUIRE = _require_intrinsic("molt_lock_acquire", globals())
+_MOLT_LOCK_RELEASE = _require_intrinsic("molt_lock_release", globals())
+_MOLT_LOCK_LOCKED = _require_intrinsic("molt_lock_locked", globals())
+_MOLT_LOCK_DROP = _require_intrinsic("molt_lock_drop", globals())
+_MOLT_RLOCK_NEW = _require_intrinsic("molt_rlock_new", globals())
+_MOLT_RLOCK_ACQUIRE = _require_intrinsic("molt_rlock_acquire", globals())
+_MOLT_RLOCK_RELEASE = _require_intrinsic("molt_rlock_release", globals())
+_MOLT_RLOCK_LOCKED = _require_intrinsic("molt_rlock_locked", globals())
+_MOLT_RLOCK_DROP = _require_intrinsic("molt_rlock_drop", globals())
+_MOLT_MODULE_CACHE_SET = _require_intrinsic("molt_module_cache_set", globals())
 
 
 def _require_callable(value: object, name: str) -> Callable[..., object]:
@@ -69,85 +70,16 @@ _HAVE_INTRINSICS = all(
 
 
 def _register_module_cache() -> None:
-    if not callable(_MOLT_MODULE_CACHE_SET):
-        return
     module = sys.modules.get(__name__)
     if module is None:
         return
-    try:
-        _MOLT_MODULE_CACHE_SET(__name__, module)
-    except Exception:
-        pass
+    _MOLT_MODULE_CACHE_SET(__name__, module)
     if __name__ != "threading":
-        try:
-            _MOLT_MODULE_CACHE_SET("threading", module)
-        except Exception:
-            pass
+        _MOLT_MODULE_CACHE_SET("threading", module)
 
 
 if not _HAVE_INTRINSICS:
-    import importlib.util
-    import sysconfig
-
-    def _load_cpython_threading() -> Any | None:
-        stdlib = sysconfig.get_path("stdlib")
-        if not stdlib:
-            return None
-        path = os.path.join(stdlib, "threading.py")
-        if not os.path.exists(path):
-            return None
-        spec = importlib.util.spec_from_file_location("_molt_cpython_threading", path)
-        if spec is None or spec.loader is None:
-            return None
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-
-    _py_threading = _load_cpython_threading()
-    if _py_threading is None:
-        raise RuntimeError("threading intrinsics unavailable")
-
-    Thread = _py_threading.Thread
-    Lock = _py_threading.Lock
-    RLock = _py_threading.RLock
-    Event = _py_threading.Event
-    Condition = _py_threading.Condition
-    Semaphore = _py_threading.Semaphore
-    BoundedSemaphore = _py_threading.BoundedSemaphore
-    Timer = _py_threading.Timer
-    local = _py_threading.local
-    current_thread = _py_threading.current_thread
-    main_thread = _py_threading.main_thread
-    get_ident = _py_threading.get_ident
-    get_native_id = _py_threading.get_native_id
-    active_count = _py_threading.active_count
-    enumerate = _py_threading.enumerate
-    TIMEOUT_MAX = _py_threading.TIMEOUT_MAX
-
-    __all__ = list(
-        getattr(
-            _py_threading,
-            "__all__",
-            [
-                "Thread",
-                "Lock",
-                "RLock",
-                "Event",
-                "Condition",
-                "Semaphore",
-                "BoundedSemaphore",
-                "Timer",
-                "local",
-                "current_thread",
-                "main_thread",
-                "get_ident",
-                "get_native_id",
-                "active_count",
-                "enumerate",
-                "TIMEOUT_MAX",
-            ],
-        )
-    )
+    raise RuntimeError("threading intrinsics unavailable")
 else:
     _register_module_cache()
 
@@ -801,9 +733,13 @@ else:
             if lock is None:
                 lock = RLock()
             self._lock = lock
-            self.acquire = lock.acquire
-            self.release = lock.release
             self._waiters: list[Any] = []
+
+        def acquire(self, *args: Any, **kwargs: Any) -> bool:
+            return bool(self._lock.acquire(*args, **kwargs))
+
+        def release(self) -> None:
+            self._lock.release()
 
         def __enter__(self) -> Condition:
             self.acquire()
@@ -1026,8 +962,6 @@ else:
             self._count = 0
             self._generation = 0
             self._broken = False
-            self._release_count = 0
-            self._release_gen = 0
 
         @property
         def parties(self) -> int:
@@ -1063,7 +997,7 @@ else:
                 if self._broken:
                     raise BrokenBarrierError
                 gen = self._generation
-                index = self._parties - self._count - 1
+                index = self._count
                 self._count += 1
                 if self._count == self._parties:
                     if self._action is not None:
@@ -1072,12 +1006,8 @@ else:
                         except Exception:
                             self._break()
                             raise
-                    self._release_count = self._parties - 1
-                    self._release_gen = gen
                     self._next_generation()
-                    while self._release_count > 0:
-                        self._cond.wait()
-                    return 0
+                    return index
                 end = None if timeout_val is None else time.monotonic() + timeout_val
                 while True:
                     if end is None:
@@ -1091,15 +1021,10 @@ else:
                     if self._broken:
                         raise BrokenBarrierError
                     if gen != self._generation:
-                        if self._release_gen == gen and self._release_count > 0:
-                            self._release_count -= 1
-                            if self._release_count == 0:
-                                self._cond.notify_all()
                         return index
 
         def _break(self) -> None:
             self._broken = True
-            self._release_count = 0
             self._cond.notify_all()
 
         def _next_generation(self) -> None:
@@ -1420,7 +1345,7 @@ else:
     def active_count() -> int:
         return len(enumerate())
 
-    TIMEOUT_MAX = 1e9
+    TIMEOUT_MAX = 9223372036.0
 
     def _bootstrap_main_thread() -> Thread:
         global _MAIN_THREAD

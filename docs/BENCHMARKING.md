@@ -2,6 +2,10 @@
 
 Molt is performance-obsessed. Every major change must be validated against our benchmark suite.
 
+## Version Policy
+Benchmarks target **Python 3.12+** semantics. Use 3.12 as the minimum baseline,
+and record any 3.13/3.14 divergences in specs/tests.
+
 ## Running Benchmarks
 
 We use `tools/bench.py` for native and `tools/bench_wasm.py` for WASM.

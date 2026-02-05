@@ -1123,3 +1123,52 @@ and regression control.
 - >=2x improvement in synthetic multi-thread resolve benchmarks.
 - <=2% overhead regression in single-threaded microbenchmarks.
 - No new Miri/TSAN warnings; spec + STATUS updates recorded.
+
+### OPT-0004: Native WebSocket Readiness Integration (io_poller + mio)
+
+**Problem**
+- Native WebSocket send/recv uses nonblocking tungstenite calls with scheduler polling (pending -> yield), which can spin CPU under load and prevents batching readiness across sockets.
+
+**Hypotheses**
+- H1: Register the underlying WebSocket stream with io_poller/mio and wake tasks on readiness to cut idle CPU and improve scalability for many concurrent sockets.
+- H2: A small per-socket recv queue + batched reads amortizes syscalls and reduces contention in hot paths.
+
+**Alternatives**
+1) io_poller integration using mio readiness on the underlying TcpStream (best scaling, moderate complexity).
+2) Migrate to tokio-tungstenite with a runtime adapter (high compatibility, higher dependency surface, runtime coupling).
+3) Dedicated worker thread per WebSocket (simple, but poor scalability and higher memory cost).
+
+**Research References**
+- mio readiness model and registration APIs.
+- tungstenite/tokio-tungstenite docs for stream integration patterns.
+- epoll/kqueue edge/level-triggered readiness tradeoffs.
+
+**Plan**
+- Phase 0: Identify WebSocket stream handle extraction across TLS variants; add microbench for idle and active echo workloads.
+- Phase 1: Register WebSocket streams with io_poller; map readiness to task wakeups.
+- Phase 2: Add bounded recv queue and batched reads; verify backpressure correctness.
+- Phase 3: Add perf gates + regression tests; document new readiness behavior.
+- Microbench: `MOLT_TRUSTED=1 MOLT_CAPABILITIES=net,net.poll,websocket.connect uv run --python 3.14 python3 tools/bench.py --script tests/benchmarks/bench_ws_wait.py` (set `MOLT_WS_BENCH_URL` to override the built-in echo server).
+
+**Status**
+- Phase 1 implemented for native + wasm websockets via `molt_ws_wait_new`; phase 2 pending.
+- TODO(perf, owner:runtime, milestone:RT3, priority:P2, status:planned): cache mio websocket poll streams/registrations to avoid per-wait `TcpStream` clones.
+
+**Benchmark Matrix**
+- ws_echo_small.py: expected lower latency jitter, >=1.3x throughput.
+- ws_idle_fanout.py: expected >5x reduction in idle CPU.
+- ws_broadcast.py: expected <=5% overhead vs baseline.
+- bench_ws_wait.py (self-contained echo server or external `MOLT_WS_BENCH_URL`): expected lower CPU + reduced tail latency once poll-stream caching lands.
+
+**Correctness Plan**
+- New unit tests for close/ping/pong handling under readiness-driven wakeups.
+- Differential cases for pending send/recv with interleaved close.
+- Guard/fallback behavior: if io_poller registration fails, fall back to polling path.
+
+**Risk + Rollback**
+- Risk: readiness registration leaks or missed wakeups cause hangs.
+- Rollback: disable readiness integration via compile-time feature flag and keep current polling path.
+
+**Success Criteria**
+- Demonstrated CPU reduction on idle workloads and no regressions >5% on active throughput benches.
+- Docs + roadmap updates to reflect readiness integration.

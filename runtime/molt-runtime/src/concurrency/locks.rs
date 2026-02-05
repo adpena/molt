@@ -414,11 +414,7 @@ pub unsafe extern "C" fn molt_rlock_release(handle_bits: u64) -> u64 {
             return raise_exception::<_>(_py, "TypeError", "invalid rlock handle");
         };
         if !lock.release() {
-            return raise_exception::<_>(
-                _py,
-                "RuntimeError",
-                "cannot release un-acquired lock",
-            );
+            return raise_exception::<_>(_py, "RuntimeError", "cannot release un-acquired lock");
         }
         MoltObject::none().bits()
     })
@@ -586,7 +582,11 @@ fn parse_timeout(_py: &PyToken<'_>, timeout_bits: u64, blocking: bool) -> Result
         ));
     }
     let Some(timeout) = to_f64(timeout_obj) else {
-        return Err(raise_exception::<_>(_py, "TypeError", "timeout value must be a float"));
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "timeout value must be a float",
+        ));
     };
     if !timeout.is_finite() {
         return Err(raise_exception::<_>(
@@ -767,11 +767,7 @@ pub unsafe extern "C" fn molt_rlock_release(handle_bits: u64) -> u64 {
             return raise_exception::<_>(_py, "TypeError", "invalid rlock handle");
         };
         if !lock.release() {
-            return raise_exception::<_>(
-                _py,
-                "RuntimeError",
-                "cannot release un-acquired lock",
-            );
+            return raise_exception::<_>(_py, "RuntimeError", "cannot release un-acquired lock");
         }
         MoltObject::none().bits()
     })

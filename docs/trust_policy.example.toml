@@ -1,0 +1,21 @@
+# Molt trust policy example (TOML)
+# Use with: molt verify --trusted-signers docs/trust_policy.example.toml
+
+[cosign]
+# SHA-256 of trusted cosign key files (hex or sha256:<hex>)
+keys = [
+  "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+]
+# Substrings to match against cosign certificate PEMs (optional)
+certificates = [
+  "CN=example",
+  "O=Example Org",
+]
+
+[codesign]
+# Trusted Apple Team IDs
+team_ids = ["ABCDE12345"]
+# Trusted bundle identifiers
+identifiers = ["com.example.molt.pkg"]
+# Trusted authority strings (exact match)
+authorities = ["Developer ID Application: Example Org (ABCDE12345)"]

@@ -610,6 +610,17 @@ def _table_import_min(data: bytes) -> int | None:
     return None
 
 
+def _memory_import_min(data: bytes) -> int | None:
+    for module, name, kind, desc in _collect_imports(data):
+        if kind != 2 or module != "env" or name != "memory":
+            continue
+        if not desc:
+            return None
+        _, minimum, _, _ = _read_limits(desc, 0)
+        return minimum
+    return None
+
+
 def _rewrite_table_import_min(data: bytes, required_min: int) -> bytes | None:
     sections = _parse_sections(data)
     changed = False
@@ -649,6 +660,63 @@ def _rewrite_table_import_min(data: bytes, required_min: int) -> bytes | None:
             rebuilt.append(kind)
             rebuilt.extend(desc)
         new_sections.append((section_id, bytes(rebuilt)))
+    if not changed:
+        return None
+    return _build_sections(new_sections)
+
+
+def _rewrite_memory_min(data: bytes, required_min: int) -> bytes | None:
+    sections = _parse_sections(data)
+    changed = False
+    new_sections: list[tuple[int, bytes]] = []
+    for section_id, payload in sections:
+        if section_id == 2:
+            offset = 0
+            count, offset = _read_varuint(payload, offset)
+            rebuilt = bytearray()
+            rebuilt.extend(_write_varuint(count))
+            for _ in range(count):
+                module, offset = _read_string(payload, offset)
+                name, offset = _read_string(payload, offset)
+                if offset >= len(payload):
+                    raise ValueError("Unexpected EOF while reading import kind")
+                kind = payload[offset]
+                offset += 1
+                desc_start = offset
+                offset = _parse_import_desc(payload, offset, kind)
+                desc = payload[desc_start:offset]
+                if kind == 2 and module == "env" and name == "memory":
+                    flags, minimum, maximum, _ = _read_limits(desc, 0)
+                    new_min = max(minimum, required_min)
+                    new_max = maximum
+                    if maximum is not None and new_min > maximum:
+                        new_max = new_min
+                    if new_min != minimum or new_max != maximum:
+                        changed = True
+                        desc = _write_limits(flags, new_min, new_max)
+                rebuilt.extend(_write_string(module))
+                rebuilt.extend(_write_string(name))
+                rebuilt.append(kind)
+                rebuilt.extend(desc)
+            new_sections.append((section_id, bytes(rebuilt)))
+            continue
+        if section_id == 5:
+            offset = 0
+            count, offset = _read_varuint(payload, offset)
+            rebuilt = bytearray()
+            rebuilt.extend(_write_varuint(count))
+            for _ in range(count):
+                flags, minimum, maximum, offset = _read_limits(payload, offset)
+                new_min = max(minimum, required_min)
+                new_max = maximum
+                if maximum is not None and new_min > maximum:
+                    new_max = new_min
+                if new_min != minimum or new_max != maximum:
+                    changed = True
+                rebuilt.extend(_write_limits(flags, new_min, new_max))
+            new_sections.append((section_id, bytes(rebuilt)))
+            continue
+        new_sections.append((section_id, payload))
     if not changed:
         return None
     return _build_sections(new_sections)
@@ -838,6 +906,17 @@ def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int
                 )
             except ValueError as exc:
                 print(f"Failed to rewrite linked table min: {exc}", file=sys.stderr)
+                return 1
+            if updated is not None:
+                linked.write_bytes(updated)
+        output_memory_min = _memory_import_min(output.read_bytes())
+        if output_memory_min is not None:
+            try:
+                updated = _rewrite_memory_min(
+                    linked.read_bytes(), output_memory_min
+                )
+            except ValueError as exc:
+                print(f"Failed to rewrite linked memory min: {exc}", file=sys.stderr)
                 return 1
             if updated is not None:
                 linked.write_bytes(updated)

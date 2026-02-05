@@ -7,6 +7,7 @@ use molt_obj_model::MoltObject;
 
 use crate::concurrency::GilGuard;
 use crate::object::accessors::resolve_obj_ptr;
+use crate::object::HEADER_FLAG_COROUTINE;
 use crate::{
     alloc_dict_with_pairs, alloc_exception, alloc_object, alloc_tuple, async_sleep_poll_fn_addr,
     async_trace_enabled, asyncgen_poll_fn_addr, asyncgen_registry, attr_lookup_ptr_allow_missing,
@@ -33,8 +34,9 @@ use crate::{
     ASYNCGEN_PENDING_OFFSET, ASYNCGEN_RUNNING_OFFSET, GEN_CLOSED_OFFSET, GEN_CONTROL_SIZE,
     GEN_EXC_DEPTH_OFFSET, GEN_SEND_OFFSET, GEN_THROW_OFFSET, GEN_YIELD_FROM_OFFSET,
     HEADER_FLAG_BLOCK_ON, HEADER_FLAG_GEN_RUNNING, HEADER_FLAG_GEN_STARTED,
-    HEADER_FLAG_SPAWN_RETAIN, TASK_KIND_FUTURE, TASK_KIND_GENERATOR, TYPE_ID_ASYNC_GENERATOR,
-    TYPE_ID_EXCEPTION, TYPE_ID_GENERATOR, TYPE_ID_OBJECT, TYPE_ID_STRING, TYPE_ID_TUPLE,
+    HEADER_FLAG_SPAWN_RETAIN, TASK_KIND_COROUTINE, TASK_KIND_FUTURE, TASK_KIND_GENERATOR,
+    TYPE_ID_ASYNC_GENERATOR, TYPE_ID_EXCEPTION, TYPE_ID_GENERATOR, TYPE_ID_OBJECT, TYPE_ID_STRING,
+    TYPE_ID_TUPLE,
 };
 
 use crate::state::runtime_state::{AsyncGenLocalsEntry, GenLocalsEntry};
@@ -278,9 +280,10 @@ unsafe fn generator_method_result(_py: &PyToken<'_>, res_bits: u64) -> u64 {
 #[no_mangle]
 pub extern "C" fn molt_task_new(poll_fn_addr: u64, closure_size: u64, kind_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let type_id = match kind_bits {
-            TASK_KIND_FUTURE => TYPE_ID_OBJECT,
-            TASK_KIND_GENERATOR => TYPE_ID_GENERATOR,
+        let (type_id, is_coroutine) = match kind_bits {
+            TASK_KIND_FUTURE => (TYPE_ID_OBJECT, false),
+            TASK_KIND_COROUTINE => (TYPE_ID_OBJECT, true),
+            TASK_KIND_GENERATOR => (TYPE_ID_GENERATOR, false),
             _ => {
                 return raise_exception::<_>(_py, "TypeError", "unknown task kind");
             }
@@ -304,6 +307,9 @@ pub extern "C" fn molt_task_new(poll_fn_addr: u64, closure_size: u64, kind_bits:
             let header = header_from_obj_ptr(ptr);
             (*header).poll_fn = poll_fn_addr;
             (*header).state = 0;
+            if is_coroutine {
+                (*header).flags |= HEADER_FLAG_COROUTINE;
+            }
             if type_id == TYPE_ID_GENERATOR && closure_size as usize >= GEN_CONTROL_SIZE {
                 *generator_slot_ptr(ptr, GEN_SEND_OFFSET) = MoltObject::none().bits();
                 *generator_slot_ptr(ptr, GEN_THROW_OFFSET) = MoltObject::none().bits();

@@ -1,9 +1,9 @@
 use std::sync::atomic::AtomicU64;
 use std::sync::OnceLock;
 
-use crate::*;
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
+use crate::*;
 
 // --- Platform constants ---
 
@@ -125,8 +125,9 @@ pub extern "C" fn molt_sys_platform() -> u64 {
     })
 }
 
-fn base_errno_constants() -> Vec<(&'static str, i64)> {
-    let mut out = vec![
+#[cfg(target_arch = "wasm32")]
+fn collect_errno_constants() -> Vec<(&'static str, i64)> {
+    vec![
         ("EACCES", libc::EACCES as i64),
         ("EAGAIN", libc::EAGAIN as i64),
         ("EALREADY", libc::EALREADY as i64),
@@ -148,25 +149,11 @@ fn base_errno_constants() -> Vec<(&'static str, i64)> {
         ("ESRCH", libc::ESRCH as i64),
         ("ETIMEDOUT", libc::ETIMEDOUT as i64),
         ("EWOULDBLOCK", libc::EWOULDBLOCK as i64),
-    ];
-    #[cfg(not(target_arch = "wasm32"))]
-    out.push(("ESHUTDOWN", libc::ESHUTDOWN as i64));
-    out
+    ]
 }
 
-fn collect_errno_constants() -> Vec<(&'static str, i64)> {
-    // TODO(stdlib-compat, owner:runtime, milestone:SL2, priority:P1, status:partial): expand errno constants to match CPython's full table on each platform.
-    #[cfg(target_os = "freebsd")]
-    {
-        let mut out = base_errno_constants();
-        out.push(("ENOTCAPABLE", libc::ENOTCAPABLE as i64));
-        out
-    }
-    #[cfg(not(target_os = "freebsd"))]
-    {
-        base_errno_constants()
-    }
-}
+#[cfg(not(target_arch = "wasm32"))]
+include!(concat!(env!("OUT_DIR"), "/errno_constants.rs"));
 
 fn socket_constants() -> Vec<(&'static str, i64)> {
     #[cfg(target_arch = "wasm32")]

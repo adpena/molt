@@ -5,15 +5,19 @@ use crate::object::utf8_cache::{
 };
 use crate::PyToken;
 use crate::{
-    builtin_classes_shutdown, clear_exception_state, clear_exception_type_cache, dec_ref_bits,
-    default_cancel_tokens, obj_from_bits, reset_ptr_registry, GilReleaseGuard, MoltObject,
-    ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, BLOCK_ON_TASK, CONTEXT_STACK,
-    CURRENT_TASK, CURRENT_TOKEN, DEFAULT_RECURSION_LIMIT, EXCEPTION_STACK, FRAME_STACK,
+    alloc_string, builtin_classes_shutdown, call_callable0, clear_exception, clear_exception_state,
+    clear_exception_type_cache, dec_ref_bits, default_cancel_tokens, dict_get_in_place,
+    exception_pending, inc_ref_bits, intern_static_name, molt_file_flush, molt_get_attr_name,
+    module_dict_bits, obj_from_bits, object_type_id, reset_ptr_registry, runtime_state,
+    GilReleaseGuard, MoltObject,
+    ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, BLOCK_ON_TASK, CONTEXT_STACK, CURRENT_TASK,
+    CURRENT_TOKEN, DEFAULT_RECURSION_LIMIT, EXCEPTION_STACK, FRAME_STACK,
     GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE, GIL_DEPTH, NEXT_CANCEL_TOKEN_ID,
     OBJECT_POOL_BUCKETS, OBJECT_POOL_TLS, PARSE_ARENA, RECURSION_DEPTH, RECURSION_LIMIT,
-    TASK_RAISE_ACTIVE,
+    TASK_RAISE_ACTIVE, TYPE_ID_DICT, TYPE_ID_FILE_HANDLE, TYPE_ID_MODULE,
 };
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::sync::OnceLock;
 
 use super::{cache::clear_atomic_slots, cache::clear_method_cache, RuntimeState};
 
@@ -53,6 +57,7 @@ pub(crate) fn runtime_teardown_isolate(_py: &PyToken<'_>, state: &RuntimeState) 
 
 fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: bool) {
     crate::gil_assert();
+    trace_shutdown("start");
     let scheduler_started = state.scheduler_started.load(AtomicOrdering::Acquire);
     let sleep_queue_started = state.sleep_queue_started.load(AtomicOrdering::Acquire);
     let io_poller_started = state.io_poller_started.load(AtomicOrdering::Acquire);
@@ -62,43 +67,90 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     let thread_pool_started = false;
 
     if scheduler_started || sleep_queue_started || io_poller_started || thread_pool_started {
+        trace_shutdown("workers_shutdown_start");
         let _release = GilReleaseGuard::new();
         if scheduler_started {
+            trace_shutdown("scheduler_shutdown_start");
             state.scheduler().shutdown();
+            trace_shutdown("scheduler_shutdown_done");
         }
         if sleep_queue_started {
+            trace_shutdown("sleep_queue_shutdown_start");
             state.sleep_queue().shutdown(_py);
+            trace_shutdown("sleep_queue_shutdown_done");
         }
         if io_poller_started {
+            trace_shutdown("io_poller_shutdown_start");
             state.io_poller().shutdown();
+            trace_shutdown("io_poller_shutdown_done");
         }
         #[cfg(not(target_arch = "wasm32"))]
         if thread_pool_started {
             if let Some(pool) = state.thread_pool.get() {
+                trace_shutdown("thread_pool_shutdown_start");
                 pool.shutdown();
+                trace_shutdown("thread_pool_shutdown_done");
             }
         }
+        trace_shutdown("workers_shutdown_done");
     }
+    trace_shutdown("clear_async_hang_probe");
     clear_async_hang_probe(state);
+    trace_shutdown("clear_task_state");
     clear_task_state(_py, state);
+    trace_shutdown("clear_exception_state");
     clear_exception_state(_py);
+    trace_shutdown("flush_stdio");
+    flush_stdio_handles(_py, state);
+    trace_shutdown("clear_module_cache");
     clear_module_cache(_py, state);
+    trace_shutdown("clear_exception_type_cache");
     clear_exception_type_cache(_py, state);
+    trace_shutdown("builtin_classes_shutdown");
     builtin_classes_shutdown(_py, state);
+    trace_shutdown("clear_interned_names");
     clear_interned_names(_py, state);
+    trace_shutdown("clear_method_cache");
     clear_method_cache(_py, state);
+    trace_shutdown("clear_special_cache");
     clear_special_cache(_py, state);
+    trace_shutdown("clear_utf8_caches");
     clear_utf8_caches(state);
+    trace_shutdown("clear_code_slots");
     clear_code_slots(_py, state);
+    trace_shutdown("clear_object_pool");
     clear_object_pool(state);
+    trace_shutdown("clear_asyncgen_registry");
     clear_asyncgen_registry(state);
+    trace_shutdown("clear_asyncgen_hooks");
     clear_asyncgen_hooks(_py, state);
+    trace_shutdown("clear_asyncgen_locals");
     clear_asyncgen_locals(_py, state);
+    trace_shutdown("clear_fn_ptr_code_map");
     clear_fn_ptr_code_map(_py, state);
     if reset_ptrs {
+        trace_shutdown("reset_ptr_registry");
         reset_ptr_registry();
     }
+    trace_shutdown("clear_thread_local_state");
     clear_thread_local_state(_py);
+    trace_shutdown("done");
+}
+
+fn trace_shutdown_enabled() -> bool {
+    static TRACE: OnceLock<bool> = OnceLock::new();
+    *TRACE.get_or_init(|| {
+        matches!(
+            std::env::var("MOLT_TRACE_SHUTDOWN").ok().as_deref(),
+            Some("1")
+        )
+    })
+}
+
+fn trace_shutdown(step: &str) {
+    if trace_shutdown_enabled() {
+        eprintln!("molt shutdown: {step}");
+    }
 }
 
 pub(crate) fn runtime_reset_for_init(_py: &PyToken<'_>, state: &RuntimeState) {
@@ -297,6 +349,89 @@ fn clear_module_cache(_py: &PyToken<'_>, state: &RuntimeState) {
     }
 }
 
+fn flush_stdio_handles(_py: &PyToken<'_>, state: &RuntimeState) {
+    crate::gil_assert();
+    let sys_bits = {
+        let guard = state.module_cache.lock().unwrap();
+        guard.get("sys").copied()
+    };
+    let Some(sys_bits) = sys_bits else {
+        return;
+    };
+    // Hold a ref while we inspect stdout/stderr.
+    inc_ref_bits(_py, sys_bits);
+    flush_module_attr(_py, sys_bits, "stdout");
+    flush_module_attr(_py, sys_bits, "stderr");
+    dec_ref_bits(_py, sys_bits);
+}
+
+fn flush_module_attr(_py: &PyToken<'_>, module_bits: u64, attr: &str) {
+    let module_obj = obj_from_bits(module_bits);
+    let Some(module_ptr) = module_obj.as_ptr() else {
+        return;
+    };
+    unsafe {
+        if object_type_id(module_ptr) != TYPE_ID_MODULE {
+            return;
+        }
+        let dict_bits = module_dict_bits(module_ptr);
+        let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+            return;
+        };
+        if object_type_id(dict_ptr) != TYPE_ID_DICT {
+            return;
+        }
+        let name_ptr = alloc_string(_py, attr.as_bytes());
+        if name_ptr.is_null() {
+            return;
+        }
+        let name_bits = MoltObject::from_ptr(name_ptr).bits();
+        let val_bits = dict_get_in_place(_py, dict_ptr, name_bits);
+        dec_ref_bits(_py, name_bits);
+        let Some(val_bits) = val_bits else {
+            return;
+        };
+        if obj_from_bits(val_bits).is_none() {
+            return;
+        }
+        inc_ref_bits(_py, val_bits);
+        flush_stdio_target(_py, val_bits);
+        dec_ref_bits(_py, val_bits);
+    }
+}
+
+fn flush_stdio_target(_py: &PyToken<'_>, target_bits: u64) {
+    let target_obj = obj_from_bits(target_bits);
+    if let Some(ptr) = target_obj.as_ptr() {
+        unsafe {
+            if object_type_id(ptr) == TYPE_ID_FILE_HANDLE {
+                let _ = molt_file_flush(target_bits);
+                if exception_pending(_py) {
+                    clear_exception(_py);
+                }
+                return;
+            }
+        }
+    }
+    let flush_name_bits =
+        intern_static_name(_py, &state_interned(_py).flush_name, b"flush");
+    let flush_bits = molt_get_attr_name(target_bits, flush_name_bits);
+    if exception_pending(_py) {
+        clear_exception(_py);
+        return;
+    }
+    let res_bits = unsafe { call_callable0(_py, flush_bits) };
+    dec_ref_bits(_py, flush_bits);
+    dec_ref_bits(_py, res_bits);
+    if exception_pending(_py) {
+        clear_exception(_py);
+    }
+}
+
+fn state_interned(_py: &PyToken<'_>) -> &'static crate::state::cache::InternedNames {
+    &runtime_state(_py).interned
+}
+
 fn clear_utf8_caches(state: &RuntimeState) {
     if let Ok(mut cache) = state.utf8_index_cache.lock() {
         *cache = Utf8CacheStore::new();
@@ -412,6 +547,8 @@ fn interned_name_slots(state: &RuntimeState) -> Vec<&AtomicU64> {
         &state.interned.index_name,
         &state.interned.int_name,
         &state.interned.round_name,
+        &state.interned.floor_name,
+        &state.interned.ceil_name,
         &state.interned.trunc_name,
         &state.interned.repr_name,
         &state.interned.str_name,
@@ -433,6 +570,7 @@ fn interned_name_slots(state: &RuntimeState) -> Vec<&AtomicU64> {
         &state.interned.molt_closure_size,
         &state.interned.molt_is_coroutine,
         &state.interned.molt_is_generator,
+        &state.interned.molt_is_async_generator,
         &state.interned.molt_bind_kind,
         &state.interned.defaults_name,
         &state.interned.kwdefaults_name,

@@ -17,3 +17,4 @@ socket2 = { version = "0.5", features = ["all"] }
 libc = "0.2"
 tungstenite = { version = "0.23", default-features = false, features = ["handshake", "rustls-tls-webpki-roots", "url"] }
 url = "2.5"
+os_pipe = "1.2"

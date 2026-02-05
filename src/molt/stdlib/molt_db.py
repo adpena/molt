@@ -6,16 +6,17 @@ from dataclasses import dataclass
 from typing import Any
 import asyncio as _asyncio
 
-from ._intrinsics import load_intrinsic as _load_intrinsic
+from _intrinsics import require_intrinsic as _intrinsics_require
+
 
 
 _PENDING = getattr(_asyncio, "_PENDING", 0x7FFD_0000_0000_0000)
 
-_molt_db_query_obj = _load_intrinsic("molt_db_query_obj", globals())
-_molt_db_exec_obj = _load_intrinsic("molt_db_exec_obj", globals())
-_molt_stream_recv = _load_intrinsic("molt_stream_recv", globals())
-_molt_stream_drop = _load_intrinsic("molt_stream_drop", globals())
-_molt_msgpack_parse_scalar_obj = _load_intrinsic(
+_molt_db_query_obj = _intrinsics_require("molt_db_query_obj", globals())
+_molt_db_exec_obj = _intrinsics_require("molt_db_exec_obj", globals())
+_molt_stream_recv = _intrinsics_require("molt_stream_recv", globals())
+_molt_stream_drop = _intrinsics_require("molt_stream_drop", globals())
+_molt_msgpack_parse_scalar_obj = _intrinsics_require(
     "molt_msgpack_parse_scalar_obj", globals()
 )
 
@@ -30,7 +31,7 @@ class DbResponse:
 
 
 def _require_intrinsic(fn: Any, name: str) -> Any:
-    if fn is None:
+    if not callable(fn):
         raise RuntimeError(f"missing intrinsic: {name}")
     return fn
 

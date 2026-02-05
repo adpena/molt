@@ -19,7 +19,7 @@ def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument(
         "--molt-cmd",
         default=os.environ.get(
-            "MOLT_REGRTEST_MOLT_CMD", f"{sys.executable} -m molt.cli run --compiled"
+            "MOLT_REGRTEST_MOLT_CMD", f"{sys.executable} -m molt.cli run"
         ),
         help="Command used to run a test file (shell-like string).",
     )
@@ -147,6 +147,21 @@ def resolve_test_path(cpython_dir: Path, test_name: str) -> Path | None:
     return None
 
 
+def module_name_from_test_path(cpython_dir: Path, test_path: Path) -> str | None:
+    lib_root = (cpython_dir / "Lib").resolve()
+    try:
+        rel = test_path.resolve().relative_to(lib_root)
+    except ValueError:
+        return None
+    if rel.name == "__init__.py":
+        rel = rel.parent
+    else:
+        rel = rel.with_suffix("")
+    if not rel.parts:
+        return None
+    return ".".join(rel.parts)
+
+
 def build_junit_xml(
     test_name: str,
     duration: float | None,
@@ -229,7 +244,11 @@ def run_molt_test(
             "non-python molt-cmd",
             file=sys.stderr,
         )
-    cmd.append(str(test_path))
+    module_name = module_name_from_test_path(cpython_dir, test_path)
+    if module_name and "--module" not in cmd:
+        cmd.extend(["--module", module_name])
+    else:
+        cmd.append(str(test_path))
     env = build_env(cpython_dir)
     start = time.perf_counter()
     result = subprocess.run(

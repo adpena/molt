@@ -14,6 +14,7 @@ into **extremely fast native binaries**, primarily for:
 Molt is not a Python interpreter.
 Molt is not a Python VM.
 Molt is not a CPython fork.
+Molt targets Python 3.12+ semantics only.
 
 **Molt is Python shedding its skin into native code.**
 

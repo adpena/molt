@@ -2,10 +2,12 @@ use molt_obj_model::MoltObject;
 use std::collections::HashSet;
 
 use crate::{
-    alloc_bound_method_obj, alloc_code_obj, alloc_function_obj, alloc_string, builtin_classes,
-    dec_ref_bits, function_set_closure_bits, function_set_trampoline_ptr, inc_ref_bits,
-    obj_from_bits, object_class_bits, object_set_class_bits, object_type_id, raise_exception,
-    string_obj_to_owned, to_i64, TYPE_ID_FUNCTION, TYPE_ID_STRING, TYPE_ID_TUPLE,
+    alloc_bound_method_obj, alloc_code_obj, alloc_function_obj, alloc_string, alloc_tuple,
+    attr_name_bits_from_bytes, builtin_classes, dec_ref_bits, dict_get_in_place,
+    ensure_function_code_bits, function_dict_bits, function_set_closure_bits,
+    function_set_trampoline_ptr, inc_ref_bits, module_dict_bits, obj_from_bits, object_class_bits,
+    object_set_class_bits, object_type_id, raise_exception, string_obj_to_owned, to_i64, type_name,
+    TYPE_ID_DICT, TYPE_ID_FUNCTION, TYPE_ID_MODULE, TYPE_ID_STRING, TYPE_ID_TUPLE,
 };
 
 struct CompileScope {
@@ -234,7 +236,24 @@ pub extern "C" fn molt_compile_builtin(
             return MoltObject::none().bits();
         }
         let name_bits = MoltObject::from_ptr(name_ptr).bits();
-        let code_ptr = alloc_code_obj(_py, filename_bits, name_bits, 1, MoltObject::none().bits());
+        let varnames_ptr = alloc_tuple(_py, &[]);
+        if varnames_ptr.is_null() {
+            dec_ref_bits(_py, name_bits);
+            return MoltObject::none().bits();
+        }
+        let varnames_bits = MoltObject::from_ptr(varnames_ptr).bits();
+        let code_ptr = alloc_code_obj(
+            _py,
+            filename_bits,
+            name_bits,
+            1,
+            MoltObject::none().bits(),
+            varnames_bits,
+            0,
+            0,
+            0,
+        );
+        dec_ref_bits(_py, varnames_bits);
         if code_ptr.is_null() {
             MoltObject::none().bits()
         } else {
@@ -320,11 +339,93 @@ pub extern "C" fn molt_function_set_builtin(func_bits: u64) -> u64 {
 }
 
 #[no_mangle]
+pub extern "C" fn molt_function_get_code(func_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(func_ptr) = obj_from_bits(func_bits).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "expected function");
+        };
+        unsafe {
+            if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
+                return raise_exception::<_>(_py, "TypeError", "expected function");
+            }
+            let code_bits = ensure_function_code_bits(_py, func_ptr);
+            if obj_from_bits(code_bits).is_none() {
+                return MoltObject::none().bits();
+            }
+            inc_ref_bits(_py, code_bits);
+            code_bits
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_function_get_globals(func_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(func_ptr) = obj_from_bits(func_bits).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "expected function");
+        };
+        unsafe {
+            if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
+                return raise_exception::<_>(_py, "TypeError", "expected function");
+            }
+            let dict_bits = function_dict_bits(func_ptr);
+            if dict_bits == 0 {
+                return MoltObject::none().bits();
+            }
+            let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+                return MoltObject::none().bits();
+            };
+            if object_type_id(dict_ptr) != TYPE_ID_DICT {
+                return MoltObject::none().bits();
+            }
+            let Some(module_name_bits) = attr_name_bits_from_bytes(_py, b"__module__") else {
+                return MoltObject::none().bits();
+            };
+            let Some(name_bits) = dict_get_in_place(_py, dict_ptr, module_name_bits) else {
+                return MoltObject::none().bits();
+            };
+            let name = match string_obj_to_owned(obj_from_bits(name_bits)) {
+                Some(val) => val,
+                None => return MoltObject::none().bits(),
+            };
+            let cache = crate::builtins::exceptions::internals::module_cache(_py);
+            let guard = cache.lock().unwrap();
+            let Some(module_bits) = guard.get(&name) else {
+                return MoltObject::none().bits();
+            };
+            let module_bits = *module_bits;
+            inc_ref_bits(_py, module_bits);
+            drop(guard);
+            let Some(module_ptr) = obj_from_bits(module_bits).as_ptr() else {
+                dec_ref_bits(_py, module_bits);
+                return MoltObject::none().bits();
+            };
+            if object_type_id(module_ptr) != TYPE_ID_MODULE {
+                dec_ref_bits(_py, module_bits);
+                return MoltObject::none().bits();
+            }
+            let globals_bits = module_dict_bits(module_ptr);
+            if obj_from_bits(globals_bits).is_none() {
+                dec_ref_bits(_py, module_bits);
+                return MoltObject::none().bits();
+            }
+            inc_ref_bits(_py, globals_bits);
+            dec_ref_bits(_py, module_bits);
+            globals_bits
+        }
+    })
+}
+
+#[no_mangle]
 pub extern "C" fn molt_code_new(
     filename_bits: u64,
     name_bits: u64,
     firstlineno_bits: u64,
     linetable_bits: u64,
+    varnames_bits: u64,
+    argcount_bits: u64,
+    posonlyargcount_bits: u64,
+    kwonlyargcount_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let filename_obj = obj_from_bits(filename_bits);
@@ -363,8 +464,60 @@ pub extern "C" fn molt_code_new(
                 }
             }
         }
+        let Some(argcount) = to_i64(obj_from_bits(argcount_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "code argcount must be int");
+        };
+        let Some(posonlyargcount) = to_i64(obj_from_bits(posonlyargcount_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "code posonlyargcount must be int");
+        };
+        let Some(kwonlyargcount) = to_i64(obj_from_bits(kwonlyargcount_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "code kwonlyargcount must be int");
+        };
+        if argcount < 0 || posonlyargcount < 0 || kwonlyargcount < 0 {
+            return raise_exception::<_>(_py, "ValueError", "code arg counts must be >= 0");
+        }
+        let mut varnames_bits = varnames_bits;
+        let mut varnames_owned = false;
+        if obj_from_bits(varnames_bits).is_none() {
+            let tuple_ptr = alloc_tuple(_py, &[]);
+            if tuple_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            varnames_bits = MoltObject::from_ptr(tuple_ptr).bits();
+            varnames_owned = true;
+        } else {
+            let Some(varnames_ptr) = obj_from_bits(varnames_bits).as_ptr() else {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "code varnames must be tuple or None",
+                );
+            };
+            unsafe {
+                if object_type_id(varnames_ptr) != TYPE_ID_TUPLE {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "code varnames must be tuple or None",
+                    );
+                }
+            }
+        }
         let firstlineno = to_i64(obj_from_bits(firstlineno_bits)).unwrap_or(0);
-        let ptr = alloc_code_obj(_py, filename_bits, name_bits, firstlineno, linetable_bits);
+        let ptr = alloc_code_obj(
+            _py,
+            filename_bits,
+            name_bits,
+            firstlineno,
+            linetable_bits,
+            varnames_bits,
+            argcount as u64,
+            posonlyargcount as u64,
+            kwonlyargcount as u64,
+        );
+        if varnames_owned {
+            dec_ref_bits(_py, varnames_bits);
+        }
         if ptr.is_null() {
             MoltObject::none().bits()
         } else {
@@ -376,12 +529,44 @@ pub extern "C" fn molt_code_new(
 #[no_mangle]
 pub extern "C" fn molt_bound_method_new(func_bits: u64, self_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        let debug_bound = std::env::var_os("MOLT_DEBUG_BOUND_METHOD").is_some();
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
+            if debug_bound {
+                let self_obj = obj_from_bits(self_bits);
+                let self_label = self_obj
+                    .as_ptr()
+                    .map(|_| type_name(_py, self_obj).into_owned())
+                    .unwrap_or_else(|| format!("immediate:{:#x}", self_bits));
+                let self_type_id = self_obj
+                    .as_ptr()
+                    .map(|ptr| unsafe { object_type_id(ptr) })
+                    .unwrap_or(0);
+                eprintln!(
+                    "molt_bound_method_new: non-object func_bits={:#x} self={} self_type_id={}",
+                    func_bits, self_label, self_type_id
+                );
+                if let Some(name) = crate::builtins::attr::debug_last_attr_name() {
+                    eprintln!("molt_bound_method_new last_attr={}", name);
+                }
+            }
             return raise_exception::<_>(_py, "TypeError", "bound method expects function object");
         };
         unsafe {
             if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
+                if debug_bound {
+                    let type_label = type_name(_py, func_obj).into_owned();
+                    let self_label = obj_from_bits(self_bits)
+                        .as_ptr()
+                        .map(|_| type_name(_py, obj_from_bits(self_bits)).into_owned())
+                        .unwrap_or_else(|| format!("immediate:{:#x}", self_bits));
+                    eprintln!(
+                        "molt_bound_method_new: expected function got type_id={} type={} self={}",
+                        object_type_id(func_ptr),
+                        type_label,
+                        self_label
+                    );
+                }
                 return raise_exception::<_>(
                     _py,
                     "TypeError",
@@ -393,6 +578,26 @@ pub extern "C" fn molt_bound_method_new(func_bits: u64, self_bits: u64) -> u64 {
         if ptr.is_null() {
             MoltObject::none().bits()
         } else {
+            let method_bits = {
+                let func_class_bits = unsafe { object_class_bits(func_ptr) };
+                if func_class_bits == builtin_classes(_py).builtin_function_or_method {
+                    func_class_bits
+                } else {
+                    crate::builtins::types::method_class(_py)
+                }
+            };
+            if method_bits != 0 {
+                unsafe {
+                    let old_bits = object_class_bits(ptr);
+                    if old_bits != method_bits {
+                        if old_bits != 0 {
+                            dec_ref_bits(_py, old_bits);
+                        }
+                        object_set_class_bits(_py, ptr, method_bits);
+                        inc_ref_bits(_py, method_bits);
+                    }
+                }
+            }
             MoltObject::from_ptr(ptr).bits()
         }
     })

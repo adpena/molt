@@ -1,4 +1,4 @@
-# Asyncio Coverage Matrix (CPython 3.12-3.14)
+# Asyncio Coverage Matrix (CPython 3.12+; tracked 3.12-3.14)
 
 This matrix maps asyncio APIs referenced by CPython test_asyncio modules (3.12-3.14)
 to Molt differential coverage. Status reflects whether we have at least one

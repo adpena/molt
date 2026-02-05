@@ -7,6 +7,9 @@ use std::time::Instant;
 
 use super::{runtime_reset_for_init, runtime_teardown, touch_tls_guard};
 
+#[cfg(not(target_arch = "wasm32"))]
+use libc;
+
 use crate::object::utf8_cache::{build_utf8_count_cache, Utf8CacheStore, Utf8CountCacheStore};
 use crate::IoPoller;
 use crate::ProcessTaskState;
@@ -15,8 +18,63 @@ use crate::{
     InternedNames, MethodCache, MoltObject, MoltScheduler, PtrSlot, PyToken, SleepQueue,
     OBJECT_POOL_BUCKETS,
 };
+use crate::concurrency::gil::{gil_held, hold_runtime_gil, release_runtime_gil};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{sleep_worker, ThreadPool, ThreadTaskState};
+
+#[cfg(target_arch = "wasm32")]
+extern "C" {
+    fn __wasm_call_ctors();
+}
+
+#[cfg(target_arch = "wasm32")]
+static WASM_CTORS: OnceLock<()> = OnceLock::new();
+
+#[cfg(target_arch = "wasm32")]
+fn ensure_wasm_ctors() {
+    WASM_CTORS.get_or_init(|| unsafe {
+        __wasm_call_ctors();
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+static DEBUG_SIGTRAP_INSTALLED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(not(target_arch = "wasm32"))]
+fn debug_sigtrap_backtrace_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("MOLT_DEBUG_SIGTRAP_BACKTRACE")
+                .ok()
+                .as_deref(),
+            Some("1")
+        )
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+unsafe extern "C" fn debug_sigtrap_handler(sig: i32) {
+    let msg = b"molt debug: SIGTRAP backtrace\n";
+    let _ = libc::write(2, msg.as_ptr() as *const _, msg.len());
+    let mut addrs = [std::ptr::null_mut(); 128];
+    let count = libc::backtrace(addrs.as_mut_ptr(), addrs.len() as i32);
+    if count > 0 {
+        libc::backtrace_symbols_fd(addrs.as_ptr(), count, 2);
+    }
+    libc::_exit(128 + sig);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ensure_debug_sigtrap_handler() {
+    if debug_sigtrap_backtrace_enabled()
+        && !DEBUG_SIGTRAP_INSTALLED.swap(true, AtomicOrdering::Relaxed)
+    {
+        unsafe {
+            libc::signal(libc::SIGTRAP, debug_sigtrap_handler as usize);
+        }
+    }
+}
 
 pub(crate) struct SpecialCache {
     pub(crate) open_default_mode: AtomicU64,
@@ -24,6 +82,8 @@ pub(crate) struct SpecialCache {
     pub(crate) molt_not_implemented: AtomicU64,
     pub(crate) molt_ellipsis: AtomicU64,
     pub(crate) awaitable_await: AtomicU64,
+    pub(crate) function_code_descriptor: AtomicU64,
+    pub(crate) function_globals_descriptor: AtomicU64,
 }
 
 #[derive(Clone)]
@@ -80,6 +140,8 @@ impl SpecialCache {
             molt_not_implemented: AtomicU64::new(0),
             molt_ellipsis: AtomicU64::new(0),
             awaitable_await: AtomicU64::new(0),
+            function_code_descriptor: AtomicU64::new(0),
+            function_globals_descriptor: AtomicU64::new(0),
         }
     }
 }
@@ -113,12 +175,14 @@ pub(crate) struct RuntimeState {
     pub(crate) async_hang_probe: OnceLock<Option<AsyncHangProbe>>,
     pub(crate) cancel_tokens: Mutex<HashMap<u64, CancelTokenEntry>>,
     pub(crate) task_tokens: Mutex<HashMap<PtrSlot, u64>>,
+    pub(crate) task_tokens_by_id: Mutex<HashMap<u64, HashSet<PtrSlot>>>,
     pub(crate) task_cancel_messages: Mutex<HashMap<PtrSlot, u64>>,
     pub(crate) task_exception_handler_stacks: Mutex<HashMap<PtrSlot, Vec<u8>>>,
     pub(crate) task_exception_stacks: Mutex<HashMap<PtrSlot, Vec<u64>>>,
     pub(crate) task_exception_depths: Mutex<HashMap<PtrSlot, usize>>,
     pub(crate) task_exception_baselines: Mutex<HashMap<PtrSlot, usize>>,
     pub(crate) task_last_exceptions: Mutex<HashMap<PtrSlot, PtrSlot>>,
+    pub(crate) dict_subclass_storage: Mutex<HashMap<PtrSlot, u64>>,
     pub(crate) await_waiters: Mutex<HashMap<PtrSlot, Vec<PtrSlot>>>,
     pub(crate) task_waiting_on: Mutex<HashMap<PtrSlot, PtrSlot>>,
     pub(crate) asyncgen_hooks: Mutex<AsyncGenHooks>,
@@ -170,12 +234,14 @@ impl RuntimeState {
             async_hang_probe: OnceLock::new(),
             cancel_tokens: Mutex::new(default_cancel_tokens()),
             task_tokens: Mutex::new(HashMap::new()),
+            task_tokens_by_id: Mutex::new(HashMap::new()),
             task_cancel_messages: Mutex::new(HashMap::new()),
             task_exception_handler_stacks: Mutex::new(HashMap::new()),
             task_exception_stacks: Mutex::new(HashMap::new()),
             task_exception_depths: Mutex::new(HashMap::new()),
             task_exception_baselines: Mutex::new(HashMap::new()),
             task_last_exceptions: Mutex::new(HashMap::new()),
+            dict_subclass_storage: Mutex::new(HashMap::new()),
             await_waiters: Mutex::new(HashMap::new()),
             task_waiting_on: Mutex::new(HashMap::new()),
             asyncgen_hooks: Mutex::new(AsyncGenHooks {
@@ -281,7 +347,11 @@ pub(crate) fn runtime_state(_py: &PyToken<'_>) -> &'static RuntimeState {
 
 #[no_mangle]
 pub extern "C" fn molt_runtime_init() -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    ensure_wasm_ctors();
     touch_tls_guard();
+    #[cfg(not(target_arch = "wasm32"))]
+    ensure_debug_sigtrap_handler();
     let _guard = runtime_state_lock().lock().unwrap();
     if !RUNTIME_STATE_PTR.load(AtomicOrdering::SeqCst).is_null() {
         return 1;
@@ -291,9 +361,21 @@ pub extern "C" fn molt_runtime_init() -> u64 {
     RUNTIME_STATE_PTR.store(ptr, AtomicOrdering::SeqCst);
     let state_ref = unsafe { &*ptr };
     let gil = GilGuard::new();
-    let py = gil.token();
-    runtime_reset_for_init(&py, state_ref);
+    {
+        let py = gil.token();
+        runtime_reset_for_init(&py, state_ref);
+    }
+    hold_runtime_gil(gil);
     1
+}
+
+#[no_mangle]
+pub extern "C" fn molt_runtime_ensure_gil() {
+    touch_tls_guard();
+    if gil_held() {
+        return;
+    }
+    hold_runtime_gil(GilGuard::new());
 }
 
 #[no_mangle]
@@ -308,6 +390,7 @@ pub extern "C" fn molt_runtime_shutdown() -> u64 {
         let gil = GilGuard::new();
         let py = gil.token();
         runtime_teardown(&py, state);
+        release_runtime_gil();
     }
     RUNTIME_STATE_PTR.store(std::ptr::null_mut(), AtomicOrdering::SeqCst);
     unsafe {

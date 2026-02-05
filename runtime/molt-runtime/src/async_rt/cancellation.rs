@@ -1,6 +1,6 @@
 use crate::PyToken;
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Mutex;
 use std::sync::OnceLock;
@@ -58,6 +58,12 @@ pub(crate) fn cancel_tokens(_py: &PyToken<'_>) -> &'static Mutex<HashMap<u64, Ca
 
 pub(crate) fn task_tokens(_py: &PyToken<'_>) -> &'static Mutex<HashMap<PtrSlot, u64>> {
     &runtime_state(_py).task_tokens
+}
+
+pub(crate) fn task_tokens_by_id(
+    _py: &PyToken<'_>,
+) -> &'static Mutex<HashMap<u64, HashSet<PtrSlot>>> {
+    &runtime_state(_py).task_tokens_by_id
 }
 
 pub(crate) fn task_cancel_messages(_py: &PyToken<'_>) -> &'static Mutex<HashMap<PtrSlot, u64>> {
@@ -168,9 +174,20 @@ pub(crate) fn release_token(_py: &PyToken<'_>, id: u64) {
 }
 
 pub(crate) fn register_task_token(_py: &PyToken<'_>, task_ptr: *mut u8, token: u64) {
+    let task_slot = PtrSlot(task_ptr);
     let mut map = task_tokens(_py).lock().unwrap();
-    if let Some(old) = map.insert(PtrSlot(task_ptr), token) {
+    let mut index = task_tokens_by_id(_py).lock().unwrap();
+    if let Some(old) = map.insert(task_slot, token) {
+        if let Some(tasks) = index.get_mut(&old) {
+            tasks.remove(&task_slot);
+            if tasks.is_empty() {
+                index.remove(&old);
+            }
+        }
         release_token(_py, old);
+    }
+    if token != 0 {
+        index.entry(token).or_default().insert(task_slot);
     }
     if trace_cancel_token() {
         eprintln!(
@@ -182,18 +199,34 @@ pub(crate) fn register_task_token(_py: &PyToken<'_>, task_ptr: *mut u8, token: u
 }
 
 pub(crate) fn ensure_task_token(_py: &PyToken<'_>, task_ptr: *mut u8, fallback: u64) -> u64 {
+    let task_slot = PtrSlot(task_ptr);
     let mut map = task_tokens(_py).lock().unwrap();
-    if let Some(token) = map.get(&PtrSlot(task_ptr)).copied() {
+    if let Some(token) = map.get(&task_slot).copied() {
         return token;
     }
-    map.insert(PtrSlot(task_ptr), fallback);
+    map.insert(task_slot, fallback);
     retain_token(_py, fallback);
+    if fallback != 0 {
+        let mut index = task_tokens_by_id(_py).lock().unwrap();
+        index.entry(fallback).or_default().insert(task_slot);
+    }
     fallback
 }
 
 pub(crate) fn clear_task_token(_py: &PyToken<'_>, task_ptr: *mut u8) {
     crate::gil_assert();
-    if let Some(token) = task_tokens(_py).lock().unwrap().remove(&PtrSlot(task_ptr)) {
+    let task_slot = PtrSlot(task_ptr);
+    let mut map = task_tokens(_py).lock().unwrap();
+    let token = map.remove(&task_slot);
+    drop(map);
+    if let Some(token) = token {
+        let mut index = task_tokens_by_id(_py).lock().unwrap();
+        if let Some(tasks) = index.get_mut(&token) {
+            tasks.remove(&task_slot);
+            if tasks.is_empty() {
+                index.remove(&token);
+            }
+        }
         release_token(_py, token);
     }
     if !task_ptr.is_null() {
@@ -281,26 +314,28 @@ pub(crate) fn raise_cancelled_with_message<T: ExceptionSentinel>(
 }
 
 pub(crate) fn wake_tasks_for_cancelled_tokens(_py: &PyToken<'_>) {
-    let entries: Vec<(PtrSlot, u64)> = {
-        let map = task_tokens(_py).lock().unwrap();
-        map.iter().map(|(ptr, token)| (*ptr, *token)).collect()
-    };
-    if entries.is_empty() {
-        return;
-    }
-    for (task_ptr, token_id) in entries {
-        if token_is_cancelled(_py, token_id) {
-            let should_wake = unsafe {
-                let header = header_from_obj_ptr(task_ptr.0);
-                ((*header).flags & HEADER_FLAG_SPAWN_RETAIN) != 0
-                    || ((*header).flags & HEADER_FLAG_BLOCK_ON) != 0
-            };
-            if should_wake {
-                wake_task_ptr(_py, task_ptr.0);
+    let mut wake_list: Vec<PtrSlot> = Vec::new();
+    {
+        let map = task_tokens_by_id(_py).lock().unwrap();
+        for (token_id, tasks) in map.iter() {
+            if token_is_cancelled(_py, *token_id) {
+                wake_list.extend(tasks.iter().copied());
             }
         }
     }
-    // TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): add a token->tasks index to avoid full scans on cancellation.
+    if wake_list.is_empty() {
+        return;
+    }
+    for task_ptr in wake_list {
+        let should_wake = unsafe {
+            let header = header_from_obj_ptr(task_ptr.0);
+            ((*header).flags & HEADER_FLAG_SPAWN_RETAIN) != 0
+                || ((*header).flags & HEADER_FLAG_BLOCK_ON) != 0
+        };
+        if should_wake {
+            wake_task_ptr(_py, task_ptr.0);
+        }
+    }
 }
 
 pub(crate) fn token_is_cancelled(_py: &PyToken<'_>, id: u64) -> bool {

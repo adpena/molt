@@ -1,7 +1,7 @@
 //! SQLite connector helpers for the Molt DB layer.
 
 use crate::Pool;
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, InterruptHandle, OpenFlags};
 use std::path::Path;
 use std::time::Duration;
 
@@ -39,6 +39,10 @@ impl SqliteConn {
 
     pub fn connection(&self) -> &Connection {
         &self.conn
+    }
+
+    pub fn interrupt_handle(&self) -> InterruptHandle {
+        self.conn.get_interrupt_handle()
     }
 }
 

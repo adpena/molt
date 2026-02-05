@@ -16,7 +16,10 @@ def _extend_cpython_test_path() -> None:
         return
     test_path = str(test_root.resolve())
     path_list = globals().get("__path__")
-    if path_list is None or test_path in path_list:
+    if path_list is None:
+        path_list = [str(Path(__file__).resolve().parent)]
+        globals()["__path__"] = path_list
+    if test_path in path_list:
         return
     path_list.insert(0, test_path)
 
@@ -28,16 +31,28 @@ def _load_test_module(name: str, fallback: str):
     _extend_cpython_test_path()
     try:
         return importlib.import_module(name)
-    except ModuleNotFoundError:
+    except (ModuleNotFoundError, NotImplementedError):
         return importlib.import_module(f"{__name__}.{fallback}")
 
 
-list_tests = _load_test_module("test.list_tests", "list_tests")
-seq_tests = _load_test_module("test.seq_tests", "seq_tests")
-support = _load_test_module("test.support", "support")
-import_helper = _load_test_module("test.support.import_helper", "import_helper")
-os_helper = _load_test_module("test.support.os_helper", "os_helper")
-warnings_helper = _load_test_module("test.warnings_helper", "warnings_helper")
+_MODULE_ALIASES = {
+    "list_tests": ("test.list_tests", "list_tests"),
+    "seq_tests": ("test.seq_tests", "seq_tests"),
+    "support": ("test.support", "support"),
+    "import_helper": ("test.support.import_helper", "import_helper"),
+    "os_helper": ("test.support.os_helper", "os_helper"),
+    "warnings_helper": ("test.warnings_helper", "warnings_helper"),
+}
+
+
+def __getattr__(name: str):
+    target = _MODULE_ALIASES.get(name)
+    if target is None:
+        raise AttributeError(name)
+    module = _load_test_module(*target)
+    globals()[name] = module
+    return module
+
 
 __all__ = [
     "import_helper",

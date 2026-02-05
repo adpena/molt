@@ -8,8 +8,8 @@ use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive};
 
 use crate::{
-    alloc_object, attr_lookup_ptr_allow_missing, call_callable0, class_name_for_error,
-    class_mro_vec, dec_ref_bits, exception_pending, intern_static_name, maybe_ptr_from_bits,
+    alloc_object, attr_lookup_ptr_allow_missing, call_callable0, class_mro_vec,
+    class_name_for_error, dec_ref_bits, exception_pending, intern_static_name, maybe_ptr_from_bits,
     obj_from_bits, object_class_bits, object_type_id, raise_exception, runtime_state,
     runtime_state_for_gil, type_of_bits, MoltHeader, INLINE_INT_MAX_I128, INLINE_INT_MIN_I128,
     TYPE_ID_BIGINT, TYPE_ID_COMPLEX, TYPE_ID_OBJECT,
@@ -39,7 +39,9 @@ fn is_int_subclass_bits(class_bits: u64) -> bool {
     if class_bits == int_bits {
         return true;
     }
-    class_mro_vec(class_bits).iter().any(|&bits| bits == int_bits)
+    class_mro_vec(class_bits)
+        .iter()
+        .any(|&bits| bits == int_bits)
 }
 
 pub(crate) fn int_subclass_value_bits_raw(obj_bits: u64) -> Option<u64> {
@@ -70,7 +72,11 @@ pub(crate) fn to_i64(obj: MoltObject) -> Option<i64> {
             return Some(i);
         }
         if val_obj.is_bool() {
-            return Some(if val_obj.as_bool().unwrap_or(false) { 1 } else { 0 });
+            return Some(if val_obj.as_bool().unwrap_or(false) {
+                1
+            } else {
+                0
+            });
         }
         if let Some(ptr) = bigint_ptr_from_bits(bits) {
             return unsafe { bigint_ref(ptr) }.to_i64();
@@ -176,7 +182,11 @@ pub(crate) fn to_bigint(obj: MoltObject) -> Option<BigInt> {
             return Some(BigInt::from(i));
         }
         if val_obj.is_bool() {
-            return Some(BigInt::from(if val_obj.as_bool().unwrap_or(false) { 1 } else { 0 }));
+            return Some(BigInt::from(if val_obj.as_bool().unwrap_or(false) {
+                1
+            } else {
+                0
+            }));
         }
         if let Some(ptr) = bigint_ptr_from_bits(bits) {
             return Some(unsafe { bigint_ref(ptr).clone() });

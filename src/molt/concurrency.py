@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, TypeVar, cast
-import sys
+
+from molt import intrinsics as _intrinsics
 
 if TYPE_CHECKING:
     from molt._intrinsics import (
@@ -31,68 +32,41 @@ _PENDING = 0x7FFD_0000_0000_0000
 _PENDING_SENTINEL: Any | None = None
 
 
-_molt_shims = None
-_molt_shims_installed = False
-
-
-def _lookup_intrinsic(name: str) -> Any | None:
-    global _molt_shims
-    global _molt_shims_installed
-    try:
-        target = globals()[name]
-    except KeyError:
-        target = None
-    if target is not None:
-        return target
-    _py_builtins = sys.modules.get("builtins")
-    if _py_builtins is None:
-        try:
-            import builtins as _py_builtins
-        except Exception:
-            _py_builtins = None
-    if _py_builtins is not None:
-        fallback = getattr(_py_builtins, name, None)
-        if fallback is not None:
-            return fallback
-    if _molt_shims is None:
-        try:
-            from molt import shims as _molt_shims  # type: ignore[no-redef]
-        except Exception:
-            _molt_shims = None
-            return None
-    if _molt_shims is not None and not _molt_shims_installed:
-        install = getattr(_molt_shims, "install", None)
-        if callable(install):
-            try:
-                install()
-            except Exception:
-                pass
-        _molt_shims_installed = True
-    fallback = getattr(_molt_shims, name, None)
-    if callable(fallback):
-        return fallback
-    return None
-
-
-def _call_intrinsic(name: str, *args: Any) -> Any:
-    target = _lookup_intrinsic(name)
-    if callable(target):
-        return target(*args)
-    raise RuntimeError(f"{name} intrinsic unavailable")
+molt_pending = _intrinsics.require("molt_pending", globals())
+molt_async_sleep = _intrinsics.require("molt_async_sleep", globals())
+molt_chan_new = _intrinsics.require("molt_chan_new", globals())
+molt_chan_drop = _intrinsics.require("molt_chan_drop", globals())
+molt_chan_recv = _intrinsics.require("molt_chan_recv", globals())
+molt_chan_send = _intrinsics.require("molt_chan_send", globals())
+molt_chan_send_blocking = _intrinsics.require("molt_chan_send_blocking", globals())
+molt_chan_recv_blocking = _intrinsics.require("molt_chan_recv_blocking", globals())
+molt_chan_try_recv = _intrinsics.require("molt_chan_try_recv", globals())
+molt_chan_try_send = _intrinsics.require("molt_chan_try_send", globals())
+molt_spawn = _intrinsics.require("molt_spawn", globals())
+molt_cancel_token_new = _intrinsics.require("molt_cancel_token_new", globals())
+molt_cancel_token_clone = _intrinsics.require("molt_cancel_token_clone", globals())
+molt_cancel_token_drop = _intrinsics.require("molt_cancel_token_drop", globals())
+molt_cancel_token_cancel = _intrinsics.require("molt_cancel_token_cancel", globals())
+molt_cancel_token_is_cancelled = _intrinsics.require(
+    "molt_cancel_token_is_cancelled", globals()
+)
+molt_cancel_token_set_current = _intrinsics.require(
+    "molt_cancel_token_set_current", globals()
+)
+molt_cancel_token_get_current = _intrinsics.require(
+    "molt_cancel_token_get_current", globals()
+)
 
 
 def _pending_sentinel() -> Any:
     global _PENDING_SENTINEL
     if _PENDING_SENTINEL is not None:
         return _PENDING_SENTINEL
-    pending = _lookup_intrinsic("molt_pending")
-    if callable(pending):
-        try:
-            _PENDING_SENTINEL = pending()
-            return _PENDING_SENTINEL
-        except Exception:
-            pass
-    _PENDING_SENTINEL = _PENDING
+    try:
+        _PENDING_SENTINEL = molt_pending()
+        return _PENDING_SENTINEL
+    except Exception:
+        _PENDING_SENTINEL = _PENDING
     return _PENDING_SENTINEL
 
 
@@ -138,7 +112,7 @@ class Channel:
             res = molt_chan_send(self._handle, value)
             if not _is_pending(res):
                 return None
-            await molt_async_sleep(0.0)
+            await molt_async_sleep(0.0, None)
 
     async def recv_async(self) -> T:
         if self._closed:
@@ -147,7 +121,7 @@ class Channel:
             res = molt_chan_recv(self._handle)
             if not _is_pending(res):
                 return cast(T, res)
-            await molt_async_sleep(0.0)
+            await molt_async_sleep(0.0, None)
 
     def try_send(self, value: T) -> bool:
         if self._closed:

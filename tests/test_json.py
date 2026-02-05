@@ -1,4 +1,11 @@
+import pytest
+
 import molt_json
+from molt import intrinsics as _intrinsics
+
+
+if not _intrinsics.runtime_active():
+    pytest.skip("Molt runtime intrinsics not active", allow_module_level=True)
 
 
 def test_json_parse():

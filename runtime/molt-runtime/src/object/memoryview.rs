@@ -1,3 +1,5 @@
+#[cfg(target_arch = "wasm32")]
+use crate::libc_compat as libc;
 use crate::{
     alloc_bytes, bigint_bits, bytearray_vec, bytes_data, bytes_len, index_bigint_from_obj,
     is_truthy, memoryview_itemsize, memoryview_len, memoryview_offset, memoryview_owner_bits,
@@ -5,8 +7,6 @@ use crate::{
     object_type_id, string_obj_to_owned, to_f64, MemoryViewFormat, MemoryViewFormatKind,
     MoltObject, PyToken, TYPE_ID_BYTEARRAY, TYPE_ID_BYTES, TYPE_ID_MEMORYVIEW,
 };
-#[cfg(target_arch = "wasm32")]
-use crate::libc_compat as libc;
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 
@@ -149,7 +149,7 @@ pub(crate) unsafe fn memoryview_bytes_slice(ptr: *mut u8) -> Option<&'static [u8
     Some(&base[offset..offset + len])
 }
 
-unsafe fn memoryview_bytes_slice_mut(ptr: *mut u8) -> Option<&'static mut [u8]> {
+pub(crate) unsafe fn memoryview_bytes_slice_mut(ptr: *mut u8) -> Option<&'static mut [u8]> {
     if memoryview_itemsize(ptr) != 1 || memoryview_stride(ptr) != 1 {
         return None;
     }

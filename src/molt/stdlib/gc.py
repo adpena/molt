@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+# Intrinsic-only stdlib guard.
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+
+_require_intrinsic("molt_stdlib_probe", globals())
+
 # TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): implement
 # the full gc module API and wire it to the runtime cycle collector once available.
 

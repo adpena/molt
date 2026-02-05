@@ -1479,6 +1479,45 @@ fn memchr_simd128(_needle: u8, _hay: &[u8]) -> (bool, Option<usize>) {
     (false, None)
 }
 
+fn is_wtf8(bytes: &[u8]) -> bool {
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        let first = bytes[idx];
+        if first < 0x80 {
+            idx += 1;
+            continue;
+        }
+        if first < 0xC0 {
+            return false;
+        }
+        let (needed, min_code) = if first < 0xE0 {
+            (1usize, 0x80u32)
+        } else if first < 0xF0 {
+            (2usize, 0x800u32)
+        } else if first < 0xF8 {
+            (3usize, 0x10000u32)
+        } else {
+            return false;
+        };
+        if idx + needed >= bytes.len() {
+            return false;
+        }
+        let mut code: u32 = (first & (0x7F >> needed)) as u32;
+        for off in 1..=needed {
+            let byte = bytes[idx + off];
+            if (byte & 0xC0) != 0x80 {
+                return false;
+            }
+            code = (code << 6) | (byte & 0x3F) as u32;
+        }
+        if code < min_code || code > 0x10FFFF {
+            return false;
+        }
+        idx += needed + 1;
+    }
+    true
+}
+
 // --- String/bytes FFI ---
 
 /// # Safety
@@ -1498,7 +1537,7 @@ pub unsafe extern "C" fn molt_string_from_bytes(
             return 1;
         }
         let slice = std::slice::from_raw_parts(ptr, len);
-        if std::str::from_utf8(slice).is_err() {
+        if !is_wtf8(slice) {
             return 1;
         }
         let obj_ptr = alloc_string(_py, slice);

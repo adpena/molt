@@ -35,7 +35,7 @@ use molt_db::{
     AcquireError, AsyncAcquireError, CancelToken, PgPool, PgPoolConfig, Pool, Pooled, SqliteConn,
     SqliteOpenMode,
 };
-use rusqlite::{params_from_iter, types::Value, types::ValueRef};
+use rusqlite::{params_from_iter, types::Value, types::ValueRef, InterruptHandle};
 use sqlparser::ast::{
     Expr as SqlExpr, GroupByExpr as SqlGroupByExpr, Ident as SqlIdent, Query as SqlQuery,
     Select as SqlSelect, SelectItem as SqlSelectItem, SetExpr as SqlSetExpr,
@@ -555,10 +555,77 @@ impl CancelRegistry {
     }
 }
 
+struct SqliteCancelRegistry {
+    pending: Mutex<HashSet<u64>>,
+    handles: Mutex<HashMap<u64, InterruptHandle>>,
+}
+
+impl SqliteCancelRegistry {
+    fn new() -> Self {
+        Self {
+            pending: Mutex::new(HashSet::new()),
+            handles: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn register(&self, request_id: u64, handle: InterruptHandle) -> SqliteCancelGuard<'_> {
+        {
+            let mut handles = self.handles.lock().unwrap();
+            handles.insert(request_id, handle);
+        }
+        let cancelled = {
+            let mut pending = self.pending.lock().unwrap();
+            pending.remove(&request_id)
+        };
+        if cancelled {
+            let handles = self.handles.lock().unwrap();
+            if let Some(handle) = handles.get(&request_id) {
+                handle.interrupt();
+            }
+        }
+        SqliteCancelGuard {
+            registry: self,
+            request_id,
+        }
+    }
+
+    fn cancel(&self, request_id: u64) {
+        let handles = self.handles.lock().unwrap();
+        if let Some(handle) = handles.get(&request_id) {
+            handle.interrupt();
+            return;
+        }
+        drop(handles);
+        let mut pending = self.pending.lock().unwrap();
+        pending.insert(request_id);
+    }
+
+    fn clear(&self, request_id: u64) {
+        {
+            let mut handles = self.handles.lock().unwrap();
+            handles.remove(&request_id);
+        }
+        let mut pending = self.pending.lock().unwrap();
+        pending.remove(&request_id);
+    }
+}
+
+struct SqliteCancelGuard<'a> {
+    registry: &'a SqliteCancelRegistry,
+    request_id: u64,
+}
+
+impl Drop for SqliteCancelGuard<'_> {
+    fn drop(&mut self) {
+        self.registry.clear(self.request_id);
+    }
+}
+
 #[derive(Clone)]
 struct WorkerContext {
     exports: Arc<HashSet<String>>,
     cancelled: CancelSet,
+    sqlite_cancel_registry: Arc<SqliteCancelRegistry>,
     pool: DbPool,
     compiled_entries: Arc<HashMap<String, CompiledEntry>>,
     fake_delay: Duration,
@@ -569,6 +636,7 @@ struct WorkerContext {
 
 struct ExecContext<'a> {
     cancelled: &'a CancelSet,
+    sqlite_cancel_registry: &'a SqliteCancelRegistry,
     request_id: u64,
     pool: &'a DbPool,
     timeout: Option<Duration>,
@@ -584,6 +652,7 @@ struct AsyncWorkerContext {
     exports: Arc<HashSet<String>>,
     cancelled: CancelSet,
     cancel_registry: AsyncCancelRegistry,
+    sqlite_cancel_registry: Arc<SqliteCancelRegistry>,
     pool: DbPool,
     pg_pool: Option<Arc<PgPool>>,
     compiled_entries: Arc<HashMap<String, CompiledEntry>>,
@@ -596,6 +665,7 @@ struct AsyncWorkerContext {
 struct AsyncExecContext<'a> {
     cancelled: &'a CancelSet,
     cancel_token: CancelToken,
+    sqlite_cancel_registry: &'a SqliteCancelRegistry,
     request_id: u64,
     pool: &'a DbPool,
     pg_pool: Option<&'a PgPool>,
@@ -894,6 +964,7 @@ fn mark_cancelled(cancelled: &CancelSet, request_id: u64) {
 fn handle_cancel_request(
     envelope: &RequestEnvelope,
     cancelled: &CancelSet,
+    sqlite_cancel: Option<&SqliteCancelRegistry>,
     async_cancel: Option<&CancelRegistry>,
 ) -> Result<(), ExecError> {
     let payload = extract_payload(envelope).map_err(|err| ExecError {
@@ -906,6 +977,9 @@ fn handle_cancel_request(
             message: err,
         })?;
     mark_cancelled(cancelled, cancel.request_id);
+    if let Some(registry) = sqlite_cancel {
+        registry.cancel(cancel.request_id);
+    }
     if let Some(registry) = async_cancel {
         registry.mark_cancelled(cancel.request_id);
     }
@@ -3108,6 +3182,9 @@ fn list_items_sqlite_response(
 ) -> Result<ListItemsResponse, ExecError> {
     check_timeout(ctx.exec_start, ctx.timeout)?;
     check_cancelled(ctx.cancelled, ctx.request_id)?;
+    let _cancel_guard = ctx
+        .sqlite_cancel_registry
+        .register(ctx.request_id, sqlite.interrupt_handle());
     let limit = request.limit.unwrap_or(50).min(500) as i64;
     let mut sql = String::from(
         "SELECT id, created_at, status, title, score, unread FROM items WHERE user_id = ?",
@@ -3295,6 +3372,9 @@ fn db_exec_sqlite_response(
             })
         }
     };
+    let _cancel_guard = ctx
+        .sqlite_cancel_registry
+        .register(ctx.request_id, sqlite.interrupt_handle());
     check_timeout(ctx.exec_start, ctx.timeout)?;
     check_cancelled(ctx.cancelled, ctx.request_id)?;
     let values = resolve_sqlite_params(params)?;
@@ -3342,6 +3422,9 @@ fn db_query_sqlite_response(
             })
         }
     };
+    let _cancel_guard = ctx
+        .sqlite_cancel_registry
+        .register(ctx.request_id, sqlite.interrupt_handle());
     check_timeout(ctx.exec_start, ctx.timeout)?;
     check_cancelled(ctx.cancelled, ctx.request_id)?;
     let values = resolve_sqlite_params(params)?;
@@ -3455,9 +3538,11 @@ async fn execute_db_exec_async_result(
     let fake_decode_us_per_row = ctx.fake_decode_us_per_row;
     let fake_cpu_iters = ctx.fake_cpu_iters;
     let default_max_rows = ctx.default_max_rows;
+    let sqlite_cancel_registry = ctx.sqlite_cancel_registry.clone();
     spawn_blocking(move || {
         let exec_ctx = ExecContext {
             cancelled: &cancelled,
+            sqlite_cancel_registry: sqlite_cancel_registry.as_ref(),
             request_id,
             pool: &pool,
             timeout,
@@ -3500,9 +3585,11 @@ async fn execute_db_query_async_result(
     let fake_decode_us_per_row = ctx.fake_decode_us_per_row;
     let fake_cpu_iters = ctx.fake_cpu_iters;
     let default_max_rows = ctx.default_max_rows;
+    let sqlite_cancel_registry = ctx.sqlite_cancel_registry.clone();
     spawn_blocking(move || {
         let exec_ctx = ExecContext {
             cancelled: &cancelled,
+            sqlite_cancel_registry: sqlite_cancel_registry.as_ref(),
             request_id,
             pool: &pool,
             timeout,
@@ -4078,6 +4165,7 @@ fn handle_request(
     let payload_bytes = envelope.payload.as_ref().map(|p| p.len()).unwrap_or(0) as u64;
     metrics.insert("payload_bytes".to_string(), payload_bytes.into());
     if is_cancelled(&ctx.cancelled, request_id) {
+        ctx.sqlite_cancel_registry.clear(request_id);
         return (
             wire,
             ResponseEnvelope {
@@ -4093,6 +4181,7 @@ fn handle_request(
         );
     }
     if !envelope.entry.starts_with("__") && !ctx.exports.contains(&envelope.entry) {
+        ctx.sqlite_cancel_registry.clear(request_id);
         return (
             wire,
             ResponseEnvelope {
@@ -4117,6 +4206,7 @@ fn handle_request(
     let compiled_flag = ctx.compiled_entries.contains_key(&entry_name) as u64;
     let exec_ctx = ExecContext {
         cancelled: &ctx.cancelled,
+        sqlite_cancel_registry: ctx.sqlite_cancel_registry.as_ref(),
         request_id,
         pool: &ctx.pool,
         timeout,
@@ -4208,7 +4298,7 @@ fn handle_request(
         }
     }
 
-    match result {
+    let response = match result {
         Ok(ExecOutcome::Standard { codec, payload }) => (
             wire,
             ResponseEnvelope {
@@ -4261,7 +4351,9 @@ fn handle_request(
                 compiled: Some(compiled_flag),
             },
         ),
-    }
+    };
+    ctx.sqlite_cancel_registry.clear(request_id);
+    response
 }
 
 async fn handle_request_async(
@@ -4293,6 +4385,7 @@ async fn handle_request_async(
     metrics.insert("payload_bytes".to_string(), payload_bytes.into());
     if is_cancelled(&ctx.cancelled, request_id) {
         ctx.cancel_registry.clear(request_id);
+        ctx.sqlite_cancel_registry.clear(request_id);
         return (
             wire,
             ResponseEnvelope {
@@ -4309,6 +4402,7 @@ async fn handle_request_async(
     }
     if !envelope.entry.starts_with("__") && !ctx.exports.contains(&envelope.entry) {
         ctx.cancel_registry.clear(request_id);
+        ctx.sqlite_cancel_registry.clear(request_id);
         return (
             wire,
             ResponseEnvelope {
@@ -4335,6 +4429,7 @@ async fn handle_request_async(
     let exec_ctx = AsyncExecContext {
         cancelled: &ctx.cancelled,
         cancel_token,
+        sqlite_cancel_registry: ctx.sqlite_cancel_registry.as_ref(),
         request_id,
         pool: &ctx.pool,
         pg_pool: ctx.pg_pool.as_deref(),
@@ -4365,6 +4460,7 @@ async fn handle_request_async(
         .map(|(codec, payload)| ExecOutcome::Standard { codec, payload })
     };
     ctx.cancel_registry.clear(request_id);
+    ctx.sqlite_cancel_registry.clear(request_id);
     let handler_us = handler_start
         .elapsed()
         .as_micros()
@@ -4515,9 +4611,11 @@ async fn execute_entry_async(
     let fake_decode_us_per_row = ctx.fake_decode_us_per_row;
     let fake_cpu_iters = ctx.fake_cpu_iters;
     let default_max_rows = ctx.default_max_rows;
+    let sqlite_cancel_registry = ctx.sqlite_cancel_registry.clone();
     spawn_blocking(move || {
         let exec_ctx = ExecContext {
             cancelled: &cancelled,
+            sqlite_cancel_registry: sqlite_cancel_registry.as_ref(),
             request_id,
             pool: &pool,
             timeout,
@@ -4612,7 +4710,12 @@ fn run_sync(ctx: WorkerContext, max_queue: usize, thread_count: usize) -> io::Re
             }
         };
         if decoded.envelope.entry == "__cancel__" {
-            let response = match handle_cancel_request(&decoded.envelope, &ctx.cancelled, None) {
+            let response = match handle_cancel_request(
+                &decoded.envelope,
+                &ctx.cancelled,
+                Some(ctx.sqlite_cancel_registry.as_ref()),
+                None,
+            ) {
                 Ok(()) => ResponseEnvelope {
                     request_id: decoded.envelope.request_id,
                     status: "Ok".to_string(),
@@ -4865,11 +4968,14 @@ fn main() -> io::Result<()> {
     };
     let fake_delay = Duration::from_millis(fake_delay_ms);
 
+    let sqlite_cancel_registry = Arc::new(SqliteCancelRegistry::new());
+
     match runtime {
         WorkerRuntime::Sync => {
             let worker_ctx = WorkerContext {
                 exports: exports.clone(),
                 cancelled: cancelled.clone(),
+                sqlite_cancel_registry: sqlite_cancel_registry.clone(),
                 pool: pool.clone(),
                 compiled_entries: compiled_entries.clone(),
                 fake_delay,
@@ -4895,6 +5001,7 @@ fn main() -> io::Result<()> {
                     exports,
                     cancelled,
                     cancel_registry: Arc::new(CancelRegistry::new()),
+                    sqlite_cancel_registry,
                     pool,
                     pg_pool: pg_pool.map(Arc::new),
                     compiled_entries,
@@ -4914,7 +5021,6 @@ fn worker_loop(
     response_tx: Sender<(WireCodec, ResponseEnvelope)>,
     ctx: WorkerContext,
 ) {
-    // TODO(offload, owner:runtime, milestone:SL1): propagate cancellation into real DB tasks.
     while let Ok(request) = request_rx.recv() {
         let queue_depth = request_rx.len();
         let response = handle_request(request, queue_depth, &ctx);
@@ -4945,6 +5051,7 @@ async fn read_loop_async(
     response_tx: mpsc::Sender<(WireCodec, ResponseEnvelope)>,
     cancelled: CancelSet,
     cancel_registry: AsyncCancelRegistry,
+    sqlite_cancel_registry: Arc<SqliteCancelRegistry>,
     queue_depth: Arc<AtomicUsize>,
 ) -> io::Result<()> {
     let mut reader = tokio::io::stdin();
@@ -4988,6 +5095,7 @@ async fn read_loop_async(
             let response = match handle_cancel_request(
                 &decoded.envelope,
                 &cancelled,
+                Some(sqlite_cancel_registry.as_ref()),
                 Some(cancel_registry.as_ref()),
             ) {
                 Ok(()) => ResponseEnvelope {
@@ -5109,6 +5217,7 @@ async fn run_async(
         response_tx.clone(),
         ctx.cancelled.clone(),
         ctx.cancel_registry.clone(),
+        ctx.sqlite_cancel_registry.clone(),
         queue_depth,
     )
     .await?;
@@ -5128,7 +5237,7 @@ mod tests {
         CompiledEntry, DbArray, DbConn, DbExecResponse, DbInterval, DbNamedParam, DbParam,
         DbParamValue, DbParams, DbPool, DbQueryRequest, DbQueryResponse, DbRange, DbRangeBound,
         DbRowValue, ExecContext, ListItemsRequest, ListItemsResponse, Pool, RequestEnvelope,
-        SqliteConn, SqliteOpenMode,
+        SqliteCancelRegistry, SqliteConn, SqliteOpenMode,
     };
     use arrow::array::{BooleanArray, Int32Array, Int64Array, ListArray, StructArray};
     use arrow::ipc::reader::StreamReader;
@@ -5214,10 +5323,12 @@ mod tests {
     fn exec_ctx<'a>(
         cancelled: &'a CancelSet,
         pool: &'a DbPool,
+        sqlite_cancel_registry: &'a SqliteCancelRegistry,
         request_id: u64,
     ) -> ExecContext<'a> {
         ExecContext {
             cancelled,
+            sqlite_cancel_registry,
             request_id,
             pool,
             timeout: None,
@@ -5255,6 +5366,7 @@ mod tests {
         };
         let cancel = CancelSet::default();
         let pool = fake_pool();
+        let sqlite_registry = SqliteCancelRegistry::new();
         let req = ListItemsRequest {
             user_id: 7,
             q: None,
@@ -5263,7 +5375,7 @@ mod tests {
             cursor: None,
         };
         let payload = super::encode_payload(&req, "msgpack").expect("encode");
-        let ctx = exec_ctx(&cancel, &pool, 7);
+        let ctx = exec_ctx(&cancel, &pool, &sqlite_registry, 7);
         let result = dispatch_compiled(&entry, &payload, &ctx).expect("compiled dispatch");
         assert_eq!(result.0, "msgpack");
         let decoded: ListItemsResponse =
@@ -5282,6 +5394,7 @@ mod tests {
         let cancel = CancelSet::default();
         mark_cancelled(&cancel, 42);
         let pool = fake_pool();
+        let sqlite_registry = SqliteCancelRegistry::new();
         let req = ListItemsRequest {
             user_id: 1,
             q: None,
@@ -5290,7 +5403,7 @@ mod tests {
             cursor: None,
         };
         let payload = super::encode_payload(&req, "msgpack").expect("encode");
-        let ctx = exec_ctx(&cancel, &pool, 42);
+        let ctx = exec_ctx(&cancel, &pool, &sqlite_registry, 42);
         let result = dispatch_compiled(&entry, &payload, &ctx);
         assert!(result.is_err());
         assert_eq!(result.err().unwrap().status, "Cancelled");
@@ -5305,7 +5418,8 @@ mod tests {
             DbConn::Sqlite(SqliteConn::open(&pool_path, SqliteOpenMode::ReadWrite).expect("sqlite"))
         });
         let cancel = CancelSet::default();
-        let ctx = exec_ctx(&cancel, &pool, 99);
+        let sqlite_registry = SqliteCancelRegistry::new();
+        let ctx = exec_ctx(&cancel, &pool, &sqlite_registry, 99);
         let request = DbQueryRequest {
             db_alias: None,
             sql: "select id, status from items where status = :status order by id".to_string(),
@@ -5351,7 +5465,8 @@ mod tests {
             DbConn::Sqlite(SqliteConn::open(&pool_path, SqliteOpenMode::ReadWrite).expect("sqlite"))
         });
         let cancel = CancelSet::default();
-        let ctx = exec_ctx(&cancel, &pool, 77);
+        let sqlite_registry = SqliteCancelRegistry::new();
+        let ctx = exec_ctx(&cancel, &pool, &sqlite_registry, 77);
         let request = DbQueryRequest {
             db_alias: None,
             sql: "update items set status = :status where id = :id".to_string(),
@@ -5404,7 +5519,8 @@ mod tests {
             DbConn::Sqlite(SqliteConn::open(&pool_path, SqliteOpenMode::ReadWrite).expect("sqlite"))
         });
         let cancel = CancelSet::default();
-        let ctx = exec_ctx(&cancel, &pool, 88);
+        let sqlite_registry = SqliteCancelRegistry::new();
+        let ctx = exec_ctx(&cancel, &pool, &sqlite_registry, 88);
         let request = DbQueryRequest {
             db_alias: None,
             sql: "select id, status from items where status = :status order by id".to_string(),
@@ -5805,7 +5921,8 @@ mod tests {
             DbConn::Sqlite(SqliteConn::open(&pool_path, SqliteOpenMode::ReadWrite).expect("sqlite"))
         });
         let cancel = CancelSet::default();
-        let ctx = exec_ctx(&cancel, &pool, 1);
+        let sqlite_registry = SqliteCancelRegistry::new();
+        let ctx = exec_ctx(&cancel, &pool, &sqlite_registry, 1);
         let request = DbQueryRequest {
             db_alias: None,
             sql: "select ?".to_string(),
@@ -5841,6 +5958,7 @@ mod tests {
         assert_eq!(entry.codec_in, "msgpack");
         let cancel = CancelSet::default();
         let pool = fake_pool();
+        let sqlite_registry = SqliteCancelRegistry::new();
         let req = ListItemsRequest {
             user_id: 3,
             q: Some("x".into()),
@@ -5849,7 +5967,7 @@ mod tests {
             cursor: None,
         };
         let payload = super::encode_payload(&req, "msgpack").expect("encode");
-        let ctx = exec_ctx(&cancel, &pool, 3);
+        let ctx = exec_ctx(&cancel, &pool, &sqlite_registry, 3);
         let result = dispatch_compiled(entry, &payload, &ctx).expect("dispatch");
         assert_eq!(result.0, "msgpack");
         let decoded: ListItemsResponse =
@@ -5867,6 +5985,7 @@ mod tests {
         let entry = map.get("unknown").expect("unknown entry");
         let cancel = CancelSet::default();
         let pool = fake_pool();
+        let sqlite_registry = SqliteCancelRegistry::new();
         let payload = super::encode_payload(
             &ListItemsRequest {
                 user_id: 1,
@@ -5878,7 +5997,7 @@ mod tests {
             "msgpack",
         )
         .expect("encode");
-        let ctx = exec_ctx(&cancel, &pool, 1);
+        let ctx = exec_ctx(&cancel, &pool, &sqlite_registry, 1);
         let result = dispatch_compiled(entry, &payload, &ctx);
         assert!(result.is_err());
         assert_eq!(result.err().unwrap().status, "InternalError");
@@ -5896,6 +6015,7 @@ mod tests {
                     .expect("sqlite open"),
             )
         });
+        let sqlite_registry = SqliteCancelRegistry::new();
         let req = ListItemsRequest {
             user_id: 1,
             q: None,
@@ -5903,7 +6023,7 @@ mod tests {
             limit: Some(2),
             cursor: None,
         };
-        let ctx = exec_ctx(&cancel, &pool, 1);
+        let ctx = exec_ctx(&cancel, &pool, &sqlite_registry, 1);
         let response = super::list_items_response(&req, &ctx).expect("sqlite list items");
         assert_eq!(response.items.len(), 2);
         assert_eq!(response.counts.open + response.counts.closed, 2);

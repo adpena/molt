@@ -4,14 +4,16 @@
 
 Molt’s long-term stance:
 - Tier 0: no CPython C-extension loading.
-- Tier 1: optional bridge mode with strict constraints.
+- Tier 1: `libmolt` C-API for recompiled extensions (primary path).
+- Tier 2: optional CPython bridge mode with strict constraints.
 - See `docs/spec/areas/compat/0210_CPYTHON_BRIDGE_PYO3.md` for the PyO3 bridge spec and
   capability-gated CPython fallback design.
 
 ## Interop modes
 A) Molt Packages (preferred): Rust/WASM components with declared effects + ABI
-B) WASM modules: portable sandbox + capability boundary
-C) Legacy native extensions: bridge-only; opaque calls with conservative assumptions
+B) `libmolt` extensions (preferred for C-extensions): recompiled against `libmolt` with declared capabilities
+C) WASM modules: portable sandbox + capability boundary
+D) Legacy CPython extensions: bridge-only; opaque calls with conservative assumptions
 
 ## Core contract: Effects + Ownership
 Effects (conservative categories):

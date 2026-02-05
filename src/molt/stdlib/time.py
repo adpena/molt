@@ -4,92 +4,42 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-import sys as _sys
-import builtins as _builtins
-
-try:
-    from _intrinsics import load_intrinsic as _load_intrinsic
-except Exception:
-    _load_intrinsic = None
-
-try:
-    import importlib as _importlib
-except Exception:
-    _importlib = None
-
-_py_time = None
-_MOLT_TIME_MONOTONIC = None
-_MOLT_TIME_MONOTONIC_NS = None
-_MOLT_TIME_TIME = None
-_MOLT_TIME_TIME_NS = None
-if _load_intrinsic is not None:
-    _MOLT_TIME_MONOTONIC = _load_intrinsic("_molt_time_monotonic", globals())
-    if _MOLT_TIME_MONOTONIC is None:
-        _MOLT_TIME_MONOTONIC = _load_intrinsic("molt_time_monotonic", globals())
-    _MOLT_TIME_MONOTONIC_NS = _load_intrinsic("_molt_time_monotonic_ns", globals())
-    if _MOLT_TIME_MONOTONIC_NS is None:
-        _MOLT_TIME_MONOTONIC_NS = _load_intrinsic("molt_time_monotonic_ns", globals())
-    _MOLT_TIME_TIME = _load_intrinsic("_molt_time_time", globals())
-    if _MOLT_TIME_TIME is None:
-        _MOLT_TIME_TIME = _load_intrinsic("molt_time_time", globals())
-    _MOLT_TIME_TIME_NS = _load_intrinsic("_molt_time_time_ns", globals())
-    if _MOLT_TIME_TIME_NS is None:
-        _MOLT_TIME_TIME_NS = _load_intrinsic("molt_time_time_ns", globals())
+from _intrinsics import require_intrinsic as _require_intrinsic
 
 
-def _import_std_time() -> Any | None:
-    if _importlib is None:
-        return None
-    if _sys.modules.get(__name__) is not None and __name__ == "time":
-        saved = _sys.modules.pop("time", None)
-        try:
-            return _importlib.import_module("time")
-        except Exception:
-            return None
-        finally:
-            if saved is not None:
-                _sys.modules["time"] = saved
-    try:
-        return _importlib.import_module("time")
-    except Exception:
-        return None
+_MOLT_TIME_MONOTONIC = _require_intrinsic("molt_time_monotonic", globals())
+_MOLT_TIME_MONOTONIC_NS = _require_intrinsic("molt_time_monotonic_ns", globals())
+_MOLT_TIME_PERF_COUNTER = _require_intrinsic("molt_time_perf_counter", globals())
+_MOLT_TIME_PERF_COUNTER_NS = _require_intrinsic("molt_time_perf_counter_ns", globals())
+_MOLT_TIME_TIME = _require_intrinsic("molt_time_time", globals())
+_MOLT_TIME_TIME_NS = _require_intrinsic("molt_time_time_ns", globals())
+_MOLT_TIME_PROCESS_TIME = _require_intrinsic("molt_time_process_time", globals())
+_MOLT_TIME_PROCESS_TIME_NS = _require_intrinsic("molt_time_process_time_ns", globals())
+_MOLT_TIME_LOCALTIME = _require_intrinsic("molt_time_localtime", globals())
+_MOLT_TIME_GMTIME = _require_intrinsic("molt_time_gmtime", globals())
+_MOLT_TIME_STRFTIME = _require_intrinsic("molt_time_strftime", globals())
+_MOLT_TIME_TIMEZONE = _require_intrinsic("molt_time_timezone", globals())
+_MOLT_TIME_TZNAME = _require_intrinsic("molt_time_tzname", globals())
+_MOLT_ASYNC_SLEEP = _require_intrinsic("molt_async_sleep", globals())
+_MOLT_BLOCK_ON = _require_intrinsic("molt_block_on", globals())
+
+_CAP_TRUSTED = None
+_CAP_HAS = None
 
 
-def _ensure_intrinsics() -> None:
-    global \
-        _MOLT_TIME_MONOTONIC, \
-        _MOLT_TIME_MONOTONIC_NS, \
-        _MOLT_TIME_TIME, \
-        _MOLT_TIME_TIME_NS
-    if _MOLT_TIME_MONOTONIC is None:
-        _MOLT_TIME_MONOTONIC = getattr(
-            _builtins, "_molt_time_monotonic", None
-        ) or getattr(_builtins, "molt_time_monotonic", None)
-    if _MOLT_TIME_MONOTONIC_NS is None:
-        _MOLT_TIME_MONOTONIC_NS = getattr(
-            _builtins, "_molt_time_monotonic_ns", None
-        ) or getattr(_builtins, "molt_time_monotonic_ns", None)
-    if _MOLT_TIME_TIME is None:
-        _MOLT_TIME_TIME = getattr(_builtins, "_molt_time_time", None) or getattr(
-            _builtins, "molt_time_time", None
-        )
-    if _MOLT_TIME_TIME_NS is None:
-        _MOLT_TIME_TIME_NS = getattr(_builtins, "_molt_time_time_ns", None) or getattr(
-            _builtins, "molt_time_time_ns", None
-        )
+def _ensure_capabilities() -> None:
+    global _CAP_TRUSTED, _CAP_HAS
+    if _CAP_TRUSTED is not None or _CAP_HAS is not None:
+        return
+    _CAP_TRUSTED = _require_intrinsic("molt_capabilities_trusted", globals())
+    _CAP_HAS = _require_intrinsic("molt_capabilities_has", globals())
 
-
-if _MOLT_TIME_MONOTONIC is None and _MOLT_TIME_TIME is None:
-    _py_time = _import_std_time()
-
-_capabilities: ModuleType | None
-try:
-    _capabilities = _importlib.import_module("molt.capabilities")
-except Exception:
-    _capabilities = None
 
 __all__ = [
     "ClockInfo",
+    "struct_time",
+    "asctime",
+    "ctime",
     "get_clock_info",
     "time",
     "time_ns",
@@ -97,15 +47,19 @@ __all__ = [
     "monotonic_ns",
     "perf_counter",
     "perf_counter_ns",
+    "process_time",
+    "process_time_ns",
     "sleep",
+    "localtime",
+    "gmtime",
+    "strftime",
+    "timezone",
+    "tzname",
 ]
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): implement full time module surface (timezone, tzname, struct_time, process_time).
+# TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): implement full time module surface (timezone, tzname) + deterministic clock policy.
 
 if TYPE_CHECKING:
-    from types import ModuleType
-
-    _capabilities: ModuleType | None
 
     def _molt_time_monotonic() -> float:
         return 0.0
@@ -118,6 +72,33 @@ if TYPE_CHECKING:
 
     def _molt_time_time_ns() -> int:
         return 0
+
+    def _molt_time_perf_counter() -> float:
+        return 0.0
+
+    def _molt_time_perf_counter_ns() -> int:
+        return 0
+
+    def _molt_time_process_time() -> float:
+        return 0.0
+
+    def _molt_time_process_time_ns() -> int:
+        return 0
+
+    def _molt_time_localtime(secs: float | None = None) -> Any:
+        return None
+
+    def _molt_time_gmtime(secs: float | None = None) -> Any:
+        return None
+
+    def _molt_time_strftime(fmt: str, time_tuple: Any) -> str:
+        return ""
+
+    def _molt_time_timezone() -> int:
+        return 0
+
+    def _molt_time_tzname() -> Any:
+        return ("UTC", "UTC")
 
     def molt_async_sleep(_delay: float = 0.0, _result: Any | None = None) -> Any:
         return None
@@ -157,6 +138,142 @@ class ClockInfo:
         )
 
 
+class struct_time(tuple):
+    __slots__ = ()
+
+    n_fields = 9
+    n_sequence_fields = 9
+    n_unnamed_fields = 0
+
+    def __new__(cls, seq: Any) -> "struct_time":
+        try:
+            items = tuple(seq)
+        except Exception:
+            raise TypeError("time tuple must be a 9-element sequence")
+        if len(items) != 9:
+            raise TypeError("time tuple must be a 9-element sequence")
+        values = []
+        for item in items:
+            try:
+                values.append(int(item))
+            except Exception:
+                raise TypeError("time tuple elements must be integers")
+        return tuple.__new__(cls, values)
+
+    @property
+    def tm_year(self) -> int:
+        return int(self[0])
+
+    @property
+    def tm_mon(self) -> int:
+        return int(self[1])
+
+    @property
+    def tm_mday(self) -> int:
+        return int(self[2])
+
+    @property
+    def tm_hour(self) -> int:
+        return int(self[3])
+
+    @property
+    def tm_min(self) -> int:
+        return int(self[4])
+
+    @property
+    def tm_sec(self) -> int:
+        return int(self[5])
+
+    @property
+    def tm_wday(self) -> int:
+        return int(self[6])
+
+    @property
+    def tm_yday(self) -> int:
+        return int(self[7])
+
+    @property
+    def tm_isdst(self) -> int:
+        return int(self[8])
+
+    @property
+    def tm_zone(self) -> None:
+        return None
+
+    @property
+    def tm_gmtoff(self) -> None:
+        return None
+
+    def __repr__(self) -> str:
+        return (
+            "time.struct_time(tm_year="
+            + repr(self.tm_year)
+            + ", tm_mon="
+            + repr(self.tm_mon)
+            + ", tm_mday="
+            + repr(self.tm_mday)
+            + ", tm_hour="
+            + repr(self.tm_hour)
+            + ", tm_min="
+            + repr(self.tm_min)
+            + ", tm_sec="
+            + repr(self.tm_sec)
+            + ", tm_wday="
+            + repr(self.tm_wday)
+            + ", tm_yday="
+            + repr(self.tm_yday)
+            + ", tm_isdst="
+            + repr(self.tm_isdst)
+            + ")"
+        )
+
+
+def _coerce_time_tuple(value: Any) -> tuple[int, ...]:
+    if isinstance(value, struct_time):
+        return tuple(value)
+    if isinstance(value, tuple):
+        return value
+    return tuple(value)
+
+
+def _init_timezone() -> int:
+    try:
+        return int(_MOLT_TIME_TIMEZONE())
+    except Exception as exc:
+        raise RuntimeError("time timezone intrinsic failed") from exc
+
+
+def _init_tzname() -> tuple[str, str]:
+    raw = _MOLT_TIME_TZNAME()
+    if not isinstance(raw, (tuple, list)) or len(raw) != 2:
+        raise RuntimeError("time tzname intrinsic returned invalid value")
+    left, right = raw
+    if not isinstance(left, str) or not isinstance(right, str):
+        raise RuntimeError("time tzname intrinsic returned invalid value")
+    return (str(left), str(right))
+
+
+timezone = _init_timezone()
+tzname = _init_tzname()
+
+
+_WEEKDAY_ABBR = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+_MONTH_ABBR = (
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+)
+
+
 def _wrap_clock_info(info: Any, name: str) -> ClockInfo:
     return ClockInfo(
         getattr(info, "name", name),
@@ -171,6 +288,8 @@ def get_clock_info(name: str) -> ClockInfo:
     name = str(name)
     if name in ("monotonic", "perf_counter"):
         return ClockInfo(name, "molt", 1e-9, True, False)
+    if name == "process_time":
+        return ClockInfo(name, "molt", 1e-9, True, False)
     if name == "time":
         _require_time_wall()
         return ClockInfo(name, "molt", 1e-6, False, True)
@@ -178,11 +297,15 @@ def get_clock_info(name: str) -> ClockInfo:
 
 
 def _has_time_wall() -> bool:
-    if _capabilities is None:
+    _ensure_capabilities()
+    if _CAP_TRUSTED is None or _CAP_HAS is None:
         return True
-    if _capabilities.trusted():
-        return True
-    return _capabilities.has("time.wall") or _capabilities.has("time")
+    try:
+        if _CAP_TRUSTED():
+            return True
+        return bool(_CAP_HAS("time.wall") or _CAP_HAS("time"))
+    except Exception:
+        return False
 
 
 def _require_time_wall() -> None:
@@ -191,75 +314,37 @@ def _require_time_wall() -> None:
 
 
 def monotonic() -> float:
-    _ensure_intrinsics()
-    if _MOLT_TIME_MONOTONIC is not None:
-        value = float(_MOLT_TIME_MONOTONIC())
-        if value > 0:
-            return value
-    try:
-        value = float(_molt_time_monotonic())  # type: ignore[name-defined]
-        if value > 0:
-            return value
-    except NameError:
-        pass
-    if _py_time is not None:
-        return float(_py_time.monotonic())
-    if _MOLT_TIME_TIME is not None:
-        return float(_MOLT_TIME_TIME())
-    try:
-        return float(_molt_time_time())  # type: ignore[name-defined]
-    except NameError:
-        pass
-    raise NotImplementedError("time.monotonic unavailable")
+    return float(_MOLT_TIME_MONOTONIC())
 
 
 def monotonic_ns() -> int:
-    _ensure_intrinsics()
-    if _MOLT_TIME_MONOTONIC_NS is not None:
-        return int(_MOLT_TIME_MONOTONIC_NS())
-    try:
-        return int(_molt_time_monotonic_ns())  # type: ignore[name-defined]
-    except NameError:
-        pass
-    if _py_time is not None and hasattr(_py_time, "monotonic_ns"):
-        return int(_py_time.monotonic_ns())
-    return int(monotonic() * 1_000_000_000)
+    return int(_MOLT_TIME_MONOTONIC_NS())
 
 
 def perf_counter() -> float:
-    return monotonic()
+    return float(_MOLT_TIME_PERF_COUNTER())
 
 
 def perf_counter_ns() -> int:
-    return monotonic_ns()
+    return int(_MOLT_TIME_PERF_COUNTER_NS())
+
+
+def process_time() -> float:
+    return float(_MOLT_TIME_PROCESS_TIME())
+
+
+def process_time_ns() -> int:
+    return int(_MOLT_TIME_PROCESS_TIME_NS())
 
 
 def time() -> float:
     _require_time_wall()
-    _ensure_intrinsics()
-    if _MOLT_TIME_TIME is not None:
-        return float(_MOLT_TIME_TIME())
-    try:
-        return float(_molt_time_time())  # type: ignore[name-defined]
-    except NameError:
-        pass
-    if _py_time is not None:
-        return float(_py_time.time())
-    raise NotImplementedError("time.time unavailable")
+    return float(_MOLT_TIME_TIME())
 
 
 def time_ns() -> int:
     _require_time_wall()
-    _ensure_intrinsics()
-    if _MOLT_TIME_TIME_NS is not None:
-        return int(_MOLT_TIME_TIME_NS())
-    try:
-        return int(_molt_time_time_ns())  # type: ignore[name-defined]
-    except NameError:
-        pass
-    if _py_time is not None and hasattr(_py_time, "time_ns"):
-        return int(_py_time.time_ns())
-    return int(time() * 1_000_000_000)
+    return int(_MOLT_TIME_TIME_NS())
 
 
 def sleep(secs: float) -> None:
@@ -269,13 +354,62 @@ def sleep(secs: float) -> None:
         raise TypeError("an integer or float is required")
     if delay < 0:
         raise ValueError("sleep length must be non-negative")
+    fut = _MOLT_ASYNC_SLEEP(delay, None)
+    _MOLT_BLOCK_ON(fut)
+    return None
+
+
+def localtime(secs: float | None = None) -> struct_time:
+    if secs is None:
+        _require_time_wall()
+    parts = _MOLT_TIME_LOCALTIME(secs)
+    return struct_time(parts)
+
+
+def gmtime(secs: float | None = None) -> struct_time:
+    if secs is None:
+        _require_time_wall()
+    parts = _MOLT_TIME_GMTIME(secs)
+    return struct_time(parts)
+
+
+def strftime(fmt: str, t: Any | None = None) -> str:
+    if not isinstance(fmt, str):
+        name = type(fmt).__name__
+        raise TypeError(f"strftime() format must be str, not {name}")
+    if t is None:
+        t = localtime()
+    tuple_val = _coerce_time_tuple(t)
+    if len(tuple_val) != 9:
+        raise TypeError("time tuple must be a 9-element sequence")
+    return str(_MOLT_TIME_STRFTIME(fmt, tuple_val))
+
+
+def asctime(t: Any | None = None) -> str:
+    if t is None:
+        t = localtime()
+    tt = struct_time(t)
     try:
-        fut = molt_async_sleep(delay, None)  # type: ignore[name-defined]
-        molt_block_on(fut)  # type: ignore[name-defined]
-        return None
-    except NameError:
-        pass
-    if _py_time is not None:
-        _py_time.sleep(delay)
-        return None
-    raise NotImplementedError("time.sleep unavailable")
+        wday = int(tt.tm_wday)
+        mon = int(tt.tm_mon)
+        mday = int(tt.tm_mday)
+        hour = int(tt.tm_hour)
+        minute = int(tt.tm_min)
+        sec = int(tt.tm_sec)
+        year = int(tt.tm_year)
+    except Exception as exc:
+        raise TypeError("time tuple elements must be integers") from exc
+    if not (0 <= wday <= 6 and 1 <= mon <= 12 and 1 <= mday <= 31):
+        raise ValueError("time tuple elements out of range")
+    day_name = _WEEKDAY_ABBR[wday]
+    mon_name = _MONTH_ABBR[mon - 1]
+    return (
+        f"{day_name} {mon_name} {mday:2d} "
+        f"{hour:02d}:{minute:02d}:{sec:02d} {year:04d}"
+    )
+
+
+def ctime(secs: float | None = None) -> str:
+    if secs is None:
+        return asctime()
+    return asctime(localtime(secs))

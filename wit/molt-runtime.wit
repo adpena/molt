@@ -18,6 +18,10 @@ interface intrinsics {
     sys_version: func() -> molt-object;
     os_name: func() -> molt-object;
     os_close: func(fd: molt-object) -> molt-object;
+    os_dup: func(fd: molt-object) -> molt-object;
+    os_get_inheritable: func(fd: molt-object) -> molt-object;
+    os_set_inheritable: func(fd: molt-object, inheritable: molt-object) -> molt-object;
+    os_urandom: func(len: molt-object) -> molt-object;
     sys_platform: func() -> molt-object;
     print_obj: func(val: molt-object);
     print_newline: func();
@@ -41,8 +45,18 @@ interface intrinsics {
     promise_set_exception: func(obj: u64, exc: u64) -> u64;
     io_wait: func(obj: molt-object) -> molt-object;
     io_wait_new: func(socket: molt-object, events: molt-object, timeout: molt-object) -> molt-object;
+    ws_wait: func(obj: molt-object) -> molt-object;
+    ws_wait_new: func(ws: molt-object, events: molt-object, timeout: molt-object) -> molt-object;
     thread_submit: func(callable: molt-object, args: molt-object, kwargs: molt-object) -> molt-object;
     thread_poll: func(obj: molt-object) -> molt-object;
+    thread_spawn: func(payload: molt-object) -> molt-object;
+    thread_join: func(handle: molt-object, timeout: molt-object) -> molt-object;
+    thread_is_alive: func(handle: molt-object) -> molt-object;
+    thread_ident: func(handle: molt-object) -> molt-object;
+    thread_native_id: func(handle: molt-object) -> molt-object;
+    thread_current_ident: func() -> molt-object;
+    thread_current_native_id: func() -> molt-object;
+    thread_drop: func(handle: molt-object) -> molt-object;
     process_spawn: func(
         args: molt-object,
         env: molt-object,
@@ -141,9 +155,23 @@ interface intrinsics {
     cancel_token_get_current: func() -> molt-object;
     cancelled: func() -> molt-object;
     cancel_current: func() -> molt-object;
+    lock_new: func() -> molt-object;
+    lock_acquire: func(handle: molt-object, blocking: molt-object, timeout: molt-object) -> molt-object;
+    lock_release: func(handle: molt-object) -> molt-object;
+    lock_locked: func(handle: molt-object) -> molt-object;
+    lock_drop: func(handle: molt-object) -> molt-object;
+    rlock_new: func() -> molt-object;
+    rlock_acquire: func(handle: molt-object, blocking: molt-object, timeout: molt-object) -> molt-object;
+    rlock_release: func(handle: molt-object) -> molt-object;
+    rlock_locked: func(handle: molt-object) -> molt-object;
+    rlock_drop: func(handle: molt-object) -> molt-object;
     chan_new: func(capacity: molt-object) -> molt-ptr;
     chan_send: func(chan: molt-ptr, val: molt-object) -> molt-object;
+    chan_send_blocking: func(chan: molt-ptr, val: molt-object) -> molt-object;
+    chan_try_send: func(chan: molt-ptr, val: molt-object) -> molt-object;
     chan_recv: func(chan: molt-ptr) -> molt-object;
+    chan_recv_blocking: func(chan: molt-ptr) -> molt-object;
+    chan_try_recv: func(chan: molt-ptr) -> molt-object;
     chan_drop: func(chan: molt-ptr);
 
     add: func(a: molt-object, b: molt-object) -> molt-object;
@@ -211,6 +239,7 @@ interface intrinsics {
     call_bind: func(callable: molt-object, builder: u64) -> molt-object;
     iter_sentinel: func(callable: molt-object, sentinel: molt-object) -> molt-object;
     missing: func() -> molt-object;
+    pending: func() -> molt-object;
     not_implemented: func() -> molt-object;
     ellipsis: func() -> molt-object;
 
@@ -220,6 +249,9 @@ interface intrinsics {
     json_parse_scalar_obj: func(val: molt-object) -> molt-object;
     msgpack_parse_scalar_obj: func(val: molt-object) -> molt-object;
     cbor_parse_scalar_obj: func(val: molt-object) -> molt-object;
+    struct_calcsize: func(format: molt-object) -> molt-object;
+    struct_pack: func(format: molt-object, values: molt-object) -> molt-object;
+    struct_unpack: func(format: molt-object, buffer: molt-object) -> molt-object;
     string_from_bytes: func(ptr: molt-ptr, len: u64, out: molt-ptr) -> s32;
     bytes_from_bytes: func(ptr: molt-ptr, len: u64, out: molt-ptr) -> s32;
     bigint_from_str: func(ptr: molt-ptr, len: u64) -> molt-object;
@@ -300,6 +332,10 @@ interface intrinsics {
         name: molt-object,
         firstlineno: molt-object,
         linetable: molt-object,
+        varnames: molt-object,
+        argcount: molt-object,
+        posonlyargcount: molt-object,
+        kwonlyargcount: molt-object,
     ) -> molt-object;
     compile_builtin: func(
         source: molt-object,
@@ -436,9 +472,29 @@ interface intrinsics {
     getpid: func() -> molt-object;
     time_monotonic: func() -> molt-object;
     time_monotonic_ns: func() -> molt-object;
+    time_perf_counter: func() -> molt-object;
+    time_perf_counter_ns: func() -> molt-object;
+    time_process_time: func() -> molt-object;
+    time_process_time_ns: func() -> molt-object;
     time_time: func() -> molt-object;
     time_time_ns: func() -> molt-object;
+    time_localtime: func(secs: molt-object) -> molt-object;
+    time_gmtime: func(secs: molt-object) -> molt-object;
+    time_strftime: func(fmt: molt-object, time_tuple: molt-object) -> molt-object;
+    time_timezone: func() -> molt-object;
+    time_tzname: func() -> molt-object;
+    math_log: func(value: molt-object) -> molt-object;
+    math_log2: func(value: molt-object) -> molt-object;
+    math_exp: func(value: molt-object) -> molt-object;
+    math_sin: func(value: molt-object) -> molt-object;
+    math_cos: func(value: molt-object) -> molt-object;
+    math_acos: func(value: molt-object) -> molt-object;
+    math_lgamma: func(value: molt-object) -> molt-object;
     path_exists: func(path: molt-object) -> molt-object;
+    path_listdir: func(path: molt-object) -> molt-object;
+    path_mkdir: func(path: molt-object) -> molt-object;
+    path_rmdir: func(path: molt-object) -> molt-object;
+    path_chmod: func(path: molt-object, mode: molt-object) -> molt-object;
     path_unlink: func(path: molt-object) -> molt-object;
     string_join: func(sep: molt-object, items: molt-object) -> molt-object;
     string_split: func(haystack: molt-object, needle: molt-object) -> molt-object;
@@ -551,6 +607,9 @@ interface intrinsics {
     ws_connect: func(ptr: molt-ptr, len: u64, out: molt-ptr) -> s32;
     ws_pair: func(capacity: u64, out_left: molt-ptr, out_right: molt-ptr) -> s32;
     ws_send: func(handle: u64, ptr: molt-ptr, len: u64) -> u64;
+    ws_connect_obj: func(url: molt-object) -> molt-object;
+    ws_pair_obj: func(capacity: molt-object) -> molt-object;
+    ws_send_obj: func(handle: molt-object, data: molt-object) -> molt-object;
     ws_recv: func(handle: u64) -> u64;
     ws_close: func(handle: u64);
     ws_drop: func(handle: u64);

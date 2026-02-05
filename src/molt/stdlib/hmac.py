@@ -1,87 +1,92 @@
-"""Minimal hmac support for Molt."""
+"""HMAC implementation backed by Rust intrinsics."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from molt.stdlib import hashlib
-
-__all__ = ["new", "digest", "compare_digest"]
-
-
-def _to_bytes(data: Any) -> bytes:
-    if isinstance(data, bytes):
-        return data
-    if isinstance(data, (bytearray, memoryview)):
-        return bytes(data)
-    if isinstance(data, str):
-        return data.encode("utf-8")
-    raise TypeError("data must be bytes-like or str")
+import hashlib as _hashlib
+from _intrinsics import require_intrinsic as _require_intrinsic
 
 
-def _hash_new(digestmod: Any):
+__all__ = ["HMAC", "new", "digest", "compare_digest"]
+
+_molt_hmac_new = _require_intrinsic("molt_hmac_new", globals())
+_molt_hmac_update = _require_intrinsic("molt_hmac_update", globals())
+_molt_hmac_copy = _require_intrinsic("molt_hmac_copy", globals())
+_molt_hmac_digest = _require_intrinsic("molt_hmac_digest", globals())
+_molt_hmac_drop = _require_intrinsic("molt_hmac_drop", globals())
+_molt_compare_digest = _require_intrinsic("molt_compare_digest", globals())
+
+
+def _resolve_digestmod(digestmod: Any) -> tuple[str, dict[str, Any] | None, int, int]:
+    if digestmod is None:
+        raise TypeError("Missing required argument 'digestmod'.")
     if isinstance(digestmod, str):
-        return hashlib.new(digestmod)
-    if callable(digestmod):
-        return digestmod()
-    raise TypeError("digestmod must be a name or callable")
+        digest = _hashlib.new(digestmod)
+    elif callable(digestmod):
+        digest = digestmod()
+    else:
+        digest_new = getattr(digestmod, "new")
+        digest = digest_new()
+    if not isinstance(digest, _hashlib._Hash):
+        raise TypeError("digestmod must be a name or callable")
+    return digest.name, digest._options, digest.digest_size, digest.block_size
 
 
-def compare_digest(a: Any, b: Any) -> bool:
-    a_bytes = _to_bytes(a)
-    b_bytes = _to_bytes(b)
-    if len(a_bytes) != len(b_bytes):
-        return False
-    res = 0
-    for x, y in zip(a_bytes, b_bytes):
-        res |= x ^ y
-    return res == 0
+class HMAC:
+    __slots__ = (
+        "_handle",
+        "_digest_name",
+        "_options",
+        "name",
+        "digest_size",
+        "block_size",
+    )
 
-
-class _Hmac:
     def __init__(self, key: Any, msg: Any | None, digestmod: Any) -> None:
-        self._digestmod = digestmod
-        key_bytes = _to_bytes(key)
-        self._inner = _hash_new(digestmod)
-        self._outer = _hash_new(digestmod)
-        block_size = getattr(self._inner, "block_size", 64)
-        if len(key_bytes) > block_size:
-            h = _hash_new(digestmod)
-            h.update(key_bytes)
-            key_bytes = h.digest()
-        if len(key_bytes) < block_size:
-            key_bytes = key_bytes + b"\x00" * (block_size - len(key_bytes))
-        o_key_pad = bytes((b ^ 0x5C) for b in key_bytes)
-        i_key_pad = bytes((b ^ 0x36) for b in key_bytes)
-        self._inner.update(i_key_pad)
-        self._outer.update(o_key_pad)
-        if msg is not None:
-            self.update(msg)
+        digest_name, options, digest_size, block_size = _resolve_digestmod(digestmod)
+        self._handle = _molt_hmac_new(key, msg, digest_name, options)
+        self._digest_name = digest_name
+        self._options = options
+        self.name = f"hmac-{digest_name}"
+        self.digest_size = digest_size
+        self.block_size = block_size
 
     def update(self, msg: Any) -> None:
-        self._inner.update(_to_bytes(msg))
+        _molt_hmac_update(self._handle, msg)
 
-    def copy(self) -> "_Hmac":
-        other = _Hmac(b"", None, self._digestmod)
-        other._inner = self._inner.copy()
-        other._outer = self._outer.copy()
+    def copy(self) -> "HMAC":
+        other = object.__new__(type(self))
+        other._handle = _molt_hmac_copy(self._handle)
+        other._digest_name = self._digest_name
+        other._options = self._options
+        other.name = self.name
+        other.digest_size = self.digest_size
+        other.block_size = self.block_size
         return other
 
     def digest(self) -> bytes:
-        inner = self._inner.copy().digest()
-        outer = self._outer.copy()
-        outer.update(inner)
-        return outer.digest()
+        return _molt_hmac_digest(self._handle)
 
     def hexdigest(self) -> str:
         return self.digest().hex()
 
+    def __del__(self) -> None:
+        try:
+            _molt_hmac_drop(self._handle)
+        except Exception:
+            pass
 
-def new(key: Any, msg: Any | None = None, digestmod: Any | None = None) -> _Hmac:
+
+def new(key: Any, msg: Any | None = None, digestmod: Any | None = None) -> HMAC:
     if digestmod is None:
-        digestmod = "sha1"
-    return _Hmac(key, msg, digestmod)
+        raise TypeError("Missing required argument 'digestmod'.")
+    return HMAC(key, msg, digestmod)
 
 
 def digest(key: Any, msg: Any, digestmod: Any) -> bytes:
     return new(key, msg, digestmod).digest()
+
+
+def compare_digest(a: Any, b: Any) -> bool:
+    return bool(_molt_compare_digest(a, b))

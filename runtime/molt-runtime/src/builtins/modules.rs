@@ -1,17 +1,21 @@
 use crate::PyToken;
 use molt_obj_model::MoltObject;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
+
+use libc;
 
 use crate::builtins::annotations::pep649_enabled;
 use crate::builtins::attr::module_attr_lookup;
+use crate::builtins::io::{molt_sys_stderr, molt_sys_stdin, molt_sys_stdout};
 use crate::{
     alloc_dict_with_pairs, alloc_list, alloc_module_obj, alloc_string, class_name_for_error,
     dec_ref_bits, dict_del_in_place, dict_get_in_place, dict_order, dict_set_in_place,
-    exception_pending, inc_ref_bits, intern_static_name, is_truthy, module_dict_bits,
-    module_name_bits, molt_exception_kind, molt_exception_last, molt_is_callable, molt_iter,
-    molt_iter_next, obj_eq, obj_from_bits, object_type_id, raise_exception, runtime_state,
-    seq_vec_ref, string_bytes, string_len, string_obj_to_owned, type_name, type_of_bits,
-    TYPE_ID_DICT, TYPE_ID_MODULE, TYPE_ID_STRING, TYPE_ID_TUPLE,
+    exception_pending, format_exception_with_traceback, inc_ref_bits, intern_static_name,
+    is_truthy, module_dict_bits, module_name_bits, molt_exception_kind, molt_exception_last,
+    molt_is_callable, molt_iter, molt_iter_next, obj_eq, obj_from_bits, object_type_id,
+    raise_exception, runtime_state, seq_vec_ref, string_bytes, string_len, string_obj_to_owned,
+    type_name, type_of_bits, TYPE_ID_DICT, TYPE_ID_MODULE, TYPE_ID_STRING, TYPE_ID_TUPLE,
 };
 
 fn trace_module_cache() -> bool {
@@ -53,6 +57,72 @@ fn trace_sys_module() -> bool {
         )
     })
 }
+
+fn trace_op_silent() -> bool {
+    static TRACE: OnceLock<bool> = OnceLock::new();
+    *TRACE.get_or_init(|| {
+        matches!(
+            std::env::var("MOLT_TRACE_OP_SILENT").ok().as_deref(),
+            Some("1")
+        )
+    })
+}
+
+fn trace_op_sigtrap_enabled() -> bool {
+    static TRACE: OnceLock<bool> = OnceLock::new();
+    *TRACE.get_or_init(|| {
+        matches!(
+            std::env::var("MOLT_TRACE_OP_SIGTRAP").ok().as_deref(),
+            Some("1")
+        )
+    })
+}
+
+static TRACE_LAST_OP: AtomicU64 = AtomicU64::new(0);
+static TRACE_SIGTRAP_INSTALLED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(not(target_arch = "wasm32"))]
+unsafe extern "C" fn trace_sigtrap_handler(sig: i32) {
+    let op = TRACE_LAST_OP.load(Ordering::Relaxed);
+    let mut buf = [0u8; 64];
+    let prefix = b"molt trace last op=";
+    let mut idx = 0usize;
+    buf[..prefix.len()].copy_from_slice(prefix);
+    idx += prefix.len();
+    let mut value = op;
+    let mut digits = [0u8; 20];
+    let mut len = 0usize;
+    if value == 0 {
+        digits[0] = b'0';
+        len = 1;
+    } else {
+        while value > 0 {
+            digits[len] = b'0' + (value % 10) as u8;
+            value /= 10;
+            len += 1;
+        }
+    }
+    for i in 0..len {
+        buf[idx + i] = digits[len - 1 - i];
+    }
+    idx += len;
+    buf[idx] = b'\n';
+    idx += 1;
+    let _ = libc::write(2, buf.as_ptr() as *const _, idx);
+    libc::_exit(128 + sig);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ensure_sigtrap_handler() {
+    if trace_op_sigtrap_enabled() && !TRACE_SIGTRAP_INSTALLED.swap(true, Ordering::Relaxed) {
+        unsafe {
+            libc::signal(libc::SIGTRAP, trace_sigtrap_handler as usize);
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn ensure_sigtrap_handler() {}
 
 unsafe fn sys_populate_argv_executable(_py: &PyToken<'_>, sys_ptr: *mut u8) -> Result<(), ()> {
     let dict_bits = module_dict_bits(sys_ptr);
@@ -120,6 +190,125 @@ unsafe fn sys_populate_argv_executable(_py: &PyToken<'_>, sys_ptr: *mut u8) -> R
     Ok(())
 }
 
+unsafe fn sys_populate_stdio(_py: &PyToken<'_>, sys_ptr: *mut u8) -> Result<(), ()> {
+    let dict_bits = module_dict_bits(sys_ptr);
+    let dict_ptr = match obj_from_bits(dict_bits).as_ptr() {
+        Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
+        _ => return Err(()),
+    };
+
+    let mut keys: Vec<u64> = Vec::with_capacity(6);
+    let stdin_key_bits = {
+        let ptr = alloc_string(_py, b"stdin");
+        if ptr.is_null() {
+            return Err(());
+        }
+        let bits = MoltObject::from_ptr(ptr).bits();
+        keys.push(bits);
+        bits
+    };
+    let stdout_key_bits = {
+        let ptr = alloc_string(_py, b"stdout");
+        if ptr.is_null() {
+            for bits in keys {
+                dec_ref_bits(_py, bits);
+            }
+            return Err(());
+        }
+        let bits = MoltObject::from_ptr(ptr).bits();
+        keys.push(bits);
+        bits
+    };
+    let stderr_key_bits = {
+        let ptr = alloc_string(_py, b"stderr");
+        if ptr.is_null() {
+            for bits in keys {
+                dec_ref_bits(_py, bits);
+            }
+            return Err(());
+        }
+        let bits = MoltObject::from_ptr(ptr).bits();
+        keys.push(bits);
+        bits
+    };
+    let dunder_stdin_bits = {
+        let ptr = alloc_string(_py, b"__stdin__");
+        if ptr.is_null() {
+            for bits in keys {
+                dec_ref_bits(_py, bits);
+            }
+            return Err(());
+        }
+        let bits = MoltObject::from_ptr(ptr).bits();
+        keys.push(bits);
+        bits
+    };
+    let dunder_stdout_bits = {
+        let ptr = alloc_string(_py, b"__stdout__");
+        if ptr.is_null() {
+            for bits in keys {
+                dec_ref_bits(_py, bits);
+            }
+            return Err(());
+        }
+        let bits = MoltObject::from_ptr(ptr).bits();
+        keys.push(bits);
+        bits
+    };
+    let dunder_stderr_bits = {
+        let ptr = alloc_string(_py, b"__stderr__");
+        if ptr.is_null() {
+            for bits in keys {
+                dec_ref_bits(_py, bits);
+            }
+            return Err(());
+        }
+        let bits = MoltObject::from_ptr(ptr).bits();
+        keys.push(bits);
+        bits
+    };
+
+    let stdin_bits = molt_sys_stdin();
+    if obj_from_bits(stdin_bits).is_none() {
+        for bits in keys {
+            dec_ref_bits(_py, bits);
+        }
+        return Err(());
+    }
+    let stdout_bits = molt_sys_stdout();
+    if obj_from_bits(stdout_bits).is_none() {
+        dec_ref_bits(_py, stdin_bits);
+        for bits in keys {
+            dec_ref_bits(_py, bits);
+        }
+        return Err(());
+    }
+    let stderr_bits = molt_sys_stderr();
+    if obj_from_bits(stderr_bits).is_none() {
+        dec_ref_bits(_py, stdin_bits);
+        dec_ref_bits(_py, stdout_bits);
+        for bits in keys {
+            dec_ref_bits(_py, bits);
+        }
+        return Err(());
+    }
+
+    dict_set_in_place(_py, dict_ptr, stdin_key_bits, stdin_bits);
+    dict_set_in_place(_py, dict_ptr, dunder_stdin_bits, stdin_bits);
+    dict_set_in_place(_py, dict_ptr, stdout_key_bits, stdout_bits);
+    dict_set_in_place(_py, dict_ptr, dunder_stdout_bits, stdout_bits);
+    dict_set_in_place(_py, dict_ptr, stderr_key_bits, stderr_bits);
+    dict_set_in_place(_py, dict_ptr, dunder_stderr_bits, stderr_bits);
+
+    dec_ref_bits(_py, stdin_bits);
+    dec_ref_bits(_py, stdout_bits);
+    dec_ref_bits(_py, stderr_bits);
+    for bits in keys {
+        dec_ref_bits(_py, bits);
+    }
+    Ok(())
+}
+
 #[no_mangle]
 pub extern "C" fn molt_module_new(name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -132,6 +321,10 @@ pub extern "C" fn molt_module_new(name_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "TypeError", "module name must be str");
             }
         }
+        let name = match string_obj_to_owned(name_obj) {
+            Some(val) => val,
+            None => return raise_exception::<_>(_py, "TypeError", "module name must be str"),
+        };
         let ptr = alloc_module_obj(_py, name_bits);
         if ptr.is_null() {
             return MoltObject::none().bits();
@@ -150,6 +343,9 @@ pub extern "C" fn molt_module_new(name_bits: u64) -> u64 {
                 }
             }
         }
+        if name == "builtins" {
+            crate::intrinsics::install_into_builtins(_py, ptr);
+        }
         MoltObject::from_ptr(ptr).bits()
     })
 }
@@ -166,6 +362,9 @@ pub extern "C" fn molt_module_cache_get(name_bits: u64) -> u64 {
         let guard = cache.lock().unwrap();
         if let Some(bits) = guard.get(&name) {
             inc_ref_bits(_py, *bits);
+            if trace {
+                eprintln!("module cache hit: {name}");
+            }
             return *bits;
         }
         if trace {
@@ -219,6 +418,10 @@ pub extern "C" fn molt_module_cache_set(name_bits: u64, module_bits: u64) -> u64
             None => return raise_exception::<_>(_py, "TypeError", "module name must be str"),
         };
         let is_sys = name == "sys";
+        let trace_cache = trace_module_cache();
+        if trace_cache {
+            eprintln!("module cache set: {name} bits=0x{module_bits:x}");
+        }
         let (sys_bits, cached_modules) = {
             let cache = crate::builtins::exceptions::internals::module_cache(_py);
             let mut guard = cache.lock().unwrap();
@@ -262,6 +465,9 @@ pub extern "C" fn molt_module_cache_set(name_bits: u64, module_bits: u64) -> u64
             if let Some(sys_ptr) = sys_obj.as_ptr() {
                 unsafe {
                     if sys_populate_argv_executable(_py, sys_ptr).is_err() {
+                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                    }
+                    if sys_populate_stdio(_py, sys_ptr).is_err() {
                         return raise_exception::<_>(_py, "MemoryError", "out of memory");
                     }
                 }
@@ -324,7 +530,11 @@ pub extern "C" fn molt_module_cache_del(name_bits: u64) -> u64 {
                 let kind_bits = molt_exception_kind(exc_bits);
                 let kind = string_obj_to_owned(obj_from_bits(kind_bits))
                     .unwrap_or_else(|| "<exc>".to_string());
-                eprintln!("module init failed: {kind} while importing {name}");
+                let detail = obj_from_bits(exc_bits)
+                    .as_ptr()
+                    .map(|ptr| format_exception_with_traceback(_py, ptr))
+                    .unwrap_or_else(|| "<no traceback>".to_string());
+                eprintln!("module init failed: {kind} while importing {name}: {detail}");
             } else {
                 eprintln!("module cache cleared without pending exception: {name}");
             }
@@ -334,6 +544,9 @@ pub extern "C" fn molt_module_cache_del(name_bits: u64) -> u64 {
             let mut guard = cache.lock().unwrap();
             if let Some(bits) = guard.remove(&name) {
                 dec_ref_bits(_py, bits);
+            }
+            if trace_module_cache() {
+                eprintln!("module cache del: {name}");
             }
             guard.get("sys").copied()
         };
@@ -377,16 +590,20 @@ pub extern "C" fn molt_debug_trace(
     op_idx_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
+        TRACE_LAST_OP.store(op_idx_bits, Ordering::Relaxed);
+        ensure_sigtrap_handler();
         let ptr = func_ptr_bits as usize as *const u8;
         if ptr.is_null() {
             return MoltObject::none().bits();
         }
         let len = func_len_bits as usize;
         let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-        if let Ok(name) = std::str::from_utf8(bytes) {
-            eprintln!("trace {name} op={op_idx_bits}");
-        } else {
-            eprintln!("trace <invalid> op={op_idx_bits}");
+        if !trace_op_silent() {
+            if let Ok(name) = std::str::from_utf8(bytes) {
+                eprintln!("trace {name} op={op_idx_bits}");
+            } else {
+                eprintln!("trace <invalid> op={op_idx_bits}");
+            }
         }
         MoltObject::none().bits()
     })
@@ -395,8 +612,14 @@ pub extern "C" fn molt_debug_trace(
 #[no_mangle]
 pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        let debug_attr = std::env::var("MOLT_DEBUG_MODULE_GET_ATTR").as_deref() == Ok("1");
         let module_obj = obj_from_bits(module_bits);
         let Some(module_ptr) = module_obj.as_ptr() else {
+            if debug_attr {
+                let attr_name = string_obj_to_owned(obj_from_bits(attr_bits))
+                    .unwrap_or_else(|| "<attr>".to_string());
+                eprintln!("molt module_get_attr invalid module for attr={}", attr_name);
+            }
             return raise_exception::<_>(
                 _py,
                 "TypeError",
@@ -405,6 +628,11 @@ pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 
         };
         unsafe {
             if object_type_id(module_ptr) != TYPE_ID_MODULE {
+                if debug_attr {
+                    let attr_name = string_obj_to_owned(obj_from_bits(attr_bits))
+                        .unwrap_or_else(|| "<attr>".to_string());
+                    eprintln!("molt module_get_attr non-module for attr={}", attr_name);
+                }
                 return raise_exception::<_>(
                     _py,
                     "TypeError",
@@ -424,6 +652,24 @@ pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 
                 .unwrap_or_default();
             let attr_name = string_obj_to_owned(obj_from_bits(attr_bits))
                 .unwrap_or_else(|| "<attr>".to_string());
+            if debug_attr {
+                let mut present = false;
+                let order = dict_order(_dict_ptr);
+                let entries = order.len() / 2;
+                for pair in order.chunks_exact(2) {
+                    if let Some(key_name) = string_obj_to_owned(obj_from_bits(pair[0])) {
+                        if key_name == attr_name {
+                            present = true;
+                            break;
+                        }
+                    }
+                }
+                let pending = exception_pending(_py);
+                eprintln!(
+                    "molt module_get_attr missing module={} attr={} present_in_dict={} dict_entries={} pending={}",
+                    module_name, attr_name, present, entries, pending
+                );
+            }
             let msg = format!("module '{module_name}' has no attribute '{attr_name}'");
             raise_exception::<_>(_py, "AttributeError", &msg)
         }

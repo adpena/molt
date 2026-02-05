@@ -49,6 +49,10 @@ core:
 stdlib:
   collections:
     tests:
+      - tests/differential/basic/collections_basic.py
+      - tests/differential/basic/collections_counter.py
+      - tests/differential/basic/collections_abc_basic.py
+      - tests/differential/basic/collections_abc_async_buffer.py
       - tests/differential/stdlib/collections_deque.py
       - tests/differential/planned/collections_counter_basic.py
       - tests/differential/planned/collections_defaultdict_basic.py
@@ -118,14 +122,18 @@ stdlib:
     tests:
       - tests/differential/basic/asyncio_api_surface_core.py
       - tests/differential/basic/asyncio_api_surface_modules.py
+      - tests/differential/basic/asyncio_streams_echo_basic.py
+      - tests/differential/basic/asyncio_streams_echo_multi_backpressure.py
   builtins:
     tests:
       - tests/differential/basic/builtins_basic.py
+      - tests/differential/basic/bytes_translate_maketrans.py
   contextlib:
     tests:
       - tests/differential/basic/contextlib_contextmanager_basic.py
       - tests/differential/basic/contextlib_exitstack.py
       - tests/differential/basic/contextlib_asynccontextmanager.py
+      - tests/differential/basic/test_support_captured_output.py
   contextvars:
     tests:
       - tests/differential/basic/contextvars_basic.py
@@ -139,12 +147,24 @@ stdlib:
   datetime:
     tests:
       - tests/differential/planned/datetime_basic.py
+  decimal:
+    tests:
+      - tests/differential/basic/decimal_basic.py
+      - tests/differential/basic/decimal_compare_context.py
+      - tests/differential/basic/decimal_context_rounding.py
+      - tests/differential/basic/decimal_exp_quantize_signals.py
+      - tests/differential/basic/decimal_flags_clear.py
+      - tests/differential/basic/decimal_quantize_rounding.py
+      - tests/differential/basic/decimal_quantize_traps.py
+      - tests/differential/basic/decimal_rounding_modes.py
+      - tests/differential/basic/decimal_traps_signals.py
+      - tests/differential/basic/decimal_tuple_normalize.py
   enum:
     tests:
       - tests/differential/basic/enum_basic.py
   errno:
     tests:
-      - tests/differential/planned/errno_basic.py
+      - tests/differential/basic/errno_basic.py
       - tests/differential/basic/oserror_errno.py
   gc:
     tests:
@@ -156,9 +176,18 @@ stdlib:
   glob:
     tests:
       - tests/differential/planned/glob_basic.py
+  http:
+    tests:
+      - tests/differential/basic/http_upgrade_headers_httpclient.py
+      - tests/differential/basic/http_upgrade_headers_end_to_end.py
+      - tests/differential/basic/http_upgrade_asyncio_raw.py
+      - tests/differential/basic/http_upgrade_asyncio_raw_malformed.py
+  hashlib:
+    tests:
+      - tests/differential/basic/http_upgrade_headers_basic.py
   hmac:
     tests:
-      - tests/differential/planned/hmac_basic.py
+      - tests/differential/basic/hmac_basic.py
   inspect:
     tests:
       - tests/differential/planned/inspect_basic.py
@@ -167,10 +196,19 @@ stdlib:
   ipaddress:
     tests:
       - tests/differential/planned/ipaddress_basic.py
+  importlib:
+    tests:
+      - tests/differential/basic/test_support_findfile_basic.py
+      - tests/differential/basic/test_support_import_helper_basic.py
   json:
     tests:
       - tests/differential/basic/stdlib_json_basic.py
       - tests/differential/basic/stdlib_json_extended.py
+      - tests/differential/basic/json_decode_error_details.py
+      - tests/differential/basic/json_encoder_hooks.py
+      - tests/differential/basic/json_error_positions.py
+      - tests/differential/basic/json_errors_edge_cases.py
+      - tests/differential/basic/json_parse_hooks.py
   locale:
     tests:
       - tests/differential/planned/locale_basic.py
@@ -179,7 +217,7 @@ stdlib:
       - tests/differential/basic/pickle_basic.py
   pprint:
     tests:
-      - tests/differential/planned/pprint_basic.py
+      - tests/differential/basic/pprint_basic.py
   queue:
     tests:
       - tests/differential/planned/queue_basic.py
@@ -187,6 +225,9 @@ stdlib:
   random:
     tests:
       - tests/differential/basic/random_basic.py
+      - tests/differential/basic/random_distributions_basic.py
+      - tests/differential/basic/random_randbytes_basic.py
+      - tests/differential/basic/random_state_roundtrip.py
       - tests/differential/planned/random_state_basic.py
   re:
     tests:
@@ -196,6 +237,22 @@ stdlib:
     tests:
       - tests/differential/basic/select_basic.py
       - tests/differential/planned/select_poll_basic.py
+  selectors:
+    tests:
+      - tests/differential/basic/selectors_basic.py
+      - tests/differential/basic/selectors_error_cases.py
+      - tests/differential/basic/selectors_fileobj_fileno_error.py
+      - tests/differential/basic/selectors_key_data.py
+      - tests/differential/basic/selectors_key_fileobj.py
+      - tests/differential/basic/selectors_modify_get_key_errors.py
+      - tests/differential/basic/selectors_modify_key.py
+      - tests/differential/basic/selectors_multiple_clients.py
+      - tests/differential/basic/selectors_register_unregister.py
+      - tests/differential/basic/selectors_socket_ready.py
+      - tests/differential/basic/selectors_socket_ready_after_close.py
+      - tests/differential/basic/selectors_socket_write_ready.py
+      - tests/differential/basic/selectors_socketpair_ready_basic.py
+      - tests/differential/basic/selectors_timeout.py
   shlex:
     tests:
       - tests/differential/planned/shlex_basic.py
@@ -220,8 +277,9 @@ stdlib:
       - tests/differential/planned/stat_basic.py
   struct:
     tests:
-      - tests/differential/planned/struct_basic.py
+      - tests/differential/basic/struct_basic.py
       - tests/differential/basic/struct_layout_mutation.py
+      - tests/differential/basic/struct_pack_into_basic.py
   subprocess:
     tests:
       - tests/differential/planned/subprocess_run_basic.py
@@ -230,6 +288,7 @@ stdlib:
     tests:
       - tests/differential/basic/sys_basic.py
       - tests/differential/basic/sys_encoding_basic.py
+      - tests/differential/basic/sys_getframe_fields.py
       - tests/differential/planned/sys_exc_info_nested.py
   textwrap:
     tests:
@@ -238,14 +297,17 @@ stdlib:
     tests:
       - tests/differential/basic/threading_basic.py
       - tests/differential/basic/threading_local_isolation.py
-      - tests/differential/planned/threading_primitives_basic.py
+      - tests/differential/basic/threading_primitives_basic.py
   time:
     tests:
       - tests/differential/basic/time_basic.py
+      - tests/differential/basic/time_localtime_strftime.py
+      - tests/differential/basic/time_asctime_ctime_tz.py
   types:
     tests:
       - tests/differential/basic/types_basic.py
       - tests/differential/basic/types_advanced.py
+      - tests/differential/basic/types_simplenamespace_parity.py
   typing:
     tests:
       - tests/differential/planned/typing_protocol.py
@@ -259,6 +321,7 @@ stdlib:
       - tests/differential/basic/weakref_basic.py
       - tests/differential/basic/weakref_basic_gc_collect.py
       - tests/differential/basic/weakref_weakkeydict_basic.py
+      - tests/differential/basic/weakref_extended.py
 
   annotationlib:
     tests:
@@ -282,9 +345,10 @@ stdlib:
       - tests/differential/planned/code_basic.py
   codecs:
     tests:
-      - tests/differential/planned/stdlib_import_smoke_codec.py
-      - tests/differential/planned/codecs_basic.py
-      - tests/differential/planned/codecs_error_handlers_basic.py
+      - tests/differential/basic/stdlib_import_smoke_codec.py
+      - tests/differential/basic/unicode_surrogate_handling.py
+      - tests/differential/basic/codecs_basic.py
+      - tests/differential/basic/codecs_error_handlers_basic.py
   codeop:
     tests:
       - tests/differential/planned/stdlib_import_smoke_introspection.py
@@ -295,7 +359,7 @@ stdlib:
   compileall:
     tests:
       - tests/differential/planned/stdlib_capability_smoke_fs_a.py
-      - tests/differential/planned/compileall_basic.py
+      - tests/differential/basic/compileall_basic.py
   compression:
     tests:
       - tests/differential/planned/stdlib_import_smoke_314.py
@@ -305,7 +369,7 @@ stdlib:
       - tests/differential/planned/configparser_basic.py
   copyreg:
     tests:
-      - tests/differential/planned/stdlib_import_smoke_codec.py
+      - tests/differential/basic/stdlib_import_smoke_codec.py
       - tests/differential/planned/copyreg_basic.py
   cProfile:
     tests:
@@ -326,7 +390,7 @@ stdlib:
       - tests/differential/planned/dis_edge_cases.py
   encodings:
     tests:
-      - tests/differential/planned/stdlib_import_smoke_codec.py
+      - tests/differential/basic/stdlib_import_smoke_codec.py
       - tests/differential/planned/encodings_basic.py
   ensurepip:
     tests:
@@ -373,7 +437,8 @@ stdlib:
   linecache:
     tests:
       - tests/differential/planned/stdlib_capability_smoke_fs_a.py
-      - tests/differential/planned/linecache_basic.py
+      - tests/differential/basic/linecache_basic.py
+      - tests/differential/basic/linecache_missing_file.py
   mailbox:
     tests:
       - tests/differential/planned/stdlib_capability_smoke_fs_a.py
@@ -427,7 +492,7 @@ stdlib:
   pkgutil:
     tests:
       - tests/differential/planned/stdlib_capability_smoke_fs_a.py
-      - tests/differential/planned/pkgutil_basic.py
+      - tests/differential/basic/pkgutil_basic.py
   plistlib:
     tests:
       - tests/differential/planned/stdlib_capability_smoke_fs_b.py
@@ -458,7 +523,7 @@ stdlib:
   py_compile:
     tests:
       - tests/differential/planned/stdlib_capability_smoke_fs_b.py
-      - tests/differential/planned/py_compile_basic.py
+      - tests/differential/basic/py_compile_basic.py
   pyclbr:
     tests:
       - tests/differential/planned/stdlib_capability_smoke_fs_b.py
@@ -588,58 +653,98 @@ stdlib:
   zipimport:
     tests:
       - tests/differential/planned/stdlib_capability_smoke_fs_b.py
-      - tests/differential/planned/zipimport_basic.py
+      - tests/differential/basic/zipimport_basic.py
   math:
     tests:
-      - tests/differential/planned/math_predicates_basic.py
-      - tests/differential/planned/math_floor_ceil_basic.py
-      - tests/differential/planned/math_isclose_specials.py
-      - tests/differential/planned/math_fsum_prod_basic.py
-      - tests/differential/planned/math_copysign_modf_frexp.py
-      - tests/differential/planned/math_factorial_errors.py
-      - tests/differential/planned/math_domain_errors.py
-      - tests/differential/planned/math_log_zero_pow_overflow.py
-      - tests/differential/planned/math_gamma_lgamma_errors.py
-      - tests/differential/planned/math_negative_zero_rounding.py
-      - tests/differential/planned/math_ldexp_frexp_roundtrip.py
-      - tests/differential/planned/math_hypot_dist_basic.py
-      - tests/differential/planned/math_isfinite_decimal.py
+      - tests/differential/basic/math_basic_more.py
+      - tests/differential/basic/math_intrinsics_basic.py
+      - tests/differential/basic/math_intrinsics_more.py
+      - tests/differential/basic/math_intrinsics_full.py
+      - tests/differential/basic/math_trig_hyperbolic_basic.py
+      - tests/differential/basic/math_remaining_intrinsics_basic.py
+      - tests/differential/basic/math_fma_remainder_basic.py
+      - tests/differential/basic/math_predicates_basic.py
+      - tests/differential/basic/math_floor_ceil_basic.py
+      - tests/differential/basic/math_isclose_specials.py
+      - tests/differential/basic/math_fsum_prod_basic.py
+      - tests/differential/basic/math_copysign_modf_frexp.py
+      - tests/differential/basic/math_factorial_errors.py
+      - tests/differential/basic/math_domain_errors.py
+      - tests/differential/basic/math_log_zero_pow_overflow.py
+      - tests/differential/basic/math_negative_zero_rounding.py
+      - tests/differential/basic/math_ldexp_frexp_roundtrip.py
+      - tests/differential/basic/math_gamma_lgamma_errors.py
+      - tests/differential/basic/math_hypot_dist_basic.py
+      - tests/differential/basic/math_isfinite_decimal.py
   bisect:
     tests:
       - tests/differential/planned/bisect_key_basic.py
       - tests/differential/planned/bisect_edge_cases.py
   io:
     tests:
-      - tests/differential/planned/io_bytesio_basic.py
-      - tests/differential/planned/io_stringio_newline.py
-      - tests/differential/planned/io_bytesio_getbuffer.py
-      - tests/differential/planned/io_stringio_seek_tell.py
-      - tests/differential/planned/io_textiowrapper_basic.py
-      - tests/differential/planned/io_bufferedreader_readinto.py
-      - tests/differential/planned/io_bufferedwriter_flush_basic.py
-      - tests/differential/planned/io_textiowrapper_newlines.py
-      - tests/differential/planned/io_textiowrapper_newline_none.py
-      - tests/differential/planned/io_textiowrapper_newline_variants.py
-      - tests/differential/planned/io_textiowrapper_write_newline_none.py
-      - tests/differential/planned/io_newline_windows_crlf.py
+      - tests/differential/basic/io_bytesio_basic.py
+      - tests/differential/basic/io_stringio_newline.py
+      - tests/differential/basic/io_bytesio_getbuffer.py
+      - tests/differential/basic/io_stringio_seek_tell.py
+      - tests/differential/basic/io_textiowrapper_basic.py
+      - tests/differential/basic/io_bufferedreader_readinto.py
+      - tests/differential/basic/io_bufferedwriter_flush_basic.py
+      - tests/differential/basic/io_textiowrapper_newlines.py
+      - tests/differential/basic/io_textiowrapper_newline_none.py
+      - tests/differential/basic/io_textiowrapper_newline_variants.py
+      - tests/differential/basic/io_textiowrapper_write_newline_none.py
+      - tests/differential/basic/io_newline_windows_crlf.py
+      - tests/differential/basic/io_xmlcharrefreplace.py
+      - tests/differential/basic/io_text_encodings_utf16_utf32.py
+      - tests/differential/basic/io_text_encoding_utf8_sig.py
+      - tests/differential/basic/io_text_encoding_cp1252.py
+      - tests/differential/basic/io_text_encoding_charmap.py
+      - tests/differential/basic/io_isatty_regular_file.py
+      - tests/differential/basic/io_text_seek_cookie.py
+      - tests/differential/basic/io_text_seek_cookie_utf8_multibyte.py
   os:
     tests:
+      - tests/differential/basic/os_environ_basic.py
+      - tests/differential/basic/os_path_basic.py
+      - tests/differential/basic/os_path_expandvars_normpath.py
+      - tests/differential/basic/os_urandom_basic.py
       - tests/differential/planned/os_path_more.py
   pathlib:
     tests:
-      - tests/differential/planned/pathlib_basic_ops.py
+      - tests/differential/basic/pathlib_basic_ops.py
+      - tests/differential/basic/pathlib_glob_relative.py
+      - tests/differential/basic/pathlib_joinpath_fspath.py
+      - tests/differential/basic/pathlib_parse_glob.py
+      - tests/differential/basic/pathlib_parents_relative.py
+      - tests/differential/basic/pathlib_purepath_comparisons.py
+      - tests/differential/basic/pathlib_relative_to_errors.py
+      - tests/differential/basic/pathlib_resolve_expanduser.py
+      - tests/differential/basic/pathlib_with_suffix_name.py
   tempfile:
     tests:
-      - tests/differential/planned/tempfile_namedtempfile_basic.py
+      - tests/differential/basic/tempfile_namedtempfile_basic.py
   logging:
     tests:
-      - tests/differential/planned/logging_level_basic.py
+      - tests/differential/basic/logging_capturewarnings_basic.py
+      - tests/differential/basic/logging_formatter_stack_info.py
+      - tests/differential/basic/logging_level_basic.py
+      - tests/differential/basic/logging_record_thread_process.py
   traceback:
     tests:
-      - tests/differential/planned/traceback_format_exception_basic.py
+      - tests/differential/basic/traceback_chain.py
+      - tests/differential/basic/traceback_exception_object.py
+      - tests/differential/basic/traceback_print_helpers.py
   warnings:
     tests:
-      - tests/differential/planned/warnings_filter_basic_more.py
+      - tests/differential/basic/warnings_basic.py
+      - tests/differential/basic/warnings_catch_reentrancy.py
+      - tests/differential/basic/warnings_filter_basic_more.py
+      - tests/differential/basic/warnings_filter_category.py
+      - tests/differential/basic/warnings_filterwarnings.py
+      - tests/differential/basic/warnings_showwarning.py
+  test.support:
+    tests:
+      - tests/differential/basic/test_support_findfile_basic.py
   importlib:
     tests:
       - tests/differential/planned/importlib_import_module_basic.py

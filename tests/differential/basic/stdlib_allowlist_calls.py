@@ -1,18 +1,16 @@
 """Purpose: differential coverage for stdlib allowlist calls."""
 
-from molt.stdlib import (
-    copy,
-    fnmatch,
-    functools,
-    inspect,
-    itertools,
-    operator,
-    pprint,
-    string,
-    sys,
-    traceback,
-    typing,
-)
+import copy
+import fnmatch
+import functools
+import inspect
+import itertools
+import operator
+import pprint
+import string
+import sys
+import traceback
+import typing
 
 
 def foo(a, b=1):

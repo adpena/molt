@@ -16,12 +16,15 @@
 - High-impact libraries gain native implementations (Rust or WASM).
 - Examples: `molt_json`, `molt_msgpack`, `molt_cbor`, data/IO connectors.
 - Capability gating enforced at package boundaries.
+- C-extension compatibility is achieved by recompiling against `libmolt`
+  (see `docs/spec/areas/compat/0214_LIBMOLT_C_API_V0.md`).
 
-### 1.3 Tier C: CPython Bridge (Fallback)
-- For C-extension heavy dependencies, run in a CPython worker process.
-- Communication via Arrow IPC and structured codecs.
+### 1.3 Tier C: CPython Bridge (Explicit Escape Hatch)
+- Primary C-extension strategy is to recompile against `libmolt` (Tier B).
+- The CPython bridge is opt-in and capability-gated, never the default.
+- When enabled, run in a CPython worker process with Arrow IPC and structured codecs.
 - Deterministic mode restricts nondeterministic APIs unless explicitly allowed.
- - See `docs/spec/areas/compat/0210_CPYTHON_BRIDGE_PYO3.md` for the PyO3 bridge modes,
+ - See `docs/spec/areas/compat/0210_CPYTHON_BRIDGE_PYO3.md` for bridge modes,
    capability rules, and performance guardrails.
 
 ---
@@ -32,7 +35,8 @@
 3) Classify dependencies into Tier A/B/C.
 4) Compile Tier A in-process.
 5) Bind Tier B as Molt Packages.
-6) Route Tier C through the CPython bridge when enabled.
+6) Route Tier C through the CPython bridge only when explicitly enabled; otherwise
+   fail fast with a compatibility error.
 
 ---
 
@@ -53,11 +57,15 @@ Each dependency should declare:
   `manifest.json` and hashed artifacts; supports `--dry-run`, `--output`,
   `--allow-non-tier-a`, `--extras`, `--json`, and `--verbose` (markers/extras
   are evaluated against the host environment).
+- `molt extension build` (planned): build helpers and headers for `libmolt`
+  extensions, including capability metadata and ABI tagging.
+- Git sources are supported when a pinned revision (or tag/branch resolved to a
+  commit) is present; the vendor manifest records the resolved commit and tree hash.
 - Build/run tooling treats `vendor/packages` and `vendor/local` as module roots
   (and adds them to `PYTHONPATH`) when present; override with `MOLT_MODULE_ROOTS`.
-- `molt verify`: confirm hashes and capability declarations (initial; manifest + checksum
-  validation implemented, capability gating enforcement still pending).
-  (TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): capability gating enforcement in `molt verify`.)
+- `molt verify`: confirm hashes and capability declarations (manifest + checksum
+  validation plus capability/effect allowlist enforcement; packages declaring
+  capabilities/effects require an allowlist via `--capabilities` or config).
 
 ---
 
@@ -72,3 +80,4 @@ Each dependency should declare:
 - Common pure-Python libraries compile and run without modification.
 - C-extension packages have a documented fallback path via the bridge.
 - Deterministic builds fail fast on unsupported or unpinned dependencies.
+- High-value C-extensions can be recompiled against `libmolt` with stable ABI tags.

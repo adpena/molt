@@ -25,6 +25,7 @@ const INT_SHIFT: i64 = (64 - INT_WIDTH) as i64;
 const GENERATOR_CONTROL_BYTES: i32 = 48;
 const TASK_KIND_FUTURE: i64 = 0;
 const TASK_KIND_GENERATOR: i64 = 1;
+const TASK_KIND_COROUTINE: i64 = 2;
 const FUNC_DEFAULT_NONE: i64 = 1;
 const FUNC_DEFAULT_DICT_POP: i64 = 2;
 const FUNC_DEFAULT_DICT_UPDATE: i64 = 3;
@@ -32,7 +33,6 @@ const HEADER_SIZE_BYTES: i32 = 40;
 const HEADER_STATE_OFFSET: i32 = -(HEADER_SIZE_BYTES - 16);
 const HEADER_FLAGS_OFFSET: i32 = -8;
 const HEADER_HAS_PTRS_FLAG: i64 = 1;
-const HEADER_COROUTINE_FLAG: i64 = 1 << 12;
 
 fn find_zero_pred_blocks(func: &Function) -> Vec<Block> {
     let mut preds: HashMap<Block, usize> = HashMap::new();
@@ -203,9 +203,19 @@ fn emit_mark_has_ptrs(builder: &mut FunctionBuilder, obj_ptr: Value) {
         .store(MemFlags::new(), new_flags, header_ptr, 0);
 }
 
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+pub struct PgoProfileIR {
+    pub version: Option<String>,
+    pub hash: Option<String>,
+    #[serde(default)]
+    pub hot_functions: Vec<String>,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SimpleIR {
     pub functions: Vec<FunctionIR>,
+    #[serde(default)]
+    pub profile: Option<PgoProfileIR>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -494,6 +504,35 @@ pub(crate) fn elide_dead_struct_allocs(func_ir: &mut FunctionIR) {
     }
 }
 
+pub(crate) fn apply_profile_order(ir: &mut SimpleIR) {
+    let Some(profile) = ir.profile.as_ref() else {
+        return;
+    };
+    if profile.hot_functions.is_empty() {
+        return;
+    }
+    let mut ranks: HashMap<String, usize> = HashMap::new();
+    for (idx, name) in profile.hot_functions.iter().enumerate() {
+        ranks.entry(name.clone()).or_insert(idx);
+    }
+    let mut original: HashMap<String, usize> = HashMap::new();
+    for (idx, func) in ir.functions.iter().enumerate() {
+        original.entry(func.name.clone()).or_insert(idx);
+    }
+    ir.functions.sort_by(|left, right| {
+        let left_rank = ranks.get(&left.name).copied().unwrap_or(usize::MAX);
+        let right_rank = ranks.get(&right.name).copied().unwrap_or(usize::MAX);
+        if left_rank != right_rank {
+            return left_rank.cmp(&right_rank);
+        }
+        let left_idx = original.get(&left.name).copied().unwrap_or(usize::MAX);
+        let right_idx = original.get(&right.name).copied().unwrap_or(usize::MAX);
+        left_idx
+            .cmp(&right_idx)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+}
+
 fn compute_last_use(ops: &[OpIR]) -> HashMap<String, usize> {
     let mut last_use = HashMap::new();
     for (idx, op) in ops.iter().enumerate() {
@@ -599,13 +638,21 @@ fn drain_cleanup_entry_tracked(
     cleanup
 }
 
+#[derive(Clone, Copy, Hash, Eq, PartialEq, Debug)]
+pub(crate) enum TrampolineKind {
+    Plain,
+    Generator,
+    Coroutine,
+    AsyncGen,
+}
+
 #[derive(Clone, Hash, Eq, PartialEq)]
 struct TrampolineKey {
     name: String,
     arity: usize,
     has_closure: bool,
     is_import: bool,
-    is_generator: bool,
+    kind: TrampolineKind,
     closure_size: i64,
 }
 
@@ -613,7 +660,7 @@ struct TrampolineKey {
 pub(crate) struct TrampolineSpec {
     pub(crate) arity: usize,
     pub(crate) has_closure: bool,
-    pub(crate) is_generator: bool,
+    pub(crate) kind: TrampolineKind,
     pub(crate) closure_size: i64,
 }
 
@@ -621,6 +668,8 @@ pub struct SimpleBackend {
     module: ObjectModule,
     ctx: Context,
     trampoline_ids: HashMap<TrampolineKey, cranelift_module::FuncId>,
+    data_pool: HashMap<Vec<u8>, cranelift_module::DataId>,
+    next_data_id: u64,
 }
 
 struct IfFrame {
@@ -680,16 +729,40 @@ impl SimpleBackend {
             module,
             ctx,
             trampoline_ids: HashMap::new(),
+            data_pool: HashMap::new(),
+            next_data_id: 0,
         }
+    }
+
+    fn intern_data_segment(
+        module: &mut ObjectModule,
+        data_pool: &mut HashMap<Vec<u8>, cranelift_module::DataId>,
+        next_data_id: &mut u64,
+        bytes: &[u8],
+    ) -> cranelift_module::DataId {
+        if let Some(existing) = data_pool.get(bytes) {
+            return *existing;
+        }
+        let name = format!("data_pool_{}", *next_data_id);
+        *next_data_id += 1;
+        let data_id = module
+            .declare_data(&name, Linkage::Export, false, false)
+            .unwrap();
+        let mut data_ctx = DataDescription::new();
+        data_ctx.define(bytes.to_vec().into_boxed_slice());
+        module.define_data(data_id, &data_ctx).unwrap();
+        data_pool.insert(bytes.to_vec(), data_id);
+        data_id
     }
 
     pub fn compile(mut self, ir: SimpleIR) -> Vec<u8> {
         let mut ir = ir;
+        apply_profile_order(&mut ir);
         for func_ir in &mut ir.functions {
             elide_dead_struct_allocs(func_ir);
         }
-        let mut generator_funcs: HashSet<String> = HashSet::new();
-        let mut generator_closure_sizes: HashMap<String, i64> = HashMap::new();
+        let mut task_kinds: HashMap<String, TrampolineKind> = HashMap::new();
+        let mut task_closure_sizes: HashMap<String, i64> = HashMap::new();
         for func_ir in &ir.functions {
             let mut func_obj_names: HashMap<String, String> = HashMap::new();
             let mut const_values: HashMap<String, i64> = HashMap::new();
@@ -728,7 +801,11 @@ impl SimpleBackend {
                 let Some(attr) = op.s_value.as_deref() else {
                     continue;
                 };
-                if attr != "__molt_is_generator__" && attr != "__molt_closure_size__" {
+                if attr != "__molt_is_generator__"
+                    && attr != "__molt_is_coroutine__"
+                    && attr != "__molt_is_async_generator__"
+                    && attr != "__molt_closure_size__"
+                {
                     continue;
                 }
                 let args = op.args.as_ref().expect("set_attr_generic_obj args missing");
@@ -736,21 +813,39 @@ impl SimpleBackend {
                     continue;
                 };
                 match attr {
-                    "__molt_is_generator__" => {
+                    "__molt_is_generator__"
+                    | "__molt_is_coroutine__"
+                    | "__molt_is_async_generator__" => {
                         let val_name = &args[1];
-                        let is_gen = const_bools
+                        let is_true = const_bools
                             .get(val_name)
                             .copied()
                             .or_else(|| const_values.get(val_name).map(|val| *val != 0))
                             .unwrap_or(false);
-                        if is_gen {
-                            generator_funcs.insert(func_name.clone());
+                        if is_true {
+                            if !func_name.ends_with("_poll") {
+                                continue;
+                            }
+                            let kind = match attr {
+                                "__molt_is_generator__" => TrampolineKind::Generator,
+                                "__molt_is_coroutine__" => TrampolineKind::Coroutine,
+                                "__molt_is_async_generator__" => TrampolineKind::AsyncGen,
+                                _ => TrampolineKind::Plain,
+                            };
+                            if let Some(prev) = task_kinds.insert(func_name.clone(), kind) {
+                                if prev != kind {
+                                    panic!(
+                                        "conflicting task kinds for {func_name}: {:?} vs {:?}",
+                                        prev, kind
+                                    );
+                                }
+                            }
                         }
                     }
                     "__molt_closure_size__" => {
                         let val_name = &args[1];
                         if let Some(size) = const_values.get(val_name) {
-                            generator_closure_sizes.insert(func_name.clone(), *size);
+                            task_closure_sizes.insert(func_name.clone(), *size);
                         }
                     }
                     _ => {}
@@ -758,7 +853,7 @@ impl SimpleBackend {
             }
         }
         for func_ir in ir.functions {
-            self.compile_func(func_ir, &generator_funcs, &generator_closure_sizes);
+            self.compile_func(func_ir, &task_kinds, &task_closure_sizes);
         }
         let product = self.module.finish();
         product.emit().unwrap()
@@ -774,7 +869,7 @@ impl SimpleBackend {
         let TrampolineSpec {
             arity,
             has_closure,
-            is_generator,
+            kind,
             closure_size,
         } = spec;
         let is_import = matches!(linkage, Linkage::Import);
@@ -783,7 +878,7 @@ impl SimpleBackend {
             arity,
             has_closure,
             is_import,
-            is_generator,
+            kind,
             closure_size,
         };
         if let Some(id) = trampoline_ids.get(&key) {
@@ -791,9 +886,14 @@ impl SimpleBackend {
         }
         let closure_suffix = if has_closure { "_closure" } else { "" };
         let import_suffix = if is_import { "_import" } else { "" };
-        let generator_suffix = if is_generator { "_gen" } else { "" };
+        let kind_suffix = match kind {
+            TrampolineKind::Plain => "",
+            TrampolineKind::Generator => "_gen",
+            TrampolineKind::Coroutine => "_coro",
+            TrampolineKind::AsyncGen => "_asyncgen",
+        };
         let trampoline_name = format!(
-            "{func_name}__molt_trampoline_{arity}{closure_suffix}{generator_suffix}{import_suffix}"
+            "{func_name}__molt_trampoline_{arity}{closure_suffix}{kind_suffix}{import_suffix}"
         );
         let mut ctx = module.make_context();
         ctx.func.signature.params.push(AbiParam::new(types::I64));
@@ -812,96 +912,275 @@ impl SimpleBackend {
         let args_ptr = builder.block_params(entry_block)[1];
         let _args_len = builder.block_params(entry_block)[2];
 
-        if is_generator {
-            if closure_size < 0 {
-                panic!("generator closure size must be non-negative");
+        let poll_target = if matches!(
+            kind,
+            TrampolineKind::Generator | TrampolineKind::Coroutine | TrampolineKind::AsyncGen
+        ) {
+            if func_name.ends_with("_poll") {
+                func_name.to_string()
+            } else {
+                format!("{func_name}_poll")
             }
-            let payload_slots = arity + usize::from(has_closure);
-            let needed = GENERATOR_CONTROL_BYTES as i64 + (payload_slots as i64) * 8;
-            if closure_size < needed {
-                panic!("generator closure size too small for trampoline");
-            }
-
-            let mut inc_ref_obj_sig = module.make_signature();
-            inc_ref_obj_sig.params.push(AbiParam::new(types::I64));
-            let inc_ref_obj_callee = module
-                .declare_function("molt_inc_ref_obj", Linkage::Import, &inc_ref_obj_sig)
-                .unwrap();
-            let local_inc_ref_obj = module.declare_func_in_func(inc_ref_obj_callee, builder.func);
-
-            let mut poll_sig = module.make_signature();
-            poll_sig.params.push(AbiParam::new(types::I64));
-            poll_sig.returns.push(AbiParam::new(types::I64));
-            let poll_id = module
-                .declare_function(func_name, linkage, &poll_sig)
-                .unwrap();
-            let poll_ref = module.declare_func_in_func(poll_id, builder.func);
-            let poll_addr = builder.ins().func_addr(types::I64, poll_ref);
-
-            let mut task_sig = module.make_signature();
-            task_sig.params.push(AbiParam::new(types::I64));
-            task_sig.params.push(AbiParam::new(types::I64));
-            task_sig.params.push(AbiParam::new(types::I64));
-            task_sig.returns.push(AbiParam::new(types::I64));
-            let task_callee = module
-                .declare_function("molt_task_new", Linkage::Import, &task_sig)
-                .unwrap();
-            let task_local = module.declare_func_in_func(task_callee, builder.func);
-            let size_val = builder.ins().iconst(types::I64, closure_size);
-            let kind_val = builder.ins().iconst(types::I64, TASK_KIND_GENERATOR);
-            let call = builder
-                .ins()
-                .call(task_local, &[poll_addr, size_val, kind_val]);
-            let obj = builder.inst_results(call)[0];
-            let obj_ptr = unbox_ptr_value(&mut builder, obj);
-
-            let mut offset = GENERATOR_CONTROL_BYTES;
-            if has_closure {
-                builder
-                    .ins()
-                    .store(MemFlags::new(), closure_bits, obj_ptr, offset);
-                builder.ins().call(local_inc_ref_obj, &[closure_bits]);
-                offset += 8;
-            }
-            for idx in 0..arity {
-                let arg_offset = (idx * std::mem::size_of::<u64>()) as i32;
-                let arg_val = builder
-                    .ins()
-                    .load(types::I64, MemFlags::new(), args_ptr, arg_offset);
-                builder
-                    .ins()
-                    .store(MemFlags::new(), arg_val, obj_ptr, offset + arg_offset);
-                builder.ins().call(local_inc_ref_obj, &[arg_val]);
-            }
-            builder.ins().return_(&[obj]);
         } else {
-            let mut call_args = Vec::with_capacity(arity + if has_closure { 1 } else { 0 });
-            if has_closure {
-                call_args.push(closure_bits);
-            }
-            for idx in 0..arity {
-                let offset = (idx * std::mem::size_of::<u64>()) as i32;
-                let arg_val = builder
-                    .ins()
-                    .load(types::I64, MemFlags::new(), args_ptr, offset);
-                call_args.push(arg_val);
-            }
+            String::new()
+        };
 
-            let mut target_sig = module.make_signature();
-            if has_closure {
-                target_sig.params.push(AbiParam::new(types::I64));
+        match kind {
+            TrampolineKind::Generator => {
+                if closure_size < 0 {
+                    panic!("generator closure size must be non-negative");
+                }
+                let payload_slots = arity + usize::from(has_closure);
+                let needed = GENERATOR_CONTROL_BYTES as i64 + (payload_slots as i64) * 8;
+                if closure_size < needed {
+                    panic!("generator closure size too small for trampoline");
+                }
+
+                let mut inc_ref_obj_sig = module.make_signature();
+                inc_ref_obj_sig.params.push(AbiParam::new(types::I64));
+                let inc_ref_obj_callee = module
+                    .declare_function("molt_inc_ref_obj", Linkage::Import, &inc_ref_obj_sig)
+                    .unwrap();
+                let local_inc_ref_obj =
+                    module.declare_func_in_func(inc_ref_obj_callee, builder.func);
+
+                let mut poll_sig = module.make_signature();
+                poll_sig.params.push(AbiParam::new(types::I64));
+                poll_sig.returns.push(AbiParam::new(types::I64));
+                let poll_id = module
+                    .declare_function(&poll_target, linkage, &poll_sig)
+                    .unwrap();
+                let poll_ref = module.declare_func_in_func(poll_id, builder.func);
+                let poll_addr = builder.ins().func_addr(types::I64, poll_ref);
+
+                let mut task_sig = module.make_signature();
+                task_sig.params.push(AbiParam::new(types::I64));
+                task_sig.params.push(AbiParam::new(types::I64));
+                task_sig.params.push(AbiParam::new(types::I64));
+                task_sig.returns.push(AbiParam::new(types::I64));
+                let task_callee = module
+                    .declare_function("molt_task_new", Linkage::Import, &task_sig)
+                    .unwrap();
+                let task_local = module.declare_func_in_func(task_callee, builder.func);
+                let size_val = builder.ins().iconst(types::I64, closure_size);
+                let kind_val = builder.ins().iconst(types::I64, TASK_KIND_GENERATOR);
+                let call = builder
+                    .ins()
+                    .call(task_local, &[poll_addr, size_val, kind_val]);
+                let obj = builder.inst_results(call)[0];
+                let obj_ptr = unbox_ptr_value(&mut builder, obj);
+
+                let mut offset = GENERATOR_CONTROL_BYTES;
+                if has_closure {
+                    builder
+                        .ins()
+                        .store(MemFlags::new(), closure_bits, obj_ptr, offset);
+                    builder.ins().call(local_inc_ref_obj, &[closure_bits]);
+                    offset += 8;
+                }
+                for idx in 0..arity {
+                    let arg_offset = (idx * std::mem::size_of::<u64>()) as i32;
+                    let arg_val =
+                        builder
+                            .ins()
+                            .load(types::I64, MemFlags::new(), args_ptr, arg_offset);
+                    builder
+                        .ins()
+                        .store(MemFlags::new(), arg_val, obj_ptr, offset + arg_offset);
+                    builder.ins().call(local_inc_ref_obj, &[arg_val]);
+                }
+                builder.ins().return_(&[obj]);
             }
-            for _ in 0..arity {
-                target_sig.params.push(AbiParam::new(types::I64));
+            TrampolineKind::Coroutine => {
+                if closure_size < 0 {
+                    panic!("coroutine closure size must be non-negative");
+                }
+                let payload_slots = arity + usize::from(has_closure);
+                let needed = (payload_slots as i64) * 8;
+                if closure_size < needed {
+                    panic!("coroutine closure size too small for trampoline");
+                }
+
+                let mut poll_sig = module.make_signature();
+                poll_sig.params.push(AbiParam::new(types::I64));
+                poll_sig.returns.push(AbiParam::new(types::I64));
+                let poll_id = module
+                    .declare_function(&poll_target, linkage, &poll_sig)
+                    .unwrap();
+                let poll_ref = module.declare_func_in_func(poll_id, builder.func);
+                let poll_addr = builder.ins().func_addr(types::I64, poll_ref);
+
+                let mut task_sig = module.make_signature();
+                task_sig.params.push(AbiParam::new(types::I64));
+                task_sig.params.push(AbiParam::new(types::I64));
+                task_sig.params.push(AbiParam::new(types::I64));
+                task_sig.returns.push(AbiParam::new(types::I64));
+                let task_callee = module
+                    .declare_function("molt_task_new", Linkage::Import, &task_sig)
+                    .unwrap();
+                let task_local = module.declare_func_in_func(task_callee, builder.func);
+                let size_val = builder.ins().iconst(types::I64, closure_size);
+                let kind_val = builder.ins().iconst(types::I64, TASK_KIND_COROUTINE);
+                let call = builder
+                    .ins()
+                    .call(task_local, &[poll_addr, size_val, kind_val]);
+                let obj = builder.inst_results(call)[0];
+                if payload_slots > 0 {
+                    let mut inc_ref_obj_sig = module.make_signature();
+                    inc_ref_obj_sig.params.push(AbiParam::new(types::I64));
+                    let inc_ref_obj_callee = module
+                        .declare_function("molt_inc_ref_obj", Linkage::Import, &inc_ref_obj_sig)
+                        .unwrap();
+                    let local_inc_ref_obj =
+                        module.declare_func_in_func(inc_ref_obj_callee, builder.func);
+                    let obj_ptr = unbox_ptr_value(&mut builder, obj);
+
+                    let mut offset = 0i32;
+                    if has_closure {
+                        builder
+                            .ins()
+                            .store(MemFlags::new(), closure_bits, obj_ptr, offset);
+                        builder.ins().call(local_inc_ref_obj, &[closure_bits]);
+                        offset += 8;
+                    }
+                    for idx in 0..arity {
+                        let arg_offset = (idx * std::mem::size_of::<u64>()) as i32;
+                        let arg_val =
+                            builder
+                                .ins()
+                                .load(types::I64, MemFlags::new(), args_ptr, arg_offset);
+                        builder
+                            .ins()
+                            .store(MemFlags::new(), arg_val, obj_ptr, offset + arg_offset);
+                        builder.ins().call(local_inc_ref_obj, &[arg_val]);
+                    }
+                }
+
+                let mut get_sig = module.make_signature();
+                get_sig.returns.push(AbiParam::new(types::I64));
+                let get_callee = module
+                    .declare_function("molt_cancel_token_get_current", Linkage::Import, &get_sig)
+                    .unwrap();
+                let get_local = module.declare_func_in_func(get_callee, builder.func);
+                let get_call = builder.ins().call(get_local, &[]);
+                let current_token = builder.inst_results(get_call)[0];
+
+                let mut reg_sig = module.make_signature();
+                reg_sig.params.push(AbiParam::new(types::I64));
+                reg_sig.params.push(AbiParam::new(types::I64));
+                reg_sig.returns.push(AbiParam::new(types::I64));
+                let reg_callee = module
+                    .declare_function("molt_task_register_token_owned", Linkage::Import, &reg_sig)
+                    .unwrap();
+                let reg_local = module.declare_func_in_func(reg_callee, builder.func);
+                builder.ins().call(reg_local, &[obj, current_token]);
+
+                builder.ins().return_(&[obj]);
             }
-            target_sig.returns.push(AbiParam::new(types::I64));
-            let target_id = module
-                .declare_function(func_name, linkage, &target_sig)
-                .unwrap();
-            let target_ref = module.declare_func_in_func(target_id, builder.func);
-            let call = builder.ins().call(target_ref, &call_args);
-            let res = builder.inst_results(call)[0];
-            builder.ins().return_(&[res]);
+            TrampolineKind::AsyncGen => {
+                if closure_size < 0 {
+                    panic!("async generator closure size must be non-negative");
+                }
+                let payload_slots = arity + usize::from(has_closure);
+                let needed = GENERATOR_CONTROL_BYTES as i64 + (payload_slots as i64) * 8;
+                if closure_size < needed {
+                    panic!("async generator closure size too small for trampoline");
+                }
+
+                let mut inc_ref_obj_sig = module.make_signature();
+                inc_ref_obj_sig.params.push(AbiParam::new(types::I64));
+                let inc_ref_obj_callee = module
+                    .declare_function("molt_inc_ref_obj", Linkage::Import, &inc_ref_obj_sig)
+                    .unwrap();
+                let local_inc_ref_obj =
+                    module.declare_func_in_func(inc_ref_obj_callee, builder.func);
+
+                let mut poll_sig = module.make_signature();
+                poll_sig.params.push(AbiParam::new(types::I64));
+                poll_sig.returns.push(AbiParam::new(types::I64));
+                let poll_id = module
+                    .declare_function(&poll_target, linkage, &poll_sig)
+                    .unwrap();
+                let poll_ref = module.declare_func_in_func(poll_id, builder.func);
+                let poll_addr = builder.ins().func_addr(types::I64, poll_ref);
+
+                let mut task_sig = module.make_signature();
+                task_sig.params.push(AbiParam::new(types::I64));
+                task_sig.params.push(AbiParam::new(types::I64));
+                task_sig.params.push(AbiParam::new(types::I64));
+                task_sig.returns.push(AbiParam::new(types::I64));
+                let task_callee = module
+                    .declare_function("molt_task_new", Linkage::Import, &task_sig)
+                    .unwrap();
+                let task_local = module.declare_func_in_func(task_callee, builder.func);
+                let size_val = builder.ins().iconst(types::I64, closure_size);
+                let kind_val = builder.ins().iconst(types::I64, TASK_KIND_GENERATOR);
+                let call = builder
+                    .ins()
+                    .call(task_local, &[poll_addr, size_val, kind_val]);
+                let obj = builder.inst_results(call)[0];
+                let obj_ptr = unbox_ptr_value(&mut builder, obj);
+
+                let mut offset = GENERATOR_CONTROL_BYTES;
+                if has_closure {
+                    builder
+                        .ins()
+                        .store(MemFlags::new(), closure_bits, obj_ptr, offset);
+                    builder.ins().call(local_inc_ref_obj, &[closure_bits]);
+                    offset += 8;
+                }
+                for idx in 0..arity {
+                    let arg_offset = (idx * std::mem::size_of::<u64>()) as i32;
+                    let arg_val =
+                        builder
+                            .ins()
+                            .load(types::I64, MemFlags::new(), args_ptr, arg_offset);
+                    builder
+                        .ins()
+                        .store(MemFlags::new(), arg_val, obj_ptr, offset + arg_offset);
+                    builder.ins().call(local_inc_ref_obj, &[arg_val]);
+                }
+
+                let mut asyncgen_sig = module.make_signature();
+                asyncgen_sig.params.push(AbiParam::new(types::I64));
+                asyncgen_sig.returns.push(AbiParam::new(types::I64));
+                let asyncgen_callee = module
+                    .declare_function("molt_asyncgen_new", Linkage::Import, &asyncgen_sig)
+                    .unwrap();
+                let asyncgen_local = module.declare_func_in_func(asyncgen_callee, builder.func);
+                let asyncgen_call = builder.ins().call(asyncgen_local, &[obj]);
+                let asyncgen_obj = builder.inst_results(asyncgen_call)[0];
+                builder.ins().return_(&[asyncgen_obj]);
+            }
+            TrampolineKind::Plain => {
+                let mut call_args = Vec::with_capacity(arity + if has_closure { 1 } else { 0 });
+                if has_closure {
+                    call_args.push(closure_bits);
+                }
+                for idx in 0..arity {
+                    let offset = (idx * std::mem::size_of::<u64>()) as i32;
+                    let arg_val = builder
+                        .ins()
+                        .load(types::I64, MemFlags::new(), args_ptr, offset);
+                    call_args.push(arg_val);
+                }
+
+                let mut target_sig = module.make_signature();
+                if has_closure {
+                    target_sig.params.push(AbiParam::new(types::I64));
+                }
+                for _ in 0..arity {
+                    target_sig.params.push(AbiParam::new(types::I64));
+                }
+                target_sig.returns.push(AbiParam::new(types::I64));
+                let target_id = module
+                    .declare_function(func_name, linkage, &target_sig)
+                    .unwrap();
+                let target_ref = module.declare_func_in_func(target_id, builder.func);
+                let call = builder.ins().call(target_ref, &call_args);
+                let res = builder.inst_results(call)[0];
+                builder.ins().return_(&[res]);
+            }
         }
 
         builder.seal_all_blocks();
@@ -920,8 +1199,8 @@ impl SimpleBackend {
     fn compile_func(
         &mut self,
         func_ir: FunctionIR,
-        generator_funcs: &HashSet<String>,
-        generator_closure_sizes: &HashMap<String, i64>,
+        task_kinds: &HashMap<String, TrampolineKind>,
+        task_closure_sizes: &HashMap<String, i64>,
     ) {
         let mut builder_ctx = FunctionBuilderContext::new();
         self.module.clear_context(&mut self.ctx);
@@ -1252,22 +1531,16 @@ impl SimpleBackend {
                 "const_bigint" => {
                     let s = op.s_value.as_ref().expect("BigInt string not found");
                     let out_name = op.out.unwrap();
-                    let data_id = self
-                        .module
-                        .declare_data(
-                            &format!("bigint_{}_{}", func_ir.name, out_name),
-                            Linkage::Export,
-                            false,
-                            false,
-                        )
-                        .unwrap();
-                    let mut data_ctx = DataDescription::new();
-                    data_ctx.define(s.as_bytes().to_vec().into_boxed_slice());
-                    self.module.define_data(data_id, &data_ctx).unwrap();
-
+                    let bytes = s.as_bytes();
+                    let data_id = Self::intern_data_segment(
+                        &mut self.module,
+                        &mut self.data_pool,
+                        &mut self.next_data_id,
+                        bytes,
+                    );
                     let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
                     let ptr = builder.ins().symbol_value(types::I64, global_ptr);
-                    let len = builder.ins().iconst(types::I64, s.len() as i64);
+                    let len = builder.ins().iconst(types::I64, bytes.len() as i64);
 
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -1323,24 +1596,21 @@ impl SimpleBackend {
                     def_var_named(&mut builder, &vars, op.out.unwrap(), iconst);
                 }
                 "const_str" => {
-                    let s = op.s_value.as_ref().unwrap();
+                    let bytes = op
+                        .bytes
+                        .as_deref()
+                        .unwrap_or_else(|| op.s_value.as_ref().unwrap().as_bytes());
                     let out_name = op.out.unwrap();
-                    let data_id = self
-                        .module
-                        .declare_data(
-                            &format!("str_{}_{}", func_ir.name, out_name),
-                            Linkage::Export,
-                            false,
-                            false,
-                        )
-                        .unwrap();
-                    let mut data_ctx = DataDescription::new();
-                    data_ctx.define(s.as_bytes().to_vec().into_boxed_slice());
-                    self.module.define_data(data_id, &data_ctx).unwrap();
+                    let data_id = Self::intern_data_segment(
+                        &mut self.module,
+                        &mut self.data_pool,
+                        &mut self.next_data_id,
+                        bytes,
+                    );
 
                     let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
                     let ptr = builder.ins().symbol_value(types::I64, global_ptr);
-                    let len = builder.ins().iconst(types::I64, s.len() as i64);
+                    let len = builder.ins().iconst(types::I64, bytes.len() as i64);
 
                     def_var_named(&mut builder, &vars, format!("{}_ptr", out_name), ptr);
                     def_var_named(&mut builder, &vars, format!("{}_len", out_name), len);
@@ -1369,18 +1639,12 @@ impl SimpleBackend {
                 "const_bytes" => {
                     let bytes = op.bytes.as_ref().expect("Bytes not found");
                     let out_name = op.out.unwrap();
-                    let data_id = self
-                        .module
-                        .declare_data(
-                            &format!("bytes_{}_{}", func_ir.name, out_name),
-                            Linkage::Export,
-                            false,
-                            false,
-                        )
-                        .unwrap();
-                    let mut data_ctx = DataDescription::new();
-                    data_ctx.define(bytes.clone().into_boxed_slice());
-                    self.module.define_data(data_id, &data_ctx).unwrap();
+                    let data_id = Self::intern_data_segment(
+                        &mut self.module,
+                        &mut self.data_pool,
+                        &mut self.next_data_id,
+                        bytes,
+                    );
 
                     let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
                     let ptr = builder.ins().symbol_value(types::I64, global_ptr);
@@ -2371,7 +2635,7 @@ impl SimpleBackend {
                 "list_new" => {
                     let args = op.args.as_ref().unwrap();
                     let out_name = op.out.unwrap();
-                    let size = builder.ins().iconst(types::I64, args.len() as i64);
+                    let size = builder.ins().iconst(types::I64, box_int(args.len() as i64));
 
                     let mut new_sig = self.module.make_signature();
                     new_sig.params.push(AbiParam::new(types::I64));
@@ -2513,7 +2777,7 @@ impl SimpleBackend {
                 "tuple_new" => {
                     let args = op.args.as_ref().unwrap();
                     let out_name = op.out.unwrap();
-                    let size = builder.ins().iconst(types::I64, args.len() as i64);
+                    let size = builder.ins().iconst(types::I64, box_int(args.len() as i64));
 
                     let mut new_sig = self.module.make_signature();
                     new_sig.params.push(AbiParam::new(types::I64));
@@ -6275,7 +6539,7 @@ impl SimpleBackend {
                         TrampolineSpec {
                             arity: arity as usize,
                             has_closure: false,
-                            is_generator: false,
+                            kind: TrampolineKind::Plain,
                             closure_size: 0,
                         },
                     );
@@ -6302,13 +6566,18 @@ impl SimpleBackend {
                 "func_new" => {
                     let func_name = op.s_value.as_ref().unwrap();
                     let arity = op.value.unwrap();
-                    let is_generator = generator_funcs.contains(func_name);
-                    let closure_size = if is_generator {
-                        *generator_closure_sizes.get(func_name).unwrap_or_else(|| {
-                            panic!("generator closure size missing for {func_name}")
-                        })
+                    let kind = if func_name.ends_with("_poll") {
+                        task_kinds
+                            .get(func_name)
+                            .copied()
+                            .unwrap_or(TrampolineKind::Plain)
                     } else {
+                        TrampolineKind::Plain
+                    };
+                    let closure_size = if kind == TrampolineKind::Plain {
                         0
+                    } else {
+                        *task_closure_sizes.get(func_name).unwrap_or(&0)
                     };
                     let mut func_sig = self.module.make_signature();
                     if func_name.ends_with("_poll") {
@@ -6333,7 +6602,7 @@ impl SimpleBackend {
                         TrampolineSpec {
                             arity: arity as usize,
                             has_closure: false,
-                            is_generator,
+                            kind,
                             closure_size,
                         },
                     );
@@ -6360,13 +6629,18 @@ impl SimpleBackend {
                 "func_new_closure" => {
                     let func_name = op.s_value.as_ref().unwrap();
                     let arity = op.value.unwrap();
-                    let is_generator = generator_funcs.contains(func_name);
-                    let closure_size = if is_generator {
-                        *generator_closure_sizes.get(func_name).unwrap_or_else(|| {
-                            panic!("generator closure size missing for {func_name}")
-                        })
+                    let kind = if func_name.ends_with("_poll") {
+                        task_kinds
+                            .get(func_name)
+                            .copied()
+                            .unwrap_or(TrampolineKind::Plain)
                     } else {
+                        TrampolineKind::Plain
+                    };
+                    let closure_size = if kind == TrampolineKind::Plain {
                         0
+                    } else {
+                        *task_closure_sizes.get(func_name).unwrap_or(&0)
                     };
                     let closure_name = op
                         .args
@@ -6399,7 +6673,7 @@ impl SimpleBackend {
                         TrampolineSpec {
                             arity: arity as usize,
                             has_closure: true,
-                            is_generator,
+                            kind,
                             closure_size,
                         },
                     );
@@ -6434,7 +6708,19 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[2]).expect("firstlineno not found");
                     let linetable_bits =
                         var_get(&mut builder, &vars, &args[3]).expect("linetable not found");
+                    let varnames_bits =
+                        var_get(&mut builder, &vars, &args[4]).expect("varnames not found");
+                    let argcount_bits =
+                        var_get(&mut builder, &vars, &args[5]).expect("argcount not found");
+                    let posonlyargcount_bits =
+                        var_get(&mut builder, &vars, &args[6]).expect("posonly not found");
+                    let kwonlyargcount_bits =
+                        var_get(&mut builder, &vars, &args[7]).expect("kwonly not found");
                     let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -6452,6 +6738,10 @@ impl SimpleBackend {
                             *name_bits,
                             *firstlineno_bits,
                             *linetable_bits,
+                            *varnames_bits,
+                            *argcount_bits,
+                            *posonlyargcount_bits,
+                            *kwonlyargcount_bits,
                         ],
                     );
                     let res = builder.inst_results(call)[0];
@@ -8644,8 +8934,7 @@ impl SimpleBackend {
                 }
                 "getframe" => {
                     let args = op.args.as_ref().unwrap();
-                    let depth =
-                        var_get(&mut builder, &vars, &args[0]).expect("depth not found");
+                    let depth = var_get(&mut builder, &vars, &args[0]).expect("depth not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -8939,13 +9228,9 @@ impl SimpleBackend {
                     }
                     reachable_blocks.insert(target_block);
                     reachable_blocks.insert(fallthrough);
-                    builder.ins().brif(
-                        cond,
-                        target_block,
-                        &[],
-                        fallthrough,
-                        &fallthrough_args,
-                    );
+                    builder
+                        .ins()
+                        .brif(cond, target_block, &[], fallthrough, &fallthrough_args);
                     switch_to_block_tracking(&mut builder, fallthrough, &mut is_block_filled);
                     if let Some((name, param)) = preserved_param {
                         def_var_named(&mut builder, &vars, name, param);
@@ -9602,10 +9887,10 @@ impl SimpleBackend {
                 "alloc_task" => {
                     let closure_size = op.value.unwrap();
                     let task_kind = op.task_kind.as_deref().unwrap_or("future");
-                    let (kind_bits, payload_base, mark_coroutine) = match task_kind {
-                        "generator" => (TASK_KIND_GENERATOR, GENERATOR_CONTROL_BYTES, false),
-                        "future" => (TASK_KIND_FUTURE, 0, false),
-                        "coroutine" => (TASK_KIND_FUTURE, 0, true),
+                    let (kind_bits, payload_base) = match task_kind {
+                        "generator" => (TASK_KIND_GENERATOR, GENERATOR_CONTROL_BYTES),
+                        "future" => (TASK_KIND_FUTURE, 0),
+                        "coroutine" => (TASK_KIND_COROUTINE, 0),
                         _ => panic!("unknown task kind: {task_kind}"),
                     };
                     let size = builder.ins().iconst(types::I64, closure_size);
@@ -9637,19 +9922,6 @@ impl SimpleBackend {
                     let call = builder.ins().call(task_local, &[poll_addr, size, kind_val]);
                     let obj = builder.inst_results(call)[0];
                     let obj_ptr = unbox_ptr_value(&mut builder, obj);
-                    if mark_coroutine {
-                        let flags_ptr = builder
-                            .ins()
-                            .iadd_imm(obj_ptr, i64::from(HEADER_FLAGS_OFFSET));
-                        let flags = builder
-                            .ins()
-                            .load(types::I64, MemFlags::new(), flags_ptr, 0);
-                        let new_flags = builder.ins().bor_imm(flags, HEADER_COROUTINE_FLAG);
-                        builder
-                            .ins()
-                            .store(MemFlags::new(), new_flags, flags_ptr, 0);
-                    }
-
                     if let Some(args_names) = &op.args {
                         for (i, name) in args_names.iter().enumerate() {
                             let arg_val = var_get(&mut builder, &vars, name)
@@ -9676,17 +9948,6 @@ impl SimpleBackend {
                         let get_call = builder.ins().call(get_local, &[]);
                         let current_token = builder.inst_results(get_call)[0];
 
-                        let mut new_sig = self.module.make_signature();
-                        new_sig.params.push(AbiParam::new(types::I64));
-                        new_sig.returns.push(AbiParam::new(types::I64));
-                        let new_callee = self
-                            .module
-                            .declare_function("molt_cancel_token_new", Linkage::Import, &new_sig)
-                            .unwrap();
-                        let new_local = self.module.declare_func_in_func(new_callee, builder.func);
-                        let new_call = builder.ins().call(new_local, &[current_token]);
-                        let new_token = builder.inst_results(new_call)[0];
-
                         let mut reg_sig = self.module.make_signature();
                         reg_sig.params.push(AbiParam::new(types::I64));
                         reg_sig.params.push(AbiParam::new(types::I64));
@@ -9700,7 +9961,7 @@ impl SimpleBackend {
                             )
                             .unwrap();
                         let reg_local = self.module.declare_func_in_func(reg_callee, builder.func);
-                        builder.ins().call(reg_local, &[obj, new_token]);
+                        builder.ins().call(reg_local, &[obj, current_token]);
                     }
 
                     output_is_ptr = false;

@@ -2720,6 +2720,26 @@ const wsHostConnect = (urlPtr, urlLen, outHandlePtr) => {
   return 0;
 };
 
+const wsHostPoll = (handle, events) => {
+  const entry = wsEntryForHandle(handle);
+  if (!entry) return -EBADF;
+  if (entry.state === 'error') return -(entry.error || ECONNRESET);
+  if (entry.state === 'closed') {
+    return IO_EVENT_ERROR | IO_EVENT_READ | IO_EVENT_WRITE;
+  }
+  let ready = 0;
+  if ((events & IO_EVENT_READ) !== 0) {
+    if (entry.queue.length) ready |= IO_EVENT_READ;
+  }
+  if ((events & IO_EVENT_WRITE) !== 0) {
+    if (entry.state === 'open') {
+      const buffered = entry.ws && typeof entry.ws.bufferedAmount === 'number' ? entry.ws.bufferedAmount : 0;
+      if (buffered <= WS_BUFFER_MAX) ready |= IO_EVENT_WRITE;
+    }
+  }
+  return ready;
+};
+
 const wsHostSend = (handle, dataPtr, len) => {
   const entry = wsEntryForHandle(handle);
   if (!entry) return -EBADF;
@@ -3413,6 +3433,7 @@ const runDirectLink = async () => {
     molt_socket_wait_host: socketHostWait,
     molt_socket_has_ipv6_host: socketHasIpv6Host,
     molt_ws_connect_host: wsHostConnect,
+    molt_ws_poll_host: wsHostPoll,
     molt_ws_send_host: wsHostSend,
     molt_ws_recv_host: wsHostRecv,
     molt_ws_close_host: wsHostClose,
@@ -3560,6 +3581,7 @@ const runLinked = async () => {
   importObject.env.molt_socket_wait_host = socketHostWait;
   importObject.env.molt_socket_has_ipv6_host = socketHasIpv6Host;
   importObject.env.molt_ws_connect_host = wsHostConnect;
+  importObject.env.molt_ws_poll_host = wsHostPoll;
   importObject.env.molt_ws_send_host = wsHostSend;
   importObject.env.molt_ws_recv_host = wsHostRecv;
   importObject.env.molt_ws_close_host = wsHostClose;
@@ -3595,10 +3617,16 @@ const runMain = async () => {
   inputHasRuntimeImports = outputImports.funcImports.some(
     (entry) => entry.module === 'molt_runtime'
   );
+  if (inputHasRuntimeImports && !linkedBuffer) {
+    throw new Error(
+      'Linked wasm required for Molt runtime outputs. Rebuild with --linked or set MOLT_WASM_LINK=1 to emit output_linked.wasm.'
+    );
+  }
   if (!inputHasRuntimeImports && !linkedBuffer) {
     linkedPath = wasmPath;
     linkedBuffer = wasmBuffer;
   }
+  // TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): re-enable safe direct-linking by relocating the runtime heap base or enforcing non-overlapping memory layouts to avoid wasm-ld in hot loops.
   runtimeCallIndirectNames = runtimeImportsDesc.funcImports
     .filter((entry) => entry.module === 'env' && entry.name.startsWith('molt_call_indirect'))
     .map((entry) => entry.name);
@@ -3609,7 +3637,9 @@ const runMain = async () => {
     preferLinkedEnv === undefined ||
     !['0', 'false', 'no', 'off'].includes(preferLinkedEnv.toLowerCase());
   const useLinked =
-    process.env.MOLT_WASM_LINKED === '1' || (preferLinked && linkedBuffer);
+    inputHasRuntimeImports ||
+    process.env.MOLT_WASM_LINKED === '1' ||
+    (preferLinked && linkedBuffer);
   const runner = useLinked ? runLinked : runDirectLink;
   await runner();
 };

@@ -23,3 +23,28 @@ lst = list(range(1, 6, 2))
 print(len(lst))
 print(lst[0])
 print(lst[-1])
+
+
+class Indexable:
+    def __index__(self):
+        return 4
+
+
+print(list(range(Indexable())))
+total = 0
+for i in range(Indexable()):
+    total += i
+print(total)
+
+try:
+    list(range(1, 3, 0))
+    print("range-step-zero-list-ok")
+except ValueError:
+    print("range-step-zero-list-valueerror")
+
+try:
+    for _ in range(1, 3, 0):
+        pass
+    print("range-step-zero-loop-ok")
+except ValueError:
+    print("range-step-zero-loop-valueerror")
