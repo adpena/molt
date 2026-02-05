@@ -24,6 +24,8 @@ jobs:
         run: uv sync --frozen --python ${{ matrix.python-version }}
       - name: Lint
         run: uv run ruff check .
+      - name: Stdlib intrinsics lint
+        run: uv run python tools/check_stdlib_intrinsics.py
       - name: Type check
         run: uv run ty check src
       - name: Verified subset manifest

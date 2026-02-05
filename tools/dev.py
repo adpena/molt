@@ -71,9 +71,14 @@ def run_uv(
             python == "3.14"
             and sys.platform == "darwin"
             and platform.machine().lower() in {"arm64", "aarch64"}
-            and shutil.which("python3.14")
         ):
-            cmd.append("--no-managed-python")
+            if shutil.which("python3.14"):
+                cmd.append("--no-managed-python")
+            else:
+                raise RuntimeError(
+                    "uv-managed Python 3.14 hangs on arm64; install python3.14 "
+                    "or remove 3.14 from the test matrix."
+                )
     cmd.extend(args)
     run_env = (env or os.environ).copy()
     run_env.setdefault("PYTHONUNBUFFERED", "1")
@@ -103,6 +108,11 @@ def main() -> None:
         run_uv(["ty", "check", "src"], python=TEST_PYTHONS[0], tty=use_tty)
         run_uv(
             ["python3", "tools/verified_subset.py", "check"],
+            python=TEST_PYTHONS[0],
+            tty=use_tty,
+        )
+        run_uv(
+            ["python3", "tools/check_stdlib_intrinsics.py"],
             python=TEST_PYTHONS[0],
             tty=use_tty,
         )

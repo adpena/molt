@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any, Callable, TextIO, cast
 from types import ModuleType
 
-import importlib as _importlib
 import io as _io
 import os as _os
 import string as _string
@@ -13,11 +12,58 @@ import sys as _sys
 import time as _time
 import traceback as _traceback
 
-try:
-    _capabilities_mod = _importlib.import_module("molt.capabilities")
-except Exception:
-    _capabilities_mod = None
-_capabilities: ModuleType | None = _capabilities_mod
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+
+_CAP_REQUIRE = None
+_RLOCK_NEW = None
+_RLOCK_ACQUIRE = None
+_RLOCK_RELEASE = None
+_RLOCK_LOCKED = None
+_RLOCK_DROP = None
+_THREAD_CURRENT_IDENT = None
+_GETPID = None
+_MAIN_THREAD_IDENT: int | None = None
+_MAIN_PROCESS_ID: int | None = None
+
+
+def _ensure_caps() -> None:
+    global _CAP_REQUIRE
+    if _CAP_REQUIRE is not None:
+        return
+    _CAP_REQUIRE = _require_intrinsic("molt_capabilities_require", globals())
+
+
+def _ensure_lock_intrinsics() -> None:
+    global _RLOCK_NEW, _RLOCK_ACQUIRE, _RLOCK_RELEASE, _RLOCK_LOCKED, _RLOCK_DROP
+    if (
+        _RLOCK_NEW is not None
+        and _RLOCK_ACQUIRE is not None
+        and _RLOCK_RELEASE is not None
+        and _RLOCK_LOCKED is not None
+        and _RLOCK_DROP is not None
+    ):
+        return
+    _RLOCK_NEW = _require_intrinsic("molt_rlock_new", globals())
+    _RLOCK_ACQUIRE = _require_intrinsic("molt_rlock_acquire", globals())
+    _RLOCK_RELEASE = _require_intrinsic("molt_rlock_release", globals())
+    _RLOCK_LOCKED = _require_intrinsic("molt_rlock_locked", globals())
+    _RLOCK_DROP = _require_intrinsic("molt_rlock_drop", globals())
+
+
+def _ensure_record_intrinsics() -> None:
+    global _THREAD_CURRENT_IDENT, _GETPID, _MAIN_THREAD_IDENT, _MAIN_PROCESS_ID
+    if _THREAD_CURRENT_IDENT is None:
+        _THREAD_CURRENT_IDENT = _require_intrinsic(
+            "molt_thread_current_ident", globals()
+        )
+    if _GETPID is None:
+        _GETPID = _require_intrinsic("molt_getpid", globals())
+    if _MAIN_THREAD_IDENT is None:
+        _MAIN_THREAD_IDENT = int(_THREAD_CURRENT_IDENT())
+    if _MAIN_PROCESS_ID is None:
+        _MAIN_PROCESS_ID = int(_GETPID())
+
 
 __all__ = [
     "BASIC_FORMAT",
@@ -95,12 +141,10 @@ _start_time = _init_start_time()
 
 
 def _require_fs_write() -> None:
-    if _capabilities is None:
+    _ensure_caps()
+    if _CAP_REQUIRE is None:
         return None
-    try:
-        _capabilities.require("fs.write")
-    except Exception:
-        raise
+    _CAP_REQUIRE("fs.write")
 
 
 def addLevelName(level: int, level_name: str) -> None:
@@ -129,18 +173,55 @@ def _check_level(level: int | str | None) -> int:
     raise TypeError("Level must be an int or str")
 
 
+def _percent_fallback(fmt: str, mapping: dict[str, Any]) -> str:
+    sentinel = "__MOLT_PERCENT__"
+    out = fmt.replace("%%", sentinel)
+    for key, value in mapping.items():
+        token = f"%({key})"
+        for spec in ("s", "d", "r", "f"):
+            needle = f"{token}{spec}"
+            if spec == "d":
+                try:
+                    repl = str(int(value))
+                except Exception:
+                    repl = str(value)
+            elif spec == "f":
+                try:
+                    repl = f"{float(value):f}"
+                except Exception:
+                    repl = str(value)
+            elif spec == "r":
+                repl = repr(value)
+            else:
+                repl = str(value)
+            out = out.replace(needle, repl)
+    return out.replace(sentinel, "%")
+
+
 class _RLock:
     def __init__(self) -> None:
-        self._count = 0
+        _ensure_lock_intrinsics()
+        if _RLOCK_NEW is None:
+            raise RuntimeError("logging rlock intrinsics unavailable")
+        self._handle = _RLOCK_NEW()
 
-    def acquire(self) -> bool:
-        self._count += 1
-        return True
+    def acquire(self, blocking: bool = True, timeout: float = -1.0) -> bool:
+        _ensure_lock_intrinsics()
+        if _RLOCK_ACQUIRE is None:
+            raise RuntimeError("logging rlock intrinsics unavailable")
+        return bool(_RLOCK_ACQUIRE(self._handle, blocking, timeout))
 
     def release(self) -> None:
-        if self._count <= 0:
-            raise RuntimeError("release unlocked lock")
-        self._count -= 1
+        _ensure_lock_intrinsics()
+        if _RLOCK_RELEASE is None:
+            raise RuntimeError("logging rlock intrinsics unavailable")
+        _RLOCK_RELEASE(self._handle)
+
+    def locked(self) -> bool:
+        _ensure_lock_intrinsics()
+        if _RLOCK_LOCKED is None:
+            raise RuntimeError("logging rlock intrinsics unavailable")
+        return bool(_RLOCK_LOCKED(self._handle))
 
     def __enter__(self) -> "_RLock":
         self.acquire()
@@ -148,6 +229,14 @@ class _RLock:
 
     def __exit__(self, _exc_type, _exc, _tb) -> None:
         self.release()
+
+    def __del__(self) -> None:
+        try:
+            _ensure_lock_intrinsics()
+            if _RLOCK_DROP is not None:
+                _RLOCK_DROP(self._handle)
+        except Exception:
+            return
 
 
 class Filter:
@@ -217,10 +306,19 @@ class LogRecord:
         self.exc_info = exc_info
         self.exc_text = None
         self.stack_info = sinfo
-        self.thread = 0
-        self.threadName = None
-        self.process = 0
-        self.processName = None
+        _ensure_record_intrinsics()
+        thread_ident = int(_THREAD_CURRENT_IDENT())
+        self.thread = thread_ident
+        if _MAIN_THREAD_IDENT is not None and thread_ident == _MAIN_THREAD_IDENT:
+            self.threadName = "MainThread"
+        else:
+            self.threadName = f"Thread-{thread_ident}"
+        process_id = int(_GETPID())
+        self.process = process_id
+        if _MAIN_PROCESS_ID is not None and process_id == _MAIN_PROCESS_ID:
+            self.processName = "MainProcess"
+        else:
+            self.processName = f"Process-{process_id}"
         self.message: str | None = None
         self.asctime: str | None = None
 
@@ -258,7 +356,16 @@ class PercentStyle(_Style):
         return "%(asctime)" in self._fmt
 
     def format(self, record: LogRecord) -> str:
-        return self._fmt % record.__dict__
+        fmt = self._fmt
+        mapping = dict(record.__dict__)
+        try:
+            mapping["message"] = record.getMessage()
+        except Exception:
+            mapping["message"] = ""
+        try:
+            return _percent_fallback(fmt, mapping)
+        except Exception:
+            return fmt
 
 
 class StrFormatStyle(_Style):
@@ -333,7 +440,12 @@ class Formatter:
         record.message = record.getMessage()
         if self.usesTime():
             record.asctime = self.formatTime(record, self.datefmt)
-        s = self._style.format(record)
+        if self._fmt.find("%(") != -1:
+            mapping = dict(record.__dict__)
+            mapping["message"] = record.message
+            s = _percent_fallback(self._fmt, mapping)
+        else:
+            s = self._style.format(record)
         if record.exc_info:
             if not record.exc_text:
                 record.exc_text = self.formatException(record.exc_info)
@@ -518,11 +630,17 @@ class Logger(Filterer):
         for _ in range(stacklevel - 1):
             if frame is None:
                 break
-            frame = frame.f_back
+            frame = getattr(frame, "f_back", None)
         if frame is None:
             return ("", 0, None)
-        code = frame.f_code
-        return (code.co_filename, frame.f_lineno, code.co_name)
+        code = getattr(frame, "f_code", None)
+        if code is None:
+            return ("", 0, None)
+        return (
+            getattr(code, "co_filename", ""),
+            int(getattr(frame, "f_lineno", 0)),
+            getattr(code, "co_name", None),
+        )
 
     def makeRecord(
         self,
@@ -847,6 +965,19 @@ ShowWarning = Callable[
 _warnings_showwarning: ShowWarning | None = None
 
 
+def _set_warning_capture_streams(warnings_mod: ModuleType, logger: Logger) -> None:
+    streams: list[tuple[Any, str]] = []
+    handlers = list(getattr(logger, "handlers", []))
+    if not handlers and getattr(logger, "propagate", False):
+        parent = getattr(logger, "parent", None)
+        if parent is not None:
+            handlers = list(getattr(parent, "handlers", []))
+    for handler in handlers:
+        if isinstance(handler, StreamHandler):
+            streams.append((handler.stream, handler.terminator))
+    setattr(warnings_mod, "_molt_capture_streams", streams)
+
+
 def _showwarning(
     message: Warning | str,
     category: type[Warning],
@@ -857,7 +988,42 @@ def _showwarning(
 ) -> None:
     logger = getLogger("py.warnings")
     msg = _formatwarning(message, category, filename, lineno, line)
-    logger.warning(msg.rstrip())
+    if getattr(logger, "disabled", False):
+        return None
+    try:
+        if not logger.isEnabledFor(WARNING):
+            return None
+    except Exception:
+        pass
+    rendered = msg.rstrip()
+    handlers = list(getattr(logger, "handlers", []))
+    if not handlers and getattr(logger, "propagate", False):
+        parent = getattr(logger, "parent", None)
+        if parent is not None:
+            handlers = list(getattr(parent, "handlers", []))
+    for handler in handlers:
+        try:
+            if WARNING < getattr(handler, "level", NOTSET):
+                continue
+            if isinstance(handler, StreamHandler):
+                stream = handler.stream or getattr(_sys, "stderr", None)
+                if stream is not None and hasattr(stream, "write"):
+                    stream.write(rendered + handler.terminator)
+                    handler.flush()
+                    continue
+            handler.handle(
+                logger.makeRecord(
+                    logger.name,
+                    WARNING,
+                    filename,
+                    lineno,
+                    rendered,
+                    (),
+                    None,
+                )
+            )
+        except Exception:
+            continue
 
 
 def captureWarnings(capture: bool) -> None:
@@ -870,7 +1036,16 @@ def captureWarnings(capture: bool) -> None:
         if _warnings_showwarning is None:
             _warnings_showwarning = warnings.showwarning
             setattr(cast(Any, warnings), "showwarning", _showwarning)
+        try:
+            _set_warning_capture_streams(warnings, getLogger("py.warnings"))
+        except Exception:
+            pass
     else:
         if _warnings_showwarning is not None:
             setattr(cast(Any, warnings), "showwarning", _warnings_showwarning)
             _warnings_showwarning = None
+        try:
+            if hasattr(warnings, "_molt_capture_streams"):
+                delattr(cast(Any, warnings), "_molt_capture_streams")
+        except Exception:
+            pass

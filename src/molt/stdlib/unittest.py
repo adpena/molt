@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+_require_intrinsic("molt_stdlib_probe", globals())
+
 from typing import Any, Callable, Iterable
 import re
 import sys
@@ -133,8 +137,9 @@ class TestCase:
             result.addSkip(self, str(exc))
         except AssertionError:
             result.addFailure(self, _exc_text())
-        except Exception:
-            result.addError(self, _exc_text())
+        except Exception as exc:
+            err = f"{type(exc).__name__}: {exc}\n{_exc_text()}"
+            result.addError(self, err)
         return result
 
     def fail(self, msg: str | None = None) -> None:

@@ -18,7 +18,8 @@ Canonical status lives in `docs/spec/STATUS.md` (README and ROADMAP are kept in 
 - **Cancellation tokens**: request-scoped defaults with task overrides; cooperative checks via `molt.cancelled()`.
 - **Molt Packages**: First-class support for Rust-backed packages, with production wire formats (MsgPack/CBOR) and Arrow IPC for tabular data; JSON is a compatibility/debug format.
 - **AOT Compilation**: Uses Cranelift to generate high-performance machine code.
-- **Differential Testing**: Verified against CPython 3.12.
+- **Differential Testing**: Verified against CPython 3.12+.
+- **No Host Python Runtime**: Compiled Molt binaries are fully self-contained and do not rely on a local Python installation; stdlib behavior must lower into Rust intrinsics (Python wrappers are only thin intrinsic forwarders).
 - **Generic aliases (PEP 585)**: builtin `list`/`dict`/`tuple`/`set`/`frozenset`/`type` support `__origin__`/`__args__`.
 - **Dict union (PEP 584)**: `dict | dict` and `dict |= dict` parity.
 - **Union types (PEP 604)**: `X | Y` unions with `types.UnionType` (`types.Union` on 3.14).
@@ -45,8 +46,8 @@ Canonical status lives in `docs/spec/STATUS.md` (README and ROADMAP are kept in 
 - **Attributes**: instances use fixed struct fields with a dynamic instance-dict fallback; user-defined `__getattr__`/`__getattribute__`/`__setattr__`/`__delattr__` hooks work, but object-level builtins for these are not exposed; no user-defined `__slots__` beyond dataclass lowering.
 - **Dataclasses**: compile-time lowering for frozen/eq/repr/slots; no `default_factory`, `kw_only`, or `order`; runtime `dataclasses` module provides metadata only.
 - **Exceptions**: `try/except/else/finally` + `raise`/reraise support; still partial vs full BaseException semantics (see `docs/spec/areas/compat/0014_TYPE_COVERAGE_MATRIX.md`).
-- **Imports**: static module graph only; no dynamic import hooks or full package resolution.
-- **Stdlib**: partial shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pickle` (protocol 0 only), `pprint`, `string`, `typing`, `sys`, `os`, `gc`, `random`, `test` (regrtest helpers only), `asyncio`, `threading`, `bisect`, `heapq`, `functools`, `itertools`, `collections`, `socket` (error classes only), `select` (error alias only); import-only stubs for `collections.abc`, `importlib`, `importlib.util` (dynamic import hooks pending).
+- **Imports**: static module graph only; relative imports resolved within known packages; no dynamic import hooks or full package resolution.
+- **Stdlib**: partial shims for `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `pickle` (protocol 0 only), `pprint`, `string`, `typing`, `sys`, `os`, `gc`, `random`, `test` (regrtest helpers only), `asyncio`, `threading`, `bisect`, `heapq`, `functools`, `itertools`, `zipfile`, `zipimport`, `collections`, `socket` (error classes only), `select` (error alias only); import-only stubs for `collections.abc`, `_collections_abc`, `_abc`, `_py_abc`, `_asyncio`, `_bz2`, `_weakref`, `_weakrefset`, `importlib`, `importlib.util` (dynamic import hooks pending).
 - **Process-based concurrency**: spawn-based `multiprocessing` (Process/Pool/Queue/Pipe/SharedValue/SharedArray) behind capabilities; `fork`/`forkserver` map to spawn semantics; `subprocess`/`concurrent.futures` pending.
 - **Reflection**: `type`, `isinstance`, `issubclass`, and `object` are supported with C3 MRO + multiple inheritance; no metaclasses or dynamic `type()` construction.
 - **Async iteration**: `anext` returns an awaitable; `__aiter__` must return an async iterator (awaitable `__aiter__` still pending).
@@ -59,6 +60,7 @@ Canonical status lives in `docs/spec/STATUS.md` (README and ROADMAP are kept in 
 - **Format protocol**: partial beyond ints/floats; locale-aware grouping still pending (WASM uses host locale for `n`).
 - **List membership perf**: `in`/`count`/`index` snapshot list elements to avoid mutation during comparisons; optimization pending.
 - **memoryview**: no multidimensional slicing/sub-views; advanced buffer exports pending.
+- **C-extensions**: CPython ABI loading is not supported; the primary plan is recompiled extensions against `libmolt`, with an explicit opt-in bridge as an escape hatch.
 - **Runtime lifecycle**: explicit init/shutdown now clears caches, pools, and async registries, but per-thread TLS drain and worker thread joins are still pending (see `docs/spec/areas/runtime/0024_RUNTIME_STATE_LIFECYCLE.md`).
 - **Offload demo**: `molt_accel` scaffolding exists (optional dep `pip install .[accel]`), with hooks/metrics (including payload/response byte sizes), auto cancel-check detection, and shared demo payload builders; a `molt_worker` stdio shell supports sync/async runtimes plus `db_query`/`db_exec` (SQLite sync + Postgres async). The decorator can fall back to `molt-worker` in PATH using a packaged default exports manifest when `MOLT_WORKER_CMD` is unset. A Django demo scaffold and k6 harness live in `demo/` and `bench/k6/`; compiled entrypoint dispatch is wired for `list_items`, `compute`, `offload_table`, and `health` while other exports still return a clear error until compiled handlers exist. `molt_db_adapter` adds a framework-agnostic DB IPC payload builder to share with Django/Flask/FastAPI adapters.
 - **DB layer**: `molt-db` includes the bounded pool, async pool primitive, SQLite connector (native-only), and an async Postgres connector with per-connection statement cache; Arrow IPC output supports arrays/ranges/intervals/multiranges via struct/list encodings and preserves array lower bounds. WASM builds now have a DB host interface with `db.read`/`db.write` gating, but host adapters/client shims remain pending.
@@ -77,6 +79,13 @@ The `molt` package includes `molt-worker`. Optional minimal worker:
 ```bash
 brew install molt-worker
 ```
+
+## Platform Pitfalls
+- **macOS SDK/versioning**: Xcode CLT must be installed; if linking fails, confirm `xcrun --show-sdk-version` works and set `MACOSX_DEPLOYMENT_TARGET` for cross-linking.
+- **macOS arm64 + Python 3.14**: uv-managed 3.14 can hang; install system `python3.14` and use `--no-managed-python` when needed (see `docs/spec/STATUS.md`).
+- **Windows toolchain conflicts**: avoid mixing MSVC and clang in the same build; keep one toolchain active.
+- **Windows path lengths**: keep repo/build paths short; avoid deeply nested output folders.
+- **WASM linker availability**: `wasm-ld` and `wasm-tools` are required for linked builds; use `--require-linked` to fail fast.
 
 ### Linux/macOS (script)
 
@@ -230,19 +239,24 @@ export MOLT_WORKER_CMD="molt-worker --stdio --exports demo/molt_worker_app/molt_
 
 ## CLI overview
 
-- `molt run <file.py>`: run CPython with Molt shims for parity checks (`--trusted` disables capability checks). Use `--timing` for run/compile timing; compiled runs forward script args by default (use `--` to separate).
+- `molt run <file.py>`: compile with Molt and run the native binary (`--trusted` disables capability checks). Use `--timing` for build/run timing; script args are forwarded by default (use `--` to separate).
 - `molt build --module pkg` / `molt run --module pkg`: compile or run a package entrypoint (`pkg.__main__` when present).
+- `molt build --output <path|dir>`: directory outputs use the default filename; `--out-dir` only affects final outputs (intermediates remain under `$MOLT_HOME/build/<entry>`).
 - `molt compare <file.py>`: compare CPython vs Molt compiled output with separate build/run timing.
 - `molt test`: run the dev test suite (wraps `uv run --python 3.12 python3 tools/dev.py test`); `--suite diff|pytest` available (`--trusted` disables capability checks).
 - `molt diff <path>`: differential testing via `uv run --python 3.12 python3 tests/molt_diff.py` (`--trusted` disables capability checks).
-- `molt build --target <triple> --cache --deterministic --capabilities <file|profile>`: cross-target builds with lockfile + capability checks (`--trusted` for trusted native deployments).
+- `molt build --target <triple> --cache --deterministic --capabilities <file|profile> --sysroot <path>`: cross-target builds with lockfile + capability checks (`--trusted` for trusted native deployments). Use `MOLT_SYSROOT` / `MOLT_CROSS_SYSROOT` for defaults.
 - `molt bench` / `molt profile`: wrappers over `tools/bench.py` and `tools/profile.py` (`molt bench --script <path>` for one-off scripts).
 - `molt doctor`: toolchain readiness checks (uv/cargo/clang/locks).
 - `molt vendor --extras <name>`: materialize Tier A sources into `vendor/` with a manifest.
+- `molt package --sign --signer cosign --signing-key <key>`: sign artifacts and emit SBOM/signature sidecars with `.moltpkg` bundles (`--signer codesign` on macOS).
+- `molt package --sbom-format spdx`: emit SPDX SBOM sidecars (`cyclonedx` is the default).
+- `molt verify --require-signature --verify-signature --trusted-signers <policy>`: enforce signature verification and trust policies on packages.
+  Example policy: `docs/trust_policy.example.toml`.
 - Vendored deps under `vendor/` are added to module roots and `PYTHONPATH` automatically (or set `MOLT_MODULE_ROOTS` explicitly).
 - `molt clean`: remove build caches (`MOLT_CACHE`) and transient artifacts (`MOLT_HOME/build`).
 - `molt completion --shell bash|zsh|fish`: emit shell completions.
-- `molt package` / `molt publish` / `molt verify`: bundle and verify `.moltpkg` archives (local registry only).
+- `molt package` / `molt publish` / `molt verify`: bundle and verify `.moltpkg` archives (local paths or HTTP(S) registry URLs); `molt package` emits CycloneDX SBOM + signature metadata sidecars and supports `--sign`.
 
 ### Accel decorator options (DX)
 - `entry`: worker export name; must be present in the exports/compiled manifest (e.g., `list_items`, `compute`). Mismatch → compile-time error or runtime `InvalidInput`/`InternalError`.
@@ -289,7 +303,7 @@ See `docs/spec/areas/` for detailed architectural decisions.
 
 ### CI Parity Jobs
 - **WASM parity**: CI runs a dedicated `test-wasm` job that executes `tests/test_wasm_control_flow.py` via Node.
-- **Differential suite**: CI runs `uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic` on CPython 3.12.
+- **Differential suite**: CI runs `uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic` on CPython 3.12+ (minimum 3.12).
 
 ### Local Commands
 - Python: `uv run --python 3.12 python3 tools/dev.py test` (runs `pytest -q` via `uv run` on Python 3.12/3.13/3.14)
@@ -302,9 +316,8 @@ See `docs/spec/areas/` for detailed architectural decisions.
 - WASM build (linked): `uv run --python 3.12 python3 -m molt.cli build --target wasm --linked examples/hello.py` (emits `output.wasm` + `output_linked.wasm`; linked requires `wasm-ld` + `wasm-tools`).
 - WASM build (custom linked output): `uv run --python 3.12 python3 -m molt.cli build --target wasm --linked --linked-output dist/app_linked.wasm examples/hello.py`.
 - WASM build (require linked): `uv run --python 3.12 python3 -m molt.cli build --target wasm --require-linked examples/hello.py` (linked output is primary; unlinked artifact removed).
-- WASM run (Node/WASI): `node run_wasm.js /path/to/output.wasm` (prefers `*_linked.wasm` when present; disable with `MOLT_WASM_PREFER_LINKED=0`).
-- WASM bench: `uv run --python 3.14 python3 tools/bench_wasm.py --json-out bench/results/bench_wasm.json`, then compare against the native CPython baselines in `bench/results/bench.json`.
-- WASM linked bench: `uv run --python 3.14 python3 tools/bench_wasm.py --linked --json-out bench/results/bench_wasm_linked.json` (requires `wasm-ld` + `wasm-tools`; add `--require-linked` to fail fast when linking is unavailable).
+- WASM run (Node/WASI): `node run_wasm.js /path/to/output.wasm` (requires linked output; build with `--linked` or `--require-linked`).
+- WASM bench: `uv run --python 3.14 python3 tools/bench_wasm.py --json-out bench/results/bench_wasm.json` (requires `wasm-ld` + `wasm-tools`; linked output is required by default), then compare against the native CPython baselines in `bench/results/bench.json`.
 
 ## Performance & Comparisons
 
@@ -312,6 +325,7 @@ After major features or optimizations, run `uv run --python 3.14 python3 tools/b
 `uv run --python 3.14 python3 tools/bench_wasm.py --json-out bench/results/bench_wasm.json`, then run
 `uv run --python 3.14 python3 tools/bench_report.py --update-readme` to refresh this section with a short summary
 (date/host, top speedups, regressions, and any build failures) for both native and WASM, including WASM vs CPython ratios.
+Optimization backlog (see `ROADMAP.md` for tracked TODOs): wasm trampoline payload init/bulk helpers, cached task-trampoline eligibility on function headers, coroutine cancel-token reuse when safe, and cached mio websocket poll registration to avoid per-wait clones.
 Install optional baselines with `uv sync --group bench --python 3.12` to enable Cython/Numba
 columns. PyPy baselines use `uv run --no-project --python pypy@3.11` to bypass
 `requires-python` and remain comparable.

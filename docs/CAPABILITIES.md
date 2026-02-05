@@ -62,18 +62,35 @@ You grant capabilities during the `build` or `run` command:
 molt build --capabilities net,env main.py
 ```
 
-Alternatively, use a profile file:
+Alternatively, use a manifest file:
 
 ```json
 {
   "allow": ["net", "time"],
+  "deny": ["fs.write"],
+  "effects": ["nondet"],
   "fs": {
     "read": ["/tmp/data"],
     "write": []
+  },
+  "packages": {
+    "molt_test_pkg": {
+      "allow": ["net"],
+      "effects": ["nondet"]
+    }
   }
 }
 ```
 `molt build --capabilities profile.json main.py`
+
+Notes:
+- `allow` accepts explicit capability tokens or built-in profiles (e.g. `net`, `fs`).
+- `deny` removes capabilities from the global allowlist.
+- `effects` is an allowlist for package effect annotations.
+- `packages` provides per-package allow/deny/effects; package allowlists must be a subset of the global allowlist.
+- `fs.read`/`fs.write` are derived from the `fs.read`/`fs.write` path lists.
+
+Tooling enforces capability/effect allowlists during `molt package` and `molt verify`.
 
 ## Native vs WASM Parity
 

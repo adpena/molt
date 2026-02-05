@@ -1,8 +1,11 @@
+use crate::object::ops::string_obj_to_owned;
 use crate::{
     ensure_function_code_bits, frame_stack_pop, frame_stack_push, function_arity,
-    function_closure_bits, function_fn_ptr, function_trampoline_ptr, obj_from_bits, object_type_id,
-    profile_hit, raise_exception, recursion_guard_enter, recursion_guard_exit, PyToken,
-    CALL_DISPATCH_COUNT, TYPE_ID_FUNCTION,
+    function_attr_bits, function_closure_bits, function_fn_ptr, function_name_bits,
+    function_trampoline_ptr, header_from_obj_ptr, intern_static_name, is_truthy, obj_from_bits,
+    object_type_id, profile_hit, raise_exception, recursion_guard_enter, recursion_guard_exit,
+    runtime_state, PyToken, CALL_DISPATCH_COUNT, HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN,
+    HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED, TYPE_ID_FUNCTION,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -12,6 +15,23 @@ use crate::{
     molt_call_indirect4, molt_call_indirect5, molt_call_indirect6, molt_call_indirect7,
     molt_call_indirect8, molt_call_indirect9,
 };
+
+unsafe fn raise_call_arity_mismatch(
+    _py: &PyToken<'_>,
+    func_ptr: *mut u8,
+    expected: u64,
+    got: u64,
+) -> u64 {
+    let mut msg = format!("call arity mismatch (expected {expected}, got {got})");
+    let name_bits = function_name_bits(_py, func_ptr);
+    if name_bits != 0 {
+        if let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) {
+            msg.push_str(" for ");
+            msg.push_str(&name);
+        }
+    }
+    raise_exception::<_>(_py, "TypeError", &msg)
+}
 
 pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_bits: u64) -> u64 {
     profile_hit(_py, &CALL_DISPATCH_COUNT);
@@ -24,7 +44,7 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
     }
     let arity = function_arity(func_ptr);
     if arity != 1 {
-        return raise_exception::<_>(_py, "TypeError", "call arity mismatch");
+        return raise_call_arity_mismatch(_py, func_ptr, arity, 1);
     }
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
@@ -77,6 +97,72 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
     res
 }
 
+unsafe fn function_needs_task_trampoline(_py: &PyToken<'_>, func_bits: u64) -> bool {
+    let func_obj = obj_from_bits(func_bits);
+    let Some(func_ptr) = func_obj.as_ptr() else {
+        return false;
+    };
+    if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
+        return false;
+    }
+    if let Some(cached) = function_task_trampoline_cached(func_ptr) {
+        return cached;
+    }
+    refresh_function_task_trampoline_cache(_py, func_ptr)
+}
+
+unsafe fn function_task_trampoline_cached(func_ptr: *mut u8) -> Option<bool> {
+    let header = header_from_obj_ptr(func_ptr);
+    let flags = (*header).flags;
+    if (flags & HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN) == 0 {
+        return None;
+    }
+    Some((flags & HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED) != 0)
+}
+
+pub(crate) unsafe fn refresh_function_task_trampoline_cache(
+    _py: &PyToken<'_>,
+    func_ptr: *mut u8,
+) -> bool {
+    let needed = compute_function_task_trampoline_needed(_py, func_ptr);
+    let header = header_from_obj_ptr(func_ptr);
+    let mut flags = (*header).flags | HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN;
+    if needed {
+        flags |= HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED;
+    } else {
+        flags &= !HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED;
+    }
+    (*header).flags = flags;
+    needed
+}
+
+unsafe fn compute_function_task_trampoline_needed(_py: &PyToken<'_>, func_ptr: *mut u8) -> bool {
+    let interned = &runtime_state(_py).interned;
+    let gen_name = intern_static_name(_py, &interned.molt_is_generator, b"__molt_is_generator__");
+    if let Some(bits) = function_attr_bits(_py, func_ptr, gen_name) {
+        if is_truthy(_py, obj_from_bits(bits)) {
+            return true;
+        }
+    }
+    let coro_name = intern_static_name(_py, &interned.molt_is_coroutine, b"__molt_is_coroutine__");
+    if let Some(bits) = function_attr_bits(_py, func_ptr, coro_name) {
+        if is_truthy(_py, obj_from_bits(bits)) {
+            return true;
+        }
+    }
+    let asyncgen_name = intern_static_name(
+        _py,
+        &interned.molt_is_async_generator,
+        b"__molt_is_async_generator__",
+    );
+    if let Some(bits) = function_attr_bits(_py, func_ptr, asyncgen_name) {
+        if is_truthy(_py, obj_from_bits(bits)) {
+            return true;
+        }
+    }
+    false
+}
+
 pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u64 {
     profile_hit(_py, &CALL_DISPATCH_COUNT);
     let func_obj = obj_from_bits(func_bits);
@@ -88,7 +174,7 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
     }
     let arity = function_arity(func_ptr);
     if arity != 0 {
-        return raise_exception::<_>(_py, "TypeError", "call arity mismatch");
+        return raise_call_arity_mismatch(_py, func_ptr, arity, 0);
     }
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
@@ -151,7 +237,7 @@ pub(crate) unsafe fn call_function_obj2(
     }
     let arity = function_arity(func_ptr);
     if arity != 2 {
-        return raise_exception::<_>(_py, "TypeError", "call arity mismatch");
+        return raise_call_arity_mismatch(_py, func_ptr, arity, 2);
     }
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
@@ -216,7 +302,7 @@ pub(crate) unsafe fn call_function_obj3(
     }
     let arity = function_arity(func_ptr);
     if arity != 3 {
-        return raise_exception::<_>(_py, "TypeError", "call arity mismatch");
+        return raise_call_arity_mismatch(_py, func_ptr, arity, 3);
     }
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
@@ -284,7 +370,7 @@ pub(crate) unsafe fn call_function_obj4(
     }
     let arity = function_arity(func_ptr);
     if arity != 4 {
-        return raise_exception::<_>(_py, "TypeError", "call arity mismatch");
+        return raise_call_arity_mismatch(_py, func_ptr, arity, 4);
     }
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
@@ -361,7 +447,7 @@ unsafe fn call_function_obj5(
     }
     let arity = function_arity(func_ptr);
     if arity != 5 {
-        return raise_exception::<_>(_py, "TypeError", "call arity mismatch");
+        return raise_call_arity_mismatch(_py, func_ptr, arity, 5);
     }
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
@@ -457,7 +543,7 @@ unsafe fn call_function_obj6(
     }
     let arity = function_arity(func_ptr);
     if arity != 6 {
-        return raise_exception::<_>(_py, "TypeError", "call arity mismatch");
+        return raise_call_arity_mismatch(_py, func_ptr, arity, 6);
     }
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
@@ -561,7 +647,7 @@ unsafe fn call_function_obj7(
     }
     let arity = function_arity(func_ptr);
     if arity != 7 {
-        return raise_exception::<_>(_py, "TypeError", "call arity mismatch");
+        return raise_call_arity_mismatch(_py, func_ptr, arity, 7);
     }
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
@@ -670,7 +756,7 @@ unsafe fn call_function_obj8(
     }
     let arity = function_arity(func_ptr);
     if arity != 8 {
-        return raise_exception::<_>(_py, "TypeError", "call arity mismatch");
+        return raise_call_arity_mismatch(_py, func_ptr, arity, 8);
     }
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
@@ -785,7 +871,7 @@ unsafe fn call_function_obj9(
     }
     let arity = function_arity(func_ptr);
     if arity != 9 {
-        return raise_exception::<_>(_py, "TypeError", "call arity mismatch");
+        return raise_call_arity_mismatch(_py, func_ptr, arity, 9);
     }
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
@@ -904,7 +990,7 @@ unsafe fn call_function_obj10(
     }
     let arity = function_arity(func_ptr);
     if arity != 10 {
-        return raise_exception::<_>(_py, "TypeError", "call arity mismatch");
+        return raise_call_arity_mismatch(_py, func_ptr, arity, 10);
     }
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
@@ -1038,7 +1124,7 @@ unsafe fn call_function_obj11(
     }
     let arity = function_arity(func_ptr);
     if arity != 11 {
-        return raise_exception::<_>(_py, "TypeError", "call arity mismatch");
+        return raise_call_arity_mismatch(_py, func_ptr, arity, 11);
     }
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
@@ -1200,7 +1286,7 @@ unsafe fn call_function_obj12(
     }
     let arity = function_arity(func_ptr);
     if arity != 12 {
-        return raise_exception::<_>(_py, "TypeError", "call arity mismatch");
+        return raise_call_arity_mismatch(_py, func_ptr, arity, 12);
     }
     let fn_ptr = function_fn_ptr(func_ptr);
     let closure_bits = function_closure_bits(func_ptr);
@@ -1364,7 +1450,7 @@ unsafe fn call_function_obj_trampoline(_py: &PyToken<'_>, func_bits: u64, args: 
     }
     let arity = function_arity(func_ptr);
     if arity != args.len() as u64 {
-        return raise_exception::<_>(_py, "TypeError", "call arity mismatch");
+        return raise_call_arity_mismatch(_py, func_ptr, arity, args.len() as u64);
     }
     let tramp_ptr = function_trampoline_ptr(func_ptr);
     if tramp_ptr == 0 {
@@ -1398,6 +1484,9 @@ unsafe fn call_function_obj_trampoline(_py: &PyToken<'_>, func_bits: u64, args: 
 }
 
 pub(crate) unsafe fn call_function_obj_vec(_py: &PyToken<'_>, func_bits: u64, args: &[u64]) -> u64 {
+    if function_needs_task_trampoline(_py, func_bits) {
+        return call_function_obj_trampoline(_py, func_bits, args);
+    }
     match args.len() {
         0 => call_function_obj0(_py, func_bits),
         1 => call_function_obj1(_py, func_bits, args[0]),

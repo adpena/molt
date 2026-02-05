@@ -45,8 +45,13 @@ const TAG_MASK: u64 = 0x0007_0000_0000_0000;
 const INT_MASK: u64 = (1 << 47) - 1;
 const MAX_DB_FRAME_SIZE: usize = 64 * 1024 * 1024;
 const CANCEL_POLL_MS: u64 = 10;
+const IO_EVENT_READ: u32 = 1;
+const IO_EVENT_WRITE: u32 = 1 << 1;
+const IO_EVENT_ERROR: u32 = 1 << 2;
 const PROCESS_STDIO_PIPE: i32 = 1;
 const PROCESS_STDIO_DEVNULL: i32 = 2;
+const PROCESS_STDIO_STDOUT_REDIRECT: i32 = -2;
+const PROCESS_STDIO_FD_BASE: i32 = 1 << 30;
 const PROCESS_STDIO_STDOUT: i32 = 1;
 const PROCESS_STDIO_STDERR: i32 = 2;
 type AddrInfoEntry = (i32, i32, i32, Vec<u8>, Vec<u8>);
@@ -62,10 +67,7 @@ fn precompiled_enabled() -> bool {
 }
 
 fn precompiled_write_enabled() -> bool {
-    matches!(
-        env::var("MOLT_WASM_PRECOMPILED_WRITE").as_deref(),
-        Ok("1")
-    )
+    matches!(env::var("MOLT_WASM_PRECOMPILED_WRITE").as_deref(), Ok("1"))
 }
 
 fn resolve_precompiled_path(wasm_path: &Path, override_env: &str) -> Option<PathBuf> {
@@ -101,8 +103,8 @@ fn load_or_compile_module(
     let wasm_bytes = fs::read(wasm_path).with_context(|| format!("read {label} {wasm_path:?}"))?;
     debug_log(|| format!("read {label} wasm in {:?}", read_start.elapsed()));
     let compile_start = Instant::now();
-    let module =
-        Module::new(engine, wasm_bytes).with_context(|| format!("compile {label} {wasm_path:?}"))?;
+    let module = Module::new(engine, wasm_bytes)
+        .with_context(|| format!("compile {label} {wasm_path:?}"))?;
     debug_log(|| format!("compiled {label} module in {:?}", compile_start.elapsed()));
     if precompiled_write_enabled() {
         if let Some(precompiled) = resolve_precompiled_path(wasm_path, override_env) {
@@ -1095,6 +1097,43 @@ fn decode_env(buf: &[u8]) -> Result<(u8, Vec<(String, String)>)> {
     Ok((mode, out))
 }
 
+fn stdio_from_fd(fd: i32) -> Option<Stdio> {
+    if fd < 0 {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        let duped = unsafe { libc::dup(fd as libc::c_int) };
+        if duped < 0 {
+            return None;
+        }
+        let file = unsafe { std::fs::File::from_raw_fd(duped) };
+        return Some(Stdio::from(file));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::FromRawHandle;
+        let duped = unsafe { libc::_dup(fd as libc::c_int) };
+        if duped < 0 {
+            return None;
+        }
+        let handle = unsafe { libc::_get_osfhandle(duped as libc::c_int) };
+        if handle == -1 {
+            unsafe {
+                libc::_close(duped as libc::c_int);
+            }
+            return None;
+        }
+        let file = unsafe { std::fs::File::from_raw_handle(handle as *mut _) };
+        return Some(Stdio::from(file));
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = fd;
+        None
+    }
+}
+
 fn spawn_process_reader<R: Read + Send + 'static>(
     mut reader: R,
     tx: mpsc::Sender<ProcessEvent>,
@@ -1251,6 +1290,123 @@ fn map_ws_error(err: &tungstenite::Error) -> i32 {
         tungstenite::Error::Tls(_) => libc::EIO,
         tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed => libc::EPIPE,
         _ => libc::EIO,
+    }
+}
+
+fn ws_drain_incoming(entry: &mut WebSocketEntry) -> Result<(), i32> {
+    if entry.closed {
+        return Ok(());
+    }
+    loop {
+        match entry.socket.read() {
+            Ok(Message::Binary(bytes)) => {
+                entry.queue.push_back(bytes);
+            }
+            Ok(Message::Text(text)) => {
+                entry.queue.push_back(text.into_bytes());
+            }
+            Ok(Message::Ping(payload)) => {
+                let _ = entry.socket.send(Message::Pong(payload));
+            }
+            Ok(Message::Pong(_)) => {}
+            Ok(Message::Frame(_)) => {}
+            Ok(Message::Close(_)) => {
+                entry.closed = true;
+                break;
+            }
+            Err(tungstenite::Error::Io(err)) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                break;
+            }
+            Err(tungstenite::Error::ConnectionClosed) | Err(tungstenite::Error::AlreadyClosed) => {
+                entry.closed = true;
+                break;
+            }
+            Err(err) => {
+                entry.closed = true;
+                return Err(map_ws_error(&err));
+            }
+        }
+        if entry.queue.len() >= 64 {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn poll_ws_stream(stream: &TcpStream, events: u32) -> Result<u32, i32> {
+    let mut poll_events: i16 = 0;
+    if (events & IO_EVENT_READ) != 0 {
+        poll_events |= libc::POLLIN;
+    }
+    if (events & IO_EVENT_WRITE) != 0 {
+        poll_events |= libc::POLLOUT;
+    }
+    if poll_events == 0 {
+        poll_events |= libc::POLLIN;
+    }
+    #[cfg(unix)]
+    {
+        let fd = stream.as_raw_fd();
+        let mut pfd = libc::pollfd {
+            fd,
+            events: poll_events,
+            revents: 0,
+        };
+        let rc = unsafe { libc::poll(&mut pfd, 1, 0) };
+        if rc < 0 {
+            return Err(map_io_error(&std::io::Error::last_os_error()));
+        }
+        if rc == 0 {
+            return Ok(0);
+        }
+        let revents = pfd.revents;
+        let mut ready = 0u32;
+        if (revents & libc::POLLERR) != 0
+            || (revents & libc::POLLHUP) != 0
+            || (revents & libc::POLLNVAL) != 0
+        {
+            ready |= IO_EVENT_ERROR | IO_EVENT_READ | IO_EVENT_WRITE;
+            return Ok(ready);
+        }
+        if (revents & libc::POLLIN) != 0 {
+            ready |= IO_EVENT_READ;
+        }
+        if (revents & libc::POLLOUT) != 0 {
+            ready |= IO_EVENT_WRITE;
+        }
+        Ok(ready)
+    }
+    #[cfg(windows)]
+    {
+        let fd = stream.as_raw_socket() as usize;
+        let mut pfd = libc::WSAPOLLFD {
+            fd,
+            events: poll_events,
+            revents: 0,
+        };
+        let rc = unsafe { libc::WSAPoll(&mut pfd, 1, 0) };
+        if rc < 0 {
+            return Err(map_io_error(&std::io::Error::last_os_error()));
+        }
+        if rc == 0 {
+            return Ok(0);
+        }
+        let revents = pfd.revents;
+        let mut ready = 0u32;
+        if (revents & (libc::POLLERR as i16)) != 0
+            || (revents & (libc::POLLHUP as i16)) != 0
+            || (revents & (libc::POLLNVAL as i16)) != 0
+        {
+            ready |= IO_EVENT_ERROR | IO_EVENT_READ | IO_EVENT_WRITE;
+            return Ok(ready);
+        }
+        if (revents & (libc::POLLIN as i16)) != 0 {
+            ready |= IO_EVENT_READ;
+        }
+        if (revents & (libc::POLLOUT as i16)) != 0 {
+            ready |= IO_EVENT_WRITE;
+        }
+        Ok(ready)
     }
 }
 
@@ -1596,7 +1752,10 @@ fn handle_db_host(
             return 7;
         }
     };
-    if memory.write(&mut caller, out_ptr, &stream_bits.to_le_bytes()).is_err() {
+    if memory
+        .write(&mut caller, out_ptr, &stream_bits.to_le_bytes())
+        .is_err()
+    {
         return 2;
     }
 
@@ -2339,35 +2498,38 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
             }
         },
     );
-    let os_close = Func::wrap(&mut *store, |_caller: Caller<'_, HostState>, fd: i64| -> i32 {
-        if fd < 0 {
-            return -(libc::EBADF as i32);
-        }
-        #[cfg(unix)]
-        {
-            let rc = unsafe { libc::close(fd as libc::c_int) };
-            if rc == 0 {
-                return 0;
+    let os_close = Func::wrap(
+        &mut *store,
+        |_caller: Caller<'_, HostState>, fd: i64| -> i32 {
+            if fd < 0 {
+                return -(libc::EBADF as i32);
             }
-            return -map_io_error(&std::io::Error::last_os_error());
-        }
-        #[cfg(windows)]
-        {
-            let sock_rc = unsafe { libc::closesocket(fd as libc::SOCKET) };
-            if sock_rc == 0 {
-                return 0;
-            }
-            let sock_err = unsafe { libc::WSAGetLastError() };
-            if sock_err == libc::WSAENOTSOCK {
-                let rc = unsafe { libc::_close(fd as libc::c_int) };
+            #[cfg(unix)]
+            {
+                let rc = unsafe { libc::close(fd as libc::c_int) };
                 if rc == 0 {
                     return 0;
                 }
                 return -map_io_error(&std::io::Error::last_os_error());
             }
-            return -(sock_err as i32);
-        }
-    });
+            #[cfg(windows)]
+            {
+                let sock_rc = unsafe { libc::closesocket(fd as libc::SOCKET) };
+                if sock_rc == 0 {
+                    return 0;
+                }
+                let sock_err = unsafe { libc::WSAGetLastError() };
+                if sock_err == libc::WSAENOTSOCK {
+                    let rc = unsafe { libc::_close(fd as libc::c_int) };
+                    if rc == 0 {
+                        return 0;
+                    }
+                    return -map_io_error(&std::io::Error::last_os_error());
+                }
+                return -(sock_err as i32);
+            }
+        },
+    );
     let socketpair = Func::wrap(
         &mut *store,
         |mut caller: Caller<'_, HostState>,
@@ -2948,45 +3110,8 @@ fn define_ws_host(linker: &mut Linker<HostState>, store: &mut Store<HostState>) 
                     Err(errno) => return -errno,
                 };
                 if entry.queue.is_empty() && !entry.closed {
-                    loop {
-                        match entry.socket.read() {
-                            Ok(Message::Binary(bytes)) => {
-                                entry.queue.push_back(bytes);
-                                break;
-                            }
-                            Ok(Message::Text(text)) => {
-                                entry.queue.push_back(text.into_bytes());
-                                break;
-                            }
-                            Ok(Message::Ping(payload)) => {
-                                let _ = entry.socket.send(Message::Pong(payload));
-                                continue;
-                            }
-                            Ok(Message::Pong(_)) => {
-                                continue;
-                            }
-                            Ok(Message::Frame(_)) => {
-                                continue;
-                            }
-                            Ok(Message::Close(_)) => {
-                                entry.closed = true;
-                                break;
-                            }
-                            Err(tungstenite::Error::Io(err))
-                                if err.kind() == std::io::ErrorKind::WouldBlock =>
-                            {
-                                break;
-                            }
-                            Err(tungstenite::Error::ConnectionClosed)
-                            | Err(tungstenite::Error::AlreadyClosed) => {
-                                entry.closed = true;
-                                break;
-                            }
-                            Err(err) => {
-                                entry.closed = true;
-                                return -map_ws_error(&err);
-                            }
-                        }
+                    if let Err(errno) = ws_drain_incoming(entry) {
+                        return -errno;
                     }
                 }
                 if let Some(front) = entry.queue.front() {
@@ -3018,6 +3143,48 @@ fn define_ws_host(linker: &mut Linker<HostState>, store: &mut Store<HostState>) 
             }
         },
     );
+    let ws_poll = Func::wrap(
+        &mut *store,
+        |mut caller: Caller<'_, HostState>, handle: i64, events: i32| -> i32 {
+            let entry = match ws_get_mut(caller.data_mut(), handle) {
+                Ok(entry) => entry,
+                Err(errno) => return -errno,
+            };
+            if entry.closed {
+                return (IO_EVENT_ERROR | IO_EVENT_READ | IO_EVENT_WRITE) as i32;
+            }
+            let events = events as u32;
+            let mut ready = 0u32;
+            if (events & IO_EVENT_READ) != 0 {
+                if entry.queue.is_empty() {
+                    if let Err(errno) = ws_drain_incoming(entry) {
+                        return -errno;
+                    }
+                }
+                if !entry.queue.is_empty() {
+                    ready |= IO_EVENT_READ;
+                }
+            }
+            if (events & IO_EVENT_WRITE) != 0 {
+                let stream_ref = match entry.socket.get_ref() {
+                    MaybeTlsStream::Plain(stream) => stream,
+                    MaybeTlsStream::Rustls(stream) => stream.get_ref(),
+                    _ => return -libc::EIO,
+                };
+                let poll_ready = match poll_ws_stream(stream_ref, IO_EVENT_WRITE) {
+                    Ok(mask) => mask,
+                    Err(errno) => return -errno,
+                };
+                if (poll_ready & IO_EVENT_ERROR) != 0 {
+                    return (IO_EVENT_ERROR | IO_EVENT_READ | IO_EVENT_WRITE) as i32;
+                }
+                if (poll_ready & IO_EVENT_WRITE) != 0 {
+                    ready |= IO_EVENT_WRITE;
+                }
+            }
+            ready as i32
+        },
+    );
     let ws_close = Func::wrap(
         &mut *store,
         |mut caller: Caller<'_, HostState>, handle: i64| -> i32 {
@@ -3034,6 +3201,7 @@ fn define_ws_host(linker: &mut Linker<HostState>, store: &mut Store<HostState>) 
         },
     );
     linker.define(&mut *store, "env", "molt_ws_connect_host", ws_connect)?;
+    linker.define(&mut *store, "env", "molt_ws_poll_host", ws_poll)?;
     linker.define(&mut *store, "env", "molt_ws_send_host", ws_send)?;
     linker.define(&mut *store, "env", "molt_ws_recv_host", ws_recv)?;
     linker.define(&mut *store, "env", "molt_ws_close_host", ws_close)?;
@@ -3129,30 +3297,85 @@ fn define_process_host(linker: &mut Linker<HostState>, store: &mut Store<HostSta
                 PROCESS_STDIO_DEVNULL => {
                     cmd.stdin(Stdio::null());
                 }
+                val if val >= PROCESS_STDIO_FD_BASE => {
+                    let fd = val - PROCESS_STDIO_FD_BASE;
+                    let Some(stdio) = stdio_from_fd(fd) else {
+                        return -libc::EBADF;
+                    };
+                    cmd.stdin(stdio);
+                }
                 _ => {
                     cmd.stdin(Stdio::inherit());
                 }
             }
-            match stdout_mode {
-                PROCESS_STDIO_PIPE => {
-                    cmd.stdout(Stdio::piped());
-                }
-                PROCESS_STDIO_DEVNULL => {
+
+            let mut merged_stdout_reader: Option<os_pipe::PipeReader> = None;
+            if stderr_mode == PROCESS_STDIO_STDOUT_REDIRECT {
+                if stdout_mode == PROCESS_STDIO_PIPE {
+                    let (reader, writer) = match os_pipe::pipe() {
+                        Ok(val) => val,
+                        Err(err) => return -map_io_error(&err),
+                    };
+                    let writer_err = match writer.try_clone() {
+                        Ok(val) => val,
+                        Err(err) => return -map_io_error(&err),
+                    };
+                    cmd.stdout(writer);
+                    cmd.stderr(writer_err);
+                    merged_stdout_reader = Some(reader);
+                } else if stdout_mode == PROCESS_STDIO_DEVNULL {
                     cmd.stdout(Stdio::null());
-                }
-                _ => {
-                    cmd.stdout(Stdio::inherit());
-                }
-            }
-            match stderr_mode {
-                PROCESS_STDIO_PIPE => {
-                    cmd.stderr(Stdio::piped());
-                }
-                PROCESS_STDIO_DEVNULL => {
                     cmd.stderr(Stdio::null());
-                }
-                _ => {
+                } else if stdout_mode >= PROCESS_STDIO_FD_BASE {
+                    let fd = stdout_mode - PROCESS_STDIO_FD_BASE;
+                    let Some(stdout_stdio) = stdio_from_fd(fd) else {
+                        return -libc::EBADF;
+                    };
+                    let Some(stderr_stdio) = stdio_from_fd(fd) else {
+                        return -libc::EBADF;
+                    };
+                    cmd.stdout(stdout_stdio);
+                    cmd.stderr(stderr_stdio);
+                } else {
+                    cmd.stdout(Stdio::inherit());
                     cmd.stderr(Stdio::inherit());
+                }
+            } else {
+                match stdout_mode {
+                    PROCESS_STDIO_PIPE => {
+                        cmd.stdout(Stdio::piped());
+                    }
+                    PROCESS_STDIO_DEVNULL => {
+                        cmd.stdout(Stdio::null());
+                    }
+                    val if val >= PROCESS_STDIO_FD_BASE => {
+                        let fd = val - PROCESS_STDIO_FD_BASE;
+                        let Some(stdio) = stdio_from_fd(fd) else {
+                            return -libc::EBADF;
+                        };
+                        cmd.stdout(stdio);
+                    }
+                    _ => {
+                        cmd.stdout(Stdio::inherit());
+                    }
+                }
+                match stderr_mode {
+                    PROCESS_STDIO_PIPE => {
+                        cmd.stderr(Stdio::piped());
+                    }
+                    PROCESS_STDIO_DEVNULL => {
+                        cmd.stderr(Stdio::null());
+                    }
+                    val if val >= PROCESS_STDIO_FD_BASE => {
+                        let fd = val - PROCESS_STDIO_FD_BASE;
+                        let Some(stdio) = stdio_from_fd(fd) else {
+                            return -libc::EBADF;
+                        };
+                        cmd.stderr(stdio);
+                    }
+                    _ => {
+                        cmd.stderr(Stdio::inherit());
+                    }
                 }
             }
 
@@ -3204,7 +3427,10 @@ fn define_process_host(linker: &mut Linker<HostState>, store: &mut Store<HostSta
                     },
                 );
             }
-            if let Some(stdout) = stdout {
+            if let Some(reader) = merged_stdout_reader.take() {
+                let tx = caller.data().process_manager.events_tx.clone();
+                spawn_process_reader(reader, tx, handle, ProcessStreamKind::Stdout);
+            } else if let Some(stdout) = stdout {
                 let tx = caller.data().process_manager.events_tx.clone();
                 spawn_process_reader(stdout, tx, handle, ProcessStreamKind::Stdout);
             }
@@ -3575,18 +3801,36 @@ fn main() -> Result<()> {
 
     let wasm_path = resolve_wasm_path(arg)?;
     let linked_path = resolve_linked_path(&wasm_path);
-    let use_linked = force_linked() || (prefer_linked() && linked_path.is_some());
-    let main_path = if use_linked {
+    let mut use_linked = force_linked() || (prefer_linked() && linked_path.is_some());
+    let mut main_path = if use_linked {
         linked_path.clone().unwrap_or_else(|| wasm_path.clone())
     } else {
         wasm_path.clone()
     };
-    debug_log(|| format!("main wasm: {main_path:?} (linked={use_linked})"));
 
     let engine = build_engine()?;
-    let output_module =
+    let mut output_module =
         load_or_compile_module(&engine, &main_path, "main", "MOLT_WASM_PRECOMPILED_PATH")?;
-    let needs_runtime = has_runtime_imports(&output_module);
+    let mut needs_runtime = has_runtime_imports(&output_module);
+    if needs_runtime {
+        if use_linked {
+            bail!("linked wasm still imports molt_runtime; link step incomplete");
+        }
+        let Some(linked_path) = linked_path.clone() else {
+            bail!(
+                "linked wasm required for Molt runtime outputs; build with --linked or set MOLT_WASM_LINK=1."
+            );
+        };
+        output_module =
+            load_or_compile_module(&engine, &linked_path, "main", "MOLT_WASM_PRECOMPILED_PATH")?;
+        needs_runtime = has_runtime_imports(&output_module);
+        if needs_runtime {
+            bail!("linked wasm still imports molt_runtime; link step incomplete");
+        }
+        main_path = linked_path;
+        use_linked = true;
+    }
+    debug_log(|| format!("main wasm: {main_path:?} (linked={use_linked})"));
 
     let runtime_module = if needs_runtime {
         let runtime_path = env::var("MOLT_RUNTIME_WASM")

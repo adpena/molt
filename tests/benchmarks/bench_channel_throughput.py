@@ -1,6 +1,10 @@
 import asyncio
 
-from molt.shims import molt_chan_new, molt_chan_recv, molt_chan_send
+from molt import intrinsics as _intrinsics
+
+molt_chan_new = _intrinsics.require("molt_chan_new", globals())
+molt_chan_recv = _intrinsics.require("molt_chan_recv", globals())
+molt_chan_send = _intrinsics.require("molt_chan_send", globals())
 
 
 async def work() -> int:

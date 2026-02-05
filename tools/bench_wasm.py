@@ -68,6 +68,10 @@ SMOKE_BENCHMARKS = [
     "tests/benchmarks/bench_bytes_find.py",
 ]
 
+WS_BENCHMARKS = [
+    "tests/benchmarks/bench_ws_wait.py",
+]
+
 MOLT_ARGS_BY_BENCH = {
     "tests/benchmarks/bench_sum_list_hints.py": ["--type-hints", "trust"],
 }
@@ -532,6 +536,23 @@ def _resolve_runner(runner: str, *, tty: bool, log: TextIO | None) -> list[str]:
     return [str(target)]
 
 
+def _node_has_websocket(log: TextIO | None) -> bool:
+    cmd = [
+        "node",
+        "-e",
+        (
+            "let ws=globalThis.WebSocket; "
+            "if (!ws) { try { ws=require('undici').WebSocket; } catch (e) {} } "
+            "process.exit(ws ? 0 : 1);"
+        ),
+    ]
+    try:
+        res = _run_cmd(cmd, env=os.environ.copy(), capture=True, tty=False, log=log)
+    except OSError:
+        return False
+    return res.returncode == 0
+
+
 def summarize_samples(samples: list[float]) -> dict[str, float]:
     mean = statistics.mean(samples)
     median = statistics.median(samples)
@@ -644,6 +665,11 @@ def main() -> None:
         help="Require linked wasm artifacts; abort if linking is unavailable.",
     )
     parser.add_argument(
+        "--ws",
+        action="store_true",
+        help="Include websocket wait benchmark (also honors MOLT_WASM_BENCH_WS=1).",
+    )
+    parser.add_argument(
         "--super",
         action="store_true",
         help="Run all benchmarks 10x and emit mean/median/variance/range stats.",
@@ -665,6 +691,9 @@ def main() -> None:
         help="Keep per-benchmark wasm temp dirs (also honors MOLT_WASM_KEEP=1).",
     )
     args = parser.parse_args()
+
+    if not args.linked and not args.require_linked:
+        args.require_linked = True
 
     if args.linked or args.require_linked:
         os.environ["MOLT_WASM_LINK"] = "1"
@@ -712,7 +741,18 @@ def main() -> None:
             file=sys.stderr,
         )
 
-    benchmarks = SMOKE_BENCHMARKS if args.smoke else BENCHMARKS
+    benchmarks = list(SMOKE_BENCHMARKS) if args.smoke else list(BENCHMARKS)
+    include_ws = args.ws or os.environ.get("MOLT_WASM_BENCH_WS") == "1"
+    if include_ws:
+        if args.runner == "node" and not _node_has_websocket(log_file):
+            print(
+                "Skipping websocket bench: node runner has no WebSocket support.",
+                file=sys.stderr,
+            )
+        else:
+            for bench in WS_BENCHMARKS:
+                if bench not in benchmarks:
+                    benchmarks.append(bench)
     samples = (
         SUPER_SAMPLES
         if args.super

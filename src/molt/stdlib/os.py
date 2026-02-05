@@ -5,81 +5,32 @@ from __future__ import annotations
 from collections.abc import ItemsView, KeysView, ValuesView
 from typing import TYPE_CHECKING, Any, Iterator, MutableMapping
 
-import builtins as _builtins
+from _intrinsics import require_intrinsic as _require_intrinsic
 
 
-def _load_intrinsic(name: str) -> Any | None:
-    direct = globals().get(name)
-    if direct is not None:
-        return direct
-    return getattr(_builtins, name, None)
-
-
-_MOLT_ENV_GET_RAW = _load_intrinsic("_molt_env_get_raw")
-_MOLT_OS_NAME = _load_intrinsic("_molt_os_name")
-_MOLT_PATH_EXISTS = _load_intrinsic("_molt_path_exists")
-_MOLT_PATH_LISTDIR = _load_intrinsic("_molt_path_listdir")
-_MOLT_PATH_MKDIR = _load_intrinsic("_molt_path_mkdir")
-_MOLT_PATH_UNLINK = _load_intrinsic("_molt_path_unlink")
-_MOLT_PATH_RMDIR = _load_intrinsic("_molt_path_rmdir")
-_MOLT_PATH_CHMOD = _load_intrinsic("_molt_path_chmod")
-_MOLT_GETCWD = _load_intrinsic("_molt_getcwd")
-_MOLT_OS_CLOSE = _load_intrinsic("_molt_os_close")
-_MOLT_OS_DUP = _load_intrinsic("_molt_os_dup")
-_MOLT_OS_GET_INHERITABLE = _load_intrinsic("_molt_os_get_inheritable")
-_MOLT_OS_SET_INHERITABLE = _load_intrinsic("_molt_os_set_inheritable")
-
-
-def _should_load_py_os() -> bool:
-    return (
-        _MOLT_ENV_GET_RAW is None
-        and _MOLT_OS_NAME is None
-        and _MOLT_PATH_EXISTS is None
-        and _MOLT_PATH_LISTDIR is None
-        and _MOLT_PATH_MKDIR is None
-        and _MOLT_PATH_UNLINK is None
-        and _MOLT_PATH_RMDIR is None
-        and _MOLT_PATH_CHMOD is None
-        and _MOLT_GETCWD is None
-    )
-
-
-def _load_py_os() -> Any:
-    if not _should_load_py_os():
-        return None
-    try:
-        import importlib as _importlib
-
-        module = _importlib.import_module("os")
-    except Exception:
-        return None
-    if module is None:
-        return None
-    if getattr(module, "__name__", None) == __name__:
-        return None
-    return module
-
-
-_py_os = _load_py_os()
+_MOLT_ENV_GET = _require_intrinsic("molt_env_get", globals())
+_MOLT_OS_NAME = _require_intrinsic("molt_os_name", globals())
+_MOLT_PATH_EXISTS = _require_intrinsic("molt_path_exists", globals())
+_MOLT_PATH_LISTDIR = _require_intrinsic("molt_path_listdir", globals())
+_MOLT_PATH_MKDIR = _require_intrinsic("molt_path_mkdir", globals())
+_MOLT_PATH_UNLINK = _require_intrinsic("molt_path_unlink", globals())
+_MOLT_PATH_RMDIR = _require_intrinsic("molt_path_rmdir", globals())
+_MOLT_PATH_CHMOD = _require_intrinsic("molt_path_chmod", globals())
+_MOLT_GETCWD = _require_intrinsic("molt_getcwd", globals())
+_MOLT_GETPID = _require_intrinsic("molt_getpid", globals())
+_MOLT_OS_CLOSE = _require_intrinsic("molt_os_close", globals())
+_MOLT_OS_DUP = _require_intrinsic("molt_os_dup", globals())
+_MOLT_OS_GET_INHERITABLE = _require_intrinsic("molt_os_get_inheritable", globals())
+_MOLT_OS_SET_INHERITABLE = _require_intrinsic("molt_os_set_inheritable", globals())
+_MOLT_OS_URANDOM = _require_intrinsic("molt_os_urandom", globals())
+_MOLT_CAP_REQUIRE = _require_intrinsic("molt_capabilities_require", globals())
 
 
 def _resolve_os_name() -> str:
-    if callable(_MOLT_OS_NAME):
-        try:
-            value = _MOLT_OS_NAME()
-            if isinstance(value, str):
-                return value
-        except Exception:
-            pass
-    if _py_os is not None:
-        try:
-            value = getattr(_py_os, "name", None)
-            if isinstance(value, str):
-                return value
-        except Exception:
-            pass
-    return "posix"
-
+    value = _MOLT_OS_NAME()
+    if not isinstance(value, str):
+        raise RuntimeError("os name intrinsic returned invalid value")
+    return value
 
 __all__ = [
     "name",
@@ -96,6 +47,7 @@ __all__ = [
     "getcwd",
     "getpid",
     "getenv",
+    "urandom",
     "listdir",
     "mkdir",
     "chmod",
@@ -106,12 +58,12 @@ __all__ = [
     "get_inheritable",
     "set_inheritable",
     "unlink",
+    "remove",
     "environ",
     "path",
     "PathLike",
     "fspath",
 ]
-
 
 name = _resolve_os_name()
 if name == "nt":
@@ -131,12 +83,12 @@ SEEK_SET = 0
 SEEK_CUR = 1
 SEEK_END = 2
 
-
 _ENV_STORE: dict[str, str] = {}
+_ENV_MISSING = object()
 
 if TYPE_CHECKING:
 
-    def _molt_env_get_raw(key: str, default: Any = None) -> Any:
+    def molt_env_get(key: str, default: Any = None) -> Any:
         return default
 
     def _molt_getpid() -> int:
@@ -154,74 +106,66 @@ if TYPE_CHECKING:
     def _molt_path_rmdir(path: Any) -> None:
         return None
 
-
 def _molt_env_get(key: str, default: Any = None) -> Any:
-    if callable(_MOLT_ENV_GET_RAW):
-        try:
-            return _MOLT_ENV_GET_RAW(key, default)
-        except Exception:
-            pass
-    if _py_os is not None:
-        try:
-            env = getattr(_py_os, "environ", None)
-            if env is not None and hasattr(env, "get"):
-                return env.get(key, default)
-        except Exception:
-            pass
     if key in _ENV_STORE:
         return _ENV_STORE[key]
-    return default
-
-
-def _capabilities() -> set[str]:
-    raw = str(_molt_env_get("MOLT_CAPABILITIES", ""))
-    caps: set[str] = set()
-    for cap in raw.split(","):
-        stripped = cap.strip()
-        if stripped:
-            caps.add(stripped)
-    return caps
-
-
-def _trusted() -> bool:
-    raw = str(_molt_env_get("MOLT_TRUSTED", ""))
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
+    return _MOLT_ENV_GET(key, default)
 
 def _require_cap(name: str) -> None:
-    try:
-        from molt import capabilities
-
-        capabilities.require(name)
-        return
-    except Exception:
-        if _trusted():
-            return
-        if name not in _capabilities():
-            raise PermissionError("Missing capability")
-
+    _MOLT_CAP_REQUIRE(name)
+    return None
 
 class _Environ:
-    # TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): os.environ parity (mapping methods + backend).
     def __init__(self) -> None:
         self._store = _ENV_STORE
 
     def _backend(self) -> MutableMapping[str, str]:
-        if _py_os is not None:
-            return _py_os.environ
         return self._store
+
+    def _check_key(self, key: Any) -> str:
+        if not isinstance(key, str):
+            raise TypeError(f"str expected, not {type(key).__name__}")
+        return key
+
+    def _check_value(self, value: Any) -> str:
+        if not isinstance(value, str):
+            raise TypeError(f"str expected, not {type(value).__name__}")
+        return value
 
     def __getitem__(self, key: str) -> str:
         _require_cap("env.read")
+        key = self._check_key(key)
+        value = _molt_env_get(key, _ENV_MISSING)
+        if value is not _ENV_MISSING:
+            return value
         return self._backend()[key]
 
     def __setitem__(self, key: str, value: str) -> None:
         _require_cap("env.write")
-        self._backend()[key] = value
+        key = self._check_key(key)
+        value = self._check_value(value)
+        backend = self._backend()
+        backend[key] = value
+        if backend is not self._store:
+            self._store[key] = value
 
     def __delitem__(self, key: str) -> None:
         _require_cap("env.write")
-        self._backend().pop(key)
+        key = self._check_key(key)
+        backend = self._backend()
+        if backend is self._store:
+            backend.pop(key)
+            return
+        removed = False
+        if key in self._store:
+            del self._store[key]
+            removed = True
+        try:
+            backend.pop(key)
+            removed = True
+        except KeyError:
+            if not removed:
+                raise
 
     def __iter__(self) -> Iterator[str]:
         _require_cap("env.read")
@@ -231,9 +175,82 @@ class _Environ:
         _require_cap("env.read")
         return len(self._backend())
 
+    def __contains__(self, key: object) -> bool:
+        _require_cap("env.read")
+        key = self._check_key(key)
+        value = _molt_env_get(key, _ENV_MISSING)
+        if value is not _ENV_MISSING:
+            return True
+        return key in self._backend()
+
+    def __repr__(self) -> str:
+        return "environ(" + repr(self.copy()) + ")"
+
+    def copy(self) -> dict[str, str]:
+        _require_cap("env.read")
+        return dict(self)
+
     def get(self, key: str, default: Any = None) -> Any:
         _require_cap("env.read")
+        key = self._check_key(key)
+        value = _molt_env_get(key, _ENV_MISSING)
+        if value is not _ENV_MISSING:
+            return value
         return self._backend().get(key, default)
+
+    def setdefault(self, key: str, default: Any = None) -> str:
+        _require_cap("env.write")
+        key = self._check_key(key)
+        default = self._check_value(default)
+        value = _molt_env_get(key, _ENV_MISSING)
+        if value is not _ENV_MISSING:
+            return value
+        self[key] = default
+        return default
+
+    def update(self, other: Any = None, /, **kwargs: str) -> None:
+        _require_cap("env.write")
+        if other is not None:
+            if hasattr(other, "items"):
+                for key, value in other.items():
+                    self[key] = value
+            else:
+                for key, value in other:
+                    self[key] = value
+        for key, value in kwargs.items():
+            self[key] = value
+
+    def pop(self, key: str, default: Any = _ENV_MISSING) -> Any:
+        _require_cap("env.write")
+        key = self._check_key(key)
+        backend = self._backend()
+        if backend is self._store:
+            if default is _ENV_MISSING:
+                return backend.pop(key)
+            return backend.pop(key, default)
+        if key in self._store:
+            value = self._store.pop(key)
+            backend.pop(key, None)
+            return value
+        if default is _ENV_MISSING:
+            return backend.pop(key)
+        return backend.pop(key, default)
+
+    def popitem(self) -> tuple[str, str]:
+        _require_cap("env.write")
+        backend = self._backend()
+        if backend is self._store:
+            return backend.popitem()
+        key, value = backend.popitem()
+        self._store.pop(key, None)
+        return key, value
+
+    def clear(self) -> None:
+        _require_cap("env.write")
+        backend = self._backend()
+        backend.clear()
+        if backend is not self._store:
+            self._store.clear()
 
     def items(self) -> ItemsView[str, str]:
         _require_cap("env.read")
@@ -247,13 +264,11 @@ class _Environ:
         _require_cap("env.read")
         return self._backend().values()
 
-
 class PathLike:
     __slots__ = ()
 
     def __fspath__(self) -> str | bytes:
         raise NotImplementedError
-
 
 def fspath(path: Any) -> str | bytes:
     if isinstance(path, (str, bytes)):
@@ -269,7 +284,6 @@ def fspath(path: Any) -> str | bytes:
     raise TypeError(
         f"expected str, bytes or os.PathLike object, not {type(path).__name__}"
     )
-
 
 class _Path:
     sep = sep
@@ -377,170 +391,168 @@ class _Path:
         return "."
 
     @staticmethod
+    def expandvars(path: str) -> str:
+        _require_cap("env.read")
+        if not path or "$" not in path:
+            return path
+
+        def _is_var_char(ch: str) -> bool:
+            if "a" <= ch <= "z" or "A" <= ch <= "Z":
+                return True
+            if "0" <= ch <= "9":
+                return True
+            return ch == "_"
+
+        out: list[str] = []
+        idx = 0
+        length = len(path)
+        while idx < length:
+            ch = path[idx]
+            if ch != "$":
+                out.append(ch)
+                idx += 1
+                continue
+            if idx + 1 >= length:
+                out.append(ch)
+                idx += 1
+                continue
+            next_ch = path[idx + 1]
+            if next_ch == "{":
+                end = path.find("}", idx + 2)
+                if end == -1:
+                    out.append(path[idx:])
+                    break
+                name = path[idx + 2 : end]
+                if not name:
+                    out.append(path[idx : end + 1])
+                else:
+                    value = _molt_env_get(name, None)
+                    if value is None:
+                        out.append(path[idx : end + 1])
+                    else:
+                        out.append(str(value))
+                idx = end + 1
+                continue
+            if next_ch == "$":
+                out.append("$$")
+                idx += 2
+                continue
+            start = idx + 1
+            end = start
+            while end < length:
+                ch = path[end]
+                if _is_var_char(ch):
+                    end += 1
+                    continue
+                break
+            if end == start:
+                out.append("$")
+                idx += 1
+                continue
+            name = path[start:end]
+            value = _molt_env_get(name, None)
+            if value is None:
+                out.append(path[idx:end])
+            else:
+                out.append(str(value))
+            idx = end
+        return "".join(out)
+
+    @staticmethod
     def abspath(path: str) -> str:
         return _Path.normpath(path)
 
     @staticmethod
     def exists(path: Any) -> bool:
         _require_cap("fs.read")
-        if callable(_MOLT_PATH_EXISTS):
-            try:
-                res = _MOLT_PATH_EXISTS(path)
-                if res is None:
-                    return False
-                return res
-            except Exception:
-                pass
-        if _py_os is not None:
-            try:
-                return _py_os.path.exists(path)
-            except Exception:
-                return False
-        return False
+        intrinsic = _require_intrinsic("_molt_path_exists", _MOLT_PATH_EXISTS)
+        res = intrinsic(path)
+        if res is None:
+            return False
+        return res
 
     @staticmethod
     def isdir(path: Any) -> bool:
         _require_cap("fs.read")
-        if callable(_MOLT_PATH_LISTDIR):
-            try:
-                _MOLT_PATH_LISTDIR(path)
-                return True
-            except Exception:
-                return False
-        if _py_os is not None:
-            try:
-                return _py_os.path.isdir(path)
-            except Exception:
-                return False
-        return False
+        intrinsic = _require_intrinsic("_molt_path_listdir", _MOLT_PATH_LISTDIR)
+        try:
+            intrinsic(path)
+            return True
+        except Exception:
+            return False
 
     @staticmethod
     def isfile(path: Any) -> bool:
         _require_cap("fs.read")
-        if callable(_MOLT_PATH_LISTDIR):
-            try:
-                _MOLT_PATH_LISTDIR(path)
-                return False
-            except FileNotFoundError:
-                return False
-            except Exception:
-                return True
-        if _py_os is not None:
-            try:
-                return _py_os.path.isfile(path)
-            except Exception:
-                return False
-        return False
+        intrinsic = _require_intrinsic("_molt_path_listdir", _MOLT_PATH_LISTDIR)
+        try:
+            intrinsic(path)
+            return False
+        except FileNotFoundError:
+            return False
+        except Exception:
+            return True
 
     @staticmethod
     def unlink(path: Any) -> None:
         _require_cap("fs.write")
-        if callable(_MOLT_PATH_UNLINK):
-            try:
-                _MOLT_PATH_UNLINK(path)
-                return
-            except Exception:
-                pass
-        if _py_os is not None:
-            _py_os.unlink(path)
-            return
-        raise FileNotFoundError(path)
+        intrinsic = _require_intrinsic("_molt_path_unlink", _MOLT_PATH_UNLINK)
+        intrinsic(path)
 
     @staticmethod
     def rmdir(path: Any) -> None:
         _require_cap("fs.write")
-        if callable(_MOLT_PATH_RMDIR):
-            try:
-                _MOLT_PATH_RMDIR(path)
-                return
-            except Exception:
-                pass
-        if _py_os is not None:
-            _py_os.rmdir(path)
-            return
-        raise FileNotFoundError(path)
-
+        intrinsic = _require_intrinsic("_molt_path_rmdir", _MOLT_PATH_RMDIR)
+        intrinsic(path)
 
 path = _Path()
 
-
 def listdir(path: Any = ".") -> list[str]:
     _require_cap("fs.read")
-    if callable(_MOLT_PATH_LISTDIR):
-        try:
-            res = _MOLT_PATH_LISTDIR(path)
-            if isinstance(res, list):
-                return res
-        except Exception:
-            raise
-    if _py_os is not None:
-        return list(_py_os.listdir(path))
+    intrinsic = _require_intrinsic("_molt_path_listdir", _MOLT_PATH_LISTDIR)
+    res = intrinsic(path)
+    if isinstance(res, list):
+        return res
     raise FileNotFoundError(path)
-
 
 environ = _Environ()
 
-
 def getpid() -> int:
-    try:
-        return _molt_getpid()  # type: ignore[unresolved-reference]
-    except Exception:
-        pass
-    if _py_os is not None:
-        return _py_os.getpid()
-    return 0
+    intrinsic = _require_intrinsic("_molt_getpid", _MOLT_GETPID)
+    return int(intrinsic())
 
+def urandom(n: Any) -> bytes:
+    _require_cap("rand")
+    intrinsic = _require_intrinsic("_molt_os_urandom", _MOLT_OS_URANDOM)
+    return intrinsic(n)
 
 def getcwd() -> str:
     _require_cap("fs.read")
-    if callable(_MOLT_GETCWD):
-        return _MOLT_GETCWD()
-    if _py_os is not None:
-        try:
-            return _py_os.getcwd()
-        except Exception:
-            pass
-    for key in ("PWD", "CD", "CWD"):
-        value = _molt_env_get(key, None)
-        if isinstance(value, str) and value:
-            return value
-    return curdir
-
+    intrinsic = _require_intrinsic("_molt_getcwd", _MOLT_GETCWD)
+    return intrinsic()
 
 def getenv(key: str, default: Any = None) -> Any:
     _require_cap("env.read")
     return _molt_env_get(key, default)
 
-
 def unlink(path: Any) -> None:
     _Path.unlink(path)
 
+def remove(path: Any) -> None:
+    unlink(path)
 
 def rmdir(path: Any) -> None:
     _Path.rmdir(path)
 
-
 def mkdir(path: Any, mode: int = 0o777) -> None:
     _require_cap("fs.write")
-    if callable(_MOLT_PATH_MKDIR):
-        _MOLT_PATH_MKDIR(path)
-        return
-    if _py_os is not None:
-        _py_os.mkdir(path, mode)
-        return
-    raise FileNotFoundError(path)
-
+    intrinsic = _require_intrinsic("_molt_path_mkdir", _MOLT_PATH_MKDIR)
+    intrinsic(path)
 
 def chmod(path: Any, mode: int) -> None:
     _require_cap("fs.write")
-    if callable(_MOLT_PATH_CHMOD):
-        _MOLT_PATH_CHMOD(path, mode)
-        return
-    if _py_os is not None:
-        _py_os.chmod(path, mode)
-        return
-    raise FileNotFoundError(path)
-
+    intrinsic = _require_intrinsic("_molt_path_chmod", _MOLT_PATH_CHMOD)
+    intrinsic(path, mode)
 
 def makedirs(name: Any, mode: int = 0o777, exist_ok: bool = False) -> None:
     path = fspath(name)
@@ -569,38 +581,18 @@ def makedirs(name: Any, mode: int = 0o777, exist_ok: bool = False) -> None:
     if not exist_ok and not _Path.exists(path):
         raise FileNotFoundError(path)
 
-
 def close(fd: int) -> None:
-    if callable(_MOLT_OS_CLOSE):
-        _MOLT_OS_CLOSE(fd)
-        return
-    if _py_os is not None:
-        _py_os.close(fd)
-        return
-    raise NotImplementedError("os.close unavailable")
-
+    intrinsic = _require_intrinsic("_molt_os_close", _MOLT_OS_CLOSE)
+    intrinsic(fd)
 
 def dup(fd: int) -> int:
-    if callable(_MOLT_OS_DUP):
-        return int(_MOLT_OS_DUP(fd))
-    if _py_os is not None:
-        return int(_py_os.dup(fd))
-    raise NotImplementedError("os.dup unavailable")
-
+    intrinsic = _require_intrinsic("_molt_os_dup", _MOLT_OS_DUP)
+    return int(intrinsic(fd))
 
 def get_inheritable(fd: int) -> bool:
-    if callable(_MOLT_OS_GET_INHERITABLE):
-        return bool(_MOLT_OS_GET_INHERITABLE(fd))
-    if _py_os is not None and hasattr(_py_os, "get_inheritable"):
-        return bool(_py_os.get_inheritable(fd))
-    raise NotImplementedError("os.get_inheritable unavailable")
-
+    intrinsic = _require_intrinsic("_molt_os_get_inheritable", _MOLT_OS_GET_INHERITABLE)
+    return bool(intrinsic(fd))
 
 def set_inheritable(fd: int, inheritable: bool) -> None:
-    if callable(_MOLT_OS_SET_INHERITABLE):
-        _MOLT_OS_SET_INHERITABLE(fd, bool(inheritable))
-        return
-    if _py_os is not None and hasattr(_py_os, "set_inheritable"):
-        _py_os.set_inheritable(fd, bool(inheritable))
-        return
-    raise NotImplementedError("os.set_inheritable unavailable")
+    intrinsic = _require_intrinsic("_molt_os_set_inheritable", _MOLT_OS_SET_INHERITABLE)
+    intrinsic(fd, bool(inheritable))

@@ -1,4 +1,7 @@
-from molt.shims import molt_chan_drop, molt_chan_new
+from molt import intrinsics as _intrinsics
+
+molt_chan_new = _intrinsics.require("molt_chan_new", globals())
+molt_chan_drop = _intrinsics.require("molt_chan_drop", globals())
 
 
 def main() -> None:

@@ -1,7 +1,7 @@
 # Molt Benchmark Plan
 
 ## 1. Methodology
-- **Baselines**: Compare against CPython 3.12/3.13/3.14 (multi-version baselines),
+- **Baselines**: Compare against CPython 3.12/3.13/3.14 (multi-version baselines; Molt targets 3.12+),
   PyPy (via `uv run --no-project --python pypy@3.11` to bypass `requires-python`),
   and optional Cython/Numba baselines when the `bench` dependency group is
   installed with Python 3.12.

@@ -1,12 +1,14 @@
 # Documentation Index
 
+Molt targets **Python 3.12+** semantics only. Do not spend effort on <=3.11.
+
 ## Start Here
 - `AGENTS.md`
 - `docs/CANONICALS.md`
 - `CONTRIBUTING.md`
 - `docs/DEVELOPER_GUIDE.md`
-- `docs/AGENT_LOCKS.md`
 - `docs/OPERATIONS.md`
+- Platform pitfalls: `README.md` (quickstart), `docs/DEVELOPER_GUIDE.md`, and `docs/OPERATIONS.md`.
 
 ## Vision, Scope, Status
 - 0000 Vision: `docs/spec/areas/core/0000-vision.md`
@@ -19,6 +21,7 @@
 ## Architecture and Runtime
 - 0002 Architecture: `docs/spec/areas/core/0002-architecture.md`
 - 0003 Runtime: `docs/spec/areas/runtime/0003-runtime.md`
+- 0024 Runtime State Lifecycle: `docs/spec/areas/runtime/0024_RUNTIME_STATE_LIFECYCLE.md`
 - 0026 Concurrency And GIL: `docs/spec/areas/runtime/0026_CONCURRENCY_AND_GIL.md`
 - 0027 Runtime Architecture Map: `docs/spec/areas/runtime/0027_RUNTIME_ARCHITECTURE_MAP.md`
 - 0004 Tiers: `docs/spec/areas/core/0004-tiers.md`
@@ -32,6 +35,8 @@
 ## Compatibility and Stdlib
 - 0014 Type Coverage Matrix: `docs/spec/areas/compat/0014_TYPE_COVERAGE_MATRIX.md`
 - 0015 Stdlib Compatibility Matrix: `docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md`
+- 0015-IB Stdlib Intrinsics Backing Tracker: `docs/spec/areas/compat/0015_STDLIB_INTRINSICS_BACKING.md`
+- 0214 libmolt C-API v0: `docs/spec/areas/compat/0214_LIBMOLT_C_API_V0.md`
 
 ## Testing and Benchmarks
 - 0007 Testing: `docs/spec/areas/testing/0007-testing.md`

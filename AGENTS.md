@@ -1,7 +1,33 @@
 # Repository Guidelines
 
+## Non-Negotiable: Raise On Missing Features
+- Always raise on missing features; never fallback silently.
+- Never build coverage or implementations that rely on host Python in any way.
+- Always assume compiled Molt binaries will run in environments with no Python installation at all.
+- Stdlib modules must be Rust-native intrinsics for compiled binaries; any Python stdlib files may only be thin, intrinsic-forwarding wrappers with zero host-Python imports.
+- Absolutely no CPython stdlib imports or `_py_*` fallback modules in compiled binaries (tooling-only shims are allowed).
+- Intrinsics are mandatory: missing intrinsics must raise immediately (standardized `RuntimeError`), and differential tests should fail fast when intrinsics are missing.
+
+## Intrinsics & Stdlib Lowering (Non-Negotiable)
+- All stdlib behavior must lower into Rust intrinsics; Python stdlib files are only thin wrappers for argument normalization, error mapping, and capability gating.
+- Load intrinsics via `src/molt/stdlib/_intrinsics.py` (module `globals()` first, then `builtins._molt_intrinsics`); do not invent alternative registries or hidden import-time side effects.
+- Required behavior must use `require_intrinsic` or explicit `RuntimeError`/`ImportError` when missing; optional features must be explicit and capability-gated with clear errors, never silent fallback to host Python.
+- Standardize intrinsic naming and registration through `runtime/molt-runtime/src/intrinsics/manifest.pyi`, and regenerate `src/molt/_intrinsics.pyi` plus `runtime/molt-runtime/src/intrinsics/generated.rs` via `tools/gen_intrinsics.py`.
+- Prefer standardization, performance, and correctness: push hot paths and semantics into Rust, keep Python shims minimal and deterministic, and avoid CPython/host-stdlib dependencies.
+
 ## Mission (Non-Negotiable)
 Build relentlessly with high productivity, velocity, and vision in the spirit and honor of Jeff Dean. Always build fully, completely, correctly, and performantly; avoid workarounds. Guiding question: "What would Jeff Dean do?"
+
+## Version Target (Non-Negotiable)
+- Molt targets Python 3.12+ semantics only. Do not spend effort on <=3.11 compatibility.
+- When behavior differs across 3.12/3.13/3.14, document the choice explicitly in specs/tests and keep the runtime aligned with the documented version.
+
+## Jeff Dean Protege Mode (Non-Negotiable)
+- Optimize for correctness, performance, and determinism before convenience. No shortcuts that degrade runtime guarantees.
+- Default path is native Molt lowering + Rust runtime. Treat CPython bridge paths as explicit, opt-in compatibility layers only.
+- Prefer recompiled C-extensions against a `libmolt` C-API subset over any embedded CPython strategy.
+- Any bridge usage must be capability-gated, off by default, and always visible in logs/metrics.
+- Measure performance impacts with benchmarks; treat regressions as failures and iterate until green.
 
 ## Project Structure & Module Organization
 - `src/molt/` contains the Python compiler frontend and CLI (`cli.py`).
@@ -34,16 +60,29 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - `python3 -m molt.cli build --target wasm --require-linked examples/hello.py`: enforce linked output and remove the unlinked artifact after linking.
 - `molt build --module mypkg`: compile a package/module entrypoint (uses `mypkg.__main__` when present).
 - Vendored deps in `vendor/` are added to module roots and `PYTHONPATH` automatically (or set `MOLT_MODULE_ROOTS` explicitly).
-- `molt run --timing examples/hello.py`: emit timing for CPython (or compile+run with `--compiled`).
-- `molt compare examples/hello.py -- --arg 1`: compare CPython vs Molt output with separate build/run timing.
+- `molt run --timing examples/hello.py`: compile+run the native binary and emit build/run timing (no CPython fallback).
+- `molt compare examples/hello.py -- --arg 1`: compare CPython vs Molt output with separate build/run timing (CPython required for baseline only).
 - `molt bench --script examples/hello.py`: run the bench harness on a custom script.
 - `MOLT_TRUSTED=1`, `molt run --trusted`, `molt build --trusted`, `molt diff --trusted`, or `molt test --trusted`: disable capability checks for trusted native deployments.
 - `tools/dev.py lint`: run `ruff` checks, `ruff format --check`, and `ty check` via `uv run` (Python 3.12).
 - `tools/dev.py test`: run the Python test suite (`pytest -q`) via `uv run` on Python 3.12/3.13/3.14.
-- `python3 tools/cpython_regrtest.py --clone`: run CPython regrtest against Molt (logs under `logs/cpython_regrtest/`); defaults to `python -m molt.cli run --compiled`.
+- `python3 tools/cpython_regrtest.py --clone`: run CPython regrtest against Molt (logs under `logs/cpython_regrtest/`); defaults to `python -m molt.cli run`.
 - `python3 tools/cpython_regrtest.py --uv --uv-python 3.12 --uv-prepare --coverage`: run regrtest with uv-managed Python + coverage.
 - `cargo test`: run Rust unit tests for runtime crates.
 - `uv sync --group bench --python 3.12`: install optional Cython/Numba benchmark deps before running `tools/bench.py` (Numba requires <3.13).
+- If `uv run` panics in sandboxed or restricted environments, reuse the existing
+  environment by setting `UV_NO_SYNC=1`. Prefer `UV_CACHE_DIR=/tmp/uv-cache` inside
+  the sandbox when external volumes are blocked.
+- If the panic mentions `system-configuration` (macOS proxy lookup), pin explicit
+  proxy envs to bypass system proxy detection, for example:
+  `HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 ALL_PROXY=http://127.0.0.1:9 NO_PROXY=localhost,127.0.0.1`.
+- If the panic is due to missing deps, run `uv sync --group dev --python 3.12`
+  locally (outside the sandbox) to populate `.venv`, then rerun with `UV_NO_SYNC=1`.
+
+## No CPython Fallback (Non-Negotiable)
+- Molt-compiled binaries must run on systems without Python installed; do not depend on `python`, `sys.executable`, or CPython at runtime.
+- Never implement CPython fallback/bridging in CLI, runtime, tests, or tooling. Unsupported constructs must be compile-time errors or `bridge_unavailable` runtime exits when `--fallback bridge` is explicitly requested.
+- CPython is only allowed for baseline comparisons (`molt compare`, `tests/molt_diff.py`, CPython regrtest); it must be explicit and never used to execute Molt binaries.
 
 ## Tooling Add-ons (Optional)
 - `uv run pre-commit install` and `uv run pre-commit run -a`: enable repo hooks (ruff/ty formatting + checks).
@@ -89,6 +128,11 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 ## Testing Guidelines
 - Use `pytest tests/differential` for `molt-diff` parity checks against CPython.
 - NON-NEGOTIABLE: Always use the external volume as the outdir root when it is available (prefer `/Volumes/APDataStore/Molt`); if it is not available, write outputs to the repo’s standard build folders (for example `logs/`, `bench/results/`, `target/`, `dist/`, `build/`, `wasm/`, or `runtime/**/target/`) and never to the repo root.
+- NON-NEGOTIABLE: Always run the differential testing suite with memory profiling enabled (`MOLT_DIFF_MEASURE_RSS=1`).
+- NON-NEGOTIABLE: Treat memory blowups as failures; if RSS climbs rapidly or threatens system stability, terminate the diff run early (kill the harness) and record the abort plus last-known RSS metrics in `tests/differential/INDEX.md`.
+- NON-NEGOTIABLE: Enforce a 10 GB per-process memory cap for diff runs when possible.
+  - macOS/Linux: `ulimit -Sv 10485760` (KB) or `ulimit -v 10485760` in the shell that launches the suite.
+  - If the limit is hit or memory pressure occurs, reduce parallelism (`--jobs 2` or `--jobs 1`) and rerun.
 - Differential artifacts can be redirected to an external volume to avoid local disk pressure.
   - Set `MOLT_DIFF_ROOT` to an absolute path; all per-test build artifacts, caches, and temp dirs will live under it.
   - Optional: set `MOLT_DIFF_TMPDIR` to override only the temp root.
@@ -96,8 +140,18 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
   - Optional: set `MOLT_DIFF_KEEP=1` to preserve per-test artifacts after each run.
   - Optional: set `MOLT_DIFF_TRUSTED=1` to force trusted mode for diff runs (defaults to trusted unless `MOLT_DEV_TRUSTED=0`).
   - Default to a shorter timeout unless a test is known to be slow: `MOLT_DIFF_TIMEOUT=180` (bump per-test only when needed).
+  - Optional: set `MOLT_DIFF_RLIMIT_GB=10` (default) or `MOLT_DIFF_RLIMIT_MB=<n>` to enforce a per-process memory cap; set to `0` to disable.
+  - Optional: set `MOLT_DIFF_MEM_PER_JOB_GB=<n>` to tune auto-parallelism by memory budget (default: 2 GB/worker).
+  - Optional: set `MOLT_DIFF_MAX_JOBS=<n>` to hard-cap the auto-selected job count.
+  - Optional: set `MOLT_DIFF_ORDER=auto|name|size-asc|size-desc` to control scheduling order (default: auto).
+  - Optional: set `MOLT_DIFF_FAILURES=<path>` or pass `--failures-output <path>` to capture a failure queue file.
+  - Optional: set `MOLT_DIFF_WARM_CACHE=1` or pass `--warm-cache` to prebuild all tests once to seed `MOLT_CACHE` before the diff run (useful for large suites).
+  - Optional: set `MOLT_DIFF_RETRY_OOM=1` (default) or pass `--no-retry-oom` to disable the one-shot OOM retry with `--jobs 1`.
+  - Optional: set `MOLT_DIFF_SUMMARY=<path>` or read `MOLT_DIFF_ROOT/summary.json` for the LLM-friendly summary sidecar (includes RSS aggregates when enabled).
   - Example (external volume + shared cache + temp root): `MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache MOLT_DIFF_ROOT=/Volumes/APDataStore/Molt MOLT_DIFF_TMPDIR=/Volumes/APDataStore/Molt/tmp MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`.
 - Example (RSS metrics): `MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache MOLT_DIFF_ROOT=/Volumes/APDataStore/Molt MOLT_DIFF_TMPDIR=/Volumes/APDataStore/Molt/tmp MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`.
+  - Example (watch RSS during run): `ps -o pid=,rss=,command= -p <PID> | awk '{printf "pid=%s rss_kb=%s cmd=%s\n",$1,$2,$3}'` (record spikes in `tests/differential/INDEX.md`).
+  - Example (kill on blowup): `kill -TERM <PID>` then `kill -KILL <PID>` if it does not exit quickly; log the abort + last-known RSS in `tests/differential/INDEX.md`.
 - Example (multi-target list, auto-parallel): `MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache MOLT_DIFF_ROOT=/Volumes/APDataStore/Molt MOLT_DIFF_TMPDIR=/Volumes/APDataStore/Molt/tmp MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic/augassign_inplace.py tests/differential/basic/container_mutation.py tests/differential/basic/ellipsis_basic.py`
   - Example (parallel full sweep + live log + aggregate log + per-test logs):
     `MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache MOLT_DIFF_ROOT=/Volumes/APDataStore/Molt MOLT_DIFF_TMPDIR=/Volumes/APDataStore/Molt/tmp MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_GLOB='**/*.py' uv run --python 3.12 python3 -u tests/molt_diff.py --jobs 8 --live --log-file /Volumes/APDataStore/Molt/diff_live.log --log-aggregate /Volumes/APDataStore/Molt/diff_full.log --log-dir /Volumes/APDataStore/Molt/diff_logs tests/differential`
@@ -216,14 +270,7 @@ Use a single, explicit TODO format everywhere (code + docs + tests). This is how
 
 ## Multi-Agent Workflow
 - This project is fundamentally low-level systems work blended with powerful higher-level abstractions; bring aspirational, genius-level rigor with gritty follow-through, seek the hardest problems first, own complexity end-to-end, and lean into building the future.
-- Use `docs/AGENT_LOCKS.md` to coordinate file ownership and avoid collisions.
-- Before opening any file or starting work on a feature, read `docs/AGENT_LOCKS.md` and honor any locks; if it is missing or unclear, stop and ask for direction before proceeding.
-- Before touching non-doc code or tests, write a narrow lock entry for your scope in `docs/AGENT_LOCKS.md`. Update locks whenever you switch files/clusters, and remove them as soon as you finish with a file or scope (be aggressive—re-lock later if needed).
-- Use a unique lock name: `codex-{process_id[:50]}` where `process_id` is the Codex CLI parent PID from `echo $PPID` or `python3 - <<'PY'\nimport os\nprint(os.getppid())\nPY`; never reuse the generic `codex` label.
-- Documentation is generally safe to share across agents; still read locks, but doc-only edits can be co-owned unless a lock explicitly reserves them.
-- Do not implement workarounds, partial implementations, or degraded behavior because a needed file is locked; wait until the lock clears instead.
 - Do not implement frontend-only workarounds or cheap hacks for runtime/compiler/backend semantics; fix the core layers so compiled binaries match CPython behavior.
-- If working on a lower-level layer (runtime/backend) with implications for higher-level code, lock and coordinate across both layers; avoid overlapping clusters at the same level without explicit coordination.
 - Agents may use `gh` (GitHub CLI) and git over SSH to open/merge PRs; commit frequently with clear messages.
 - Run linting/testing once after a cohesive change set is complete (`tools/dev.py lint`, `tools/dev.py test`, plus relevant `cargo` checks); avoid repetitive cycles mid-implementation.
 - Prioritize clear, explicit communication: scope, files touched, and tests run.

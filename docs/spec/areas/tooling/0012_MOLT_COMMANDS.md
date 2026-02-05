@@ -26,8 +26,9 @@ Key flags:
 - `--codec {msgpack,cbor,json}` (default: `msgpack`)
 - `--type-hints {ignore,trust,check}` (default: `ignore`)
 - `--type-facts <path>` (optional Type Facts Artifact from `molt check`)
-- `--output <path>` (optional output path for the native binary, wasm artifact, or object file when `--emit obj`; relative paths resolve under `--out-dir` if set, otherwise the project root)
-- `--out-dir <dir>` (optional output directory for artifacts and binaries; default: `$MOLT_HOME/build/<entry>` for artifacts and `$MOLT_BIN` for native binaries)
+- `--output <path>` (optional output path for the native binary, wasm artifact, or object file when `--emit obj`; relative paths resolve under `--out-dir` if set, otherwise the project root; directory paths use the default filename within that directory)
+- `--out-dir <dir>` (optional output directory for final artifacts; intermediate build outputs stay under `$MOLT_HOME/build/<entry>`; native binaries otherwise default to `$MOLT_BIN`)
+- `--sysroot <path>` (override sysroot for native linking; relative paths resolve under the project root)
 - `--emit {bin,obj,wasm}` (select which artifact to emit)
 - `--linked/--no-linked` (emit `output_linked.wasm` alongside `output.wasm` when targeting WASM; requires `wasm-ld` + `wasm-tools`)
 - `--linked-output <path>` (override the linked wasm output path; requires `--linked`)
@@ -43,22 +44,28 @@ Key flags:
 - `--rebuild` (alias for `--no-cache`)
 - `--respect-pythonpath/--no-respect-pythonpath` (include `PYTHONPATH` entries as module roots; default: off)
 - `--capabilities <file|profile|list>` (capability manifest or profiles/tokens)
-- `--pgo-profile <molt_profile.json>` (planned)
-  (TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): enable PGO profile ingestion.)
+- `--pgo-profile <molt_profile.json>` (profile-guided optimization hints; expects MPA v0.1)
 
 Outputs:
 - `output.o` + linked binary (native, unless `--emit obj`)
 - `output.wasm` (WASM)
 - `output_linked.wasm` when `--linked` is enabled (single-module WASM)
 - When `--require-linked` is enabled, the linked artifact becomes the primary output and the unlinked `output.wasm` is removed after linking.
-- Artifacts are placed under `--out-dir` when provided; otherwise they default to `$MOLT_HOME/build/<entry>` (including `main_stub.c`).
+- Intermediate artifacts (`main_stub.c`, importer stubs, `output.o` for `--emit bin`) live under `$MOLT_HOME/build/<entry>`.
+- Final outputs (binary/wasm/object) are placed under `--out-dir` when provided; otherwise wasm/object outputs default to the project root and native binaries default to `$MOLT_BIN/<entry>_molt`.
 - Native binary defaults to `$MOLT_BIN/<entry>_molt` when `--output` is not provided.
 - `--emit obj` skips linking and returns only the object artifact.
 - Cache reuse skips the backend compile step only; linking still runs when `--linked` is enabled. Use `--no-cache` for a full recompile.
+- Cache keys are computed from the IR payload plus backend/runtime source fingerprints and rustc/RUSTFLAGS metadata; small timestamp-only changes should not invalidate the cache.
 Environment defaults:
 - `MOLT_HOME` (default `~/.molt`): base directory for Molt state, including build artifacts under `build/`.
 - `MOLT_BIN` (default `$MOLT_HOME/bin`): default directory for compiled native binaries.
 - `MOLT_CACHE` (default OS cache, e.g. `~/Library/Caches/molt` or `$XDG_CACHE_HOME/molt`): IR artifact cache.
+- `MOLT_SYSROOT` / `MOLT_CROSS_SYSROOT`: default sysroot path for native linking (overridden by `--sysroot`).
+- `MOLT_CARGO_TIMEOUT`: optional timeout in seconds for cargo build steps (backend/runtime/wasm).
+- `MOLT_BACKEND_TIMEOUT`: optional timeout in seconds for backend compilation (IR -> object/wasm).
+- `MOLT_LINK_TIMEOUT`: optional timeout in seconds for native linker invocations (cc/zig).
+- `MOLT_BACKEND_PROFILE`: override backend binary profile (`release` default; set `dev` for debugging).
 
 Deterministic enforcement:
 - Requires `uv` and `cargo` on PATH.
@@ -74,26 +81,26 @@ Purpose: Generate a Type Facts Artifact (TFA) for optimization and guard reducti
 Key flags:
 - `--output <path>` (default: `type_facts.json`)
 - `--strict` (mark facts as trusted for strict-tier builds)
+- `--deterministic/--no-deterministic`
+- `--deterministic-warn/--no-deterministic-warn`
  - `ty` is used as a validator when available; failing checks block strict facts
 
 Outputs:
 - `type_facts.json`
 
 ### 2.3 `molt run`
-**Status:** Implemented (initial).
+**Status:** Implemented (compiled-by-default).
 
-Purpose: Run Python code via CPython with Molt shims for parity testing.
+Purpose: Compile with Molt and run the native binary.
 
 Key flags:
-- `--python <exe|version>`
 - `--module <name>` (use `name.__main__` when present)
-- `--no-shims`
-- `--compiled` + `--build-arg <arg>`
-- `--rebuild` (disable cache for `--compiled`)
-- `--timing` (emit compile/run timing when used with `--compiled`)
+- `--build-arg <arg>` (forwarded to `molt build`)
+- `--rebuild` (disable build cache for the compiled run)
+- `--timing` (emit compile/run timing)
 - `--capabilities <file|profile|list>` (capability profiles/tokens or manifest path)
 - `--trusted/--no-trusted` (disable capability checks for trusted deployments).
-- Compiled runs forward script args by default; use `--` to separate.
+- Script args are forwarded by default; use `--` to separate.
 
 ### 2.4 `molt compare`
 **Status:** Implemented (initial).
@@ -103,7 +110,6 @@ Purpose: Compare CPython vs Molt compiled output and timings (separates build vs
 Key flags:
 - `--python <exe|version>`
 - `--module <name>` (use `name.__main__` when present)
-- `--shims/--no-shims` (toggle Molt shims for the CPython run; default is raw CPython)
 - `--build-arg <arg>` + `--rebuild` (forward to the Molt build)
 - `--capabilities <file|profile|list>`
 - `--trusted/--no-trusted`
@@ -150,17 +156,68 @@ Purpose: Bundle a manifest + artifact into a `.moltpkg` archive with checksum.
 
 Key flags:
 - `--deterministic/--no-deterministic`
+- `--deterministic-warn/--no-deterministic-warn`
 - `--capabilities <file>`
+- `--require-signature/--no-require-signature` (require a package signature)
+- `--verify-signature/--no-verify-signature` (verify signatures before publishing)
+- `--trusted-signers <path>` (trust policy for allowed signers)
+- `--signer {auto,cosign,codesign}` (verification tool)
+- `--signing-key <path>` (cosign key for verification; or set `COSIGN_KEY`)
+- `--sbom/--no-sbom` (emit SBOM sidecar)
+- `--sbom-output <path>` (override SBOM sidecar path)
+- `--sbom-format cyclonedx|spdx` (SBOM format)
+- `--signature <path>` (attach an existing signature file)
+- `--signature-output <path>` (override signature sidecar path)
+- `--sign/--no-sign` (sign the artifact via cosign/codesign)
+- `--signer {auto,cosign,codesign}` (select signing tool)
+- `--signing-key <path>` (cosign key path; or `COSIGN_KEY`)
+- `--signing-identity <id>` (codesign identity; or `MOLT_CODESIGN_IDENTITY`)
+
+Outputs:
+- `dist/<name>-<version>-<target>.moltpkg` (default) containing `manifest.json`, `artifact/*`, plus `sbom.json` and `signature.json` when enabled.
+- Sidecar files `<artifact>.sbom.json` and `<artifact>.sig.json` next to the package output.
+- `<artifact>.sig` sidecar when `--signature` is provided or when `--sign` uses cosign.
+Environment:
+- `COSIGN_KEY`: cosign key path
+- `MOLT_CODESIGN_IDENTITY`: codesign identity
+- `MOLT_COSIGN_TLOG=1`: upload signatures to the transparency log (default off)
 
 ### 3.2 `molt publish`
-**Status:** Implemented (initial; local registry path).
+**Status:** Implemented (local + remote HTTP(S) registry).
 
-Purpose: Copy a `.moltpkg` archive into a local registry path (signing/SBOM pending).
-  (TODO(tooling, owner:release, milestone:TL2, priority:P2, status:planned): signing + SBOM support for publish.)
+Purpose: Copy a `.moltpkg` archive into a local registry path or upload to an HTTP(S)
+registry. When the registry URL ends with `/` (or has no path), the package filename
+is appended; otherwise the URL is treated as the destination object. SBOM/signature
+sidecars are copied/uploaded when present.
+Remote uploads use HTTP `PUT` per artifact and expect a 2xx response.
+Remote publishes default to enforcing signature verification + trust policy (disable
+explicitly with `--no-require-signature`/`--no-verify-signature` for local/dev flows).
 
 Key flags:
+- `--registry <path|url>`
+- `--registry-token <token>` (or `MOLT_REGISTRY_TOKEN`; `@path` to read from file)
+- `--registry-user/--registry-password` (or `MOLT_REGISTRY_USER`/`MOLT_REGISTRY_PASSWORD`)
+- `--registry-timeout <seconds>` (or `MOLT_REGISTRY_TIMEOUT`)
 - `--deterministic/--no-deterministic`
+- `--deterministic-warn/--no-deterministic-warn`
+- `--require-signature/--no-require-signature`
+- `--verify-signature/--no-verify-signature`
+- `--trusted-signers <path>`
+- `--signer {auto,cosign,codesign}`
+- `--signing-key <path>`
 - `--capabilities <file>`
+- `--require-signature/--no-require-signature`
+- `--verify-signature/--no-verify-signature`
+- `--trusted-signers <file>`
+
+Environment:
+- `MOLT_REGISTRY_TOKEN`
+- `MOLT_REGISTRY_USER`
+- `MOLT_REGISTRY_PASSWORD`
+- `MOLT_REGISTRY_TIMEOUT`
+- `MOLT_TRUSTED_SIGNERS`
+- `MOLT_REQUIRE_SIGNATURE`
+- `MOLT_VERIFY_SIGNATURE`
 
 ---
 
@@ -189,6 +246,8 @@ Key flags:
 - `--include-dev`
 - `--extras <name>` (include optional-dependency groups)
 - `--allow-non-tier-a` (proceed with blockers)
+- `--deterministic/--no-deterministic`
+- `--deterministic-warn/--no-deterministic-warn`
 
 ### 4.5 `molt clean`
 **Status:** Implemented (initial).
@@ -225,6 +284,18 @@ Key flags:
 - `--require-checksum`
 - `--require-deterministic`
 - `--capabilities <file|profile|list>`
+- `--require-signature/--no-require-signature` (require a package signature)
+- `--verify-signature/--no-verify-signature` (verify signatures when present)
+- `--trusted-signers <path>` (trust policy for allowed signers)
+- `--signer {auto,cosign,codesign}` (verification tool)
+- `--signing-key <path>` (cosign key for verification; or set `COSIGN_KEY`)
+
+Trust policy file (TOML/JSON):
+- `cosign.keys`: list of trusted cosign key SHA-256 digests (hex or `sha256:<hex>`).
+- `cosign.certificates`: list of substrings to match against cosign certificate PEM.
+- `codesign.team_ids`: list of trusted Apple Team IDs.
+- `codesign.identifiers`: list of trusted bundle identifiers.
+- `codesign.authorities`: list of trusted authority strings.
 
 ---
 
@@ -236,7 +307,7 @@ coverage, and stdlib matrix exports.
 
 Key flags:
 - `--clone` (fetch CPython checkout when missing)
-- `--molt-cmd <cmd...>` (command used by `tools/molt_regrtest_shim.py` to run each test file; defaults to `python -m molt.cli run --compiled`)
+- `--molt-cmd <cmd...>` (command used by `tools/molt_regrtest_shim.py` to run each test file; defaults to `python -m molt.cli run`)
 - `--molt-capabilities <csv>` (comma-separated `MOLT_CAPABILITIES` for Molt test runs; default `fs.read,env.read`)
 - `--molt-shim <path>` (override the shim path)
 - `--skip-file <path>` (skip list, one module per line)
@@ -275,10 +346,9 @@ Notes:
 
 ## 5. Determinism and Security Flags
 All commands that produce artifacts must support:
-- `--deterministic` (default on in CI; planned)
-  (TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:planned): enforce deterministic flag across artifact commands.)
-- `--capabilities <file|profile|list>` (explicit capability grants; planned)
-  (TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:planned): capability manifest enforcement across CLI.)
+- `--deterministic` (default on in CI; planned; enforced for build/check/package/publish/vendor)
+- `--deterministic-warn` (warn instead of failing on lockfile enforcement)
+- `--capabilities <file|profile|list>` (explicit capability grants; supports allow/deny/packages/effects manifests).
 
 ---
 

@@ -4,36 +4,39 @@ macro_rules! fn_addr {
     };
 }
 
-use crate::PyToken;
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
+use crate::PyToken;
 use molt_obj_model::MoltObject;
+use num_traits::ToPrimitive;
 use std::backtrace::Backtrace;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Mutex, OnceLock};
-
+use wtf8::Wtf8;
 use crate::builtins::frames::FrameEntry;
 use crate::{
     alloc_class_obj, alloc_dict_with_pairs, alloc_instance_for_class_no_pool, alloc_list,
     alloc_object, alloc_string, alloc_tuple, attr_lookup_ptr_allow_missing,
-    attr_name_bits_from_bytes, builtin_classes, builtin_func_bits, call_callable1,
-    call_class_init_with_args, class_break_cycles, class_name_bits, class_name_for_error,
-    code_filename_bits, code_firstlineno, code_name_bits, context_stack_unwind, current_task_key,
-    current_task_ptr, current_token_id, dec_ref_bits, dict_get_in_place, dict_set_in_place,
-    format_obj, format_obj_str, header_from_obj_ptr, inc_ref_bits, instance_dict_bits,
-    instance_set_dict_bits, int_bits_from_i64, intern_static_name, is_truthy, isinstance_bits,
-    issubclass_bits, maybe_ptr_from_bits, module_dict_bits, molt_class_set_base, molt_dec_ref,
-    molt_index, molt_is_callable, molt_iter_checked, molt_iter_next, molt_repr_from_obj,
-    molt_str_from_obj, obj_from_bits, object_class_bits, object_mark_has_ptrs, object_type_id,
-    profile_enabled, runtime_state, seq_vec, seq_vec_ref, string_obj_to_owned,
-    task_exception_depths, task_exception_handler_stacks, task_exception_stacks,
-    task_last_exceptions, to_i64, token_is_cancelled, traceback_suppressed, type_name,
-    type_of_bits, MoltHeader, PtrSlot, RuntimeState, FRAME_STACK, HEADER_FLAG_TRACEBACK_SUPPRESSED,
-    TRACEBACK_BUILD_COUNT, TRACEBACK_BUILD_FRAMES, TRACEBACK_SUPPRESS_COUNT, TYPE_ID_CODE,
-    TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_LIST, TYPE_ID_MODULE, TYPE_ID_STRING, TYPE_ID_TUPLE,
-    TYPE_ID_TYPE,
+    attr_name_bits_from_bytes, builtin_classes, builtin_func_bits, bytes_like_slice,
+    call_callable1, call_class_init_with_args, class_break_cycles, class_name_bits,
+    class_name_for_error, code_filename_bits, code_firstlineno, code_name_bits,
+    context_stack_unwind, current_task_key, current_task_ptr, current_token_id, dec_ref_bits,
+    dict_find_entry_fast, dict_get_in_place, dict_order, dict_set_in_place, dict_table,
+    format_obj, format_obj_str, header_from_obj_ptr,
+    inc_ref_bits, index_bigint_from_obj, instance_dict_bits, instance_set_dict_bits,
+    int_bits_from_i64, intern_static_name, is_truthy, isinstance_bits, issubclass_bits,
+    maybe_ptr_from_bits, module_dict_bits, molt_class_set_base, molt_dec_ref, molt_index,
+    molt_is_callable, molt_iter_checked, molt_iter_next, molt_repr_from_obj, molt_str_from_obj,
+    obj_from_bits, object_class_bits, object_mark_has_ptrs, object_type_id, profile_enabled,
+    runtime_state, seq_vec, seq_vec_ref, string_bytes, string_len, string_obj_to_owned,
+    task_exception_depths,
+    task_exception_handler_stacks, task_exception_stacks, task_last_exceptions, to_i64,
+    token_is_cancelled, traceback_suppressed, type_name, type_of_bits, MoltHeader, PtrSlot,
+    RuntimeState, FRAME_STACK, HEADER_FLAG_TRACEBACK_SUPPRESSED, TRACEBACK_BUILD_COUNT,
+    TRACEBACK_BUILD_FRAMES, TRACEBACK_SUPPRESS_COUNT, TYPE_ID_CODE, TYPE_ID_DICT,
+    TYPE_ID_EXCEPTION, TYPE_ID_LIST, TYPE_ID_MODULE, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE,
 };
 
 pub(crate) trait ExceptionSentinel {
@@ -155,11 +158,18 @@ pub(crate) mod internals {
     pub(crate) static CHARACTERS_WRITTEN_ATTR_NAME: AtomicU64 = AtomicU64::new(0);
     pub(crate) static EXC_GROUP_MESSAGE_NAME: AtomicU64 = AtomicU64::new(0);
     pub(crate) static EXC_GROUP_EXCEPTIONS_NAME: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static UNICODE_ENCODING_ATTR_NAME: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static UNICODE_OBJECT_ATTR_NAME: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static UNICODE_START_ATTR_NAME: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static UNICODE_END_ATTR_NAME: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static UNICODE_REASON_ATTR_NAME: AtomicU64 = AtomicU64::new(0);
 }
 
 use internals::{
     exception_type_cache, module_cache, CHARACTERS_WRITTEN_ATTR_NAME, ERRNO_ATTR_NAME,
     EXC_GROUP_EXCEPTIONS_NAME, EXC_GROUP_MESSAGE_NAME, FILENAME_ATTR_NAME, STRERROR_ATTR_NAME,
+    UNICODE_ENCODING_ATTR_NAME, UNICODE_END_ATTR_NAME, UNICODE_OBJECT_ATTR_NAME,
+    UNICODE_REASON_ATTR_NAME, UNICODE_START_ATTR_NAME,
 };
 
 pub(crate) fn exception_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
@@ -231,6 +241,100 @@ pub(crate) fn raise_exception<T: ExceptionSentinel>(
     if !ptr.is_null() {
         record_exception(_py, ptr);
     }
+    T::exception_sentinel()
+}
+
+pub(crate) fn raise_unicode_decode_error<T: ExceptionSentinel>(
+    _py: &PyToken<'_>,
+    encoding: &str,
+    object_bits: u64,
+    start: usize,
+    end: usize,
+    reason: &str,
+) -> T {
+    let encoding_ptr = alloc_string(_py, encoding.as_bytes());
+    if encoding_ptr.is_null() {
+        return T::exception_sentinel();
+    }
+    let reason_ptr = alloc_string(_py, reason.as_bytes());
+    if reason_ptr.is_null() {
+        unsafe { molt_dec_ref(encoding_ptr) };
+        return T::exception_sentinel();
+    }
+    let encoding_bits = MoltObject::from_ptr(encoding_ptr).bits();
+    let reason_bits = MoltObject::from_ptr(reason_ptr).bits();
+    let start_bits = int_bits_from_i64(_py, start as i64);
+    let end_bits = int_bits_from_i64(_py, end as i64);
+    let args_ptr = alloc_tuple(
+        _py,
+        &[
+            encoding_bits,
+            object_bits,
+            start_bits,
+            end_bits,
+            reason_bits,
+        ],
+    );
+    if args_ptr.is_null() {
+        dec_ref_bits(_py, encoding_bits);
+        dec_ref_bits(_py, reason_bits);
+        return T::exception_sentinel();
+    }
+    let args_bits = MoltObject::from_ptr(args_ptr).bits();
+    let class_bits = exception_type_bits_from_name(_py, "UnicodeDecodeError");
+    let ptr = alloc_exception_from_class_bits(_py, class_bits, args_bits);
+    if !ptr.is_null() {
+        record_exception(_py, ptr);
+    }
+    dec_ref_bits(_py, encoding_bits);
+    dec_ref_bits(_py, reason_bits);
+    T::exception_sentinel()
+}
+
+pub(crate) fn raise_unicode_encode_error<T: ExceptionSentinel>(
+    _py: &PyToken<'_>,
+    encoding: &str,
+    object_bits: u64,
+    start: usize,
+    end: usize,
+    reason: &str,
+) -> T {
+    let encoding_ptr = alloc_string(_py, encoding.as_bytes());
+    if encoding_ptr.is_null() {
+        return T::exception_sentinel();
+    }
+    let reason_ptr = alloc_string(_py, reason.as_bytes());
+    if reason_ptr.is_null() {
+        unsafe { molt_dec_ref(encoding_ptr) };
+        return T::exception_sentinel();
+    }
+    let encoding_bits = MoltObject::from_ptr(encoding_ptr).bits();
+    let reason_bits = MoltObject::from_ptr(reason_ptr).bits();
+    let start_bits = int_bits_from_i64(_py, start as i64);
+    let end_bits = int_bits_from_i64(_py, end as i64);
+    let args_ptr = alloc_tuple(
+        _py,
+        &[
+            encoding_bits,
+            object_bits,
+            start_bits,
+            end_bits,
+            reason_bits,
+        ],
+    );
+    if args_ptr.is_null() {
+        dec_ref_bits(_py, encoding_bits);
+        dec_ref_bits(_py, reason_bits);
+        return T::exception_sentinel();
+    }
+    let args_bits = MoltObject::from_ptr(args_ptr).bits();
+    let class_bits = exception_type_bits_from_name(_py, "UnicodeEncodeError");
+    let ptr = alloc_exception_from_class_bits(_py, class_bits, args_bits);
+    if !ptr.is_null() {
+        record_exception(_py, ptr);
+    }
+    dec_ref_bits(_py, encoding_bits);
+    dec_ref_bits(_py, reason_bits);
     T::exception_sentinel()
 }
 
@@ -481,6 +585,21 @@ pub(crate) fn exception_pending(_py: &PyToken<'_>) -> bool {
         }
     }
     pending
+}
+
+pub(crate) fn exception_last_bits_noinc(_py: &PyToken<'_>) -> Option<u64> {
+    if let Some(task_key) = current_task_key() {
+        if let Some(ptr) = task_last_exceptions(_py)
+            .lock()
+            .unwrap()
+            .get(&task_key)
+            .copied()
+        {
+            return Some(MoltObject::from_ptr(ptr.0).bits());
+        }
+    }
+    let guard = runtime_state(_py).last_exception.lock().unwrap();
+    guard.map(|ptr| MoltObject::from_ptr(ptr.0).bits())
 }
 
 pub(crate) fn clear_exception_state(_py: &PyToken<'_>) {
@@ -1075,7 +1194,7 @@ fn exception_type_bits_from_builtins(_py: &PyToken<'_>, name: &str) -> Option<u6
             return None;
         }
         let name_bits = MoltObject::from_ptr(name_ptr).bits();
-        let value_bits = dict_get_in_place(_py, dict_ptr, name_bits);
+        let value_bits = dict_get_in_place_fast_str(_py, dict_ptr, name_bits);
         dec_ref_bits(_py, name_bits);
         let value_bits = value_bits?;
         let value_ptr = obj_from_bits(value_bits).as_ptr()?;
@@ -1090,13 +1209,40 @@ fn exception_type_bits_from_builtins(_py: &PyToken<'_>, name: &str) -> Option<u6
     }
 }
 
+unsafe fn dict_get_in_place_fast_str(
+    _py: &PyToken<'_>,
+    dict_ptr: *mut u8,
+    key_bits: u64,
+) -> Option<u64> {
+    let order = dict_order(dict_ptr);
+    let table = dict_table(dict_ptr);
+    let found = dict_find_entry_fast(_py, order, table, key_bits);
+    found.map(|idx| order[idx * 2 + 1])
+}
+
 pub(crate) fn exception_type_bits_from_name(_py: &PyToken<'_>, name: &str) -> u64 {
     let builtins = builtin_classes(_py);
     match name {
-        "Exception" => return builtins.exception,
-        "BaseException" => return builtins.base_exception,
-        "BaseExceptionGroup" => return builtins.base_exception_group,
-        "ExceptionGroup" => return builtins.exception_group,
+        "Exception" => {
+            let bits = builtins.exception;
+            ensure_exception_in_builtins(_py, name, bits);
+            return bits;
+        }
+        "BaseException" => {
+            let bits = builtins.base_exception;
+            ensure_exception_in_builtins(_py, name, bits);
+            return bits;
+        }
+        "BaseExceptionGroup" => {
+            let bits = builtins.base_exception_group;
+            ensure_exception_in_builtins(_py, name, bits);
+            return bits;
+        }
+        "ExceptionGroup" => {
+            let bits = builtins.exception_group;
+            ensure_exception_in_builtins(_py, name, bits);
+            return bits;
+        }
         _ => {}
     }
     if let Some(bits) = exception_type_cache(_py).lock().unwrap().get(name).copied() {
@@ -1118,6 +1264,7 @@ pub(crate) fn exception_type_bits_from_name(_py: &PyToken<'_>, name: &str) -> u6
                 .lock()
                 .unwrap()
                 .insert(name.to_string(), bits);
+            ensure_exception_in_builtins(_py, name, bits);
         }
         return bits;
     }
@@ -1174,7 +1321,41 @@ fn cache_exception_type(_py: &PyToken<'_>, name: &str, class_bits: u64) -> u64 {
     }
     inc_ref_bits(_py, class_bits);
     cache.insert(name.to_string(), class_bits);
+    ensure_exception_in_builtins(_py, name, class_bits);
     class_bits
+}
+
+fn ensure_exception_in_builtins(_py: &PyToken<'_>, name: &str, class_bits: u64) {
+    let module_bits = {
+        let cache = module_cache(_py);
+        let guard = cache.lock().unwrap();
+        guard.get("builtins").copied()
+    };
+    let Some(module_bits) = module_bits else {
+        return;
+    };
+    let module_ptr = match obj_from_bits(module_bits).as_ptr() {
+        Some(ptr) if unsafe { object_type_id(ptr) } == TYPE_ID_MODULE => ptr,
+        _ => return,
+    };
+    let dict_bits = unsafe { module_dict_bits(module_ptr) };
+    let dict_ptr = match obj_from_bits(dict_bits).as_ptr() {
+        Some(ptr) if unsafe { object_type_id(ptr) } == TYPE_ID_DICT => ptr,
+        _ => return,
+    };
+    let name_ptr = alloc_string(_py, name.as_bytes());
+    if name_ptr.is_null() {
+        return;
+    }
+    let name_bits = MoltObject::from_ptr(name_ptr).bits();
+    let existing = unsafe { dict_get_in_place_fast_str(_py, dict_ptr, name_bits) };
+    let needs_set = existing.map_or(true, |bits| bits != class_bits);
+    if needs_set {
+        unsafe {
+            dict_set_in_place(_py, dict_ptr, name_bits, class_bits);
+        }
+    }
+    dec_ref_bits(_py, name_bits);
 }
 
 pub(crate) fn exception_type_bits(_py: &PyToken<'_>, kind_bits: u64) -> u64 {
@@ -2173,6 +2354,179 @@ unsafe fn oserror_attr_dict(
     MoltObject::from_ptr(dict_ptr).bits()
 }
 
+#[derive(Clone, Copy)]
+enum UnicodeErrorKind {
+    Encode,
+    Decode,
+    Translate,
+}
+
+#[derive(Clone, Copy)]
+struct UnicodeErrorFields {
+    encoding_bits: u64,
+    object_bits: u64,
+    start_bits: u64,
+    end_bits: u64,
+    reason_bits: u64,
+}
+
+fn unicode_error_kind(name: &str) -> Option<UnicodeErrorKind> {
+    match name {
+        "UnicodeEncodeError" => Some(UnicodeErrorKind::Encode),
+        "UnicodeDecodeError" => Some(UnicodeErrorKind::Decode),
+        "UnicodeTranslateError" => Some(UnicodeErrorKind::Translate),
+        _ => None,
+    }
+}
+
+fn unicode_error_index_bits(_py: &PyToken<'_>, obj_bits: u64) -> Result<u64, ()> {
+    let type_label = type_name(_py, obj_from_bits(obj_bits));
+    let err = format!(
+        "'{}' object cannot be interpreted as an integer",
+        type_label
+    );
+    let Some(value) = index_bigint_from_obj(_py, obj_bits, &err) else {
+        return Err(());
+    };
+    if let Some(val) = value.to_i64() {
+        return Ok(int_bits_from_i64(_py, val));
+    }
+    let _ = raise_exception::<u64>(
+        _py,
+        "OverflowError",
+        "Python int too large to convert to C ssize_t",
+    );
+    Err(())
+}
+
+fn unicode_error_fields_from_args(
+    _py: &PyToken<'_>,
+    kind: UnicodeErrorKind,
+    args_bits: u64,
+) -> Result<UnicodeErrorFields, ()> {
+    let args_obj = obj_from_bits(args_bits);
+    let Some(args_ptr) = args_obj.as_ptr() else {
+        return Err(());
+    };
+    unsafe {
+        if object_type_id(args_ptr) != TYPE_ID_TUPLE {
+            return Err(());
+        }
+        let elems = seq_vec_ref(args_ptr);
+        let expected = match kind {
+            UnicodeErrorKind::Translate => 4,
+            UnicodeErrorKind::Encode | UnicodeErrorKind::Decode => 5,
+        };
+        if elems.len() != expected {
+            let msg = format!(
+                "function takes exactly {expected} arguments ({} given)",
+                elems.len()
+            );
+            let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+            return Err(());
+        }
+        let (encoding_bits, object_bits, start_bits, end_bits, reason_bits, object_idx) = match kind
+        {
+            UnicodeErrorKind::Translate => (
+                MoltObject::none().bits(),
+                elems[0],
+                elems[1],
+                elems[2],
+                elems[3],
+                1,
+            ),
+            UnicodeErrorKind::Encode | UnicodeErrorKind::Decode => {
+                (elems[0], elems[1], elems[2], elems[3], elems[4], 2)
+            }
+        };
+        let builtins = builtin_classes(_py);
+        if matches!(kind, UnicodeErrorKind::Encode | UnicodeErrorKind::Decode)
+            && !isinstance_bits(_py, encoding_bits, builtins.str)
+        {
+            let msg = format!(
+                "argument 1 must be str, not {}",
+                type_name(_py, obj_from_bits(encoding_bits))
+            );
+            let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+            return Err(());
+        }
+        match kind {
+            UnicodeErrorKind::Decode => {
+                let is_bytes_like = obj_from_bits(object_bits)
+                    .as_ptr()
+                    .is_some_and(|ptr| bytes_like_slice(ptr).is_some());
+                if !is_bytes_like {
+                    let msg = format!(
+                        "a bytes-like object is required, not '{}'",
+                        type_name(_py, obj_from_bits(object_bits))
+                    );
+                    let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+                    return Err(());
+                }
+            }
+            UnicodeErrorKind::Encode | UnicodeErrorKind::Translate => {
+                if !isinstance_bits(_py, object_bits, builtins.str) {
+                    let msg = format!(
+                        "argument {object_idx} must be str, not {}",
+                        type_name(_py, obj_from_bits(object_bits))
+                    );
+                    let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+                    return Err(());
+                }
+            }
+        }
+        if !isinstance_bits(_py, reason_bits, builtins.str) {
+            let arg_index = match kind {
+                UnicodeErrorKind::Translate => 4,
+                UnicodeErrorKind::Encode | UnicodeErrorKind::Decode => 5,
+            };
+            let msg = format!(
+                "argument {arg_index} must be str, not {}",
+                type_name(_py, obj_from_bits(reason_bits))
+            );
+            let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+            return Err(());
+        }
+        let start_bits = unicode_error_index_bits(_py, start_bits)?;
+        let end_bits = unicode_error_index_bits(_py, end_bits)?;
+        Ok(UnicodeErrorFields {
+            encoding_bits,
+            object_bits,
+            start_bits,
+            end_bits,
+            reason_bits,
+        })
+    }
+}
+
+fn unicode_error_attr_dict(_py: &PyToken<'_>, fields: UnicodeErrorFields) -> u64 {
+    let encoding_name = intern_static_name(_py, &UNICODE_ENCODING_ATTR_NAME, b"encoding");
+    let object_name = intern_static_name(_py, &UNICODE_OBJECT_ATTR_NAME, b"object");
+    let start_name = intern_static_name(_py, &UNICODE_START_ATTR_NAME, b"start");
+    let end_name = intern_static_name(_py, &UNICODE_END_ATTR_NAME, b"end");
+    let reason_name = intern_static_name(_py, &UNICODE_REASON_ATTR_NAME, b"reason");
+    let dict_ptr = alloc_dict_with_pairs(
+        _py,
+        &[
+            encoding_name,
+            fields.encoding_bits,
+            object_name,
+            fields.object_bits,
+            start_name,
+            fields.start_bits,
+            end_name,
+            fields.end_bits,
+            reason_name,
+            fields.reason_bits,
+        ],
+    );
+    if dict_ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(dict_ptr).bits()
+    }
+}
+
 fn alloc_exception_group_from_class_bits(
     _py: &PyToken<'_>,
     class_bits: u64,
@@ -2257,7 +2611,6 @@ pub(crate) fn alloc_exception_from_class_bits(
     class_bits: u64,
     args_bits: u64,
 ) -> *mut u8 {
-    // TODO(type-coverage, owner:runtime, milestone:TC2, priority:P1, status:partial): parse subclass-specific args (UnicodeError fields) into dedicated attributes.
     let class_obj = obj_from_bits(class_bits);
     let Some(class_ptr) = class_obj.as_ptr() else {
         return std::ptr::null_mut();
@@ -2323,6 +2676,18 @@ pub(crate) fn alloc_exception_from_class_bits(
                         }
                     }
                 }
+            }
+        }
+        if let Some(name) = string_obj_to_owned(obj_from_bits(kind_bits)) {
+            if let Some(kind) = unicode_error_kind(&name) {
+                let fields = match unicode_error_fields_from_args(_py, kind, args_bits) {
+                    Ok(fields) => fields,
+                    Err(()) => {
+                        dec_ref_bits(_py, args_bits);
+                        return std::ptr::null_mut();
+                    }
+                };
+                dict_bits = unicode_error_attr_dict(_py, fields);
             }
         }
         let msg_bits = exception_message_from_args(_py, args_bits);
@@ -2413,6 +2778,17 @@ pub(crate) fn format_exception_message(_py: &PyToken<'_>, ptr: *mut u8) -> Strin
     if obj_from_bits(class_bits).is_none() || class_bits == 0 {
         class_bits = unsafe { exception_type_bits(_py, exception_kind_bits(ptr)) };
     }
+    let kind = exception_class_name(ptr);
+    if kind == "UnicodeDecodeError" {
+        if let Some(msg) = format_unicode_decode_error(_py, ptr) {
+            return msg;
+        }
+    }
+    if kind == "UnicodeEncodeError" {
+        if let Some(msg) = format_unicode_encode_error(_py, ptr) {
+            return msg;
+        }
+    }
     let base_group_bits = builtin_classes(_py).base_exception_group;
     if base_group_bits != 0 && issubclass_bits(class_bits, base_group_bits) {
         let msg_bits = exception_group_message_bits(_py, ptr);
@@ -2442,7 +2818,6 @@ pub(crate) fn format_exception_message(_py: &PyToken<'_>, ptr: *mut u8) -> Strin
     if args.is_empty() {
         return String::new();
     }
-    let kind = exception_class_name(ptr);
     if kind == "KeyError" && args.len() == 1 {
         return format_obj(_py, obj_from_bits(args[0]));
     }
@@ -2450,6 +2825,101 @@ pub(crate) fn format_exception_message(_py: &PyToken<'_>, ptr: *mut u8) -> Strin
         return format_obj_str(_py, obj_from_bits(args[0]));
     }
     format_obj_str(_py, obj_from_bits(unsafe { exception_args_bits(ptr) }))
+}
+
+fn format_unicode_decode_error(_py: &PyToken<'_>, ptr: *mut u8) -> Option<String> {
+    let args = exception_args_vec(ptr);
+    if args.len() != 5 {
+        return None;
+    }
+    let encoding = string_obj_to_owned(obj_from_bits(args[0]))?;
+    let reason = string_obj_to_owned(obj_from_bits(args[4]))?;
+    let start = to_i64(obj_from_bits(args[2]))?;
+    let end = to_i64(obj_from_bits(args[3]))?;
+    if start < 0 || end < 0 {
+        return None;
+    }
+    let start = start as usize;
+    let end = end as usize;
+    if end <= start {
+        return None;
+    }
+    if end == start + 1 {
+        let obj = obj_from_bits(args[1]);
+        let ptr = obj.as_ptr()?;
+        let bytes = unsafe { bytes_like_slice(ptr) }?;
+        if start >= bytes.len() {
+            return None;
+        }
+        let byte = bytes[start];
+        return Some(format!(
+            "'{encoding}' codec can't decode byte 0x{byte:02x} in position {start}: {reason}"
+        ));
+    }
+    let end_pos = end.saturating_sub(1);
+    Some(format!(
+        "'{encoding}' codec can't decode bytes in position {start}-{end_pos}: {reason}"
+    ))
+}
+
+fn unicode_escape_codepoint(code: u32) -> String {
+    if code <= 0xFF {
+        format!("\\x{code:02x}")
+    } else if code <= 0xFFFF {
+        format!("\\u{code:04x}")
+    } else {
+        format!("\\U{code:08x}")
+    }
+}
+
+fn wtf8_from_bytes(bytes: &[u8]) -> &Wtf8 {
+    // SAFETY: Molt string bytes are constructed as well-formed WTF-8.
+    unsafe { &*(bytes as *const [u8] as *const Wtf8) }
+}
+
+fn wtf8_codepoint_at_index(bytes: &[u8], idx: usize) -> Option<u32> {
+    wtf8_from_bytes(bytes)
+        .code_points()
+        .nth(idx)
+        .map(|cp| cp.to_u32())
+}
+
+fn format_unicode_encode_error(_py: &PyToken<'_>, ptr: *mut u8) -> Option<String> {
+    let args = exception_args_vec(ptr);
+    if args.len() != 5 {
+        return None;
+    }
+    let encoding = string_obj_to_owned(obj_from_bits(args[0]))?;
+    let reason = string_obj_to_owned(obj_from_bits(args[4]))?;
+    let start = to_i64(obj_from_bits(args[2]))?;
+    let end = to_i64(obj_from_bits(args[3]))?;
+    if start < 0 || end < 0 {
+        return None;
+    }
+    let start = start as usize;
+    let end = end as usize;
+    if end <= start {
+        return None;
+    }
+    let obj = obj_from_bits(args[1]);
+    let ptr = obj.as_ptr()?;
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_STRING {
+            return None;
+        }
+        let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
+        if end == start + 1 {
+            let code = wtf8_codepoint_at_index(bytes, start)?;
+            let escaped = unicode_escape_codepoint(code);
+            return Some(format!(
+                "'{encoding}' codec can't encode character '{escaped}' in position {start}: {reason}"
+            ));
+        }
+    }
+    let end_pos = end.saturating_sub(1);
+    Some(format!(
+        "'{encoding}' codec can't encode characters in position {start}-{end_pos}: {reason}"
+    ))
 }
 
 fn format_traceback(_py: &PyToken<'_>, ptr: *mut u8) -> Option<String> {
@@ -2677,61 +3147,63 @@ unsafe fn alloc_traceback_obj(
 }
 
 pub(crate) fn frame_stack_trace_bits(_py: &PyToken<'_>) -> Option<u64> {
-    let entries = FRAME_STACK.with(|stack| stack.borrow().clone());
-    if entries.is_empty() {
-        return None;
-    }
-    let mut next_bits = MoltObject::none().bits();
-    let mut built_any = false;
-    let mut frames_built: u64 = 0;
-    for entry in entries.into_iter().rev() {
-        if entry.code_bits == 0 {
-            continue;
+    FRAME_STACK.with(|stack| {
+        let stack = stack.borrow();
+        if stack.is_empty() {
+            return None;
         }
-        let Some(code_ptr) = obj_from_bits(entry.code_bits).as_ptr() else {
-            continue;
-        };
-        unsafe {
-            if object_type_id(code_ptr) != TYPE_ID_CODE {
+        let mut next_bits = MoltObject::none().bits();
+        let mut built_any = false;
+        let mut frames_built: u64 = 0;
+        for entry in stack.iter().rev() {
+            if entry.code_bits == 0 {
                 continue;
             }
-            let mut line = entry.line;
-            if line <= 0 {
-                line = code_firstlineno(code_ptr);
-            }
-            let Some(frame_bits) = alloc_frame_obj(_py, entry.code_bits, line) else {
-                if !obj_from_bits(next_bits).is_none() {
-                    dec_ref_bits(_py, next_bits);
-                }
-                return None;
+            let Some(code_ptr) = obj_from_bits(entry.code_bits).as_ptr() else {
+                continue;
             };
-            let Some(tb_bits) = alloc_traceback_obj(_py, frame_bits, line, next_bits) else {
+            unsafe {
+                if object_type_id(code_ptr) != TYPE_ID_CODE {
+                    continue;
+                }
+                let mut line = entry.line;
+                if line <= 0 {
+                    line = code_firstlineno(code_ptr);
+                }
+                let Some(frame_bits) = alloc_frame_obj(_py, entry.code_bits, line) else {
+                    if !obj_from_bits(next_bits).is_none() {
+                        dec_ref_bits(_py, next_bits);
+                    }
+                    return None;
+                };
+                let Some(tb_bits) = alloc_traceback_obj(_py, frame_bits, line, next_bits) else {
+                    dec_ref_bits(_py, frame_bits);
+                    if !obj_from_bits(next_bits).is_none() {
+                        dec_ref_bits(_py, next_bits);
+                    }
+                    return None;
+                };
                 dec_ref_bits(_py, frame_bits);
                 if !obj_from_bits(next_bits).is_none() {
                     dec_ref_bits(_py, next_bits);
                 }
-                return None;
-            };
-            dec_ref_bits(_py, frame_bits);
+                next_bits = tb_bits;
+                built_any = true;
+                frames_built += 1;
+            }
+        }
+        if !built_any || obj_from_bits(next_bits).is_none() {
             if !obj_from_bits(next_bits).is_none() {
                 dec_ref_bits(_py, next_bits);
             }
-            next_bits = tb_bits;
-            built_any = true;
-            frames_built += 1;
+            return None;
         }
-    }
-    if !built_any || obj_from_bits(next_bits).is_none() {
-        if !obj_from_bits(next_bits).is_none() {
-            dec_ref_bits(_py, next_bits);
+        if profile_enabled(_py) {
+            TRACEBACK_BUILD_COUNT.fetch_add(1, AtomicOrdering::Relaxed);
+            TRACEBACK_BUILD_FRAMES.fetch_add(frames_built, AtomicOrdering::Relaxed);
         }
-        return None;
-    }
-    if profile_enabled(_py) {
-        TRACEBACK_BUILD_COUNT.fetch_add(1, AtomicOrdering::Relaxed);
-        TRACEBACK_BUILD_FRAMES.fetch_add(frames_built, AtomicOrdering::Relaxed);
-    }
-    Some(next_bits)
+        Some(next_bits)
+    })
 }
 
 #[no_mangle]
@@ -2921,16 +3393,45 @@ pub extern "C" fn molt_exception_init(self_bits: u64, args_bits: u64) -> u64 {
         };
         let preserve_existing = existing_len > 0 && new_len > existing_len;
         if !preserve_existing {
+            let mut class_bits = unsafe { exception_class_bits(self_ptr) };
+            if obj_from_bits(class_bits).is_none() || class_bits == 0 {
+                class_bits = unsafe { exception_type_bits(_py, exception_kind_bits(self_ptr)) };
+            }
+            let mut unicode_fields = None;
+            if class_bits != 0 {
+                if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
+                    unsafe {
+                        if object_type_id(class_ptr) == TYPE_ID_TYPE {
+                            if let Some(name) =
+                                string_obj_to_owned(obj_from_bits(class_name_bits(class_ptr)))
+                            {
+                                if let Some(kind) = unicode_error_kind(&name) {
+                                    let fields = match unicode_error_fields_from_args(
+                                        _py, kind, norm_bits,
+                                    ) {
+                                        Ok(fields) => fields,
+                                        Err(()) => {
+                                            dec_ref_bits(_py, norm_bits);
+                                            dec_ref_bits(_py, msg_bits);
+                                            if !obj_from_bits(args_bits).is_none() {
+                                                dec_ref_bits(_py, args_bits);
+                                            }
+                                            return MoltObject::none().bits();
+                                        }
+                                    };
+                                    unicode_fields = Some(fields);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             unsafe {
                 inc_ref_bits(_py, norm_bits);
                 inc_ref_bits(_py, msg_bits);
                 exception_store_args_and_message(_py, self_ptr, norm_bits, msg_bits);
                 exception_set_stop_iteration_value(_py, self_ptr, norm_bits);
                 exception_set_system_exit_code(_py, self_ptr, norm_bits);
-            }
-            let mut class_bits = unsafe { exception_class_bits(self_ptr) };
-            if obj_from_bits(class_bits).is_none() || class_bits == 0 {
-                class_bits = unsafe { exception_type_bits(_py, exception_kind_bits(self_ptr)) };
             }
             let oserror_bits = exception_type_bits_from_name(_py, "OSError");
             if class_bits != 0 && oserror_bits != 0 && issubclass_bits(class_bits, oserror_bits) {
@@ -2973,6 +3474,63 @@ pub extern "C" fn molt_exception_init(self_bits: u64, args_bits: u64) -> u64 {
                                 dict_set_in_place(_py, dict_ptr, errno_name, errno_bits);
                                 dict_set_in_place(_py, dict_ptr, strerror_name, strerror_bits);
                                 dict_set_in_place(_py, dict_ptr, filename_name, filename_bits);
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(fields) = unicode_fields {
+                let mut dict_bits = unsafe { exception_dict_bits(self_ptr) };
+                if obj_from_bits(dict_bits).is_none() || dict_bits == 0 {
+                    let dict_ptr = alloc_dict_with_pairs(_py, &[]);
+                    if !dict_ptr.is_null() {
+                        dict_bits = MoltObject::from_ptr(dict_ptr).bits();
+                        unsafe {
+                            let slot = self_ptr.add(9 * std::mem::size_of::<u64>()) as *mut u64;
+                            let old_bits = *slot;
+                            if old_bits != dict_bits {
+                                dec_ref_bits(_py, old_bits);
+                                *slot = dict_bits;
+                            }
+                        }
+                    }
+                }
+                if !obj_from_bits(dict_bits).is_none() && dict_bits != 0 {
+                    if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+                        if unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT {
+                            let encoding_name = intern_static_name(
+                                _py,
+                                &internals::UNICODE_ENCODING_ATTR_NAME,
+                                b"encoding",
+                            );
+                            let object_name = intern_static_name(
+                                _py,
+                                &internals::UNICODE_OBJECT_ATTR_NAME,
+                                b"object",
+                            );
+                            let start_name = intern_static_name(
+                                _py,
+                                &internals::UNICODE_START_ATTR_NAME,
+                                b"start",
+                            );
+                            let end_name =
+                                intern_static_name(_py, &internals::UNICODE_END_ATTR_NAME, b"end");
+                            let reason_name = intern_static_name(
+                                _py,
+                                &internals::UNICODE_REASON_ATTR_NAME,
+                                b"reason",
+                            );
+                            unsafe {
+                                dict_set_in_place(
+                                    _py,
+                                    dict_ptr,
+                                    encoding_name,
+                                    fields.encoding_bits,
+                                );
+                                dict_set_in_place(_py, dict_ptr, object_name, fields.object_bits);
+                                dict_set_in_place(_py, dict_ptr, start_name, fields.start_bits);
+                                dict_set_in_place(_py, dict_ptr, end_name, fields.end_bits);
+                                dict_set_in_place(_py, dict_ptr, reason_name, fields.reason_bits);
                             }
                         }
                     }
@@ -3458,6 +4016,7 @@ mod tests {
             }
         });
     }
+
 }
 
 #[no_mangle]

@@ -13,20 +13,18 @@ import time
 from types import ModuleType
 from typing import Any, Callable, cast
 
-from _intrinsics import load_intrinsic as _load_intrinsic
+from _intrinsics import require_intrinsic as _intrinsics_require
 
-try:
-    _capabilities_mod = importlib.import_module("molt.capabilities")
-except Exception:  # pragma: no cover - host CPython fallback
-    _capabilities_mod = None
+
+from molt import capabilities as _capabilities_mod
+
 _capabilities: ModuleType | None = _capabilities_mod
 
 
 def _require_intrinsic(func: Any | None, name: str) -> Callable[..., Any]:
-    if func is None:
+    if not callable(func):
         raise RuntimeError(f"Missing intrinsic: {name}")
     return cast(Callable[..., Any], func)
-
 
 __all__ = [
     "Array",
@@ -53,26 +51,23 @@ _MP_SPAWN_ENV = "MOLT_MP_SPAWN"
 _MP_START_METHOD_ENV = "MOLT_MP_START_METHOD"
 _MP_ENTRY_OVERRIDE = "multiprocessing.spawn"
 
-_MOLT_PROCESS_SPAWN = _load_intrinsic("molt_process_spawn", globals())
-_MOLT_PROCESS_WAIT = _load_intrinsic("molt_process_wait_future", globals())
-_MOLT_PROCESS_POLL = _load_intrinsic("molt_process_poll", globals())
-_MOLT_PROCESS_PID = _load_intrinsic("molt_process_pid", globals())
-_MOLT_PROCESS_RETURN = _load_intrinsic("molt_process_returncode", globals())
-_MOLT_PROCESS_KILL = _load_intrinsic("molt_process_kill", globals())
-_MOLT_PROCESS_TERM = _load_intrinsic("molt_process_terminate", globals())
-_MOLT_PROCESS_STDIN = _load_intrinsic("molt_process_stdin", globals())
-_MOLT_PROCESS_STDOUT = _load_intrinsic("molt_process_stdout", globals())
-_MOLT_PROCESS_STDERR = _load_intrinsic("molt_process_stderr", globals())
-_MOLT_PROCESS_DROP = _load_intrinsic("molt_process_drop", globals())
-_MOLT_STREAM_SEND = _load_intrinsic("molt_stream_send_obj", globals())
-_MOLT_STREAM_RECV = _load_intrinsic("molt_stream_recv", globals())
-_MOLT_STREAM_CLOSE = _load_intrinsic("molt_stream_close", globals())
-_MOLT_STREAM_DROP = _load_intrinsic("molt_stream_drop", globals())
-try:
-    _MOLT_ENV_GET_RAW = _molt_env_get_raw  # type: ignore[name-defined]  # noqa: F821
-except NameError:  # pragma: no cover - host fallback
-    _MOLT_ENV_GET_RAW = _load_intrinsic("_molt_env_get_raw", globals())
-_MOLT_ENV_SNAPSHOT = _load_intrinsic("_molt_env_snapshot", globals())
+_MOLT_PROCESS_SPAWN = _intrinsics_require("molt_process_spawn", globals())
+_MOLT_PROCESS_WAIT = _intrinsics_require("molt_process_wait_future", globals())
+_MOLT_PROCESS_POLL = _intrinsics_require("molt_process_poll", globals())
+_MOLT_PROCESS_PID = _intrinsics_require("molt_process_pid", globals())
+_MOLT_PROCESS_RETURN = _intrinsics_require("molt_process_returncode", globals())
+_MOLT_PROCESS_KILL = _intrinsics_require("molt_process_kill", globals())
+_MOLT_PROCESS_TERM = _intrinsics_require("molt_process_terminate", globals())
+_MOLT_PROCESS_STDIN = _intrinsics_require("molt_process_stdin", globals())
+_MOLT_PROCESS_STDOUT = _intrinsics_require("molt_process_stdout", globals())
+_MOLT_PROCESS_STDERR = _intrinsics_require("molt_process_stderr", globals())
+_MOLT_PROCESS_DROP = _intrinsics_require("molt_process_drop", globals())
+_MOLT_STREAM_SEND = _intrinsics_require("molt_stream_send_obj", globals())
+_MOLT_STREAM_RECV = _intrinsics_require("molt_stream_recv", globals())
+_MOLT_STREAM_CLOSE = _intrinsics_require("molt_stream_close", globals())
+_MOLT_STREAM_DROP = _intrinsics_require("molt_stream_drop", globals())
+_MOLT_ENV_GET = _intrinsics_require("molt_env_get", globals())
+_MOLT_ENV_SNAPSHOT = _intrinsics_require("molt_env_snapshot", globals())
 
 _MAX_MESSAGE = 64 * 1024 * 1024
 _MAX_DEPTH = 100
@@ -108,17 +103,14 @@ _MSG_VALUE_SET = "value_set"
 _MSG_ARRAY_SET = "array_set"
 _MSG_CLOSE = "close"
 
-
 @dataclass(frozen=True)
 class _FunctionRef:
     module: str
     qualname: str
 
-
 @dataclass(frozen=True)
 class _QueueRef:
     queue_id: int
-
 
 @dataclass(frozen=True)
 class _PipeRef:
@@ -126,20 +118,17 @@ class _PipeRef:
     readable: bool
     writable: bool
 
-
 @dataclass(frozen=True)
 class _ValueRef:
     value_id: int
     typecode: str
     value: Any
 
-
 @dataclass(frozen=True)
 class _ArrayRef:
     array_id: int
     typecode: str
     values: list[Any]
-
 
 class _ExceptionRef:
     __slots__ = ("module", "name", "message")
@@ -149,73 +138,20 @@ class _ExceptionRef:
         self.name = name
         self.message = message
 
-
 class _RemoteError(Exception):
     pass
 
-
 def _require_process_capability() -> None:
-    getter = _MOLT_ENV_GET_RAW or getattr(os, "_molt_env_get", None)
-    if getter is not None:
-        try:
-            trusted = str(getter("MOLT_TRUSTED", "")).strip().lower()
-        except Exception:
-            trusted = ""
-    else:
-        trusted = str(os.environ.get("MOLT_TRUSTED", "")).strip().lower()
-    if trusted in {"1", "true", "yes", "on"}:
-        return
-    if getter is not None:
-        try:
-            raw_caps = str(getter("MOLT_CAPABILITIES", ""))
-        except Exception:
-            raw_caps = ""
-    else:
-        raw_caps = str(os.environ.get("MOLT_CAPABILITIES", ""))
-    for cap in raw_caps.split(","):
-        if cap.strip() in {"process", "process.exec"}:
-            return
     if _capabilities is None:
         raise PermissionError("Missing capability")
-    if _capabilities.trusted():
-        return
     _capabilities.require("process.exec")
 
-
 def _get_env_value(key: str, default: str) -> str:
-    try:
-        value = _molt_env_get_raw(key, default)  # type: ignore[name-defined]  # noqa: F821
-        return str(value)
-    except NameError:  # pragma: no cover - host fallback
-        pass
-    except Exception:
-        return default
-    if _MOLT_ENV_GET_RAW is not None:
-        try:
-            return str(_MOLT_ENV_GET_RAW(key, default))
-        except Exception:
-            pass
-    try:
-        snapshot = _molt_env_snapshot()  # type: ignore[name-defined]  # noqa: F821
-    except NameError:  # pragma: no cover - host fallback
-        snapshot = None
-    except Exception:
-        snapshot = None
-    if isinstance(snapshot, dict):
-        try:
-            return str(snapshot.get(key, default))
-        except Exception:
-            return default
-    try:
-        value = os.environ.get(key, default)
-    except Exception:
-        return default
-    return value
-
+    getter = _require_intrinsic(_MOLT_ENV_GET, "molt_env_get")
+    return str(getter(key, default))
 
 def _mp_debug_enabled() -> bool:
     return _get_env_value("MOLT_MP_DEBUG", "") == "1"
-
 
 def _mp_debug(message: str) -> None:
     if not _mp_debug_enabled():
@@ -227,10 +163,8 @@ def _mp_debug(message: str) -> None:
     except Exception:
         pass
 
-
 def _spawn_trace_enabled() -> bool:
     return _get_env_value("MOLT_MP_TRACE_SPAWN", "") == "1"
-
 
 def _spawn_trace(message: str) -> None:
     if not _spawn_trace_enabled():
@@ -242,21 +176,11 @@ def _spawn_trace(message: str) -> None:
     except Exception:
         pass
 
-
 def _build_spawn_env() -> dict[str, str]:
-    env: dict[str, str] | None = None
-    if _MOLT_ENV_SNAPSHOT is not None:
-        try:
-            snapshot = _MOLT_ENV_SNAPSHOT()
-        except Exception:
-            snapshot = None
-        if isinstance(snapshot, dict):
-            env = {str(key): str(val) for key, val in snapshot.items()}
-    if env is None:
-        env = {}
-        env["MOLT_ENV_OVERLAY"] = "1"
-    return env
-
+    snapshot = _require_intrinsic(_MOLT_ENV_SNAPSHOT, "molt_env_snapshot")()
+    if not isinstance(snapshot, dict):
+        raise RuntimeError("molt_env_snapshot must return a dict")
+    return {str(key): str(val) for key, val in snapshot.items()}
 
 def _exception_ref_from_exc(exc: BaseException) -> _ExceptionRef:
     exc_type = type(exc)
@@ -270,10 +194,8 @@ def _exception_ref_from_exc(exc: BaseException) -> _ExceptionRef:
         message = repr(exc)
     return _ExceptionRef(str(module), str(name), message)
 
-
 def _now() -> float:
     return time.monotonic()
-
 
 def _resolve_entry_module_name() -> str:
     main_mod = sys.modules.get("__main__")
@@ -292,7 +214,6 @@ def _resolve_entry_module_name() -> str:
         if resolved is not None:
             return resolved
     return "__main__"
-
 
 def _module_name_from_path(path: str) -> str | None:
     try:
@@ -334,12 +255,10 @@ def _module_name_from_path(path: str) -> str | None:
         return ".".join(parts)
     return None
 
-
 try:
     _COMPLEX_TYPE = type(0j)
 except Exception:
     _COMPLEX_TYPE = None
-
 
 def _complex_from_parts(real: float, imag: float) -> Any:
     if _COMPLEX_TYPE is not None:
@@ -348,7 +267,6 @@ def _complex_from_parts(real: float, imag: float) -> Any:
         except Exception:
             pass
     return real + imag * 1j
-
 
 def _encode_varint(value: int, out: bytearray) -> None:
     while True:
@@ -359,7 +277,6 @@ def _encode_varint(value: int, out: bytearray) -> None:
         else:
             out.append(byte)
             break
-
 
 def _decode_varint(data: bytes, idx: int) -> tuple[int, int]:
     shift = 0
@@ -376,7 +293,6 @@ def _decode_varint(data: bytes, idx: int) -> tuple[int, int]:
         if shift > 10_000:
             raise ValueError("varint too large")
 
-
 def _encode_int(value: int, out: bytearray) -> None:
     if value < 0:
         out.append(1)
@@ -384,7 +300,6 @@ def _encode_int(value: int, out: bytearray) -> None:
     else:
         out.append(0)
         _encode_varint(value, out)
-
 
 def _decode_int(data: bytes, idx: int) -> tuple[int, int]:
     if idx >= len(data):
@@ -394,11 +309,9 @@ def _decode_int(data: bytes, idx: int) -> tuple[int, int]:
     magnitude, idx = _decode_varint(data, idx)
     return (-magnitude if sign else magnitude), idx
 
-
 def _encode_bytes(value: bytes, out: bytearray) -> None:
     _encode_varint(len(value), out)
     out.extend(value)
-
 
 def _decode_bytes(data: bytes, idx: int) -> tuple[bytes, int]:
     length, idx = _decode_varint(data, idx)
@@ -406,7 +319,6 @@ def _decode_bytes(data: bytes, idx: int) -> tuple[bytes, int]:
     if end > len(data):
         raise ValueError("truncated bytes")
     return data[idx:end], end
-
 
 def _encode_value(value: Any, out: bytearray, hub: "_Hub | None", depth: int) -> None:
     if depth > _MAX_DEPTH:
@@ -550,7 +462,6 @@ def _encode_value(value: Any, out: bytearray, hub: "_Hub | None", depth: int) ->
         return
     raise TypeError(f"cannot serialize {type(value).__name__}")
 
-
 def _decode_value(
     data: bytes, idx: int, hub: "_Hub | None", depth: int
 ) -> tuple[Any, int]:
@@ -679,7 +590,6 @@ def _decode_value(
         return hub.resolve_exception(module, name, message), idx
     raise ValueError(f"unknown tag {tag}")
 
-
 def _encode_message(message: Any, hub: "_Hub | None") -> bytes:
     out = bytearray()
     _encode_value(message, out, hub, 0)
@@ -687,13 +597,11 @@ def _encode_message(message: Any, hub: "_Hub | None") -> bytes:
         raise ValueError("message too large")
     return bytes(out)
 
-
 def _decode_message(data: bytes, hub: "_Hub | None") -> Any:
     value, idx = _decode_value(data, 0, hub, 0)
     if idx != len(data):
         raise ValueError("trailing bytes")
     return value
-
 
 def _bind_hub(value: Any, hub: "_Hub", depth: int, seen: set[int]) -> None:
     if depth > _MAX_DEPTH:
@@ -725,7 +633,6 @@ def _bind_hub(value: Any, hub: "_Hub", depth: int, seen: set[int]) -> None:
             _bind_hub(item, hub, depth + 1, seen)
         return
 
-
 def _stream_send_frame(stream: Any, payload: bytes) -> None:
     if _MOLT_STREAM_SEND is None:
         raise RuntimeError("stream send unavailable")
@@ -741,7 +648,6 @@ def _stream_send_frame(stream: Any, payload: bytes) -> None:
         if res != _PENDING:
             return
         time.sleep(0)
-
 
 def _stream_poll_frame(stream: Any, buf: bytearray) -> bytes | None:
     if len(buf) >= 4:
@@ -762,7 +668,6 @@ def _stream_poll_frame(stream: Any, buf: bytearray) -> bytes | None:
         return _stream_poll_frame(stream, buf)
     return None
 
-
 def _stream_recv_frame(
     stream: Any, buf: bytearray, timeout: float | None
 ) -> bytes | None:
@@ -774,7 +679,6 @@ def _stream_recv_frame(
         if deadline is not None and _now() >= deadline:
             return None
         time.sleep(0.001)
-
 
 class _StreamTransport:
     def __init__(self, recv_stream: Any, send_stream: Any) -> None:
@@ -856,7 +760,6 @@ class _StreamTransport:
                 return None
             time.sleep(0.001)
 
-
 class _FdTransport:
     def __init__(self, reader: Any, writer: Any) -> None:
         self._reader = reader
@@ -892,7 +795,6 @@ class _FdTransport:
         payload = bytes(self._buf[4:needed])
         del self._buf[:needed]
         return payload
-
 
 class _Hub:
     def __init__(
@@ -1080,7 +982,6 @@ class _Hub:
         if isinstance(transport, _StreamTransport):
             transport.close()
 
-
 class _Queue:
     def __init__(self, maxsize: int = 0) -> None:
         self._id = _next_object_id()
@@ -1132,7 +1033,6 @@ class _Queue:
     def join_thread(self) -> None:
         return None
 
-
 class QueueProxy:
     def __init__(self, queue_id: int, hub: _Hub) -> None:
         self._id = queue_id
@@ -1150,7 +1050,6 @@ class QueueProxy:
 
     def join_thread(self) -> None:
         return None
-
 
 class PipeConnection:
     def __init__(self, pipe_id: int, readable: bool, writable: bool) -> None:
@@ -1193,7 +1092,6 @@ class PipeConnection:
     def close(self) -> None:
         return None
 
-
 class PipeProxy:
     def __init__(self, pipe_id: int, readable: bool, writable: bool, hub: _Hub) -> None:
         self._id = pipe_id
@@ -1222,7 +1120,6 @@ class PipeProxy:
     def close(self) -> None:
         return None
 
-
 class SharedValue:
     def __init__(self, typecode: str, value: Any) -> None:
         self._id = _next_object_id()
@@ -1240,7 +1137,6 @@ class SharedValue:
         if self._hub is not None and self._hub._role == "child":
             self._hub.send((_MSG_VALUE_SET, self._id, new_value))
 
-
 class ValueProxy:
     def __init__(self, value_id: int, typecode: str, value: Any, hub: _Hub) -> None:
         self._id = value_id
@@ -1256,7 +1152,6 @@ class ValueProxy:
     def value(self, new_value: Any) -> None:
         self._value = new_value
         self._hub.send((_MSG_VALUE_SET, self._id, new_value))
-
 
 class SharedArray:
     def __init__(self, typecode: str, values: Iterable[Any]) -> None:
@@ -1278,7 +1173,6 @@ class SharedArray:
 
     def __iter__(self) -> Iterator[Any]:
         return iter(self._values)
-
 
 class ArrayProxy:
     def __init__(
@@ -1302,16 +1196,13 @@ class ArrayProxy:
     def __iter__(self) -> Iterator[Any]:
         return iter(self._values)
 
-
 _NEXT_OBJECT_ID = 1
-
 
 def _next_object_id() -> int:
     global _NEXT_OBJECT_ID
     value = _NEXT_OBJECT_ID
     _NEXT_OBJECT_ID += 1
     return value
-
 
 class Process:
     def __init__(
@@ -1488,7 +1379,6 @@ class Process:
         except Exception:
             return 0
 
-
 class AsyncResult:
     def __init__(
         self,
@@ -1529,7 +1419,6 @@ class AsyncResult:
         if self._unwrap_single and len(self._results) == 1:
             return self._results[0]
         return list(self._results)
-
 
 class IMapIterator:
     def __init__(self, pool: "Pool", ordered: bool, total: int) -> None:
@@ -1582,7 +1471,6 @@ class IMapIterator:
             if deadline is not None and _now() >= deadline:
                 raise TimeoutError("result not ready")
             time.sleep(0.001)
-
 
 class Pool:
     def __init__(
@@ -1856,7 +1744,6 @@ class Pool:
         self.close()
         self.join()
 
-
 class _Worker:
     def __init__(
         self,
@@ -1997,10 +1884,8 @@ class _Worker:
         if self._transport is not None:
             self._transport.close()
 
-
 ProcessType = Process
 PoolType = Pool
-
 
 class Context:
     def __init__(self, method: str | None) -> None:
@@ -2053,15 +1938,12 @@ class Context:
     def Array(self, typecode: str, values: Iterable[Any]) -> SharedArray:
         return SharedArray(typecode, values)
 
-
 _DEFAULT_START_METHOD: str | None = None
-
 
 def get_all_start_methods() -> list[str]:
     if os.name == "nt":
         return ["spawn"]
     return ["spawn", "fork", "forkserver"]
-
 
 def set_start_method(method: str, force: bool = False) -> None:
     global _DEFAULT_START_METHOD
@@ -2071,12 +1953,10 @@ def set_start_method(method: str, force: bool = False) -> None:
         raise ValueError("unknown start method")
     _DEFAULT_START_METHOD = method
 
-
 def get_start_method(allow_none: bool = False) -> str | None:
     if _DEFAULT_START_METHOD is None:
         return None if allow_none else "spawn"
     return _DEFAULT_START_METHOD
-
 
 def get_context(method: str | None = None) -> Context:
     if method is None:
@@ -2089,29 +1969,23 @@ def get_context(method: str | None = None) -> Context:
         return Context(method)
     return Context(method)
 
-
 def _effective_start_method(ctx: "Context | None") -> str:
     if ctx is not None:
         return ctx.get_start_method()
     method = get_start_method(allow_none=True)
     return method if method is not None else "spawn"
 
-
 def Queue(maxsize: int = 0) -> _Queue:
     return get_context("spawn").Queue(maxsize)
-
 
 def Pipe(duplex: bool = True) -> tuple[PipeConnection, PipeConnection]:
     return get_context("spawn").Pipe(duplex=duplex)
 
-
 def Value(typecode: str, value: Any) -> SharedValue:
     return get_context("spawn").Value(typecode, value)
 
-
 def Array(typecode: str, values: Iterable[Any]) -> SharedArray:
     return get_context("spawn").Array(typecode, values)
-
 
 def _spawn_main() -> None:
     _mp_debug("mp: spawn_main start")
@@ -2168,7 +2042,6 @@ def _spawn_main() -> None:
         _worker_loop(hub, msg)
         return
 
-
 def _run_child(hub: _Hub, msg: tuple[Any, ...]) -> None:
     target = msg[1]
     args = msg[2] if len(msg) > 2 else ()
@@ -2195,7 +2068,6 @@ def _run_child(hub: _Hub, msg: tuple[Any, ...]) -> None:
     except BaseException as exc:
         hub.send((_MSG_TASK_ERROR, 0, 0, _exception_ref_from_exc(exc)))
         sys.exit(1)
-
 
 def _worker_loop(hub: _Hub, msg: tuple[Any, ...]) -> None:
     initializer = msg[1] if len(msg) > 1 else None

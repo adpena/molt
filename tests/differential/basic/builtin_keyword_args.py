@@ -1,9 +1,9 @@
 """Purpose: keyword argument coverage for builtins and list.index."""
 
 values = [0, 1, 2, 1, 3]
-print(values.index(1, start=1))
-print(values.index(1, start=2, end=4))
-print(values.index(1, 1, end=4))
+print(values.index(1, 1))
+print(values.index(1, 2, 4))
+print(values.index(1, 1, 4))
 
 try:
     values.index(1, foo=2)
@@ -25,4 +25,23 @@ try:
 except TypeError:
     print("int-base-typeerror")
 
-print(list(range(start=1, stop=5, step=2)))
+print(round(number=1.25))
+print(round(1.25, ndigits=1))
+
+try:
+    round(ndigits=2)
+    print("round-missing-ok")
+except TypeError:
+    print("round-missing-typeerror")
+
+try:
+    round(1, foo=2)
+    print("round-foo-ok")
+except TypeError:
+    print("round-foo-typeerror")
+
+try:
+    print(list(range(start=1, stop=5, step=2)))
+    print("range-kw-ok")
+except TypeError:
+    print("range-kw-typeerror")

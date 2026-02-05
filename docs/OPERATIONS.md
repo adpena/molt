@@ -3,6 +3,24 @@
 This document consolidates remote access, logging, progress reporting, and
 multi-agent workflow rules.
 
+## Version Policy
+Molt targets **Python 3.12+** semantics only. Do not spend effort on <=3.11
+compatibility. If 3.12/3.13/3.14 differ, document the chosen target in specs/tests.
+
+## Platform Pitfalls
+- **macOS SDK/versioning**: Xcode CLT must be installed; if linking fails, confirm `xcrun --show-sdk-version` works and set `MACOSX_DEPLOYMENT_TARGET` for cross-linking.
+- **macOS arm64 + Python 3.14**: uv-managed 3.14 can hang; install system `python3.14` and use `--no-managed-python` when needed (see `docs/spec/STATUS.md`).
+- **Windows toolchain conflicts**: avoid mixing MSVC and clang in the same build; keep one toolchain active.
+- **Windows path lengths**: keep repo/build paths short; avoid deeply nested output folders.
+- **WASM linker availability**: `wasm-ld` and `wasm-tools` are required for linked builds; use `--require-linked` to fail fast.
+
+## Differential Suite (Operational Controls)
+- **Memory profiling**: set `MOLT_DIFF_MEASURE_RSS=1` to collect per-test RSS metrics.
+- **Summary sidecar**: `MOLT_DIFF_ROOT/summary.json` (or `MOLT_DIFF_SUMMARY=<path>`) records jobs, limits, and RSS aggregates.
+- **Failure queue**: failed tests are written to `MOLT_DIFF_ROOT/failures.txt` (override with `MOLT_DIFF_FAILURES` or `--failures-output`).
+- **OOM retry**: OOM failures retry once with `--jobs 1` by default (`MOLT_DIFF_RETRY_OOM=0` disables).
+- **Memory caps**: default 10 GB per-process; override with `MOLT_DIFF_RLIMIT_GB`/`MOLT_DIFF_RLIMIT_MB` or disable with `MOLT_DIFF_RLIMIT_GB=0`.
+
 ## Remote Access and Persistent Sessions
 This project assumes persistent terminal sessions and remote access.
 Contributors are expected to use tmux + mosh (or equivalent) for long-running
@@ -172,14 +190,10 @@ This section standardizes parallel agent work on Molt.
 - Agents are expected to create branches, open PRs, and merge when approved.
 - Proactively commit work in logical chunks with clear messages.
 
-### Locking and ownership
-- Use `docs/AGENT_LOCKS.md` to claim files/directories before editing.
-- Claims must be explicit and removed promptly when work finishes.
-
 ### Work partitioning
 - Assign each agent a scoped area (runtime/frontend/docs/tests) and avoid
   overlap.
-- If cross-cutting changes are required, coordinate and update locks first.
+- If cross-cutting changes are required, coordinate early.
 
 ### Communication rules
 - Always announce: scope, files touched, and expected tests.

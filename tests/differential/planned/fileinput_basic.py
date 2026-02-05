@@ -8,10 +8,8 @@ import fileinput
 root = tempfile.mkdtemp()
 path = os.path.join(root, 'data.txt')
 with open(path, 'w', encoding='utf-8') as handle:
-    handle.write('a
-')
-    handle.write('b
-')
+    handle.write("a\n")
+    handle.write("b\n")
 
 lines = [line.strip() for line in fileinput.input([path])]
 print(lines)

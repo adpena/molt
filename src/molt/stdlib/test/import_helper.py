@@ -7,15 +7,18 @@ import contextlib
 import importlib
 import importlib.util
 import os
+import shutil
 import sys
 from types import ModuleType
 import unittest
 import warnings
 
-from .os_helper import unlink
+from .os_helper import temp_dir, unlink
 
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): extend import_helper coverage (frozen modules, subinterpreters, and script helpers).
+# TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): extend
+# import_helper coverage (extension loader helpers, importlib.machinery parity, and
+# script helper utilities beyond ready_to_import).
 
 
 @contextlib.contextmanager
@@ -47,6 +50,23 @@ def forget(modname: str) -> None:
             continue
 
 
+def make_legacy_pyc(source: str) -> str:
+    pyc_file = importlib.util.cache_from_source(source)
+    legacy_pyc = source + "c"
+    shutil.move(pyc_file, legacy_pyc)
+    return legacy_pyc
+
+
+def _make_script(dirname: str, name: str, source: str) -> str:
+    filename = f"{name}.py"
+    path = os.path.join(dirname, filename)
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(source)
+        if source and not source.endswith("\n"):
+            handle.write("\n")
+    return path
+
+
 def import_module(
     name: str, deprecated: bool = False, *, required_on: Iterable[str] = ()
 ):
@@ -68,6 +88,39 @@ def _save_and_remove_modules(names: Iterable[str]) -> dict[str, object]:
     return orig_modules
 
 
+@contextlib.contextmanager
+def frozen_modules(enabled: bool = True):
+    try:
+        import _imp as _imp_mod
+    except Exception:
+        _imp_mod = None
+    if _imp_mod is None or not hasattr(_imp_mod, "_override_frozen_modules_for_tests"):
+        yield
+        return
+    _imp_mod._override_frozen_modules_for_tests(1 if enabled else -1)
+    try:
+        yield
+    finally:
+        _imp_mod._override_frozen_modules_for_tests(0)
+
+
+@contextlib.contextmanager
+def multi_interp_extensions_check(enabled: bool = True):
+    try:
+        import _imp as _imp_mod
+    except Exception:
+        _imp_mod = None
+    override = getattr(_imp_mod, "_override_multi_interp_extensions_check", None)
+    if _imp_mod is None or override is None:
+        yield
+        return
+    old = override(1 if enabled else -1)
+    try:
+        yield
+    finally:
+        override(old)
+
+
 def import_fresh_module(
     name: str,
     fresh: Iterable[str] = (),
@@ -85,12 +138,13 @@ def import_fresh_module(
         for modname in blocked_list:
             sys.modules[modname] = cast(ModuleType, None)
         try:
-            try:
-                for modname in fresh_list:
-                    __import__(modname)
-            except ImportError:
-                return None
-            return importlib.import_module(name)
+            with frozen_modules(False):
+                try:
+                    for modname in fresh_list:
+                        __import__(modname)
+                except ImportError:
+                    return None
+                return importlib.import_module(name)
         finally:
             _save_and_remove_modules(names)
             sys.modules.update(orig_modules)
@@ -116,10 +170,79 @@ class CleanImport:
         return False
 
 
+class DirsOnSysPath:
+    """Context manager to temporarily add directories to sys.path."""
+
+    def __init__(self, *paths: str) -> None:
+        self._original_value = sys.path[:]
+        self._original_object = sys.path
+        sys.path.extend(paths)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        sys.path = self._original_object
+        sys.path[:] = self._original_value
+        return False
+
+
+def modules_setup():
+    return (sys.modules.copy(),)
+
+
+def modules_cleanup(oldmodules):
+    encodings = [
+        (name, module)
+        for name, module in sys.modules.items()
+        if name.startswith("encodings.")
+    ]
+    sys.modules.clear()
+    sys.modules.update(encodings)
+    sys.modules.update(oldmodules)
+
+
+@contextlib.contextmanager
+def isolated_modules():
+    (saved,) = modules_setup()
+    try:
+        yield
+    finally:
+        modules_cleanup(saved)
+
+
+@contextlib.contextmanager
+def ready_to_import(name: str | None = None, source: str = ""):
+    name = name or "spam"
+    with temp_dir() as tempdir:
+        path = _make_script(tempdir, name, source)
+        old_module = sys.modules.pop(name, None)
+        sys.path.insert(0, tempdir)
+        try:
+            yield name, path
+        finally:
+            try:
+                sys.path.remove(tempdir)
+            except ValueError:
+                pass
+            if old_module is not None:
+                sys.modules[name] = old_module
+            else:
+                sys.modules.pop(name, None)
+
+
 __all__ = [
     "CleanImport",
+    "DirsOnSysPath",
     "forget",
+    "frozen_modules",
     "import_fresh_module",
     "import_module",
+    "isolated_modules",
+    "make_legacy_pyc",
+    "multi_interp_extensions_check",
+    "modules_cleanup",
+    "modules_setup",
+    "ready_to_import",
     "unload",
 ]

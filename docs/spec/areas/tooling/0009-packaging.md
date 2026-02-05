@@ -16,12 +16,19 @@ Molt leverages Rust's excellent cross-compilation support.
 
 ## 4. Signing & SBOM
 - **Signing**: Support for `codesign` (macOS) and `cosign` (Linux) builtin to the CLI.
+- **Verification**: `molt verify`/`molt publish` can enforce signature verification and
+  trust policies for packaged artifacts (remote publish defaults to enforcement).
 - **SBOM**: Molt generates a Software Bill of Materials (CycloneDX or SPDX) including:
     - The compiler version.
     - All Python dependencies (from `uv.lock`).
     - All Molt Packages (WASM or Native).
     - The Rust toolchain version.
     - Dependency tier classification (see `docs/spec/areas/tooling/0013_PYTHON_DEPENDENCIES.md`).
+  - Current CLI emits CycloneDX (default) or SPDX JSON sidecars
+    (`<artifact>.sbom.json`) and embeds `sbom.json` inside `.moltpkg` archives;
+    signature metadata is emitted via sidecar (`<artifact>.sig.json`) and
+    in-package `signature.json` entries. When `--sign` uses cosign, a
+    `<artifact>.sig` sidecar is also produced.
 
 ## 5. Molt Registry
 A centralized (but cacheable) registry for verified Molt Packages.

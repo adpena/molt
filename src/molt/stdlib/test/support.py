@@ -6,7 +6,9 @@ from typing import Any
 import contextlib
 import gc
 import io
+import os
 import sys
+import time
 import unittest
 
 
@@ -37,6 +39,8 @@ NEVER_EQ = _NeverEq()
 C_RECURSION_LIMIT = sys.getrecursionlimit()
 use_resources: set[str] | None = None
 verbose = 0
+TEST_SUPPORT_DIR = os.path.dirname(os.path.abspath(__file__))
+TEST_HOME_DIR = os.path.dirname(TEST_SUPPORT_DIR)
 
 try:
     import socket
@@ -101,6 +105,69 @@ def requires(resource: str, msg: str | None = None) -> None:
 
 def cpython_only(obj):
     return unittest.skip("CPython only test")(obj)
+
+
+def findfile(filename: str, subdir: str | None = None) -> str:
+    """Try to find a file on sys.path or in the test directory."""
+    if os.path.isabs(filename):
+        return filename
+    if subdir is not None:
+        filename = os.path.join(subdir, filename)
+    path = [TEST_HOME_DIR] + sys.path
+    for dn in path:
+        fn = os.path.join(dn, filename)
+        if os.path.exists(fn):
+            return fn
+    return filename
+
+
+def run_with_tz(tz: str):
+    def decorator(func):
+        def inner(*args, **kwds):
+            try:
+                tzset = time.tzset
+            except AttributeError:
+                raise unittest.SkipTest("tzset required")
+            if "TZ" in os.environ:
+                orig_tz = os.environ["TZ"]
+            else:
+                orig_tz = None
+            os.environ["TZ"] = tz
+            tzset()
+
+            try:
+                return func(*args, **kwds)
+            finally:
+                if orig_tz is None:
+                    del os.environ["TZ"]
+                else:
+                    os.environ["TZ"] = orig_tz
+                time.tzset()
+
+        inner.__name__ = func.__name__
+        inner.__doc__ = func.__doc__
+        return inner
+
+    return decorator
+
+
+def check_syntax_error(
+    testcase,
+    statement: str,
+    errtext: str = "",
+    *,
+    lineno: int | None = None,
+    offset: int | None = None,
+):
+    with testcase.assertRaisesRegex(SyntaxError, errtext) as cm:
+        compile(statement, "<test string>", "exec")
+    err = cm.exception
+    testcase.assertIsNotNone(err.lineno)
+    if lineno is not None:
+        testcase.assertEqual(err.lineno, lineno)
+    testcase.assertIsNotNone(err.offset)
+    if offset is not None:
+        testcase.assertEqual(err.offset, offset)
 
 
 def check_free_after_iterating(test: Any, iter_func, cls, args: tuple[Any, ...] = ()):

@@ -1,6 +1,92 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
+
+
+def _load_intrinsic_specs() -> list[tuple[str, str, int]]:
+    manifest = (
+        Path(__file__).resolve().parents[1]
+        / "runtime/molt-runtime/src/intrinsics/manifest.pyi"
+    )
+    specs: list[tuple[str, str, int]] = []
+    text = manifest.read_text()
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("def "):
+            continue
+        match = re.match(r"def\s+([A-Za-z0-9_]+)\(([^)]*)\)", line)
+        if not match:
+            continue
+        name = match.group(1)
+        raw_args = match.group(2).strip()
+        if not raw_args:
+            arity = 0
+        else:
+            parts = []
+            for part in raw_args.split(","):
+                part = part.strip()
+                if not part or part in {"*", "/"}:
+                    continue
+                parts.append(part)
+            arity = len(parts)
+        import_name = name
+        if name.startswith("molt_"):
+            import_name = name[len("molt_") :]
+        specs.append((name, import_name, arity))
+    return specs
+
+
+INTRINSIC_SPECS = _load_intrinsic_specs()
+
+
+def _intrinsic_registry_js() -> str:
+    lines = ["const intrinsicSpecs = ["]
+    for name, import_name, arity in INTRINSIC_SPECS:
+        lines.append(f"  ['{name}', '{import_name}', {arity}],")
+    lines.append("];")
+    lines.append("let intrinsicsInstalled = false;")
+    lines.append("const installIntrinsics = (builtinsBits) => {")
+    lines.append("  if (intrinsicsInstalled) return;")
+    lines.append("  intrinsicsInstalled = true;")
+    lines.append("  const builtins = getModule(builtinsBits);")
+    lines.append("  if (!builtins) return;")
+    lines.append("  const dict = getDict(builtins.dictBits);")
+    lines.append("  if (!dict) return;")
+    lines.append("  const registryBits = boxPtr({ type: 'dict', entries: [], lookup: new Map() });")
+    lines.append("  const registry = getDict(registryBits);")
+    lines.append("  if (!registry) return;")
+    lines.append("  dictSetValue(dict, boxPtr({ type: 'str', value: '_molt_intrinsics' }), registryBits);")
+    lines.append("  dictSetValue(dict, boxPtr({ type: 'str', value: '_molt_intrinsics_strict' }), boxBool(true));")
+    lines.append("  dictSetValue(dict, boxPtr({ type: 'str', value: '_molt_runtime' }), boxBool(true));")
+    lines.append("  for (const [name, importName, arity] of intrinsicSpecs) {")
+    lines.append("    let fn = baseImports[importName];")
+    lines.append("    if (!fn) {")
+    lines.append("      fn = (..._args) => baseImports.unsupported_import(importName);")
+    lines.append("    }")
+    lines.append("    const idx = getOrAddTableFunc(fn, arity);")
+    lines.append("    if (idx === null) continue;")
+    lines.append("    const fnBits = baseImports.func_new(BigInt(idx), 0n, BigInt(arity));")
+    lines.append("    const nameBits = boxPtr({ type: 'str', value: name });")
+    lines.append("    dictSetValue(dict, nameBits, fnBits);")
+    lines.append("    dictSetValue(registry, nameBits, fnBits);")
+    lines.append("    if (name.startsWith('molt_')) {")
+    lines.append("      const alias = `_molt_${name.slice(5)}`;")
+    lines.append("      const aliasBits = boxPtr({ type: 'str', value: alias });")
+    lines.append("      dictSetValue(dict, aliasBits, fnBits);")
+    lines.append("      dictSetValue(registry, aliasBits, fnBits);")
+    lines.append("    }")
+    lines.append("  }")
+    lines.append("};")
+    lines.append("if (!moduleCache.get('builtins')) {")
+    lines.append("  const builtinsName = boxPtr({ type: 'str', value: 'builtins' });")
+    lines.append("  const builtinsBits = baseImports.module_new(builtinsName);")
+    lines.append("  baseImports.module_cache_set(builtinsName, builtinsBits);")
+    lines.append("}")
+    return "\n".join(lines)
+
+
+INTRINSIC_REGISTRY_JS = _intrinsic_registry_js()
 
 BASE_PREAMBLE = """\
 const fs = require('fs');
@@ -274,6 +360,8 @@ const runnableTasks = new Set();
 const runnableQueue = [];
 let codeSlots = null;
 const frameStack = [];
+let lastAttrName = null;
+let lastAttrObjType = null;
 const cancelPending = new Set();
 const cancelTokens = new Map();
 const taskTokens = new Map();
@@ -281,7 +369,14 @@ let nextCancelTokenId = 2n;
 let currentTokenId = 1n;
 let currentTaskPtr = 0;
 let nextChanId = 1;
+let nextLockId = 1;
+let nextRLockId = 1;
+const lockStates = new Map();
+const rlockStates = new Map();
+let sysVersionInfo = null;
+let sysVersionStr = null;
 let heapPtr = 1 << 20;
+let lastBuiltinName = null;
 let recursionLimit = 1000;
 let recursionDepth = 0;
 const HEADER_SIZE = 40;
@@ -763,6 +858,15 @@ const getTableFunc = (idx) => {
   return table.get(idx);
 };
 const DIRECT_CALL_MAX = 12;
+const functionNeedsTaskTrampoline = (funcBits) => {
+  const genBits = lookupAttr(funcBits, '__molt_is_generator__');
+  if (genBits !== undefined && isTruthyBits(genBits)) return true;
+  const coroBits = lookupAttr(funcBits, '__molt_is_coroutine__');
+  if (coroBits !== undefined && isTruthyBits(coroBits)) return true;
+  const asyncgenBits = lookupAttr(funcBits, '__molt_is_async_generator__');
+  if (asyncgenBits !== undefined && isTruthyBits(asyncgenBits)) return true;
+  return false;
+};
 const callFunctionTrampoline = (func, args) => {
   if (!memory) {
     throw new Error('RuntimeError: wasm memory unavailable for trampoline');
@@ -796,6 +900,9 @@ const callFunctionBits = (funcBits, args) => {
   const fn = getTableFunc(func.idx);
   if (!fn) {
     throw new Error('TypeError: call expects function object');
+  }
+  if (functionNeedsTaskTrampoline(funcBits)) {
+    return callFunctionTrampoline(func, args);
   }
   if (func.trampoline && args.length > DIRECT_CALL_MAX && memory) {
     return callFunctionTrampoline(func, args);
@@ -3360,8 +3467,14 @@ const lookupAttr = (objBits, name) => {
     if (val !== undefined) return val;
   }
   const func = getFunction(objBits);
-  if (func && func.attrs && func.attrs.has(name)) {
-    return func.attrs.get(name);
+  if (func) {
+    if (name === '__closure__') {
+      if (func.closure && func.closure !== 0n) return func.closure;
+      return boxNone();
+    }
+    if (func.attrs && func.attrs.has(name)) {
+      return func.attrs.get(name);
+    }
   }
   const obj = getObj(objBits);
   if (obj && obj.type === 'module') {
@@ -5008,6 +5121,8 @@ const builtinMethodNamesForClass = (className) => {
       'strip',
       'lstrip',
       'rstrip',
+      'startswith',
+      'endswith',
       '__iter__',
       '__len__',
       '__contains__',
@@ -5456,6 +5571,9 @@ const getBuiltinMethodBits = (classBits, name) => {
     if (name === '__init__') {
       fn = (_selfBits) => boxNone();
       arity = 1;
+    } else if (name === '__init_subclass__') {
+      fn = (_selfBits) => boxNone();
+      arity = 1;
     }
   } else if (className === 'list') {
     if (name === 'append') {
@@ -5585,6 +5703,67 @@ const getBuiltinMethodBits = (classBits, name) => {
       fn = (selfBits, charsBits) => baseImports.string_rstrip(selfBits, charsBits);
       arity = 2;
       defaultKind = FUNC_DEFAULT_NONE;
+    } else if (name === 'startswith') {
+      if (process.env.MOLT_DEBUG_STR_STARTSWITH === '1') {
+        console.error('getBuiltinMethodBits(str.startswith)');
+      }
+      fn = (selfBits, needleBits, startBits, endBits, hasStartBits, hasEndBits) => {
+        const hay = getStrObj(selfBits);
+        if (hay === null) return boxNone();
+        const range = normalizeBytesRange(
+          hay.length,
+          startBits,
+          endBits,
+          hasStartBits,
+          hasEndBits,
+          'startswith() start must be int',
+          'startswith() end must be int',
+        );
+        if (!range) return boxNone();
+        const slice = hay.slice(range.start, range.end);
+        const tuple = getTuple(needleBits);
+        if (tuple) {
+          for (const item of tuple.items) {
+            const needle = getStrObj(item);
+            if (needle === null) return boxNone();
+            if (slice.startsWith(needle)) return boxBool(true);
+          }
+          return boxBool(false);
+        }
+        const needle = getStrObj(needleBits);
+        if (needle === null) return boxNone();
+        return boxBool(slice.startsWith(needle));
+      };
+      arity = 6;
+    } else if (name === 'endswith') {
+      fn = (selfBits, needleBits, startBits, endBits, hasStartBits, hasEndBits) => {
+        const hay = getStrObj(selfBits);
+        if (hay === null) return boxNone();
+        const range = normalizeBytesRange(
+          hay.length,
+          startBits,
+          endBits,
+          hasStartBits,
+          hasEndBits,
+          'endswith() start must be int',
+          'endswith() end must be int',
+        );
+        if (!range) return boxNone();
+        const slice = hay.slice(range.start, range.end);
+        const tuple = getTuple(needleBits);
+        if (tuple) {
+          for (const item of tuple.items) {
+            const needle = getStrObj(item);
+            if (needle === null) return boxNone();
+            if (slice.endsWith(needle)) return boxBool(true);
+          }
+          return boxBool(false);
+        }
+        const needle = getStrObj(needleBits);
+        if (needle === null) return boxNone();
+        return boxBool(slice.endsWith(needle));
+      };
+      arity = 6;
     } else if (name === '__iter__') {
       fn = (selfBits) => baseImports.iter(selfBits);
       arity = 1;
@@ -5954,6 +6133,7 @@ const getBuiltinMethodBits = (classBits, name) => {
 const bindBuiltinCall = (funcBits, func, args) => {
   const out = [...args.pos];
   const name = func && typeof func.builtinName === 'string' ? func.builtinName : null;
+  lastBuiltinName = name;
   const isSetMethod = name && (name.startsWith('set.') || name.startsWith('frozenset.'));
   if (args.kwNames.length) {
     if (name === 'memoryview.cast') {
@@ -5973,6 +6153,12 @@ const bindBuiltinCall = (funcBits, func, args) => {
     }
   }
   const arity = func ? func.arity : out.length;
+  if (name === 'object.__init__' && out.length > 1) {
+    const selfBits = out[0];
+    console.error(
+      `object.__init__ called with ${out.length} args on ${typeName(selfBits)}`,
+    );
+  }
   if (name === 'list.pop') {
     if (out.length === 1) {
       out.push(missingSentinel());
@@ -6035,6 +6221,8 @@ const bindBuiltinCall = (funcBits, func, args) => {
     name === 'bytearray.startswith' ||
     name === 'bytes.endswith' ||
     name === 'bytearray.endswith' ||
+    name === 'str.startswith' ||
+    name === 'str.endswith' ||
     name === 'bytes.count' ||
     name === 'bytearray.count'
   ) {
@@ -6190,7 +6378,14 @@ const bindBuiltinCall = (funcBits, func, args) => {
 """
 
 BASE_IMPORTS = """\
-  runtime_init: () => 1n,
+  runtime_init: () => {
+    if (!moduleCache.get('builtins')) {
+      const nameBits = boxPtr({ type: 'str', value: 'builtins' });
+      const moduleBits = baseImports.module_new(nameBits);
+      baseImports.module_cache_set(nameBits, moduleBits);
+    }
+    return 1n;
+  },
   runtime_shutdown: () => 1n,
   unsupported_import: (name) => {
     const exc = exceptionNew(
@@ -7133,12 +7328,25 @@ BASE_IMPORTS = """\
       const lc = complexFromValStrict(a);
       const rc = complexFromValStrict(b);
       if ((lc && lc.overflow) || (rc && rc.overflow)) {
-        throw new Error('OverflowError: int too large to convert to float');
+        const exc = exceptionNew(
+          boxPtr({ type: 'str', value: 'OverflowError' }),
+          exceptionArgs(
+            boxPtr({
+              type: 'str',
+              value: 'int too large to convert to float',
+            }),
+          ),
+        );
+        return raiseException(exc);
       }
       if (lc && rc) {
         const denom = rc.re * rc.re + rc.im * rc.im;
         if (denom === 0) {
-          throw new Error('ZeroDivisionError: division by zero');
+          const exc = exceptionNew(
+            boxPtr({ type: 'str', value: 'ZeroDivisionError' }),
+            exceptionArgs(boxPtr({ type: 'str', value: 'division by zero' })),
+          );
+          return raiseException(exc);
         }
         const re = (lc.re * rc.re + lc.im * rc.im) / denom;
         const im = (lc.im * rc.re - lc.re * rc.im) / denom;
@@ -7147,10 +7355,23 @@ BASE_IMPORTS = """\
       return boxNone();
     }
     if (lf === null || rf === null) {
-      throw new Error('TypeError: unsupported operand type(s) for /');
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(
+          boxPtr({
+            type: 'str',
+            value: 'unsupported operand type(s) for /',
+          }),
+        ),
+      );
+      return raiseException(exc);
     }
     if (rf === 0) {
-      throw new Error('ZeroDivisionError: division by zero');
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'ZeroDivisionError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'division by zero' })),
+      );
+      return raiseException(exc);
     }
     return boxFloat(lf / rf);
   },
@@ -7560,7 +7781,12 @@ BASE_IMPORTS = """\
     if (left === null || right === null) return boxBool(false);
     return boxBool(left === right);
   },
-  is: (a, b) => boxBool(a === b),
+  is: (a, b) => {
+    if (process.env.MOLT_DEBUG_IS === '1' && (isTag(a, TAG_NONE) || isTag(b, TAG_NONE))) {
+      console.error(`is(a=0x${a.toString(16)}, b=0x${b.toString(16)}) -> ${a === b}`);
+    }
+    return boxBool(a === b);
+  },
   closure_load: (ptr, offset) => {
     if (!memory) return boxNone();
     const base = expectPtrAddr(ptr, 'closure_load');
@@ -7769,8 +7995,18 @@ BASE_IMPORTS = """\
     }
     return getAttrValue(boxPtrAddr(addr), readUtf8(namePtr, nameLen));
   },
-  get_attr_object: (obj, namePtr, nameLen) =>
-    getAttrValue(obj, readUtf8(namePtr, nameLen)),
+  get_attr_object: (obj, namePtr, nameLen) => {
+    const name = readUtf8(namePtr, nameLen);
+    lastAttrName = name;
+    lastAttrObjType = typeName(obj);
+    if (
+      process.env.MOLT_DEBUG_GETATTR_STARTSWITH === '1' &&
+      name === 'startswith'
+    ) {
+      console.error(`get_attr_object startswith on ${typeName(obj)}`);
+    }
+    return getAttrValue(obj, name);
+  },
   get_attr_special: (obj, namePtr, nameLen) =>
     getAttrSpecialValue(obj, readUtf8(namePtr, nameLen)),
   set_attr_ptr: (obj, namePtr, nameLen, val) => {
@@ -7868,7 +8104,16 @@ BASE_IMPORTS = """\
       const keyBits = boxPtr({ type: 'str', value: '__name__' });
       dictSetValue(dict, keyBits, nameBits);
     }
-    return boxPtr({ type: 'module', name: name ?? '<module>', dictBits });
+    const moduleBits = boxPtr({ type: 'module', name: name ?? '<module>', dictBits });
+    if (dict && name === 'importlib.machinery') {
+      const loaderKey = boxPtr({ type: 'str', value: 'MOLT_LOADER' });
+      const loaderBits = boxPtr({ type: 'molt_loader' });
+      dictSetValue(dict, loaderKey, loaderBits);
+    }
+    if (name === 'builtins') {
+      installIntrinsics(moduleBits);
+    }
+    return moduleBits;
   },
   module_cache_get: (nameBits) => {
     const name = getStrObj(nameBits);
@@ -9642,12 +9887,13 @@ BASE_IMPORTS = """\
     return func && func.closure ? func.closure : 0n;
   },
   call_arity_error: (expected, got) => {
+    const name = lastBuiltinName ? ` for ${lastBuiltinName}` : '';
     const exc = exceptionNew(
       boxPtr({ type: 'str', value: 'TypeError' }),
       exceptionArgs(
         boxPtr({
           type: 'str',
-          value: `call arity mismatch (expected ${expected}, got ${got})`,
+          value: `call arity mismatch (expected ${expected}, got ${got})${name}`,
         }),
       ),
     );
@@ -9723,8 +9969,66 @@ BASE_IMPORTS = """\
   call_bind: (callBits, builderBits) => {
     const args = getCallArgs(builderBits);
     if (!args) return boxNone();
+    if (process.env.MOLT_DEBUG_CALL_BIND_NONE === '1' && isTag(callBits, TAG_NONE)) {
+      const payload = callBits & POINTER_MASK;
+      const payloadHex = payload.toString(16);
+      const top = frameStack.length ? frameStack[frameStack.length - 1] : null;
+      const codeObj = top ? getCode(top.codeBits) : null;
+      const name = codeObj && codeObj.name ? codeObj.name : '<no-code>';
+      const pending = exceptionPending() !== 0n;
+      const argTypes = args.pos
+        .map((bit) => {
+          const s = getStrObj(bit);
+          if (s !== null) return `str:${s}`;
+          return typeName(bit);
+        })
+        .join(', ');
+      console.error(
+        `call_bind None payload=0x${payloadHex} in ${name} args=[${argTypes}] pending=${pending} lastAttr=${lastAttrName ?? '<none>'} lastAttrType=${lastAttrObjType ?? '<none>'}`,
+      );
+    }
     const cls = getClass(callBits);
     if (cls) {
+      const typeBits = getBuiltinType(101);
+      const handleTypeCall = () => {
+        const nameBits = args.pos[0];
+        const basesBitsRaw = args.pos[1];
+        const namespaceBits = args.pos[2];
+        const name = getStrObj(nameBits);
+        if (name === null) {
+          throw new Error('TypeError: type() name must be a str');
+        }
+        const classBits = baseImports.class_new(nameBits);
+        let basesBits = basesBitsRaw;
+        const basesTuple = getTuple(basesBitsRaw);
+        if (basesTuple && basesTuple.items.length === 0) {
+          basesBits = getBuiltinType(100);
+        }
+        baseImports.class_set_base(classBits, basesBits);
+        const dict = getDict(namespaceBits);
+        if (!dict) {
+          throw new Error('TypeError: type() namespace must be a dict');
+        }
+        for (const entry of dict.entries) {
+          const keyBits = entry[0];
+          const valBits = entry[1];
+          const key = getStrObj(keyBits);
+          if (key === null) {
+            throw new Error('TypeError: type() attribute name must be str');
+          }
+          setAttrValue(classBits, key, valBits);
+        }
+        return classBits;
+      };
+      if (callBits === typeBits) {
+        if (args.pos.length === 0) return typeBits;
+        if (args.pos.length === 1) return typeOfBits(args.pos[0]);
+        if (args.pos.length === 3) return handleTypeCall();
+        return baseImports.call_arity_error(BigInt(3), BigInt(args.pos.length));
+      }
+      if (isSubclass(callBits, typeBits) && args.pos.length === 3) {
+        return handleTypeCall();
+      }
       if (isSubclass(callBits, getBaseExceptionClass())) {
         const excArgsBits = tupleFromArray([...args.pos]);
         const excBits = exceptionNewFromClass(callBits, excArgsBits);
@@ -9740,6 +10044,17 @@ BASE_IMPORTS = """\
       const initBits = lookupClassAttr(callBits, '__init__');
       if (initBits === undefined) {
         return instBits;
+      }
+      const initFunc = getFunction(initBits);
+      if (
+        initFunc &&
+        initFunc.builtinName === 'object.__init__' &&
+        args.pos.length > 0
+      ) {
+        const clsName = cls && cls.name ? cls.name : '<class>';
+        console.error(
+          `object.__init__ invoked for ${clsName} with ${args.pos.length} args`,
+        );
       }
       args.pos.unshift(instBits);
       baseImports.call_bind(initBits, builderBits);
@@ -11694,7 +12009,7 @@ BASE_IMPORTS = """\
     if (!cls) return boxNone();
     for (const [name, valBits] of cls.attrs.entries()) {
       const setName = lookupAttr(valBits, '__set_name__');
-      if (setName !== undefined) {
+      if (setName !== undefined && isTruthyBits(baseImports.is_callable(setName))) {
         const nameBits = boxPtr({ type: 'str', value: name });
         callCallable2(setName, classBits, nameBits);
       }
@@ -12051,7 +12366,16 @@ BASE_IMPORTS = """\
     codeSlots[idx] = codeBits;
     return boxNone();
   },
-  code_new: (filenameBits, nameBits, firstlinenoBits, linetableBits) => {
+  code_new: (
+    filenameBits,
+    nameBits,
+    firstlinenoBits,
+    linetableBits,
+    varnamesBits,
+    argcountBits,
+    posonlyargcountBits,
+    kwonlyargcountBits,
+  ) => {
     const filename = getStrObj(filenameBits);
     if (filename === null) {
       const exc = exceptionNew(
@@ -12077,10 +12401,58 @@ BASE_IMPORTS = """\
       );
       return raiseException(exc);
     }
+    if (isNone(varnamesBits)) {
+      varnamesBits = tupleFromArray([]);
+    } else if (!getTuple(varnamesBits)) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(
+          boxPtr({ type: 'str', value: 'code varnames must be tuple or None' }),
+        ),
+      );
+      return raiseException(exc);
+    }
+    if (!isIntLike(argcountBits)) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'code argcount must be int' })),
+      );
+      return raiseException(exc);
+    }
+    if (!isIntLike(posonlyargcountBits)) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(
+          boxPtr({ type: 'str', value: 'code posonlyargcount must be int' }),
+        ),
+      );
+      return raiseException(exc);
+    }
+    if (!isIntLike(kwonlyargcountBits)) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(
+          boxPtr({ type: 'str', value: 'code kwonlyargcount must be int' }),
+        ),
+      );
+      return raiseException(exc);
+    }
     let firstlineno = 0;
     if (isIntLike(firstlinenoBits)) {
       const rawLine = Number(unboxIntLike(firstlinenoBits));
       firstlineno = Number.isFinite(rawLine) ? Math.trunc(rawLine) : 0;
+    }
+    const argcount = Number(unboxIntLike(argcountBits));
+    const posonlyargcount = Number(unboxIntLike(posonlyargcountBits));
+    const kwonlyargcount = Number(unboxIntLike(kwonlyargcountBits));
+    if (argcount < 0 || posonlyargcount < 0 || kwonlyargcount < 0) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'ValueError' }),
+        exceptionArgs(
+          boxPtr({ type: 'str', value: 'code arg counts must be >= 0' }),
+        ),
+      );
+      return raiseException(exc);
     }
     return boxPtr({
       type: 'code',
@@ -12088,6 +12460,10 @@ BASE_IMPORTS = """\
       nameBits,
       firstlineno,
       linetableBits,
+      varnamesBits,
+      argcount,
+      posonlyargcount,
+      kwonlyargcount,
     });
   },
   compile_builtin: (
@@ -12188,7 +12564,7 @@ BASE_IMPORTS = """\
       ];
       let pendingDefIndent = null;
       let pendingParams = [];
-      const lines = rawSource.split(/\r?\n/);
+      const lines = rawSource.split(/\\r?\\n/);
       for (const raw of lines) {
         const stripped = raw.trimStart();
         if (!stripped || stripped.startsWith('#')) {
@@ -12289,7 +12665,16 @@ BASE_IMPORTS = """\
       return raiseException(exc);
     }
     const nameBits = boxPtr({ type: 'str', value: '<module>' });
-    return baseImports.code_new(filenameBits, nameBits, boxInt(1), boxNone());
+    return baseImports.code_new(
+      filenameBits,
+      nameBits,
+      boxInt(1),
+      boxNone(),
+      tupleFromArray([]),
+      boxInt(0),
+      boxInt(0),
+      boxInt(0),
+    );
   },
   sum_builtin: (iterableBits, startBits) => {
     const iterBits = baseImports.iter(iterableBits);
@@ -12589,8 +12974,386 @@ BASE_IMPORTS = """\
     const delta = now - MONO_START;
     return boxIntOrBigint(delta);
   },
+  time_perf_counter: () => {
+    const now =
+      typeof process !== 'undefined' && process.hrtime && process.hrtime.bigint
+        ? process.hrtime.bigint()
+        : BigInt(Date.now()) * 1000000n;
+    const delta = now - MONO_START;
+    return boxFloat(Number(delta) / 1e9);
+  },
+  time_perf_counter_ns: () => {
+    const now =
+      typeof process !== 'undefined' && process.hrtime && process.hrtime.bigint
+        ? process.hrtime.bigint()
+        : BigInt(Date.now()) * 1000000n;
+    const delta = now - MONO_START;
+    return boxIntOrBigint(delta);
+  },
+  time_process_time: () => {
+    if (typeof process !== 'undefined' && process.cpuUsage) {
+      const usage = process.cpuUsage();
+      const totalUs = (usage.user || 0) + (usage.system || 0);
+      return boxFloat(totalUs / 1e6);
+    }
+    const exc = exceptionNew(
+      boxPtr({ type: 'str', value: 'OSError' }),
+      exceptionArgs(boxPtr({ type: 'str', value: 'process_time unavailable' })),
+    );
+    return raiseException(exc);
+  },
+  time_process_time_ns: () => {
+    if (typeof process !== 'undefined' && process.cpuUsage) {
+      const usage = process.cpuUsage();
+      const totalUs = BigInt((usage.user || 0) + (usage.system || 0));
+      return boxIntOrBigint(totalUs * 1000n);
+    }
+    const exc = exceptionNew(
+      boxPtr({ type: 'str', value: 'OSError' }),
+      exceptionArgs(boxPtr({ type: 'str', value: 'process_time unavailable' })),
+    );
+    return raiseException(exc);
+  },
   time_time: () => boxFloat(Date.now() / 1000),
   time_time_ns: () => boxIntOrBigint(BigInt(Date.now()) * 1000000n),
+  time_localtime: (secsBits) => {
+    const parseSeconds = (bits) => {
+      if (isTag(bits, TAG_NONE)) {
+        return { ok: true, value: Date.now() / 1000 };
+      }
+      if (isFloat(bits)) {
+        const val = bitsToFloat(bits);
+        if (!Number.isFinite(val)) {
+          const exc = exceptionNew(
+            boxPtr({ type: 'str', value: 'OverflowError' }),
+            exceptionArgs(
+              boxPtr({
+                type: 'str',
+                value: 'timestamp out of range for platform time_t',
+              }),
+            ),
+          );
+          return { ok: false, bits: raiseException(exc) };
+        }
+        return { ok: true, value: val };
+      }
+      const big = getBigIntValue(bits);
+      if (big !== null) {
+        return { ok: true, value: Number(big) };
+      }
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(
+          boxPtr({
+            type: 'str',
+            value: `an integer is required (got type ${typeName(bits)})`,
+          }),
+        ),
+      );
+      return { ok: false, bits: raiseException(exc) };
+    };
+    const result = parseSeconds(secsBits);
+    if (!result.ok) return result.bits;
+    const date = new Date(result.value * 1000);
+    const year = date.getFullYear();
+    const month = date.getMonth() + 1;
+    const day = date.getDate();
+    const hour = date.getHours();
+    const minute = date.getMinutes();
+    const second = date.getSeconds();
+    const wday = (date.getDay() + 6) % 7;
+    const start = new Date(year, 0, 1).getTime();
+    const yday = Math.floor((date.getTime() - start) / 86400000) + 1;
+    const jan = new Date(year, 0, 1);
+    const jul = new Date(year, 6, 1);
+    const stdOffset = Math.max(jan.getTimezoneOffset(), jul.getTimezoneOffset());
+    const isdst = date.getTimezoneOffset() < stdOffset ? 1 : 0;
+    return tupleFromArray([
+      boxInt(year),
+      boxInt(month),
+      boxInt(day),
+      boxInt(hour),
+      boxInt(minute),
+      boxInt(second),
+      boxInt(wday),
+      boxInt(yday),
+      boxInt(isdst),
+    ]);
+  },
+  time_gmtime: (secsBits) => {
+    const parseSeconds = (bits) => {
+      if (isTag(bits, TAG_NONE)) {
+        return { ok: true, value: Date.now() / 1000 };
+      }
+      if (isFloat(bits)) {
+        const val = bitsToFloat(bits);
+        if (!Number.isFinite(val)) {
+          const exc = exceptionNew(
+            boxPtr({ type: 'str', value: 'OverflowError' }),
+            exceptionArgs(
+              boxPtr({
+                type: 'str',
+                value: 'timestamp out of range for platform time_t',
+              }),
+            ),
+          );
+          return { ok: false, bits: raiseException(exc) };
+        }
+        return { ok: true, value: val };
+      }
+      const big = getBigIntValue(bits);
+      if (big !== null) {
+        return { ok: true, value: Number(big) };
+      }
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(
+          boxPtr({
+            type: 'str',
+            value: `an integer is required (got type ${typeName(bits)})`,
+          }),
+        ),
+      );
+      return { ok: false, bits: raiseException(exc) };
+    };
+    const result = parseSeconds(secsBits);
+    if (!result.ok) return result.bits;
+    const date = new Date(result.value * 1000);
+    const year = date.getUTCFullYear();
+    const month = date.getUTCMonth() + 1;
+    const day = date.getUTCDate();
+    const hour = date.getUTCHours();
+    const minute = date.getUTCMinutes();
+    const second = date.getUTCSeconds();
+    const wday = (date.getUTCDay() + 6) % 7;
+    const start = Date.UTC(year, 0, 1);
+    const yday = Math.floor((date.getTime() - start) / 86400000) + 1;
+    return tupleFromArray([
+      boxInt(year),
+      boxInt(month),
+      boxInt(day),
+      boxInt(hour),
+      boxInt(minute),
+      boxInt(second),
+      boxInt(wday),
+      boxInt(yday),
+      boxInt(0),
+    ]);
+  },
+  time_strftime: (fmtBits, timeBits) => {
+    const fmt = getStrObj(fmtBits);
+    if (fmt === null) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'strftime() format must be str' })),
+      );
+      return raiseException(exc);
+    }
+    if (fmt.includes('\0')) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'ValueError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'embedded null character' })),
+      );
+      return raiseException(exc);
+    }
+    const tuple = getTuple(timeBits);
+    if (!tuple) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'strftime() argument 2 must be tuple' })),
+      );
+      return raiseException(exc);
+    }
+    if (tuple.items.length !== 9) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(
+          boxPtr({ type: 'str', value: 'time tuple must have exactly 9 elements' }),
+        ),
+      );
+      return raiseException(exc);
+    }
+    const vals = [];
+    for (const item of tuple.items) {
+      const big = getBigIntValue(item);
+      if (big === null) {
+        const exc = exceptionNew(
+          boxPtr({ type: 'str', value: 'TypeError' }),
+          exceptionArgs(
+            boxPtr({
+              type: 'str',
+              value: `an integer is required (got type ${typeName(item)})`,
+            }),
+          ),
+        );
+        return raiseException(exc);
+      }
+      vals.push(Number(big));
+    }
+    const [year, month, day, hour, minute, second, wday, yday] = vals;
+    const WEEKDAY_SHORT = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const MONTH_SHORT = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+    const padNum = (value, width, pad = '0') => {
+      const sign = value < 0 ? '-' : '';
+      const abs = Math.abs(value);
+      const body = String(abs).padStart(width, pad);
+      return `${sign}${body}`;
+    };
+    let out = '';
+    for (let idx = 0; idx < fmt.length; idx++) {
+      const ch = fmt[idx];
+      if (ch !== '%') {
+        out += ch;
+        continue;
+      }
+      idx += 1;
+      if (idx >= fmt.length) {
+        out += '%';
+        break;
+      }
+      const spec = fmt[idx];
+      switch (spec) {
+        case '%':
+          out += '%';
+          break;
+        case 'Y':
+          out += padNum(year, 4, '0');
+          break;
+        case 'y':
+          out += padNum(((year % 100) + 100) % 100, 2, '0');
+          break;
+        case 'm':
+          out += padNum(month, 2, '0');
+          break;
+        case 'd':
+          out += padNum(day, 2, '0');
+          break;
+        case 'H':
+          out += padNum(hour, 2, '0');
+          break;
+        case 'M':
+          out += padNum(minute, 2, '0');
+          break;
+        case 'S':
+          out += padNum(second, 2, '0');
+          break;
+        case 'a':
+          out += WEEKDAY_SHORT[wday] || '';
+          break;
+        case 'b':
+        case 'h':
+          out += MONTH_SHORT[month - 1] || '';
+          break;
+        case 'c':
+          out += `${WEEKDAY_SHORT[wday]} ${MONTH_SHORT[month - 1]} ${padNum(
+            day,
+            2,
+            ' ',
+          )} ${padNum(hour, 2, '0')}:${padNum(minute, 2, '0')}:${padNum(
+            second,
+            2,
+            '0',
+          )} ${padNum(year, 4, '0')}`;
+          break;
+        case 'x':
+          out += `${padNum(month, 2, '0')}/${padNum(day, 2, '0')}/${padNum(
+            ((year % 100) + 100) % 100,
+            2,
+            '0',
+          )}`;
+          break;
+        case 'X':
+          out += `${padNum(hour, 2, '0')}:${padNum(minute, 2, '0')}:${padNum(
+            second,
+            2,
+            '0',
+          )}`;
+          break;
+        case 'Z':
+          out += 'UTC';
+          break;
+        case 'z':
+          out += '+0000';
+          break;
+        default: {
+          const exc = exceptionNew(
+            boxPtr({ type: 'str', value: 'ValueError' }),
+            exceptionArgs(
+              boxPtr({
+                type: 'str',
+                value: `unsupported strftime directive %${spec}`,
+              }),
+            ),
+          );
+          return raiseException(exc);
+        }
+      }
+    }
+    return boxPtr({ type: 'str', value: out });
+  },
+  time_timezone: () => boxInt(0),
+  time_tzname: () =>
+    tupleFromArray([
+      boxPtr({ type: 'str', value: 'UTC' }),
+      boxPtr({ type: 'str', value: 'UTC' }),
+    ]),
+  math_log: (val) => {
+    const floatBits = baseImports.float_from_obj(val);
+    const num = bitsToFloat(floatBits);
+    if (Number.isNaN(num)) return floatBits;
+    if (num <= 0) {
+      throw new Error('ValueError: math domain error');
+    }
+    return boxFloat(Math.log(num));
+  },
+  math_log2: (val) => {
+    const floatBits = baseImports.float_from_obj(val);
+    const num = bitsToFloat(floatBits);
+    if (Number.isNaN(num)) return floatBits;
+    if (num <= 0) {
+      throw new Error('ValueError: math domain error');
+    }
+    if (Math.log2) return boxFloat(Math.log2(num));
+    return boxFloat(Math.log(num) / Math.LN2);
+  },
+  math_exp: (val) => {
+    const floatBits = baseImports.float_from_obj(val);
+    const num = bitsToFloat(floatBits);
+    return boxFloat(Math.exp(num));
+  },
+  math_sin: (val) => {
+    const floatBits = baseImports.float_from_obj(val);
+    const num = bitsToFloat(floatBits);
+    return boxFloat(Math.sin(num));
+  },
+  math_cos: (val) => {
+    const floatBits = baseImports.float_from_obj(val);
+    const num = bitsToFloat(floatBits);
+    return boxFloat(Math.cos(num));
+  },
+  math_acos: (val) => {
+    const floatBits = baseImports.float_from_obj(val);
+    const num = bitsToFloat(floatBits);
+    if (Number.isNaN(num)) return floatBits;
+    if (num < -1 || num > 1) {
+      throw new Error('ValueError: math domain error');
+    }
+    return boxFloat(Math.acos(num));
+  },
+  math_lgamma: (..._args) => baseImports.unsupported_import('math_lgamma'),
   path_exists: (pathBits) => {
     const path = getStrObj(pathBits);
     if (path === null) {
@@ -12632,6 +13395,7 @@ BASE_IMPORTS = """\
       return raiseException(exc);
     }
   },
+  path_chmod: (..._args) => baseImports.unsupported_import('path_chmod'),
   exception_push: () => exceptionPush(),
   exception_pop: () => exceptionPop(),
   exception_last: () => exceptionLast(),
@@ -12817,6 +13581,9 @@ BASE_IMPORTS = """\
     expectPtrAddr(ptr, 'ws_send');
     return 0n;
   },
+  ws_connect_obj: (..._args) => baseImports.unsupported_import('ws_connect_obj'),
+  ws_pair_obj: (..._args) => baseImports.unsupported_import('ws_pair_obj'),
+  ws_send_obj: (..._args) => baseImports.unsupported_import('ws_send_obj'),
   ws_recv: () => 0n,
   ws_close: () => {},
   ws_drop: () => {},
@@ -13119,6 +13886,8 @@ BASE_IMPORTS = """\
 
   io_wait: (..._args) => baseImports.unsupported_import('io_wait'),
   io_wait_new: (..._args) => baseImports.unsupported_import('io_wait_new'),
+  ws_wait: (..._args) => baseImports.unsupported_import('ws_wait'),
+  ws_wait_new: (..._args) => baseImports.unsupported_import('ws_wait_new'),
   thread_submit: (..._args) => baseImports.unsupported_import('thread_submit'),
   thread_poll: (..._args) => baseImports.unsupported_import('thread_poll'),
   process_spawn: (..._args) => baseImports.unsupported_import('process_spawn'),
@@ -13175,6 +13944,164 @@ BASE_IMPORTS = """\
   },
   stream_clone: (..._args) => baseImports.unsupported_import('stream_clone'),
   stream_send_obj: (..._args) => baseImports.unsupported_import('stream_send_obj'),
+  sys_set_version_info: (major, minor, micro, releaselevel, serial, version) => {
+    sysVersionInfo = tupleFromArray([major, minor, micro, releaselevel, serial]);
+    sysVersionStr = version;
+    return boxNone();
+  },
+  sys_version_info: () => {
+    if (sysVersionInfo) return sysVersionInfo;
+    return tupleFromArray([
+      boxInt(0),
+      boxInt(0),
+      boxInt(0),
+      boxPtr({ type: 'str', value: 'final' }),
+      boxInt(0),
+    ]);
+  },
+  sys_version: () => {
+    if (sysVersionStr) return sysVersionStr;
+    return boxPtr({ type: 'str', value: '0.0.0' });
+  },
+  sys_platform: () => boxPtr({ type: 'str', value: 'wasm' }),
+  sys_executable: () => boxNone(),
+  sys_stdin: () => boxNone(),
+  sys_stdout: () => boxNone(),
+  sys_stderr: () => boxNone(),
+  stdlib_probe: () => boxBool(true),
+  os_name: () => boxPtr({ type: 'str', value: 'posix' }),
+  os_close: (_fd) => boxNone(),
+  os_dup: (fd) => fd,
+  os_get_inheritable: (_fd) => boxBool(false),
+  os_set_inheritable: (_fd, _inheritable) => boxNone(),
+  os_urandom: (sizeBits) => {
+    if (!isIntLike(sizeBits)) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'urandom() argument must be int' })),
+      );
+      return raiseException(exc);
+    }
+    const size = Number(unboxIntLike(sizeBits));
+    if (!Number.isFinite(size) || size < 0) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'ValueError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'urandom() argument must be non-negative' })),
+      );
+      return raiseException(exc);
+    }
+    if (size === 0) return boxBytes([]);
+    let data;
+    if (typeof crypto !== 'undefined' && crypto.randomBytes) {
+      data = crypto.randomBytes(size);
+    } else {
+      const buf = new Uint8Array(size);
+      for (let i = 0; i < size; i += 1) {
+        buf[i] = Math.floor(Math.random() * 256);
+      }
+      data = buf;
+    }
+    return boxBytes(data);
+  },
+  env_snapshot: () => boxPtr({ type: 'dict', entries: [], lookup: new Map() }),
+  getcwd: () => boxPtr({ type: 'str', value: '/' }),
+  getframe: (_depth) => boxNone(),
+  path_listdir: (_path) => listFromArray([]),
+  path_mkdir: (_path) => boxNone(),
+  path_rmdir: (_path) => boxNone(),
+  pending: () => boxPending(),
+  chan_send_blocking: (chan, val) => baseImports.chan_send(chan, val),
+  chan_try_send: (chan, val) => baseImports.chan_send(chan, val),
+  chan_recv_blocking: (chan) => baseImports.chan_recv(chan),
+  chan_try_recv: (chan) => baseImports.chan_recv(chan),
+  func_new_builtin: (fnIdx, trampolineIdx, arity) =>
+    baseImports.func_new(fnIdx, trampolineIdx, arity),
+  function_set_builtin: (_funcBits) => boxNone(),
+  fn_ptr_code_set: (_fnPtr, _codeBits) => boxNone(),
+  asyncgen_hooks_get: () => boxNone(),
+  asyncgen_hooks_set: (_hooks, _finalizer) => boxNone(),
+  asyncgen_locals: (_obj) => boxNone(),
+  asyncgen_locals_register: (_obj, _names, _offsets) => boxNone(),
+  gen_locals: (_obj) => boxNone(),
+  gen_locals_register: (_obj, _names, _offsets) => boxNone(),
+  exception_stack_clear: () => boxNone(),
+  exceptiongroup_match: (_exc, _handler) => boxNone(),
+  exceptiongroup_combine: (_exc) => boxNone(),
+  weakref_register: (_obj, _cb, _finalize) => boxNone(),
+  weakref_get: (_handle) => boxNone(),
+  weakref_drop: (_handle) => boxNone(),
+  struct_calcsize: (_format) => boxNone(),
+  struct_pack: (_format, _values) => boxNone(),
+  struct_unpack: (_format, _buffer) => boxNone(),
+  lock_new: () => {
+    const id = nextLockId++;
+    lockStates.set(id, { locked: false });
+    return boxInt(id);
+  },
+  lock_acquire: (handle, _blocking, _timeout) => {
+    const id = Number(unboxInt(handle));
+    const entry = lockStates.get(id);
+    if (!entry) return boxBool(false);
+    if (entry.locked) return boxBool(false);
+    entry.locked = true;
+    return boxBool(true);
+  },
+  lock_release: (handle) => {
+    const id = Number(unboxInt(handle));
+    const entry = lockStates.get(id);
+    if (entry) entry.locked = false;
+    return boxNone();
+  },
+  lock_locked: (handle) => {
+    const id = Number(unboxInt(handle));
+    const entry = lockStates.get(id);
+    return boxBool(!!(entry && entry.locked));
+  },
+  lock_drop: (handle) => {
+    const id = Number(unboxInt(handle));
+    lockStates.delete(id);
+    return boxNone();
+  },
+  rlock_new: () => {
+    const id = nextRLockId++;
+    rlockStates.set(id, { locked: false, count: 0 });
+    return boxInt(id);
+  },
+  rlock_acquire: (handle, _blocking, _timeout) => {
+    const id = Number(unboxInt(handle));
+    const entry = rlockStates.get(id);
+    if (!entry) return boxBool(false);
+    entry.locked = true;
+    entry.count += 1;
+    return boxBool(true);
+  },
+  rlock_release: (handle) => {
+    const id = Number(unboxInt(handle));
+    const entry = rlockStates.get(id);
+    if (entry && entry.count > 0) {
+      entry.count -= 1;
+      if (entry.count === 0) entry.locked = false;
+    }
+    return boxNone();
+  },
+  rlock_locked: (handle) => {
+    const id = Number(unboxInt(handle));
+    const entry = rlockStates.get(id);
+    return boxBool(!!(entry && entry.locked));
+  },
+  rlock_drop: (handle) => {
+    const id = Number(unboxInt(handle));
+    rlockStates.delete(id);
+    return boxNone();
+  },
+  thread_spawn: (_payload) => boxInt(0),
+  thread_join: (_handle, _timeout) => boxNone(),
+  thread_is_alive: (_handle) => boxBool(false),
+  thread_ident: (_handle) => boxNone(),
+  thread_native_id: (_handle) => boxNone(),
+  thread_current_ident: () => boxNone(),
+  thread_current_native_id: () => boxNone(),
+  thread_drop: (_handle) => boxNone(),
 """
 
 IMPORT_HELPERS = """\
@@ -13204,6 +14131,27 @@ const readString = (bytes, offset) => {
   const value = new TextDecoder('utf-8').decode(bytes.slice(pos, end));
   return [value, end];
 };
+const readVarInt = (bytes, offset) => {
+  let result = 0;
+  let shift = 0;
+  let pos = offset;
+  let byte = 0;
+  while (true) {
+    if (pos >= bytes.length) {
+      throw new Error('Unexpected EOF while reading varint');
+    }
+    byte = bytes[pos++];
+    result |= (byte & 0x7f) << shift;
+    shift += 7;
+    if ((byte & 0x80) === 0) {
+      break;
+    }
+  }
+  if (shift < 32 && (byte & 0x40)) {
+    result |= ~0 << shift;
+  }
+  return [result, pos];
+};
 const readLimits = (bytes, offset) => {
   const flags = bytes[offset++];
   const [min, pos] = readVarUint(bytes, offset);
@@ -13216,6 +14164,34 @@ const readLimits = (bytes, offset) => {
   }
   return [{ min, max }, next];
 };
+const skipConstExpr = (bytes, offset, sectionEnd) => {
+  let pos = offset;
+  while (pos < sectionEnd && bytes[pos] !== 0x0b) pos += 1;
+  if (pos < sectionEnd && bytes[pos] === 0x0b) pos += 1;
+  return pos;
+};
+const readConstExprI32 = (bytes, offset, sectionEnd, globalI32Values) => {
+  let pos = offset;
+  if (pos >= sectionEnd) return [0, pos, false];
+  const opcode = bytes[pos++];
+  if (opcode === 0x41) {
+    let value;
+    [value, pos] = readVarInt(bytes, pos);
+    pos = skipConstExpr(bytes, pos, sectionEnd);
+    return [value, pos, true];
+  }
+  if (opcode === 0x23) {
+    let globalIdx;
+    [globalIdx, pos] = readVarUint(bytes, pos);
+    pos = skipConstExpr(bytes, pos, sectionEnd);
+    if (globalI32Values[globalIdx] !== undefined) {
+      return [globalI32Values[globalIdx], pos, true];
+    }
+    return [0, pos, false];
+  }
+  pos = skipConstExpr(bytes, pos, sectionEnd);
+  return [0, pos, false];
+};
 const parseWasmImports = (buffer) => {
   const bytes = new Uint8Array(buffer);
   if (bytes.length < 8) {
@@ -13224,6 +14200,7 @@ const parseWasmImports = (buffer) => {
   let offset = 8;
   let memoryImport = null;
   let tableImport = null;
+  let globalImportCount = 0;
   while (offset < bytes.length) {
     const sectionId = bytes[offset++];
     const [sectionSize, sizePos] = readVarUint(bytes, offset);
@@ -13256,6 +14233,7 @@ const parseWasmImports = (buffer) => {
           }
         } else if (kind === 3) {
           offset += 2;
+          globalImportCount += 1;
         } else {
           throw new Error(`Unknown import kind ${kind}`);
         }
@@ -13264,9 +14242,113 @@ const parseWasmImports = (buffer) => {
       offset = sectionEnd;
     }
   }
-  return { memory: memoryImport, table: tableImport };
+  return { memory: memoryImport, table: tableImport, globalImportCount };
+};
+const parseWasmDataEnd = (buffer, memoryImport, globalImportCount) => {
+  const bytes = new Uint8Array(buffer);
+  if (bytes.length < 8) {
+    throw new Error('Invalid wasm binary');
+  }
+  let offset = 8;
+  let dataEnd = 0;
+  let unknownActiveOffset = false;
+  let memoryMinPages = memoryImport ? memoryImport.min : null;
+  const globalI32Values = [];
+  while (offset < bytes.length) {
+    const sectionId = bytes[offset++];
+    const [sectionSize, sizePos] = readVarUint(bytes, offset);
+    offset = sizePos;
+    const sectionEnd = offset + sectionSize;
+    if (sectionId === 5 && memoryMinPages === null) {
+      let count;
+      [count, offset] = readVarUint(bytes, offset);
+      for (let idx = 0; idx < count; idx += 1) {
+        let limits;
+        [limits, offset] = readLimits(bytes, offset);
+        if (idx === 0) memoryMinPages = limits.min;
+      }
+    } else if (sectionId === 6) {
+      let count;
+      [count, offset] = readVarUint(bytes, offset);
+      for (let idx = 0; idx < count; idx += 1) {
+        const valType = bytes[offset++];
+        const mutability = bytes[offset++];
+        let valueKnown = false;
+        let value = 0;
+        if (valType === 0x7f && mutability === 0) {
+          [value, offset, valueKnown] = readConstExprI32(
+            bytes,
+            offset,
+            sectionEnd,
+            globalI32Values
+          );
+        } else {
+          offset = skipConstExpr(bytes, offset, sectionEnd);
+        }
+        const globalIdx = (globalImportCount || 0) + idx;
+        if (valueKnown) globalI32Values[globalIdx] = value;
+      }
+    } else if (sectionId === 11) {
+      let count;
+      [count, offset] = readVarUint(bytes, offset);
+      for (let idx = 0; idx < count; idx += 1) {
+        const kind = bytes[offset++];
+        let segOffset = 0;
+        let segOffsetKnown = false;
+        let active = false;
+        if (kind === 0) {
+          active = true;
+          [segOffset, offset, segOffsetKnown] = readConstExprI32(
+            bytes,
+            offset,
+            sectionEnd,
+            globalI32Values
+          );
+        } else if (kind === 2) {
+          active = true;
+          const [, pos] = readVarUint(bytes, offset);
+          offset = pos;
+          [segOffset, offset, segOffsetKnown] = readConstExprI32(
+            bytes,
+            offset,
+            sectionEnd,
+            globalI32Values
+          );
+        } else if (kind === 1) {
+          segOffset = 0;
+        } else {
+          throw new Error(`Unknown data segment kind ${kind}`);
+        }
+        let size;
+        [size, offset] = readVarUint(bytes, offset);
+        if (active) {
+          if (!segOffsetKnown) {
+            unknownActiveOffset = true;
+          } else {
+            if (segOffset < 0) segOffset = 0;
+            if (segOffset + size > dataEnd) {
+              dataEnd = segOffset + size;
+            }
+          }
+        }
+        offset += size;
+      }
+    }
+    offset = sectionEnd;
+  }
+  if (unknownActiveOffset && memoryMinPages !== null) {
+    const memoryMinBytes = memoryMinPages * 65536;
+    if (memoryMinBytes > dataEnd) dataEnd = memoryMinBytes;
+  }
+  return dataEnd;
 };
 const wasmImports = parseWasmImports(wasmBuffer);
+const wasmDataEnd = parseWasmDataEnd(
+  wasmBuffer,
+  wasmImports.memory,
+  wasmImports.globalImportCount
+);
+heapPtr = Math.max(heapPtr, align(wasmDataEnd, 8));
 if (wasmImports.memory) {
   const memDesc = { initial: wasmImports.memory.min };
   if (wasmImports.memory.max !== null) {
@@ -13286,6 +14368,7 @@ if (memory) envImports.memory = memory;
 if (table) envImports.__indirect_function_table = table;
 envImports.molt_getpid_host = () =>
   BigInt(typeof process !== 'undefined' && process.pid ? process.pid : 0);
+envImports.molt_ws_poll_host = () => 0;
 """
 
 
@@ -13296,6 +14379,7 @@ def wasm_runner_source(*, extra_js: str = "", import_overrides: str = "") -> str
     parts.append("const baseImports = {\n")
     parts.append(BASE_IMPORTS.rstrip() + "\n")
     parts.append("};\n")
+    parts.append(INTRINSIC_REGISTRY_JS.rstrip() + "\n")
     parts.append("const overrideImports = {\n")
     if import_overrides:
         parts.append(import_overrides.rstrip() + "\n")

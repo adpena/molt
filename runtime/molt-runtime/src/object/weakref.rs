@@ -1,7 +1,7 @@
 use crate::state::runtime_state::WeakRefEntry;
 use crate::{
     call_callable1, clear_exception, dec_ref_bits, exception_pending, inc_ref_bits, is_truthy,
-    obj_from_bits,
+    obj_from_bits, resolve_ptr,
 };
 use crate::{
     molt_is_callable, raise_exception, runtime_state, type_name, MoltObject, PtrSlot, PyToken,
@@ -120,15 +120,64 @@ pub extern "C" fn molt_weakref_get(weak_bits: u64) -> u64 {
         let Some(weak_ptr) = obj_from_bits(weak_bits).as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "weakref must be an object");
         };
-        let registry = runtime_state(_py).weakrefs.lock().unwrap();
-        let Some(entry) = registry.by_ref.get(&PtrSlot(weak_ptr)) else {
-            return MoltObject::none().bits();
+        let mut callbacks: Vec<(u64, u64)> = Vec::new();
+            let bits = {
+            let weak_slot = PtrSlot(weak_ptr);
+            let mut callback_bits = MoltObject::none().bits();
+            let mut target_dead = false;
+            let target_ptr = {
+                let mut registry = runtime_state(_py).weakrefs.lock().unwrap();
+                let mut prune_target = None;
+                let resolved_target = {
+                    let Some(entry) = registry.by_ref.get_mut(&weak_slot) else {
+                        return MoltObject::none().bits();
+                    };
+                    if entry.target.0.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    let resolved_target = entry.target.0;
+                    let addr = resolved_target.expose_provenance() as u64;
+                    if resolve_ptr(addr).is_none() {
+                        entry.target = PtrSlot(ptr::null_mut());
+                        target_dead = true;
+                        callback_bits = entry.callback_bits;
+                        prune_target = Some(PtrSlot(resolved_target));
+                    }
+                    resolved_target
+                };
+                if let Some(target_slot) = prune_target {
+                    if let Some(list) = registry.by_target.get_mut(&target_slot) {
+                        list.retain(|slot| *slot != weak_slot);
+                        if list.is_empty() {
+                            registry.by_target.remove(&target_slot);
+                        }
+                    }
+                }
+                resolved_target
+            };
+            if target_dead {
+                if !obj_from_bits(callback_bits).is_none() {
+                    inc_ref_bits(_py, callback_bits);
+                    inc_ref_bits(_py, weak_bits);
+                    callbacks.push((weak_bits, callback_bits));
+                }
+                return MoltObject::none().bits();
+            }
+            let bits = MoltObject::from_ptr(target_ptr).bits();
+            inc_ref_bits(_py, bits);
+            bits
         };
-        if entry.target.0.is_null() {
-            return MoltObject::none().bits();
+        for (weak_bits, cb_bits) in callbacks {
+            let res_bits = unsafe { call_callable1(_py, cb_bits, weak_bits) };
+            if exception_pending(_py) {
+                clear_exception(_py);
+            }
+            if !obj_from_bits(res_bits).is_none() {
+                dec_ref_bits(_py, res_bits);
+            }
+            dec_ref_bits(_py, cb_bits);
+            dec_ref_bits(_py, weak_bits);
         }
-        let bits = MoltObject::from_ptr(entry.target.0).bits();
-        inc_ref_bits(_py, bits);
         bits
     })
 }

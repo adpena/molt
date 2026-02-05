@@ -93,7 +93,7 @@ Entrypoints are invoked by name with a payload.
   - drop/rollback resources
 - Do not leak memory, tasks, or DB connections
 
-**Implementation note:** current worker accepts `__cancel__` requests carrying a `request_id` payload; cancellation is honored during pool waits and execution (fake DB + compiled entrypoints). Async Postgres queries now propagate cancellation via protocol cancel; SQLite remains cooperative via periodic checks.
+**Implementation note:** current worker accepts `__cancel__` requests carrying a `request_id` payload; cancellation is honored during pool waits and execution (fake DB + compiled entrypoints). Async Postgres queries propagate cancellation via protocol cancel; SQLite queries are interrupted via per-connection interrupt handles.
 
 ---
 

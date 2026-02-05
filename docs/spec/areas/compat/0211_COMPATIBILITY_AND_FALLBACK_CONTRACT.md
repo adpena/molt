@@ -11,6 +11,8 @@
 - **Explicit policy:** Users select fallback behavior via CLI flags or config.
 - **Actionable guidance:** Every fallback warning includes the performance impact and a Molt-native alternative.
 - **Hard errors when required:** If policy forbids fallback, compilation fails with a detailed error.
+- **No implicit CPython fallback:** `molt run` / `molt build` never fall back to CPython.
+- **No CPython in binaries:** compiled artifacts are self-contained; the bridge is tooling-only and treated as unavailable for production builds.
 
 ---
 
@@ -27,7 +29,7 @@
 ## 3. Policy Controls
 - CLI flag: `molt build --fallback {error|bridge}`
   - `error` (default): Any non-native tier fails compilation.
-  - `bridge`: Allows bridge-tier constructs with warnings; if no bridge is available, compilation fails with a bridge-unavailable error.
+  - `bridge`: Allows bridge-tier constructs with warnings in tooling-only flows; compiled binaries treat bridge as unavailable and fail with a bridge-unavailable error.
 
 ---
 

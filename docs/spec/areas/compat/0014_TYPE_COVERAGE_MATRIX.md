@@ -4,6 +4,11 @@
 **Owner:** core-compiler + runtime + backend
 **Goal:** Full CPython builtin type coverage with CPython semantics (including `PYTHONHASHSEED`) and production-grade performance.
 
+## 0. Version Policy
+- This matrix targets CPython **3.12+** semantics.
+- When behavior differs across 3.12/3.13/3.14, record the chosen target in the
+  Notes column (e.g., "3.14-only") and align tests/runtime to that version.
+
 ## 1. Coverage Matrix (builtins)
 ### Types
 | Type | Required Semantics (short) | Status | Priority | Milestone | Owner |
@@ -155,8 +160,7 @@
 - Implemented: instance dict fallback for structified objects + dynamic attrs on non-slot dataclasses.
 - Implemented: class objects + basic descriptors (`classmethod`, `staticmethod`, `property`).
 - Implemented: instance `__getattr__`/`__getattribute__` fallback plus `__setattr__`/`__delattr__` hooks for user-defined classes.
-- Implemented: `__class__`/`__dict__` accessors for instances/functions/modules/classes (class `__dict__` is mutable; mappingproxy pending).
-- TODO(type-coverage, owner:runtime, milestone:TC2, priority:P2, status:missing): mappingproxy view for class `__dict__`.
+- Implemented: `__class__`/`__dict__` accessors for instances/functions/modules/classes (class `__dict__` now returns a mappingproxy view).
 - Implemented: C3 MRO + multiple inheritance for attribute lookup + `super()` resolution + data descriptor precedence.
 - Implemented: frozenset hashing (order-insensitive) + set/frozenset algebra intrinsics with CPython mixing parity.
 - Implemented: exception objects with args/class/dict + cause/context/suppress fields.

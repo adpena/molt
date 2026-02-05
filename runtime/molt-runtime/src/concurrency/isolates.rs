@@ -1,4 +1,4 @@
-use crate::{MoltObject, PyToken};
+use crate::{raise_exception, MoltObject, PyToken};
 
 #[cfg(not(target_arch = "wasm32"))]
 use super::current_thread_id;
@@ -23,14 +23,14 @@ use crate::state::{
     set_thread_runtime_state, touch_tls_guard, RuntimeState,
 };
 #[cfg(not(target_arch = "wasm32"))]
+use crate::GilGuard;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::{
     alloc_bytes, alloc_string, bits_from_ptr, bytes_data, bytes_len, dec_ref_bits,
     exception_pending, format_exception_with_traceback, has_capability, molt_exception_clear,
     molt_exception_last, molt_module_get_attr, obj_from_bits, object_type_id, ptr_from_bits,
-    raise_exception, release_ptr, TYPE_ID_BYTES,
+    release_ptr, TYPE_ID_BYTES,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use crate::GilGuard;
 
 #[cfg(not(target_arch = "wasm32"))]
 extern "C" {
@@ -232,11 +232,7 @@ fn thread_main(payload: Vec<u8>, handle: Arc<MoltThreadHandle>) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn thread_main_shared(
-    payload: Vec<u8>,
-    handle: Arc<MoltThreadHandle>,
-    state_ptr: usize,
-) {
+fn thread_main_shared(payload: Vec<u8>, handle: Arc<MoltThreadHandle>, state_ptr: usize) {
     let thread_id = current_thread_id();
     handle.mark_started(thread_id, thread_id);
     let state_ptr = state_ptr as *mut RuntimeState;
@@ -262,8 +258,8 @@ pub unsafe extern "C" fn molt_thread_spawn(payload_bits: u64) -> u64 {
         let handle = Arc::new(MoltThreadHandle::new());
         let thread_handle = handle.clone();
         let join = if shared_runtime {
-            let state_ptr = crate::state::runtime_state::runtime_state(_py)
-                as *const RuntimeState as usize;
+            let state_ptr =
+                crate::state::runtime_state::runtime_state(_py) as *const RuntimeState as usize;
             thread::spawn(move || thread_main_shared(payload, thread_handle, state_ptr))
         } else {
             thread::spawn(move || thread_main(payload, thread_handle))
@@ -373,7 +369,11 @@ pub unsafe extern "C" fn molt_thread_drop(handle_bits: u64) -> u64 {
 #[no_mangle]
 pub extern "C" fn molt_thread_spawn(_payload_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        raise_exception::<_>(_py, "NotImplementedError", "threads are unavailable in wasm")
+        raise_exception::<_>(
+            _py,
+            "NotImplementedError",
+            "threads are unavailable in wasm",
+        )
     })
 }
 

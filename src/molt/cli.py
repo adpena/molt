@@ -1,13 +1,16 @@
 import argparse
 import ast
+import base64
 import errno
 import datetime as dt
 import hashlib
+import http.client
 import tempfile
 import json
 import keyword
 import os
 import platform
+import posixpath
 import re
 import shlex
 import shutil
@@ -15,11 +18,14 @@ import subprocess
 import sys
 import tomllib
 import time
+import tokenize
 import urllib.parse
 import urllib.request
+import uuid
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, NamedTuple
+from typing import Any, Iterable, Literal, NamedTuple
 
 from packaging.markers import InvalidMarker, Marker
 from packaging.requirements import InvalidRequirement, Requirement
@@ -43,6 +49,7 @@ ENTRY_OVERRIDE_ENV = "MOLT_ENTRY_MODULE"
 ENTRY_OVERRIDE_SPAWN = "multiprocessing.spawn"
 IMPORTER_MODULE_NAME = "_molt_importer"
 JSON_SCHEMA_VERSION = "1.0"
+REMOTE_REGISTRY_SCHEMES = {"http", "https"}
 CAPABILITY_PROFILES: dict[str, list[str]] = {
     "core": [],
     "fs": ["fs.read", "fs.write"],
@@ -54,6 +61,63 @@ CAPABILITY_PROFILES: dict[str, list[str]] = {
 }
 CAPABILITY_TOKEN_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _OUTPUT_BASE_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
+_ABI_VERSION_RE = re.compile(r"^(\d+)\.(\d+)(?:\.(\d+))?$")
+_SUPPORTED_PKG_ABI_MAJOR = 0
+_SUPPORTED_PKG_ABI_MINOR = 1
+_SUPPORTED_PKG_ABI = f"{_SUPPORTED_PKG_ABI_MAJOR}.{_SUPPORTED_PKG_ABI_MINOR}"
+CapabilityInput = str | list[str] | dict[str, Any]
+
+
+def _dedupe_preserve_order(items: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return deduped
+
+
+def _split_tokens(value: str) -> list[str]:
+    return [token for token in re.split(r"[,\s]+", value) if token]
+
+
+@dataclass(frozen=True)
+class CapabilityGrant:
+    allow: list[str] | None
+    deny: list[str]
+    effects: list[str] | None
+
+    def merged(self, other: "CapabilityGrant") -> "CapabilityGrant":
+        allow = _merge_optional_list(self.allow, other.allow)
+        deny = _dedupe_preserve_order([*self.deny, *other.deny])
+        effects = _merge_optional_list(self.effects, other.effects)
+        return CapabilityGrant(allow=allow, deny=deny, effects=effects)
+
+
+@dataclass(frozen=True)
+class CapabilityManifest:
+    allow: list[str] | None
+    deny: list[str]
+    effects: list[str] | None
+    packages: dict[str, CapabilityGrant]
+
+
+@dataclass(frozen=True)
+class CapabilitySpec:
+    capabilities: list[str] | None
+    profiles: list[str]
+    source: str | None
+    errors: list[str]
+    manifest: CapabilityManifest | None
+
+
+@dataclass(frozen=True)
+class PgoProfileSummary:
+    version: str
+    hash: str
+    hot_functions: list[str]
 
 
 def _emit_json(payload: dict[str, Any], json_output: bool) -> None:
@@ -129,23 +193,30 @@ def _write_importer_module(module_names: list[str], output_dir: Path) -> Path:
             '        raise ImportError("relative import requires package")',
             '    parts = package.split(".")',
             "    if level > len(parts):",
-            '        raise ImportError("attempted relative import beyond top-level package")',
-            '    base = ".".join(parts[:-level])',
-            '    return f"{base}.{name}" if base else name',
+            '        raise ImportError(\"attempted relative import beyond top-level package\")',
+            "    cut = len(parts) - level + 1",
+            "    base = \".\".join(parts[:cut])",
+            "    if name:",
+            "        return f\"{base}.{name}\" if base else name",
+            "    return base",
             "",
             "def _molt_import(name, globals=None, locals=None, fromlist=(), level=0):",
             "    if not name:",
             '        raise ImportError("Empty module name")',
             "    package = None",
             "    if isinstance(globals, dict):",
-            '        package = globals.get("__package__") or globals.get("__name__")',
+            '        package = globals.get(\"__package__\")',
+            "        if not package and globals.get(\"__path__\") and globals.get(\"__name__\"):",
+            '            package = globals.get(\"__name__\")',
             "    resolved = _resolve_name(name, package, level) if level else name",
             '    modules = getattr(_sys, "modules", {})',
             "    if resolved in modules:",
             "        mod = modules[resolved]",
+            "        if mod is None:",
+            '            raise ImportError(f\"import of {resolved} halted; None in sys.modules\")',
             "        if fromlist:",
             "            return mod",
-            '        top = resolved.split(".", 1)[0]',
+            '        top = resolved.split(\".\", 1)[0]',
             "        return modules.get(top, mod)",
         ]
     )
@@ -212,14 +283,26 @@ def _vendor_roots(project_root: Path) -> list[Path]:
     return roots
 
 
-def _base_env(root: Path, script_path: Path | None = None) -> dict[str, str]:
+def _base_env(
+    root: Path,
+    script_path: Path | None = None,
+    *,
+    molt_root: Path | None = None,
+) -> dict[str, str]:
     env = os.environ.copy()
     paths = [env.get("PYTHONPATH", "")]
     if script_path is not None:
         paths.append(str(script_path.parent))
-    paths.extend([str(root / "src"), str(root)])
-    paths.extend(str(path) for path in _vendor_roots(root))
+    roots: list[Path] = []
+    if molt_root is not None and molt_root != root:
+        roots.append(molt_root)
+    roots.append(root)
+    for base in roots:
+        paths.extend([str(base / "src"), str(base)])
+        paths.extend(str(path) for path in _vendor_roots(base))
     env["PYTHONPATH"] = os.pathsep.join(p for p in paths if p)
+    if molt_root is not None:
+        env.setdefault("MOLT_PROJECT_ROOT", str(molt_root))
     return env
 
 
@@ -315,6 +398,34 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _git_rev(root: Path) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    value = result.stdout.strip()
+    return value or None
+
+
+def _abi_version_error(value: str) -> str | None:
+    cleaned = value.strip()
+    match = _ABI_VERSION_RE.match(cleaned)
+    if match is None:
+        return "abi_version must be MAJOR.MINOR[.PATCH] (e.g., 0.1)"
+    major = int(match.group(1))
+    minor = int(match.group(2))
+    if major != _SUPPORTED_PKG_ABI_MAJOR or minor != _SUPPORTED_PKG_ABI_MINOR:
+        return f"unsupported abi_version {cleaned} (supported: {_SUPPORTED_PKG_ABI})"
+    return None
+
+
 def _manifest_errors(manifest: dict[str, Any]) -> list[str]:
     required = [
         "name",
@@ -343,6 +454,10 @@ def _manifest_errors(manifest: dict[str, Any]) -> list[str]:
         errors.append("version must be a string")
     if abi_version is not None and not isinstance(abi_version, str):
         errors.append("abi_version must be a string")
+    if isinstance(abi_version, str):
+        abi_error = _abi_version_error(abi_version)
+        if abi_error:
+            errors.append(abi_error)
     if target is not None and not isinstance(target, str):
         errors.append("target must be a string")
     if capabilities is not None:
@@ -362,6 +477,22 @@ def _manifest_errors(manifest: dict[str, Any]) -> list[str]:
     return errors
 
 
+def _normalize_effects(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        normalized: list[str] = []
+        for entry in value:
+            if isinstance(entry, str):
+                stripped = entry.strip()
+                if stripped:
+                    normalized.append(stripped)
+        return normalized
+    if isinstance(value, str):
+        return _split_tokens(value)
+    return []
+
+
 def _load_manifest(path: Path) -> dict[str, Any] | None:
     try:
         return json.loads(path.read_text())
@@ -376,8 +507,730 @@ def _write_zip_member(zf: zipfile.ZipFile, name: str, data: bytes) -> None:
     zf.writestr(info, data)
 
 
+def _compiler_metadata() -> tuple[str | None, str | None]:
+    compiler_root = Path(__file__).resolve().parents[2]
+    pyproject = _load_toml(compiler_root / "pyproject.toml")
+    version = pyproject.get("project", {}).get("version")
+    git_rev = _git_rev(compiler_root)
+    return version if isinstance(version, str) else None, git_rev
+
+
+def _sbom_component_hashes(pkg: dict[str, Any]) -> list[dict[str, str]]:
+    digests: set[str] = set()
+    sdist = pkg.get("sdist")
+    if isinstance(sdist, dict):
+        digest = sdist.get("hash", "")
+        if isinstance(digest, str) and digest:
+            digests.add(digest)
+    for wheel in pkg.get("wheels", []):
+        if not isinstance(wheel, dict):
+            continue
+        digest = wheel.get("hash", "")
+        if isinstance(digest, str) and digest:
+            digests.add(digest)
+    hashes: list[dict[str, str]] = []
+    for entry in sorted(digests):
+        if ":" in entry:
+            algo, digest = entry.split(":", 1)
+        else:
+            algo, digest = "sha256", entry
+        if digest:
+            hashes.append({"alg": algo.upper(), "content": digest})
+    return hashes
+
+
+def _sbom_component_for_lock_pkg(
+    pkg: dict[str, Any],
+    allow: dict[str, set[str]],
+) -> dict[str, Any] | None:
+    name = pkg.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    source = pkg.get("source", {})
+    if isinstance(source, dict) and source.get("virtual") == ".":
+        return None
+    version = pkg.get("version")
+    if not isinstance(version, str):
+        version = None
+    norm = _normalize_name(name)
+    purl = f"pkg:pypi/{norm}"
+    if version:
+        purl = f"{purl}@{version}"
+    tier, reason = _classify_tier(name, pkg, allow)
+    component: dict[str, Any] = {
+        "type": "library",
+        "name": name,
+        "bom-ref": purl,
+        "purl": purl,
+    }
+    if version:
+        component["version"] = version
+    hashes = _sbom_component_hashes(pkg)
+    if hashes:
+        component["hashes"] = hashes
+    properties = [
+        {"name": "molt.tier", "value": tier},
+        {"name": "molt.tier_reason", "value": reason},
+    ]
+    if isinstance(source, dict):
+        if source.get("git"):
+            properties.append({"name": "molt.source", "value": "git"})
+            if isinstance(source.get("git"), str):
+                properties.append({"name": "molt.source_git", "value": source["git"]})
+        elif source.get("path"):
+            properties.append({"name": "molt.source", "value": "path"})
+    component["properties"] = properties
+    return component
+
+
+def _sbom_dependencies(
+    project_root: Path,
+) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    warnings: list[str] = []
+    lock_path = project_root / "uv.lock"
+    if not lock_path.exists():
+        warnings.append("uv.lock not found; SBOM excludes Python dependencies.")
+        return [], [], warnings
+    lock = _load_toml(lock_path)
+    pyproject = _load_toml(project_root / "pyproject.toml")
+    allow = _dep_allowlists(pyproject)
+    components: list[dict[str, Any]] = []
+    refs: list[str] = []
+    packages = lock.get("package", [])
+    if not packages:
+        warnings.append("uv.lock contains no package entries.")
+        return [], [], warnings
+    for pkg in packages:
+        if not isinstance(pkg, dict):
+            continue
+        component = _sbom_component_for_lock_pkg(pkg, allow)
+        if component is None:
+            continue
+        components.append(component)
+    components.sort(key=lambda entry: (entry.get("name", ""), entry.get("version", "")))
+    for component in components:
+        ref = component.get("bom-ref")
+        if isinstance(ref, str):
+            refs.append(ref)
+    return components, refs, warnings
+
+
+def _build_sbom(
+    *,
+    manifest: dict[str, Any],
+    artifact_path: Path,
+    checksum: str,
+    project_root: Path,
+    format_name: str = "cyclonedx",
+) -> tuple[dict[str, Any], list[str]]:
+    if format_name == "cyclonedx":
+        return _build_cyclonedx_sbom(
+            manifest=manifest,
+            artifact_path=artifact_path,
+            checksum=checksum,
+            project_root=project_root,
+        )
+    if format_name == "spdx":
+        return _build_spdx_sbom(
+            manifest=manifest,
+            artifact_path=artifact_path,
+            checksum=checksum,
+            project_root=project_root,
+        )
+    raise ValueError(f"Unsupported SBOM format: {format_name}")
+
+
+def _build_cyclonedx_sbom(
+    *,
+    manifest: dict[str, Any],
+    artifact_path: Path,
+    checksum: str,
+    project_root: Path,
+) -> tuple[dict[str, Any], list[str]]:
+    warnings: list[str] = []
+    compiler_version, compiler_rev = _compiler_metadata()
+    rustc_version = _rustc_version()
+    if rustc_version:
+        rustc_version = rustc_version.splitlines()[0].strip() or rustc_version
+    name = manifest.get("name", "molt_pkg")
+    version = manifest.get("version", "0.0.0")
+    target = manifest.get("target", "unknown")
+    abi_version = manifest.get("abi_version")
+    deterministic = manifest.get("deterministic")
+    effects = manifest.get("effects")
+    capabilities = manifest.get("capabilities")
+    component_ref = f"pkg:molt/{_normalize_name(str(name))}@{version}"
+    component = {
+        "type": "library",
+        "name": name,
+        "version": version,
+        "bom-ref": component_ref,
+        "purl": component_ref,
+        "hashes": [{"alg": "SHA-256", "content": checksum}],
+        "properties": [
+            {"name": "molt.target", "value": str(target)},
+            {"name": "molt.abi_version", "value": str(abi_version)},
+            {"name": "molt.deterministic", "value": str(deterministic)},
+        ],
+    }
+    if effects is not None:
+        component["properties"].append(
+            {"name": "molt.effects", "value": json.dumps(effects)}
+        )
+    if capabilities is not None:
+        component["properties"].append(
+            {"name": "molt.capabilities", "value": json.dumps(capabilities)}
+        )
+    component["properties"].append(
+        {"name": "molt.artifact", "value": str(artifact_path)}
+    )
+    meta_properties: list[dict[str, str]] = []
+    if compiler_version:
+        meta_properties.append(
+            {"name": "molt.compiler.version", "value": compiler_version}
+        )
+    if compiler_rev:
+        meta_properties.append({"name": "molt.compiler.git_rev", "value": compiler_rev})
+    if rustc_version:
+        meta_properties.append({"name": "molt.rustc.version", "value": rustc_version})
+    components, dependency_refs, dep_warnings = _sbom_dependencies(project_root)
+    warnings.extend(dep_warnings)
+    sbom: dict[str, Any] = {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.5",
+        "version": 1,
+        "metadata": {
+            "tools": [
+                {
+                    "vendor": "molt",
+                    "name": "molt",
+                    "version": compiler_version or "unknown",
+                }
+            ],
+            "component": component,
+        },
+    }
+    if meta_properties:
+        sbom["metadata"]["properties"] = meta_properties
+    if components:
+        sbom["components"] = components
+    if dependency_refs:
+        sbom["dependencies"] = [{"ref": component_ref, "dependsOn": dependency_refs}]
+    return sbom, warnings
+
+
+def _spdx_id(base: str) -> str:
+    cleaned = _OUTPUT_BASE_SAFE_RE.sub("-", base).strip(".-")
+    if not cleaned:
+        cleaned = "package"
+    return f"SPDXRef-{cleaned}"
+
+
+def _spdx_checksum(value: str | None) -> list[dict[str, str]] | None:
+    digest = _normalize_sha256(value)
+    if not digest:
+        return None
+    return [{"algorithm": "SHA256", "checksumValue": digest}]
+
+
+def _spdx_package_entry(
+    *,
+    name: str,
+    version: str | None,
+    checksum: str | None,
+    purl: str | None,
+    spdx_id: str,
+) -> dict[str, Any]:
+    package: dict[str, Any] = {
+        "SPDXID": spdx_id,
+        "name": name,
+        "downloadLocation": "NOASSERTION",
+        "licenseConcluded": "NOASSERTION",
+        "licenseDeclared": "NOASSERTION",
+        "filesAnalyzed": False,
+    }
+    if version:
+        package["versionInfo"] = version
+    checksums = _spdx_checksum(checksum)
+    if checksums:
+        package["checksums"] = checksums
+    if purl:
+        package["externalRefs"] = [
+            {
+                "referenceCategory": "PACKAGE-MANAGER",
+                "referenceType": "purl",
+                "referenceLocator": purl,
+            }
+        ]
+    return package
+
+
+def _build_spdx_sbom(
+    *,
+    manifest: dict[str, Any],
+    artifact_path: Path,
+    checksum: str,
+    project_root: Path,
+) -> tuple[dict[str, Any], list[str]]:
+    warnings: list[str] = []
+    compiler_version, _compiler_rev = _compiler_metadata()
+    name = manifest.get("name", "molt_pkg")
+    version = manifest.get("version", "0.0.0")
+    target = manifest.get("target", "unknown")
+    namespace_seed = f"{name}-{version}-{target}-{checksum}"
+    namespace_token = _OUTPUT_BASE_SAFE_RE.sub("-", namespace_seed).strip(".-")
+    if not namespace_token:
+        namespace_token = "molt"
+    document_namespace = f"https://molt.dev/spdx/{namespace_token}"
+    created = "1970-01-01T00:00:00Z"
+    tool_version = compiler_version or "unknown"
+    root_purl = f"pkg:molt/{_normalize_name(str(name))}@{version}"
+    root_id = _spdx_id(f"{name}-{version}")
+
+    packages: list[dict[str, Any]] = []
+    packages.append(
+        _spdx_package_entry(
+            name=str(name),
+            version=str(version),
+            checksum=checksum,
+            purl=root_purl,
+            spdx_id=root_id,
+        )
+    )
+    components, dependency_refs, dep_warnings = _sbom_dependencies(project_root)
+    warnings.extend(dep_warnings)
+    relationships: list[dict[str, str]] = []
+    if components:
+        for component in components:
+            dep_name = str(component.get("name") or "dependency")
+            dep_version = component.get("version")
+            dep_id = _spdx_id(f"{dep_name}-{dep_version or 'unknown'}")
+            dep_checksum = None
+            hashes = component.get("hashes")
+            if isinstance(hashes, list):
+                for entry in hashes:
+                    if (
+                        isinstance(entry, dict)
+                        and entry.get("alg") == "SHA-256"
+                        and isinstance(entry.get("content"), str)
+                    ):
+                        dep_checksum = entry.get("content")
+                        break
+            dep_purl = component.get("purl") if isinstance(component, dict) else None
+            packages.append(
+                _spdx_package_entry(
+                    name=dep_name,
+                    version=str(dep_version) if dep_version else None,
+                    checksum=dep_checksum,
+                    purl=dep_purl if isinstance(dep_purl, str) else None,
+                    spdx_id=dep_id,
+                )
+            )
+            relationships.append(
+                {
+                    "spdxElementId": root_id,
+                    "relationshipType": "DEPENDS_ON",
+                    "relatedSpdxElement": dep_id,
+                }
+            )
+
+    sbom: dict[str, Any] = {
+        "spdxVersion": "SPDX-2.3",
+        "dataLicense": "CC0-1.0",
+        "SPDXID": "SPDXRef-DOCUMENT",
+        "name": f"molt-{name}-{version}",
+        "documentNamespace": document_namespace,
+        "creationInfo": {
+            "created": created,
+            "creators": [f"Tool: molt {tool_version}"],
+        },
+        "documentDescribes": [root_id],
+        "packages": packages,
+    }
+    if relationships:
+        sbom["relationships"] = relationships
+    return sbom, warnings
+
+
+def _is_macho(path: Path) -> bool:
+    try:
+        data = path.read_bytes()[:4]
+    except OSError:
+        return False
+    if len(data) < 4:
+        return False
+    be = int.from_bytes(data, "big")
+    le = int.from_bytes(data, "little")
+    magic_values = {
+        0xFEEDFACE,
+        0xCEFAEDFE,
+        0xFEEDFACF,
+        0xCFFAEDFE,
+        0xCAFEBABE,
+        0xBEBAFECA,
+    }
+    return be in magic_values or le in magic_values
+
+
+def _cosign_key_hash(key_path: Path) -> str | None:
+    try:
+        return _sha256_file(key_path)
+    except OSError:
+        return None
+
+
+def _cosign_sign_blob(
+    artifact_path: Path,
+    key: str,
+    *,
+    tlog_upload: bool = False,
+) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory(prefix="molt_cosign_") as tmpdir:
+        sig_path = Path(tmpdir) / "artifact.sig"
+        cert_path = Path(tmpdir) / "artifact.pem"
+        cmd = [
+            "cosign",
+            "sign-blob",
+            "--yes",
+            "--key",
+            key,
+            "--output-signature",
+            str(sig_path),
+            "--output-certificate",
+            str(cert_path),
+        ]
+        if not tlog_upload:
+            cmd.append("--tlog-upload=false")
+        cmd.append(str(artifact_path))
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip() or "unknown error"
+            raise RuntimeError(f"cosign sign-blob failed: {detail}")
+        signature = sig_path.read_text().strip()
+        certificate = cert_path.read_text().strip()
+    metadata: dict[str, Any] = {
+        "tool": {"name": "cosign"},
+        "signature": {"format": "cosign-blob", "value": signature},
+    }
+    if certificate:
+        metadata["signature"]["certificate"] = certificate
+    key_path = Path(key).expanduser()
+    if key_path.exists():
+        key_hash = _cosign_key_hash(key_path)
+        if key_hash:
+            metadata["key"] = {"sha256": key_hash}
+    return metadata
+
+
+def _codesign_identity_info(artifact_path: Path) -> dict[str, Any]:
+    result = subprocess.run(
+        ["codesign", "--display", "--verbose=4", str(artifact_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = (result.stderr or "") + (result.stdout or "")
+    info: dict[str, Any] = {"tool": {"name": "codesign"}}
+    authorities: list[str] = []
+    for line in output.splitlines():
+        if line.startswith("Authority="):
+            authorities.append(line.split("=", 1)[1].strip())
+        elif line.startswith("TeamIdentifier="):
+            info["team_id"] = line.split("=", 1)[1].strip()
+        elif line.startswith("Identifier="):
+            info["identifier"] = line.split("=", 1)[1].strip()
+        elif line.startswith("Format="):
+            info["format"] = line.split("=", 1)[1].strip()
+    if authorities:
+        info["authorities"] = authorities
+    return info
+
+
+def _codesign_sign(artifact_path: Path, identity: str) -> dict[str, Any]:
+    cmd = [
+        "codesign",
+        "--force",
+        "--sign",
+        identity,
+        "--timestamp=none",
+        str(artifact_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip() or "unknown error"
+        raise RuntimeError(f"codesign failed: {detail}")
+    info = _codesign_identity_info(artifact_path)
+    metadata: dict[str, Any] = {"tool": {"name": "codesign"}}
+    metadata.update(info)
+    return metadata
+
+
+def _select_signer(preferred: str | None, *, artifact_path: Path | None) -> str | None:
+    selected = preferred
+    if selected in {"auto", "", None}:
+        if (
+            sys.platform == "darwin"
+            and shutil.which("codesign")
+            and (artifact_path is None or _is_macho(artifact_path))
+        ):
+            return "codesign"
+        if shutil.which("cosign"):
+            return "cosign"
+        if sys.platform == "darwin" and shutil.which("codesign"):
+            return "codesign"
+        return None
+    return selected
+
+
+def _sign_artifact(
+    *,
+    artifact_path: Path,
+    sign: bool,
+    signer: str | None,
+    signing_key: str | None,
+    signing_identity: str | None,
+    tlog_upload: bool,
+) -> tuple[dict[str, Any] | None, str | None]:
+    if not sign:
+        return None, None
+    selected = _select_signer(signer, artifact_path=artifact_path)
+    if selected is None:
+        raise RuntimeError("No signing tool available (cosign/codesign not found)")
+    if selected == "cosign":
+        key = signing_key or os.environ.get("COSIGN_KEY")
+        if not key:
+            raise RuntimeError("cosign signing requires --signing-key or COSIGN_KEY")
+        cosign_meta = _cosign_sign_blob(artifact_path, key, tlog_upload=tlog_upload)
+        return cosign_meta, selected
+    if selected == "codesign":
+        if sys.platform != "darwin":
+            raise RuntimeError("codesign signing is only available on macOS")
+        if not _is_macho(artifact_path):
+            raise RuntimeError("codesign requires a Mach-O artifact")
+        identity = signing_identity or os.environ.get("MOLT_CODESIGN_IDENTITY")
+        if not identity:
+            raise RuntimeError(
+                "codesign signing requires --signing-identity or MOLT_CODESIGN_IDENTITY"
+            )
+        codesign_meta = _codesign_sign(artifact_path, identity)
+        return codesign_meta, selected
+    raise RuntimeError(f"Unsupported signer: {selected}")
+
+
+def _signature_metadata(
+    *,
+    artifact_path: Path,
+    checksum: str,
+    signer_meta: dict[str, Any] | None,
+    signer: str | None,
+    signature_name: str | None,
+    signature_checksum: str | None,
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "schema_version": 1,
+        "artifact": {"path": str(artifact_path), "sha256": checksum},
+    }
+    signed = signer_meta is not None or signature_name is not None
+    metadata["status"] = "signed" if signed else "unsigned"
+    if not signed:
+        metadata["reason"] = "signing disabled"
+    signature_info: dict[str, Any] = {
+        "status": "signed" if signature_name or signer_meta is not None else "unsigned",
+        "algorithm": "sha256",
+    }
+    if signature_name:
+        signature_info["file"] = signature_name
+    if signature_checksum:
+        signature_info["checksum"] = signature_checksum
+    metadata["signature"] = signature_info
+    if signature_name:
+        metadata["signature_file"] = {
+            "name": signature_name,
+            "sha256": signature_checksum,
+        }
+    if signer_meta is not None:
+        metadata["signer"] = signer_meta
+        if signer:
+            metadata["signer"]["selected"] = signer
+    return metadata
+
+
+@dataclass(frozen=True)
+class TrustPolicy:
+    cosign_keys: set[str]
+    cosign_cert_substrings: list[str]
+    codesign_team_ids: set[str]
+    codesign_identifiers: set[str]
+    codesign_authorities: set[str]
+
+
+def _normalize_sha256(value: str | None) -> str | None:
+    if not value:
+        return None
+    cleaned = value.strip().lower()
+    if cleaned.startswith("sha256:"):
+        cleaned = cleaned[len("sha256:") :]
+    return cleaned
+
+
+def _load_trust_policy(path: Path) -> TrustPolicy:
+    if not path.exists():
+        raise FileNotFoundError(f"Trust policy not found: {path}")
+    if path.suffix == ".json":
+        data = json.loads(path.read_text())
+    else:
+        data = tomllib.loads(path.read_text())
+    cosign = data.get("cosign", {})
+    codesign = data.get("codesign", {})
+    cosign_keys = {
+        _normalize_sha256(key)
+        for key in cosign.get("keys", [])
+        if isinstance(key, str) and _normalize_sha256(key)
+    }
+    cosign_cert_substrings = [
+        value
+        for value in cosign.get("certificates", [])
+        if isinstance(value, str) and value
+    ]
+    codesign_team_ids = {
+        value
+        for value in codesign.get("team_ids", [])
+        if isinstance(value, str) and value
+    }
+    codesign_identifiers = {
+        value
+        for value in codesign.get("identifiers", [])
+        if isinstance(value, str) and value
+    }
+    codesign_authorities = {
+        value
+        for value in codesign.get("authorities", [])
+        if isinstance(value, str) and value
+    }
+    return TrustPolicy(
+        cosign_keys=cosign_keys,
+        cosign_cert_substrings=cosign_cert_substrings,
+        codesign_team_ids=codesign_team_ids,
+        codesign_identifiers=codesign_identifiers,
+        codesign_authorities=codesign_authorities,
+    )
+
+
+def _trust_policy_allows(
+    signer: str | None, signer_meta: dict[str, Any] | None, policy: TrustPolicy
+) -> tuple[bool, str]:
+    if signer is None:
+        return False, "missing signer metadata"
+    if signer == "cosign":
+        if signer_meta is None:
+            return False, "missing cosign metadata"
+        key_meta = signer_meta.get("key", {}) if isinstance(signer_meta, dict) else {}
+        key_hash = _normalize_sha256(
+            key_meta.get("sha256") if isinstance(key_meta, dict) else None
+        )
+        if policy.cosign_keys and key_hash and key_hash in policy.cosign_keys:
+            return True, "cosign key trusted"
+        if policy.cosign_cert_substrings:
+            cert = None
+            signature = signer_meta.get("signature")
+            if isinstance(signature, dict):
+                cert = signature.get("certificate")
+            if isinstance(cert, str):
+                for token in policy.cosign_cert_substrings:
+                    if token in cert:
+                        return True, "cosign certificate trusted"
+        return False, "cosign signer not in trusted policy"
+    if signer == "codesign":
+        if signer_meta is None:
+            return False, "missing codesign metadata"
+        team_id = signer_meta.get("team_id") if isinstance(signer_meta, dict) else None
+        if policy.codesign_team_ids and isinstance(team_id, str):
+            if team_id in policy.codesign_team_ids:
+                return True, "codesign team trusted"
+        identifier = (
+            signer_meta.get("identifier") if isinstance(signer_meta, dict) else None
+        )
+        if policy.codesign_identifiers and isinstance(identifier, str):
+            if identifier in policy.codesign_identifiers:
+                return True, "codesign identifier trusted"
+        authorities = (
+            signer_meta.get("authorities") if isinstance(signer_meta, dict) else None
+        )
+        if policy.codesign_authorities and isinstance(authorities, list):
+            for authority in authorities:
+                if (
+                    isinstance(authority, str)
+                    and authority in policy.codesign_authorities
+                ):
+                    return True, "codesign authority trusted"
+        return False, "codesign signer not in trusted policy"
+    return False, f"unsupported signer {signer}"
+
+
+def _resolve_signature_tool(
+    signer: str | None,
+    signer_meta: dict[str, Any] | None,
+    artifact_path: Path,
+    signature_bytes: bytes | None,
+) -> str | None:
+    if signer and signer != "auto":
+        return signer
+    if isinstance(signer_meta, dict):
+        selected = signer_meta.get("selected")
+        if isinstance(selected, str) and selected:
+            return selected
+        tool = signer_meta.get("tool")
+        if isinstance(tool, dict):
+            name = tool.get("name")
+            if isinstance(name, str) and name:
+                return name
+    if _is_macho(artifact_path):
+        return "codesign"
+    if signature_bytes is not None:
+        return "cosign"
+    return None
+
+
+def _verify_cosign_signature(
+    artifact_path: Path, signature_bytes: bytes, signing_key: str
+) -> None:
+    with tempfile.TemporaryDirectory(prefix="molt_cosign_verify_") as tmpdir:
+        sig_path = Path(tmpdir) / "artifact.sig"
+        sig_path.write_bytes(signature_bytes)
+        cmd = [
+            "cosign",
+            "verify-blob",
+            "--key",
+            signing_key,
+            "--signature",
+            str(sig_path),
+            "--insecure-ignore-tlog",
+            str(artifact_path),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip() or "unknown error"
+            raise RuntimeError(f"cosign verify-blob failed: {detail}")
+
+
+def _verify_codesign_signature(artifact_path: Path) -> None:
+    result = subprocess.run(
+        ["codesign", "--verify", "--verbose=4", str(artifact_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip() or "unknown error"
+        raise RuntimeError(f"codesign verify failed: {detail}")
+
+
 def _module_name_from_path(path: Path, roots: list[Path], stdlib_root: Path) -> str:
     resolved = path.resolve()
+    cpython_test_root: Path | None = None
+    cpython_dir = os.environ.get("MOLT_REGRTEST_CPYTHON_DIR")
+    if cpython_dir:
+        cpython_test_root = (Path(cpython_dir) / "Lib" / "test").resolve()
     rel = None
     try:
         rel = resolved.relative_to(stdlib_root.resolve())
@@ -399,6 +1252,8 @@ def _module_name_from_path(path: Path, roots: list[Path], stdlib_root: Path) -> 
         for root in roots:
             try:
                 root_resolved = root.resolve()
+                if cpython_test_root is not None and root_resolved == cpython_test_root:
+                    continue
                 candidate = resolved.relative_to(root_resolved)
             except ValueError:
                 continue
@@ -423,18 +1278,88 @@ def _expand_module_chain(name: str) -> list[str]:
     return [".".join(parts[:idx]) for idx in range(1, len(parts) + 1)]
 
 
+def _resolve_root_override(var: str) -> Path | None:
+    override = os.environ.get(var)
+    if not override:
+        return None
+    path = Path(override).expanduser()
+    if not path.is_absolute():
+        path = (Path.cwd() / path).absolute()
+    if path.exists():
+        return path
+    return None
+
+
+def _has_molt_repo_markers(path: Path) -> bool:
+    return (path / "runtime/molt-runtime/Cargo.toml").exists() and (
+        path / "src/molt/cli.py"
+    ).exists()
+
+
 def _find_project_root(start: Path) -> Path:
-    override = os.environ.get("MOLT_PROJECT_ROOT")
+    override = _resolve_root_override("MOLT_PROJECT_ROOT")
     if override:
-        path = Path(override).expanduser()
-        if not path.is_absolute():
-            path = (Path.cwd() / path).absolute()
-        if path.exists():
-            return path
+        return override
     for parent in [start] + list(start.parents):
-        if (parent / "pyproject.toml").exists() or (parent / ".git").exists():
+        if _has_project_markers(parent):
             return parent
     return start.parent
+
+
+def _has_project_markers(path: Path) -> bool:
+    return (
+        (path / "pyproject.toml").exists()
+        or (path / ".git").exists()
+        or _has_molt_repo_markers(path)
+    )
+
+
+def _find_molt_root(*candidates: Path) -> Path:
+    override = _resolve_root_override("MOLT_PROJECT_ROOT")
+    if override:
+        return override
+    for candidate in candidates:
+        for parent in [candidate] + list(candidate.parents):
+            if _has_molt_repo_markers(parent):
+                return parent
+    module_path = Path(__file__).resolve()
+    for parent in [module_path] + list(module_path.parents):
+        if _has_molt_repo_markers(parent):
+            return parent
+    if candidates:
+        return candidates[0]
+    return Path.cwd()
+
+
+def _require_molt_root(
+    molt_root: Path,
+    json_output: bool,
+    command: str,
+) -> int | None:
+    runtime_toml = molt_root / "runtime/molt-runtime/Cargo.toml"
+    backend_toml = molt_root / "runtime/molt-backend/Cargo.toml"
+    if runtime_toml.exists() and backend_toml.exists():
+        return None
+    message = (
+        f"Molt runtime sources not found under {molt_root}. "
+        "Set MOLT_PROJECT_ROOT to the Molt repo root or run from within the Molt repo."
+    )
+    return _fail(message, json_output, command=command)
+
+
+def _stdlib_root_path() -> Path:
+    override = os.environ.get("MOLT_PROJECT_ROOT")
+    if override:
+        root = Path(override).expanduser()
+        if not root.is_absolute():
+            root = (Path.cwd() / root).absolute()
+        candidate = root / "src/molt/stdlib"
+        if candidate.exists():
+            return candidate.resolve()
+    candidate = Path(__file__).resolve().parent / "stdlib"
+    if candidate.exists():
+        return candidate.resolve()
+    return Path("src/molt/stdlib").resolve()
 
 
 def _resolve_module_path(module_name: str, roots: list[Path]) -> Path | None:
@@ -525,6 +1450,8 @@ def _has_namespace_dir(module_name: str, roots: list[Path]) -> bool:
 def _collect_namespace_parents(
     module_graph: dict[str, Path],
     roots: list[Path],
+    stdlib_root: Path,
+    stdlib_allowlist: set[str],
     explicit_imports: set[str] | None = None,
 ) -> set[str]:
     namespace_parents: set[str] = set()
@@ -532,9 +1459,10 @@ def _collect_namespace_parents(
     def maybe_add(name: str) -> None:
         if name in module_graph:
             return
-        if _resolve_module_path(name, roots) is not None:
+        candidate_roots = _roots_for_module(name, roots, stdlib_root, stdlib_allowlist)
+        if _resolve_module_path(name, candidate_roots) is not None:
             return
-        if _has_namespace_dir(name, roots):
+        if _has_namespace_dir(name, candidate_roots):
             namespace_parents.add(name)
 
     for module_name in module_graph:
@@ -557,6 +1485,120 @@ def _namespace_paths(name: str, roots: list[Path]) -> list[str]:
         if candidate.exists() and candidate.is_dir():
             paths.append(str(candidate))
     return list(dict.fromkeys(paths))
+
+
+def _spec_parent(spec_name: str, is_package: bool) -> str:
+    if is_package:
+        return spec_name
+    return spec_name.rpartition(".")[0]
+
+
+def _is_modulespec_ctor(node: ast.AST) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id == "ModuleSpec"
+    if isinstance(node, ast.Attribute):
+        return node.attr == "ModuleSpec"
+    return False
+
+
+def _parse_modulespec_override(
+    value: ast.AST,
+) -> tuple[str, bool | None] | None:
+    if not isinstance(value, ast.Call):
+        return None
+    if not _is_modulespec_ctor(value.func):
+        return None
+    spec_name = None
+    if value.args:
+        first = value.args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            spec_name = first.value
+    for kw in value.keywords:
+        if (
+            kw.arg == "name"
+            and spec_name is None
+            and isinstance(kw.value, ast.Constant)
+            and isinstance(kw.value.value, str)
+        ):
+            spec_name = kw.value.value
+    if spec_name is None:
+        return None
+    is_package = None
+    if len(value.args) >= 4:
+        arg = value.args[3]
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, bool):
+            is_package = arg.value
+    for kw in value.keywords:
+        if (
+            kw.arg == "is_package"
+            and isinstance(kw.value, ast.Constant)
+            and isinstance(kw.value.value, bool)
+        ):
+            is_package = kw.value.value
+    return spec_name, is_package
+
+
+def _infer_module_overrides(
+    tree: ast.AST,
+) -> tuple[bool, str | None, bool, str | None, bool | None]:
+    package_override_set = False
+    package_override: str | None = None
+    spec_override_set = False
+    spec_override: str | None = None
+    spec_override_is_package: bool | None = None
+    for stmt in getattr(tree, "body", []):
+        if isinstance(stmt, ast.Assign):
+            targets = stmt.targets
+            value = stmt.value
+        elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+            targets = [stmt.target]
+            value = stmt.value
+        else:
+            continue
+        for target in targets:
+            if not isinstance(target, ast.Name):
+                continue
+            if target.id == "__package__":
+                package_override_set = True
+                if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                    package_override = value.value
+                elif isinstance(value, ast.Constant) and value.value is None:
+                    package_override = None
+                else:
+                    package_override = None
+            elif target.id == "__spec__":
+                if isinstance(value, ast.Constant) and value.value is None:
+                    spec_override_set = False
+                    spec_override = None
+                    spec_override_is_package = None
+                else:
+                    parsed = _parse_modulespec_override(value)
+                    if parsed is None:
+                        continue
+                    spec_override_set = True
+                    spec_override, spec_override_is_package = parsed
+    return (
+        package_override_set,
+        package_override,
+        spec_override_set,
+        spec_override,
+        spec_override_is_package,
+    )
+
+
+def _package_root_for_override(source_path: Path, package_name: str) -> Path | None:
+    parts = [part for part in package_name.split(".") if part]
+    if not parts:
+        return None
+    package_dir = source_path.parent
+    if len(parts) > len(package_dir.parts):
+        return None
+    if tuple(package_dir.parts[-len(parts) :]) != tuple(parts):
+        return None
+    root = package_dir
+    for _ in parts:
+        root = root.parent
+    return root
 
 
 def _write_namespace_module(name: str, paths: list[str], output_dir: Path) -> Path:
@@ -582,7 +1624,12 @@ def _write_namespace_module(name: str, paths: list[str], output_dir: Path) -> Pa
     return stub_path
 
 
-def _collect_package_parents(module_graph: dict[str, Path], roots: list[Path]) -> None:
+def _collect_package_parents(
+    module_graph: dict[str, Path],
+    roots: list[Path],
+    stdlib_root: Path,
+    stdlib_allowlist: set[str],
+) -> None:
     changed = True
     while changed:
         changed = False
@@ -592,7 +1639,10 @@ def _collect_package_parents(module_graph: dict[str, Path], roots: list[Path]) -
                 parent = ".".join(parts[:idx])
                 if parent in module_graph:
                     continue
-                resolved = _resolve_module_path(parent, roots)
+                resolved = _resolve_module_path(
+                    parent,
+                    _roots_for_module(parent, roots, stdlib_root, stdlib_allowlist),
+                )
                 if resolved is None:
                     continue
                 if resolved.name != "__init__.py":
@@ -601,10 +1651,67 @@ def _collect_package_parents(module_graph: dict[str, Path], roots: list[Path]) -
                 changed = True
 
 
-def _collect_imports(tree: ast.AST) -> list[str]:
+def _resolve_relative_import(
+    module_name: str,
+    *,
+    is_package: bool,
+    level: int,
+    module: str | None,
+    package_override: str | None = None,
+    package_override_set: bool = False,
+    spec_override: str | None = None,
+    spec_override_set: bool = False,
+    spec_override_is_package: bool | None = None,
+) -> str | None:
+    if level <= 0:
+        return module
+    package = ""
+    if package_override_set:
+        package = package_override or ""
+    else:
+        if spec_override_set and spec_override:
+            override_is_package = (
+                spec_override_is_package
+                if spec_override_is_package is not None
+                else is_package
+            )
+            package = _spec_parent(spec_override, override_is_package)
+        else:
+            if is_package:
+                package = module_name
+            elif "." in module_name:
+                package = module_name.rsplit(".", 1)[0]
+            else:
+                package = ""
+    if not package:
+        return None
+    parts = package.split(".")
+    if level > len(parts):
+        return None
+    base_parts = parts[: len(parts) - (level - 1)]
+    base_name = ".".join(base_parts)
+    if module:
+        if base_name:
+            return f"{base_name}.{module}"
+        return module
+    return base_name or None
+
+
+def _collect_imports(
+    tree: ast.AST,
+    module_name: str | None = None,
+    is_package: bool = False,
+) -> list[str]:
     imports: list[str] = []
     needs_typing = False
     type_alias_cls = getattr(ast, "TypeAlias", None)
+    (
+        package_override_set,
+        package_override,
+        spec_override_set,
+        spec_override,
+        spec_override_is_package,
+    ) = _infer_module_overrides(tree)
 
     def _importlib_target(func: ast.expr) -> str | None:
         if isinstance(func, ast.Attribute):
@@ -625,6 +1732,23 @@ def _collect_imports(tree: ast.AST) -> list[str]:
             continue
         if isinstance(node, ast.ImportFrom):
             if node.level:
+                if module_name:
+                    resolved = _resolve_relative_import(
+                        module_name,
+                        is_package=is_package,
+                        level=node.level,
+                        module=node.module,
+                        package_override=package_override,
+                        package_override_set=package_override_set,
+                        spec_override=spec_override,
+                        spec_override_set=spec_override_set,
+                        spec_override_is_package=spec_override_is_package,
+                    )
+                    if resolved:
+                        imports.append(resolved)
+                        for alias in node.names:
+                            if alias.name != "*":
+                                imports.append(f"{resolved}.{alias.name}")
                 continue
             if node.module:
                 imports.append(node.module)
@@ -655,7 +1779,9 @@ def _module_dependencies(
     tree: ast.AST, module_name: str, module_graph: dict[str, Path]
 ) -> set[str]:
     deps: set[str] = set()
-    for name in _collect_imports(tree):
+    path = module_graph.get(module_name)
+    is_package = path is not None and path.name == "__init__.py"
+    for name in _collect_imports(tree, module_name, is_package):
         for candidate in _expand_module_chain(name):
             if candidate == "molt" and module_name.startswith("molt."):
                 continue
@@ -666,6 +1792,99 @@ def _module_dependencies(
                 if stdlib_candidate in module_graph and stdlib_candidate != module_name:
                     deps.add(stdlib_candidate)
     return deps
+
+
+@dataclass(frozen=True)
+class ModuleSyntaxErrorInfo:
+    message: str
+    filename: str
+    lineno: int | None
+    offset: int | None
+    text: str | None
+
+
+def _read_module_source(path: Path) -> str:
+    with tokenize.open(path) as handle:
+        return handle.read()
+
+
+def _syntax_error_info_from_exception(
+    exc: Exception, *, path: Path
+) -> ModuleSyntaxErrorInfo:
+    if isinstance(exc, SyntaxError):
+        message = exc.msg or str(exc)
+        lineno = exc.lineno
+        offset = exc.offset
+        text = exc.text
+        filename = exc.filename or str(path)
+    elif isinstance(exc, UnicodeDecodeError):
+        message = str(exc)
+        lineno = 1
+        offset = exc.start + 1 if exc.start is not None else None
+        text = None
+        filename = str(path)
+    else:
+        message = str(exc)
+        lineno = None
+        offset = None
+        text = None
+        filename = str(path)
+    if isinstance(text, str):
+        text = text.rstrip("\n")
+    return ModuleSyntaxErrorInfo(
+        message=message,
+        filename=filename,
+        lineno=lineno,
+        offset=offset,
+        text=text,
+    )
+
+
+def _format_syntax_error_message(info: ModuleSyntaxErrorInfo) -> str:
+    if info.lineno is None:
+        return info.message
+    filename = Path(info.filename).name if info.filename else "<unknown>"
+    return f"{info.message} ({filename}, line {info.lineno})"
+
+
+def _syntax_error_stub_ast(info: ModuleSyntaxErrorInfo) -> ast.Module:
+    msg = _format_syntax_error_message(info)
+    err_name = ast.Name(id="err", ctx=ast.Store())
+    err_value = ast.Name(id="err", ctx=ast.Load())
+    stmts: list[ast.stmt] = [
+        ast.Assign(
+            targets=[err_name],
+            value=ast.Call(
+                func=ast.Name(id="SyntaxError", ctx=ast.Load()),
+                args=[ast.Constant(msg)],
+                keywords=[],
+            ),
+        )
+    ]
+    attr_values = [
+        ("lineno", info.lineno),
+        ("offset", info.offset),
+        ("filename", Path(info.filename).name if info.filename else None),
+        ("text", info.text),
+    ]
+    for attr_name, value in attr_values:
+        if value is None:
+            continue
+        stmts.append(
+            ast.Assign(
+                targets=[
+                    ast.Attribute(
+                        value=err_value,
+                        attr=attr_name,
+                        ctx=ast.Store(),
+                    )
+                ],
+                value=ast.Constant(value),
+            )
+        )
+    stmts.append(ast.Raise(exc=err_value, cause=None))
+    module = ast.Module(body=stmts, type_ignores=[])
+    return ast.fix_missing_locations(module)
 
 
 def _default_spec_for_expr(expr: ast.expr) -> dict[str, Any]:
@@ -739,15 +1958,23 @@ def _stdlib_allowlist() -> set[str]:
     allowlist: set[str] = set()
     spec_path = Path("docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md")
     if not spec_path.exists():
+        project_root = os.environ.get("MOLT_PROJECT_ROOT")
+        if project_root:
+            spec_path = (
+                Path(project_root)
+                / "docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md"
+            )
+        else:
+            spec_path = (
+                Path(__file__).resolve().parents[2]
+                / "docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md"
+            )
+    if not spec_path.exists():
         return allowlist
-    in_table = False
     for line in spec_path.read_text().splitlines():
-        if line.startswith("| Module |"):
-            in_table = True
+        if not line.startswith("|"):
             continue
-        if in_table and not line.startswith("|"):
-            break
-        if not in_table or line.startswith("| ---"):
+        if line.startswith("| ---"):
             continue
         parts = [part.strip() for part in line.strip().strip("|").split("|")]
         if not parts:
@@ -762,10 +1989,72 @@ def _stdlib_allowlist() -> set[str]:
     return allowlist
 
 
+def _stdlib_module_uses_intrinsics(path: Path) -> bool:
+    try:
+        source = path.read_text(encoding="utf-8")
+    except Exception:
+        return False
+    return "require_intrinsic" in source or "_molt_intrinsics" in source
+
+
+def _enforce_intrinsic_stdlib(
+    module_graph: dict[str, Path],
+    stdlib_root: Path,
+    json_output: bool,
+) -> int | None:
+    missing: list[str] = []
+    stdlib_root = stdlib_root.resolve()
+    for name, path in module_graph.items():
+        if not path or not path.suffix == ".py":
+            continue
+        try:
+            path.resolve().relative_to(stdlib_root)
+        except ValueError:
+            continue
+        if not _stdlib_module_uses_intrinsics(path):
+            missing.append(name)
+    if not missing:
+        return None
+    missing.sort()
+    message = (
+        "Intrinsic-only stdlib enforcement failed. These modules are Python-only "
+        "and must be lowered to Rust intrinsics (or become thin intrinsic wrappers):\n"
+        + "\n".join(f"  - {name}" for name in missing)
+    )
+    return _fail(message, json_output, command="build")
+
+
+def _is_stdlib_module(name: str, stdlib_allowlist: set[str]) -> bool:
+    if name.startswith("molt."):
+        return False
+    if name in stdlib_allowlist:
+        return True
+    top = name.split(".", 1)[0]
+    return top in stdlib_allowlist
+
+
+def _roots_for_module(
+    module_name: str,
+    roots: list[Path],
+    stdlib_root: Path,
+    stdlib_allowlist: set[str],
+) -> list[Path]:
+    if _is_stdlib_module(module_name, stdlib_allowlist):
+        if module_name == "test.tokenizedata" or module_name.startswith(
+            "test.tokenizedata."
+        ):
+            return [stdlib_root] + [root for root in roots if root != stdlib_root]
+        if module_name == "test" or module_name.startswith("test."):
+            if os.environ.get("MOLT_REGRTEST_CPYTHON_DIR"):
+                return roots
+        return [stdlib_root]
+    return roots
+
+
 def _ensure_core_stdlib_modules(
     module_graph: dict[str, Path], stdlib_root: Path
 ) -> None:
-    for name in ("builtins", "sys"):
+    for name in ("builtins", "sys", "types"):
         path = _resolve_module_path(name, [stdlib_root])
         if path is not None:
             module_graph.setdefault(name, path)
@@ -775,10 +2064,11 @@ def _discover_module_graph(
     entry_path: Path,
     roots: list[Path],
     module_roots: list[Path],
+    stdlib_root: Path,
+    stdlib_allowlist: set[str],
     skip_modules: set[str] | None = None,
     stub_parents: set[str] | None = None,
 ) -> tuple[dict[str, Path], set[str]]:
-    stdlib_root = Path("src/molt/stdlib")
     graph: dict[str, Path] = {}
     skip_modules = skip_modules or set()
     stub_parents = stub_parents or set()
@@ -791,14 +2081,15 @@ def _discover_module_graph(
             continue
         graph[module_name] = path
         try:
-            source = path.read_text()
-        except OSError:
+            source = _read_module_source(path)
+        except (OSError, SyntaxError, UnicodeDecodeError):
             continue
         try:
-            tree = ast.parse(source)
+            tree = ast.parse(source, filename=str(path))
         except SyntaxError:
             continue
-        for name in _collect_imports(tree):
+        is_package = path.name == "__init__.py"
+        for name in _collect_imports(tree, module_name, is_package):
             explicit_imports.add(name)
             for candidate in _expand_module_chain(name):
                 if candidate in stub_parents:
@@ -810,7 +2101,12 @@ def _discover_module_graph(
                     stdlib_candidate = candidate[len("molt.stdlib.") :]
                     resolved = _resolve_module_path(stdlib_candidate, [stdlib_root])
                 if resolved is None:
-                    resolved = _resolve_module_path(candidate, roots)
+                    resolved = _resolve_module_path(
+                        candidate,
+                        _roots_for_module(
+                            candidate, roots, stdlib_root, stdlib_allowlist
+                        ),
+                    )
                 if resolved is not None:
                     queue.append(resolved)
     return graph, explicit_imports
@@ -955,18 +2251,26 @@ def _check_lockfiles(
         warnings.append(f"Missing lockfiles: {', '.join(missing)}")
         return None
     if deterministic:
-        uv_error = _verify_uv_lock(project_root)
-        if uv_error is not None:
-            if deterministic_warn:
-                warnings.append(uv_error)
-            else:
-                return _fail(uv_error, json_output, command=command)
-        cargo_error = _verify_cargo_lock(project_root)
-        if cargo_error is not None:
-            if deterministic_warn:
-                warnings.append(cargo_error)
-            else:
-                return _fail(cargo_error, json_output, command=command)
+        skip_uv_lock = os.environ.get("UV_NO_SYNC") == "1"
+        if skip_uv_lock:
+            warnings.append("Skipping uv.lock check because UV_NO_SYNC=1.")
+        else:
+            uv_error = _verify_uv_lock(project_root)
+            if uv_error is not None:
+                if deterministic_warn:
+                    warnings.append(uv_error)
+                else:
+                    return _fail(uv_error, json_output, command=command)
+        skip_cargo_lock = os.environ.get("MOLT_SKIP_CARGO_LOCK") == "1"
+        if skip_cargo_lock:
+            warnings.append("Skipping Cargo.lock check because MOLT_SKIP_CARGO_LOCK=1.")
+        else:
+            cargo_error = _verify_cargo_lock(project_root)
+            if cargo_error is not None:
+                if deterministic_warn:
+                    warnings.append(cargo_error)
+                else:
+                    return _fail(cargo_error, json_output, command=command)
     return None
 
 
@@ -1054,10 +2358,10 @@ def _resolve_build_config(config: dict[str, Any]) -> dict[str, Any]:
     return _resolve_command_config(config, "build")
 
 
-def _resolve_capabilities_config(config: dict[str, Any]) -> list[str] | None:
+def _resolve_capabilities_config(config: dict[str, Any]) -> CapabilityInput | None:
     for path in (["capabilities"], ["tool", "molt", "capabilities"]):
         caps = _config_value(config, path)
-        if isinstance(caps, list) and all(isinstance(item, str) for item in caps):
+        if isinstance(caps, (list, str, dict)):
             return caps
     return None
 
@@ -1070,26 +2374,523 @@ def _coerce_bool(value: Any, default: bool) -> bool:
     return default
 
 
-def _load_capabilities(path: Path) -> tuple[list[str], str] | None:
-    try:
-        if path.suffix == ".json":
-            data = json.loads(path.read_text())
-        else:
-            data = tomllib.loads(path.read_text())
-    except (OSError, json.JSONDecodeError, tomllib.TOMLDecodeError):
+def _merge_optional_list(
+    left: list[str] | None, right: list[str] | None
+) -> list[str] | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return _dedupe_preserve_order([*left, *right])
+
+
+def _coerce_token_list(
+    value: Any, field: str, errors: list[str]
+) -> tuple[list[str], bool]:
+    if value is None:
+        return [], False
+    if isinstance(value, list):
+        tokens: list[str] = []
+        for entry in value:
+            if isinstance(entry, str):
+                stripped = entry.strip()
+                if stripped:
+                    tokens.append(stripped)
+            else:
+                errors.append(f"{field} entries must be strings")
+        return tokens, True
+    if isinstance(value, str):
+        return _split_tokens(value), True
+    errors.append(f"{field} must be a list or string")
+    return [], True
+
+
+def _coerce_effects_list(
+    value: Any, field: str, errors: list[str]
+) -> tuple[list[str], bool]:
+    if value is None:
+        return [], False
+    if isinstance(value, list):
+        effects: list[str] = []
+        for entry in value:
+            if isinstance(entry, str):
+                stripped = entry.strip()
+                if stripped:
+                    effects.append(stripped)
+            else:
+                errors.append(f"{field} entries must be strings")
+        return effects, True
+    if isinstance(value, str):
+        return _split_tokens(value), True
+    errors.append(f"{field} must be a list or string")
+    return [], True
+
+
+def _fs_entry_enabled(value: Any, field: str, errors: list[str]) -> tuple[bool, bool]:
+    if value is None:
+        return False, False
+    if isinstance(value, bool):
+        return True, value
+    if isinstance(value, str):
+        return True, bool(value.strip())
+    if isinstance(value, list):
+        for entry in value:
+            if not isinstance(entry, str):
+                errors.append(f"{field} entries must be strings")
+        return True, bool(value)
+    errors.append(f"{field} must be a list, string, or bool")
+    return True, False
+
+
+def _parse_fs_block(
+    value: Any, field: str, errors: list[str]
+) -> tuple[list[str], bool]:
+    if value is None:
+        return [], False
+    if not isinstance(value, dict):
+        errors.append(f"{field} must be a table")
+        return [], True
+    allow: list[str] = []
+    for key, capability in (("read", "fs.read"), ("write", "fs.write")):
+        present, enabled = _fs_entry_enabled(value.get(key), f"{field}.{key}", errors)
+        if present and enabled:
+            allow.append(capability)
+    return allow, True
+
+
+def _parse_package_grant(value: Any, field: str, errors: list[str]) -> CapabilityGrant:
+    if value is None:
+        return CapabilityGrant(allow=None, deny=[], effects=None)
+    if isinstance(value, (list, str)):
+        allow, _present = _coerce_token_list(value, f"{field}.allow", errors)
+        return CapabilityGrant(
+            allow=_dedupe_preserve_order(allow), deny=[], effects=None
+        )
+    if not isinstance(value, dict):
+        errors.append(f"{field} must be a list, string, or table")
+        return CapabilityGrant(allow=None, deny=[], effects=None)
+    allow_tokens, allow_present = _coerce_token_list(
+        value.get("allow"), f"{field}.allow", errors
+    )
+    caps_value = value.get("capabilities")
+    caps_tokens: list[str] = []
+    caps_present = False
+    if isinstance(caps_value, dict):
+        nested = _parse_package_grant(caps_value, f"{field}.capabilities", errors)
+        allow_tokens = _dedupe_preserve_order(allow_tokens + (nested.allow or []))
+        allow_present = True
+        if nested.deny:
+            errors.append(f"{field}.capabilities must not include deny entries")
+        if nested.effects is not None:
+            errors.append(f"{field}.capabilities must not include effects entries")
+    else:
+        caps_tokens, caps_present = _coerce_token_list(
+            caps_value, f"{field}.capabilities", errors
+        )
+    deny_tokens, _deny_present = _coerce_token_list(
+        value.get("deny"), f"{field}.deny", errors
+    )
+    effects_tokens, effects_present = _coerce_effects_list(
+        value.get("effects"), f"{field}.effects", errors
+    )
+    fs_tokens, fs_present = _parse_fs_block(value.get("fs"), f"{field}.fs", errors)
+    combined_allow: list[str] = []
+    if allow_present:
+        combined_allow.extend(allow_tokens)
+    if caps_present:
+        combined_allow.extend(caps_tokens)
+    if fs_present:
+        combined_allow.extend(fs_tokens)
+    allow = (
+        _dedupe_preserve_order(combined_allow)
+        if allow_present or caps_present or fs_present
+        else None
+    )
+    effects = _dedupe_preserve_order(effects_tokens) if effects_present else None
+    return CapabilityGrant(
+        allow=allow,
+        deny=_dedupe_preserve_order(deny_tokens),
+        effects=effects,
+    )
+
+
+def _parse_package_grants(
+    value: Any, field: str, errors: list[str]
+) -> dict[str, CapabilityGrant]:
+    packages: dict[str, CapabilityGrant] = {}
+    if value is None:
+        return packages
+    if isinstance(value, dict):
+        for name, entry in value.items():
+            if not isinstance(name, str) or not name:
+                errors.append(f"{field} entries must be keyed by package name")
+                continue
+            grant = _parse_package_grant(entry, f"{field}.{name}", errors)
+            if name in packages:
+                packages[name] = packages[name].merged(grant)
+            else:
+                packages[name] = grant
+        return packages
+    if isinstance(value, list):
+        for idx, entry in enumerate(value):
+            if not isinstance(entry, dict):
+                errors.append(f"{field}[{idx}] must be a table")
+                continue
+            name = entry.get("name") or entry.get("package")
+            if not isinstance(name, str) or not name:
+                errors.append(f"{field}[{idx}].name must be a non-empty string")
+                continue
+            grant = _parse_package_grant(entry, f"{field}.{name}", errors)
+            if name in packages:
+                packages[name] = packages[name].merged(grant)
+            else:
+                packages[name] = grant
+        return packages
+    errors.append(f"{field} must be a table or list")
+    return packages
+
+
+def _parse_capability_manifest_dict(
+    data: Any, field: str, errors: list[str]
+) -> CapabilityManifest | None:
+    if not isinstance(data, dict):
+        errors.append(f"{field} must be a table")
         return None
-    # TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:planned): support richer capability manifests
-    # (deny lists, per-package grants, and effect annotations).
-    caps = None
-    if isinstance(data, dict):
-        caps = data.get("capabilities")
-        if caps is None:
-            caps = _config_value(data, ["molt", "capabilities"])
-        if caps is None:
-            caps = _config_value(data, ["tool", "molt", "capabilities"])
-    if isinstance(caps, list) and all(isinstance(item, str) for item in caps):
-        return caps, str(path)
-    return None
+    allow: list[str] | None = None
+    deny: list[str] = []
+    effects: list[str] | None = None
+    packages: dict[str, CapabilityGrant] = {}
+
+    def apply_section(section: Any, ctx: str) -> None:
+        nonlocal allow, deny, effects, packages
+        if not isinstance(section, dict):
+            errors.append(f"{ctx} must be a table")
+            return
+        caps_value = section.get("capabilities")
+        if isinstance(caps_value, dict):
+            apply_section(caps_value, f"{ctx}.capabilities")
+            caps_value = None
+        allow_tokens, allow_present = _coerce_token_list(
+            section.get("allow"), f"{ctx}.allow", errors
+        )
+        caps_tokens: list[str] = []
+        caps_present = False
+        if caps_value is not None:
+            caps_tokens, caps_present = _coerce_token_list(
+                caps_value, f"{ctx}.capabilities", errors
+            )
+        fs_tokens, fs_present = _parse_fs_block(section.get("fs"), f"{ctx}.fs", errors)
+        combined_allow: list[str] = []
+        if allow_present:
+            combined_allow.extend(allow_tokens)
+        if caps_present:
+            combined_allow.extend(caps_tokens)
+        if fs_present:
+            combined_allow.extend(fs_tokens)
+        if allow_present or caps_present or fs_present:
+            if allow is None:
+                allow = _dedupe_preserve_order(combined_allow)
+            else:
+                allow = _dedupe_preserve_order([*allow, *combined_allow])
+        deny_tokens, deny_present = _coerce_token_list(
+            section.get("deny"), f"{ctx}.deny", errors
+        )
+        if deny_present:
+            deny = _dedupe_preserve_order([*deny, *deny_tokens])
+        effects_tokens, effects_present = _coerce_effects_list(
+            section.get("effects"), f"{ctx}.effects", errors
+        )
+        if effects_present:
+            if effects is None:
+                effects = _dedupe_preserve_order(effects_tokens)
+            else:
+                effects = _dedupe_preserve_order([*effects, *effects_tokens])
+        pkg_entries = _parse_package_grants(
+            section.get("packages"), f"{ctx}.packages", errors
+        )
+        if pkg_entries:
+            for name, grant in pkg_entries.items():
+                if name in packages:
+                    packages[name] = packages[name].merged(grant)
+                else:
+                    packages[name] = grant
+
+    apply_section(data, field)
+    molt_section = data.get("molt")
+    if isinstance(molt_section, dict):
+        apply_section(molt_section, f"{field}.molt")
+    tool_section = data.get("tool")
+    if isinstance(tool_section, dict):
+        tool_molt = tool_section.get("molt")
+        if isinstance(tool_molt, dict):
+            apply_section(tool_molt, f"{field}.tool.molt")
+
+    return CapabilityManifest(
+        allow=allow,
+        deny=deny,
+        effects=effects,
+        packages=packages,
+    )
+
+
+def _validate_capability_tokens(
+    tokens: Iterable[str], field: str, errors: list[str]
+) -> None:
+    for cap in tokens:
+        if not CAPABILITY_TOKEN_RE.match(cap):
+            errors.append(f"invalid capability token in {field}: {cap}")
+
+
+def _validate_effect_tokens(
+    tokens: Iterable[str], field: str, errors: list[str]
+) -> None:
+    for effect in tokens:
+        if not CAPABILITY_TOKEN_RE.match(effect):
+            errors.append(f"invalid effect token in {field}: {effect}")
+
+
+def _resolve_capability_manifest(
+    manifest: CapabilityManifest,
+) -> tuple[list[str], list[str], list[str]]:
+    errors: list[str] = []
+    allow_tokens = manifest.allow or []
+    allow_expanded, allow_profiles = _expand_capabilities(allow_tokens)
+    deny_expanded, deny_profiles = _expand_capabilities(manifest.deny)
+    profiles = _dedupe_preserve_order([*allow_profiles, *deny_profiles])
+    _validate_capability_tokens(allow_expanded, "allow", errors)
+    _validate_capability_tokens(deny_expanded, "deny", errors)
+    deny_set = set(deny_expanded)
+    resolved = _dedupe_preserve_order(
+        cap for cap in allow_expanded if cap not in deny_set
+    )
+    manifest_effects_set: set[str] | None = None
+    if manifest.effects is not None:
+        _validate_effect_tokens(manifest.effects, "effects", errors)
+        manifest_effects_set = set(manifest.effects)
+    global_allow = set(resolved)
+    for name, grant in manifest.packages.items():
+        pkg_allow_tokens = grant.allow or []
+        pkg_allow_expanded, pkg_allow_profiles = _expand_capabilities(pkg_allow_tokens)
+        pkg_deny_expanded, pkg_deny_profiles = _expand_capabilities(grant.deny)
+        profiles = _dedupe_preserve_order(
+            [*profiles, *pkg_allow_profiles, *pkg_deny_profiles]
+        )
+        _validate_capability_tokens(
+            pkg_allow_expanded, f"packages.{name}.allow", errors
+        )
+        _validate_capability_tokens(pkg_deny_expanded, f"packages.{name}.deny", errors)
+        if grant.allow is not None:
+            extras = [
+                cap
+                for cap in _dedupe_preserve_order(pkg_allow_expanded)
+                if cap not in global_allow
+            ]
+            if extras:
+                errors.append(
+                    "packages."
+                    + name
+                    + ".allow includes capabilities not in global allowlist: "
+                    + ", ".join(extras)
+                )
+        if grant.effects is not None:
+            _validate_effect_tokens(grant.effects, f"packages.{name}.effects", errors)
+            if manifest_effects_set is not None:
+                effect_extras = [
+                    effect
+                    for effect in _dedupe_preserve_order(grant.effects)
+                    if effect not in manifest_effects_set
+                ]
+                if effect_extras:
+                    errors.append(
+                        "packages."
+                        + name
+                        + ".effects includes effects not in global effects allowlist: "
+                        + ", ".join(effect_extras)
+                    )
+    return resolved, profiles, errors
+
+
+def _parse_capabilities_spec(
+    capabilities: CapabilityInput | None,
+) -> CapabilitySpec:
+    if capabilities is None:
+        return CapabilitySpec(
+            capabilities=None,
+            profiles=[],
+            source=None,
+            errors=[],
+            manifest=None,
+        )
+    errors: list[str] = []
+    profiles: list[str] = []
+    source: str | None = None
+    manifest: CapabilityManifest | None = None
+    if isinstance(capabilities, dict):
+        source = "config"
+        manifest = _parse_capability_manifest_dict(capabilities, "capabilities", errors)
+    elif isinstance(capabilities, list):
+        source = "config"
+        tokens, _present = _coerce_token_list(capabilities, "capabilities", errors)
+        manifest = CapabilityManifest(
+            allow=_dedupe_preserve_order(tokens),
+            deny=[],
+            effects=None,
+            packages={},
+        )
+    else:
+        if isinstance(capabilities, str) and not capabilities.strip():
+            source = "inline"
+            manifest = CapabilityManifest(
+                allow=[],
+                deny=[],
+                effects=None,
+                packages={},
+            )
+            resolved, profiles, resolve_errors = _resolve_capability_manifest(manifest)
+            if resolve_errors:
+                return CapabilitySpec(
+                    capabilities=None,
+                    profiles=profiles,
+                    source=None,
+                    errors=resolve_errors,
+                    manifest=manifest,
+                )
+            return CapabilitySpec(
+                capabilities=resolved,
+                profiles=profiles,
+                source=source,
+                errors=[],
+                manifest=manifest,
+            )
+        path = Path(capabilities)
+        if path.exists():
+            source = str(path)
+            try:
+                if path.suffix == ".json":
+                    data = json.loads(path.read_text())
+                else:
+                    data = tomllib.loads(path.read_text())
+            except (OSError, json.JSONDecodeError, tomllib.TOMLDecodeError):
+                return CapabilitySpec(
+                    capabilities=None,
+                    profiles=[],
+                    source=source,
+                    errors=["failed to load capabilities file"],
+                    manifest=None,
+                )
+            manifest = _parse_capability_manifest_dict(data, "capabilities", errors)
+        else:
+            source = "inline"
+            tokens = _split_tokens(capabilities)
+            manifest = CapabilityManifest(
+                allow=_dedupe_preserve_order(tokens),
+                deny=[],
+                effects=None,
+                packages={},
+            )
+    if manifest is None:
+        return CapabilitySpec(
+            capabilities=None,
+            profiles=profiles,
+            source=source,
+            errors=errors,
+            manifest=None,
+        )
+    resolved, profiles, resolve_errors = _resolve_capability_manifest(manifest)
+    errors.extend(resolve_errors)
+    if errors:
+        return CapabilitySpec(
+            capabilities=None,
+            profiles=profiles,
+            source=source,
+            errors=errors,
+            manifest=manifest,
+        )
+    return CapabilitySpec(
+        capabilities=resolved,
+        profiles=profiles,
+        source=source,
+        errors=[],
+        manifest=manifest,
+    )
+
+
+def _parse_capabilities(
+    capabilities: CapabilityInput | None,
+) -> tuple[list[str] | None, list[str], str | None, list[str]]:
+    spec = _parse_capabilities_spec(capabilities)
+    return spec.capabilities, spec.profiles, spec.source, spec.errors
+
+
+def _format_capabilities_input(value: CapabilityInput | None) -> str:
+    if value is None:
+        return "none"
+    if isinstance(value, list):
+        return ", ".join(value) if value else "(empty)"
+    if isinstance(value, str):
+        return value if value else "(empty)"
+    return json.dumps(value, sort_keys=True)
+
+
+def _allowed_capabilities_for_package(
+    global_allow: list[str],
+    manifest: CapabilityManifest | None,
+    package_name: str | None,
+) -> set[str]:
+    allowed = set(global_allow)
+    if manifest is None or not package_name:
+        return allowed
+    grant = manifest.packages.get(package_name)
+    if grant is None:
+        return allowed
+    if grant.allow is not None:
+        grant_allow, _profiles = _expand_capabilities(grant.allow)
+        allowed &= set(grant_allow)
+    if grant.deny:
+        grant_deny, _profiles = _expand_capabilities(grant.deny)
+        allowed -= set(grant_deny)
+    return allowed
+
+
+def _allowed_effects_for_package(
+    manifest: CapabilityManifest | None,
+    package_name: str | None,
+) -> set[str] | None:
+    if manifest is None:
+        return None
+    allowed: set[str] | None = None
+    if manifest.effects is not None:
+        allowed = set(manifest.effects)
+    grant = manifest.packages.get(package_name) if package_name else None
+    if grant is None or grant.effects is None:
+        return allowed
+    grant_effects = set(grant.effects)
+    if allowed is None:
+        return grant_effects
+    return allowed & grant_effects
+
+
+def _materialize_capabilities_arg(
+    capabilities: CapabilityInput,
+) -> tuple[str, Path | None]:
+    if isinstance(capabilities, list):
+        return ",".join(capabilities), None
+    if isinstance(capabilities, str):
+        return capabilities, None
+    handle = tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        suffix=".json",
+        prefix="molt_capabilities_",
+        delete=False,
+    )
+    try:
+        json.dump(capabilities, handle, sort_keys=True, indent=2)
+        handle.write("\n")
+        path = Path(handle.name)
+    finally:
+        handle.close()
+    return str(path), path
 
 
 def _expand_capabilities(items: list[str]) -> tuple[list[str], list[str]]:
@@ -1116,35 +2917,6 @@ def _expand_capabilities(items: list[str]) -> tuple[list[str], list[str]]:
     return deduped, profiles
 
 
-def _parse_capabilities(
-    capabilities: str | list[str] | None,
-) -> tuple[list[str] | None, list[str], str | None, list[str]]:
-    if not capabilities:
-        return None, [], None, []
-    source: str | None
-    items: list[str]
-    if isinstance(capabilities, list):
-        items = [item.strip() for item in capabilities if item.strip()]
-        source = "config"
-    else:
-        path = Path(capabilities)
-        if path.exists():
-            loaded = _load_capabilities(path)
-            if loaded is None:
-                return None, [], str(path), ["failed to load capabilities file"]
-            items, source = loaded
-        else:
-            tokens = re.split(r"[,\s]+", capabilities)
-            items = [token for token in tokens if token]
-            source = "inline"
-    expanded, profiles = _expand_capabilities(items)
-    errors: list[str] = []
-    for cap in expanded:
-        if not CAPABILITY_TOKEN_RE.match(cap):
-            errors.append(f"invalid capability token: {cap}")
-    return expanded, profiles, source, errors
-
-
 def _runtime_source_paths(project_root: Path) -> list[Path]:
     return [
         project_root / "runtime/molt-runtime/src",
@@ -1158,12 +2930,145 @@ def _runtime_source_paths(project_root: Path) -> list[Path]:
     ]
 
 
+def _backend_source_paths(project_root: Path) -> list[Path]:
+    return [
+        project_root / "runtime/molt-backend/src",
+        project_root / "runtime/molt-backend/Cargo.toml",
+        project_root / "runtime/molt-backend/build.rs",
+        project_root / "Cargo.toml",
+        project_root / "Cargo.lock",
+    ]
+
+
+def _backend_bin_path(project_root: Path, profile: BuildProfile) -> Path:
+    profile_dir = _cargo_profile_dir(profile)
+    target_root = _cargo_target_root(project_root)
+    exe_suffix = ".exe" if os.name == "nt" else ""
+    return target_root / profile_dir / f"molt-backend{exe_suffix}"
+
+
+def _resolve_backend_profile() -> tuple[BuildProfile, str | None]:
+    raw = os.environ.get("MOLT_BACKEND_PROFILE")
+    if not raw:
+        return "release", None
+    value = raw.strip().lower()
+    if value not in {"dev", "release"}:
+        return "release", f"Invalid MOLT_BACKEND_PROFILE value: {raw}"
+    return value, None
+
+
+def _backend_fingerprint_path(
+    project_root: Path,
+    artifact: Path,
+    profile: BuildProfile,
+) -> Path:
+    root = project_root / "target" / "backend_fingerprints"
+    return root / f"{artifact.name}.{profile}.fingerprint"
+
+
+def _backend_fingerprint(
+    project_root: Path,
+    *,
+    profile: BuildProfile,
+    rustflags: str,
+) -> dict[str, str | None] | None:
+    hasher = hashlib.sha256()
+    meta = f"profile:{profile}\n"
+    meta += f"rustflags:{rustflags}\n"
+    hasher.update(meta.encode("utf-8"))
+    rustc_info = _rustc_version()
+    try:
+        for path in sorted(_backend_source_paths(project_root), key=lambda p: str(p)):
+            if path.is_dir():
+                for item in sorted(path.rglob("*"), key=lambda p: str(p)):
+                    if item.is_file():
+                        _hash_runtime_file(item, project_root, hasher)
+            elif path.exists():
+                _hash_runtime_file(path, project_root, hasher)
+    except OSError:
+        return None
+    return {"hash": hasher.hexdigest(), "rustc": rustc_info}
+
+
+def _ensure_backend_binary(
+    backend_bin: Path,
+    *,
+    cargo_timeout: float | None,
+    json_output: bool,
+    profile: BuildProfile,
+    project_root: Path,
+) -> bool:
+    rustflags = os.environ.get("RUSTFLAGS", "")
+    fingerprint = _backend_fingerprint(
+        project_root,
+        profile=profile,
+        rustflags=rustflags,
+    )
+    fingerprint_path = _backend_fingerprint_path(project_root, backend_bin, profile)
+    stored_fingerprint = (
+        _read_runtime_fingerprint(fingerprint_path)
+        if fingerprint_path.exists()
+        else None
+    )
+    needs_build = not backend_bin.exists()
+    if not needs_build:
+        if fingerprint is None or stored_fingerprint is None:
+            needs_build = True
+        elif stored_fingerprint.get("hash") != fingerprint.get("hash"):
+            needs_build = True
+        elif fingerprint.get("rustc"):
+            stored_rustc = stored_fingerprint.get("rustc")
+            needs_build = stored_rustc is None or stored_rustc != fingerprint["rustc"]
+    if not needs_build:
+        return True
+    if not json_output:
+        print("Backend sources changed; rebuilding backend...")
+    cmd = ["cargo", "build", "--package", "molt-backend"]
+    if profile == "release":
+        cmd.append("--release")
+    try:
+        build = subprocess.run(
+            cmd,
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            timeout=cargo_timeout,
+        )
+    except subprocess.TimeoutExpired:
+        if not json_output:
+            timeout_note = (
+                f"Backend build timed out after {cargo_timeout:.1f}s."
+                if cargo_timeout is not None
+                else "Backend build timed out."
+            )
+            print(timeout_note, file=sys.stderr)
+        return False
+    if build.returncode != 0:
+        if not json_output:
+            err = build.stderr.strip() or build.stdout.strip()
+            if err:
+                print(err, file=sys.stderr)
+        return False
+    if fingerprint is not None:
+        try:
+            fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
+            _write_runtime_fingerprint(fingerprint_path, fingerprint)
+        except OSError:
+            if not json_output:
+                print(
+                    "Warning: failed to write backend fingerprint metadata.",
+                    file=sys.stderr,
+                )
+    return True
+
+
 def _ensure_runtime_lib(
     runtime_lib: Path,
     target_triple: str | None,
     json_output: bool,
     profile: BuildProfile,
     project_root: Path,
+    cargo_timeout: float | None,
 ) -> bool:
     rustflags = os.environ.get("RUSTFLAGS", "")
     fingerprint = _runtime_fingerprint(
@@ -1198,10 +3103,28 @@ def _ensure_runtime_lib(
         cmd.append("--release")
     if target_triple:
         cmd.extend(["--target", target_triple])
-    build = subprocess.run(cmd, cwd=project_root)
-    if build.returncode != 0:
+    try:
+        build = subprocess.run(
+            cmd,
+            cwd=project_root,
+            capture_output=json_output,
+            text=json_output,
+            timeout=cargo_timeout,
+        )
+    except subprocess.TimeoutExpired:
         if not json_output:
-            print("Runtime build failed", file=sys.stderr)
+            timeout_note = (
+                f"Runtime build timed out after {cargo_timeout:.1f}s."
+                if cargo_timeout is not None
+                else "Runtime build timed out."
+            )
+            print(timeout_note, file=sys.stderr)
+        return False
+    if build.returncode != 0:
+        if json_output:
+            err = build.stderr.strip() or build.stdout.strip()
+            if err:
+                print(err, file=sys.stderr)
         return False
     if fingerprint is not None:
         try:
@@ -1228,8 +3151,10 @@ def _ensure_runtime_wasm(
     reloc: bool,
     json_output: bool,
     profile: BuildProfile,
+    cargo_timeout: float | None,
+    project_root: Path | None = None,
 ) -> bool:
-    root = Path(__file__).resolve().parents[2]
+    root = project_root or Path(__file__).resolve().parents[2]
     env = os.environ.copy()
     if reloc:
         flags = (
@@ -1280,7 +3205,24 @@ def _ensure_runtime_wasm(
     ]
     if profile == "release":
         cmd.append("--release")
-    build = subprocess.run(cmd, cwd=root, env=env, capture_output=True, text=True)
+    try:
+        build = subprocess.run(
+            cmd,
+            cwd=root,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=cargo_timeout,
+        )
+    except subprocess.TimeoutExpired:
+        if not json_output:
+            timeout_note = (
+                f"Runtime wasm build timed out after {cargo_timeout:.1f}s."
+                if cargo_timeout is not None
+                else "Runtime wasm build timed out."
+            )
+            print(timeout_note, file=sys.stderr)
+        return False
     if build.returncode != 0:
         if not json_output:
             err = build.stderr.strip() or build.stdout.strip()
@@ -1333,6 +3275,43 @@ def _read_wasm_string(data: bytes, offset: int) -> tuple[str, int]:
     if end > len(data):
         raise ValueError("Unexpected EOF while reading string")
     return data[offset:end].decode("utf-8"), end
+
+
+def _read_wasm_varint(data: bytes, offset: int, bits: int) -> tuple[int, int]:
+    result = 0
+    shift = 0
+    byte = 0
+    while True:
+        if offset >= len(data):
+            raise ValueError("Unexpected EOF while reading varint")
+        byte = data[offset]
+        offset += 1
+        result |= (byte & 0x7F) << shift
+        shift += 7
+        if byte & 0x80 == 0:
+            break
+        if shift > bits + 7:
+            raise ValueError("varint too large")
+    if shift < bits and (byte & 0x40):
+        result |= -1 << shift
+    return result, offset
+
+
+def _read_wasm_const_expr_i32(data: bytes, offset: int) -> tuple[int, int]:
+    if offset >= len(data):
+        raise ValueError("Unexpected EOF while reading const expr")
+    opcode = data[offset]
+    offset += 1
+    if opcode == 0x41:  # i32.const
+        value, offset = _read_wasm_varint(data, offset, 32)
+    elif opcode == 0x42:  # i64.const
+        value, offset = _read_wasm_varint(data, offset, 64)
+    else:
+        raise ValueError("Unsupported const expr opcode")
+    if offset >= len(data) or data[offset] != 0x0B:
+        raise ValueError("Invalid const expr terminator")
+    offset += 1
+    return value, offset
 
 
 def _read_wasm_table_min(path: Path) -> int | None:
@@ -1391,6 +3370,56 @@ def _read_wasm_table_min(path: Path) -> int | None:
     except ValueError:
         return None
     return None
+
+
+def _read_wasm_data_end(path: Path) -> int | None:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if len(data) < 8 or data[:4] != b"\0asm" or data[4:8] != b"\x01\x00\x00\x00":
+        return None
+    offset = 8
+    max_end = None
+    try:
+        while offset < len(data):
+            section_id = data[offset]
+            offset += 1
+            size, offset = _read_wasm_varuint(data, offset)
+            end = offset + size
+            if end > len(data):
+                raise ValueError("Unexpected EOF while reading section")
+            if section_id != 11:
+                offset = end
+                continue
+            payload = data[offset:end]
+            offset = end
+            cursor = 0
+            count, cursor = _read_wasm_varuint(payload, cursor)
+            for _ in range(count):
+                if cursor >= len(payload):
+                    raise ValueError("Unexpected EOF while reading data segment")
+                flags = payload[cursor]
+                cursor += 1
+                is_passive = flags & 0x1
+                has_memidx = flags & 0x2
+                if has_memidx:
+                    _, cursor = _read_wasm_varuint(payload, cursor)
+                if is_passive:
+                    size_bytes, cursor = _read_wasm_varuint(payload, cursor)
+                    cursor += size_bytes
+                    continue
+                offset_val, cursor = _read_wasm_const_expr_i32(payload, cursor)
+                size_bytes, cursor = _read_wasm_varuint(payload, cursor)
+                cursor += size_bytes
+                if offset_val < 0:
+                    continue
+                end_val = offset_val + size_bytes
+                if max_end is None or end_val > max_end:
+                    max_end = end_val
+    except ValueError:
+        return None
+    return max_end
 
 
 def _cargo_profile_dir(profile: BuildProfile) -> str:
@@ -1465,19 +3494,223 @@ def _resolve_out_dir(project_root: Path, out_dir: str | Path | None) -> Path | N
     return path
 
 
+def _resolve_sysroot(project_root: Path, sysroot: str | None) -> Path | None:
+    raw = (
+        sysroot
+        or os.environ.get("MOLT_SYSROOT")
+        or os.environ.get("MOLT_CROSS_SYSROOT")
+    )
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = (project_root / path).absolute()
+    return path
+
+
+def _pgo_hotspot_entries(
+    hotspots: Any, warnings: list[str]
+) -> list[tuple[str, float | None]]:
+    entries: list[tuple[str, float | None]] = []
+    if hotspots is None:
+        return entries
+    if isinstance(hotspots, dict):
+        for name, score in hotspots.items():
+            if not isinstance(name, str) or not name:
+                continue
+            score_val = score if isinstance(score, (int, float)) else None
+            entries.append((name, float(score_val) if score_val is not None else None))
+        return entries
+    if isinstance(hotspots, list):
+        for entry in hotspots:
+            if isinstance(entry, str) and entry:
+                entries.append((entry, None))
+                continue
+            if isinstance(entry, (list, tuple)) and entry:
+                name = entry[0]
+                score = entry[1] if len(entry) > 1 else None
+                if isinstance(name, str) and name:
+                    score_val = score if isinstance(score, (int, float)) else None
+                    entries.append(
+                        (name, float(score_val) if score_val is not None else None)
+                    )
+                continue
+            if isinstance(entry, dict):
+                name = (
+                    entry.get("symbol")
+                    or entry.get("name")
+                    or entry.get("func")
+                    or entry.get("function")
+                )
+                if not isinstance(name, str) or not name:
+                    continue
+                score = entry.get("score")
+                if score is None:
+                    score = entry.get("time_ms")
+                if score is None:
+                    score = entry.get("time_us")
+                if score is None:
+                    score = entry.get("count")
+                score_val = score if isinstance(score, (int, float)) else None
+                entries.append(
+                    (name, float(score_val) if score_val is not None else None)
+                )
+                continue
+        return entries
+    warnings.append("PGO profile hotspots must be a list or object; ignoring.")
+    return entries
+
+
+def _extract_hot_functions(profile: dict[str, Any], warnings: list[str]) -> list[str]:
+    entries = _pgo_hotspot_entries(profile.get("hotspots"), warnings)
+    if not entries:
+        return []
+    has_score = any(score is not None for _, score in entries)
+    if has_score:
+        entries = sorted(
+            entries,
+            key=lambda item: (-(item[1] or 0.0), item[0]),
+        )
+    else:
+        entries = sorted(entries, key=lambda item: item[0])
+    seen: set[str] = set()
+    hot: list[str] = []
+    for name, _score in entries:
+        if name in seen:
+            continue
+        seen.add(name)
+        hot.append(name)
+    return hot
+
+
+def _load_pgo_profile(
+    project_root: Path,
+    profile_path: str,
+    warnings: list[str],
+    json_output: bool,
+    command: str,
+) -> tuple[PgoProfileSummary | None, Path | None, int | None]:
+    path = Path(profile_path).expanduser()
+    if not path.is_absolute():
+        path = (project_root / path).absolute()
+    if not path.exists():
+        return (
+            None,
+            None,
+            _fail(f"PGO profile not found: {path}", json_output, command=command),
+        )
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        return (
+            None,
+            None,
+            _fail(
+                f"Failed to read PGO profile {path}: {exc}",
+                json_output,
+                command=command,
+            ),
+        )
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return (
+            None,
+            None,
+            _fail(
+                f"Invalid PGO profile JSON at {path}:{exc.lineno}:{exc.colno}: {exc.msg}",
+                json_output,
+                command=command,
+            ),
+        )
+    if not isinstance(payload, dict):
+        return (
+            None,
+            None,
+            _fail(
+                f"Invalid PGO profile {path}: expected a JSON object.",
+                json_output,
+                command=command,
+            ),
+        )
+    errors: list[str] = []
+    version = payload.get("molt_profile_version")
+    if not isinstance(version, str):
+        errors.append("missing molt_profile_version")
+    elif version != "0.1":
+        errors.append(f"unsupported molt_profile_version {version}")
+    python_impl = payload.get("python_implementation")
+    if not isinstance(python_impl, str) or not python_impl:
+        errors.append("missing python_implementation")
+    python_version = payload.get("python_version")
+    if not isinstance(python_version, str) or not python_version:
+        errors.append("missing python_version")
+    platform_meta = payload.get("platform")
+    if not isinstance(platform_meta, dict):
+        errors.append("missing platform")
+    else:
+        if not isinstance(platform_meta.get("os"), str):
+            errors.append("platform.os must be a string")
+        if not isinstance(platform_meta.get("arch"), str):
+            errors.append("platform.arch must be a string")
+    run_meta = payload.get("run_metadata")
+    if not isinstance(run_meta, dict):
+        errors.append("missing run_metadata")
+    else:
+        if not isinstance(run_meta.get("entrypoint"), str):
+            errors.append("run_metadata.entrypoint must be a string")
+        argv = run_meta.get("argv")
+        if not isinstance(argv, list) or not all(isinstance(arg, str) for arg in argv):
+            errors.append("run_metadata.argv must be a list of strings")
+        if not isinstance(run_meta.get("env_fingerprint"), str):
+            errors.append("run_metadata.env_fingerprint must be a string")
+        if not isinstance(run_meta.get("inputs_fingerprint"), str):
+            errors.append("run_metadata.inputs_fingerprint must be a string")
+        duration_ms = run_meta.get("duration_ms")
+        if not isinstance(duration_ms, (int, float)) or duration_ms < 0:
+            errors.append("run_metadata.duration_ms must be a non-negative number")
+    if errors:
+        return (
+            None,
+            None,
+            _fail(
+                f"Invalid PGO profile {path}: " + "; ".join(errors),
+                json_output,
+                command=command,
+            ),
+        )
+    hot_functions = _extract_hot_functions(payload, warnings)
+    digest = hashlib.sha256(raw).hexdigest()
+    summary = PgoProfileSummary(
+        version=version, hash=digest, hot_functions=hot_functions
+    )
+    return summary, path, None
+
+
+def _resolve_timeout_env(env_name: str) -> tuple[float | None, str | None]:
+    raw = os.environ.get(env_name)
+    if raw is None:
+        return None, None
+    try:
+        timeout = float(raw)
+    except ValueError:
+        return None, f"Invalid {env_name} value: {raw}"
+    if timeout <= 0:
+        return None, f"{env_name} must be greater than zero."
+    return timeout, None
+
+
 def _resolve_output_roots(
     project_root: Path, out_dir: Path | None, output_base: str
-) -> tuple[Path, Path]:
-    if out_dir is not None:
-        return out_dir, out_dir
-    # TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): refactor
-    # build output defaults and flags to mirror Go's go build UX (single visible output,
-    # hide intermediates, and align -o semantics).
+) -> tuple[Path, Path, Path]:
     artifacts_root = _default_build_root(output_base)
-    bin_root = _default_molt_bin()
+    bin_root = out_dir if out_dir is not None else _default_molt_bin()
+    output_root = out_dir if out_dir is not None else project_root
     artifacts_root.mkdir(parents=True, exist_ok=True)
     bin_root.mkdir(parents=True, exist_ok=True)
-    return artifacts_root, bin_root
+    if output_root != bin_root:
+        output_root.mkdir(parents=True, exist_ok=True)
+    return artifacts_root, bin_root, output_root
 
 
 def _resolve_output_path(
@@ -1493,30 +3726,45 @@ def _resolve_output_path(
     if not path.is_absolute():
         base = out_dir if out_dir is not None else project_root
         path = base / path
+    if output.endswith(os.sep) or (os.altsep and output.endswith(os.altsep)):
+        return path / default.name
+    try:
+        if path.exists() and path.is_dir():
+            return path / default.name
+    except OSError:
+        pass
     return path
 
 
+_CACHE_FINGERPRINT: str | None = None
+
+
 def _cache_fingerprint() -> str:
+    global _CACHE_FINGERPRINT
+    if _CACHE_FINGERPRINT is not None:
+        return _CACHE_FINGERPRINT
     root = Path(__file__).resolve().parents[2]
-    paths = [
-        root / "runtime" / "molt-backend" / "src" / "lib.rs",
-        root / "runtime" / "molt-backend" / "src" / "wasm.rs",
-        root / "runtime" / "molt-backend" / "Cargo.toml",
-        root / "runtime" / "molt-runtime" / "src" / "lib.rs",
-        root / "runtime" / "molt-runtime" / "Cargo.toml",
-    ]
-    parts: list[str] = []
-    for path in paths:
-        try:
-            stat = path.stat()
-        except OSError:
+    hasher = hashlib.sha256()
+    rustc_info = _rustc_version() or ""
+    rustflags = os.environ.get("RUSTFLAGS", "")
+    hasher.update(f"rustc:{rustc_info}\n".encode("utf-8"))
+    hasher.update(f"rustflags:{rustflags}\n".encode("utf-8"))
+    seen: set[Path] = set()
+    for path in sorted(
+        _backend_source_paths(root) + _runtime_source_paths(root),
+        key=lambda p: str(p),
+    ):
+        if path in seen:
             continue
-        try:
-            rel = path.relative_to(root).as_posix()
-        except ValueError:
-            rel = path.as_posix()
-        parts.append(f"{rel}:{stat.st_mtime_ns}:{stat.st_size}")
-    return "|".join(parts)
+        seen.add(path)
+        if path.is_dir():
+            for item in sorted(path.rglob("*"), key=lambda p: str(p)):
+                if item.is_file():
+                    _hash_runtime_file(item, root, hasher)
+        elif path.exists():
+            _hash_runtime_file(path, root, hasher)
+    _CACHE_FINGERPRINT = hasher.hexdigest()
+    return _CACHE_FINGERPRINT
 
 
 def _json_ir_default(value: Any) -> Any:
@@ -1525,15 +3773,34 @@ def _json_ir_default(value: Any) -> Any:
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
+def _cache_ir_payload(ir: dict[str, Any]) -> bytes:
+    normalized: dict[str, Any] = ir
+    funcs = ir.get("functions")
+    if isinstance(funcs, list) and funcs:
+
+        def _func_sort_key(entry: Any) -> str:
+            if isinstance(entry, dict):
+                name = entry.get("name")
+                if isinstance(name, str):
+                    return name
+            return ""
+
+        sorted_funcs = sorted(funcs, key=_func_sort_key)
+        if sorted_funcs != funcs:
+            normalized = dict(ir)
+            normalized["functions"] = sorted_funcs
+    return json.dumps(
+        normalized, sort_keys=True, separators=(",", ":"), default=_json_ir_default
+    ).encode("utf-8")
+
+
 def _cache_key(
     ir: dict[str, Any],
     target: str,
     target_triple: str | None,
     variant: str = "",
 ) -> str:
-    payload = json.dumps(
-        ir, sort_keys=True, separators=(",", ":"), default=_json_ir_default
-    ).encode("utf-8")
+    payload = _cache_ir_payload(ir)
     suffix = target_triple or target
     if variant:
         suffix = f"{suffix}:{variant}"
@@ -1596,18 +3863,141 @@ def _strip_arch_flags(args: list[str]) -> list[str]:
 
 
 def _zig_target_query(target_triple: str) -> str:
-    # TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): replace with a comprehensive
-    # target-triple to zig target query mapping (vendor/abi/sysroot aware).
-    parts = target_triple.split("-")
-    if len(parts) < 3:
+    triple = target_triple.strip()
+    if not triple:
         return target_triple
-    arch = parts[0]
-    os_name = parts[2]
-    env = parts[3] if len(parts) > 3 else None
-    if os_name in {"darwin", "macosx"}:
-        return f"{arch}-macos"
-    if env:
-        return f"{arch}-{os_name}-{env}"
+    parts = [part for part in triple.split("-") if part]
+    if len(parts) < 2:
+        return target_triple
+
+    arch_aliases = {
+        "amd64": "x86_64",
+        "x64": "x86_64",
+        "arm64": "aarch64",
+        "armv7l": "armv7",
+        "i386": "x86",
+        "i486": "x86",
+        "i586": "x86",
+        "i686": "x86",
+    }
+    os_aliases = {
+        "darwin": "macos",
+        "macosx": "macos",
+        "win32": "windows",
+        "mingw32": "windows",
+        "mingw64": "windows",
+        "cygwin": "windows",
+    }
+    abi_aliases = {
+        "sim": "simulator",
+        "androideabi": "android",
+    }
+    abi_tokens = {
+        "gnu",
+        "gnueabi",
+        "gnueabihf",
+        "gnuabi64",
+        "gnux32",
+        "musl",
+        "musleabi",
+        "musleabihf",
+        "msvc",
+        "eabi",
+        "eabihf",
+        "android",
+        "simulator",
+        "sim",
+        "ilp32",
+        "uclibc",
+        "ohos",
+        "macabi",
+        "androideabi",
+    }
+    os_tokens = {
+        "linux",
+        "windows",
+        "darwin",
+        "macos",
+        "macosx",
+        "ios",
+        "tvos",
+        "watchos",
+        "freebsd",
+        "netbsd",
+        "openbsd",
+        "dragonfly",
+        "solaris",
+        "haiku",
+        "hurd",
+        "android",
+        "wasi",
+        "emscripten",
+        "fuchsia",
+        "uefi",
+        "mingw32",
+        "mingw64",
+        "cygwin",
+        "illumos",
+        "aix",
+    }
+
+    def is_os_token(token: str) -> bool:
+        lowered = token.lower()
+        return lowered in os_tokens or lowered in os_aliases
+
+    arch = arch_aliases.get(parts[0].lower(), parts[0].lower())
+    remainder = [part.lower() for part in parts[1:]]
+    abi = None
+    if remainder:
+        last = remainder[-1]
+        if len(remainder) >= 2 and last in abi_tokens and is_os_token(remainder[-2]):
+            abi = abi_aliases.get(last, last)
+            remainder = remainder[:-1]
+        elif last in abi_tokens and last not in os_tokens:
+            abi = abi_aliases.get(last, last)
+            remainder = remainder[:-1]
+    os_part = remainder[-1] if remainder else None
+    vendor_parts = remainder[:-1] if len(remainder) > 1 else []
+    if os_part is None:
+        return f"{arch}-{abi}" if abi else arch
+    os_token = os_part.lower()
+    match = re.match(r"^(darwin|macosx|macos|ios|tvos|watchos)([0-9].*)$", os_token)
+    if match:
+        os_token = match.group(1)
+    os_name = os_aliases.get(os_token, os_token)
+    if os_name in {"unknown", "none"}:
+        os_name = "freestanding"
+    if os_name == "windows" and abi is None:
+        if any(token in {"w64", "mingw32", "mingw64"} for token in vendor_parts):
+            abi = "gnu"
+    if os_name in {"mingw32", "mingw64"}:
+        os_name = "windows"
+        if abi is None:
+            abi = "gnu"
+    if os_name in {"macos", "ios", "tvos", "watchos"}:
+        if abi == "sim":
+            abi = "simulator"
+        elif os_name == "macos":
+            abi = None
+        elif abi in {
+            "gnu",
+            "gnueabi",
+            "gnueabihf",
+            "gnuabi64",
+            "gnux32",
+            "musl",
+            "musleabi",
+            "musleabihf",
+            "msvc",
+            "android",
+            "eabi",
+            "eabihf",
+            "uclibc",
+        }:
+            abi = None
+
+    if abi:
+        return f"{arch}-{os_name}-{abi}"
     return f"{arch}-{os_name}"
 
 
@@ -1656,16 +4046,18 @@ def build(
     type_hint_policy: TypeHintPolicy = "ignore",
     fallback_policy: FallbackPolicy = "error",
     type_facts_path: str | None = None,
+    pgo_profile: str | None = None,
     output: str | None = None,
     json_output: bool = False,
     verbose: bool = False,
     deterministic: bool = True,
     deterministic_warn: bool = False,
     trusted: bool = False,
-    capabilities: str | list[str] | None = None,
+    capabilities: CapabilityInput | None = None,
     cache: bool = True,
     cache_dir: str | None = None,
     cache_report: bool = False,
+    sysroot: str | None = None,
     emit_ir: str | None = None,
     emit: EmitMode | None = None,
     out_dir: str | None = None,
@@ -1676,6 +4068,8 @@ def build(
     respect_pythonpath: bool = False,
     module: str | None = None,
 ) -> int:
+    if isinstance(profile, bool):
+        profile = "release"
     if profile not in {"dev", "release"}:
         return _fail(f"Invalid build profile: {profile}", json_output, command="build")
     if file_path and module:
@@ -1685,15 +4079,20 @@ def build(
     if not file_path and not module:
         return _fail("Missing entry file or module.", json_output, command="build")
 
-    stdlib_root = Path("src/molt/stdlib")
+    stdlib_root = _stdlib_root_path()
     warnings: list[str] = []
+    cwd_root = _find_project_root(Path.cwd())
     project_root = (
-        _find_project_root(Path(file_path).resolve())
-        if file_path
-        else _find_project_root(Path.cwd())
+        _find_project_root(Path(file_path).resolve()) if file_path else cwd_root
     )
+    if not _has_project_markers(project_root) and _has_project_markers(cwd_root):
+        project_root = cwd_root
+    molt_root = _find_molt_root(project_root, cwd_root)
+    root_error = _require_molt_root(molt_root, json_output, "build")
+    if root_error is not None:
+        return root_error
     lock_error = _check_lockfiles(
-        project_root,
+        molt_root,
         json_output,
         warnings,
         deterministic,
@@ -1702,10 +4101,51 @@ def build(
     )
     if lock_error is not None:
         return lock_error
+    sysroot_path = _resolve_sysroot(project_root, sysroot)
+    if sysroot_path is not None and not sysroot_path.exists():
+        return _fail(
+            f"Sysroot not found: {sysroot_path}",
+            json_output,
+            command="build",
+        )
+    pgo_profile_summary: PgoProfileSummary | None = None
+    pgo_profile_path: Path | None = None
+    if pgo_profile:
+        summary, resolved, err = _load_pgo_profile(
+            project_root,
+            pgo_profile,
+            warnings,
+            json_output,
+            command="build",
+        )
+        if err is not None:
+            return err
+        pgo_profile_summary = summary
+        pgo_profile_path = resolved
+    pgo_profile_payload: dict[str, Any] | None = None
+    if pgo_profile_summary is not None and pgo_profile_path is not None:
+        pgo_profile_payload = {
+            "path": str(pgo_profile_path),
+            "version": pgo_profile_summary.version,
+            "hash": pgo_profile_summary.hash,
+            "hot_functions": pgo_profile_summary.hot_functions,
+        }
+    cargo_timeout, timeout_err = _resolve_timeout_env("MOLT_CARGO_TIMEOUT")
+    if timeout_err:
+        return _fail(timeout_err, json_output, command="build")
+    backend_timeout, timeout_err = _resolve_timeout_env("MOLT_BACKEND_TIMEOUT")
+    if timeout_err:
+        return _fail(timeout_err, json_output, command="build")
+    link_timeout, timeout_err = _resolve_timeout_env("MOLT_LINK_TIMEOUT")
+    if timeout_err:
+        return _fail(timeout_err, json_output, command="build")
+    backend_profile, profile_err = _resolve_backend_profile()
+    if profile_err:
+        return _fail(profile_err, json_output, command="build")
     capabilities_list: list[str] | None = None
     capabilities_source = None
     capability_profiles: list[str] = []
-    if capabilities:
+    if capabilities is not None:
         parsed, profiles, source, errors = _parse_capabilities(capabilities)
         if errors:
             return _fail(
@@ -1734,9 +4174,6 @@ def build(
             module_roots.append(src_root)
         module_roots.extend(_vendor_roots(root))
     source_path: Path | None = None
-    entry_module_name: str | None = None
-    entry_module_name: str | None = None
-    entry_module_name: str | None = None
     entry_module: str | None = None
     if file_path:
         source_path = Path(file_path)
@@ -1769,7 +4206,13 @@ def build(
     if source_path is None or entry_module is None:
         return _fail("Failed to resolve entry module.", json_output, command="build")
     try:
-        entry_source = source_path.read_text()
+        entry_source = _read_module_source(source_path)
+    except (SyntaxError, UnicodeDecodeError) as exc:
+        return _fail(
+            f"Syntax error in {source_path}: {exc}",
+            json_output,
+            command="build",
+        )
     except OSError as exc:
         return _fail(
             f"Failed to read entry module {source_path}: {exc}",
@@ -1777,25 +4220,89 @@ def build(
             command="build",
         )
     try:
-        entry_tree = ast.parse(entry_source)
+        entry_tree = ast.parse(entry_source, filename=str(source_path))
     except SyntaxError as exc:
         return _fail(
             f"Syntax error in {source_path}: {exc}",
             json_output,
             command="build",
         )
-    entry_imports = set(_collect_imports(entry_tree))
+    (
+        entry_pkg_override_set,
+        entry_pkg_override,
+        entry_spec_override_set,
+        entry_spec_override,
+        entry_spec_override_is_package,
+    ) = _infer_module_overrides(entry_tree)
+    if entry_pkg_override_set and entry_pkg_override:
+        root = _package_root_for_override(source_path, entry_pkg_override)
+        if root is not None:
+            source_parent = source_path.parent.resolve()
+            module_roots = [
+                candidate
+                for candidate in module_roots
+                if candidate.resolve() != source_parent
+            ]
+            module_roots.append(root)
+            entry_module = _module_name_from_path(source_path, [root], stdlib_root)
+    elif entry_spec_override_set and entry_spec_override:
+        override_is_package = (
+            entry_spec_override_is_package
+            if entry_spec_override_is_package is not None
+            else source_path.name == "__init__.py"
+        )
+        package_name = _spec_parent(entry_spec_override, override_is_package)
+        if package_name:
+            root = _package_root_for_override(source_path, package_name)
+            if root is not None:
+                source_parent = source_path.parent.resolve()
+                module_roots = [
+                    candidate
+                    for candidate in module_roots
+                    if candidate.resolve() != source_parent
+                ]
+                module_roots.append(root)
+                entry_module = _module_name_from_path(source_path, [root], stdlib_root)
+    module_roots = list(dict.fromkeys(root.resolve() for root in module_roots))
+    entry_imports = set(
+        _collect_imports(entry_tree, entry_module, source_path.name == "__init__.py")
+    )
     stub_parents = STUB_PARENT_MODULES - entry_imports
+    stdlib_allowlist = _stdlib_allowlist()
     roots = module_roots + [stdlib_root]
     module_graph, explicit_imports = _discover_module_graph(
         source_path,
         roots,
         module_roots,
+        stdlib_root,
+        stdlib_allowlist,
         skip_modules=STUB_MODULES,
         stub_parents=stub_parents,
     )
-    _collect_package_parents(module_graph, roots)
+    _collect_package_parents(module_graph, roots, stdlib_root, stdlib_allowlist)
     _ensure_core_stdlib_modules(module_graph, stdlib_root)
+    intrinsic_enforced = _enforce_intrinsic_stdlib(
+        module_graph, stdlib_root, json_output
+    )
+    if intrinsic_enforced is not None:
+        return intrinsic_enforced
+    core_paths = [
+        path
+        for name in ("builtins", "sys")
+        if (path := module_graph.get(name)) is not None
+    ]
+    for core_path in core_paths:
+        core_graph, _ = _discover_module_graph(
+            core_path,
+            roots,
+            module_roots,
+            stdlib_root,
+            stdlib_allowlist,
+            skip_modules=STUB_MODULES,
+            stub_parents=stub_parents,
+        )
+        for name, path in core_graph.items():
+            module_graph.setdefault(name, path)
     spawn_enabled = False
     spawn_path = _resolve_module_path(ENTRY_OVERRIDE_SPAWN, [stdlib_root])
     if spawn_path is not None:
@@ -1804,13 +4311,15 @@ def build(
             spawn_path,
             roots,
             module_roots,
+            stdlib_root,
+            stdlib_allowlist,
             skip_modules=STUB_MODULES,
             stub_parents=stub_parents,
         )
         for name, path in spawn_graph.items():
             module_graph.setdefault(name, path)
     namespace_parents = _collect_namespace_parents(
-        module_graph, roots, explicit_imports
+        module_graph, roots, stdlib_root, stdlib_allowlist, explicit_imports
     )
     if verbose and not json_output:
         print(f"Project root: {project_root}")
@@ -1818,19 +4327,23 @@ def build(
         print(f"Modules discovered: {len(module_graph)}")
     output_base = _output_base_for_entry(entry_module, source_path)
     out_dir_path = _resolve_out_dir(project_root, out_dir)
-    artifacts_root, bin_root = _resolve_output_roots(
+    artifacts_root, bin_root, output_root = _resolve_output_roots(
         project_root, out_dir_path, output_base
     )
+    namespace_modules: dict[str, Path] = {}
     if namespace_parents:
-        namespace_modules: dict[str, Path] = {}
         for name in sorted(namespace_parents):
-            paths = _namespace_paths(name, roots)
+            paths = _namespace_paths(
+                name,
+                _roots_for_module(name, roots, stdlib_root, stdlib_allowlist),
+            )
             if not paths:
                 continue
             stub_path = _write_namespace_module(name, paths, artifacts_root)
             namespace_modules[name] = stub_path
         if namespace_modules:
             module_graph.update(namespace_modules)
+    namespace_module_names = set(namespace_modules)
     is_wasm = target == "wasm"
     if trusted and is_wasm:
         return _fail(
@@ -1883,7 +4396,7 @@ def build(
     if is_wasm:
         output_wasm = _resolve_output_path(
             output,
-            artifacts_root / "output.wasm",
+            output_root / "output.wasm",
             out_dir=out_dir_path,
             project_root=project_root,
         )
@@ -1907,7 +4420,7 @@ def build(
         if emit_mode == "obj":
             output_obj = _resolve_output_path(
                 output,
-                output_obj,
+                output_root / "output.o",
                 out_dir=out_dir_path,
                 project_root=project_root,
             )
@@ -1934,9 +4447,11 @@ def build(
             module_graph.pop(stub, None)
     if IMPORTER_MODULE_NAME not in module_graph:
         importer_names = sorted(
-            name
-            for name in module_graph
-            if name not in {IMPORTER_MODULE_NAME, "builtins"}
+            {
+                name
+                for name in module_graph
+                if name not in {IMPORTER_MODULE_NAME, "builtins"}
+            }.union(stub_parents)
         )
         importer_path = _write_importer_module(importer_names, artifacts_root)
         module_graph[IMPORTER_MODULE_NAME] = importer_path
@@ -1944,15 +4459,29 @@ def build(
     if machinery_path is not None:
         module_graph.setdefault("importlib.machinery", machinery_path)
     known_modules = set(module_graph.keys())
-    stdlib_allowlist = _stdlib_allowlist()
     stdlib_allowlist.update(STUB_MODULES)
     stdlib_allowlist.update(stub_parents)
     stdlib_allowlist.add("molt.stdlib")
     module_deps: dict[str, set[str]] = {}
     known_func_defaults: dict[str, dict[str, dict[str, Any]]] = {}
+    module_trees: dict[str, ast.AST] = {}
+    syntax_error_modules: dict[str, ModuleSyntaxErrorInfo] = {}
     for module_name, module_path in module_graph.items():
         try:
-            source = module_path.read_text()
+            source = _read_module_source(module_path)
+        except (SyntaxError, UnicodeDecodeError) as exc:
+            if module_name == entry_module:
+                return _fail(
+                    f"Syntax error in {module_path}: {exc}",
+                    json_output,
+                    command="build",
+                )
+            syntax_error_modules[module_name] = _syntax_error_info_from_exception(
+                exc, path=module_path
+            )
+            module_deps[module_name] = set()
+            known_func_defaults[module_name] = {}
+            continue
         except OSError as exc:
             return _fail(
                 f"Failed to read module {module_path}: {exc}",
@@ -1960,13 +4489,21 @@ def build(
                 command="build",
             )
         try:
-            tree = ast.parse(source)
+            tree = ast.parse(source, filename=str(module_path))
         except SyntaxError as exc:
-            return _fail(
-                f"Syntax error in {module_path}: {exc}",
-                json_output,
-                command="build",
+            if module_name == entry_module:
+                return _fail(
+                    f"Syntax error in {module_path}: {exc}",
+                    json_output,
+                    command="build",
+                )
+            syntax_error_modules[module_name] = _syntax_error_info_from_exception(
+                exc, path=module_path
             )
+            module_deps[module_name] = set()
+            known_func_defaults[module_name] = {}
+            continue
+        module_trees[module_name] = tree
         module_deps[module_name] = _module_dependencies(tree, module_name, module_graph)
         known_func_defaults[module_name] = _collect_func_defaults(tree)
     module_order = _topo_sort_modules(module_graph, module_deps)
@@ -2057,22 +4594,33 @@ def build(
     known_classes: dict[str, Any] = {}
     for module_name in module_order:
         module_path = module_graph[module_name]
-        try:
-            source = module_path.read_text()
-        except OSError as exc:
-            return _fail(
-                f"Failed to read module {module_path}: {exc}",
-                json_output,
-                command="build",
-            )
-        try:
-            tree = ast.parse(source)
-        except SyntaxError as exc:
-            return _fail(
-                f"Syntax error in {module_path}: {exc}",
-                json_output,
-                command="build",
-            )
+        if module_name in syntax_error_modules:
+            tree = _syntax_error_stub_ast(syntax_error_modules[module_name])
+        else:
+            tree = module_trees.get(module_name)
+            if tree is None:
+                try:
+                    source = _read_module_source(module_path)
+                except (SyntaxError, UnicodeDecodeError) as exc:
+                    return _fail(
+                        f"Syntax error in {module_path}: {exc}",
+                        json_output,
+                        command="build",
+                    )
+                except OSError as exc:
+                    return _fail(
+                        f"Failed to read module {module_path}: {exc}",
+                        json_output,
+                        command="build",
+                    )
+                try:
+                    tree = ast.parse(source, filename=str(module_path))
+                except SyntaxError as exc:
+                    return _fail(
+                        f"Syntax error in {module_path}: {exc}",
+                        json_output,
+                        command="build",
+                    )
         entry_override = entry_module
         if module_name == entry_module and entry_module != "__main__":
             entry_override = None
@@ -2083,6 +4631,7 @@ def build(
             source_path=str(module_path),
             type_facts=type_facts,
             module_name=module_name,
+            module_is_namespace=module_name in namespace_module_names,
             entry_module=entry_override,
             enable_phi=enable_phi,
             known_modules=known_modules,
@@ -2123,7 +4672,13 @@ def build(
                 command="build",
             )
         try:
-            source = entry_path.read_text()
+            source = _read_module_source(entry_path)
+        except (SyntaxError, UnicodeDecodeError) as exc:
+            return _fail(
+                f"Syntax error in {entry_path}: {exc}",
+                json_output,
+                command="build",
+            )
         except OSError as exc:
             return _fail(
                 f"Failed to read module {entry_path}: {exc}",
@@ -2131,7 +4686,7 @@ def build(
                 command="build",
             )
         try:
-            tree = ast.parse(source)
+            tree = ast.parse(source, filename=str(entry_path))
         except SyntaxError as exc:
             return _fail(
                 f"Syntax error in {entry_path}: {exc}",
@@ -2278,6 +4833,14 @@ def build(
         next_var += 1
         linetable_var = f"v{next_var}"
         next_var += 1
+        varnames_var = f"v{next_var}"
+        next_var += 1
+        argcount_var = f"v{next_var}"
+        next_var += 1
+        posonly_var = f"v{next_var}"
+        next_var += 1
+        kwonly_var = f"v{next_var}"
+        next_var += 1
         code_var = f"v{next_var}"
         next_var += 1
         module_code_ops.extend(
@@ -2290,9 +4853,22 @@ def build(
                 {"kind": "const_str", "s_value": "<module>", "out": name_var},
                 {"kind": "const", "value": 1, "out": line_var},
                 {"kind": "const_none", "out": linetable_var},
+                {"kind": "tuple_new", "args": [], "out": varnames_var},
+                {"kind": "const", "value": 0, "out": argcount_var},
+                {"kind": "const", "value": 0, "out": posonly_var},
+                {"kind": "const", "value": 0, "out": kwonly_var},
                 {
                     "kind": "code_new",
-                    "args": [file_var, name_var, line_var, linetable_var],
+                    "args": [
+                        file_var,
+                        name_var,
+                        line_var,
+                        linetable_var,
+                        varnames_var,
+                        argcount_var,
+                        posonly_var,
+                        kwonly_var,
+                    ],
                     "out": code_var,
                 },
                 {
@@ -2313,6 +4889,14 @@ def build(
         next_var += 1
         linetable_var = f"v{next_var}"
         next_var += 1
+        varnames_var = f"v{next_var}"
+        next_var += 1
+        argcount_var = f"v{next_var}"
+        next_var += 1
+        posonly_var = f"v{next_var}"
+        next_var += 1
+        kwonly_var = f"v{next_var}"
+        next_var += 1
         code_var = f"v{next_var}"
         next_var += 1
         module_code_ops.extend(
@@ -2325,9 +4909,22 @@ def build(
                 {"kind": "const_str", "s_value": "<module>", "out": name_var},
                 {"kind": "const", "value": 1, "out": line_var},
                 {"kind": "const_none", "out": linetable_var},
+                {"kind": "tuple_new", "args": [], "out": varnames_var},
+                {"kind": "const", "value": 0, "out": argcount_var},
+                {"kind": "const", "value": 0, "out": posonly_var},
+                {"kind": "const", "value": 0, "out": kwonly_var},
                 {
                     "kind": "code_new",
-                    "args": [file_var, name_var, line_var, linetable_var],
+                    "args": [
+                        file_var,
+                        name_var,
+                        line_var,
+                        linetable_var,
+                        varnames_var,
+                        argcount_var,
+                        posonly_var,
+                        kwonly_var,
+                    ],
                     "out": code_var,
                 },
                 {
@@ -2468,6 +5065,12 @@ def build(
         {"name": "molt_isolate_import", "params": ["p0"], "ops": import_ops}
     )
     ir = {"functions": functions}
+    if pgo_profile_summary is not None:
+        ir["profile"] = {
+            "version": pgo_profile_summary.version,
+            "hash": pgo_profile_summary.hash,
+            "hot_functions": pgo_profile_summary.hot_functions,
+        }
     if emit_ir_path is not None:
         try:
             emit_ir_path.write_text(
@@ -2477,18 +5080,19 @@ def build(
             return _fail(f"Failed to write IR: {exc}", json_output, command="build")
     runtime_lib: Path | None = None
     if is_wasm:
-        root = Path(__file__).resolve().parents[2]
-        runtime_wasm = root / "wasm" / "molt_runtime.wasm"
+        runtime_wasm = molt_root / "wasm" / "molt_runtime.wasm"
         if not _ensure_runtime_wasm(
             runtime_wasm,
             reloc=False,
             json_output=json_output,
             profile=profile,
+            cargo_timeout=cargo_timeout,
+            project_root=molt_root,
         ):
             return _fail("Runtime wasm build failed", json_output, command="build")
     elif emit_mode == "bin":
         profile_dir = _cargo_profile_dir(profile)
-        target_root = _cargo_target_root(project_root)
+        target_root = _cargo_target_root(molt_root)
         if target_triple:
             runtime_lib = (
                 target_root / target_triple / profile_dir / "libmolt_runtime.a"
@@ -2500,7 +5104,8 @@ def build(
             target_triple,
             json_output,
             profile,
-            project_root,
+            molt_root,
+            cargo_timeout,
         ):
             return _fail("Runtime build failed", json_output, command="build")
     cache_hit = False
@@ -2535,21 +5140,46 @@ def build(
 
     # 2. Backend: JSON IR -> output.o / output.wasm
     if not cache_hit:
-        backend_env = None
+        backend_env = os.environ.copy() if is_wasm else None
         reloc_requested = is_wasm and (
             linked or os.environ.get("MOLT_WASM_LINK") == "1"
         )
-        if reloc_requested:
-            backend_env = os.environ.copy()
+        if is_wasm and backend_env is not None:
+            if "MOLT_WASM_DATA_BASE" not in backend_env:
+                runtime_wasm = molt_root / "wasm" / "molt_runtime.wasm"
+                if not _ensure_runtime_wasm(
+                    runtime_wasm,
+                    reloc=False,
+                    json_output=json_output,
+                    profile=profile,
+                    cargo_timeout=cargo_timeout,
+                    project_root=molt_root,
+                ):
+                    return _fail(
+                        "Runtime wasm build failed",
+                        json_output,
+                        command="build",
+                    )
+            if runtime_wasm.exists():
+                data_end = _read_wasm_data_end(runtime_wasm)
+                if data_end is not None:
+                    aligned = (data_end + 7) & ~7
+                    backend_env["MOLT_WASM_DATA_BASE"] = str(aligned)
+                else:
+                    warnings.append(
+                        "Failed to read runtime data size; using default data base."
+                    )
+        if reloc_requested and backend_env is not None:
             backend_env["MOLT_WASM_LINK"] = "1"
             if "MOLT_WASM_TABLE_BASE" not in backend_env:
-                root = Path(__file__).resolve().parents[2]
-                runtime_reloc = root / "wasm" / "molt_runtime_reloc.wasm"
+                runtime_reloc = molt_root / "wasm" / "molt_runtime_reloc.wasm"
                 if linked and not _ensure_runtime_wasm(
                     runtime_reloc,
                     reloc=True,
                     json_output=json_output,
                     profile=profile,
+                    cargo_timeout=cargo_timeout,
+                    project_root=molt_root,
                 ):
                     return _fail(
                         "Runtime wasm build failed",
@@ -2564,10 +5194,18 @@ def build(
                         warnings.append(
                             "Failed to read runtime table size; using default table base."
                         )
-        cmd = ["cargo", "run", "--quiet"]
-        if profile == "release":
-            cmd.append("--release")
-        cmd.extend(["--package", "molt-backend", "--"])
+        backend_bin = _backend_bin_path(molt_root, backend_profile)
+        if not _ensure_backend_binary(
+            backend_bin,
+            cargo_timeout=cargo_timeout,
+            json_output=json_output,
+            profile=backend_profile,
+            project_root=molt_root,
+        ):
+            return _fail("Backend build failed", json_output, command="build")
+        if not backend_bin.exists():
+            return _fail("Backend binary missing", json_output, command="build")
+        cmd = [str(backend_bin)]
         if is_wasm:
             cmd.extend(["--target", "wasm"])
         elif target_triple:
@@ -2581,13 +5219,21 @@ def build(
                 "output.wasm" if is_wasm else "output.o"
             )
             cmd_with_output = cmd + ["--output", str(backend_output)]
-            backend_process = subprocess.run(
-                cmd_with_output,
-                input=json.dumps(ir, default=_json_ir_default),
-                text=True,
-                capture_output=True,
-                env=backend_env,
-            )
+            try:
+                backend_process = subprocess.run(
+                    cmd_with_output,
+                    input=json.dumps(ir, default=_json_ir_default),
+                    text=True,
+                    capture_output=True,
+                    env=backend_env,
+                    timeout=backend_timeout,
+                )
+            except subprocess.TimeoutExpired:
+                return _fail(
+                    "Backend compilation timed out",
+                    json_output,
+                    command="build",
+                )
             if backend_process.returncode != 0:
                 if not json_output:
                     if backend_process.stderr:
@@ -2636,13 +5282,14 @@ def build(
     if is_wasm:
         output_wasm = output_artifact
         if linked:
-            root = Path(__file__).resolve().parents[2]
-            runtime_reloc = root / "wasm" / "molt_runtime_reloc.wasm"
+            runtime_reloc = molt_root / "wasm" / "molt_runtime_reloc.wasm"
             if not _ensure_runtime_wasm(
                 runtime_reloc,
                 reloc=True,
                 json_output=json_output,
                 profile=profile,
+                cargo_timeout=cargo_timeout,
+                project_root=molt_root,
             ):
                 return _fail(
                     "Runtime wasm build failed",
@@ -2653,7 +5300,7 @@ def build(
                 linked_output_path = output_wasm.with_name("output_linked.wasm")
             if linked_output_path.parent != Path("."):
                 linked_output_path.parent.mkdir(parents=True, exist_ok=True)
-            tool = root / "tools" / "wasm_link.py"
+            tool = molt_root / "tools" / "wasm_link.py"
             link_process = subprocess.run(
                 [
                     sys.executable,
@@ -2665,7 +5312,7 @@ def build(
                     "--output",
                     str(linked_output_path),
                 ],
-                cwd=root,
+                cwd=molt_root,
                 capture_output=True,
                 text=True,
             )
@@ -2704,12 +5351,15 @@ def build(
                 "capabilities": capabilities_list,
                 "capability_profiles": capability_profiles,
                 "capabilities_source": capabilities_source,
+                "sysroot": str(sysroot_path) if sysroot_path is not None else None,
                 "cache": cache_info,
                 "emit": emit_mode,
                 "profile": profile,
                 "linked": linked,
                 "require_linked": require_linked,
             }
+            if pgo_profile_payload is not None:
+                data["pgo_profile"] = pgo_profile_payload
             if linked_output_path is not None:
                 data["linked_output"] = str(linked_output_path)
             if emit_ir_path is not None:
@@ -2748,11 +5398,14 @@ def build(
                 "capabilities": capabilities_list,
                 "capability_profiles": capability_profiles,
                 "capabilities_source": capabilities_source,
+                "sysroot": str(sysroot_path) if sysroot_path is not None else None,
                 "cache": cache_info,
                 "emit": emit_mode,
                 "profile": profile,
                 "artifacts": {"object": str(output_obj)},
             }
+            if pgo_profile_payload is not None:
+                data["pgo_profile"] = pgo_profile_payload
             if emit_ir_path is not None:
                 data["emit_ir"] = str(emit_ir_path)
             payload = _json_payload(
@@ -2802,6 +5455,7 @@ static void molt_set_capabilities() {{
 #include <wchar.h>
 #endif
 extern unsigned long long molt_runtime_init();
+extern void molt_runtime_ensure_gil();
 extern unsigned long long molt_runtime_shutdown();
 extern void molt_set_argv(int argc, const char** argv);
 #ifdef _WIN32
@@ -2842,6 +5496,7 @@ static int molt_finish() {
         unsigned long long exc = molt_exception_last();
         molt_raise(exc);
         molt_dec_ref(exc);
+        molt_runtime_shutdown();
         return 1;
     }
     const char* profile = getenv("MOLT_PROFILE");
@@ -2857,6 +5512,7 @@ int wmain(int argc, wchar_t** argv) {
     /* MOLT_TRUSTED_CALL */
     /* MOLT_CAPABILITIES_CALL */
     molt_runtime_init();
+    molt_runtime_ensure_gil();
     molt_set_argv_utf16(argc, (const wchar_t**)argv);
     molt_main();
     return molt_finish();
@@ -2866,6 +5522,7 @@ int main(int argc, char** argv) {
     /* MOLT_TRUSTED_CALL */
     /* MOLT_CAPABILITIES_CALL */
     molt_runtime_init();
+    molt_runtime_ensure_gil();
     molt_set_argv(argc, (const char**)argv);
     molt_main();
     return molt_finish();
@@ -2891,7 +5548,7 @@ int main(int argc, char** argv) {
         output_binary.parent.mkdir(parents=True, exist_ok=True)
     if runtime_lib is None:
         profile_dir = _cargo_profile_dir(profile)
-        target_root = _cargo_target_root(project_root)
+        target_root = _cargo_target_root(molt_root)
         if target_triple:
             runtime_lib = (
                 target_root / target_triple / profile_dir / "libmolt_runtime.a"
@@ -2902,8 +5559,6 @@ int main(int argc, char** argv) {
     cc = os.environ.get("CC", "clang")
     link_cmd = shlex.split(cc)
     if target_triple:
-        # TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): support sysroot configuration,
-        # target-specific flags, and cached runtime cross-builds.
         cross_cc = os.environ.get("MOLT_CROSS_CC")
         target_arg = target_triple
         if cross_cc:
@@ -2922,6 +5577,15 @@ int main(int argc, char** argv) {
                 command="build",
             )
         link_cmd.extend(["-target", target_arg])
+    if sysroot_path is not None:
+        sysroot_flag = "--sysroot"
+        if link_cmd and Path(link_cmd[0]).name.startswith("zig"):
+            sysroot_flag = "--sysroot"
+        elif (
+            target_triple and ("apple" in target_triple or "darwin" in target_triple)
+        ) or (not target_triple and sys.platform == "darwin"):
+            sysroot_flag = "-isysroot"
+        link_cmd.extend([sysroot_flag, str(sysroot_path)])
     cflags = os.environ.get("CFLAGS", "")
     if cflags:
         link_cmd.extend(shlex.split(cflags))
@@ -2952,11 +5616,15 @@ int main(int argc, char** argv) {
             link_cmd.append("-lstdc++")
             link_cmd.append("-lm")
 
-    link_process = subprocess.run(
-        link_cmd,
-        capture_output=json_output,
-        text=True,
-    )
+    try:
+        link_process = subprocess.run(
+            link_cmd,
+            capture_output=json_output,
+            text=True,
+            timeout=link_timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return _fail("Linker timed out", json_output, command="build")
 
     if link_process.returncode == 0:
         if json_output:
@@ -2980,10 +5648,13 @@ int main(int argc, char** argv) {
                 "capabilities": capabilities_list,
                 "capability_profiles": capability_profiles,
                 "capabilities_source": capabilities_source,
+                "sysroot": str(sysroot_path) if sysroot_path is not None else None,
                 "cache": cache_info,
                 "emit": emit_mode,
                 "profile": profile,
             }
+            if pgo_profile_payload is not None:
+                data["pgo_profile"] = pgo_profile_payload
             if emit_ir_path is not None:
                 data["emit_ir"] = str(emit_ir_path)
             if link_process.stdout:
@@ -3009,6 +5680,8 @@ int main(int argc, char** argv) {
                 "profile": profile,
                 "trusted": trusted,
             }
+            if pgo_profile_payload is not None:
+                data["pgo_profile"] = pgo_profile_payload
             data["cache"] = {
                 "enabled": cache,
                 "hit": cache_hit,
@@ -3036,15 +5709,12 @@ int main(int argc, char** argv) {
 def run_script(
     file_path: str | None,
     module: str | None,
-    python_exe: str | None,
     script_args: list[str],
     json_output: bool = False,
     verbose: bool = False,
-    no_shims: bool = False,
-    compiled: bool = False,
     timing: bool = False,
     trusted: bool = False,
-    capabilities: str | list[str] | None = None,
+    capabilities: CapabilityInput | None = None,
     build_args: list[str] | None = None,
 ) -> int:
     if file_path and module:
@@ -3053,21 +5723,22 @@ def run_script(
         )
     if not file_path and not module:
         return _fail("Missing entry file or module.", json_output, command="run")
-    root = (
+    project_root = (
         _find_project_root(Path(file_path).resolve())
         if file_path
         else _find_project_root(Path.cwd())
     )
+    molt_root = _find_molt_root(project_root, Path.cwd())
     source_path: Path | None = None
     entry_module_name: str | None = None
     if file_path:
         source_path = Path(file_path)
         if not source_path.exists():
             return _fail(f"File not found: {source_path}", json_output, command="run")
-    elif module and compiled:
+    elif module:
         cwd_root = _find_project_root(Path.cwd())
         module_roots = _resolve_module_roots(
-            root,
+            project_root,
             cwd_root,
             respect_pythonpath=_build_args_respect_pythonpath(build_args or []),
         )
@@ -3079,12 +5750,12 @@ def run_script(
                 command="run",
             )
         entry_module_name, source_path = resolved
-    env = _base_env(root, source_path)
+    env = _base_env(project_root, source_path, molt_root=molt_root)
     if file_path:
         env.update(_collect_env_overrides(file_path))
     if trusted:
         env["MOLT_TRUSTED"] = "1"
-    if capabilities:
+    if capabilities is not None:
         parsed, _profiles, _source, errors = _parse_capabilities(capabilities)
         if errors:
             return _fail(
@@ -3095,26 +5766,24 @@ def run_script(
         if parsed is not None:
             env["MOLT_CAPABILITIES"] = ",".join(parsed)
 
-    if compiled:
-        build_args = list(build_args or [])
-        if trusted and not _build_args_has_trusted_flag(build_args):
-            build_args.append("--trusted")
-        if capabilities and not _build_args_has_capabilities_flag(build_args):
-            if isinstance(capabilities, list):
-                cap_arg = ",".join(capabilities)
-            else:
-                cap_arg = capabilities
-            build_args.extend(["--capabilities", cap_arg])
-        build_cmd = [sys.executable, "-m", "molt.cli", "build", *build_args]
-        if module:
-            build_cmd.extend(["--module", module])
-        else:
-            build_cmd.append(file_path)
+    build_args = list(build_args or [])
+    capabilities_tmp: Path | None = None
+    if trusted and not _build_args_has_trusted_flag(build_args):
+        build_args.append("--trusted")
+    if capabilities is not None and not _build_args_has_capabilities_flag(build_args):
+        cap_arg, capabilities_tmp = _materialize_capabilities_arg(capabilities)
+        build_args.extend(["--capabilities", cap_arg])
+    build_cmd = [sys.executable, "-m", "molt.cli", "build", *build_args]
+    if module:
+        build_cmd.extend(["--module", module])
+    else:
+        build_cmd.append(file_path)
+    try:
         if timing:
             build_res = _run_command_timed(
                 build_cmd,
                 env=env,
-                cwd=root,
+                cwd=project_root,
                 verbose=verbose,
                 capture_output=json_output,
             )
@@ -3140,7 +5809,7 @@ def run_script(
             build_res = subprocess.run(
                 build_cmd,
                 env=env,
-                cwd=root,
+                cwd=project_root,
                 capture_output=json_output,
                 text=json_output,
             )
@@ -3163,124 +5832,63 @@ def run_script(
                     if build_res.stderr:
                         print(build_res.stderr, end="", file=sys.stderr)
                 return build_res.returncode
-        emit_arg = _extract_emit_arg(build_args)
-        if emit_arg and emit_arg != "bin":
-            return _fail(
-                f"Compiled run requires emit=bin (got {emit_arg})",
-                json_output,
-                command="run",
-            )
-        output_binary = _extract_output_arg(build_args)
-        out_dir = _extract_out_dir_arg(build_args)
-        out_dir_path = _resolve_out_dir(root, out_dir)
-        if entry_module_name is None:
-            cwd_root = _find_project_root(Path.cwd())
-            module_roots = _resolve_module_roots(
-                root,
-                cwd_root,
-                respect_pythonpath=_build_args_respect_pythonpath(build_args),
-            )
-            if source_path is not None:
-                module_roots.append(source_path.parent.resolve())
-                module_roots = list(dict.fromkeys(module_roots))
-                entry_module_name = _module_name_from_path(
-                    source_path, module_roots, Path("src/molt/stdlib")
-                )
-        if entry_module_name is None or source_path is None:
-            return _fail("Failed to resolve entry module.", json_output, command="run")
-        output_base = _output_base_for_entry(entry_module_name, source_path)
-        _artifacts_root, bin_root = _resolve_output_roots(
-            root, out_dir_path, output_base
+    finally:
+        if capabilities_tmp is not None:
+            try:
+                capabilities_tmp.unlink()
+            except OSError:
+                pass
+    emit_arg = _extract_emit_arg(build_args)
+    if emit_arg and emit_arg != "bin":
+        return _fail(
+            f"Compiled run requires emit=bin (got {emit_arg})",
+            json_output,
+            command="run",
         )
-        output_binary = _resolve_output_path(
-            str(output_binary) if output_binary is not None else None,
-            bin_root / f"{output_base}_molt",
-            out_dir=out_dir_path,
-            project_root=root,
+    output_binary = _extract_output_arg(build_args)
+    out_dir = _extract_out_dir_arg(build_args)
+    out_dir_path = _resolve_out_dir(project_root, out_dir)
+    if entry_module_name is None:
+        cwd_root = _find_project_root(Path.cwd())
+        module_roots = _resolve_module_roots(
+            project_root,
+            cwd_root,
+            respect_pythonpath=_build_args_respect_pythonpath(build_args),
         )
-        if timing:
-            run_res = _run_command_timed(
-                [str(output_binary), *script_args],
-                env=env,
-                cwd=root,
-                verbose=verbose,
-                capture_output=json_output,
+        if source_path is not None:
+            module_roots.append(source_path.parent.resolve())
+            module_roots = list(dict.fromkeys(module_roots))
+            entry_module_name = _module_name_from_path(
+                source_path, module_roots, _stdlib_root_path()
             )
-            if json_output:
-                data = {
-                    "returncode": run_res.returncode,
-                    "timing": {
-                        "build_s": build_res.duration_s,
-                        "run_s": run_res.duration_s,
-                        "total_s": build_res.duration_s + run_res.duration_s,
-                    },
-                }
-                if run_res.stdout:
-                    data["stdout"] = run_res.stdout
-                if run_res.stderr:
-                    data["stderr"] = run_res.stderr
-                payload = _json_payload(
-                    "run",
-                    "ok" if run_res.returncode == 0 else "error",
-                    data=data,
-                )
-                _emit_json(payload, json_output=True)
-            else:
-                print("Timing (compiled):", file=sys.stderr)
-                print(
-                    f"- build: {_format_duration(build_res.duration_s)}",
-                    file=sys.stderr,
-                )
-                print(
-                    f"- run: {_format_duration(run_res.duration_s)}",
-                    file=sys.stderr,
-                )
-                total = build_res.duration_s + run_res.duration_s
-                print(f"- total: {_format_duration(total)}", file=sys.stderr)
-            return run_res.returncode
-        return _run_command(
-            [str(output_binary), *script_args],
-            env=env,
-            cwd=root,
-            json_output=json_output,
-            verbose=verbose,
-            label="run",
-        )
-
-    python_exe = _resolve_python_exe(python_exe)
-    if module:
-        if no_shims:
-            cmd = [python_exe, "-m", module, *script_args]
-        else:
-            bootstrap = (
-                "import runpy, sys; "
-                "import molt.shims as shims; "
-                "shims.install(); "
-                "runpy.run_module(sys.argv[1], run_name='__main__')"
-            )
-            cmd = [python_exe, "-c", bootstrap, module, *script_args]
-    elif no_shims:
-        cmd = [python_exe, str(source_path), *script_args]
-    else:
-        bootstrap = (
-            "import runpy, sys; "
-            "import molt.shims as shims; "
-            "shims.install(); "
-            "runpy.run_path(sys.argv[1], run_name='__main__')"
-        )
-        cmd = [python_exe, "-c", bootstrap, str(source_path), *script_args]
+    if entry_module_name is None or source_path is None:
+        return _fail("Failed to resolve entry module.", json_output, command="run")
+    output_base = _output_base_for_entry(entry_module_name, source_path)
+    _artifacts_root, bin_root, _output_root = _resolve_output_roots(
+        project_root, out_dir_path, output_base
+    )
+    output_binary = _resolve_output_path(
+        str(output_binary) if output_binary is not None else None,
+        bin_root / f"{output_base}_molt",
+        out_dir=out_dir_path,
+        project_root=project_root,
+    )
     if timing:
         run_res = _run_command_timed(
-            cmd,
+            [str(output_binary), *script_args],
             env=env,
-            cwd=root,
+            cwd=project_root,
             verbose=verbose,
             capture_output=json_output,
         )
         if json_output:
             data = {
                 "returncode": run_res.returncode,
-                "timing": {"run_s": run_res.duration_s},
+                "timing": {
+                    "build_s": build_res.duration_s,
+                    "run_s": run_res.duration_s,
+                    "total_s": build_res.duration_s + run_res.duration_s,
+                },
             }
             if run_res.stdout:
                 data["stdout"] = run_res.stdout
@@ -3293,14 +5901,22 @@ def run_script(
             )
             _emit_json(payload, json_output=True)
         else:
-            label = "CPython (shims)" if not no_shims else "CPython"
-            print(f"Timing ({label}):", file=sys.stderr)
-            print(f"- run: {_format_duration(run_res.duration_s)}", file=sys.stderr)
+            print("Timing (compiled):", file=sys.stderr)
+            print(
+                f"- build: {_format_duration(build_res.duration_s)}",
+                file=sys.stderr,
+            )
+            print(
+                f"- run: {_format_duration(run_res.duration_s)}",
+                file=sys.stderr,
+            )
+            total = build_res.duration_s + run_res.duration_s
+            print(f"- total: {_format_duration(total)}", file=sys.stderr)
         return run_res.returncode
     return _run_command(
-        cmd,
+        [str(output_binary), *script_args],
         env=env,
-        cwd=root,
+        cwd=project_root,
         json_output=json_output,
         verbose=verbose,
         label="run",
@@ -3314,9 +5930,8 @@ def compare(
     script_args: list[str],
     json_output: bool = False,
     verbose: bool = False,
-    shims: bool = False,
     trusted: bool = False,
-    capabilities: str | list[str] | None = None,
+    capabilities: CapabilityInput | None = None,
     build_args: list[str] | None = None,
     rebuild: bool = False,
 ) -> int:
@@ -3335,17 +5950,18 @@ def compare(
             return _fail(
                 f"File not found: {source_path}", json_output, command="compare"
             )
-    root = (
+    project_root = (
         _find_project_root(Path(file_path).resolve())
         if file_path
         else _find_project_root(Path.cwd())
     )
-    env = _base_env(root, source_path)
+    molt_root = _find_molt_root(project_root, Path.cwd())
+    env = _base_env(project_root, source_path, molt_root=molt_root)
     if file_path:
         env.update(_collect_env_overrides(file_path))
     if trusted:
         env["MOLT_TRUSTED"] = "1"
-    if capabilities:
+    if capabilities is not None:
         parsed, _profiles, _source, errors = _parse_capabilities(capabilities)
         if errors:
             return _fail(
@@ -3358,44 +5974,25 @@ def compare(
 
     python_exe = _resolve_python_exe(python_exe)
     if module:
-        if shims:
-            bootstrap = (
-                "import runpy, sys; "
-                "import molt.shims as shims; "
-                "shims.install(); "
-                "runpy.run_module(sys.argv[1], run_name='__main__')"
-            )
-            cpy_cmd = [python_exe, "-c", bootstrap, module, *script_args]
-        else:
-            cpy_cmd = [python_exe, "-m", module, *script_args]
-    elif shims:
-        bootstrap = (
-            "import runpy, sys; "
-            "import molt.shims as shims; "
-            "shims.install(); "
-            "runpy.run_path(sys.argv[1], run_name='__main__')"
-        )
-        cpy_cmd = [python_exe, "-c", bootstrap, str(source_path), *script_args]
+        cpy_cmd = [python_exe, "-m", module, *script_args]
     else:
         cpy_cmd = [python_exe, str(source_path), *script_args]
     cpy_res = _run_command_timed(
         cpy_cmd,
         env=env,
-        cwd=root,
+        cwd=project_root,
         verbose=verbose,
         capture_output=True,
     )
 
     build_args = list(build_args or [])
+    capabilities_tmp: Path | None = None
     if rebuild and not _build_args_has_cache_flag(build_args):
         build_args.append("--no-cache")
     if trusted and not _build_args_has_trusted_flag(build_args):
         build_args.append("--trusted")
-    if capabilities and not _build_args_has_capabilities_flag(build_args):
-        if isinstance(capabilities, list):
-            cap_arg = ",".join(capabilities)
-        else:
-            cap_arg = capabilities
+    if capabilities is not None and not _build_args_has_capabilities_flag(build_args):
+        cap_arg, capabilities_tmp = _materialize_capabilities_arg(capabilities)
         build_args.extend(["--capabilities", cap_arg])
     emit_arg = _extract_emit_arg(build_args)
     if emit_arg and emit_arg != "bin":
@@ -3416,13 +6013,20 @@ def compare(
         build_cmd.extend(["--module", module])
     else:
         build_cmd.append(file_path)
-    build_res = _run_command_timed(
-        build_cmd,
-        env=env,
-        cwd=root,
-        verbose=verbose,
-        capture_output=True,
-    )
+    try:
+        build_res = _run_command_timed(
+            build_cmd,
+            env=env,
+            cwd=project_root,
+            verbose=verbose,
+            capture_output=True,
+        )
+    finally:
+        if capabilities_tmp is not None:
+            try:
+                capabilities_tmp.unlink()
+            except OSError:
+                pass
     if build_res.returncode != 0:
         if json_output:
             data: dict[str, Any] = {
@@ -3470,7 +6074,7 @@ def compare(
     molt_res = _run_command_timed(
         [str(output_path), *script_args],
         env=env,
-        cwd=root,
+        cwd=project_root,
         verbose=verbose,
         capture_output=True,
     )
@@ -3578,8 +6182,11 @@ def diff(
     json_output: bool = False,
     verbose: bool = False,
 ) -> int:
-    root = _find_project_root(Path.cwd())
-    env = _base_env(root)
+    root = _find_molt_root(Path.cwd())
+    root_error = _require_molt_root(root, json_output, "diff")
+    if root_error is not None:
+        return root_error
+    env = _base_env(root, molt_root=root)
     if trusted:
         env["MOLT_TRUSTED"] = "1"
     cmd = [sys.executable, "tests/molt_diff.py"]
@@ -3598,7 +6205,10 @@ def diff(
 
 
 def lint(json_output: bool = False, verbose: bool = False) -> int:
-    root = _find_project_root(Path.cwd())
+    root = _find_molt_root(Path.cwd())
+    root_error = _require_molt_root(root, json_output, "lint")
+    if root_error is not None:
+        return root_error
     cmd = [sys.executable, "tools/dev.py", "lint"]
     return _run_command(
         cmd,
@@ -3618,8 +6228,11 @@ def test(
     json_output: bool = False,
     verbose: bool = False,
 ) -> int:
-    root = _find_project_root(Path.cwd())
-    env = _base_env(root)
+    root = _find_molt_root(Path.cwd())
+    root_error = _require_molt_root(root, json_output, "test")
+    if root_error is not None:
+        return root_error
+    env = _base_env(root, molt_root=root)
     if trusted:
         env["MOLT_TRUSTED"] = "1"
     if suite == "dev":
@@ -3652,7 +6265,10 @@ def bench(
     json_output: bool = False,
     verbose: bool = False,
 ) -> int:
-    root = _find_project_root(Path.cwd())
+    root = _find_molt_root(Path.cwd())
+    root_error = _require_molt_root(root, json_output, "bench")
+    if root_error is not None:
+        return root_error
     tool = "tools/bench_wasm.py" if wasm else "tools/bench.py"
     cmd = [sys.executable, tool]
     for script in bench_script or []:
@@ -3672,7 +6288,10 @@ def profile(
     json_output: bool = False,
     verbose: bool = False,
 ) -> int:
-    root = _find_project_root(Path.cwd())
+    root = _find_molt_root(Path.cwd())
+    root_error = _require_molt_root(root, json_output, "profile")
+    if root_error is not None:
+        return root_error
     cmd = [sys.executable, "tools/profile.py", *profile_args]
     return _run_command(
         cmd,
@@ -3688,7 +6307,10 @@ def doctor(
     verbose: bool = False,
     strict: bool = False,
 ) -> int:
-    root = _find_project_root(Path.cwd())
+    root = _find_molt_root(Path.cwd())
+    root_error = _require_molt_root(root, json_output, "doctor")
+    if root_error is not None:
+        return root_error
     checks: list[dict[str, Any]] = []
     warnings: list[str] = []
     errors: list[str] = []
@@ -3893,6 +6515,251 @@ def doctor(
     return 0
 
 
+def _resolve_sidecar_path(output_path: Path, override: str | None, suffix: str) -> Path:
+    if override:
+        path = Path(override).expanduser()
+        if not path.is_absolute():
+            path = (output_path.parent / path).absolute()
+        return path
+    return output_path.with_name(output_path.stem + suffix)
+
+
+def _is_remote_registry(registry: str) -> bool:
+    scheme = urllib.parse.urlparse(registry).scheme.lower()
+    return scheme in REMOTE_REGISTRY_SCHEMES
+
+
+def _validate_registry_url(registry: str) -> str | None:
+    parsed = urllib.parse.urlparse(registry)
+    if parsed.scheme.lower() not in REMOTE_REGISTRY_SCHEMES:
+        return f"Unsupported registry scheme: {parsed.scheme or 'none'}"
+    if not parsed.netloc:
+        return "Registry URL is missing a host"
+    if parsed.username or parsed.password:
+        return (
+            "Registry URL must not include credentials "
+            "(use --registry-token or --registry-user/--registry-password)"
+        )
+    return None
+
+
+def _read_secret_value(
+    value: str | None, *, env_name: str, label: str, use_env: bool = True
+) -> tuple[str | None, str | None]:
+    source = None
+    if value is None and use_env:
+        env_val = os.environ.get(env_name)
+        if env_val is not None:
+            value = env_val
+            source = "env"
+    else:
+        source = "arg"
+    if value is None:
+        return None, None
+    if value.startswith("@"):
+        secret_path = Path(value[1:]).expanduser()
+        if not secret_path.exists():
+            raise RuntimeError(f"{label} file not found: {secret_path}")
+        value = secret_path.read_text()
+        source = "file"
+    value = value.strip()
+    if not value:
+        raise RuntimeError(f"{label} is empty")
+    return value, source
+
+
+def _resolve_registry_auth(
+    registry_token: str | None,
+    registry_user: str | None,
+    registry_password: str | None,
+) -> tuple[dict[str, str], dict[str, str]]:
+    explicit_token = registry_token is not None
+    explicit_user = registry_user is not None or registry_password is not None
+    if explicit_token and explicit_user:
+        raise RuntimeError(
+            "Use --registry-token or --registry-user/--registry-password, not both."
+        )
+    token: str | None = None
+    token_source: str | None = None
+    if explicit_token:
+        token, token_source = _read_secret_value(
+            registry_token,
+            env_name="MOLT_REGISTRY_TOKEN",
+            label="Registry token",
+            use_env=False,
+        )
+    elif not explicit_user:
+        token, token_source = _read_secret_value(
+            None,
+            env_name="MOLT_REGISTRY_TOKEN",
+            label="Registry token",
+            use_env=True,
+        )
+    user = None
+    user_source = None
+    password = None
+    password_source = None
+    if token is None:
+        user = registry_user
+        user_source = "arg" if registry_user is not None else None
+        if user is None:
+            env_user = os.environ.get("MOLT_REGISTRY_USER")
+            if env_user is not None:
+                user = env_user
+                user_source = "env"
+        password, password_source = _read_secret_value(
+            registry_password,
+            env_name="MOLT_REGISTRY_PASSWORD",
+            label="Registry password",
+            use_env=registry_password is None,
+        )
+    if user and not password:
+        raise RuntimeError("Registry password is required when using --registry-user.")
+    if password and not user:
+        raise RuntimeError("Registry user is required when using --registry-password.")
+    headers: dict[str, str] = {}
+    auth_info = {"mode": "none", "source": "none"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+        auth_info["mode"] = "bearer"
+        auth_info["source"] = token_source or "unknown"
+    elif user:
+        credential = f"{user}:{password}"
+        encoded = base64.b64encode(credential.encode("utf-8")).decode("ascii")
+        headers["Authorization"] = f"Basic {encoded}"
+        auth_info["mode"] = "basic"
+        sources = {
+            source for source in (user_source, password_source) if source is not None
+        }
+        if len(sources) == 1:
+            auth_info["source"] = sources.pop()
+        elif len(sources) > 1:
+            auth_info["source"] = "mixed"
+        else:
+            auth_info["source"] = "unknown"
+    return headers, auth_info
+
+
+def _resolve_registry_timeout(value: float | None) -> float:
+    timeout = value
+    if timeout is None:
+        env_val = os.environ.get("MOLT_REGISTRY_TIMEOUT")
+        if env_val:
+            try:
+                timeout = float(env_val)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"Invalid MOLT_REGISTRY_TIMEOUT value: {env_val}"
+                ) from exc
+    if timeout is None:
+        timeout = 30.0
+    if timeout <= 0:
+        raise RuntimeError("Registry timeout must be greater than zero.")
+    return timeout
+
+
+def _remote_registry_destination(registry_url: str, filename: str) -> str:
+    parsed = urllib.parse.urlparse(registry_url)
+    path = parsed.path or ""
+    if not path or path.endswith("/"):
+        base_path = path or "/"
+        if not base_path.endswith("/"):
+            base_path += "/"
+        dest_path = posixpath.join(base_path, filename)
+    else:
+        dest_path = path
+    return urllib.parse.urlunparse(parsed._replace(path=dest_path))
+
+
+def _remote_sidecar_url(dest_url: str, suffix: str) -> str:
+    parsed = urllib.parse.urlparse(dest_url)
+    path = parsed.path
+    if not path:
+        raise RuntimeError("Remote destination URL is missing a path")
+    dir_name, file_name = posixpath.split(path)
+    stem = Path(file_name).stem
+    sidecar_name = f"{stem}{suffix}"
+    if dir_name and not dir_name.endswith("/"):
+        sidecar_path = posixpath.join(dir_name, sidecar_name)
+    elif dir_name:
+        sidecar_path = f"{dir_name}{sidecar_name}"
+    else:
+        sidecar_path = f"/{sidecar_name}"
+    return urllib.parse.urlunparse(parsed._replace(path=sidecar_path))
+
+
+def _registry_content_type(path: Path) -> str:
+    if path.suffix == ".moltpkg":
+        return "application/zip"
+    if path.suffix == ".json":
+        return "application/json"
+    return "application/octet-stream"
+
+
+def _upload_registry_file(
+    source: Path,
+    dest_url: str,
+    headers: dict[str, str],
+    timeout: float,
+) -> dict[str, Any]:
+    parsed = urllib.parse.urlparse(dest_url)
+    scheme = parsed.scheme.lower()
+    host = parsed.hostname
+    if not host:
+        raise RuntimeError(f"Invalid registry URL: {dest_url}")
+    if scheme not in REMOTE_REGISTRY_SCHEMES:
+        raise RuntimeError(f"Unsupported registry scheme: {scheme}")
+    port = parsed.port
+    path = parsed.path or "/"
+    if parsed.params:
+        path = f"{path};{parsed.params}"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    conn_cls: type[http.client.HTTPConnection]
+    if scheme == "https":
+        conn_cls = http.client.HTTPSConnection
+    else:
+        conn_cls = http.client.HTTPConnection
+    content_length = source.stat().st_size
+    upload_headers = {
+        "Content-Type": _registry_content_type(source),
+        "Content-Length": str(content_length),
+        "User-Agent": f"molt/{_compiler_metadata()[0] or 'unknown'}",
+        "X-Molt-Upload-Id": str(uuid.uuid4()),
+    }
+    upload_headers.update(headers)
+    conn = conn_cls(host, port, timeout=timeout)
+    try:
+        conn.putrequest("PUT", path)
+        for key, value in upload_headers.items():
+            conn.putheader(key, value)
+        conn.endheaders()
+        with source.open("rb") as handle:
+            while True:
+                chunk = handle.read(1024 * 64)
+                if not chunk:
+                    break
+                conn.send(chunk)
+        response = conn.getresponse()
+        body = response.read()
+    finally:
+        conn.close()
+    status = response.status
+    if status < 200 or status >= 300:
+        detail = body.decode("utf-8", errors="replace").strip()
+        if detail:
+            detail = f" {detail}"
+        raise RuntimeError(
+            f"Registry upload failed ({status} {response.reason}).{detail}"
+        )
+    return {
+        "status": status,
+        "reason": response.reason,
+        "bytes": content_length,
+        "etag": response.getheader("ETag"),
+    }
+
+
 def package(
     artifact: str,
     manifest_path: str,
@@ -3900,7 +6767,17 @@ def package(
     json_output: bool = False,
     verbose: bool = False,
     deterministic: bool = True,
-    capabilities: str | list[str] | None = None,
+    deterministic_warn: bool = False,
+    capabilities: CapabilityInput | None = None,
+    sbom: bool = True,
+    sbom_output: str | None = None,
+    sbom_format: str = "cyclonedx",
+    signature: str | None = None,
+    signature_output: str | None = None,
+    sign: bool = False,
+    signer: str | None = None,
+    signing_key: str | None = None,
+    signing_identity: str | None = None,
 ) -> int:
     artifact_path = Path(artifact)
     if not artifact_path.exists():
@@ -3931,21 +6808,38 @@ def package(
             command="package",
         )
 
+    warnings: list[str] = []
+    project_root = _find_project_root(manifest_file.resolve())
+    lock_error = _check_lockfiles(
+        project_root,
+        json_output,
+        warnings,
+        deterministic,
+        deterministic_warn,
+        "package",
+    )
+    if lock_error is not None:
+        return lock_error
     capabilities_list = None
     capability_profiles: list[str] = []
-    if capabilities:
-        parsed, profiles, _source, errors = _parse_capabilities(capabilities)
-        if errors:
+    capability_manifest: CapabilityManifest | None = None
+    if capabilities is not None:
+        spec = _parse_capabilities_spec(capabilities)
+        if spec.errors:
             return _fail(
-                "Invalid capabilities: " + ", ".join(errors),
+                "Invalid capabilities: " + ", ".join(spec.errors),
                 json_output,
                 command="package",
             )
-        capabilities_list = parsed
-        capability_profiles = profiles
+        capabilities_list = spec.capabilities
+        capability_profiles = spec.profiles
+        capability_manifest = spec.manifest
     if capabilities_list is not None:
         required = manifest.get("capabilities", [])
-        allowlist = set(capabilities_list) | set(capability_profiles)
+        pkg_name = manifest.get("name")
+        allowlist = _allowed_capabilities_for_package(
+            capabilities_list, capability_manifest, pkg_name
+        )
         missing = [cap for cap in required if cap not in allowlist]
         if missing:
             return _fail(
@@ -3953,6 +6847,43 @@ def package(
                 json_output,
                 command="package",
             )
+        required_effects = _normalize_effects(manifest.get("effects"))
+        allowed_effects = _allowed_effects_for_package(capability_manifest, pkg_name)
+        if allowed_effects is not None:
+            missing_effects = [
+                effect for effect in required_effects if effect not in allowed_effects
+            ]
+            if missing_effects:
+                return _fail(
+                    "Effects missing from allowlist: " + ", ".join(missing_effects),
+                    json_output,
+                    command="package",
+                )
+
+    if signature and sign:
+        return _fail(
+            "Use --signature or --sign, not both.",
+            json_output,
+            command="package",
+        )
+    if sign and manifest.get("deterministic") is True:
+        warnings.append("Signing may introduce non-determinism in packaged outputs.")
+
+    tlog_upload = os.environ.get("MOLT_COSIGN_TLOG", "").lower() in {"1", "true", "yes"}
+    signer_meta: dict[str, Any] | None = None
+    signer_selected: str | None = None
+    if sign:
+        try:
+            signer_meta, signer_selected = _sign_artifact(
+                artifact_path=artifact_path,
+                sign=sign,
+                signer=signer,
+                signing_key=signing_key,
+                signing_identity=signing_identity,
+                tlog_upload=tlog_upload,
+            )
+        except RuntimeError as exc:
+            return _fail(str(exc), json_output, command="package")
 
     checksum = _sha256_file(artifact_path)
     manifest = dict(manifest)
@@ -3967,6 +6898,63 @@ def package(
         output_path = Path("dist") / f"{name}-{version}-{target}.moltpkg"
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    signature_source = Path(signature).expanduser() if signature else None
+    signature_bytes: bytes | None = None
+    signature_checksum: str | None = None
+    signature_path: Path | None = None
+    if signature_source is not None:
+        if not signature_source.exists():
+            return _fail(
+                f"Signature not found: {signature_source}",
+                json_output,
+                command="package",
+            )
+        signature_bytes = signature_source.read_bytes()
+        signature_checksum = hashlib.sha256(signature_bytes).hexdigest()
+        signature_path = _resolve_sidecar_path(output_path, signature_output, ".sig")
+    elif signer_meta is not None:
+        sig_value = (
+            signer_meta.get("signature", {}).get("value")
+            if isinstance(signer_meta.get("signature"), dict)
+            else None
+        )
+        if isinstance(sig_value, str) and sig_value:
+            signature_bytes = sig_value.encode("utf-8")
+            signature_checksum = hashlib.sha256(signature_bytes).hexdigest()
+            signature_path = _resolve_sidecar_path(
+                output_path, signature_output, ".sig"
+            )
+
+    sbom_bytes: bytes | None = None
+    sbom_path: Path | None = None
+    if sbom:
+        project_root = _find_project_root(manifest_file.resolve())
+        sbom_path = _resolve_sidecar_path(output_path, sbom_output, ".sbom.json")
+        sbom_data, sbom_warnings = _build_sbom(
+            manifest=manifest,
+            artifact_path=artifact_path,
+            checksum=checksum,
+            project_root=project_root,
+            format_name=sbom_format,
+        )
+        warnings.extend(sbom_warnings)
+        sbom_bytes = (
+            json.dumps(sbom_data, sort_keys=True, indent=2).encode("utf-8") + b"\n"
+        )
+
+    signature_meta_path = _resolve_sidecar_path(output_path, None, ".sig.json")
+    signature_meta = _signature_metadata(
+        artifact_path=artifact_path,
+        checksum=checksum,
+        signer_meta=signer_meta,
+        signer=signer_selected,
+        signature_name=signature_path.name if signature_path is not None else None,
+        signature_checksum=signature_checksum,
+    )
+    signature_meta_bytes = (
+        json.dumps(signature_meta, sort_keys=True, indent=2).encode("utf-8") + b"\n"
+    )
+
     artifact_bytes = artifact_path.read_bytes()
     manifest_bytes = (
         json.dumps(manifest, sort_keys=True, indent=2).encode("utf-8") + b"\n"
@@ -3974,6 +6962,20 @@ def package(
     with zipfile.ZipFile(output_path, "w") as zf:
         _write_zip_member(zf, "manifest.json", manifest_bytes)
         _write_zip_member(zf, f"artifact/{artifact_path.name}", artifact_bytes)
+        if sbom_bytes is not None:
+            _write_zip_member(zf, "sbom.json", sbom_bytes)
+        _write_zip_member(zf, "signature.json", signature_meta_bytes)
+        if signature_bytes is not None and signature_path is not None:
+            _write_zip_member(zf, f"signature/{signature_path.name}", signature_bytes)
+
+    if sbom_bytes is not None and sbom_path is not None:
+        sbom_path.parent.mkdir(parents=True, exist_ok=True)
+        sbom_path.write_bytes(sbom_bytes)
+    signature_meta_path.parent.mkdir(parents=True, exist_ok=True)
+    signature_meta_path.write_bytes(signature_meta_bytes)
+    if signature_bytes is not None and signature_path is not None:
+        signature_path.parent.mkdir(parents=True, exist_ok=True)
+        signature_path.write_bytes(signature_bytes)
 
     if json_output:
         payload = _json_payload(
@@ -3985,15 +6987,31 @@ def package(
                 "deterministic": deterministic,
                 "capabilities": capabilities_list,
                 "capability_profiles": capability_profiles,
+                "sbom": str(sbom_path) if sbom_path is not None else None,
+                "sbom_format": sbom_format if sbom else None,
+                "signature_metadata": str(signature_meta_path),
+                "signature": str(signature_path)
+                if signature_path is not None
+                else None,
+                "signed": signer_meta is not None or signature_path is not None,
+                "signer": signer_selected,
             },
+            warnings=warnings,
         )
         _emit_json(payload, json_output=True)
     else:
         print(f"Packaged {output_path}")
         if verbose:
-            # TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): emit SBOM + signature metadata
-            # once signing and SBOM generation are implemented.
             print(f"Checksum: {checksum}")
+            if sbom_path is not None:
+                print(f"SBOM: {sbom_path}")
+            print(f"Signature metadata: {signature_meta_path}")
+            if signature_path is not None:
+                print(f"Signature: {signature_path}")
+            if signer_meta is not None:
+                print(f"Signed with: {signer_selected}")
+            for warning in warnings:
+                print(f"WARN: {warning}")
     return 0
 
 
@@ -4004,7 +7022,17 @@ def publish(
     json_output: bool = False,
     verbose: bool = False,
     deterministic: bool = True,
-    capabilities: str | list[str] | None = None,
+    deterministic_warn: bool = False,
+    capabilities: CapabilityInput | None = None,
+    require_signature: bool = False,
+    verify_signature: bool = False,
+    trusted_signers: str | None = None,
+    signer: str | None = None,
+    signing_key: str | None = None,
+    registry_token: str | None = None,
+    registry_user: str | None = None,
+    registry_password: str | None = None,
+    registry_timeout: float | None = None,
 ) -> int:
     source = Path(package_path)
     if not source.exists():
@@ -4013,7 +7041,27 @@ def publish(
             json_output,
             command="publish",
         )
-    if deterministic:
+    warnings: list[str] = []
+    project_root = _find_project_root(source.resolve())
+    lock_error = _check_lockfiles(
+        project_root,
+        json_output,
+        warnings,
+        deterministic,
+        deterministic_warn,
+        "publish",
+    )
+    if lock_error is not None:
+        return lock_error
+    if verify_signature:
+        require_signature = True
+    should_verify = (
+        deterministic
+        or require_signature
+        or verify_signature
+        or trusted_signers is not None
+    )
+    if should_verify:
         verify_code = verify(
             package_path,
             None,
@@ -4021,21 +7069,75 @@ def publish(
             True,
             False,
             verbose,
-            True,
+            deterministic,
             capabilities,
+            require_signature,
+            verify_signature,
+            trusted_signers,
+            signer,
+            signing_key,
         )
         if verify_code != 0:
             return verify_code
-    registry_path = Path(registry)
-    if registry_path.exists() and registry_path.is_dir():
-        dest = registry_path / source.name
-    elif registry.endswith(os.sep):
-        dest = registry_path / source.name
+    is_remote = _is_remote_registry(registry)
+    sidecars: list[dict[str, str]] = []
+    uploads: list[dict[str, Any]] = []
+    auth_info = {"mode": "none", "source": "none"}
+    if is_remote:
+        url_error = _validate_registry_url(registry)
+        if url_error:
+            return _fail(url_error, json_output, command="publish")
+        try:
+            headers, auth_info = _resolve_registry_auth(
+                registry_token, registry_user, registry_password
+            )
+            timeout = _resolve_registry_timeout(registry_timeout)
+        except RuntimeError as exc:
+            return _fail(str(exc), json_output, command="publish")
+        dest = _remote_registry_destination(registry, source.name)
+        upload_plan: list[tuple[Path, str]] = [(source, dest)]
+        for suffix in (".sbom.json", ".sig.json", ".sig"):
+            sidecar_src = source.with_name(source.stem + suffix)
+            if not sidecar_src.exists():
+                continue
+            sidecar_dest = _remote_sidecar_url(dest, suffix)
+            sidecars.append({"source": str(sidecar_src), "dest": sidecar_dest})
+            upload_plan.append((sidecar_src, sidecar_dest))
+        if not dry_run:
+            for upload_src, upload_dest in upload_plan:
+                try:
+                    result = _upload_registry_file(
+                        upload_src, upload_dest, headers, timeout
+                    )
+                except RuntimeError as exc:
+                    return _fail(str(exc), json_output, command="publish")
+                uploads.append(
+                    {
+                        "source": str(upload_src),
+                        "dest": upload_dest,
+                        **result,
+                    }
+                )
     else:
-        dest = registry_path
-    if not dry_run:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, dest)
+        registry_path = Path(registry)
+        if registry_path.exists() and registry_path.is_dir():
+            dest = registry_path / source.name
+        elif registry.endswith(os.sep):
+            dest = registry_path / source.name
+        else:
+            dest = registry_path
+        if not dry_run:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, dest)
+        for suffix in (".sbom.json", ".sig.json", ".sig"):
+            sidecar_src = source.with_name(source.stem + suffix)
+            if not sidecar_src.exists():
+                continue
+            sidecar_dest = dest.with_name(dest.stem + suffix)
+            sidecars.append({"source": str(sidecar_src), "dest": str(sidecar_dest)})
+            if not dry_run:
+                sidecar_dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(sidecar_src, sidecar_dest)
     if json_output:
         payload = _json_payload(
             "publish",
@@ -4045,16 +7147,27 @@ def publish(
                 "dest": str(dest),
                 "dry_run": dry_run,
                 "deterministic": deterministic,
+                "sidecars": sidecars,
+                "remote": is_remote,
+                "auth": auth_info,
+                "uploads": uploads,
             },
+            warnings=warnings,
         )
         _emit_json(payload, json_output=True)
     else:
         action = "Would publish" if dry_run else "Published"
         print(f"{action} {source} -> {dest}")
+        if sidecars and verbose:
+            for entry in sidecars:
+                print(f"{action} {entry['source']} -> {entry['dest']}")
         if verbose:
-            # TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): support registry auth and
-            # remote publish flows.
-            print(f"Registry: {registry_path}")
+            registry_label = registry
+            if is_remote:
+                print(f"Registry: {registry_label} (remote)")
+                print(f"Auth: {auth_info['mode']}")
+            else:
+                print(f"Registry: {registry_label}")
     return 0
 
 
@@ -4066,26 +7179,48 @@ def verify(
     json_output: bool = False,
     verbose: bool = False,
     require_deterministic: bool = False,
-    capabilities: str | list[str] | None = None,
+    capabilities: CapabilityInput | None = None,
+    require_signature: bool = False,
+    verify_signature: bool = False,
+    trusted_signers: str | None = None,
+    signer: str | None = None,
+    signing_key: str | None = None,
 ) -> int:
     errors: list[str] = []
     warnings: list[str] = []
     manifest: dict[str, Any] | None = None
     artifact_name = None
     artifact_bytes = None
+    artifact_file: Path | None = None
+    checksum: str | None = None
     capabilities_list = None
     capability_profiles: list[str] = []
+    capability_manifest: CapabilityManifest | None = None
+    signature_meta: dict[str, Any] | None = None
+    signature_bytes: bytes | None = None
+    signature_name: str | None = None
+    trust_policy: TrustPolicy | None = None
 
-    if capabilities:
-        parsed, profiles, _source, cap_errors = _parse_capabilities(capabilities)
-        if cap_errors:
+    if capabilities is not None:
+        spec = _parse_capabilities_spec(capabilities)
+        if spec.errors:
             return _fail(
-                "Invalid capabilities: " + ", ".join(cap_errors),
+                "Invalid capabilities: " + ", ".join(spec.errors),
                 json_output,
                 command="verify",
             )
-        capabilities_list = parsed
-        capability_profiles = profiles
+        capabilities_list = spec.capabilities
+        capability_profiles = spec.profiles
+        capability_manifest = spec.manifest
+    if trusted_signers:
+        try:
+            trust_policy = _load_trust_policy(Path(trusted_signers))
+        except (OSError, json.JSONDecodeError, tomllib.TOMLDecodeError) as exc:
+            return _fail(
+                f"Failed to load trust policy: {exc}",
+                json_output,
+                command="verify",
+            )
 
     if package_path:
         pkg_path = Path(package_path)
@@ -4103,6 +7238,12 @@ def verify(
                     errors.append("manifest.json not found in package")
                 else:
                     manifest = json.loads(manifest_bytes.decode("utf-8"))
+                try:
+                    sig_meta_bytes = zf.read("signature.json")
+                except KeyError:
+                    signature_meta = None
+                else:
+                    signature_meta = json.loads(sig_meta_bytes.decode("utf-8"))
                 artifact_entries = [
                     name for name in zf.namelist() if name.startswith("artifact/")
                 ]
@@ -4113,12 +7254,29 @@ def verify(
                     errors.append("artifact/* not found in package")
                 else:
                     errors.append("multiple artifact entries in package")
+                signature_entries = [
+                    name for name in zf.namelist() if name.startswith("signature/")
+                ]
+                if len(signature_entries) == 1:
+                    signature_name = signature_entries[0].split("/", 1)[1]
+                    signature_bytes = zf.read(signature_entries[0])
+                elif len(signature_entries) > 1:
+                    errors.append("multiple signature entries in package")
         except (OSError, zipfile.BadZipFile) as exc:
             return _fail(
                 f"Failed to read package: {exc}",
                 json_output,
                 command="verify",
             )
+        if signature_meta is None:
+            sidecar = pkg_path.with_name(pkg_path.stem + ".sig.json")
+            if sidecar.exists():
+                signature_meta = json.loads(sidecar.read_text())
+        if signature_bytes is None:
+            sidecar_sig = pkg_path.with_name(pkg_path.stem + ".sig")
+            if sidecar_sig.exists():
+                signature_bytes = sidecar_sig.read_bytes()
+                signature_name = sidecar_sig.name
     else:
         if not manifest_path or not artifact_path:
             return _fail(
@@ -4135,6 +7293,13 @@ def verify(
         else:
             artifact_name = artifact_file.name
             artifact_bytes = artifact_file.read_bytes()
+        sidecar = artifact_file.with_name(artifact_file.stem + ".sig.json")
+        if sidecar.exists():
+            signature_meta = json.loads(sidecar.read_text())
+        sidecar_sig = artifact_file.with_name(artifact_file.stem + ".sig")
+        if sidecar_sig.exists():
+            signature_bytes = sidecar_sig.read_bytes()
+            signature_name = sidecar_sig.name
 
     if manifest is not None:
         errors.extend(_manifest_errors(manifest))
@@ -4149,16 +7314,129 @@ def verify(
             warnings.append("checksum missing")
         if require_deterministic and manifest.get("deterministic") is not True:
             errors.append("manifest is not deterministic")
+        required_caps = manifest.get("capabilities", [])
+        if not isinstance(required_caps, list):
+            required_caps = []
+        required_effects = _normalize_effects(manifest.get("effects"))
+        if capabilities_list is None and (required_caps or required_effects):
+            errors.append(
+                "capabilities allowlist required; pass --capabilities or set "
+                "tool.molt.capabilities in config"
+            )
         if capabilities_list is not None:
-            required = manifest.get("capabilities", [])
-            allowlist = set(capabilities_list) | set(capability_profiles)
-            missing = [cap for cap in required if cap not in allowlist]
+            pkg_name = manifest.get("name")
+            allowlist = _allowed_capabilities_for_package(
+                capabilities_list, capability_manifest, pkg_name
+            )
+            missing = [cap for cap in required_caps if cap not in allowlist]
             if missing:
                 errors.append(
                     "capabilities missing from allowlist: " + ", ".join(missing)
                 )
-        # TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): enforce ABI compatibility and
-        # schema versioning when the package ABI stabilizes.
+            allowed_effects = _allowed_effects_for_package(
+                capability_manifest, pkg_name
+            )
+            if allowed_effects is not None:
+                missing_effects = [
+                    effect
+                    for effect in required_effects
+                    if effect not in allowed_effects
+                ]
+                if missing_effects:
+                    errors.append(
+                        "effects missing from allowlist: " + ", ".join(missing_effects)
+                    )
+
+    signature_status = None
+    signer_meta: dict[str, Any] | None = None
+    if signature_meta and isinstance(signature_meta, dict):
+        signature_status = signature_meta.get("status")
+        signer_meta_val = signature_meta.get("signer")
+        if isinstance(signer_meta_val, dict):
+            signer_meta = signer_meta_val
+        artifact_meta = signature_meta.get("artifact")
+        if isinstance(artifact_meta, dict):
+            meta_sha = _normalize_sha256(artifact_meta.get("sha256"))
+            if meta_sha and checksum:
+                if _normalize_sha256(checksum) != meta_sha:
+                    errors.append("signature metadata artifact checksum mismatch")
+        signature_file = signature_meta.get("signature_file")
+        if isinstance(signature_file, dict) and signature_bytes is not None:
+            expected_sig = _normalize_sha256(signature_file.get("sha256"))
+            actual_sig = hashlib.sha256(signature_bytes).hexdigest()
+            if expected_sig and _normalize_sha256(actual_sig) != expected_sig:
+                errors.append("signature file checksum mismatch")
+
+    if verify_signature:
+        require_signature = True
+
+    signed = False
+    if signature_status == "signed":
+        signed = True
+    elif signature_status == "unsigned":
+        signed = False
+    elif signature_name or signature_bytes or signer_meta is not None:
+        signed = True
+
+    if require_signature or trust_policy is not None:
+        if not signed:
+            errors.append("signature required but not present")
+
+    trust_status = None
+    if trust_policy is not None and signed:
+        signer_name = None
+        if signer_meta is not None:
+            selected = signer_meta.get("selected")
+            if isinstance(selected, str) and selected:
+                signer_name = selected
+            else:
+                tool = signer_meta.get("tool")
+                if isinstance(tool, dict):
+                    name = tool.get("name")
+                    if isinstance(name, str) and name:
+                        signer_name = name
+        allowed, reason = _trust_policy_allows(signer_name, signer_meta, trust_policy)
+        trust_status = "trusted" if allowed else "untrusted"
+        if not allowed:
+            errors.append(f"signature trust policy failed: {reason}")
+
+    signature_verified = None
+    if verify_signature and signed and artifact_bytes is not None:
+        key = signing_key or os.environ.get("COSIGN_KEY")
+        with tempfile.TemporaryDirectory(prefix="molt_verify_") as tmpdir:
+            temp_dir = Path(tmpdir)
+            artifact_path = artifact_file
+            if artifact_path is None:
+                filename = Path(artifact_name).name if artifact_name else "artifact.bin"
+                artifact_path = temp_dir / filename
+                artifact_path.write_bytes(artifact_bytes)
+            tool = _resolve_signature_tool(
+                signer, signer_meta, artifact_path, signature_bytes
+            )
+            try:
+                if tool == "cosign":
+                    if signature_bytes is None:
+                        raise RuntimeError("cosign signature file is missing")
+                    if not key:
+                        raise RuntimeError(
+                            "cosign verification requires --signing-key or COSIGN_KEY"
+                        )
+                    _verify_cosign_signature(artifact_path, signature_bytes, key)
+                elif tool == "codesign":
+                    if not _is_macho(artifact_path):
+                        raise RuntimeError(
+                            "codesign verification requires a Mach-O artifact"
+                        )
+                    _verify_codesign_signature(artifact_path)
+                else:
+                    raise RuntimeError(
+                        "unable to resolve signing tool for verification"
+                    )
+            except RuntimeError as exc:
+                signature_verified = False
+                errors.append(str(exc))
+            else:
+                signature_verified = True
 
     status = "ok" if not errors else "error"
     if json_output:
@@ -4169,6 +7447,10 @@ def verify(
                 "artifact": artifact_name,
                 "deterministic": require_deterministic,
                 "capability_profiles": capability_profiles,
+                "signature_status": signature_status
+                or ("signed" if signed else "unsigned"),
+                "signature_verified": signature_verified,
+                "trust_status": trust_status,
             },
             warnings=warnings,
             errors=errors,
@@ -4193,9 +7475,129 @@ def _summarize_tiers(rows: list[dict[str, Any]]) -> dict[str, int]:
     return summary
 
 
+def _git_ref_from_source(source: dict[str, Any]) -> tuple[str | None, str | None]:
+    for key in ("rev", "revision", "commit", "reference"):
+        value = source.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip(), key
+    for key in ("tag", "branch"):
+        value = source.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip(), key
+    return None, None
+
+
+def _resolve_git_ref(url: str, ref: str) -> tuple[str | None, str | None]:
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", url, ref],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        return None, f"Failed to resolve git ref {ref}: {exc}"
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip() or "unknown error"
+        return None, f"Failed to resolve git ref {ref}: {detail}"
+    line = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
+    if not line:
+        return None, f"Failed to resolve git ref {ref}: empty response"
+    commit = line.split()[0]
+    if not commit:
+        return None, f"Failed to resolve git ref {ref}: empty commit"
+    return commit, None
+
+
+def _clone_git_source(
+    url: str,
+    ref: str,
+    dest: Path,
+    *,
+    subdirectory: str | None = None,
+) -> tuple[str, str]:
+    tmp_root = dest.parent
+    with tempfile.TemporaryDirectory(dir=tmp_root, prefix="git_vendor_") as tmpdir:
+        repo_dir = Path(tmpdir) / "repo"
+        try:
+            clone = subprocess.run(
+                [
+                    "git",
+                    "clone",
+                    "--filter=blob:none",
+                    "--no-checkout",
+                    url,
+                    str(repo_dir),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as exc:
+            raise RuntimeError(f"Failed to clone git repo {url}: {exc}") from exc
+        if clone.returncode != 0:
+            detail = (clone.stderr or clone.stdout).strip() or "unknown error"
+            raise RuntimeError(f"Failed to clone git repo {url}: {detail}")
+        fetch = subprocess.run(
+            ["git", "-C", str(repo_dir), "fetch", "--depth", "1", "origin", ref],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if fetch.returncode != 0:
+            detail = (fetch.stderr or fetch.stdout).strip() or "unknown error"
+            raise RuntimeError(f"Failed to fetch git ref {ref}: {detail}")
+        checkout = subprocess.run(
+            ["git", "-C", str(repo_dir), "checkout", "--detach", ref],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if checkout.returncode != 0:
+            detail = (checkout.stderr or checkout.stdout).strip() or "unknown error"
+            raise RuntimeError(f"Failed to checkout git ref {ref}: {detail}")
+        rev = subprocess.run(
+            ["git", "-C", str(repo_dir), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if rev.returncode != 0 or not rev.stdout.strip():
+            detail = (rev.stderr or rev.stdout).strip() or "unknown error"
+            raise RuntimeError(f"Failed to resolve git revision for {ref}: {detail}")
+        resolved_commit = rev.stdout.strip()
+        tree = subprocess.run(
+            ["git", "-C", str(repo_dir), "rev-parse", "HEAD^{tree}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if tree.returncode != 0 or not tree.stdout.strip():
+            detail = (tree.stderr or tree.stdout).strip() or "unknown error"
+            raise RuntimeError(f"Failed to resolve git tree hash: {detail}")
+        tree_hash = tree.stdout.strip()
+        source_dir = repo_dir
+        if subdirectory:
+            source_dir = repo_dir / subdirectory
+            if not source_dir.exists():
+                raise RuntimeError(f"Git subdirectory not found: {subdirectory}")
+        if dest.exists():
+            shutil.rmtree(dest)
+        if source_dir.is_dir():
+            shutil.copytree(source_dir, dest, ignore=shutil.ignore_patterns(".git"))
+        else:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_dir, dest)
+        return resolved_commit, tree_hash
+
+
 def deps(include_dev: bool, json_output: bool = False, verbose: bool = False) -> int:
-    pyproject = _load_toml(Path("pyproject.toml"))
-    lock = _load_toml(Path("uv.lock"))
+    root = _find_molt_root(Path.cwd())
+    root_error = _require_molt_root(root, json_output, "deps")
+    if root_error is not None:
+        return root_error
+    pyproject = _load_toml(root / "pyproject.toml")
+    lock = _load_toml(root / "uv.lock")
     deps = _collect_deps(pyproject, include_dev=include_dev)
     packages = _lock_packages(lock)
     allow = _dep_allowlists(pyproject)
@@ -4236,8 +7638,24 @@ def vendor(
     dry_run: bool = False,
     allow_non_tier_a: bool = False,
     extras: list[str] | None = None,
+    deterministic: bool = True,
+    deterministic_warn: bool = False,
 ) -> int:
-    root = _find_project_root(Path.cwd())
+    root = _find_molt_root(Path.cwd())
+    root_error = _require_molt_root(root, json_output, "vendor")
+    if root_error is not None:
+        return root_error
+    warnings: list[str] = []
+    lock_error = _check_lockfiles(
+        root,
+        json_output,
+        warnings,
+        deterministic,
+        deterministic_warn,
+        "vendor",
+    )
+    if lock_error is not None:
+        return lock_error
     pyproject = _load_toml(root / "pyproject.toml")
     lock = _load_toml(root / "uv.lock")
     extras_set: set[str] = set()
@@ -4302,6 +7720,7 @@ def vendor(
                     "skipped_root": skipped_root,
                 },
                 errors=["vendoring blocked by non-Tier A dependencies"],
+                warnings=warnings,
             )
             _emit_json(payload, json_output=True)
             return 2
@@ -4357,13 +7776,73 @@ def vendor(
             )
             continue
         if source.get("git"):
-            # TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): support vendoring git sources
-            # with pinned revisions and integrity metadata.
-            blockers.append(
+            url = source.get("git")
+            if not isinstance(url, str) or not url.strip():
+                blockers.append(
+                    {**entry, "tier": "Tier A", "reason": "git source missing url"}
+                )
+                continue
+            if shutil.which("git") is None:
+                return _fail(
+                    "git is required to vendor git sources",
+                    json_output,
+                    command="vendor",
+                )
+            ref, ref_kind = _git_ref_from_source(source)
+            if ref is None:
+                blockers.append(
+                    {
+                        **entry,
+                        "tier": "Tier A",
+                        "reason": "git source missing pinned revision",
+                    }
+                )
+                continue
+            resolved_ref = ref
+            resolved_error = None
+            if ref_kind in {"tag", "branch"}:
+                resolved_ref, resolved_error = _resolve_git_ref(url, ref)
+            if resolved_error:
+                return _fail(
+                    resolved_error,
+                    json_output,
+                    command="vendor",
+                )
+            subdir = source.get("subdirectory") or source.get("subdir")
+            if subdir is not None and not isinstance(subdir, str):
+                blockers.append(
+                    {
+                        **entry,
+                        "tier": "Tier A",
+                        "reason": "git source subdirectory must be a string",
+                    }
+                )
+                continue
+            dest = local_dir / entry["name"]
+            resolved_commit = resolved_ref
+            tree_hash = None
+            if not dry_run:
+                try:
+                    resolved_commit, tree_hash = _clone_git_source(
+                        url, resolved_ref, dest, subdirectory=subdir
+                    )
+                except RuntimeError as exc:
+                    return _fail(
+                        str(exc),
+                        json_output,
+                        command="vendor",
+                    )
+            manifest["packages"].append(
                 {
                     **entry,
-                    "tier": "Tier A",
-                    "reason": "git source not supported for vendoring",
+                    "source": "git",
+                    "git": url,
+                    "ref": ref,
+                    "ref_kind": ref_kind,
+                    "resolved": resolved_commit,
+                    "tree": tree_hash,
+                    "subdirectory": subdir,
+                    "path": str(dest),
                 }
             )
             continue
@@ -4412,10 +7891,11 @@ def vendor(
             "extras": sorted(extras_set),
             "skipped": skipped,
             "skipped_root": skipped_root,
+            "deterministic": deterministic,
         }
         if verbose:
             data["count"] = len(vendor_list)
-        payload = _json_payload("vendor", "ok", data=data)
+        payload = _json_payload("vendor", "ok", data=data, warnings=warnings)
         _emit_json(payload, json_output=True)
         return 0
 
@@ -4446,7 +7926,10 @@ def clean(
     clean_all: bool = False,
     include_venvs: bool = False,
 ) -> int:
-    root = _find_project_root(Path.cwd())
+    root = _find_molt_root(Path.cwd())
+    root_error = _require_molt_root(root, json_output, "clean")
+    if root_error is not None:
+        return root_error
     removed: list[str] = []
     missing: list[str] = []
     failures: list[str] = []
@@ -4579,6 +8062,8 @@ def show_config(
     compare_cfg = _resolve_command_config(config, "compare")
     test_cfg = _resolve_command_config(config, "test")
     diff_cfg = _resolve_command_config(config, "diff")
+    publish_cfg = _resolve_command_config(config, "publish")
+    publish_cfg = _resolve_command_config(config, "publish")
     caps_cfg = _resolve_capabilities_config(config)
     data: dict[str, Any] = {
         "root": str(config_root),
@@ -4591,6 +8076,7 @@ def show_config(
         "compare": compare_cfg,
         "test": test_cfg,
         "diff": diff_cfg,
+        "publish": publish_cfg,
         "capabilities": caps_cfg,
         "paths": {
             "molt_home": str(_default_molt_home()),
@@ -4644,8 +8130,14 @@ def show_config(
             print(f"- {key}: {diff_cfg[key]}")
     else:
         print("Diff defaults: none")
-    if caps_cfg:
-        print(f"Capabilities: {', '.join(caps_cfg)}")
+    if publish_cfg:
+        print("Publish defaults:")
+        for key in sorted(publish_cfg):
+            print(f"- {key}: {publish_cfg[key]}")
+    else:
+        print("Publish defaults: none")
+    if caps_cfg is not None:
+        print(f"Capabilities: {_format_capabilities_input(caps_cfg)}")
     else:
         print("Capabilities: none")
     if verbose:
@@ -4683,8 +8175,10 @@ def _completion_script(shell: str) -> str:
             "--type-hints",
             "--fallback",
             "--type-facts",
+            "--pgo-profile",
             "--output",
             "--out-dir",
+            "--sysroot",
             "--emit",
             "--emit-ir",
             "--profile",
@@ -4705,13 +8199,18 @@ def _completion_script(shell: str) -> str:
             "--json",
             "--verbose",
         ],
-        "check": ["--output", "--strict", "--json", "--verbose"],
+        "check": [
+            "--output",
+            "--strict",
+            "--deterministic",
+            "--no-deterministic",
+            "--deterministic-warn",
+            "--no-deterministic-warn",
+            "--json",
+            "--verbose",
+        ],
         "run": [
-            "--python",
-            "--python-version",
             "--module",
-            "--no-shims",
-            "--compiled",
             "--build-arg",
             "--rebuild",
             "--timing",
@@ -4725,8 +8224,6 @@ def _completion_script(shell: str) -> str:
             "--python",
             "--python-version",
             "--module",
-            "--shims",
-            "--no-shims",
             "--build-arg",
             "--rebuild",
             "--capabilities",
@@ -4758,16 +8255,42 @@ def _completion_script(shell: str) -> str:
             "--output",
             "--deterministic",
             "--no-deterministic",
+            "--deterministic-warn",
+            "--no-deterministic-warn",
             "--capabilities",
+            "--sbom",
+            "--no-sbom",
+            "--sbom-output",
+            "--sbom-format",
+            "--signature",
+            "--signature-output",
+            "--sign",
+            "--no-sign",
+            "--signer",
+            "--signing-key",
+            "--signing-identity",
             "--json",
             "--verbose",
         ],
         "publish": [
             "--registry",
+            "--registry-token",
+            "--registry-user",
+            "--registry-password",
+            "--registry-timeout",
             "--dry-run",
             "--deterministic",
             "--no-deterministic",
+            "--deterministic-warn",
+            "--no-deterministic-warn",
             "--capabilities",
+            "--require-signature",
+            "--no-require-signature",
+            "--verify-signature",
+            "--no-verify-signature",
+            "--trusted-signers",
+            "--signer",
+            "--signing-key",
             "--json",
             "--verbose",
         ],
@@ -4777,6 +8300,13 @@ def _completion_script(shell: str) -> str:
             "--artifact",
             "--require-checksum",
             "--require-deterministic",
+            "--require-signature",
+            "--no-require-signature",
+            "--verify-signature",
+            "--no-verify-signature",
+            "--trusted-signers",
+            "--signer",
+            "--signing-key",
             "--capabilities",
             "--json",
             "--verbose",
@@ -4788,6 +8318,10 @@ def _completion_script(shell: str) -> str:
             "--dry-run",
             "--allow-non-tier-a",
             "--extras",
+            "--deterministic",
+            "--no-deterministic",
+            "--deterministic-warn",
+            "--no-deterministic-warn",
             "--json",
             "--verbose",
         ],
@@ -4995,18 +8529,31 @@ def main() -> int:
         help="Path to type facts JSON from `molt check`.",
     )
     build_parser.add_argument(
+        "--pgo-profile",
+        help="Path to a Molt profile artifact (molt_profile.json) for PGO hints.",
+    )
+    build_parser.add_argument(
         "--output",
         help=(
             "Output path for the native binary or wasm artifact "
-            "(relative to --out-dir when set, otherwise project root)."
+            "(relative to --out-dir when set, otherwise project root). "
+            "If the path is a directory (or ends with a path separator), "
+            "the default filename is used within that directory."
         ),
     )
     build_parser.add_argument(
         "--out-dir",
         help=(
-            "Output directory for build artifacts (output.o/main_stub.c/output.wasm). "
-            "When set, native binaries default here too. Defaults to "
-            "MOLT_HOME/build/<entry> for artifacts and MOLT_BIN for native binaries."
+            "Output directory for final artifacts (binary/wasm/object). "
+            "Intermediates stay under MOLT_HOME/build/<entry> by default. "
+            "Native binaries otherwise default to MOLT_BIN."
+        ),
+    )
+    build_parser.add_argument(
+        "--sysroot",
+        help=(
+            "Sysroot path for native linking (relative paths resolve under the project "
+            "root; defaults to MOLT_SYSROOT or MOLT_CROSS_SYSROOT when set)."
         ),
     )
     build_parser.add_argument(
@@ -5114,6 +8661,18 @@ def main() -> int:
         help="Mark facts as trusted (strict tier).",
     )
     check_parser.add_argument(
+        "--deterministic",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Require deterministic inputs (lockfiles).",
+    )
+    check_parser.add_argument(
+        "--deterministic-warn",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Warn instead of failing when deterministic lockfile checks fail.",
+    )
+    check_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."
     )
     check_parser.add_argument(
@@ -5121,7 +8680,7 @@ def main() -> int:
     )
 
     run_parser = subparsers.add_parser(
-        "run", help="Run Python via CPython with Molt shims"
+        "run", help="Compile with Molt and run the native binary"
     )
     run_parser.add_argument("file", nargs="?", help="Path to Python source")
     run_parser.add_argument(
@@ -5129,38 +8688,20 @@ def main() -> int:
         help="Entry module name (uses pkg.__main__ when present).",
     )
     run_parser.add_argument(
-        "--python",
-        help="Python interpreter (path) or version (e.g. 3.12).",
-    )
-    run_parser.add_argument(
-        "--python-version",
-        help="Python version alias (e.g. 3.12).",
-    )
-    run_parser.add_argument(
-        "--no-shims",
-        action="store_true",
-        help="Disable Molt shims and run raw CPython.",
-    )
-    run_parser.add_argument(
-        "--compiled",
-        action="store_true",
-        help="Compile with Molt and run the native binary instead of CPython.",
-    )
-    run_parser.add_argument(
         "--build-arg",
         action="append",
         default=[],
-        help="Extra args passed to `molt build` when using --compiled.",
+        help="Extra args passed to `molt build`.",
     )
     run_parser.add_argument(
         "--rebuild",
         action="store_true",
-        help="Disable build cache when using --compiled.",
+        help="Disable build cache for `molt build`.",
     )
     run_parser.add_argument(
         "--timing",
         action="store_true",
-        help="Emit timing summary (compile + run for --compiled).",
+        help="Emit timing summary (compile + run).",
     )
     run_parser.add_argument(
         "--capabilities",
@@ -5199,12 +8740,6 @@ def main() -> int:
     compare_parser.add_argument(
         "--python-version",
         help="Python version alias (e.g. 3.12).",
-    )
-    compare_parser.add_argument(
-        "--shims",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Enable Molt shims for the CPython run.",
     )
     compare_parser.add_argument(
         "--build-arg",
@@ -5365,8 +8900,58 @@ def main() -> int:
         help="Require deterministic package metadata.",
     )
     package_parser.add_argument(
+        "--deterministic-warn",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Warn instead of failing when deterministic lockfile checks fail.",
+    )
+    package_parser.add_argument(
         "--capabilities",
         help="Capability profiles/tokens or path to manifest (toml/json).",
+    )
+    package_parser.add_argument(
+        "--sbom",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Emit a CycloneDX SBOM sidecar (default: enabled).",
+    )
+    package_parser.add_argument(
+        "--sbom-output",
+        help="Override the SBOM output path (defaults next to the package).",
+    )
+    package_parser.add_argument(
+        "--sbom-format",
+        choices=["cyclonedx", "spdx"],
+        default="cyclonedx",
+        help="SBOM format to emit (default: cyclonedx).",
+    )
+    package_parser.add_argument(
+        "--signature",
+        help="Path to a signature file to attach and record in metadata.",
+    )
+    package_parser.add_argument(
+        "--signature-output",
+        help="Override the signature sidecar output path (defaults next to the package).",
+    )
+    package_parser.add_argument(
+        "--sign",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Sign the artifact with cosign or codesign.",
+    )
+    package_parser.add_argument(
+        "--signer",
+        choices=["auto", "cosign", "codesign"],
+        default="auto",
+        help="Select the signing tool (default: auto).",
+    )
+    package_parser.add_argument(
+        "--signing-key",
+        help="Signing key path for cosign (or set COSIGN_KEY).",
+    )
+    package_parser.add_argument(
+        "--signing-identity",
+        help="Signing identity for codesign (or set MOLT_CODESIGN_IDENTITY).",
     )
     package_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."
@@ -5376,13 +8961,35 @@ def main() -> int:
     )
 
     publish_parser = subparsers.add_parser(
-        "publish", help="Publish a Molt package to a local registry path"
+        "publish", help="Publish a Molt package to a registry path or URL"
     )
     publish_parser.add_argument("package", help="Path to the .moltpkg file.")
     publish_parser.add_argument(
         "--registry",
         default="dist/registry",
-        help="Registry directory or file path.",
+        help="Registry directory, file path, or HTTP(S) URL.",
+    )
+    publish_parser.add_argument(
+        "--registry-token",
+        help=(
+            "Bearer token for remote registry auth (or MOLT_REGISTRY_TOKEN; "
+            "prefix @ for file)."
+        ),
+    )
+    publish_parser.add_argument(
+        "--registry-user",
+        help="Username for basic auth (or MOLT_REGISTRY_USER).",
+    )
+    publish_parser.add_argument(
+        "--registry-password",
+        help=(
+            "Password for basic auth (or MOLT_REGISTRY_PASSWORD; prefix @ for file)."
+        ),
+    )
+    publish_parser.add_argument(
+        "--registry-timeout",
+        type=float,
+        help="Registry request timeout in seconds (or MOLT_REGISTRY_TIMEOUT).",
     )
     publish_parser.add_argument(
         "--dry-run", action="store_true", help="Print the publish plan only."
@@ -5394,8 +9001,40 @@ def main() -> int:
         help="Verify package determinism before publishing.",
     )
     publish_parser.add_argument(
+        "--deterministic-warn",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Warn instead of failing when deterministic lockfile checks fail.",
+    )
+    publish_parser.add_argument(
         "--capabilities",
         help="Capability profiles/tokens or path to manifest (toml/json).",
+    )
+    publish_parser.add_argument(
+        "--require-signature",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Require a package signature when publishing.",
+    )
+    publish_parser.add_argument(
+        "--verify-signature",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Verify package signatures when publishing.",
+    )
+    publish_parser.add_argument(
+        "--trusted-signers",
+        help="Path to a trust policy for allowed signers.",
+    )
+    publish_parser.add_argument(
+        "--signer",
+        choices=["auto", "cosign", "codesign"],
+        default="auto",
+        help="Select the verification tool (default: auto).",
+    )
+    publish_parser.add_argument(
+        "--signing-key",
+        help="Verification key path for cosign (or set COSIGN_KEY).",
     )
     publish_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."
@@ -5422,6 +9061,32 @@ def main() -> int:
         "--require-deterministic",
         action="store_true",
         help="Fail when manifest is not deterministic.",
+    )
+    verify_parser.add_argument(
+        "--require-signature",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Require a package signature.",
+    )
+    verify_parser.add_argument(
+        "--verify-signature",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Verify package signatures when present.",
+    )
+    verify_parser.add_argument(
+        "--trusted-signers",
+        help="Path to a trust policy for allowed signers.",
+    )
+    verify_parser.add_argument(
+        "--signer",
+        choices=["auto", "cosign", "codesign"],
+        default="auto",
+        help="Select the verification tool (default: auto).",
+    )
+    verify_parser.add_argument(
+        "--signing-key",
+        help="Verification key path for cosign (or set COSIGN_KEY).",
     )
     verify_parser.add_argument(
         "--capabilities",
@@ -5470,6 +9135,18 @@ def main() -> int:
         "--extras",
         action="append",
         help="Extras to include from project optional-dependencies.",
+    )
+    vendor_parser.add_argument(
+        "--deterministic",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Require deterministic inputs (lockfiles).",
+    )
+    vendor_parser.add_argument(
+        "--deterministic-warn",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Warn instead of failing when deterministic lockfile checks fail.",
     )
     vendor_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."
@@ -5571,6 +9248,7 @@ def main() -> int:
     run_cfg = _resolve_command_config(config, "run")
     test_cfg = _resolve_command_config(config, "test")
     diff_cfg = _resolve_command_config(config, "diff")
+    publish_cfg = _resolve_command_config(config, "publish")
     cfg_capabilities = _resolve_capabilities_config(config)
 
     if args.command == "build":
@@ -5580,8 +9258,19 @@ def main() -> int:
         fallback = args.fallback or build_cfg.get("fallback") or "error"
         output = args.output or build_cfg.get("output")
         out_dir = args.out_dir or build_cfg.get("out_dir") or build_cfg.get("out-dir")
+        sysroot = (
+            args.sysroot
+            or build_cfg.get("sysroot")
+            or build_cfg.get("sysroot_path")
+            or build_cfg.get("sysroot-path")
+        )
         emit = args.emit or build_cfg.get("emit")
         emit_ir = args.emit_ir or build_cfg.get("emit_ir") or build_cfg.get("emit-ir")
+        pgo_profile = (
+            args.pgo_profile
+            or build_cfg.get("pgo_profile")
+            or build_cfg.get("pgo-profile")
+        )
         build_profile = (
             args.profile
             or build_cfg.get("profile")
@@ -5654,6 +9343,7 @@ def main() -> int:
             type_hints,
             fallback,
             type_facts,
+            pgo_profile,
             output,
             args.json,
             args.verbose,
@@ -5664,6 +9354,7 @@ def main() -> int:
             cache,
             cache_dir,
             cache_report,
+            sysroot,
             emit_ir,
             emit,
             out_dir,
@@ -5675,9 +9366,26 @@ def main() -> int:
             args.module,
         )
     if args.command == "check":
-        return check(args.path, args.output, args.strict, args.json, args.verbose)
+        deterministic = args.deterministic
+        if deterministic is None:
+            deterministic = _coerce_bool(build_cfg.get("deterministic"), True)
+        deterministic_warn = args.deterministic_warn
+        if deterministic_warn is None:
+            deterministic_warn = _coerce_bool(
+                build_cfg.get("deterministic_warn")
+                or build_cfg.get("deterministic-warn"),
+                False,
+            )
+        return check(
+            args.path,
+            args.output,
+            args.strict,
+            args.json,
+            args.verbose,
+            deterministic,
+            deterministic_warn,
+        )
     if args.command == "run":
-        python_exe = args.python or args.python_version
         build_args = _strip_leading_double_dash(args.build_arg)
         if args.rebuild and not _build_args_has_cache_flag(build_args):
             build_args.append("--no-cache")
@@ -5690,12 +9398,9 @@ def main() -> int:
         return run_script(
             args.file,
             args.module,
-            python_exe,
             _strip_leading_double_dash(args.script_args),
             args.json,
             args.verbose,
-            args.no_shims,
-            args.compiled,
             args.timing,
             trusted,
             capabilities,
@@ -5717,7 +9422,6 @@ def main() -> int:
             _strip_leading_double_dash(args.script_args),
             args.json,
             args.verbose,
-            args.shims,
             trusted,
             capabilities,
             build_args,
@@ -5772,20 +9476,85 @@ def main() -> int:
         deterministic = args.deterministic
         if deterministic is None:
             deterministic = _coerce_bool(build_cfg.get("deterministic"), True)
+        deterministic_warn = args.deterministic_warn
+        if deterministic_warn is None:
+            deterministic_warn = _coerce_bool(
+                build_cfg.get("deterministic_warn")
+                or build_cfg.get("deterministic-warn"),
+                False,
+            )
         capabilities = args.capabilities or cfg_capabilities
+        sbom_enabled = args.sbom
+        if sbom_enabled is None:
+            sbom_enabled = True
         return package(
             args.artifact,
             args.manifest,
             args.output,
-            args.json,
-            args.verbose,
-            deterministic,
-            capabilities,
+            json_output=args.json,
+            verbose=args.verbose,
+            deterministic=deterministic,
+            deterministic_warn=deterministic_warn,
+            capabilities=capabilities,
+            sbom=sbom_enabled,
+            sbom_output=args.sbom_output,
+            sbom_format=args.sbom_format,
+            signature=args.signature,
+            signature_output=args.signature_output,
+            sign=args.sign,
+            signer=args.signer,
+            signing_key=args.signing_key,
+            signing_identity=args.signing_identity,
         )
     if args.command == "publish":
         deterministic = args.deterministic
         if deterministic is None:
             deterministic = _coerce_bool(build_cfg.get("deterministic"), True)
+        deterministic_warn = args.deterministic_warn
+        if deterministic_warn is None:
+            deterministic_warn = _coerce_bool(
+                build_cfg.get("deterministic_warn")
+                or build_cfg.get("deterministic-warn"),
+                False,
+            )
+        explicit_require = args.require_signature is not None
+        explicit_verify = args.verify_signature is not None
+        require_signature = args.require_signature
+        if require_signature is None:
+            require_signature = _coerce_bool(
+                publish_cfg.get("require_signature")
+                or publish_cfg.get("require-signature")
+                or os.environ.get("MOLT_REQUIRE_SIGNATURE"),
+                False,
+            )
+        verify_signature = args.verify_signature
+        if verify_signature is None:
+            verify_signature = _coerce_bool(
+                publish_cfg.get("verify_signature")
+                or publish_cfg.get("verify-signature")
+                or os.environ.get("MOLT_VERIFY_SIGNATURE"),
+                False,
+            )
+        if explicit_require and not require_signature and not explicit_verify:
+            verify_signature = False
+        trusted_signers = (
+            args.trusted_signers
+            or publish_cfg.get("trusted_signers")
+            or publish_cfg.get("trusted-signers")
+            or os.environ.get("MOLT_TRUSTED_SIGNERS")
+        )
+        if _is_remote_registry(args.registry):
+            if not explicit_require:
+                require_signature = True
+            if not explicit_verify and require_signature:
+                verify_signature = True
+            if trusted_signers is None and (require_signature or verify_signature):
+                return _fail(
+                    "Remote publish requires --trusted-signers or MOLT_TRUSTED_SIGNERS "
+                    "(disable with --no-require-signature/--no-verify-signature).",
+                    args.json,
+                    command="publish",
+                )
         capabilities = args.capabilities or cfg_capabilities
         return publish(
             args.package,
@@ -5794,9 +9563,25 @@ def main() -> int:
             args.json,
             args.verbose,
             deterministic,
+            deterministic_warn,
             capabilities,
+            require_signature,
+            verify_signature,
+            trusted_signers,
+            args.signer,
+            args.signing_key,
+            args.registry_token,
+            args.registry_user,
+            args.registry_password,
+            args.registry_timeout,
         )
     if args.command == "verify":
+        require_signature = args.require_signature
+        if require_signature is None:
+            require_signature = False
+        verify_signature = args.verify_signature
+        if verify_signature is None:
+            verify_signature = False
         return verify(
             args.package,
             args.manifest,
@@ -5806,10 +9591,25 @@ def main() -> int:
             args.verbose,
             args.require_deterministic,
             args.capabilities or cfg_capabilities,
+            require_signature,
+            verify_signature,
+            args.trusted_signers,
+            args.signer,
+            args.signing_key,
         )
     if args.command == "deps":
         return deps(args.include_dev, args.json, args.verbose)
     if args.command == "vendor":
+        deterministic = args.deterministic
+        if deterministic is None:
+            deterministic = _coerce_bool(build_cfg.get("deterministic"), True)
+        deterministic_warn = args.deterministic_warn
+        if deterministic_warn is None:
+            deterministic_warn = _coerce_bool(
+                build_cfg.get("deterministic_warn")
+                or build_cfg.get("deterministic-warn"),
+                False,
+            )
         return vendor(
             args.include_dev,
             args.json,
@@ -5818,6 +9618,8 @@ def main() -> int:
             args.dry_run,
             args.allow_non_tier_a,
             args.extras,
+            deterministic,
+            deterministic_warn,
         )
     if args.command == "clean":
         return clean(
@@ -5960,11 +9762,21 @@ def _lock_package_graph(
         packages[name] = pkg
         dep_names: list[str] = []
         extras = selected_extras.get(name, set())
+        if isinstance(extras, list):
+            extras = set(extras)
         for dep in pkg.get("dependencies", []):
             dep_name = _normalize_name(dep.get("name", ""))
             marker = dep.get("marker")
             extra = dep.get("extra")
-            if extra and extra not in extras:
+            extra_tokens: list[str] = []
+            if isinstance(extra, str):
+                if extra:
+                    extra_tokens = [extra]
+            elif isinstance(extra, list):
+                extra_tokens = [
+                    item for item in extra if isinstance(item, str) and item
+                ]
+            if extra_tokens and extras.isdisjoint(extra_tokens):
                 skipped.append(
                     {
                         "name": dep.get("name"),
@@ -6198,10 +10010,24 @@ def check(
     strict: bool,
     json_output: bool = False,
     verbose: bool = False,
+    deterministic: bool = True,
+    deterministic_warn: bool = False,
 ) -> int:
     target = Path(path)
     if not target.exists():
         return _fail(f"Path not found: {target}", json_output, command="check")
+    project_root = _find_project_root(target.resolve())
+    warnings: list[str] = []
+    lock_error = _check_lockfiles(
+        project_root,
+        json_output,
+        warnings,
+        deterministic,
+        deterministic_warn,
+        "check",
+    )
+    if lock_error is not None:
+        return lock_error
     files = _collect_py_files(target)
     if not files:
         return _fail(
@@ -6211,7 +10037,6 @@ def check(
         )
     trust = "trusted" if strict else "guarded"
     ty_ok, ty_output = _run_ty_check(target)
-    warnings: list[str] = []
     if ty_ok:
         facts = collect_type_facts_from_paths(files, trust, infer=True)
         facts.tool = "molt-check+ty+infer"
@@ -6236,7 +10061,12 @@ def check(
         payload = _json_payload(
             "check",
             "ok",
-            data={"output": str(output_path), "strict": strict, "ty_ok": ty_ok},
+            data={
+                "output": str(output_path),
+                "strict": strict,
+                "ty_ok": ty_ok,
+                "deterministic": deterministic,
+            },
             warnings=warnings,
         )
         _emit_json(payload, json_output)

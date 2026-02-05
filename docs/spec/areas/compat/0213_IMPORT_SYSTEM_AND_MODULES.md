@@ -16,7 +16,7 @@ This spec defines:
 - compatibility boundaries for dynamic imports.
 
 TODO(import-system, owner:stdlib, milestone:TC3, priority:P1, status:planned): project-root builds (package discovery, `__init__` handling, namespace packages, deterministic dependency graph caching).
-TODO(import-system, owner:stdlib, milestone:TC3, priority:P1, status:planned): implement relative imports (explicit and implicit) with deterministic package resolution.
+Implemented: relative imports (explicit and implicit) with deterministic package resolution, honoring `__package__`/`__spec__` metadata and namespace packages.
 
 ---
 

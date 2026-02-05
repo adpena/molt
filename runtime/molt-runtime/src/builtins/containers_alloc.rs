@@ -1,8 +1,9 @@
 use crate::{
     alloc_object, dict_len, dict_table_capacity, dict_update_apply, dict_update_set_in_place,
     exception_pending, is_truthy, maybe_ptr_from_bits, molt_iter, molt_iter_next, obj_from_bits,
-    object_type_id, seq_vec_ref, set_table_capacity, usize_from_bits, MoltHeader, MoltObject,
-    PyToken, TYPE_ID_DICT, TYPE_ID_FROZENSET, TYPE_ID_LIST, TYPE_ID_SET, TYPE_ID_TUPLE,
+    object_type_id, raise_exception, seq_vec_ref, set_table_capacity, usize_from_bits,
+    MoltHeader, MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_FROZENSET, TYPE_ID_LIST, TYPE_ID_SET,
+    TYPE_ID_TUPLE,
 };
 
 #[no_mangle]
@@ -13,14 +14,27 @@ pub extern "C" fn molt_dict_new(capacity_bits: u64) -> u64 {
             + std::mem::size_of::<*mut Vec<usize>>();
         let ptr = alloc_object(_py, total, TYPE_ID_DICT);
         if ptr.is_null() {
-            return MoltObject::none().bits();
+            return raise_exception::<_>(_py, "MemoryError", "dict allocation failed");
         }
         unsafe {
             let capacity_hint = usize_from_bits(capacity_bits);
-            let order = Vec::with_capacity(capacity_hint * 2);
+            let mut order = Vec::new();
+            if capacity_hint > 0 {
+                let order_cap = capacity_hint
+                    .checked_mul(2)
+                    .ok_or(())
+                    .and_then(|val| order.try_reserve(val).map_err(|_| ()));
+                if order_cap.is_err() {
+                    return raise_exception::<_>(_py, "MemoryError", "dict allocation failed");
+                }
+            }
             let mut table = Vec::new();
             if capacity_hint > 0 {
-                table.resize(dict_table_capacity(capacity_hint), 0);
+                let table_cap = dict_table_capacity(capacity_hint);
+                if table.try_reserve(table_cap).is_err() {
+                    return raise_exception::<_>(_py, "MemoryError", "dict allocation failed");
+                }
+                table.resize(table_cap, 0);
             }
             let order_ptr = Box::into_raw(Box::new(order));
             let table_ptr = Box::into_raw(Box::new(table));

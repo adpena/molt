@@ -78,7 +78,7 @@ The gap is primarily in **Lowering** (AST -> HIR), not Parsing.
 
 ## 3. TODOs
 - TODO(syntax, owner:frontend, milestone:M3, priority:P2, status:missing): Implement `match` lowering (start with simple literals).
-- TODO(syntax, owner:frontend, milestone:M2, priority:P2, status:partial): Implement `f-string` format specifiers + conversion flags + debug spec (needs `format()` protocol).
+- Implemented: `f-string` format specifiers + conversion flags + debug spec.
 
 
 ## 4. Matrix Audit (2026-01-16)

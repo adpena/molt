@@ -17,11 +17,10 @@ else:
     def cast(_tp, value):
         return value
 
-
 import collections.abc as abc
-import builtins as _builtins
 import keyword as _keyword
-import operator as _operator
+
+from _intrinsics import require_intrinsic as _require_intrinsic
 
 
 __all__ = ["abc", "Counter", "defaultdict", "deque", "namedtuple"]
@@ -31,18 +30,9 @@ _MISSING = object()
 if TYPE_CHECKING:
     from types import NotImplementedType
 
-
-def _load_intrinsic(name: str) -> Any | None:
-    direct = globals().get(name)
-    if direct is not None:
-        return direct
-    return getattr(_builtins, name, None)
-
-
-_MOLT_CLASS_NEW = _load_intrinsic("_molt_class_new")
-_MOLT_CLASS_SET_BASE = _load_intrinsic("_molt_class_set_base")
-_MOLT_CLASS_APPLY_SET_NAME = _load_intrinsic("_molt_class_apply_set_name")
-
+_MOLT_CLASS_NEW = _require_intrinsic("molt_class_new", globals())
+_MOLT_CLASS_SET_BASE = _require_intrinsic("molt_class_set_base", globals())
+_MOLT_CLASS_APPLY_SET_NAME = _require_intrinsic("molt_class_apply_set_name", globals())
 
 class _DequeIter:
     def __init__(self, deq: "deque") -> None:
@@ -58,7 +48,6 @@ class _DequeIter:
         value = self._data[self._index]
         self._index += 1
         return value
-
 
 class deque:
     _iter_class = _DequeIter
@@ -217,7 +206,6 @@ class deque:
     def __reversed__(self) -> Iterator[Any]:
         return reversed(self._data)
 
-
 def namedtuple(
     typename: Any,
     field_names: Any,
@@ -287,8 +275,7 @@ def namedtuple(
         except Exception:
             module = "__main__"
 
-    if not callable(_MOLT_CLASS_NEW) or not callable(_MOLT_CLASS_SET_BASE):
-        raise NotImplementedError("namedtuple requires Molt runtime support")
+    use_intrinsics = callable(_MOLT_CLASS_NEW) and callable(_MOLT_CLASS_SET_BASE)
 
     def __new__(cls, *args: Any, **kwargs: Any) -> Any:
         if len(args) > num_fields:
@@ -345,29 +332,56 @@ def namedtuple(
         items = ", ".join(f"{name}={getattr(self, name)!r}" for name in field_tuple)
         return f"{typename}({items})"
 
-    cls = _MOLT_CLASS_NEW(typename)
-    base_res = _MOLT_CLASS_SET_BASE(cls, tuple)
-    if base_res is not None:
-        cls = base_res
-    setattr(cls, "__slots__", ())
-    setattr(cls, "__doc__", f"{typename}({', '.join(field_tuple)})")
-    setattr(cls, "__module__", module)
-    setattr(cls, "__qualname__", typename)
-    setattr(cls, "_fields", field_tuple)
-    setattr(cls, "_field_defaults", field_defaults)
-    setattr(cls, "__match_args__", field_tuple)
-    setattr(cls, "__new__", __new__)
-    setattr(cls, "_make", classmethod(_make))
-    setattr(cls, "_replace", _replace)
-    setattr(cls, "_asdict", _asdict)
-    setattr(cls, "__getnewargs__", __getnewargs__)
-    setattr(cls, "__repr__", __repr__)
-    for idx, name in enumerate(field_tuple):
-        setattr(cls, name, property(_operator.itemgetter(idx)))
-    if callable(_MOLT_CLASS_APPLY_SET_NAME):
-        _MOLT_CLASS_APPLY_SET_NAME(cls)
-    return cls
+    def _field_getter(index: int):
+        def _getter(self):
+            return self[index]
 
+        return _getter
+
+    if use_intrinsics:
+        cls = _MOLT_CLASS_NEW(typename)
+        base_res = _MOLT_CLASS_SET_BASE(cls, tuple)
+        if base_res is not None:
+            cls = base_res
+        setattr(cls, "__slots__", ())
+        setattr(cls, "__doc__", f"{typename}({', '.join(field_tuple)})")
+        setattr(cls, "__module__", module)
+        setattr(cls, "__qualname__", typename)
+        setattr(cls, "_fields", field_tuple)
+        setattr(cls, "_field_defaults", field_defaults)
+        setattr(cls, "__match_args__", field_tuple)
+        setattr(cls, "__new__", __new__)
+        setattr(cls, "_make", classmethod(_make))
+        setattr(cls, "_replace", _replace)
+        setattr(cls, "_asdict", _asdict)
+        setattr(cls, "__getnewargs__", __getnewargs__)
+        setattr(cls, "__repr__", __repr__)
+        for idx, name in enumerate(field_tuple):
+            setattr(cls, name, property(_field_getter(idx)))
+        if callable(_MOLT_CLASS_APPLY_SET_NAME):
+            _MOLT_CLASS_APPLY_SET_NAME(cls)
+        return cls
+
+    namespace: dict[str, Any] = {
+        "__slots__": (),
+        "__doc__": f"{typename}({', '.join(field_tuple)})",
+        "__module__": module,
+        "__qualname__": typename,
+        "_fields": field_tuple,
+        "_field_defaults": field_defaults,
+        "__match_args__": field_tuple,
+        "__new__": __new__,
+        "_make": classmethod(_make),
+        "_replace": _replace,
+        "_asdict": _asdict,
+        "__getnewargs__": __getnewargs__,
+        "__repr__": __repr__,
+    }
+    for idx, name in enumerate(field_tuple):
+        namespace[name] = property(_field_getter(idx))
+    cls = type.__new__(type, typename, (tuple,), namespace)
+    type.__init__(cls, typename, (tuple,), namespace)
+    return cls
 
 class Counter(dict):
     def __init__(
@@ -645,7 +659,6 @@ class Counter(dict):
             dict.__setitem__(self, key, value)
         return self
 
-
 class defaultdict(dict):
     def __init__(self, default_factory=None, *args: Any, **kwargs: Any) -> None:
         self.default_factory = default_factory
@@ -690,20 +703,20 @@ class defaultdict(dict):
         return dict.get(self, key, default)
 
     def __missing__(self, key: Any) -> Any:
-        if self.default_factory is None:
+        factory = self.default_factory
+        if factory is None:
             raise KeyError(key)
-        if self.default_factory is list:
+        if factory is list:
             value = []
-        elif self.default_factory is dict:
+        elif factory is dict:
             value = {}
         else:
-            value = self.default_factory()
+            value = factory()
         dict.__setitem__(self, key, value)
         return value
 
     def __repr__(self) -> str:
         return f"defaultdict({self.default_factory!r}, {dict(self)!r})"
-
 
 class _CounterElementsIter:
     def __init__(self, counter: Counter) -> None:
@@ -755,7 +768,6 @@ class _CounterElementsIter:
             self._index += 1
         raise StopIteration
 
-
 class _CounterItemsIter:
     def __init__(self, counter: Counter) -> None:
         items: list[tuple[Any, int]] = []
@@ -773,7 +785,6 @@ class _CounterItemsIter:
         item = self._items[self._index]
         self._index += 1
         return item
-
 
 class _CounterItemsView:
     def __init__(self, counter: Counter) -> None:

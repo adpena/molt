@@ -1,6 +1,6 @@
 """Purpose: differential coverage for stdlib class kwargs."""
 
-from molt.stdlib import collections
+import collections
 
 d = collections.deque(maxlen=2)
 d.append(1)

@@ -49,6 +49,11 @@ No feature line is ever to be deleted from this file.
 
 from __future__ import annotations
 
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+
+_require_intrinsic("molt_stdlib_probe", globals())
+
 all_feature_names = [
     "nested_scopes",
     "generators",

@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Sequence
 from functools import lru_cache
 from pathlib import Path
@@ -200,7 +201,11 @@ def _diff_root() -> Path:
     if raw:
         root = Path(raw).expanduser()
     else:
-        root = Path("logs") / "molt_diff"
+        external_root = Path("/Volumes/APDataStore/Molt")
+        if external_root.exists():
+            root = external_root
+        else:
+            root = Path("logs") / "molt_diff"
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -210,7 +215,11 @@ def _diff_tmp_root() -> Path:
     if raw:
         root = Path(raw).expanduser()
     else:
-        root = _diff_root()
+        diff_root = _diff_root()
+        if diff_root.as_posix().startswith("/Volumes/APDataStore/Molt"):
+            root = diff_root / "tmp"
+        else:
+            root = diff_root
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -240,8 +249,144 @@ def _diff_glob() -> str:
     return raw or "*.py"
 
 
+def _diff_run_id() -> str:
+    raw = os.environ.get("MOLT_DIFF_RUN_ID", "").strip()
+    if raw:
+        return raw
+    ts = time.strftime("%Y%m%d_%H%M%S", time.gmtime())
+    return f"{ts}_{os.getpid()}"
+
+
+def _diff_warm_cache() -> bool:
+    raw = os.environ.get("MOLT_DIFF_WARM_CACHE", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _diff_retry_oom_default() -> bool:
+    raw = os.environ.get("MOLT_DIFF_RETRY_OOM", "").strip().lower()
+    if raw:
+        return raw in {"1", "true", "yes", "on"}
+    return True
+
+
+def _parse_float_env(name: str) -> float | None:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+def _memory_limit_bytes() -> int | None:
+    gb = _parse_float_env("MOLT_DIFF_RLIMIT_GB")
+    mb = _parse_float_env("MOLT_DIFF_RLIMIT_MB")
+    if gb is not None:
+        if gb <= 0:
+            return None
+        return int(gb * 1024 * 1024 * 1024)
+    if mb is not None:
+        if mb <= 0:
+            return None
+        return int(mb * 1024 * 1024)
+    # Default to 10 GB when unset; disable by setting MOLT_DIFF_RLIMIT_GB=0.
+    return 10 * 1024 * 1024 * 1024
+
+
+_MEM_LIMIT_APPLIED = False
+
+
+def _apply_memory_limit() -> None:
+    global _MEM_LIMIT_APPLIED
+    if _MEM_LIMIT_APPLIED:
+        return
+    limit = _memory_limit_bytes()
+    if limit is None:
+        _MEM_LIMIT_APPLIED = True
+        return
+    try:
+        import resource  # type: ignore
+    except Exception:
+        _MEM_LIMIT_APPLIED = True
+        return
+    for name in ("RLIMIT_AS", "RLIMIT_DATA", "RLIMIT_RSS"):
+        res = getattr(resource, name, None)
+        if res is None:
+            continue
+        try:
+            soft, hard = resource.getrlimit(res)
+            new_soft = min(soft, limit) if soft != resource.RLIM_INFINITY else limit
+            new_hard = min(hard, limit) if hard != resource.RLIM_INFINITY else limit
+            resource.setrlimit(res, (new_soft, new_hard))
+        except Exception:
+            continue
+    _MEM_LIMIT_APPLIED = True
+
+
+def _available_memory_bytes() -> int | None:
+    override = _parse_float_env("MOLT_DIFF_MEM_AVAILABLE_GB")
+    if override is not None and override > 0:
+        return int(override * 1024 * 1024 * 1024)
+    system = sys.platform
+    if system.startswith("linux"):
+        try:
+            text = Path("/proc/meminfo").read_text()
+        except OSError:
+            text = ""
+        for line in text.splitlines():
+            if line.startswith("MemAvailable:"):
+                parts = line.split()
+                if len(parts) >= 2 and parts[1].isdigit():
+                    return int(parts[1]) * 1024
+        for line in text.splitlines():
+            if line.startswith("MemTotal:"):
+                parts = line.split()
+                if len(parts) >= 2 and parts[1].isdigit():
+                    return int(parts[1]) * 1024
+    if system == "darwin":
+        try:
+            page_size = os.sysconf("SC_PAGE_SIZE")
+            pages = os.sysconf("SC_PHYS_PAGES")
+            return int(page_size * pages * 0.6)
+        except (OSError, ValueError):
+            return None
+    if system.startswith("win"):
+        try:
+            import ctypes
+
+            class MemoryStatus(ctypes.Structure):
+                _fields_ = [
+                    ("length", ctypes.c_uint32),
+                    ("memory_load", ctypes.c_uint32),
+                    ("total_phys", ctypes.c_uint64),
+                    ("avail_phys", ctypes.c_uint64),
+                    ("total_page_file", ctypes.c_uint64),
+                    ("avail_page_file", ctypes.c_uint64),
+                    ("total_virtual", ctypes.c_uint64),
+                    ("avail_virtual", ctypes.c_uint64),
+                    ("avail_extended_virtual", ctypes.c_uint64),
+                ]
+
+            status = MemoryStatus()
+            status.length = ctypes.sizeof(MemoryStatus)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))
+            return int(status.avail_phys)
+        except Exception:
+            return None
+    return None
+
+
 def _default_jobs() -> int:
     count = os.cpu_count() or 1
+    per_job_gb = _parse_float_env("MOLT_DIFF_MEM_PER_JOB_GB") or 2.0
+    available = _available_memory_bytes()
+    if available is not None:
+        mem_jobs = int(available / (per_job_gb * 1024 * 1024 * 1024))
+        count = min(count, max(1, mem_jobs))
+    max_jobs = os.environ.get("MOLT_DIFF_MAX_JOBS", "").strip()
+    if max_jobs.isdigit():
+        count = min(count, max(1, int(max_jobs)))
     return max(1, count)
 
 
@@ -262,6 +407,25 @@ def _collect_test_files_multi(targets: Sequence[Path]) -> list[Path]:
             seen.add(path)
             files.append(path)
     return files
+
+
+def _order_test_files(files: list[Path], jobs: int) -> list[Path]:
+    mode = os.environ.get("MOLT_DIFF_ORDER", "auto").strip().lower()
+    if mode not in {"auto", "name", "size-asc", "size-desc"}:
+        mode = "auto"
+    if mode == "auto":
+        mode = "size-desc" if jobs > 1 else "name"
+    if mode == "name":
+        return files
+
+    def size_key(path: Path) -> int:
+        try:
+            return path.stat().st_size
+        except OSError:
+            return 0
+
+    reverse = mode == "size-desc"
+    return sorted(files, key=size_key, reverse=reverse)
 
 
 def _log_path_for_test(log_dir: Path, file_path: str) -> Path:
@@ -397,16 +561,27 @@ def _parse_time_metrics(path: Path) -> dict[str, int]:
     except OSError:
         return metrics
     for line in text.splitlines():
-        parts = line.split()
-        if not parts:
+        raw = line.strip()
+        if not raw:
             continue
-        try:
-            value = int(parts[0])
-        except ValueError:
+        value: int | None = None
+        if ":" in raw:
+            maybe = raw.split(":", 1)[1].strip().split()[0]
+            if maybe.isdigit():
+                value = int(maybe)
+        else:
+            parts = raw.split()
+            if parts and parts[0].isdigit():
+                value = int(parts[0])
+        if value is None:
             continue
-        if "maximum resident set size" in line:
+        if "maximum resident set size" in raw or "Maximum resident set size" in raw:
+            if sys.platform == "darwin":
+                value = max(1, value // 1024)
             metrics["max_rss"] = value
-        elif "peak memory footprint" in line:
+        elif "peak memory footprint" in raw:
+            if sys.platform == "darwin":
+                value = max(1, value // 1024)
             metrics["peak_footprint"] = value
     return metrics
 
@@ -422,7 +597,10 @@ def _run_with_optional_time(
     if time_path is not None:
         time_bin = _time_tool()
         if time_bin is not None:
-            run_cmd = [time_bin, "-l", "-o", str(time_path), *cmd]
+            if sys.platform == "darwin":
+                run_cmd = [time_bin, "-l", "-o", str(time_path), *cmd]
+            else:
+                run_cmd = [time_bin, "-v", "-o", str(time_path), *cmd]
     return subprocess.run(
         run_cmd,
         env=env,
@@ -444,7 +622,10 @@ def _record_rss_metrics(
 ) -> None:
     if not _diff_measure_rss():
         return
+    run_id = os.environ.get("MOLT_DIFF_RUN_ID", "").strip() or None
     payload = {
+        "run_id": run_id,
+        "timestamp": time.time(),
         "file": file_path,
         "status": status,
         "build_rc": build_rc,
@@ -462,17 +643,11 @@ def _record_rss_metrics(
 
 def run_cpython(file_path, python_exe=sys.executable):
     python_exe = _resolve_python_exe(python_exe)
+    _apply_memory_limit()
     env = os.environ.copy()
-    paths = [env.get("PYTHONPATH", ""), ".", "src"]
-    env["PYTHONPATH"] = os.pathsep.join(p for p in paths if p)
     env["PYTHONHASHSEED"] = "0"
     env.update(_collect_env_overrides(file_path))
-    bootstrap = (
-        "import runpy, sys; "
-        "import molt.shims as shims; "
-        "shims.install(); "
-        "runpy.run_path(sys.argv[1], run_name='__main__')"
-    )
+    bootstrap = "import runpy, sys; runpy.run_path(sys.argv[1], run_name='__main__')"
     timeout = _diff_timeout()
     try:
         result = subprocess.run(
@@ -489,6 +664,15 @@ def run_cpython(file_path, python_exe=sys.executable):
 
 
 def run_molt(file_path):
+    return _run_molt(file_path, build_only=False)
+
+
+def run_molt_build_only(file_path: str) -> tuple[str, str, int]:
+    return _run_molt(file_path, build_only=True)
+
+
+def _run_molt(file_path: str, *, build_only: bool) -> tuple[str | None, str, int]:
+    _apply_memory_limit()
     output_root = Path(tempfile.mkdtemp(prefix="molt_diff_", dir=_diff_tmp_root()))
     cache_root = output_root / "cache"
     tmp_root = output_root / "tmp"
@@ -576,6 +760,17 @@ def run_molt(file_path):
             )
             return None, build_res.stderr, build_res.returncode
 
+        if build_only:
+            _record_rss_metrics(
+                file_path,
+                build_metrics=build_metrics,
+                run_metrics=None,
+                build_rc=build_res.returncode,
+                run_rc=None,
+                status="build_only_ok",
+            )
+            return "", "", 0
+
         # Run
         try:
             run_res = _run_with_optional_time(
@@ -615,6 +810,127 @@ def run_molt(file_path):
             shutil.rmtree(output_root, ignore_errors=True)
 
 
+def _is_oom_returncode(code: int | None) -> bool:
+    if code is None:
+        return False
+    if code in {137, 9}:
+        return True
+    if code < 0 and abs(code) in {9, 137}:
+        return True
+    return False
+
+
+def _is_oom_error(stderr: str) -> bool:
+    needle = stderr.lower()
+    return any(token in needle for token in ("oom", "out of memory", "std::bad_alloc"))
+
+
+def _should_retry_oom(code: int | None, stderr: str) -> bool:
+    return _is_oom_returncode(code) or _is_oom_error(stderr)
+
+
+def _aggregate_rss_metrics(run_id: str) -> dict[str, object]:
+    if not _diff_measure_rss():
+        return {}
+    summary_path = _diff_root() / "rss_metrics.jsonl"
+    if not summary_path.exists():
+        return {}
+    entries: list[dict[str, object]] = []
+    try:
+        for line in summary_path.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if run_id and payload.get("run_id") != run_id:
+                continue
+            entries.append(payload)
+    except OSError:
+        return {}
+    if not entries:
+        return {}
+
+    def metric_max(key: str, field: str) -> int | None:
+        values: list[int] = []
+        for item in entries:
+            block = item.get(key) or {}
+            if isinstance(block, dict):
+                value = block.get(field)
+                if isinstance(value, int):
+                    values.append(value)
+        return max(values) if values else None
+
+    max_build_rss = metric_max("build", "max_rss")
+    max_run_rss = metric_max("run", "max_rss")
+    max_peak = metric_max("run", "peak_footprint")
+    return {
+        "entries": len(entries),
+        "max_build_rss_kb": max_build_rss,
+        "max_run_rss_kb": max_run_rss,
+        "max_run_peak_footprint_kb": max_peak,
+    }
+
+
+def _top_rss_entries(run_id: str, limit: int) -> list[dict[str, object]]:
+    if not _diff_measure_rss():
+        return []
+    summary_path = _diff_root() / "rss_metrics.jsonl"
+    if not summary_path.exists():
+        return []
+    entries: list[dict[str, object]] = []
+    try:
+        for line in summary_path.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if run_id and payload.get("run_id") != run_id:
+                continue
+            entries.append(payload)
+    except OSError:
+        return []
+
+    def metric(entry: dict[str, object]) -> int:
+        block = entry.get("run") or {}
+        if isinstance(block, dict):
+            value = block.get("max_rss")
+            if isinstance(value, int):
+                return value
+        return 0
+
+    ranked = sorted(entries, key=metric, reverse=True)
+    return ranked[: max(0, limit)]
+
+
+def _print_rss_top(run_id: str, limit: int) -> None:
+    if limit <= 0:
+        return
+    entries = _top_rss_entries(run_id, limit)
+    if not entries:
+        return
+    print(f"Top {len(entries)} RSS offenders (run phase):")
+    for entry in entries:
+        file_path = entry.get("file", "<unknown>")
+        status = entry.get("status", "")
+        run_block = entry.get("run") or {}
+        build_block = entry.get("build") or {}
+        run_rss = run_block.get("max_rss") if isinstance(run_block, dict) else None
+        build_rss = (
+            build_block.get("max_rss") if isinstance(build_block, dict) else None
+        )
+
+        def fmt(value: object) -> str:
+            return f"{value} KB" if isinstance(value, int) and value > 0 else "-"
+
+        print(
+            f"- {file_path} | run={fmt(run_rss)} build={fmt(build_rss)} status={status}"
+        )
+
+
 def diff_test(file_path, python_exe=sys.executable):
     meta = _collect_meta(file_path)
     python_version = _python_exe_version(python_exe)
@@ -634,6 +950,9 @@ def diff_test(file_path, python_exe=sys.executable):
 
     print(f"Testing {file_path} against {python_exe}...")
     cp_out, cp_err, cp_ret = run_cpython(file_path, python_exe)
+    if _should_retry_oom(cp_ret, cp_err):
+        print(f"[OOM] {file_path} (cpython)")
+        return "oom"
     if cp_ret != 0 and (
         "msgpack is required for parse_msgpack fallback" in cp_err
         or "cbor2 is required for parse_cbor fallback" in cp_err
@@ -641,6 +960,9 @@ def diff_test(file_path, python_exe=sys.executable):
         print(f"[SKIP] {file_path} (missing msgpack/cbor2 in CPython env)")
         return "skip"
     molt_out, molt_err, molt_ret = run_molt(file_path)
+    if _should_retry_oom(molt_ret, molt_err):
+        print(f"[OOM] {file_path}")
+        return "oom"
 
     cp_out = _normalize_output(cp_out, normalize)
     cp_err = _normalize_output(cp_err, normalize)
@@ -690,6 +1012,9 @@ def run_diff(
     log_aggregate: Path | None = None,
     live: bool = False,
     fail_fast: bool = False,
+    failures_output: Path | None = None,
+    warm_cache: bool = False,
+    retry_oom: bool = False,
 ) -> dict:
     results: list[tuple[str, str]] = []
     if isinstance(target, Path):
@@ -698,6 +1023,18 @@ def run_diff(
         test_files = _collect_test_files_multi(target)
     if jobs is None:
         jobs = _default_jobs() if len(test_files) > 1 else 1
+    run_id = _diff_run_id()
+    os.environ["MOLT_DIFF_RUN_ID"] = run_id
+    test_files = _order_test_files(test_files, jobs)
+    if warm_cache:
+        shared_cache = os.environ.get("MOLT_CACHE")
+        if not shared_cache:
+            shared_cache = str(_diff_root() / "molt_cache")
+            os.environ["MOLT_CACHE"] = shared_cache
+        for file_path in test_files:
+            _out, err, rc = run_molt_build_only(str(file_path))
+            if rc != 0:
+                print(f"[WARM-CACHE FAIL] {file_path}: {err.strip()}")
     if jobs <= 1:
         with _open_log_file(log_file) as log_handle:
             with _open_log_file(log_aggregate) as aggregate_handle:
@@ -781,24 +1118,93 @@ def run_diff(
                     print(payload["stdout"], end="")
                 if payload["stderr"]:
                     print(payload["stderr"], end="", file=sys.stderr)
-    discovered = len(results)
-    failed_files = [path for path, status in results if status == "fail"]
-    skipped_files = [path for path, status in results if status == "skip"]
+    status_by_path = {path: status for path, status in results}
+    if jobs > 1 and retry_oom:
+        oom_paths = [p for p, s in status_by_path.items() if s == "oom"]
+        if oom_paths:
+            _emit_line(
+                f"[RETRY-OOM] Retrying {len(oom_paths)} test(s) with --jobs 1",
+                None,
+                echo=True,
+            )
+        for path in oom_paths:
+            retry_payload = _diff_run_single(path, python_exe)
+            status_by_path[path] = retry_payload["status"]
+            outputs[path] = retry_payload
+    discovered = len(status_by_path)
+    failed_files = [
+        path for path, status in status_by_path.items() if status in {"fail", "oom"}
+    ]
+    skipped_files = [
+        path for path, status in status_by_path.items() if status == "skip"
+    ]
     failed = len(failed_files)
-    passed = len([None for _, status in results if status == "pass"])
+    passed = len([None for status in status_by_path.values() if status == "pass"])
     skipped = len(skipped_files)
+    oom = len([None for status in status_by_path.values() if status == "oom"])
     total = passed + failed
-    return {
+    try:
+        limit = int(os.environ.get("MOLT_DIFF_RSS_TOP", "5"))
+    except ValueError:
+        limit = 5
+    rss_top = [
+        {
+            "file": entry.get("file"),
+            "status": entry.get("status"),
+            "run_max_rss_kb": (entry.get("run") or {}).get("max_rss")
+            if isinstance(entry.get("run"), dict)
+            else None,
+            "build_max_rss_kb": (entry.get("build") or {}).get("max_rss")
+            if isinstance(entry.get("build"), dict)
+            else None,
+        }
+        for entry in _top_rss_entries(run_id, limit if _diff_measure_rss() else 0)
+    ]
+    summary = {
         "discovered": discovered,
         "total": total,
         "passed": passed,
         "failed": failed,
+        "oom": oom,
         "skipped": skipped,
         "failed_files": failed_files,
         "skipped_files": skipped_files,
         "python_exe": python_exe,
         "jobs": jobs,
+        "run_id": run_id,
+        "config": {
+            "measure_rss": _diff_measure_rss(),
+            "mem_limit_bytes": _memory_limit_bytes(),
+            "mem_per_job_gb": _parse_float_env("MOLT_DIFF_MEM_PER_JOB_GB") or 2.0,
+            "order": os.environ.get("MOLT_DIFF_ORDER", "auto"),
+            "warm_cache": warm_cache,
+            "retry_oom": retry_oom,
+        },
+        "rss": {
+            **_aggregate_rss_metrics(run_id),
+            "top": rss_top,
+        },
     }
+    if failures_output is None:
+        env_path = os.environ.get("MOLT_DIFF_FAILURES", "").strip()
+        if env_path:
+            failures_output = Path(env_path).expanduser()
+        else:
+            failures_output = _diff_root() / "failures.txt"
+    if failures_output is not None and failed_files:
+        try:
+            failures_output.parent.mkdir(parents=True, exist_ok=True)
+            failures_output.write_text("\n".join(failed_files) + "\n")
+        except OSError:
+            pass
+    summary_output = os.environ.get("MOLT_DIFF_SUMMARY", "").strip()
+    if summary_output:
+        _emit_json(summary, summary_output, stdout=False)
+    else:
+        summary_path = _diff_root() / "summary.json"
+        _emit_json(summary, str(summary_path), stdout=False)
+    _print_rss_top(run_id, limit if _diff_measure_rss() else 0)
+    return summary
 
 
 def _emit_json(payload: dict, output_path: str | None, stdout: bool) -> None:
@@ -858,6 +1264,25 @@ if __name__ == "__main__":
         action="store_true",
         help="Stop after the first failing test.",
     )
+    parser.add_argument(
+        "--failures-output",
+        help="Write failed test paths to a file (default: MOLT_DIFF_ROOT/failures.txt).",
+    )
+    parser.add_argument(
+        "--warm-cache",
+        action="store_true",
+        help="Warm shared MOLT_CACHE with build-only pass before running tests.",
+    )
+    parser.add_argument(
+        "--retry-oom",
+        action="store_true",
+        help="Retry OOM failures once with --jobs 1 (enabled by default).",
+    )
+    parser.add_argument(
+        "--no-retry-oom",
+        action="store_true",
+        help="Disable OOM retries.",
+    )
 
     args = parser.parse_args()
 
@@ -870,9 +1295,17 @@ if __name__ == "__main__":
     log_aggregate = (
         Path(args.log_aggregate).expanduser() if args.log_aggregate else None
     )
+    failures_output = (
+        Path(args.failures_output).expanduser() if args.failures_output else None
+    )
 
     if args.file:
         targets = [Path(path) for path in args.file]
+        retry_oom = _diff_retry_oom_default()
+        if args.retry_oom:
+            retry_oom = True
+        if args.no_retry_oom:
+            retry_oom = False
         summary = run_diff(
             targets,
             python_exe,
@@ -882,6 +1315,9 @@ if __name__ == "__main__":
             log_aggregate=log_aggregate,
             live=args.live,
             fail_fast=args.fail_fast,
+            failures_output=failures_output,
+            warm_cache=args.warm_cache or _diff_warm_cache(),
+            retry_oom=retry_oom,
         )
         _emit_json(summary, args.json_output, args.json)
         sys.exit(0 if summary["failed"] == 0 else 1)
@@ -897,6 +1333,9 @@ if __name__ == "__main__":
         log_aggregate=log_aggregate,
         live=args.live,
         fail_fast=args.fail_fast,
+        failures_output=failures_output,
+        warm_cache=args.warm_cache or _diff_warm_cache(),
+        retry_oom=_diff_retry_oom_default(),
     )
     _emit_json(summary, args.json_output, args.json)
     os.remove("temp_test.py")

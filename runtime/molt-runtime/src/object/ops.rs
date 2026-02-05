@@ -1,4 +1,5 @@
 use crate::object::accessors::object_field_init_ptr_raw;
+use crate::object::layout::{range_start_bits, range_step_bits, range_stop_bits};
 use crate::object::utf8_cache::{
     Utf8CountCache, Utf8CountCacheEntry, Utf8IndexCache, UTF8_CACHE_BLOCK, UTF8_CACHE_MIN_LEN,
     UTF8_COUNT_CACHE_SHARDS, UTF8_COUNT_PREFIX_MIN_LEN, UTF8_COUNT_TLS,
@@ -15,10 +16,35 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::ffi::CStr;
+#[cfg(not(target_arch = "wasm32"))]
+use std::ffi::CString;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, OnceLock};
+use unicode_casefold::{Locale, UnicodeCaseFold, Variant};
 use unicode_ident::{is_xid_continue, is_xid_start};
+use wtf8::{CodePoint, Wtf8};
+
+mod unicode_digit_table {
+    include!(concat!(env!("OUT_DIR"), "/unicode_digit_ranges.rs"));
+
+    pub(crate) fn is_digit(code: u32) -> bool {
+        let mut lo = 0usize;
+        let mut hi = UNICODE_DIGIT_RANGES.len();
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            let (start, end) = UNICODE_DIGIT_RANGES[mid];
+            if code < start {
+                hi = mid;
+            } else if code > end {
+                lo = mid + 1;
+            } else {
+                return true;
+            }
+        }
+        false
+    }
+}
 
 fn slice_bounds_from_args(
     _py: &PyToken<'_>,
@@ -90,30 +116,75 @@ fn slice_match(slice: &[u8], needle: &[u8], start_raw: i64, total: i64, suffix: 
     }
 }
 
+fn range_components_bigint(ptr: *mut u8) -> Option<(BigInt, BigInt, BigInt)> {
+    unsafe {
+        let start_obj = obj_from_bits(range_start_bits(ptr));
+        let stop_obj = obj_from_bits(range_stop_bits(ptr));
+        let step_obj = obj_from_bits(range_step_bits(ptr));
+        let start = to_bigint(start_obj)?;
+        let stop = to_bigint(stop_obj)?;
+        let step = to_bigint(step_obj)?;
+        Some((start, stop, step))
+    }
+}
+
+fn range_len_bigint(start: &BigInt, stop: &BigInt, step: &BigInt) -> BigInt {
+    if step.is_zero() {
+        return BigInt::from(0);
+    }
+    if step.is_positive() {
+        if start >= stop {
+            return BigInt::from(0);
+        }
+        let span = stop - start - 1;
+        return BigInt::from(1) + span / step;
+    }
+    if start <= stop {
+        return BigInt::from(0);
+    }
+    let step_abs = -step;
+    let span = start - stop - 1;
+    BigInt::from(1) + span / step_abs
+}
+
+fn alloc_range_from_bigints(_py: &PyToken<'_>, start: BigInt, stop: BigInt, step: BigInt) -> u64 {
+    let start_bits = int_bits_from_bigint(_py, start);
+    let stop_bits = int_bits_from_bigint(_py, stop);
+    let step_bits = int_bits_from_bigint(_py, step);
+    let ptr = alloc_range(_py, start_bits, stop_bits, step_bits);
+    let range_bits = if ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(ptr).bits()
+    };
+    dec_ref_bits(_py, start_bits);
+    dec_ref_bits(_py, stop_bits);
+    dec_ref_bits(_py, step_bits);
+    range_bits
+}
+
 #[no_mangle]
 pub extern "C" fn molt_range_new(start_bits: u64, stop_bits: u64, step_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let start = match to_i64(obj_from_bits(start_bits)) {
-            Some(val) => val,
-            None => return MoltObject::none().bits(),
+        let start_type = class_name_for_error(type_of_bits(_py, start_bits));
+        let start_err = format!("'{start_type}' object cannot be interpreted as an integer");
+        let Some(start) = index_bigint_from_obj(_py, start_bits, &start_err) else {
+            return MoltObject::none().bits();
         };
-        let stop = match to_i64(obj_from_bits(stop_bits)) {
-            Some(val) => val,
-            None => return MoltObject::none().bits(),
+        let stop_type = class_name_for_error(type_of_bits(_py, stop_bits));
+        let stop_err = format!("'{stop_type}' object cannot be interpreted as an integer");
+        let Some(stop) = index_bigint_from_obj(_py, stop_bits, &stop_err) else {
+            return MoltObject::none().bits();
         };
-        let step = match to_i64(obj_from_bits(step_bits)) {
-            Some(val) => val,
-            None => return MoltObject::none().bits(),
+        let step_type = class_name_for_error(type_of_bits(_py, step_bits));
+        let step_err = format!("'{step_type}' object cannot be interpreted as an integer");
+        let Some(step) = index_bigint_from_obj(_py, step_bits, &step_err) else {
+            return MoltObject::none().bits();
         };
-        if step == 0 {
+        if step.is_zero() {
             return raise_exception::<_>(_py, "ValueError", "range() arg 3 must not be zero");
         }
-        let ptr = alloc_range(_py, start, stop, step);
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        }
+        alloc_range_from_bigints(_py, start, stop, step)
     })
 }
 
@@ -373,10 +444,13 @@ pub extern "C" fn molt_dataclass_new(
             repr,
             slots,
             class_bits: 0,
+            field_flags: Vec::new(),
+            hash_mode: 0,
         });
         let desc_ptr = Box::into_raw(desc);
 
         let total = std::mem::size_of::<MoltHeader>()
+            + std::mem::size_of::<*mut DataclassDesc>()
             + std::mem::size_of::<*mut Vec<u64>>()
             + std::mem::size_of::<u64>();
         let ptr = alloc_object(_py, total, TYPE_ID_DATACLASS);
@@ -488,6 +562,92 @@ pub extern "C" fn molt_dataclass_set(obj_bits: u64, index_bits: u64, val_bits: u
     })
 }
 
+pub(crate) unsafe fn dataclass_set_class_raw(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    class_bits: u64,
+) -> u64 {
+    if object_type_id(ptr) != TYPE_ID_DATACLASS {
+        return raise_exception::<_>(_py, "TypeError", "dataclass expects object");
+    }
+    if class_bits != 0 {
+        let class_obj = obj_from_bits(class_bits);
+        let Some(class_ptr) = class_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "class must be a type object");
+        };
+        if object_type_id(class_ptr) != TYPE_ID_TYPE {
+            return raise_exception::<_>(_py, "TypeError", "class must be a type object");
+        }
+    }
+    let desc_ptr = dataclass_desc_ptr(ptr);
+    if !desc_ptr.is_null() {
+        let old_bits = (*desc_ptr).class_bits;
+        if old_bits != 0 {
+            dec_ref_bits(_py, old_bits);
+        }
+        (*desc_ptr).class_bits = class_bits;
+        if class_bits != 0 {
+            inc_ref_bits(_py, class_bits);
+        }
+        object_set_class_bits(_py, ptr, class_bits);
+        if class_bits != 0 {
+            let class_obj = obj_from_bits(class_bits);
+            if let Some(class_ptr) = class_obj.as_ptr() {
+                if object_type_id(class_ptr) == TYPE_ID_TYPE {
+                    let flags_name =
+                        attr_name_bits_from_bytes(_py, b"__molt_dataclass_field_flags__");
+                    if let Some(flags_name) = flags_name {
+                        if let Some(flags_bits) =
+                            class_attr_lookup_raw_mro(_py, class_ptr, flags_name)
+                        {
+                            let flags_obj = obj_from_bits(flags_bits);
+                            let flags_ptr = flags_obj.as_ptr();
+                            if let Some(flags_ptr) = flags_ptr {
+                                let type_id = object_type_id(flags_ptr);
+                                if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                                    let elems = seq_vec_ref(flags_ptr);
+                                    let mut out = Vec::with_capacity(elems.len());
+                                    for &elem_bits in elems.iter() {
+                                        let elem_obj = obj_from_bits(elem_bits);
+                                        let Some(val) = to_i64(elem_obj) else {
+                                            out.clear();
+                                            break;
+                                        };
+                                        if val < 0 || val > u8::MAX as i64 {
+                                            out.clear();
+                                            break;
+                                        }
+                                        out.push(val as u8);
+                                    }
+                                    if !out.is_empty() {
+                                        (*desc_ptr).field_flags = out;
+                                    }
+                                }
+                            }
+                        }
+                        dec_ref_bits(_py, flags_name);
+                    }
+                    let hash_name = attr_name_bits_from_bytes(_py, b"__molt_dataclass_hash__");
+                    if let Some(hash_name) = hash_name {
+                        if let Some(hash_bits) =
+                            class_attr_lookup_raw_mro(_py, class_ptr, hash_name)
+                        {
+                            let hash_obj = obj_from_bits(hash_bits);
+                            if let Some(val) = to_i64(hash_obj) {
+                                if val >= 0 && val <= u8::MAX as i64 {
+                                    (*desc_ptr).hash_mode = val as u8;
+                                }
+                            }
+                        }
+                        dec_ref_bits(_py, hash_name);
+                    }
+                }
+            }
+        }
+    }
+    MoltObject::none().bits()
+}
+
 #[no_mangle]
 pub extern "C" fn molt_dataclass_set_class(obj_bits: u64, class_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -495,32 +655,7 @@ pub extern "C" fn molt_dataclass_set_class(obj_bits: u64, class_bits: u64) -> u6
         let Some(ptr) = obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "dataclass expects object");
         };
-        unsafe {
-            if object_type_id(ptr) != TYPE_ID_DATACLASS {
-                return raise_exception::<_>(_py, "TypeError", "dataclass expects object");
-            }
-            if class_bits != 0 {
-                let class_obj = obj_from_bits(class_bits);
-                let Some(class_ptr) = class_obj.as_ptr() else {
-                    return raise_exception::<_>(_py, "TypeError", "class must be a type object");
-                };
-                if object_type_id(class_ptr) != TYPE_ID_TYPE {
-                    return raise_exception::<_>(_py, "TypeError", "class must be a type object");
-                }
-            }
-            let desc_ptr = dataclass_desc_ptr(ptr);
-            if !desc_ptr.is_null() {
-                let old_bits = (*desc_ptr).class_bits;
-                if old_bits != 0 {
-                    dec_ref_bits(_py, old_bits);
-                }
-                (*desc_ptr).class_bits = class_bits;
-                if class_bits != 0 {
-                    inc_ref_bits(_py, class_bits);
-                }
-            }
-        }
-        MoltObject::none().bits()
+        unsafe { dataclass_set_class_raw(_py, ptr, class_bits) }
     })
 }
 
@@ -1477,7 +1612,11 @@ pub extern "C" fn molt_pow(a: u64, b: u64) -> u64 {
                     "0.0 cannot be raised to a negative power",
                 );
             }
-            return MoltObject::from_float(lf.powf(rf)).bits();
+            let out = lf.powf(rf);
+            if out.is_infinite() && lf.is_finite() && rf.is_finite() {
+                return raise_exception::<_>(_py, "OverflowError", "math range error");
+            }
+            return MoltObject::from_float(out).bits();
         }
         if let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
             if let Some(exp) = r_big.to_u64() {
@@ -1517,7 +1656,11 @@ pub extern "C" fn molt_pow(a: u64, b: u64) -> u64 {
                     return complex_bits(_py, out.re, out.im);
                 }
             }
-            return MoltObject::from_float(lf.powf(rf)).bits();
+            let out = lf.powf(rf);
+            if out.is_infinite() && lf.is_finite() && rf.is_finite() {
+                return raise_exception::<_>(_py, "OverflowError", "math range error");
+            }
+            return MoltObject::from_float(out).bits();
         }
         raise_exception::<_>(_py, "TypeError", "unsupported operand type(s) for **")
     })
@@ -1863,8 +2006,17 @@ unsafe fn set_like_intersection(
         return MoltObject::none().bits();
     }
     for &entry in output.iter() {
-        if set_find_entry(_py, probe_elems, probe_table, entry).is_some() {
+        let found = set_find_entry(_py, probe_elems, probe_table, entry);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, res_bits);
+            return MoltObject::none().bits();
+        }
+        if found.is_some() {
             set_add_in_place(_py, res_ptr, entry);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, res_bits);
+                return MoltObject::none().bits();
+            }
         }
     }
     res_bits
@@ -1887,8 +2039,17 @@ unsafe fn set_like_difference(
         return MoltObject::none().bits();
     }
     for &entry in l_elems.iter() {
-        if set_find_entry(_py, r_elems, r_table, entry).is_none() {
+        let found = set_find_entry(_py, r_elems, r_table, entry);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, res_bits);
+            return MoltObject::none().bits();
+        }
+        if found.is_none() {
             set_add_in_place(_py, res_ptr, entry);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, res_bits);
+                return MoltObject::none().bits();
+            }
         }
     }
     res_bits
@@ -1912,13 +2073,31 @@ unsafe fn set_like_symdiff(
         return MoltObject::none().bits();
     }
     for &entry in l_elems.iter() {
-        if set_find_entry(_py, r_elems, r_table, entry).is_none() {
+        let found = set_find_entry(_py, r_elems, r_table, entry);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, res_bits);
+            return MoltObject::none().bits();
+        }
+        if found.is_none() {
             set_add_in_place(_py, res_ptr, entry);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, res_bits);
+                return MoltObject::none().bits();
+            }
         }
     }
     for &entry in r_elems.iter() {
-        if set_find_entry(_py, l_elems, l_table, entry).is_none() {
+        let found = set_find_entry(_py, l_elems, l_table, entry);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, res_bits);
+            return MoltObject::none().bits();
+        }
+        if found.is_none() {
             set_add_in_place(_py, res_ptr, entry);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, res_bits);
+                return MoltObject::none().bits();
+            }
         }
     }
     res_bits
@@ -2703,12 +2882,30 @@ fn rich_compare_bool(
     op_name_bits: u64,
     reverse_name_bits: u64,
 ) -> CompareBoolOutcome {
+    let pending_before = exception_pending(_py);
+    let prev_exc_bits = if pending_before {
+        exception_last_bits_noinc(_py).unwrap_or(0)
+    } else {
+        0
+    };
+    let exception_changed = || {
+        if !exception_pending(_py) {
+            return false;
+        }
+        if !pending_before {
+            return true;
+        }
+        exception_last_bits_noinc(_py).unwrap_or(0) != prev_exc_bits
+    };
+    if let Some(outcome) = rich_compare_type_bool(_py, lhs, rhs, op_name_bits, reverse_name_bits) {
+        return outcome;
+    }
     unsafe {
         if let Some(lhs_ptr) = lhs.as_ptr() {
             if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, lhs_ptr, op_name_bits) {
                 let res_bits = call_callable1(_py, call_bits, rhs.bits());
                 dec_ref_bits(_py, call_bits);
-                if exception_pending(_py) {
+                if exception_changed() {
                     dec_ref_bits(_py, res_bits);
                     return CompareBoolOutcome::Error;
                 }
@@ -2724,7 +2921,7 @@ fn rich_compare_bool(
                     };
                 }
             }
-            if exception_pending(_py) {
+            if exception_changed() {
                 return CompareBoolOutcome::Error;
             }
         }
@@ -2733,7 +2930,7 @@ fn rich_compare_bool(
             {
                 let res_bits = call_callable1(_py, call_bits, lhs.bits());
                 dec_ref_bits(_py, call_bits);
-                if exception_pending(_py) {
+                if exception_changed() {
                     dec_ref_bits(_py, res_bits);
                     return CompareBoolOutcome::Error;
                 }
@@ -2749,12 +2946,105 @@ fn rich_compare_bool(
                     };
                 }
             }
-            if exception_pending(_py) {
+            if exception_changed() {
                 return CompareBoolOutcome::Error;
             }
         }
     }
     CompareBoolOutcome::NotComparable
+}
+
+fn rich_compare_type_bool(
+    _py: &PyToken<'_>,
+    lhs: MoltObject,
+    rhs: MoltObject,
+    op_name_bits: u64,
+    reverse_name_bits: u64,
+) -> Option<CompareBoolOutcome> {
+    unsafe {
+        let mut saw_type = false;
+        if let Some(lhs_ptr) = lhs.as_ptr() {
+            if object_type_id(lhs_ptr) == TYPE_ID_TYPE {
+                saw_type = true;
+                if let Some(outcome) =
+                    rich_compare_type_method(_py, lhs_ptr, rhs.bits(), op_name_bits)
+                {
+                    return Some(outcome);
+                }
+            }
+        }
+        if let Some(rhs_ptr) = rhs.as_ptr() {
+            if object_type_id(rhs_ptr) == TYPE_ID_TYPE {
+                saw_type = true;
+                if let Some(outcome) =
+                    rich_compare_type_method(_py, rhs_ptr, lhs.bits(), reverse_name_bits)
+                {
+                    return Some(outcome);
+                }
+            }
+        }
+        if saw_type {
+            return Some(CompareBoolOutcome::NotComparable);
+        }
+    }
+    None
+}
+
+unsafe fn rich_compare_type_method(
+    _py: &PyToken<'_>,
+    type_ptr: *mut u8,
+    other_bits: u64,
+    op_name_bits: u64,
+) -> Option<CompareBoolOutcome> {
+    let pending_before = exception_pending(_py);
+    let prev_exc_bits = if pending_before {
+        exception_last_bits_noinc(_py).unwrap_or(0)
+    } else {
+        0
+    };
+    let exception_changed = || {
+        if !exception_pending(_py) {
+            return false;
+        }
+        if !pending_before {
+            return true;
+        }
+        exception_last_bits_noinc(_py).unwrap_or(0) != prev_exc_bits
+    };
+    let mut meta_bits = object_class_bits(type_ptr);
+    if meta_bits == 0 {
+        meta_bits = builtin_classes(_py).type_obj;
+    }
+    let meta_ptr = match obj_from_bits(meta_bits).as_ptr() {
+        Some(ptr) if object_type_id(ptr) == TYPE_ID_TYPE => ptr,
+        _ => return None,
+    };
+    let Some(method_bits) = class_attr_lookup_raw_mro(_py, meta_ptr, op_name_bits) else {
+        return None;
+    };
+    let Some(bound_bits) = descriptor_bind(_py, method_bits, meta_ptr, Some(type_ptr)) else {
+        if exception_changed() {
+            return Some(CompareBoolOutcome::Error);
+        }
+        return None;
+    };
+    let res_bits = call_callable1(_py, bound_bits, other_bits);
+    dec_ref_bits(_py, bound_bits);
+    if exception_changed() {
+        dec_ref_bits(_py, res_bits);
+        return Some(CompareBoolOutcome::Error);
+    }
+    if is_not_implemented_bits(_py, res_bits) {
+        dec_ref_bits(_py, res_bits);
+        return None;
+    }
+    let truthy = is_truthy(_py, obj_from_bits(res_bits));
+    dec_ref_bits(_py, res_bits);
+    Some(if truthy {
+        CompareBoolOutcome::True
+    } else {
+        CompareBoolOutcome::False
+    })
 }
 
 fn rich_compare_order(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> CompareOutcome {
@@ -2902,6 +3192,14 @@ pub extern "C" fn molt_ne(a: u64, b: u64) -> u64 {
             fn_addr!(molt_object_ne),
             2,
         );
+        if let Some(outcome) = rich_compare_type_bool(_py, lhs, rhs, ne_name_bits, ne_name_bits) {
+            return match outcome {
+                CompareBoolOutcome::True => MoltObject::from_bool(true).bits(),
+                CompareBoolOutcome::False => MoltObject::from_bool(false).bits(),
+                CompareBoolOutcome::Error => MoltObject::none().bits(),
+                CompareBoolOutcome::NotComparable => MoltObject::from_bool(a != b).bits(),
+            };
+        }
         let mut saw_explicit = false;
         unsafe {
             if let Some(lhs_ptr) = lhs.as_ptr() {
@@ -3649,12 +3947,19 @@ pub extern "C" fn molt_int_new(cls_bits: u64, val_bits: u64, base_bits: u64) -> 
             return MoltObject::none().bits();
         };
         let Some(slot_name_bits) = attr_name_bits_from_bytes(_py, b"__molt_int_value__") else {
-            return raise_exception::<_>(_py, "TypeError", "int subclass layout missing value slot");
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "int subclass layout missing value slot",
+            );
         };
-        let Some(offset) =
-            (unsafe { class_field_offset(_py, cls_ptr, slot_name_bits) }) else {
+        let Some(offset) = (unsafe { class_field_offset(_py, cls_ptr, slot_name_bits) }) else {
             dec_ref_bits(_py, slot_name_bits);
-            return raise_exception::<_>(_py, "TypeError", "int subclass layout missing value slot");
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "int subclass layout missing value slot",
+            );
         };
         dec_ref_bits(_py, slot_name_bits);
         unsafe {
@@ -5501,13 +5806,11 @@ fn slice_error(_py: &PyToken<'_>, err: SliceError) -> u64 {
         return MoltObject::none().bits();
     }
     match err {
-        SliceError::Type => {
-            raise_exception::<_>(
-                _py,
-                "TypeError",
-                "slice indices must be integers or None or have an __index__ method",
-            )
-        }
+        SliceError::Type => raise_exception::<_>(
+            _py,
+            "TypeError",
+            "slice indices must be integers or None or have an __index__ method",
+        ),
         SliceError::Value => raise_exception::<_>(_py, "ValueError", "slice step cannot be zero"),
     }
 }
@@ -5776,7 +6079,9 @@ pub extern "C" fn molt_len(val: u64) -> u64 {
             unsafe {
                 let type_id = object_type_id(ptr);
                 if type_id == TYPE_ID_STRING {
-                    return MoltObject::from_int(string_len(ptr) as i64).bits();
+                    let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
+                    let count = utf8_codepoint_count_cached(_py, bytes, Some(ptr as usize));
+                    return MoltObject::from_int(count).bits();
                 }
                 if type_id == TYPE_ID_BYTES {
                     return MoltObject::from_int(bytes_len(ptr) as i64).bits();
@@ -5822,8 +6127,11 @@ pub extern "C" fn molt_len(val: u64) -> u64 {
                     return MoltObject::from_int(dict_view_len(ptr) as i64).bits();
                 }
                 if type_id == TYPE_ID_RANGE {
-                    let len = range_len_i64(range_start(ptr), range_stop(ptr), range_step(ptr));
-                    return MoltObject::from_int(len).bits();
+                    let Some((start, stop, step)) = range_components_bigint(ptr) else {
+                        return MoltObject::none().bits();
+                    };
+                    let len = range_len_bigint(&start, &stop, &step);
+                    return int_bits_from_bigint(_py, len);
                 }
                 if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__len__") {
                     let call_bits = attr_lookup_ptr(_py, ptr, name_bits);
@@ -5914,15 +6222,14 @@ pub extern "C" fn molt_ord(val: u64) -> u64 {
                 let type_id = object_type_id(ptr);
                 if type_id == TYPE_ID_STRING {
                     let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
-                    let Ok(s) = std::str::from_utf8(bytes) else {
+                    let char_count = utf8_codepoint_count_cached(_py, bytes, Some(ptr as usize));
+                    if char_count != 1 {
+                        return ord_length_error(_py, char_count as usize);
+                    }
+                    let Some(code) = wtf8_codepoint_at(bytes, 0) else {
                         return MoltObject::none().bits();
                     };
-                    let char_count = s.chars().count();
-                    if char_count != 1 {
-                        return ord_length_error(_py, char_count);
-                    }
-                    let ch = s.chars().next().unwrap();
-                    return MoltObject::from_int(ch as i64).bits();
+                    return MoltObject::from_int(code.to_u32() as i64).bits();
                 }
                 if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
                     let len = bytes_len(ptr);
@@ -5954,12 +6261,9 @@ pub extern "C" fn molt_chr(val: u64) -> u64 {
         let Some(code) = value.to_u32() else {
             return raise_exception::<_>(_py, "ValueError", "chr() arg not in range(0x110000)");
         };
-        let Some(ch) = std::char::from_u32(code) else {
-            return raise_exception::<_>(_py, "ValueError", "chr() arg not in range(0x110000)");
-        };
-        let mut buf = [0u8; 4];
-        let s = ch.encode_utf8(&mut buf);
-        let out = alloc_string(_py, s.as_bytes());
+        let mut out_bytes = Vec::with_capacity(4);
+        push_wtf8_codepoint(&mut out_bytes, code);
+        let out = alloc_string(_py, &out_bytes);
         if out.is_null() {
             return MoltObject::none().bits();
         }
@@ -6454,9 +6758,104 @@ pub extern "C" fn molt_time_monotonic() -> u64 {
 }
 
 #[no_mangle]
+pub extern "C" fn molt_time_perf_counter() -> u64 {
+    crate::with_gil_entry!(_py, {
+        MoltObject::from_float(monotonic_now_secs(_py)).bits()
+    })
+}
+
+#[no_mangle]
 pub extern "C" fn molt_time_monotonic_ns() -> u64 {
     crate::with_gil_entry!(_py, {
         int_bits_from_bigint(_py, BigInt::from(monotonic_now_nanos(_py)))
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_time_perf_counter_ns() -> u64 {
+    crate::with_gil_entry!(_py, {
+        int_bits_from_bigint(_py, BigInt::from(monotonic_now_nanos(_py)))
+    })
+}
+
+#[cfg(all(not(target_arch = "wasm32"), unix))]
+fn process_time_duration() -> Result<std::time::Duration, String> {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    let rc = unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    if ts.tv_sec < 0 || ts.tv_nsec < 0 {
+        return Err("process time before epoch".to_string());
+    }
+    Ok(std::time::Duration::new(
+        ts.tv_sec as u64,
+        ts.tv_nsec as u32,
+    ))
+}
+
+#[cfg(all(not(target_arch = "wasm32"), windows))]
+fn process_time_duration() -> Result<std::time::Duration, String> {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+
+    let mut creation = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut exit = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut kernel = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut user = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let handle = unsafe { GetCurrentProcess() };
+    let ok = unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    let kernel_100ns =
+        ((kernel.dwHighDateTime as u64) << 32) | kernel.dwLowDateTime as u64;
+    let user_100ns = ((user.dwHighDateTime as u64) << 32) | user.dwLowDateTime as u64;
+    let total_100ns = kernel_100ns.saturating_add(user_100ns);
+    let secs = total_100ns / 10_000_000;
+    let nanos = (total_100ns % 10_000_000) * 100;
+    Ok(std::time::Duration::new(secs, nanos as u32))
+}
+
+#[cfg(any(target_arch = "wasm32", not(any(unix, windows))))]
+fn process_time_duration() -> Result<std::time::Duration, String> {
+    Err("process_time unavailable".to_string())
+}
+
+#[no_mangle]
+pub extern "C" fn molt_time_process_time() -> u64 {
+    crate::with_gil_entry!(_py, {
+        match process_time_duration() {
+            Ok(duration) => MoltObject::from_float(duration.as_secs_f64()).bits(),
+            Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_time_process_time_ns() -> u64 {
+    crate::with_gil_entry!(_py, {
+        match process_time_duration() {
+            Ok(duration) => {
+                int_bits_from_bigint(_py, BigInt::from(duration.as_nanos()))
+            }
+            Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
+        }
     })
 }
 
@@ -6495,6 +6894,978 @@ pub extern "C" fn molt_time_time_ns() -> u64 {
             }
         };
         int_bits_from_bigint(_py, BigInt::from(now.as_nanos()))
+    })
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TimeParts {
+    year: i32,
+    month: i32,
+    day: i32,
+    hour: i32,
+    minute: i32,
+    second: i32,
+    wday: i32,
+    yday: i32,
+    isdst: i32,
+}
+
+fn time_parts_to_tuple(_py: &PyToken<'_>, parts: TimeParts) -> u64 {
+    let elems = [
+        MoltObject::from_int(parts.year as i64).bits(),
+        MoltObject::from_int(parts.month as i64).bits(),
+        MoltObject::from_int(parts.day as i64).bits(),
+        MoltObject::from_int(parts.hour as i64).bits(),
+        MoltObject::from_int(parts.minute as i64).bits(),
+        MoltObject::from_int(parts.second as i64).bits(),
+        MoltObject::from_int(parts.wday as i64).bits(),
+        MoltObject::from_int(parts.yday as i64).bits(),
+        MoltObject::from_int(parts.isdst as i64).bits(),
+    ];
+    let tuple_ptr = alloc_tuple(_py, &elems);
+    if tuple_ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(tuple_ptr).bits()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn time_parts_from_tm(tm: &libc::tm) -> TimeParts {
+    let wday = (tm.tm_wday + 6).rem_euclid(7);
+    TimeParts {
+        year: tm.tm_year + 1900,
+        month: tm.tm_mon + 1,
+        day: tm.tm_mday,
+        hour: tm.tm_hour,
+        minute: tm.tm_min,
+        second: tm.tm_sec,
+        wday,
+        yday: tm.tm_yday + 1,
+        isdst: tm.tm_isdst,
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn tm_from_time_parts(_py: &PyToken<'_>, parts: TimeParts) -> Result<libc::tm, u64> {
+    let mut tm = unsafe { std::mem::zeroed::<libc::tm>() };
+    tm.tm_sec = parts.second;
+    tm.tm_min = parts.minute;
+    tm.tm_hour = parts.hour;
+    tm.tm_mday = parts.day;
+    tm.tm_mon = parts.month - 1;
+    tm.tm_year = parts.year - 1900;
+    tm.tm_wday = (parts.wday + 1).rem_euclid(7);
+    tm.tm_yday = parts.yday - 1;
+    tm.tm_isdst = parts.isdst;
+    if tm.tm_mon < 0 || tm.tm_mon > 11 {
+        return Err(raise_exception::<_>(
+            _py,
+            "ValueError",
+            "strftime() argument 2 out of range",
+        ));
+    }
+    Ok(tm)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn is_leap_year(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn day_of_year(year: i32, month: i32, day: i32) -> i32 {
+    const DAYS_BEFORE_MONTH: [[i32; 13]; 2] = [
+        [0, 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334],
+        [0, 0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335],
+    ];
+    let leap = if is_leap_year(year) { 1 } else { 0 };
+    let m = month.clamp(1, 12) as usize;
+    DAYS_BEFORE_MONTH[leap][m] + day
+}
+
+#[cfg(target_arch = "wasm32")]
+fn civil_from_days(days: i64) -> (i32, i32, i32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let mut y = (yoe + era * 400) as i32;
+    let doy = (doe - (365 * yoe + yoe / 4 - yoe / 100)) as i32;
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as i32;
+    let m = (mp + if mp < 10 { 3 } else { -9 }) as i32;
+    if m <= 2 {
+        y += 1;
+    }
+    (y, m, d)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn time_parts_from_epoch_utc(secs: i64) -> TimeParts {
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let hour = (rem / 3600) as i32;
+    let minute = ((rem % 3600) / 60) as i32;
+    let second = (rem % 60) as i32;
+    let (year, month, day) = civil_from_days(days);
+    let yday = day_of_year(year, month, day);
+    let wday = ((days + 3).rem_euclid(7)) as i32;
+    TimeParts {
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second,
+        wday,
+        yday,
+        isdst: 0,
+    }
+}
+
+fn parse_time_seconds(_py: &PyToken<'_>, secs_bits: u64) -> Result<i64, u64> {
+    let obj = obj_from_bits(secs_bits);
+    if obj.is_none() {
+        let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(now) => now,
+            Err(_) => {
+                return Err(raise_exception::<_>(_py, "OSError", "system time before epoch"));
+            }
+        };
+        let secs = now.as_secs();
+        let secs = i64::try_from(secs).unwrap_or(i64::MAX);
+        return Ok(secs);
+    }
+    let Some(val) = to_f64(obj) else {
+        let type_name = class_name_for_error(type_of_bits(_py, secs_bits));
+        let msg = format!("an integer is required (got type {type_name})");
+        return Err(raise_exception::<_>(_py, "TypeError", &msg));
+    };
+    if !val.is_finite() {
+        return Err(raise_exception::<_>(
+            _py,
+            "OverflowError",
+            "timestamp out of range for platform time_t",
+        ));
+    }
+    let secs = val.trunc();
+    let (min, max) = time_t_bounds();
+    if secs < min as f64 || secs > max as f64 {
+        return Err(raise_exception::<_>(
+            _py,
+            "OverflowError",
+            "timestamp out of range for platform time_t",
+        ));
+    }
+    Ok(secs as i64)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn time_t_bounds() -> (i128, i128) {
+    let size = std::mem::size_of::<libc::time_t>();
+    if size == 4 {
+        (i32::MIN as i128, i32::MAX as i128)
+    } else {
+        (i64::MIN as i128, i64::MAX as i128)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn time_t_bounds() -> (i128, i128) {
+    (i64::MIN as i128, i64::MAX as i128)
+}
+
+fn days_from_civil(year: i32, month: i32, day: i32) -> i64 {
+    let mut y = year as i64;
+    let m = month as i64;
+    let d = day as i64;
+    y -= if m <= 2 { 1 } else { 0 };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = m + if m > 2 { -3 } else { 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn tm_to_epoch_seconds(tm: &libc::tm) -> i64 {
+    let year = tm.tm_year + 1900;
+    let month = tm.tm_mon + 1;
+    let day = tm.tm_mday;
+    let days = days_from_civil(year, month, day);
+    let seconds = (tm.tm_hour as i64) * 3600
+        + (tm.tm_min as i64) * 60
+        + (tm.tm_sec as i64);
+    days.saturating_mul(86_400).saturating_add(seconds)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn offset_west_from_secs(secs: i64) -> Result<i64, String> {
+    let secs = secs as libc::time_t;
+    let local_tm = localtime_tm(secs)?;
+    let utc_tm = gmtime_tm(secs)?;
+    let local_secs = tm_to_epoch_seconds(&local_tm);
+    let utc_secs = tm_to_epoch_seconds(&utc_tm);
+    Ok(utc_secs.saturating_sub(local_secs))
+}
+
+fn parse_time_tuple(_py: &PyToken<'_>, tuple_bits: u64) -> Result<TimeParts, u64> {
+    let obj = obj_from_bits(tuple_bits);
+    let Some(ptr) = obj.as_ptr() else {
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "strftime() argument 2 must be tuple",
+        ));
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_TUPLE {
+            let type_name = class_name_for_error(type_of_bits(_py, tuple_bits));
+            let msg = format!("strftime() argument 2 must be tuple, not {type_name}");
+            return Err(raise_exception::<_>(_py, "TypeError", &msg));
+        }
+        let elems = seq_vec_ref(ptr);
+        if elems.len() != 9 {
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "time tuple must have exactly 9 elements",
+            ));
+        }
+        let mut vals = [0i64; 9];
+        for (idx, slot) in vals.iter_mut().enumerate() {
+            let bits = elems[idx];
+            let Some(val) = to_i64(obj_from_bits(bits)) else {
+                let type_name = class_name_for_error(type_of_bits(_py, bits));
+                let msg = format!("an integer is required (got type {type_name})");
+                return Err(raise_exception::<_>(_py, "TypeError", &msg));
+            };
+            if val < i32::MIN as i64 || val > i32::MAX as i64 {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "ValueError",
+                    "strftime() argument 2 out of range",
+                ));
+            }
+            *slot = val;
+        }
+        let year = vals[0] as i32;
+        let month = vals[1] as i32;
+        let day = vals[2] as i32;
+        let hour = vals[3] as i32;
+        let minute = vals[4] as i32;
+        let second = vals[5] as i32;
+        let wday = vals[6] as i32;
+        let yday = vals[7] as i32;
+        let isdst = vals[8] as i32;
+        if !(1..=12).contains(&month)
+            || !(1..=31).contains(&day)
+            || !(0..=23).contains(&hour)
+            || !(0..=59).contains(&minute)
+            || !(0..=60).contains(&second)
+            || !(0..=6).contains(&wday)
+            || !(1..=366).contains(&yday)
+        {
+            return Err(raise_exception::<_>(
+                _py,
+                "ValueError",
+                "strftime() argument 2 out of range",
+            ));
+        }
+        if ![-1, 0, 1].contains(&isdst) {
+            return Err(raise_exception::<_>(
+                _py,
+                "ValueError",
+                "strftime() argument 2 out of range",
+            ));
+        }
+        Ok(TimeParts {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            wday,
+            yday,
+            isdst,
+        })
+    }
+}
+
+fn parse_mktime_tuple(_py: &PyToken<'_>, tuple_bits: u64) -> Result<TimeParts, u64> {
+    let obj = obj_from_bits(tuple_bits);
+    let Some(ptr) = obj.as_ptr() else {
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "Tuple or struct_time argument required",
+        ));
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_TUPLE {
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "Tuple or struct_time argument required",
+            ));
+        }
+        let elems = seq_vec_ref(ptr);
+        if elems.len() != 9 {
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "mktime(): illegal time tuple argument",
+            ));
+        }
+        let mut vals = [0i64; 9];
+        for (idx, slot) in vals.iter_mut().enumerate() {
+            let bits = elems[idx];
+            let Some(val) = to_i64(obj_from_bits(bits)) else {
+                let type_name = class_name_for_error(type_of_bits(_py, bits));
+                let msg = format!("an integer is required (got type {type_name})");
+                return Err(raise_exception::<_>(_py, "TypeError", &msg));
+            };
+            if val < i32::MIN as i64 || val > i32::MAX as i64 {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "OverflowError",
+                    "mktime(): argument out of range",
+                ));
+            }
+            *slot = val;
+        }
+        Ok(TimeParts {
+            year: vals[0] as i32,
+            month: vals[1] as i32,
+            day: vals[2] as i32,
+            hour: vals[3] as i32,
+            minute: vals[4] as i32,
+            second: vals[5] as i32,
+            wday: vals[6] as i32,
+            yday: vals[7] as i32,
+            isdst: vals[8] as i32,
+        })
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn localtime_tm(secs: libc::time_t) -> Result<libc::tm, String> {
+    #[cfg(unix)]
+    unsafe {
+        let mut out = std::mem::zeroed::<libc::tm>();
+        if libc::localtime_r(&secs as *const libc::time_t, &mut out).is_null() {
+            return Err("localtime failed".to_string());
+        }
+        Ok(out)
+    }
+    #[cfg(windows)]
+    unsafe {
+        let mut out = std::mem::zeroed::<libc::tm>();
+        let rc = libc::localtime_s(&mut out as *mut libc::tm, &secs as *const libc::time_t);
+        if rc != 0 {
+            return Err("localtime failed".to_string());
+        }
+        Ok(out)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn gmtime_tm(secs: libc::time_t) -> Result<libc::tm, String> {
+    #[cfg(unix)]
+    unsafe {
+        let mut out = std::mem::zeroed::<libc::tm>();
+        if libc::gmtime_r(&secs as *const libc::time_t, &mut out).is_null() {
+            return Err("gmtime failed".to_string());
+        }
+        Ok(out)
+    }
+    #[cfg(windows)]
+    unsafe {
+        let mut out = std::mem::zeroed::<libc::tm>();
+        let rc = libc::gmtime_s(&mut out as *mut libc::tm, &secs as *const libc::time_t);
+        if rc != 0 {
+            return Err("gmtime failed".to_string());
+        }
+        Ok(out)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn strftime_wasm(format: &str, parts: TimeParts) -> Result<String, String> {
+    const WEEKDAY_SHORT: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const WEEKDAY_LONG: [&str; 7] = [
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+        "Sunday",
+    ];
+    const MONTH_SHORT: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    const MONTH_LONG: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+
+    fn push_num(out: &mut String, val: i32, width: usize, pad: char) {
+        let mut buf = [pad as u8; 12];
+        let mut idx = buf.len();
+        let mut n = val.abs() as u32;
+        if n == 0 {
+            idx -= 1;
+            buf[idx] = b'0';
+        } else {
+            while n > 0 {
+                let digit = (n % 10) as u8;
+                idx -= 1;
+                buf[idx] = b'0' + digit;
+                n /= 10;
+            }
+        }
+        let len = buf.len() - idx;
+        let needed = width.saturating_sub(len + if val < 0 { 1 } else { 0 });
+        for _ in 0..needed {
+            out.push(pad);
+        }
+        if val < 0 {
+            out.push('-');
+        }
+        out.push_str(std::str::from_utf8(&buf[idx..]).unwrap_or("0"));
+    }
+
+    fn jan1_wday_mon0(yday: i32, wday_mon0: i32) -> i32 {
+        let offset = (yday - 1).rem_euclid(7);
+        (wday_mon0 - offset).rem_euclid(7)
+    }
+
+    fn week_number_sun(yday: i32, jan1_wday_mon0: i32) -> i32 {
+        let jan1_sun0 = (jan1_wday_mon0 + 1).rem_euclid(7);
+        let first_sunday = 1 + (7 - jan1_sun0).rem_euclid(7);
+        if yday < first_sunday {
+            0
+        } else {
+            1 + (yday - first_sunday) / 7
+        }
+    }
+
+    fn week_number_mon(yday: i32, jan1_wday_mon0: i32) -> i32 {
+        let first_monday = 1 + (7 - jan1_wday_mon0).rem_euclid(7);
+        if yday < first_monday {
+            0
+        } else {
+            1 + (yday - first_monday) / 7
+        }
+    }
+
+    fn weeks_in_year(year: i32, jan1_wday_mon0: i32) -> i32 {
+        let jan1_mon1 = jan1_wday_mon0 + 1;
+        if jan1_mon1 == 4 || (is_leap_year(year) && jan1_mon1 == 3) {
+            53
+        } else {
+            52
+        }
+    }
+
+    fn iso_week_date(year: i32, yday: i32, wday_mon0: i32) -> (i32, i32, i32) {
+        let weekday = wday_mon0 + 1;
+        let mut week = (yday - weekday + 10) / 7;
+        let jan1_wday = jan1_wday_mon0(yday, wday_mon0);
+        let mut iso_year = year;
+        let max_week = weeks_in_year(year, jan1_wday);
+        if week < 1 {
+            iso_year -= 1;
+            let prev_days = if is_leap_year(iso_year) { 366 } else { 365 };
+            let prev_jan1 = (jan1_wday - (prev_days % 7)).rem_euclid(7);
+            week = weeks_in_year(iso_year, prev_jan1);
+        } else if week > max_week {
+            iso_year += 1;
+            week = 1;
+        }
+        (iso_year, week, weekday)
+    }
+
+    let mut out = String::with_capacity(format.len() + 16);
+    let mut iter = format.chars();
+    while let Some(ch) = iter.next() {
+        if ch != '%' {
+            out.push(ch);
+            continue;
+        }
+        let Some(spec) = iter.next() else {
+            out.push('%');
+            break;
+        };
+        match spec {
+            '%' => out.push('%'),
+            'a' => out.push_str(WEEKDAY_SHORT[parts.wday as usize]),
+            'A' => out.push_str(WEEKDAY_LONG[parts.wday as usize]),
+            'b' | 'h' => out.push_str(MONTH_SHORT[(parts.month - 1) as usize]),
+            'B' => out.push_str(MONTH_LONG[(parts.month - 1) as usize]),
+            'C' => {
+                let century = parts.year.div_euclid(100);
+                push_num(&mut out, century, 2, '0');
+            }
+            'd' => push_num(&mut out, parts.day, 2, '0'),
+            'e' => push_num(&mut out, parts.day, 2, ' '),
+            'H' => push_num(&mut out, parts.hour, 2, '0'),
+            'I' => {
+                let mut hour = parts.hour % 12;
+                if hour == 0 {
+                    hour = 12;
+                }
+                push_num(&mut out, hour, 2, '0');
+            }
+            'k' => push_num(&mut out, parts.hour, 2, ' '),
+            'l' => {
+                let mut hour = parts.hour % 12;
+                if hour == 0 {
+                    hour = 12;
+                }
+                push_num(&mut out, hour, 2, ' ');
+            }
+            'j' => push_num(&mut out, parts.yday, 3, '0'),
+            'm' => push_num(&mut out, parts.month, 2, '0'),
+            'M' => push_num(&mut out, parts.minute, 2, '0'),
+            'p' => out.push_str(if parts.hour < 12 { "AM" } else { "PM" }),
+            'S' => push_num(&mut out, parts.second, 2, '0'),
+            'U' => {
+                let jan1 = jan1_wday_mon0(parts.yday, parts.wday);
+                let week = week_number_sun(parts.yday, jan1);
+                push_num(&mut out, week, 2, '0');
+            }
+            'W' => {
+                let jan1 = jan1_wday_mon0(parts.yday, parts.wday);
+                let week = week_number_mon(parts.yday, jan1);
+                push_num(&mut out, week, 2, '0');
+            }
+            'w' => {
+                let wday_sun0 = (parts.wday + 1).rem_euclid(7);
+                push_num(&mut out, wday_sun0, 1, '0');
+            }
+            'u' => {
+                let wday_mon1 = parts.wday + 1;
+                push_num(&mut out, wday_mon1, 1, '0');
+            }
+            'x' => {
+                push_num(&mut out, parts.month, 2, '0');
+                out.push('/');
+                push_num(&mut out, parts.day, 2, '0');
+                out.push('/');
+                let yy = parts.year.rem_euclid(100);
+                push_num(&mut out, yy, 2, '0');
+            }
+            'X' => {
+                push_num(&mut out, parts.hour, 2, '0');
+                out.push(':');
+                push_num(&mut out, parts.minute, 2, '0');
+                out.push(':');
+                push_num(&mut out, parts.second, 2, '0');
+            }
+            'y' => {
+                let yy = parts.year.rem_euclid(100);
+                push_num(&mut out, yy, 2, '0');
+            }
+            'Y' => push_num(&mut out, parts.year, 4, '0'),
+            'Z' => out.push_str("UTC"),
+            'z' => out.push_str("+0000"),
+            'c' => {
+                out.push_str(WEEKDAY_SHORT[parts.wday as usize]);
+                out.push(' ');
+                out.push_str(MONTH_SHORT[(parts.month - 1) as usize]);
+                out.push(' ');
+                push_num(&mut out, parts.day, 2, ' ');
+                out.push(' ');
+                push_num(&mut out, parts.hour, 2, '0');
+                out.push(':');
+                push_num(&mut out, parts.minute, 2, '0');
+                out.push(':');
+                push_num(&mut out, parts.second, 2, '0');
+                out.push(' ');
+                push_num(&mut out, parts.year, 4, '0');
+            }
+            'D' => {
+                push_num(&mut out, parts.month, 2, '0');
+                out.push('/');
+                push_num(&mut out, parts.day, 2, '0');
+                out.push('/');
+                let yy = parts.year.rem_euclid(100);
+                push_num(&mut out, yy, 2, '0');
+            }
+            'F' => {
+                push_num(&mut out, parts.year, 4, '0');
+                out.push('-');
+                push_num(&mut out, parts.month, 2, '0');
+                out.push('-');
+                push_num(&mut out, parts.day, 2, '0');
+            }
+            'R' => {
+                push_num(&mut out, parts.hour, 2, '0');
+                out.push(':');
+                push_num(&mut out, parts.minute, 2, '0');
+            }
+            'r' => {
+                let mut hour = parts.hour % 12;
+                if hour == 0 {
+                    hour = 12;
+                }
+                push_num(&mut out, hour, 2, '0');
+                out.push(':');
+                push_num(&mut out, parts.minute, 2, '0');
+                out.push(':');
+                push_num(&mut out, parts.second, 2, '0');
+                out.push(' ');
+                out.push_str(if parts.hour < 12 { "AM" } else { "PM" });
+            }
+            'T' => {
+                push_num(&mut out, parts.hour, 2, '0');
+                out.push(':');
+                push_num(&mut out, parts.minute, 2, '0');
+                out.push(':');
+                push_num(&mut out, parts.second, 2, '0');
+            }
+            'n' => out.push('\n'),
+            't' => out.push('\t'),
+            'G' | 'g' | 'V' => {
+                let (iso_year, iso_week, _) = iso_week_date(parts.year, parts.yday, parts.wday);
+                match spec {
+                    'G' => push_num(&mut out, iso_year, 4, '0'),
+                    'g' => {
+                        let yy = iso_year.rem_euclid(100);
+                        push_num(&mut out, yy, 2, '0');
+                    }
+                    _ => push_num(&mut out, iso_week, 2, '0'),
+                }
+            }
+            _ => {
+                return Err(format!("unsupported strftime directive %{spec}"));
+            }
+        }
+    }
+    Ok(out)
+}
+
+#[no_mangle]
+pub extern "C" fn molt_time_localtime(secs_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(secs_bits);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if obj.is_none() && require_time_wall_capability::<u64>(_py).is_err() {
+                return MoltObject::none().bits();
+            }
+        }
+        let secs = match parse_time_seconds(_py, secs_bits) {
+            Ok(val) => val,
+            Err(bits) => return bits,
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let secs = secs as libc::time_t;
+            let tm = match localtime_tm(secs) {
+                Ok(tm) => tm,
+                Err(msg) => return raise_exception::<_>(_py, "OSError", &msg),
+            };
+            let parts = time_parts_from_tm(&tm);
+            return time_parts_to_tuple(_py, parts);
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            // TODO(wasm-parity, owner:runtime, milestone:RT2, priority:P1, status:partial):
+            // implement local timezone offset and locale-aware names for localtime/strftime.
+            let parts = time_parts_from_epoch_utc(secs);
+            return time_parts_to_tuple(_py, parts);
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_time_gmtime(secs_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(secs_bits);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if obj.is_none() && require_time_wall_capability::<u64>(_py).is_err() {
+                return MoltObject::none().bits();
+            }
+        }
+        let secs = match parse_time_seconds(_py, secs_bits) {
+            Ok(val) => val,
+            Err(bits) => return bits,
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let secs = secs as libc::time_t;
+            let tm = match gmtime_tm(secs) {
+                Ok(tm) => tm,
+                Err(msg) => return raise_exception::<_>(_py, "OSError", &msg),
+            };
+            let parts = time_parts_from_tm(&tm);
+            return time_parts_to_tuple(_py, parts);
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let parts = time_parts_from_epoch_utc(secs);
+            return time_parts_to_tuple(_py, parts);
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_time_strftime(fmt_bits: u64, time_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let fmt_obj = obj_from_bits(fmt_bits);
+        if fmt_obj.is_none() {
+            return raise_exception::<_>(_py, "TypeError", "strftime() format must be str");
+        }
+        let Some(fmt) = string_obj_to_owned(fmt_obj) else {
+            let type_name = class_name_for_error(type_of_bits(_py, fmt_bits));
+            let msg = format!("strftime() format must be str, not {type_name}");
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        };
+        if fmt.as_bytes().iter().any(|b| *b == 0) {
+            return raise_exception::<_>(_py, "ValueError", "embedded null character");
+        }
+        let parts = match parse_time_tuple(_py, time_bits) {
+            Ok(parts) => parts,
+            Err(bits) => return bits,
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let tm = match tm_from_time_parts(_py, parts) {
+                Ok(tm) => tm,
+                Err(bits) => return bits,
+            };
+            let c_fmt = match CString::new(fmt) {
+                Ok(c) => c,
+                Err(_) => {
+                    return raise_exception::<_>(_py, "ValueError", "embedded null character");
+                }
+            };
+            let mut buf = vec![0u8; 128];
+            loop {
+                let len = unsafe {
+                    libc::strftime(
+                        buf.as_mut_ptr() as *mut libc::c_char,
+                        buf.len(),
+                        c_fmt.as_ptr(),
+                        &tm as *const libc::tm,
+                    )
+                };
+                if len == 0 {
+                    if buf.len() >= 1_048_576 {
+                        return raise_exception::<_>(
+                            _py,
+                            "ValueError",
+                            "strftime() result too large",
+                        );
+                    }
+                    buf.resize(buf.len() * 2, 0);
+                    continue;
+                }
+                let slice = &buf[..len];
+                let Ok(text) = std::str::from_utf8(slice) else {
+                    return raise_exception::<_>(
+                        _py,
+                        "UnicodeError",
+                        "strftime() produced non-UTF-8 output",
+                    );
+                };
+                let ptr = alloc_string(_py, text.as_bytes());
+                if ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                return MoltObject::from_ptr(ptr).bits();
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let out = match strftime_wasm(&fmt, parts) {
+                Ok(out) => out,
+                Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
+            };
+            let ptr = alloc_string(_py, out.as_bytes());
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(ptr).bits();
+        }
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn tzname_native() -> Result<(String, String), String> {
+    #[cfg(unix)]
+    unsafe {
+        extern "C" {
+            fn tzset();
+            static mut tzname: [*mut libc::c_char; 2];
+        }
+        tzset();
+        let std_ptr = tzname[0];
+        let dst_ptr = tzname[1];
+        if std_ptr.is_null() || dst_ptr.is_null() {
+            return Err("tzname unavailable".to_string());
+        }
+        let std_name = CStr::from_ptr(std_ptr).to_string_lossy().into_owned();
+        let dst_name = CStr::from_ptr(dst_ptr).to_string_lossy().into_owned();
+        return Ok((std_name, dst_name));
+    }
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Time::{
+            GetTimeZoneInformation, TIME_ZONE_ID_INVALID, TIME_ZONE_INFORMATION,
+        };
+        let mut info = TIME_ZONE_INFORMATION {
+            Bias: 0,
+            StandardName: [0u16; 32],
+            StandardDate: std::mem::zeroed(),
+            StandardBias: 0,
+            DaylightName: [0u16; 32],
+            DaylightDate: std::mem::zeroed(),
+            DaylightBias: 0,
+        };
+        let status = GetTimeZoneInformation(&mut info as *mut TIME_ZONE_INFORMATION);
+        if status == TIME_ZONE_ID_INVALID {
+            return Err("tzname unavailable".to_string());
+        }
+        let std_len = info
+            .StandardName
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(info.StandardName.len());
+        let dst_len = info
+            .DaylightName
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(info.DaylightName.len());
+        let std_name = String::from_utf16_lossy(&info.StandardName[..std_len]);
+        let dst_name = String::from_utf16_lossy(&info.DaylightName[..dst_len]);
+        return Ok((std_name, dst_name));
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn timezone_native() -> Result<i64, String> {
+    #[cfg(unix)]
+    unsafe {
+        extern "C" {
+            fn tzset();
+            static mut timezone: libc::c_long;
+        }
+        tzset();
+        return Ok(timezone as i64);
+    }
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Time::{
+            GetTimeZoneInformation, TIME_ZONE_ID_INVALID, TIME_ZONE_INFORMATION,
+        };
+        let mut info = TIME_ZONE_INFORMATION {
+            Bias: 0,
+            StandardName: [0u16; 32],
+            StandardDate: std::mem::zeroed(),
+            StandardBias: 0,
+            DaylightName: [0u16; 32],
+            DaylightDate: std::mem::zeroed(),
+            DaylightBias: 0,
+        };
+        let status = GetTimeZoneInformation(&mut info as *mut TIME_ZONE_INFORMATION);
+        if status == TIME_ZONE_ID_INVALID {
+            return Err("timezone unavailable".to_string());
+        }
+        let bias = info.Bias + info.StandardBias;
+        return Ok((bias as i64) * 60);
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_time_timezone() -> u64 {
+    crate::with_gil_entry!(_py, {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            match timezone_native() {
+                Ok(val) => MoltObject::from_int(val).bits(),
+                Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            // TODO(wasm-parity, owner:runtime, milestone:RT2, priority:P1, status:partial):
+            // wire local timezone offset from wasm hosts; defaulting to UTC.
+            MoltObject::from_int(0).bits()
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_time_tzname() -> u64 {
+    crate::with_gil_entry!(_py, {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let (std_name, dst_name) = match tzname_native() {
+                Ok(res) => res,
+                Err(msg) => return raise_exception::<_>(_py, "OSError", &msg),
+            };
+            let std_ptr = alloc_string(_py, std_name.as_bytes());
+            if std_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let dst_ptr = alloc_string(_py, dst_name.as_bytes());
+            if dst_ptr.is_null() {
+                dec_ref_bits(_py, MoltObject::from_ptr(std_ptr).bits());
+                return MoltObject::none().bits();
+            }
+            let std_bits = MoltObject::from_ptr(std_ptr).bits();
+            let dst_bits = MoltObject::from_ptr(dst_ptr).bits();
+            let tuple_ptr = alloc_tuple(_py, &[std_bits, dst_bits]);
+            dec_ref_bits(_py, std_bits);
+            dec_ref_bits(_py, dst_bits);
+            if tuple_ptr.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(tuple_ptr).bits()
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            // TODO(wasm-parity, owner:runtime, milestone:RT2, priority:P1, status:partial):
+            // wire local timezone names from wasm hosts; defaulting to UTC.
+            let std_ptr = alloc_string(_py, b"UTC");
+            if std_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let dst_ptr = alloc_string(_py, b"UTC");
+            if dst_ptr.is_null() {
+                dec_ref_bits(_py, MoltObject::from_ptr(std_ptr).bits());
+                return MoltObject::none().bits();
+            }
+            let std_bits = MoltObject::from_ptr(std_ptr).bits();
+            let dst_bits = MoltObject::from_ptr(dst_ptr).bits();
+            let tuple_ptr = alloc_tuple(_py, &[std_bits, dst_bits]);
+            dec_ref_bits(_py, std_bits);
+            dec_ref_bits(_py, dst_bits);
+            if tuple_ptr.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(tuple_ptr).bits()
+            }
+        }
     })
 }
 
@@ -7318,6 +8689,30 @@ pub extern "C" fn molt_reversed_builtin(seq_bits: u64) -> u64 {
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
                 let type_id = object_type_id(ptr);
+                if type_id == TYPE_ID_RANGE {
+                    let Some((start, stop, step)) = range_components_bigint(ptr) else {
+                        return MoltObject::none().bits();
+                    };
+                    if step.is_zero() {
+                        return MoltObject::none().bits();
+                    }
+                    let len = range_len_bigint(&start, &stop, &step);
+                    let rev_bits = if len.is_zero() {
+                        alloc_range_from_bigints(_py, start.clone(), start.clone(), BigInt::from(1))
+                    } else {
+                        let last = &start + &step * (&len - 1);
+                        let rev_start = last;
+                        let rev_stop = &start - &step;
+                        let rev_step = -step;
+                        alloc_range_from_bigints(_py, rev_start, rev_stop, rev_step)
+                    };
+                    if obj_from_bits(rev_bits).is_none() {
+                        return MoltObject::none().bits();
+                    }
+                    let iter_bits = molt_iter(rev_bits);
+                    dec_ref_bits(_py, rev_bits);
+                    return iter_bits;
+                }
                 if let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) {
                     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
                         return MoltObject::none().bits();
@@ -7340,7 +8735,6 @@ pub extern "C" fn molt_reversed_builtin(seq_bits: u64) -> u64 {
                     || type_id == TYPE_ID_STRING
                     || type_id == TYPE_ID_BYTES
                     || type_id == TYPE_ID_BYTEARRAY
-                    || type_id == TYPE_ID_RANGE
                     || type_id == TYPE_ID_DICT
                     || type_id == TYPE_ID_DICT_KEYS_VIEW
                     || type_id == TYPE_ID_DICT_VALUES_VIEW
@@ -7357,8 +8751,6 @@ pub extern "C" fn molt_reversed_builtin(seq_bits: u64) -> u64 {
                         || type_id == TYPE_ID_DICT_ITEMS_VIEW
                     {
                         dict_view_len(ptr)
-                    } else if type_id == TYPE_ID_RANGE {
-                        range_len_i64(range_start(ptr), range_stop(ptr), range_step(ptr)) as usize
                     } else if type_id == TYPE_ID_LIST {
                         list_len(ptr)
                     } else {
@@ -7869,7 +9261,7 @@ pub extern "C" fn molt_object_setattr(obj_bits: u64, name_bits: u64, val_bits: u
                 let res = if type_id == TYPE_ID_OBJECT {
                     object_setattr_raw(_py, obj_ptr, attr_bits, &attr_name, val_bits)
                 } else if type_id == TYPE_ID_DATACLASS {
-                    dataclass_setattr_raw(_py, obj_ptr, attr_bits, &attr_name, val_bits)
+                    dataclass_setattr_raw_unchecked(_py, obj_ptr, attr_bits, &attr_name, val_bits)
                 } else {
                     let bytes = string_bytes(name_ptr);
                     let len = string_len(name_ptr);
@@ -7915,7 +9307,7 @@ pub extern "C" fn molt_object_delattr(obj_bits: u64, name_bits: u64) -> u64 {
                 let res = if type_id == TYPE_ID_OBJECT {
                     object_delattr_raw(_py, obj_ptr, attr_bits, &attr_name)
                 } else if type_id == TYPE_ID_DATACLASS {
-                    dataclass_delattr_raw(_py, obj_ptr, attr_bits, &attr_name)
+                    dataclass_delattr_raw_unchecked(_py, obj_ptr, attr_bits, &attr_name)
                 } else {
                     del_attr_ptr(_py, obj_ptr, attr_bits, &attr_name)
                 };
@@ -7985,25 +9377,112 @@ pub extern "C" fn molt_print_builtin(
     flush_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        fn print_string_arg(
+        fn print_string_arg_bits(
             _py: &PyToken<'_>,
             bits: u64,
-            default: &str,
+            default: &[u8],
             label: &str,
-        ) -> Option<String> {
+        ) -> Option<u64> {
             let obj = obj_from_bits(bits);
             if obj.is_none() {
-                return Some(default.to_string());
+                let ptr = alloc_string(_py, default);
+                if ptr.is_null() {
+                    return None;
+                }
+                return Some(MoltObject::from_ptr(ptr).bits());
             }
-            if let Some(val) = string_obj_to_owned(obj) {
-                return Some(val);
+            let Some(ptr) = obj.as_ptr() else {
+                let msg = format!(
+                    "{} must be None or a string, not {}",
+                    label,
+                    type_name(_py, obj)
+                );
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            };
+            unsafe {
+                if object_type_id(ptr) != TYPE_ID_STRING {
+                    let msg = format!(
+                        "{} must be None or a string, not {}",
+                        label,
+                        type_name(_py, obj)
+                    );
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
             }
-            let msg = format!(
-                "{} must be None or a string, not {}",
-                label,
-                type_name(_py, obj)
-            );
-            raise_exception::<_>(_py, "TypeError", &msg)
+            inc_ref_bits(_py, bits);
+            Some(bits)
+        }
+
+        fn string_bits_is_empty(bits: u64) -> bool {
+            let obj = obj_from_bits(bits);
+            let Some(ptr) = obj.as_ptr() else {
+                return false;
+            };
+            unsafe { string_len(ptr) == 0 }
+        }
+
+        fn string_bits_contains_newline(bits: u64) -> bool {
+            let obj = obj_from_bits(bits);
+            let Some(ptr) = obj.as_ptr() else {
+                return false;
+            };
+            unsafe {
+                let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
+                bytes.contains(&b'\n')
+            }
+        }
+
+        fn encode_print_bytes(
+            _py: &PyToken<'_>,
+            bits: u64,
+            encoding: &str,
+            errors: &str,
+        ) -> Result<Vec<u8>, u64> {
+            let obj = obj_from_bits(bits);
+            let Some(ptr) = obj.as_ptr() else {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "print expects a string",
+                ));
+            };
+            unsafe {
+                if object_type_id(ptr) != TYPE_ID_STRING {
+                    return Err(raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "print expects a string",
+                    ));
+                }
+                let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
+                match encode_string_with_errors(bytes, encoding, Some(errors)) {
+                    Ok(out) => Ok(out),
+                    Err(EncodeError::UnknownEncoding(name)) => {
+                        let msg = format!("unknown encoding: {name}");
+                        Err(raise_exception::<_>(_py, "LookupError", &msg))
+                    }
+                    Err(EncodeError::UnknownErrorHandler(name)) => {
+                        let msg = format!("unknown error handler name '{name}'");
+                        Err(raise_exception::<_>(_py, "LookupError", &msg))
+                    }
+                    Err(EncodeError::InvalidChar {
+                        encoding,
+                        code,
+                        pos,
+                        limit,
+                    }) => {
+                        let reason = encode_error_reason(encoding, code, limit);
+                        Err(raise_unicode_encode_error::<_>(
+                            _py,
+                            encoding,
+                            bits,
+                            pos,
+                            pos + 1,
+                            &reason,
+                        ))
+                    }
+                }
+            }
         }
 
         let args_obj = obj_from_bits(args_bits);
@@ -8014,12 +9493,33 @@ pub extern "C" fn molt_print_builtin(
             if object_type_id(args_ptr) != TYPE_ID_TUPLE {
                 return raise_exception::<_>(_py, "TypeError", "print expects a tuple");
             }
-            let Some(sep) = print_string_arg(_py, sep_bits, " ", "sep") else {
-                return MoltObject::none().bits();
-            };
-            let Some(end) = print_string_arg(_py, end_bits, "\n", "end") else {
-                return MoltObject::none().bits();
-            };
+            let mut sep_bits_opt =
+                match print_string_arg_bits(_py, sep_bits, b" ", "sep") {
+                    Some(bits) => Some(bits),
+                    None => return MoltObject::none().bits(),
+                };
+            let mut end_bits_opt =
+                match print_string_arg_bits(_py, end_bits, b"\n", "end") {
+                    Some(bits) => Some(bits),
+                    None => {
+                        if let Some(bits) = sep_bits_opt {
+                            dec_ref_bits(_py, bits);
+                        }
+                        return MoltObject::none().bits();
+                    }
+                };
+            if let Some(bits) = sep_bits_opt {
+                if string_bits_is_empty(bits) {
+                    dec_ref_bits(_py, bits);
+                    sep_bits_opt = None;
+                }
+            }
+            if let Some(bits) = end_bits_opt {
+                if string_bits_is_empty(bits) {
+                    dec_ref_bits(_py, bits);
+                    end_bits_opt = None;
+                }
+            }
 
             let mut resolved_file_bits = file_bits;
             let mut sys_found = false;
@@ -8045,101 +9545,244 @@ pub extern "C" fn molt_print_builtin(
             }
 
             let elems = seq_vec_ref(args_ptr);
-            // TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned):
-            // stream writes to avoid building an intermediate output string for large print payloads.
-            let mut output = String::new();
-            for (idx, &val_bits) in elems.iter().enumerate() {
-                if idx > 0 {
-                    output.push_str(&sep);
-                }
-                let str_bits = molt_str_from_obj(val_bits);
-                if exception_pending(_py) {
-                    if file_from_sys {
-                        dec_ref_bits(_py, resolved_file_bits);
-                    }
-                    return MoltObject::none().bits();
-                }
-                let Some(text) = string_obj_to_owned(obj_from_bits(str_bits)) else {
-                    dec_ref_bits(_py, str_bits);
-                    if file_from_sys {
-                        dec_ref_bits(_py, resolved_file_bits);
-                    }
-                    return MoltObject::none().bits();
-                };
-                output.push_str(&text);
-                dec_ref_bits(_py, str_bits);
-            }
-            output.push_str(&end);
-
             let do_flush = is_truthy(_py, obj_from_bits(flush_bits));
 
             if obj_from_bits(resolved_file_bits).is_none() && !sys_found {
-                print!("{output}");
-                if do_flush {
-                    let _ = std::io::stdout().flush();
+                let encoding = "utf-8";
+                let errors = "surrogateescape";
+                let mut stdout = std::io::stdout();
+                let mut wrote_newline = false;
+                let sep_bytes = if let Some(bits) = sep_bits_opt {
+                    match encode_print_bytes(_py, bits, encoding, errors) {
+                        Ok(bytes) => Some(bytes),
+                        Err(bits) => {
+                            if let Some(end_bits) = end_bits_opt {
+                                dec_ref_bits(_py, end_bits);
+                            }
+                            dec_ref_bits(_py, bits);
+                            return bits;
+                        }
+                    }
+                } else {
+                    None
+                };
+                let end_bytes = if let Some(bits) = end_bits_opt {
+                    match encode_print_bytes(_py, bits, encoding, errors) {
+                        Ok(bytes) => Some(bytes),
+                        Err(bits) => {
+                            if let Some(sep_bits) = sep_bits_opt {
+                                dec_ref_bits(_py, sep_bits);
+                            }
+                            dec_ref_bits(_py, bits);
+                            return bits;
+                        }
+                    }
+                } else {
+                    None
+                };
+                for (idx, &val_bits) in elems.iter().enumerate() {
+                    if idx > 0 {
+                        if let Some(bytes) = sep_bytes.as_deref() {
+                            if bytes.contains(&b'\n') {
+                                wrote_newline = true;
+                            }
+                            let _ = stdout.write_all(bytes);
+                        }
+                    }
+                    let str_bits = molt_str_from_obj(val_bits);
+                    if exception_pending(_py) {
+                        if let Some(sep_bits) = sep_bits_opt {
+                            dec_ref_bits(_py, sep_bits);
+                        }
+                        if let Some(end_bits) = end_bits_opt {
+                            dec_ref_bits(_py, end_bits);
+                        }
+                        return MoltObject::none().bits();
+                    }
+                    let bytes = match encode_print_bytes(_py, str_bits, encoding, errors) {
+                        Ok(bytes) => bytes,
+                        Err(bits) => {
+                            dec_ref_bits(_py, str_bits);
+                            if let Some(sep_bits) = sep_bits_opt {
+                                dec_ref_bits(_py, sep_bits);
+                            }
+                            if let Some(end_bits) = end_bits_opt {
+                                dec_ref_bits(_py, end_bits);
+                            }
+                            return bits;
+                        }
+                    };
+                    if bytes.contains(&b'\n') {
+                        wrote_newline = true;
+                    }
+                    let _ = stdout.write_all(&bytes);
+                    dec_ref_bits(_py, str_bits);
+                }
+                if let Some(bytes) = end_bytes.as_deref() {
+                    if bytes.contains(&b'\n') {
+                        wrote_newline = true;
+                    }
+                    let _ = stdout.write_all(bytes);
+                }
+                if do_flush || wrote_newline {
+                    let _ = stdout.flush();
+                }
+                if let Some(bits) = sep_bits_opt {
+                    dec_ref_bits(_py, bits);
+                }
+                if let Some(bits) = end_bits_opt {
+                    dec_ref_bits(_py, bits);
                 }
                 return MoltObject::none().bits();
             }
 
-            let out_ptr = alloc_string(_py, output.as_bytes());
-            if out_ptr.is_null() {
-                if file_from_sys {
-                    dec_ref_bits(_py, resolved_file_bits);
-                }
-                return MoltObject::none().bits();
-            }
-            let out_bits = MoltObject::from_ptr(out_ptr).bits();
+            let sep_bits = sep_bits_opt;
+            let end_bits = end_bits_opt;
+            let end_has_newline = end_bits
+                .map(string_bits_contains_newline)
+                .unwrap_or(false);
+
+            let mut write_bits = MoltObject::none().bits();
+            let mut use_file_handle = false;
             if let Some(ptr) = obj_from_bits(resolved_file_bits).as_ptr() {
-                if object_type_id(ptr) == TYPE_ID_FILE_HANDLE {
-                    let _ = molt_file_write(resolved_file_bits, out_bits);
-                    dec_ref_bits(_py, out_bits);
-                    if do_flush {
-                        let _ = molt_file_flush(resolved_file_bits);
-                    }
-                    if file_from_sys {
-                        dec_ref_bits(_py, resolved_file_bits);
-                    }
-                    return MoltObject::none().bits();
-                }
+                use_file_handle = object_type_id(ptr) == TYPE_ID_FILE_HANDLE;
             }
-            let write_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.write_name, b"write");
-            let write_bits = molt_get_attr_name(resolved_file_bits, write_name_bits);
-            if exception_pending(_py) {
-                dec_ref_bits(_py, out_bits);
-                if file_from_sys {
-                    dec_ref_bits(_py, resolved_file_bits);
-                }
-                return MoltObject::none().bits();
-            }
-            let res_bits = call_callable1(_py, write_bits, out_bits);
-            dec_ref_bits(_py, write_bits);
-            dec_ref_bits(_py, out_bits);
-            dec_ref_bits(_py, res_bits);
-            if exception_pending(_py) {
-                if file_from_sys {
-                    dec_ref_bits(_py, resolved_file_bits);
-                }
-                return MoltObject::none().bits();
-            }
-            if do_flush {
-                let flush_name_bits =
-                    intern_static_name(_py, &runtime_state(_py).interned.flush_name, b"flush");
-                let flush_method_bits = molt_get_attr_name(resolved_file_bits, flush_name_bits);
+            if !use_file_handle {
+                let write_name_bits =
+                    intern_static_name(_py, &runtime_state(_py).interned.write_name, b"write");
+                write_bits = molt_get_attr_name(resolved_file_bits, write_name_bits);
                 if exception_pending(_py) {
+                    if let Some(bits) = sep_bits {
+                        dec_ref_bits(_py, bits);
+                    }
+                    if let Some(bits) = end_bits {
+                        dec_ref_bits(_py, bits);
+                    }
                     if file_from_sys {
                         dec_ref_bits(_py, resolved_file_bits);
                     }
                     return MoltObject::none().bits();
                 }
-                let flush_res_bits = call_callable0(_py, flush_method_bits);
-                dec_ref_bits(_py, flush_method_bits);
-                dec_ref_bits(_py, flush_res_bits);
+            }
+
+            for (idx, &val_bits) in elems.iter().enumerate() {
+                if idx > 0 {
+                    if let Some(bits) = sep_bits {
+                        if use_file_handle {
+                            let _ = molt_file_write(resolved_file_bits, bits);
+                        } else {
+                            let res_bits = call_callable1(_py, write_bits, bits);
+                            dec_ref_bits(_py, res_bits);
+                        }
+                        if exception_pending(_py) {
+                            if !use_file_handle {
+                                dec_ref_bits(_py, write_bits);
+                            }
+                            if let Some(bits) = sep_bits {
+                                dec_ref_bits(_py, bits);
+                            }
+                            if let Some(bits) = end_bits {
+                                dec_ref_bits(_py, bits);
+                            }
+                            if file_from_sys {
+                                dec_ref_bits(_py, resolved_file_bits);
+                            }
+                            return MoltObject::none().bits();
+                        }
+                    }
+                }
+                let str_bits = molt_str_from_obj(val_bits);
                 if exception_pending(_py) {
+                    if !use_file_handle {
+                        dec_ref_bits(_py, write_bits);
+                    }
+                    if let Some(bits) = sep_bits {
+                        dec_ref_bits(_py, bits);
+                    }
+                    if let Some(bits) = end_bits {
+                        dec_ref_bits(_py, bits);
+                    }
                     if file_from_sys {
                         dec_ref_bits(_py, resolved_file_bits);
                     }
                     return MoltObject::none().bits();
+                }
+                if use_file_handle {
+                    let _ = molt_file_write(resolved_file_bits, str_bits);
+                } else {
+                    let res_bits = call_callable1(_py, write_bits, str_bits);
+                    dec_ref_bits(_py, res_bits);
+                }
+                dec_ref_bits(_py, str_bits);
+                if exception_pending(_py) {
+                    if !use_file_handle {
+                        dec_ref_bits(_py, write_bits);
+                    }
+                    if let Some(bits) = sep_bits {
+                        dec_ref_bits(_py, bits);
+                    }
+                    if let Some(bits) = end_bits {
+                        dec_ref_bits(_py, bits);
+                    }
+                    if file_from_sys {
+                        dec_ref_bits(_py, resolved_file_bits);
+                    }
+                    return MoltObject::none().bits();
+                }
+            }
+            if let Some(bits) = end_bits {
+                if use_file_handle {
+                    let _ = molt_file_write(resolved_file_bits, bits);
+                } else {
+                    let res_bits = call_callable1(_py, write_bits, bits);
+                    dec_ref_bits(_py, res_bits);
+                }
+                if exception_pending(_py) {
+                    if !use_file_handle {
+                        dec_ref_bits(_py, write_bits);
+                    }
+                    if let Some(bits) = sep_bits {
+                        dec_ref_bits(_py, bits);
+                    }
+                    dec_ref_bits(_py, bits);
+                    if file_from_sys {
+                        dec_ref_bits(_py, resolved_file_bits);
+                    }
+                    return MoltObject::none().bits();
+                }
+            }
+            if !use_file_handle {
+                dec_ref_bits(_py, write_bits);
+            }
+            if let Some(bits) = sep_bits {
+                dec_ref_bits(_py, bits);
+            }
+            if let Some(bits) = end_bits {
+                dec_ref_bits(_py, bits);
+            }
+
+            if do_flush || (file_from_sys && use_file_handle && end_has_newline) {
+                if use_file_handle {
+                    let _ = molt_file_flush(resolved_file_bits);
+                } else {
+                    let flush_name_bits =
+                        intern_static_name(_py, &runtime_state(_py).interned.flush_name, b"flush");
+                    let flush_method_bits = molt_get_attr_name(resolved_file_bits, flush_name_bits);
+                    if exception_pending(_py) {
+                        if file_from_sys {
+                            dec_ref_bits(_py, resolved_file_bits);
+                        }
+                        return MoltObject::none().bits();
+                    }
+                    let flush_res_bits = call_callable0(_py, flush_method_bits);
+                    dec_ref_bits(_py, flush_method_bits);
+                    dec_ref_bits(_py, flush_res_bits);
+                    if exception_pending(_py) {
+                        if file_from_sys {
+                            dec_ref_bits(_py, resolved_file_bits);
+                        }
+                        return MoltObject::none().bits();
+                    }
                 }
             }
             if file_from_sys {
@@ -8165,12 +9808,14 @@ pub extern "C" fn molt_slice(obj_bits: u64, start_bits: u64, end_bits: u64) -> u
             unsafe {
                 let type_id = object_type_id(ptr);
                 if type_id == TYPE_ID_STRING {
-                    let len = string_len(ptr) as isize;
-                    let start = match decode_slice_bound(_py, start_obj, len, 0) {
+                    let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
+                    let total_chars =
+                        utf8_codepoint_count_cached(_py, bytes, Some(ptr as usize)) as isize;
+                    let start = match decode_slice_bound(_py, start_obj, total_chars, 0) {
                         Ok(v) => v,
                         Err(err) => return slice_error(_py, err),
                     };
-                    let end = match decode_slice_bound(_py, end_obj, len, len) {
+                    let end = match decode_slice_bound(_py, end_obj, total_chars, total_chars) {
                         Ok(v) => v,
                         Err(err) => return slice_error(_py, err),
                     };
@@ -8181,8 +9826,19 @@ pub extern "C" fn molt_slice(obj_bits: u64, start_bits: u64, end_bits: u64) -> u
                         }
                         return MoltObject::from_ptr(out).bits();
                     }
-                    let bytes = std::slice::from_raw_parts(string_bytes(ptr), len as usize);
-                    let slice = &bytes[start as usize..end as usize];
+                    let start_byte = utf8_char_to_byte_index_cached(
+                        _py,
+                        bytes,
+                        start as i64,
+                        Some(ptr as usize),
+                    );
+                    let end_byte = utf8_char_to_byte_index_cached(
+                        _py,
+                        bytes,
+                        end as i64,
+                        Some(ptr as usize),
+                    );
+                    let slice = &bytes[start_byte..end_byte];
                     let out = alloc_string(_py, slice);
                     if out.is_null() {
                         return MoltObject::none().bits();
@@ -10750,15 +12406,65 @@ fn utf8_byte_to_char_index_cached(
     utf8_count_prefix_blocked(bytes, prefix_len)
 }
 
+fn wtf8_from_bytes(bytes: &[u8]) -> &Wtf8 {
+    // SAFETY: Molt string bytes are constructed as well-formed WTF-8.
+    unsafe { &*(bytes as *const [u8] as *const Wtf8) }
+}
+
+fn wtf8_codepoint_at(bytes: &[u8], idx: usize) -> Option<CodePoint> {
+    wtf8_from_bytes(bytes).code_points().nth(idx)
+}
+
+fn wtf8_codepoint_count_scan(bytes: &[u8]) -> i64 {
+    let mut idx = 0usize;
+    let mut count = 0i64;
+    while idx < bytes.len() {
+        let width = utf8_char_width(bytes[idx]);
+        if width == 0 {
+            idx = idx.saturating_add(1);
+        } else {
+            idx = idx.saturating_add(width);
+        }
+        count += 1;
+    }
+    count
+}
+
+fn wtf8_has_surrogates(bytes: &[u8]) -> bool {
+    wtf8_from_bytes(bytes).as_str().is_none()
+}
+
+fn push_wtf8_codepoint(out: &mut Vec<u8>, code: u32) {
+    if code <= 0x7F {
+        out.push(code as u8);
+    } else if code <= 0x7FF {
+        out.push((0xC0 | ((code >> 6) as u8)) as u8);
+        out.push((0x80 | (code as u8 & 0x3F)) as u8);
+    } else if code <= 0xFFFF {
+        out.push((0xE0 | ((code >> 12) as u8)) as u8);
+        out.push((0x80 | (((code >> 6) as u8) & 0x3F)) as u8);
+        out.push((0x80 | (code as u8 & 0x3F)) as u8);
+    } else {
+        out.push((0xF0 | ((code >> 18) as u8)) as u8);
+        out.push((0x80 | (((code >> 12) as u8) & 0x3F)) as u8);
+        out.push((0x80 | (((code >> 6) as u8) & 0x3F)) as u8);
+        out.push((0x80 | (code as u8 & 0x3F)) as u8);
+    }
+}
+
 fn utf8_char_width(first: u8) -> usize {
     if first < 0x80 {
+        1
+    } else if first < 0xC0 {
         1
     } else if first < 0xE0 {
         2
     } else if first < 0xF0 {
         3
-    } else {
+    } else if first < 0xF8 {
         4
+    } else {
+        1
     }
 }
 
@@ -10831,28 +12537,16 @@ fn utf8_count_prefix_blocked(bytes: &[u8], prefix_len: usize) -> i64 {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn count_utf8_bytes(bytes: &[u8]) -> i64 {
-    simdutf::count_utf8(bytes) as i64
+    if std::str::from_utf8(bytes).is_ok() {
+        simdutf::count_utf8(bytes) as i64
+    } else {
+        wtf8_codepoint_count_scan(bytes)
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
 fn count_utf8_bytes(bytes: &[u8]) -> i64 {
-    let mut count = 0i64;
-    let mut idx = 0usize;
-    while idx < bytes.len() {
-        let b = bytes[idx];
-        let width = if b < 0x80 {
-            1
-        } else if b < 0xE0 {
-            2
-        } else if b < 0xF0 {
-            3
-        } else {
-            4
-        };
-        idx = idx.saturating_add(width);
-        count += 1;
-    }
-    count
+    wtf8_codepoint_count_scan(bytes)
 }
 
 #[no_mangle]
@@ -11644,8 +13338,8 @@ pub extern "C" fn molt_string_encode(hay_bits: u64, encoding_bits: u64, errors_b
                 Some(val) => val,
                 None => return MoltObject::none().bits(),
             };
-            let text = string_obj_to_owned(hay).unwrap_or_default();
-            let out = match encode_string_with_errors(&text, &encoding, Some(&errors)) {
+            let bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            let out = match encode_string_with_errors(bytes, &encoding, Some(&errors)) {
                 Ok(bytes) => bytes,
                 Err(EncodeError::UnknownEncoding(name)) => {
                     let msg = format!("unknown encoding: {name}");
@@ -11657,15 +13351,19 @@ pub extern "C" fn molt_string_encode(hay_bits: u64, encoding_bits: u64, errors_b
                 }
                 Err(EncodeError::InvalidChar {
                     encoding,
-                    ch,
+                    code,
                     pos,
                     limit,
                 }) => {
-                    let escaped = unicode_escape(ch);
-                    let msg = format!(
-                    "'{encoding}' codec can't encode character '{escaped}' in position {pos}: ordinal not in range({limit})"
-                );
-                    return raise_exception::<_>(_py, "UnicodeEncodeError", &msg);
+                    let reason = encode_error_reason(encoding, code, limit);
+                    return raise_unicode_encode_error::<_>(
+                        _py,
+                        encoding,
+                        hay_bits,
+                        pos,
+                        pos + 1,
+                        &reason,
+                    );
                 }
             };
             let ptr = alloc_bytes(_py, &out);
@@ -11694,6 +13392,33 @@ pub extern "C" fn molt_string_lower(hay_bits: u64) -> u64 {
             };
             let lowered = hay_str.to_lowercase();
             let ptr = alloc_string(_py, lowered.as_bytes());
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_string_casefold(hay_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let hay = obj_from_bits(hay_bits);
+        let Some(hay_ptr) = hay.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(hay_ptr) != TYPE_ID_STRING {
+                return MoltObject::none().bits();
+            }
+            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
+                return MoltObject::none().bits();
+            };
+            let folded: String = hay_str
+                .case_fold_with(Variant::Full, Locale::NonTurkic)
+                .collect();
+            let ptr = alloc_string(_py, folded.as_bytes());
             if ptr.is_null() {
                 return MoltObject::none().bits();
             }
@@ -11777,7 +13502,7 @@ pub extern "C" fn molt_string_isdigit(hay_bits: u64) -> u64 {
             };
             let mut seen = false;
             for ch in hay_str.chars() {
-                if ch.to_digit(10).is_some() {
+                if unicode_digit_table::is_digit(ch as u32) {
                     seen = true;
                     continue;
                 }
@@ -12743,37 +14468,28 @@ fn bytes_decode_impl(
             Some(val) => val,
             None => return MoltObject::none().bits(),
         };
-        let Some(kind) = normalize_encoding(&encoding) else {
-            let msg = format!("unknown encoding: {encoding}");
-            return raise_exception::<_>(_py, "LookupError", &msg);
-        };
         let bytes = bytes_like_slice(hay_ptr).unwrap_or(&[]);
-        let errors_known = matches!(errors.as_str(), "strict" | "ignore" | "replace");
-        let result = if errors_known {
-            decode_bytes_with_errors(bytes, kind, &errors)
-        } else {
-            match decode_bytes_with_errors(bytes, kind, "strict") {
-                Ok((text, label)) => Ok((text, label)),
-                Err((_failure, label)) => Err((DecodeFailure::UnknownErrorHandler(errors), label)),
-            }
-        };
-        let out_bits = match result {
-            Ok((text, _label)) => {
-                let ptr = alloc_string(_py, text.as_bytes());
+        let out_bits = match decode_bytes_text(&encoding, &errors, bytes) {
+            Ok((text_bytes, _label)) => {
+                let ptr = alloc_string(_py, &text_bytes);
                 if ptr.is_null() {
                     return MoltObject::none().bits();
                 }
                 MoltObject::from_ptr(ptr).bits()
             }
-            Err((DecodeFailure::UnknownErrorHandler(name), _label)) => {
+            Err(DecodeTextError::UnknownEncoding(name)) => {
+                let msg = format!("unknown encoding: {name}");
+                return raise_exception::<_>(_py, "LookupError", &msg);
+            }
+            Err(DecodeTextError::UnknownErrorHandler(name)) => {
                 let msg = format!("unknown error handler name '{name}'");
                 return raise_exception::<_>(_py, "LookupError", &msg);
             }
-            Err((DecodeFailure::Byte { pos, byte, message }, label)) => {
+            Err(DecodeTextError::Failure(DecodeFailure::Byte { pos, byte, message }, label)) => {
                 let msg = decode_error_byte(&label, byte, pos, message);
                 return raise_exception::<_>(_py, "UnicodeDecodeError", &msg);
             }
-            Err((
+            Err(DecodeTextError::Failure(
                 DecodeFailure::Range {
                     start,
                     end,
@@ -12783,6 +14499,10 @@ fn bytes_decode_impl(
             )) => {
                 let msg = decode_error_range(&label, start, end, message);
                 return raise_exception::<_>(_py, "UnicodeDecodeError", &msg);
+            }
+            Err(DecodeTextError::Failure(DecodeFailure::UnknownErrorHandler(name), _label)) => {
+                let msg = format!("unknown error handler name '{name}'");
+                return raise_exception::<_>(_py, "LookupError", &msg);
             }
         };
         out_bits
@@ -12962,7 +14682,11 @@ fn bytes_hex_sep_from_bits(_py: &PyToken<'_>, sep_bits: u64) -> Result<Option<St
             return Ok(Some(ch.to_string()));
         }
     }
-    Err(raise_exception::<_>(_py, "TypeError", "sep must be str or bytes"))
+    Err(raise_exception::<_>(
+        _py,
+        "TypeError",
+        "sep must be str or bytes",
+    ))
 }
 
 fn bytes_hex_string(bytes: &[u8], sep: Option<&str>, bytes_per_sep: i64) -> String {
@@ -13087,12 +14811,222 @@ pub extern "C" fn molt_bytes_lower(hay_bits: u64) -> u64 {
     })
 }
 
+fn bytes_translate_impl(
+    _py: &PyToken<'_>,
+    hay_bytes: &[u8],
+    table_bits: u64,
+    delete_bits: u64,
+) -> Result<Vec<u8>, u64> {
+    let table_obj = obj_from_bits(table_bits);
+    let table_opt = if table_obj.is_none() {
+        None
+    } else {
+        let table_ptr = match table_obj.as_ptr() {
+            Some(ptr) => ptr,
+            None => {
+                let msg = format!(
+                    "a bytes-like object is required, not '{}'",
+                    type_name(_py, table_obj)
+                );
+                return Err(raise_exception::<_>(_py, "TypeError", &msg));
+            }
+        };
+        let table_bytes = match unsafe { bytes_like_slice(table_ptr) } {
+            Some(slice) => slice,
+            None => {
+                let msg = format!(
+                    "a bytes-like object is required, not '{}'",
+                    type_name(_py, table_obj)
+                );
+                return Err(raise_exception::<_>(_py, "TypeError", &msg));
+            }
+        };
+        if table_bytes.len() != 256 {
+            return Err(raise_exception::<_>(
+                _py,
+                "ValueError",
+                "translation table must be 256 characters long",
+            ));
+        }
+        Some(table_bytes)
+    };
+    let delete_bytes = if is_missing_bits(_py, delete_bits) {
+        &[]
+    } else {
+        let delete_obj = obj_from_bits(delete_bits);
+        let delete_ptr = match delete_obj.as_ptr() {
+            Some(ptr) => ptr,
+            None => {
+                let msg = format!(
+                    "a bytes-like object is required, not '{}'",
+                    type_name(_py, delete_obj)
+                );
+                return Err(raise_exception::<_>(_py, "TypeError", &msg));
+            }
+        };
+        match unsafe { bytes_like_slice(delete_ptr) } {
+            Some(slice) => slice,
+            None => {
+                let msg = format!(
+                    "a bytes-like object is required, not '{}'",
+                    type_name(_py, delete_obj)
+                );
+                return Err(raise_exception::<_>(_py, "TypeError", &msg));
+            }
+        }
+    };
+    if hay_bytes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut delete_map = [false; 256];
+    for &b in delete_bytes {
+        delete_map[b as usize] = true;
+    }
+    let mut out = Vec::with_capacity(hay_bytes.len());
+    match table_opt {
+        Some(table) => {
+            for &b in hay_bytes {
+                if delete_map[b as usize] {
+                    continue;
+                }
+                out.push(table[b as usize]);
+            }
+        }
+        None => {
+            for &b in hay_bytes {
+                if delete_map[b as usize] {
+                    continue;
+                }
+                out.push(b);
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[no_mangle]
-pub extern "C" fn molt_bytes_hex(
+pub extern "C" fn molt_bytes_translate(hay_bits: u64, table_bits: u64, delete_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let hay = obj_from_bits(hay_bits);
+        let Some(hay_ptr) = hay.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(hay_ptr) != TYPE_ID_BYTES {
+                return MoltObject::none().bits();
+            }
+            let hay_bytes = bytes_like_slice(hay_ptr).unwrap_or(&[]);
+            let out = match bytes_translate_impl(_py, hay_bytes, table_bits, delete_bits) {
+                Ok(out) => out,
+                Err(err_bits) => return err_bits,
+            };
+            let ptr = alloc_bytes(_py, &out);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_bytearray_translate(
     hay_bits: u64,
-    sep_bits: u64,
-    bytes_per_sep_bits: u64,
+    table_bits: u64,
+    delete_bits: u64,
 ) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let hay = obj_from_bits(hay_bits);
+        let Some(hay_ptr) = hay.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(hay_ptr) != TYPE_ID_BYTEARRAY {
+                return MoltObject::none().bits();
+            }
+            let hay_bytes = bytes_like_slice(hay_ptr).unwrap_or(&[]);
+            let out = match bytes_translate_impl(_py, hay_bytes, table_bits, delete_bits) {
+                Ok(out) => out,
+                Err(err_bits) => return err_bits,
+            };
+            let ptr = alloc_bytearray(_py, &out);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_bytes_maketrans(from_bits: u64, to_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let from_obj = obj_from_bits(from_bits);
+        let to_obj = obj_from_bits(to_bits);
+        let from_ptr = match from_obj.as_ptr() {
+            Some(ptr) => ptr,
+            None => {
+                let msg = format!(
+                    "a bytes-like object is required, not '{}'",
+                    type_name(_py, from_obj)
+                );
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            }
+        };
+        let to_ptr = match to_obj.as_ptr() {
+            Some(ptr) => ptr,
+            None => {
+                let msg = format!(
+                    "a bytes-like object is required, not '{}'",
+                    type_name(_py, to_obj)
+                );
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            }
+        };
+        let from_bytes = match unsafe { bytes_like_slice(from_ptr) } {
+            Some(slice) => slice,
+            None => {
+                let msg = format!(
+                    "a bytes-like object is required, not '{}'",
+                    type_name(_py, from_obj)
+                );
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            }
+        };
+        let to_bytes = match unsafe { bytes_like_slice(to_ptr) } {
+            Some(slice) => slice,
+            None => {
+                let msg = format!(
+                    "a bytes-like object is required, not '{}'",
+                    type_name(_py, to_obj)
+                );
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            }
+        };
+        if from_bytes.len() != to_bytes.len() {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "maketrans arguments must have same length",
+            );
+        }
+        let mut table = [0u8; 256];
+        for (idx, slot) in table.iter_mut().enumerate() {
+            *slot = idx as u8;
+        }
+        for (from_byte, to_byte) in from_bytes.iter().zip(to_bytes.iter()) {
+            table[*from_byte as usize] = *to_byte;
+        }
+        let ptr = alloc_bytes(_py, &table);
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_bytes_hex(hay_bits: u64, sep_bits: u64, bytes_per_sep_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let hay = obj_from_bits(hay_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
@@ -13109,11 +15043,7 @@ pub extern "C" fn molt_bytes_hex(
 }
 
 #[no_mangle]
-pub extern "C" fn molt_bytearray_hex(
-    hay_bits: u64,
-    sep_bits: u64,
-    bytes_per_sep_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_bytearray_hex(hay_bits: u64, sep_bits: u64, bytes_per_sep_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let hay = obj_from_bits(hay_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
@@ -13277,7 +15207,7 @@ enum BytesCtorKind {
 }
 
 impl BytesCtorKind {
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             BytesCtorKind::Bytes => "bytes",
             BytesCtorKind::Bytearray => "bytearray",
@@ -13313,10 +15243,40 @@ impl BytesCtorKind {
 }
 
 #[derive(Clone, Copy)]
-enum EncodingKind {
+pub(crate) enum EncodingKind {
     Utf8,
+    Utf8Sig,
+    Cp1252,
+    Cp437,
+    Cp850,
+    Cp860,
+    Cp862,
+    Cp863,
+    Cp865,
+    Cp866,
+    Cp874,
+    Cp1250,
+    Cp1251,
+    Cp1253,
+    Cp1254,
+    Cp1255,
+    Cp1256,
+    Cp1257,
+    Koi8R,
+    Koi8U,
+    Iso8859_2,
+    Iso8859_3,
+    Iso8859_4,
+    Iso8859_5,
+    Iso8859_6,
+    Iso8859_7,
+    Iso8859_8,
+    Iso8859_10,
+    Iso8859_15,
+    MacRoman,
     Latin1,
     Ascii,
+    UnicodeEscape,
     Utf16,
     Utf16LE,
     Utf16BE,
@@ -13326,11 +15286,41 @@ enum EncodingKind {
 }
 
 impl EncodingKind {
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             EncodingKind::Utf8 => "utf-8",
+            EncodingKind::Utf8Sig => "utf-8-sig",
+            EncodingKind::Cp1252 => "cp1252",
+            EncodingKind::Cp437 => "cp437",
+            EncodingKind::Cp850 => "cp850",
+            EncodingKind::Cp860 => "cp860",
+            EncodingKind::Cp862 => "cp862",
+            EncodingKind::Cp863 => "cp863",
+            EncodingKind::Cp865 => "cp865",
+            EncodingKind::Cp866 => "cp866",
+            EncodingKind::Cp874 => "cp874",
+            EncodingKind::Cp1250 => "cp1250",
+            EncodingKind::Cp1251 => "cp1251",
+            EncodingKind::Cp1253 => "cp1253",
+            EncodingKind::Cp1254 => "cp1254",
+            EncodingKind::Cp1255 => "cp1255",
+            EncodingKind::Cp1256 => "cp1256",
+            EncodingKind::Cp1257 => "cp1257",
+            EncodingKind::Koi8R => "koi8-r",
+            EncodingKind::Koi8U => "koi8-u",
+            EncodingKind::Iso8859_2 => "iso8859-2",
+            EncodingKind::Iso8859_3 => "iso8859-3",
+            EncodingKind::Iso8859_4 => "iso8859-4",
+            EncodingKind::Iso8859_5 => "iso8859-5",
+            EncodingKind::Iso8859_6 => "iso8859-6",
+            EncodingKind::Iso8859_7 => "iso8859-7",
+            EncodingKind::Iso8859_8 => "iso8859-8",
+            EncodingKind::Iso8859_10 => "iso8859-10",
+            EncodingKind::Iso8859_15 => "iso8859-15",
+            EncodingKind::MacRoman => "mac-roman",
             EncodingKind::Latin1 => "latin-1",
             EncodingKind::Ascii => "ascii",
+            EncodingKind::UnicodeEscape => "unicode-escape",
             EncodingKind::Utf16 => "utf-16",
             EncodingKind::Utf16LE => "utf-16-le",
             EncodingKind::Utf16BE => "utf-16-be",
@@ -13344,7 +15334,37 @@ impl EncodingKind {
         match self {
             EncodingKind::Ascii => 128,
             EncodingKind::Latin1 => 256,
+            EncodingKind::UnicodeEscape => u32::MAX,
+            EncodingKind::Cp1252 => u32::MAX,
+            EncodingKind::Cp437 => u32::MAX,
+            EncodingKind::Cp850 => u32::MAX,
+            EncodingKind::Cp860 => u32::MAX,
+            EncodingKind::Cp862 => u32::MAX,
+            EncodingKind::Cp863 => u32::MAX,
+            EncodingKind::Cp865 => u32::MAX,
+            EncodingKind::Cp866 => u32::MAX,
+            EncodingKind::Cp874 => u32::MAX,
+            EncodingKind::Cp1250 => u32::MAX,
+            EncodingKind::Cp1251 => u32::MAX,
+            EncodingKind::Cp1253 => u32::MAX,
+            EncodingKind::Cp1254 => u32::MAX,
+            EncodingKind::Cp1255 => u32::MAX,
+            EncodingKind::Cp1256 => u32::MAX,
+            EncodingKind::Cp1257 => u32::MAX,
+            EncodingKind::Koi8R => u32::MAX,
+            EncodingKind::Koi8U => u32::MAX,
+            EncodingKind::Iso8859_2 => u32::MAX,
+            EncodingKind::Iso8859_3 => u32::MAX,
+            EncodingKind::Iso8859_4 => u32::MAX,
+            EncodingKind::Iso8859_5 => u32::MAX,
+            EncodingKind::Iso8859_6 => u32::MAX,
+            EncodingKind::Iso8859_7 => u32::MAX,
+            EncodingKind::Iso8859_8 => u32::MAX,
+            EncodingKind::Iso8859_10 => u32::MAX,
+            EncodingKind::Iso8859_15 => u32::MAX,
+            EncodingKind::MacRoman => u32::MAX,
             EncodingKind::Utf8
+            | EncodingKind::Utf8Sig
             | EncodingKind::Utf16
             | EncodingKind::Utf16LE
             | EncodingKind::Utf16BE
@@ -13355,23 +15375,67 @@ impl EncodingKind {
     }
 }
 
-enum EncodeError {
+pub(crate) fn encoding_kind_name(kind: EncodingKind) -> &'static str {
+    kind.name()
+}
+
+pub(crate) enum EncodeError {
     UnknownEncoding(String),
     UnknownErrorHandler(String),
     InvalidChar {
         encoding: &'static str,
-        ch: char,
+        code: u32,
         pos: usize,
         limit: u32,
     },
 }
 
-fn normalize_encoding(name: &str) -> Option<EncodingKind> {
+pub(crate) fn normalize_encoding(name: &str) -> Option<EncodingKind> {
     let normalized = name.to_ascii_lowercase().replace('_', "-");
     match normalized.as_str() {
         "utf-8" | "utf8" => Some(EncodingKind::Utf8),
+        "utf-8-sig" | "utf8-sig" => Some(EncodingKind::Utf8Sig),
+        "cp1252" | "cp-1252" | "windows-1252" => Some(EncodingKind::Cp1252),
+        "cp437" | "ibm437" | "437" => Some(EncodingKind::Cp437),
+        "cp850" | "ibm850" | "850" | "cp-850" => Some(EncodingKind::Cp850),
+        "cp860" | "ibm860" | "860" | "cp-860" => Some(EncodingKind::Cp860),
+        "cp862" | "ibm862" | "862" | "cp-862" => Some(EncodingKind::Cp862),
+        "cp863" | "ibm863" | "863" | "cp-863" => Some(EncodingKind::Cp863),
+        "cp865" | "ibm865" | "865" | "cp-865" => Some(EncodingKind::Cp865),
+        "cp866" | "ibm866" | "866" | "cp-866" => Some(EncodingKind::Cp866),
+        "cp874" | "cp-874" | "windows-874" => Some(EncodingKind::Cp874),
+        "cp1250" | "cp-1250" | "windows-1250" => Some(EncodingKind::Cp1250),
+        "cp1251" | "cp-1251" | "windows-1251" => Some(EncodingKind::Cp1251),
+        "cp1253" | "cp-1253" | "windows-1253" => Some(EncodingKind::Cp1253),
+        "cp1254" | "cp-1254" | "windows-1254" => Some(EncodingKind::Cp1254),
+        "cp1255" | "cp-1255" | "windows-1255" => Some(EncodingKind::Cp1255),
+        "cp1256" | "cp-1256" | "windows-1256" => Some(EncodingKind::Cp1256),
+        "cp1257" | "cp-1257" | "windows-1257" => Some(EncodingKind::Cp1257),
+        "koi8-r" | "koi8r" | "koi8_r" => Some(EncodingKind::Koi8R),
+        "koi8-u" | "koi8u" | "koi8_u" => Some(EncodingKind::Koi8U),
+        "iso-8859-2" | "iso8859-2" | "latin2" | "latin-2" => {
+            Some(EncodingKind::Iso8859_2)
+        }
+        "iso-8859-3" | "iso8859-3" | "latin3" | "latin-3" => {
+            Some(EncodingKind::Iso8859_3)
+        }
+        "iso-8859-4" | "iso8859-4" | "latin4" | "latin-4" => {
+            Some(EncodingKind::Iso8859_4)
+        }
+        "iso-8859-5" | "iso8859-5" | "cyrillic" => Some(EncodingKind::Iso8859_5),
+        "iso-8859-6" | "iso8859-6" | "arabic" => Some(EncodingKind::Iso8859_6),
+        "iso-8859-7" | "iso8859-7" | "greek" => Some(EncodingKind::Iso8859_7),
+        "iso-8859-8" | "iso8859-8" | "hebrew" => Some(EncodingKind::Iso8859_8),
+        "iso-8859-10" | "iso8859-10" | "latin6" | "latin-6" => {
+            Some(EncodingKind::Iso8859_10)
+        }
+        "iso-8859-15" | "iso8859-15" | "latin9" | "latin-9" | "latin_9" => {
+            Some(EncodingKind::Iso8859_15)
+        }
+        "mac-roman" | "macroman" | "mac_roman" => Some(EncodingKind::MacRoman),
         "latin-1" | "latin1" | "iso-8859-1" | "iso8859-1" => Some(EncodingKind::Latin1),
-        "ascii" => Some(EncodingKind::Ascii),
+        "ascii" | "us-ascii" => Some(EncodingKind::Ascii),
+        "unicode-escape" | "unicodeescape" => Some(EncodingKind::UnicodeEscape),
         "utf-16" | "utf16" => Some(EncodingKind::Utf16),
         "utf-16le" | "utf-16-le" | "utf16le" => Some(EncodingKind::Utf16LE),
         "utf-16be" | "utf-16-be" | "utf16be" => Some(EncodingKind::Utf16BE),
@@ -13432,8 +15496,11 @@ fn encode_utf32(text: &str, endian: Endian, with_bom: bool) -> Vec<u8> {
     out
 }
 
-fn unicode_escape(ch: char) -> String {
-    let code = ch as u32;
+fn is_surrogate(code: u32) -> bool {
+    (0xD800..=0xDFFF).contains(&code)
+}
+
+fn unicode_escape_codepoint(code: u32) -> String {
     if code <= 0xFF {
         format!("\\x{code:02x}")
     } else if code <= 0xFFFF {
@@ -13443,54 +15510,3929 @@ fn unicode_escape(ch: char) -> String {
     }
 }
 
-fn encode_string_with_errors(
-    text: &str,
+fn unicode_name_escape(code: u32) -> String {
+    if let Some(ch) = char::from_u32(code) {
+        if let Some(name) = unicode_names2::name(ch) {
+            return format!("\\N{{{name}}}");
+        }
+    }
+    unicode_escape_codepoint(code)
+}
+
+fn unicode_escape(ch: char) -> String {
+    unicode_escape_codepoint(ch as u32)
+}
+
+pub(crate) fn encode_error_reason(encoding: &str, code: u32, limit: u32) -> String {
+    if encoding == "charmap" {
+        return "character maps to <undefined>".to_string();
+    }
+    if is_surrogate(code) && encoding.starts_with("utf-") {
+        return "surrogates not allowed".to_string();
+    }
+    format!("ordinal not in range({limit})")
+}
+
+fn push_backslash_bytes(out: &mut String, bytes: &[u8]) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for &byte in bytes {
+        out.push('\\');
+        out.push('x');
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+}
+
+fn push_backslash_bytes_vec(out: &mut Vec<u8>, bytes: &[u8]) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for &byte in bytes {
+        out.push(b'\\');
+        out.push(b'x');
+        out.push(HEX[(byte >> 4) as usize]);
+        out.push(HEX[(byte & 0x0f) as usize]);
+    }
+}
+
+fn push_hex_escape(out: &mut Vec<u8>, prefix: u8, code: u32, width: usize) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    out.push(b'\\');
+    out.push(prefix);
+    for shift in (0..width).rev() {
+        let nibble = ((code >> (shift * 4)) & 0x0f) as usize;
+        out.push(HEX[nibble]);
+    }
+}
+
+fn xmlcharref_bytes(code: u32, buf: &mut [u8; 16]) -> &[u8] {
+    buf[0] = b'&';
+    buf[1] = b'#';
+    let mut digits = [0u8; 10];
+    let mut idx = digits.len();
+    let mut value = code;
+    loop {
+        idx = idx.saturating_sub(1);
+        digits[idx] = b'0' + (value % 10) as u8;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    let digits_len = digits.len() - idx;
+    buf[2..2 + digits_len].copy_from_slice(&digits[idx..]);
+    buf[2 + digits_len] = b';';
+    &buf[..2 + digits_len + 1]
+}
+
+fn push_xmlcharref_ascii(out: &mut Vec<u8>, code: u32) {
+    let mut buf = [0u8; 16];
+    let bytes = xmlcharref_bytes(code, &mut buf);
+    out.extend_from_slice(bytes);
+}
+
+fn push_xmlcharref_utf16(out: &mut Vec<u8>, code: u32, endian: Endian) {
+    let mut buf = [0u8; 16];
+    let bytes = xmlcharref_bytes(code, &mut buf);
+    for &byte in bytes {
+        push_u16(out, byte as u16, endian);
+    }
+}
+
+fn push_xmlcharref_utf32(out: &mut Vec<u8>, code: u32, endian: Endian) {
+    let mut buf = [0u8; 16];
+    let bytes = xmlcharref_bytes(code, &mut buf);
+    for &byte in bytes {
+        push_u32(out, byte as u32, endian);
+    }
+}
+
+fn encode_cp1252_byte(code: u32) -> Option<u8> {
+    if code <= 0x7F || (0xA0..=0xFF).contains(&code) {
+        return Some(code as u8);
+    }
+    match code {
+        0x20AC => Some(0x80),
+        0x201A => Some(0x82),
+        0x0192 => Some(0x83),
+        0x201E => Some(0x84),
+        0x2026 => Some(0x85),
+        0x2020 => Some(0x86),
+        0x2021 => Some(0x87),
+        0x02C6 => Some(0x88),
+        0x2030 => Some(0x89),
+        0x0160 => Some(0x8A),
+        0x2039 => Some(0x8B),
+        0x0152 => Some(0x8C),
+        0x017D => Some(0x8E),
+        0x2018 => Some(0x91),
+        0x2019 => Some(0x92),
+        0x201C => Some(0x93),
+        0x201D => Some(0x94),
+        0x2022 => Some(0x95),
+        0x2013 => Some(0x96),
+        0x2014 => Some(0x97),
+        0x02DC => Some(0x98),
+        0x2122 => Some(0x99),
+        0x0161 => Some(0x9A),
+        0x203A => Some(0x9B),
+        0x0153 => Some(0x9C),
+        0x017E => Some(0x9E),
+        0x0178 => Some(0x9F),
+        _ => None,
+    }
+}
+
+fn encode_cp437_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xFF),
+        0x00A1 => Some(0xAD),
+        0x00A2 => Some(0x9B),
+        0x00A3 => Some(0x9C),
+        0x00A5 => Some(0x9D),
+        0x00AA => Some(0xA6),
+        0x00AB => Some(0xAE),
+        0x00AC => Some(0xAA),
+        0x00B0 => Some(0xF8),
+        0x00B1 => Some(0xF1),
+        0x00B2 => Some(0xFD),
+        0x00B5 => Some(0xE6),
+        0x00B7 => Some(0xFA),
+        0x00BA => Some(0xA7),
+        0x00BB => Some(0xAF),
+        0x00BC => Some(0xAC),
+        0x00BD => Some(0xAB),
+        0x00BF => Some(0xA8),
+        0x00C4 => Some(0x8E),
+        0x00C5 => Some(0x8F),
+        0x00C6 => Some(0x92),
+        0x00C7 => Some(0x80),
+        0x00C9 => Some(0x90),
+        0x00D1 => Some(0xA5),
+        0x00D6 => Some(0x99),
+        0x00DC => Some(0x9A),
+        0x00DF => Some(0xE1),
+        0x00E0 => Some(0x85),
+        0x00E1 => Some(0xA0),
+        0x00E2 => Some(0x83),
+        0x00E4 => Some(0x84),
+        0x00E5 => Some(0x86),
+        0x00E6 => Some(0x91),
+        0x00E7 => Some(0x87),
+        0x00E8 => Some(0x8A),
+        0x00E9 => Some(0x82),
+        0x00EA => Some(0x88),
+        0x00EB => Some(0x89),
+        0x00EC => Some(0x8D),
+        0x00ED => Some(0xA1),
+        0x00EE => Some(0x8C),
+        0x00EF => Some(0x8B),
+        0x00F1 => Some(0xA4),
+        0x00F2 => Some(0x95),
+        0x00F3 => Some(0xA2),
+        0x00F4 => Some(0x93),
+        0x00F6 => Some(0x94),
+        0x00F7 => Some(0xF6),
+        0x00F9 => Some(0x97),
+        0x00FA => Some(0xA3),
+        0x00FB => Some(0x96),
+        0x00FC => Some(0x81),
+        0x00FF => Some(0x98),
+        0x0192 => Some(0x9F),
+        0x0393 => Some(0xE2),
+        0x0398 => Some(0xE9),
+        0x03A3 => Some(0xE4),
+        0x03A6 => Some(0xE8),
+        0x03A9 => Some(0xEA),
+        0x03B1 => Some(0xE0),
+        0x03B4 => Some(0xEB),
+        0x03B5 => Some(0xEE),
+        0x03C0 => Some(0xE3),
+        0x03C3 => Some(0xE5),
+        0x03C4 => Some(0xE7),
+        0x03C6 => Some(0xED),
+        0x207F => Some(0xFC),
+        0x20A7 => Some(0x9E),
+        0x2219 => Some(0xF9),
+        0x221A => Some(0xFB),
+        0x221E => Some(0xEC),
+        0x2229 => Some(0xEF),
+        0x2248 => Some(0xF7),
+        0x2261 => Some(0xF0),
+        0x2264 => Some(0xF3),
+        0x2265 => Some(0xF2),
+        0x2310 => Some(0xA9),
+        0x2320 => Some(0xF4),
+        0x2321 => Some(0xF5),
+        0x2500 => Some(0xC4),
+        0x2502 => Some(0xB3),
+        0x250C => Some(0xDA),
+        0x2510 => Some(0xBF),
+        0x2514 => Some(0xC0),
+        0x2518 => Some(0xD9),
+        0x251C => Some(0xC3),
+        0x2524 => Some(0xB4),
+        0x252C => Some(0xC2),
+        0x2534 => Some(0xC1),
+        0x253C => Some(0xC5),
+        0x2550 => Some(0xCD),
+        0x2551 => Some(0xBA),
+        0x2552 => Some(0xD5),
+        0x2553 => Some(0xD6),
+        0x2554 => Some(0xC9),
+        0x2555 => Some(0xB8),
+        0x2556 => Some(0xB7),
+        0x2557 => Some(0xBB),
+        0x2558 => Some(0xD4),
+        0x2559 => Some(0xD3),
+        0x255A => Some(0xC8),
+        0x255B => Some(0xBE),
+        0x255C => Some(0xBD),
+        0x255D => Some(0xBC),
+        0x255E => Some(0xC6),
+        0x255F => Some(0xC7),
+        0x2560 => Some(0xCC),
+        0x2561 => Some(0xB5),
+        0x2562 => Some(0xB6),
+        0x2563 => Some(0xB9),
+        0x2564 => Some(0xD1),
+        0x2565 => Some(0xD2),
+        0x2566 => Some(0xCB),
+        0x2567 => Some(0xCF),
+        0x2568 => Some(0xD0),
+        0x2569 => Some(0xCA),
+        0x256A => Some(0xD8),
+        0x256B => Some(0xD7),
+        0x256C => Some(0xCE),
+        0x2580 => Some(0xDF),
+        0x2584 => Some(0xDC),
+        0x2588 => Some(0xDB),
+        0x258C => Some(0xDD),
+        0x2590 => Some(0xDE),
+        0x2591 => Some(0xB0),
+        0x2592 => Some(0xB1),
+        0x2593 => Some(0xB2),
+        0x25A0 => Some(0xFE),
+        _ => None,
+    }
+}
+
+fn encode_cp850_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xFF),
+        0x00A1 => Some(0xAD),
+        0x00A2 => Some(0xBD),
+        0x00A3 => Some(0x9C),
+        0x00A4 => Some(0xCF),
+        0x00A5 => Some(0xBE),
+        0x00A6 => Some(0xDD),
+        0x00A7 => Some(0xF5),
+        0x00A8 => Some(0xF9),
+        0x00A9 => Some(0xB8),
+        0x00AA => Some(0xA6),
+        0x00AB => Some(0xAE),
+        0x00AC => Some(0xAA),
+        0x00AD => Some(0xF0),
+        0x00AE => Some(0xA9),
+        0x00AF => Some(0xEE),
+        0x00B0 => Some(0xF8),
+        0x00B1 => Some(0xF1),
+        0x00B2 => Some(0xFD),
+        0x00B3 => Some(0xFC),
+        0x00B4 => Some(0xEF),
+        0x00B5 => Some(0xE6),
+        0x00B6 => Some(0xF4),
+        0x00B7 => Some(0xFA),
+        0x00B8 => Some(0xF7),
+        0x00B9 => Some(0xFB),
+        0x00BA => Some(0xA7),
+        0x00BB => Some(0xAF),
+        0x00BC => Some(0xAC),
+        0x00BD => Some(0xAB),
+        0x00BE => Some(0xF3),
+        0x00BF => Some(0xA8),
+        0x00C0 => Some(0xB7),
+        0x00C1 => Some(0xB5),
+        0x00C2 => Some(0xB6),
+        0x00C3 => Some(0xC7),
+        0x00C4 => Some(0x8E),
+        0x00C5 => Some(0x8F),
+        0x00C6 => Some(0x92),
+        0x00C7 => Some(0x80),
+        0x00C8 => Some(0xD4),
+        0x00C9 => Some(0x90),
+        0x00CA => Some(0xD2),
+        0x00CB => Some(0xD3),
+        0x00CC => Some(0xDE),
+        0x00CD => Some(0xD6),
+        0x00CE => Some(0xD7),
+        0x00CF => Some(0xD8),
+        0x00D0 => Some(0xD1),
+        0x00D1 => Some(0xA5),
+        0x00D2 => Some(0xE3),
+        0x00D3 => Some(0xE0),
+        0x00D4 => Some(0xE2),
+        0x00D5 => Some(0xE5),
+        0x00D6 => Some(0x99),
+        0x00D7 => Some(0x9E),
+        0x00D8 => Some(0x9D),
+        0x00D9 => Some(0xEB),
+        0x00DA => Some(0xE9),
+        0x00DB => Some(0xEA),
+        0x00DC => Some(0x9A),
+        0x00DD => Some(0xED),
+        0x00DE => Some(0xE8),
+        0x00DF => Some(0xE1),
+        0x00E0 => Some(0x85),
+        0x00E1 => Some(0xA0),
+        0x00E2 => Some(0x83),
+        0x00E3 => Some(0xC6),
+        0x00E4 => Some(0x84),
+        0x00E5 => Some(0x86),
+        0x00E6 => Some(0x91),
+        0x00E7 => Some(0x87),
+        0x00E8 => Some(0x8A),
+        0x00E9 => Some(0x82),
+        0x00EA => Some(0x88),
+        0x00EB => Some(0x89),
+        0x00EC => Some(0x8D),
+        0x00ED => Some(0xA1),
+        0x00EE => Some(0x8C),
+        0x00EF => Some(0x8B),
+        0x00F0 => Some(0xD0),
+        0x00F1 => Some(0xA4),
+        0x00F2 => Some(0x95),
+        0x00F3 => Some(0xA2),
+        0x00F4 => Some(0x93),
+        0x00F5 => Some(0xE4),
+        0x00F6 => Some(0x94),
+        0x00F7 => Some(0xF6),
+        0x00F8 => Some(0x9B),
+        0x00F9 => Some(0x97),
+        0x00FA => Some(0xA3),
+        0x00FB => Some(0x96),
+        0x00FC => Some(0x81),
+        0x00FD => Some(0xEC),
+        0x00FE => Some(0xE7),
+        0x00FF => Some(0x98),
+        0x0131 => Some(0xD5),
+        0x0192 => Some(0x9F),
+        0x2017 => Some(0xF2),
+        0x2500 => Some(0xC4),
+        0x2502 => Some(0xB3),
+        0x250C => Some(0xDA),
+        0x2510 => Some(0xBF),
+        0x2514 => Some(0xC0),
+        0x2518 => Some(0xD9),
+        0x251C => Some(0xC3),
+        0x2524 => Some(0xB4),
+        0x252C => Some(0xC2),
+        0x2534 => Some(0xC1),
+        0x253C => Some(0xC5),
+        0x2550 => Some(0xCD),
+        0x2551 => Some(0xBA),
+        0x2554 => Some(0xC9),
+        0x2557 => Some(0xBB),
+        0x255A => Some(0xC8),
+        0x255D => Some(0xBC),
+        0x2560 => Some(0xCC),
+        0x2563 => Some(0xB9),
+        0x2566 => Some(0xCB),
+        0x2569 => Some(0xCA),
+        0x256C => Some(0xCE),
+        0x2580 => Some(0xDF),
+        0x2584 => Some(0xDC),
+        0x2588 => Some(0xDB),
+        0x2591 => Some(0xB0),
+        0x2592 => Some(0xB1),
+        0x2593 => Some(0xB2),
+        0x25A0 => Some(0xFE),
+        _ => None,
+    }
+}
+
+fn encode_cp865_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xFF),
+        0x00A1 => Some(0xAD),
+        0x00A3 => Some(0x9C),
+        0x00A4 => Some(0xAF),
+        0x00AA => Some(0xA6),
+        0x00AB => Some(0xAE),
+        0x00AC => Some(0xAA),
+        0x00B0 => Some(0xF8),
+        0x00B1 => Some(0xF1),
+        0x00B2 => Some(0xFD),
+        0x00B5 => Some(0xE6),
+        0x00B7 => Some(0xFA),
+        0x00BA => Some(0xA7),
+        0x00BC => Some(0xAC),
+        0x00BD => Some(0xAB),
+        0x00BF => Some(0xA8),
+        0x00C4 => Some(0x8E),
+        0x00C5 => Some(0x8F),
+        0x00C6 => Some(0x92),
+        0x00C7 => Some(0x80),
+        0x00C9 => Some(0x90),
+        0x00D1 => Some(0xA5),
+        0x00D6 => Some(0x99),
+        0x00D8 => Some(0x9D),
+        0x00DC => Some(0x9A),
+        0x00DF => Some(0xE1),
+        0x00E0 => Some(0x85),
+        0x00E1 => Some(0xA0),
+        0x00E2 => Some(0x83),
+        0x00E4 => Some(0x84),
+        0x00E5 => Some(0x86),
+        0x00E6 => Some(0x91),
+        0x00E7 => Some(0x87),
+        0x00E8 => Some(0x8A),
+        0x00E9 => Some(0x82),
+        0x00EA => Some(0x88),
+        0x00EB => Some(0x89),
+        0x00EC => Some(0x8D),
+        0x00ED => Some(0xA1),
+        0x00EE => Some(0x8C),
+        0x00EF => Some(0x8B),
+        0x00F1 => Some(0xA4),
+        0x00F2 => Some(0x95),
+        0x00F3 => Some(0xA2),
+        0x00F4 => Some(0x93),
+        0x00F6 => Some(0x94),
+        0x00F7 => Some(0xF6),
+        0x00F8 => Some(0x9B),
+        0x00F9 => Some(0x97),
+        0x00FA => Some(0xA3),
+        0x00FB => Some(0x96),
+        0x00FC => Some(0x81),
+        0x00FF => Some(0x98),
+        0x0192 => Some(0x9F),
+        0x0393 => Some(0xE2),
+        0x0398 => Some(0xE9),
+        0x03A3 => Some(0xE4),
+        0x03A6 => Some(0xE8),
+        0x03A9 => Some(0xEA),
+        0x03B1 => Some(0xE0),
+        0x03B4 => Some(0xEB),
+        0x03B5 => Some(0xEE),
+        0x03C0 => Some(0xE3),
+        0x03C3 => Some(0xE5),
+        0x03C4 => Some(0xE7),
+        0x03C6 => Some(0xED),
+        0x207F => Some(0xFC),
+        0x20A7 => Some(0x9E),
+        0x2219 => Some(0xF9),
+        0x221A => Some(0xFB),
+        0x221E => Some(0xEC),
+        0x2229 => Some(0xEF),
+        0x2248 => Some(0xF7),
+        0x2261 => Some(0xF0),
+        0x2264 => Some(0xF3),
+        0x2265 => Some(0xF2),
+        0x2310 => Some(0xA9),
+        0x2320 => Some(0xF4),
+        0x2321 => Some(0xF5),
+        0x2500 => Some(0xC4),
+        0x2502 => Some(0xB3),
+        0x250C => Some(0xDA),
+        0x2510 => Some(0xBF),
+        0x2514 => Some(0xC0),
+        0x2518 => Some(0xD9),
+        0x251C => Some(0xC3),
+        0x2524 => Some(0xB4),
+        0x252C => Some(0xC2),
+        0x2534 => Some(0xC1),
+        0x253C => Some(0xC5),
+        0x2550 => Some(0xCD),
+        0x2551 => Some(0xBA),
+        0x2552 => Some(0xD5),
+        0x2553 => Some(0xD6),
+        0x2554 => Some(0xC9),
+        0x2555 => Some(0xB8),
+        0x2556 => Some(0xB7),
+        0x2557 => Some(0xBB),
+        0x2558 => Some(0xD4),
+        0x2559 => Some(0xD3),
+        0x255A => Some(0xC8),
+        0x255B => Some(0xBE),
+        0x255C => Some(0xBD),
+        0x255D => Some(0xBC),
+        0x255E => Some(0xC6),
+        0x255F => Some(0xC7),
+        0x2560 => Some(0xCC),
+        0x2561 => Some(0xB5),
+        0x2562 => Some(0xB6),
+        0x2563 => Some(0xB9),
+        0x2564 => Some(0xD1),
+        0x2565 => Some(0xD2),
+        0x2566 => Some(0xCB),
+        0x2567 => Some(0xCF),
+        0x2568 => Some(0xD0),
+        0x2569 => Some(0xCA),
+        0x256A => Some(0xD8),
+        0x256B => Some(0xD7),
+        0x256C => Some(0xCE),
+        0x2580 => Some(0xDF),
+        0x2584 => Some(0xDC),
+        0x2588 => Some(0xDB),
+        0x258C => Some(0xDD),
+        0x2590 => Some(0xDE),
+        0x2591 => Some(0xB0),
+        0x2592 => Some(0xB1),
+        0x2593 => Some(0xB2),
+        0x25A0 => Some(0xFE),
+        _ => None,
+    }
+}
+
+
+fn encode_cp874_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xA0),
+        0x0E01 => Some(0xA1),
+        0x0E02 => Some(0xA2),
+        0x0E03 => Some(0xA3),
+        0x0E04 => Some(0xA4),
+        0x0E05 => Some(0xA5),
+        0x0E06 => Some(0xA6),
+        0x0E07 => Some(0xA7),
+        0x0E08 => Some(0xA8),
+        0x0E09 => Some(0xA9),
+        0x0E0A => Some(0xAA),
+        0x0E0B => Some(0xAB),
+        0x0E0C => Some(0xAC),
+        0x0E0D => Some(0xAD),
+        0x0E0E => Some(0xAE),
+        0x0E0F => Some(0xAF),
+        0x0E10 => Some(0xB0),
+        0x0E11 => Some(0xB1),
+        0x0E12 => Some(0xB2),
+        0x0E13 => Some(0xB3),
+        0x0E14 => Some(0xB4),
+        0x0E15 => Some(0xB5),
+        0x0E16 => Some(0xB6),
+        0x0E17 => Some(0xB7),
+        0x0E18 => Some(0xB8),
+        0x0E19 => Some(0xB9),
+        0x0E1A => Some(0xBA),
+        0x0E1B => Some(0xBB),
+        0x0E1C => Some(0xBC),
+        0x0E1D => Some(0xBD),
+        0x0E1E => Some(0xBE),
+        0x0E1F => Some(0xBF),
+        0x0E20 => Some(0xC0),
+        0x0E21 => Some(0xC1),
+        0x0E22 => Some(0xC2),
+        0x0E23 => Some(0xC3),
+        0x0E24 => Some(0xC4),
+        0x0E25 => Some(0xC5),
+        0x0E26 => Some(0xC6),
+        0x0E27 => Some(0xC7),
+        0x0E28 => Some(0xC8),
+        0x0E29 => Some(0xC9),
+        0x0E2A => Some(0xCA),
+        0x0E2B => Some(0xCB),
+        0x0E2C => Some(0xCC),
+        0x0E2D => Some(0xCD),
+        0x0E2E => Some(0xCE),
+        0x0E2F => Some(0xCF),
+        0x0E30 => Some(0xD0),
+        0x0E31 => Some(0xD1),
+        0x0E32 => Some(0xD2),
+        0x0E33 => Some(0xD3),
+        0x0E34 => Some(0xD4),
+        0x0E35 => Some(0xD5),
+        0x0E36 => Some(0xD6),
+        0x0E37 => Some(0xD7),
+        0x0E38 => Some(0xD8),
+        0x0E39 => Some(0xD9),
+        0x0E3A => Some(0xDA),
+        0x0E3F => Some(0xDF),
+        0x0E40 => Some(0xE0),
+        0x0E41 => Some(0xE1),
+        0x0E42 => Some(0xE2),
+        0x0E43 => Some(0xE3),
+        0x0E44 => Some(0xE4),
+        0x0E45 => Some(0xE5),
+        0x0E46 => Some(0xE6),
+        0x0E47 => Some(0xE7),
+        0x0E48 => Some(0xE8),
+        0x0E49 => Some(0xE9),
+        0x0E4A => Some(0xEA),
+        0x0E4B => Some(0xEB),
+        0x0E4C => Some(0xEC),
+        0x0E4D => Some(0xED),
+        0x0E4E => Some(0xEE),
+        0x0E4F => Some(0xEF),
+        0x0E50 => Some(0xF0),
+        0x0E51 => Some(0xF1),
+        0x0E52 => Some(0xF2),
+        0x0E53 => Some(0xF3),
+        0x0E54 => Some(0xF4),
+        0x0E55 => Some(0xF5),
+        0x0E56 => Some(0xF6),
+        0x0E57 => Some(0xF7),
+        0x0E58 => Some(0xF8),
+        0x0E59 => Some(0xF9),
+        0x0E5A => Some(0xFA),
+        0x0E5B => Some(0xFB),
+        0x2013 => Some(0x96),
+        0x2014 => Some(0x97),
+        0x2018 => Some(0x91),
+        0x2019 => Some(0x92),
+        0x201C => Some(0x93),
+        0x201D => Some(0x94),
+        0x2022 => Some(0x95),
+        0x2026 => Some(0x85),
+        0x20AC => Some(0x80),
+        _ => None,
+    }
+}
+
+fn encode_cp1250_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xA0),
+        0x00A4 => Some(0xA4),
+        0x00A6 => Some(0xA6),
+        0x00A7 => Some(0xA7),
+        0x00A8 => Some(0xA8),
+        0x00A9 => Some(0xA9),
+        0x00AB => Some(0xAB),
+        0x00AC => Some(0xAC),
+        0x00AD => Some(0xAD),
+        0x00AE => Some(0xAE),
+        0x00B0 => Some(0xB0),
+        0x00B1 => Some(0xB1),
+        0x00B4 => Some(0xB4),
+        0x00B5 => Some(0xB5),
+        0x00B6 => Some(0xB6),
+        0x00B7 => Some(0xB7),
+        0x00B8 => Some(0xB8),
+        0x00BB => Some(0xBB),
+        0x00C1 => Some(0xC1),
+        0x00C2 => Some(0xC2),
+        0x00C4 => Some(0xC4),
+        0x00C7 => Some(0xC7),
+        0x00C9 => Some(0xC9),
+        0x00CB => Some(0xCB),
+        0x00CD => Some(0xCD),
+        0x00CE => Some(0xCE),
+        0x00D3 => Some(0xD3),
+        0x00D4 => Some(0xD4),
+        0x00D6 => Some(0xD6),
+        0x00D7 => Some(0xD7),
+        0x00DA => Some(0xDA),
+        0x00DC => Some(0xDC),
+        0x00DD => Some(0xDD),
+        0x00DF => Some(0xDF),
+        0x00E1 => Some(0xE1),
+        0x00E2 => Some(0xE2),
+        0x00E4 => Some(0xE4),
+        0x00E7 => Some(0xE7),
+        0x00E9 => Some(0xE9),
+        0x00EB => Some(0xEB),
+        0x00ED => Some(0xED),
+        0x00EE => Some(0xEE),
+        0x00F3 => Some(0xF3),
+        0x00F4 => Some(0xF4),
+        0x00F6 => Some(0xF6),
+        0x00F7 => Some(0xF7),
+        0x00FA => Some(0xFA),
+        0x00FC => Some(0xFC),
+        0x00FD => Some(0xFD),
+        0x0102 => Some(0xC3),
+        0x0103 => Some(0xE3),
+        0x0104 => Some(0xA5),
+        0x0105 => Some(0xB9),
+        0x0106 => Some(0xC6),
+        0x0107 => Some(0xE6),
+        0x010C => Some(0xC8),
+        0x010D => Some(0xE8),
+        0x010E => Some(0xCF),
+        0x010F => Some(0xEF),
+        0x0110 => Some(0xD0),
+        0x0111 => Some(0xF0),
+        0x0118 => Some(0xCA),
+        0x0119 => Some(0xEA),
+        0x011A => Some(0xCC),
+        0x011B => Some(0xEC),
+        0x0139 => Some(0xC5),
+        0x013A => Some(0xE5),
+        0x013D => Some(0xBC),
+        0x013E => Some(0xBE),
+        0x0141 => Some(0xA3),
+        0x0142 => Some(0xB3),
+        0x0143 => Some(0xD1),
+        0x0144 => Some(0xF1),
+        0x0147 => Some(0xD2),
+        0x0148 => Some(0xF2),
+        0x0150 => Some(0xD5),
+        0x0151 => Some(0xF5),
+        0x0154 => Some(0xC0),
+        0x0155 => Some(0xE0),
+        0x0158 => Some(0xD8),
+        0x0159 => Some(0xF8),
+        0x015A => Some(0x8C),
+        0x015B => Some(0x9C),
+        0x015E => Some(0xAA),
+        0x015F => Some(0xBA),
+        0x0160 => Some(0x8A),
+        0x0161 => Some(0x9A),
+        0x0162 => Some(0xDE),
+        0x0163 => Some(0xFE),
+        0x0164 => Some(0x8D),
+        0x0165 => Some(0x9D),
+        0x016E => Some(0xD9),
+        0x016F => Some(0xF9),
+        0x0170 => Some(0xDB),
+        0x0171 => Some(0xFB),
+        0x0179 => Some(0x8F),
+        0x017A => Some(0x9F),
+        0x017B => Some(0xAF),
+        0x017C => Some(0xBF),
+        0x017D => Some(0x8E),
+        0x017E => Some(0x9E),
+        0x02C7 => Some(0xA1),
+        0x02D8 => Some(0xA2),
+        0x02D9 => Some(0xFF),
+        0x02DB => Some(0xB2),
+        0x02DD => Some(0xBD),
+        0x2013 => Some(0x96),
+        0x2014 => Some(0x97),
+        0x2018 => Some(0x91),
+        0x2019 => Some(0x92),
+        0x201A => Some(0x82),
+        0x201C => Some(0x93),
+        0x201D => Some(0x94),
+        0x201E => Some(0x84),
+        0x2020 => Some(0x86),
+        0x2021 => Some(0x87),
+        0x2022 => Some(0x95),
+        0x2026 => Some(0x85),
+        0x2030 => Some(0x89),
+        0x2039 => Some(0x8B),
+        0x203A => Some(0x9B),
+        0x20AC => Some(0x80),
+        0x2122 => Some(0x99),
+        _ => None,
+    }
+}
+
+fn encode_cp1251_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xA0),
+        0x00A4 => Some(0xA4),
+        0x00A6 => Some(0xA6),
+        0x00A7 => Some(0xA7),
+        0x00A9 => Some(0xA9),
+        0x00AB => Some(0xAB),
+        0x00AC => Some(0xAC),
+        0x00AD => Some(0xAD),
+        0x00AE => Some(0xAE),
+        0x00B0 => Some(0xB0),
+        0x00B1 => Some(0xB1),
+        0x00B5 => Some(0xB5),
+        0x00B6 => Some(0xB6),
+        0x00B7 => Some(0xB7),
+        0x00BB => Some(0xBB),
+        0x0401 => Some(0xA8),
+        0x0402 => Some(0x80),
+        0x0403 => Some(0x81),
+        0x0404 => Some(0xAA),
+        0x0405 => Some(0xBD),
+        0x0406 => Some(0xB2),
+        0x0407 => Some(0xAF),
+        0x0408 => Some(0xA3),
+        0x0409 => Some(0x8A),
+        0x040A => Some(0x8C),
+        0x040B => Some(0x8E),
+        0x040C => Some(0x8D),
+        0x040E => Some(0xA1),
+        0x040F => Some(0x8F),
+        0x0410 => Some(0xC0),
+        0x0411 => Some(0xC1),
+        0x0412 => Some(0xC2),
+        0x0413 => Some(0xC3),
+        0x0414 => Some(0xC4),
+        0x0415 => Some(0xC5),
+        0x0416 => Some(0xC6),
+        0x0417 => Some(0xC7),
+        0x0418 => Some(0xC8),
+        0x0419 => Some(0xC9),
+        0x041A => Some(0xCA),
+        0x041B => Some(0xCB),
+        0x041C => Some(0xCC),
+        0x041D => Some(0xCD),
+        0x041E => Some(0xCE),
+        0x041F => Some(0xCF),
+        0x0420 => Some(0xD0),
+        0x0421 => Some(0xD1),
+        0x0422 => Some(0xD2),
+        0x0423 => Some(0xD3),
+        0x0424 => Some(0xD4),
+        0x0425 => Some(0xD5),
+        0x0426 => Some(0xD6),
+        0x0427 => Some(0xD7),
+        0x0428 => Some(0xD8),
+        0x0429 => Some(0xD9),
+        0x042A => Some(0xDA),
+        0x042B => Some(0xDB),
+        0x042C => Some(0xDC),
+        0x042D => Some(0xDD),
+        0x042E => Some(0xDE),
+        0x042F => Some(0xDF),
+        0x0430 => Some(0xE0),
+        0x0431 => Some(0xE1),
+        0x0432 => Some(0xE2),
+        0x0433 => Some(0xE3),
+        0x0434 => Some(0xE4),
+        0x0435 => Some(0xE5),
+        0x0436 => Some(0xE6),
+        0x0437 => Some(0xE7),
+        0x0438 => Some(0xE8),
+        0x0439 => Some(0xE9),
+        0x043A => Some(0xEA),
+        0x043B => Some(0xEB),
+        0x043C => Some(0xEC),
+        0x043D => Some(0xED),
+        0x043E => Some(0xEE),
+        0x043F => Some(0xEF),
+        0x0440 => Some(0xF0),
+        0x0441 => Some(0xF1),
+        0x0442 => Some(0xF2),
+        0x0443 => Some(0xF3),
+        0x0444 => Some(0xF4),
+        0x0445 => Some(0xF5),
+        0x0446 => Some(0xF6),
+        0x0447 => Some(0xF7),
+        0x0448 => Some(0xF8),
+        0x0449 => Some(0xF9),
+        0x044A => Some(0xFA),
+        0x044B => Some(0xFB),
+        0x044C => Some(0xFC),
+        0x044D => Some(0xFD),
+        0x044E => Some(0xFE),
+        0x044F => Some(0xFF),
+        0x0451 => Some(0xB8),
+        0x0452 => Some(0x90),
+        0x0453 => Some(0x83),
+        0x0454 => Some(0xBA),
+        0x0455 => Some(0xBE),
+        0x0456 => Some(0xB3),
+        0x0457 => Some(0xBF),
+        0x0458 => Some(0xBC),
+        0x0459 => Some(0x9A),
+        0x045A => Some(0x9C),
+        0x045B => Some(0x9E),
+        0x045C => Some(0x9D),
+        0x045E => Some(0xA2),
+        0x045F => Some(0x9F),
+        0x0490 => Some(0xA5),
+        0x0491 => Some(0xB4),
+        0x2013 => Some(0x96),
+        0x2014 => Some(0x97),
+        0x2018 => Some(0x91),
+        0x2019 => Some(0x92),
+        0x201A => Some(0x82),
+        0x201C => Some(0x93),
+        0x201D => Some(0x94),
+        0x201E => Some(0x84),
+        0x2020 => Some(0x86),
+        0x2021 => Some(0x87),
+        0x2022 => Some(0x95),
+        0x2026 => Some(0x85),
+        0x2030 => Some(0x89),
+        0x2039 => Some(0x8B),
+        0x203A => Some(0x9B),
+        0x20AC => Some(0x88),
+        0x2116 => Some(0xB9),
+        0x2122 => Some(0x99),
+        _ => None,
+    }
+}
+
+fn encode_cp866_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xFF),
+        0x00A4 => Some(0xFD),
+        0x00B0 => Some(0xF8),
+        0x00B7 => Some(0xFA),
+        0x0401 => Some(0xF0),
+        0x0404 => Some(0xF2),
+        0x0407 => Some(0xF4),
+        0x040E => Some(0xF6),
+        0x0410 => Some(0x80),
+        0x0411 => Some(0x81),
+        0x0412 => Some(0x82),
+        0x0413 => Some(0x83),
+        0x0414 => Some(0x84),
+        0x0415 => Some(0x85),
+        0x0416 => Some(0x86),
+        0x0417 => Some(0x87),
+        0x0418 => Some(0x88),
+        0x0419 => Some(0x89),
+        0x041A => Some(0x8A),
+        0x041B => Some(0x8B),
+        0x041C => Some(0x8C),
+        0x041D => Some(0x8D),
+        0x041E => Some(0x8E),
+        0x041F => Some(0x8F),
+        0x0420 => Some(0x90),
+        0x0421 => Some(0x91),
+        0x0422 => Some(0x92),
+        0x0423 => Some(0x93),
+        0x0424 => Some(0x94),
+        0x0425 => Some(0x95),
+        0x0426 => Some(0x96),
+        0x0427 => Some(0x97),
+        0x0428 => Some(0x98),
+        0x0429 => Some(0x99),
+        0x042A => Some(0x9A),
+        0x042B => Some(0x9B),
+        0x042C => Some(0x9C),
+        0x042D => Some(0x9D),
+        0x042E => Some(0x9E),
+        0x042F => Some(0x9F),
+        0x0430 => Some(0xA0),
+        0x0431 => Some(0xA1),
+        0x0432 => Some(0xA2),
+        0x0433 => Some(0xA3),
+        0x0434 => Some(0xA4),
+        0x0435 => Some(0xA5),
+        0x0436 => Some(0xA6),
+        0x0437 => Some(0xA7),
+        0x0438 => Some(0xA8),
+        0x0439 => Some(0xA9),
+        0x043A => Some(0xAA),
+        0x043B => Some(0xAB),
+        0x043C => Some(0xAC),
+        0x043D => Some(0xAD),
+        0x043E => Some(0xAE),
+        0x043F => Some(0xAF),
+        0x0440 => Some(0xE0),
+        0x0441 => Some(0xE1),
+        0x0442 => Some(0xE2),
+        0x0443 => Some(0xE3),
+        0x0444 => Some(0xE4),
+        0x0445 => Some(0xE5),
+        0x0446 => Some(0xE6),
+        0x0447 => Some(0xE7),
+        0x0448 => Some(0xE8),
+        0x0449 => Some(0xE9),
+        0x044A => Some(0xEA),
+        0x044B => Some(0xEB),
+        0x044C => Some(0xEC),
+        0x044D => Some(0xED),
+        0x044E => Some(0xEE),
+        0x044F => Some(0xEF),
+        0x0451 => Some(0xF1),
+        0x0454 => Some(0xF3),
+        0x0457 => Some(0xF5),
+        0x045E => Some(0xF7),
+        0x2116 => Some(0xFC),
+        0x2219 => Some(0xF9),
+        0x221A => Some(0xFB),
+        0x2500 => Some(0xC4),
+        0x2502 => Some(0xB3),
+        0x250C => Some(0xDA),
+        0x2510 => Some(0xBF),
+        0x2514 => Some(0xC0),
+        0x2518 => Some(0xD9),
+        0x251C => Some(0xC3),
+        0x2524 => Some(0xB4),
+        0x252C => Some(0xC2),
+        0x2534 => Some(0xC1),
+        0x253C => Some(0xC5),
+        0x2550 => Some(0xCD),
+        0x2551 => Some(0xBA),
+        0x2552 => Some(0xD5),
+        0x2553 => Some(0xD6),
+        0x2554 => Some(0xC9),
+        0x2555 => Some(0xB8),
+        0x2556 => Some(0xB7),
+        0x2557 => Some(0xBB),
+        0x2558 => Some(0xD4),
+        0x2559 => Some(0xD3),
+        0x255A => Some(0xC8),
+        0x255B => Some(0xBE),
+        0x255C => Some(0xBD),
+        0x255D => Some(0xBC),
+        0x255E => Some(0xC6),
+        0x255F => Some(0xC7),
+        0x2560 => Some(0xCC),
+        0x2561 => Some(0xB5),
+        0x2562 => Some(0xB6),
+        0x2563 => Some(0xB9),
+        0x2564 => Some(0xD1),
+        0x2565 => Some(0xD2),
+        0x2566 => Some(0xCB),
+        0x2567 => Some(0xCF),
+        0x2568 => Some(0xD0),
+        0x2569 => Some(0xCA),
+        0x256A => Some(0xD8),
+        0x256B => Some(0xD7),
+        0x256C => Some(0xCE),
+        0x2580 => Some(0xDF),
+        0x2584 => Some(0xDC),
+        0x2588 => Some(0xDB),
+        0x258C => Some(0xDD),
+        0x2590 => Some(0xDE),
+        0x2591 => Some(0xB0),
+        0x2592 => Some(0xB1),
+        0x2593 => Some(0xB2),
+        0x25A0 => Some(0xFE),
+        _ => None,
+    }
+}
+
+
+
+
+fn encode_cp860_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xFF),
+        0x00A1 => Some(0xAD),
+        0x00A2 => Some(0x9B),
+        0x00A3 => Some(0x9C),
+        0x00AA => Some(0xA6),
+        0x00AB => Some(0xAE),
+        0x00AC => Some(0xAA),
+        0x00B0 => Some(0xF8),
+        0x00B1 => Some(0xF1),
+        0x00B2 => Some(0xFD),
+        0x00B5 => Some(0xE6),
+        0x00B7 => Some(0xFA),
+        0x00BA => Some(0xA7),
+        0x00BB => Some(0xAF),
+        0x00BC => Some(0xAC),
+        0x00BD => Some(0xAB),
+        0x00BF => Some(0xA8),
+        0x00C0 => Some(0x91),
+        0x00C1 => Some(0x86),
+        0x00C2 => Some(0x8F),
+        0x00C3 => Some(0x8E),
+        0x00C7 => Some(0x80),
+        0x00C8 => Some(0x92),
+        0x00C9 => Some(0x90),
+        0x00CA => Some(0x89),
+        0x00CC => Some(0x98),
+        0x00CD => Some(0x8B),
+        0x00D1 => Some(0xA5),
+        0x00D2 => Some(0xA9),
+        0x00D3 => Some(0x9F),
+        0x00D4 => Some(0x8C),
+        0x00D5 => Some(0x99),
+        0x00D9 => Some(0x9D),
+        0x00DA => Some(0x96),
+        0x00DC => Some(0x9A),
+        0x00DF => Some(0xE1),
+        0x00E0 => Some(0x85),
+        0x00E1 => Some(0xA0),
+        0x00E2 => Some(0x83),
+        0x00E3 => Some(0x84),
+        0x00E7 => Some(0x87),
+        0x00E8 => Some(0x8A),
+        0x00E9 => Some(0x82),
+        0x00EA => Some(0x88),
+        0x00EC => Some(0x8D),
+        0x00ED => Some(0xA1),
+        0x00F1 => Some(0xA4),
+        0x00F2 => Some(0x95),
+        0x00F3 => Some(0xA2),
+        0x00F4 => Some(0x93),
+        0x00F5 => Some(0x94),
+        0x00F7 => Some(0xF6),
+        0x00F9 => Some(0x97),
+        0x00FA => Some(0xA3),
+        0x00FC => Some(0x81),
+        0x0393 => Some(0xE2),
+        0x0398 => Some(0xE9),
+        0x03A3 => Some(0xE4),
+        0x03A6 => Some(0xE8),
+        0x03A9 => Some(0xEA),
+        0x03B1 => Some(0xE0),
+        0x03B4 => Some(0xEB),
+        0x03B5 => Some(0xEE),
+        0x03C0 => Some(0xE3),
+        0x03C3 => Some(0xE5),
+        0x03C4 => Some(0xE7),
+        0x03C6 => Some(0xED),
+        0x207F => Some(0xFC),
+        0x20A7 => Some(0x9E),
+        0x2219 => Some(0xF9),
+        0x221A => Some(0xFB),
+        0x221E => Some(0xEC),
+        0x2229 => Some(0xEF),
+        0x2248 => Some(0xF7),
+        0x2261 => Some(0xF0),
+        0x2264 => Some(0xF3),
+        0x2265 => Some(0xF2),
+        0x2320 => Some(0xF4),
+        0x2321 => Some(0xF5),
+        0x2500 => Some(0xC4),
+        0x2502 => Some(0xB3),
+        0x250C => Some(0xDA),
+        0x2510 => Some(0xBF),
+        0x2514 => Some(0xC0),
+        0x2518 => Some(0xD9),
+        0x251C => Some(0xC3),
+        0x2524 => Some(0xB4),
+        0x252C => Some(0xC2),
+        0x2534 => Some(0xC1),
+        0x253C => Some(0xC5),
+        0x2550 => Some(0xCD),
+        0x2551 => Some(0xBA),
+        0x2552 => Some(0xD5),
+        0x2553 => Some(0xD6),
+        0x2554 => Some(0xC9),
+        0x2555 => Some(0xB8),
+        0x2556 => Some(0xB7),
+        0x2557 => Some(0xBB),
+        0x2558 => Some(0xD4),
+        0x2559 => Some(0xD3),
+        0x255A => Some(0xC8),
+        0x255B => Some(0xBE),
+        0x255C => Some(0xBD),
+        0x255D => Some(0xBC),
+        0x255E => Some(0xC6),
+        0x255F => Some(0xC7),
+        0x2560 => Some(0xCC),
+        0x2561 => Some(0xB5),
+        0x2562 => Some(0xB6),
+        0x2563 => Some(0xB9),
+        0x2564 => Some(0xD1),
+        0x2565 => Some(0xD2),
+        0x2566 => Some(0xCB),
+        0x2567 => Some(0xCF),
+        0x2568 => Some(0xD0),
+        0x2569 => Some(0xCA),
+        0x256A => Some(0xD8),
+        0x256B => Some(0xD7),
+        0x256C => Some(0xCE),
+        0x2580 => Some(0xDF),
+        0x2584 => Some(0xDC),
+        0x2588 => Some(0xDB),
+        0x258C => Some(0xDD),
+        0x2590 => Some(0xDE),
+        0x2591 => Some(0xB0),
+        0x2592 => Some(0xB1),
+        0x2593 => Some(0xB2),
+        0x25A0 => Some(0xFE),
+        _ => None,
+    }
+}
+fn encode_cp862_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xFF),
+        0x00A1 => Some(0xAD),
+        0x00A2 => Some(0x9B),
+        0x00A3 => Some(0x9C),
+        0x00A5 => Some(0x9D),
+        0x00AA => Some(0xA6),
+        0x00AB => Some(0xAE),
+        0x00AC => Some(0xAA),
+        0x00B0 => Some(0xF8),
+        0x00B1 => Some(0xF1),
+        0x00B2 => Some(0xFD),
+        0x00B5 => Some(0xE6),
+        0x00B7 => Some(0xFA),
+        0x00BA => Some(0xA7),
+        0x00BB => Some(0xAF),
+        0x00BC => Some(0xAC),
+        0x00BD => Some(0xAB),
+        0x00BF => Some(0xA8),
+        0x00D1 => Some(0xA5),
+        0x00DF => Some(0xE1),
+        0x00E1 => Some(0xA0),
+        0x00ED => Some(0xA1),
+        0x00F1 => Some(0xA4),
+        0x00F3 => Some(0xA2),
+        0x00F7 => Some(0xF6),
+        0x00FA => Some(0xA3),
+        0x0192 => Some(0x9F),
+        0x0393 => Some(0xE2),
+        0x0398 => Some(0xE9),
+        0x03A3 => Some(0xE4),
+        0x03A6 => Some(0xE8),
+        0x03A9 => Some(0xEA),
+        0x03B1 => Some(0xE0),
+        0x03B4 => Some(0xEB),
+        0x03B5 => Some(0xEE),
+        0x03C0 => Some(0xE3),
+        0x03C3 => Some(0xE5),
+        0x03C4 => Some(0xE7),
+        0x03C6 => Some(0xED),
+        0x05D0 => Some(0x80),
+        0x05D1 => Some(0x81),
+        0x05D2 => Some(0x82),
+        0x05D3 => Some(0x83),
+        0x05D4 => Some(0x84),
+        0x05D5 => Some(0x85),
+        0x05D6 => Some(0x86),
+        0x05D7 => Some(0x87),
+        0x05D8 => Some(0x88),
+        0x05D9 => Some(0x89),
+        0x05DA => Some(0x8A),
+        0x05DB => Some(0x8B),
+        0x05DC => Some(0x8C),
+        0x05DD => Some(0x8D),
+        0x05DE => Some(0x8E),
+        0x05DF => Some(0x8F),
+        0x05E0 => Some(0x90),
+        0x05E1 => Some(0x91),
+        0x05E2 => Some(0x92),
+        0x05E3 => Some(0x93),
+        0x05E4 => Some(0x94),
+        0x05E5 => Some(0x95),
+        0x05E6 => Some(0x96),
+        0x05E7 => Some(0x97),
+        0x05E8 => Some(0x98),
+        0x05E9 => Some(0x99),
+        0x05EA => Some(0x9A),
+        0x207F => Some(0xFC),
+        0x20A7 => Some(0x9E),
+        0x2219 => Some(0xF9),
+        0x221A => Some(0xFB),
+        0x221E => Some(0xEC),
+        0x2229 => Some(0xEF),
+        0x2248 => Some(0xF7),
+        0x2261 => Some(0xF0),
+        0x2264 => Some(0xF3),
+        0x2265 => Some(0xF2),
+        0x2310 => Some(0xA9),
+        0x2320 => Some(0xF4),
+        0x2321 => Some(0xF5),
+        0x2500 => Some(0xC4),
+        0x2502 => Some(0xB3),
+        0x250C => Some(0xDA),
+        0x2510 => Some(0xBF),
+        0x2514 => Some(0xC0),
+        0x2518 => Some(0xD9),
+        0x251C => Some(0xC3),
+        0x2524 => Some(0xB4),
+        0x252C => Some(0xC2),
+        0x2534 => Some(0xC1),
+        0x253C => Some(0xC5),
+        0x2550 => Some(0xCD),
+        0x2551 => Some(0xBA),
+        0x2552 => Some(0xD5),
+        0x2553 => Some(0xD6),
+        0x2554 => Some(0xC9),
+        0x2555 => Some(0xB8),
+        0x2556 => Some(0xB7),
+        0x2557 => Some(0xBB),
+        0x2558 => Some(0xD4),
+        0x2559 => Some(0xD3),
+        0x255A => Some(0xC8),
+        0x255B => Some(0xBE),
+        0x255C => Some(0xBD),
+        0x255D => Some(0xBC),
+        0x255E => Some(0xC6),
+        0x255F => Some(0xC7),
+        0x2560 => Some(0xCC),
+        0x2561 => Some(0xB5),
+        0x2562 => Some(0xB6),
+        0x2563 => Some(0xB9),
+        0x2564 => Some(0xD1),
+        0x2565 => Some(0xD2),
+        0x2566 => Some(0xCB),
+        0x2567 => Some(0xCF),
+        0x2568 => Some(0xD0),
+        0x2569 => Some(0xCA),
+        0x256A => Some(0xD8),
+        0x256B => Some(0xD7),
+        0x256C => Some(0xCE),
+        0x2580 => Some(0xDF),
+        0x2584 => Some(0xDC),
+        0x2588 => Some(0xDB),
+        0x258C => Some(0xDD),
+        0x2590 => Some(0xDE),
+        0x2591 => Some(0xB0),
+        0x2592 => Some(0xB1),
+        0x2593 => Some(0xB2),
+        0x25A0 => Some(0xFE),
+        _ => None,
+    }
+}
+fn encode_cp863_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xFF),
+        0x00A2 => Some(0x9B),
+        0x00A3 => Some(0x9C),
+        0x00A4 => Some(0x98),
+        0x00A6 => Some(0xA0),
+        0x00A7 => Some(0x8F),
+        0x00A8 => Some(0xA4),
+        0x00AB => Some(0xAE),
+        0x00AC => Some(0xAA),
+        0x00AF => Some(0xA7),
+        0x00B0 => Some(0xF8),
+        0x00B1 => Some(0xF1),
+        0x00B2 => Some(0xFD),
+        0x00B3 => Some(0xA6),
+        0x00B4 => Some(0xA1),
+        0x00B5 => Some(0xE6),
+        0x00B6 => Some(0x86),
+        0x00B7 => Some(0xFA),
+        0x00B8 => Some(0xA5),
+        0x00BB => Some(0xAF),
+        0x00BC => Some(0xAC),
+        0x00BD => Some(0xAB),
+        0x00BE => Some(0xAD),
+        0x00C0 => Some(0x8E),
+        0x00C2 => Some(0x84),
+        0x00C7 => Some(0x80),
+        0x00C8 => Some(0x91),
+        0x00C9 => Some(0x90),
+        0x00CA => Some(0x92),
+        0x00CB => Some(0x94),
+        0x00CE => Some(0xA8),
+        0x00CF => Some(0x95),
+        0x00D4 => Some(0x99),
+        0x00D9 => Some(0x9D),
+        0x00DB => Some(0x9E),
+        0x00DC => Some(0x9A),
+        0x00DF => Some(0xE1),
+        0x00E0 => Some(0x85),
+        0x00E2 => Some(0x83),
+        0x00E7 => Some(0x87),
+        0x00E8 => Some(0x8A),
+        0x00E9 => Some(0x82),
+        0x00EA => Some(0x88),
+        0x00EB => Some(0x89),
+        0x00EE => Some(0x8C),
+        0x00EF => Some(0x8B),
+        0x00F3 => Some(0xA2),
+        0x00F4 => Some(0x93),
+        0x00F7 => Some(0xF6),
+        0x00F9 => Some(0x97),
+        0x00FA => Some(0xA3),
+        0x00FB => Some(0x96),
+        0x00FC => Some(0x81),
+        0x0192 => Some(0x9F),
+        0x0393 => Some(0xE2),
+        0x0398 => Some(0xE9),
+        0x03A3 => Some(0xE4),
+        0x03A6 => Some(0xE8),
+        0x03A9 => Some(0xEA),
+        0x03B1 => Some(0xE0),
+        0x03B4 => Some(0xEB),
+        0x03B5 => Some(0xEE),
+        0x03C0 => Some(0xE3),
+        0x03C3 => Some(0xE5),
+        0x03C4 => Some(0xE7),
+        0x03C6 => Some(0xED),
+        0x2017 => Some(0x8D),
+        0x207F => Some(0xFC),
+        0x2219 => Some(0xF9),
+        0x221A => Some(0xFB),
+        0x221E => Some(0xEC),
+        0x2229 => Some(0xEF),
+        0x2248 => Some(0xF7),
+        0x2261 => Some(0xF0),
+        0x2264 => Some(0xF3),
+        0x2265 => Some(0xF2),
+        0x2310 => Some(0xA9),
+        0x2320 => Some(0xF4),
+        0x2321 => Some(0xF5),
+        0x2500 => Some(0xC4),
+        0x2502 => Some(0xB3),
+        0x250C => Some(0xDA),
+        0x2510 => Some(0xBF),
+        0x2514 => Some(0xC0),
+        0x2518 => Some(0xD9),
+        0x251C => Some(0xC3),
+        0x2524 => Some(0xB4),
+        0x252C => Some(0xC2),
+        0x2534 => Some(0xC1),
+        0x253C => Some(0xC5),
+        0x2550 => Some(0xCD),
+        0x2551 => Some(0xBA),
+        0x2552 => Some(0xD5),
+        0x2553 => Some(0xD6),
+        0x2554 => Some(0xC9),
+        0x2555 => Some(0xB8),
+        0x2556 => Some(0xB7),
+        0x2557 => Some(0xBB),
+        0x2558 => Some(0xD4),
+        0x2559 => Some(0xD3),
+        0x255A => Some(0xC8),
+        0x255B => Some(0xBE),
+        0x255C => Some(0xBD),
+        0x255D => Some(0xBC),
+        0x255E => Some(0xC6),
+        0x255F => Some(0xC7),
+        0x2560 => Some(0xCC),
+        0x2561 => Some(0xB5),
+        0x2562 => Some(0xB6),
+        0x2563 => Some(0xB9),
+        0x2564 => Some(0xD1),
+        0x2565 => Some(0xD2),
+        0x2566 => Some(0xCB),
+        0x2567 => Some(0xCF),
+        0x2568 => Some(0xD0),
+        0x2569 => Some(0xCA),
+        0x256A => Some(0xD8),
+        0x256B => Some(0xD7),
+        0x256C => Some(0xCE),
+        0x2580 => Some(0xDF),
+        0x2584 => Some(0xDC),
+        0x2588 => Some(0xDB),
+        0x258C => Some(0xDD),
+        0x2590 => Some(0xDE),
+        0x2591 => Some(0xB0),
+        0x2592 => Some(0xB1),
+        0x2593 => Some(0xB2),
+        0x25A0 => Some(0xFE),
+        _ => None,
+    }
+}
+fn encode_cp1253_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xA0),
+        0x00A3 => Some(0xA3),
+        0x00A4 => Some(0xA4),
+        0x00A5 => Some(0xA5),
+        0x00A6 => Some(0xA6),
+        0x00A7 => Some(0xA7),
+        0x00A8 => Some(0xA8),
+        0x00A9 => Some(0xA9),
+        0x00AB => Some(0xAB),
+        0x00AC => Some(0xAC),
+        0x00AD => Some(0xAD),
+        0x00AE => Some(0xAE),
+        0x00B0 => Some(0xB0),
+        0x00B1 => Some(0xB1),
+        0x00B2 => Some(0xB2),
+        0x00B3 => Some(0xB3),
+        0x00B5 => Some(0xB5),
+        0x00B6 => Some(0xB6),
+        0x00B7 => Some(0xB7),
+        0x00BB => Some(0xBB),
+        0x00BD => Some(0xBD),
+        0x0192 => Some(0x83),
+        0x0384 => Some(0xB4),
+        0x0385 => Some(0xA1),
+        0x0386 => Some(0xA2),
+        0x0388 => Some(0xB8),
+        0x0389 => Some(0xB9),
+        0x038A => Some(0xBA),
+        0x038C => Some(0xBC),
+        0x038E => Some(0xBE),
+        0x038F => Some(0xBF),
+        0x0390 => Some(0xC0),
+        0x0391 => Some(0xC1),
+        0x0392 => Some(0xC2),
+        0x0393 => Some(0xC3),
+        0x0394 => Some(0xC4),
+        0x0395 => Some(0xC5),
+        0x0396 => Some(0xC6),
+        0x0397 => Some(0xC7),
+        0x0398 => Some(0xC8),
+        0x0399 => Some(0xC9),
+        0x039A => Some(0xCA),
+        0x039B => Some(0xCB),
+        0x039C => Some(0xCC),
+        0x039D => Some(0xCD),
+        0x039E => Some(0xCE),
+        0x039F => Some(0xCF),
+        0x03A0 => Some(0xD0),
+        0x03A1 => Some(0xD1),
+        0x03A3 => Some(0xD3),
+        0x03A4 => Some(0xD4),
+        0x03A5 => Some(0xD5),
+        0x03A6 => Some(0xD6),
+        0x03A7 => Some(0xD7),
+        0x03A8 => Some(0xD8),
+        0x03A9 => Some(0xD9),
+        0x03AA => Some(0xDA),
+        0x03AB => Some(0xDB),
+        0x03AC => Some(0xDC),
+        0x03AD => Some(0xDD),
+        0x03AE => Some(0xDE),
+        0x03AF => Some(0xDF),
+        0x03B0 => Some(0xE0),
+        0x03B1 => Some(0xE1),
+        0x03B2 => Some(0xE2),
+        0x03B3 => Some(0xE3),
+        0x03B4 => Some(0xE4),
+        0x03B5 => Some(0xE5),
+        0x03B6 => Some(0xE6),
+        0x03B7 => Some(0xE7),
+        0x03B8 => Some(0xE8),
+        0x03B9 => Some(0xE9),
+        0x03BA => Some(0xEA),
+        0x03BB => Some(0xEB),
+        0x03BC => Some(0xEC),
+        0x03BD => Some(0xED),
+        0x03BE => Some(0xEE),
+        0x03BF => Some(0xEF),
+        0x03C0 => Some(0xF0),
+        0x03C1 => Some(0xF1),
+        0x03C2 => Some(0xF2),
+        0x03C3 => Some(0xF3),
+        0x03C4 => Some(0xF4),
+        0x03C5 => Some(0xF5),
+        0x03C6 => Some(0xF6),
+        0x03C7 => Some(0xF7),
+        0x03C8 => Some(0xF8),
+        0x03C9 => Some(0xF9),
+        0x03CA => Some(0xFA),
+        0x03CB => Some(0xFB),
+        0x03CC => Some(0xFC),
+        0x03CD => Some(0xFD),
+        0x03CE => Some(0xFE),
+        0x2013 => Some(0x96),
+        0x2014 => Some(0x97),
+        0x2015 => Some(0xAF),
+        0x2018 => Some(0x91),
+        0x2019 => Some(0x92),
+        0x201A => Some(0x82),
+        0x201C => Some(0x93),
+        0x201D => Some(0x94),
+        0x201E => Some(0x84),
+        0x2020 => Some(0x86),
+        0x2021 => Some(0x87),
+        0x2022 => Some(0x95),
+        0x2026 => Some(0x85),
+        0x2030 => Some(0x89),
+        0x2039 => Some(0x8B),
+        0x203A => Some(0x9B),
+        0x20AC => Some(0x80),
+        0x2122 => Some(0x99),
+        _ => None,
+    }
+}
+fn encode_cp1254_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xA0),
+        0x00A1 => Some(0xA1),
+        0x00A2 => Some(0xA2),
+        0x00A3 => Some(0xA3),
+        0x00A4 => Some(0xA4),
+        0x00A5 => Some(0xA5),
+        0x00A6 => Some(0xA6),
+        0x00A7 => Some(0xA7),
+        0x00A8 => Some(0xA8),
+        0x00A9 => Some(0xA9),
+        0x00AA => Some(0xAA),
+        0x00AB => Some(0xAB),
+        0x00AC => Some(0xAC),
+        0x00AD => Some(0xAD),
+        0x00AE => Some(0xAE),
+        0x00AF => Some(0xAF),
+        0x00B0 => Some(0xB0),
+        0x00B1 => Some(0xB1),
+        0x00B2 => Some(0xB2),
+        0x00B3 => Some(0xB3),
+        0x00B4 => Some(0xB4),
+        0x00B5 => Some(0xB5),
+        0x00B6 => Some(0xB6),
+        0x00B7 => Some(0xB7),
+        0x00B8 => Some(0xB8),
+        0x00B9 => Some(0xB9),
+        0x00BA => Some(0xBA),
+        0x00BB => Some(0xBB),
+        0x00BC => Some(0xBC),
+        0x00BD => Some(0xBD),
+        0x00BE => Some(0xBE),
+        0x00BF => Some(0xBF),
+        0x00C0 => Some(0xC0),
+        0x00C1 => Some(0xC1),
+        0x00C2 => Some(0xC2),
+        0x00C3 => Some(0xC3),
+        0x00C4 => Some(0xC4),
+        0x00C5 => Some(0xC5),
+        0x00C6 => Some(0xC6),
+        0x00C7 => Some(0xC7),
+        0x00C8 => Some(0xC8),
+        0x00C9 => Some(0xC9),
+        0x00CA => Some(0xCA),
+        0x00CB => Some(0xCB),
+        0x00CC => Some(0xCC),
+        0x00CD => Some(0xCD),
+        0x00CE => Some(0xCE),
+        0x00CF => Some(0xCF),
+        0x00D1 => Some(0xD1),
+        0x00D2 => Some(0xD2),
+        0x00D3 => Some(0xD3),
+        0x00D4 => Some(0xD4),
+        0x00D5 => Some(0xD5),
+        0x00D6 => Some(0xD6),
+        0x00D7 => Some(0xD7),
+        0x00D8 => Some(0xD8),
+        0x00D9 => Some(0xD9),
+        0x00DA => Some(0xDA),
+        0x00DB => Some(0xDB),
+        0x00DC => Some(0xDC),
+        0x00DF => Some(0xDF),
+        0x00E0 => Some(0xE0),
+        0x00E1 => Some(0xE1),
+        0x00E2 => Some(0xE2),
+        0x00E3 => Some(0xE3),
+        0x00E4 => Some(0xE4),
+        0x00E5 => Some(0xE5),
+        0x00E6 => Some(0xE6),
+        0x00E7 => Some(0xE7),
+        0x00E8 => Some(0xE8),
+        0x00E9 => Some(0xE9),
+        0x00EA => Some(0xEA),
+        0x00EB => Some(0xEB),
+        0x00EC => Some(0xEC),
+        0x00ED => Some(0xED),
+        0x00EE => Some(0xEE),
+        0x00EF => Some(0xEF),
+        0x00F1 => Some(0xF1),
+        0x00F2 => Some(0xF2),
+        0x00F3 => Some(0xF3),
+        0x00F4 => Some(0xF4),
+        0x00F5 => Some(0xF5),
+        0x00F6 => Some(0xF6),
+        0x00F7 => Some(0xF7),
+        0x00F8 => Some(0xF8),
+        0x00F9 => Some(0xF9),
+        0x00FA => Some(0xFA),
+        0x00FB => Some(0xFB),
+        0x00FC => Some(0xFC),
+        0x00FF => Some(0xFF),
+        0x011E => Some(0xD0),
+        0x011F => Some(0xF0),
+        0x0130 => Some(0xDD),
+        0x0131 => Some(0xFD),
+        0x0152 => Some(0x8C),
+        0x0153 => Some(0x9C),
+        0x015E => Some(0xDE),
+        0x015F => Some(0xFE),
+        0x0160 => Some(0x8A),
+        0x0161 => Some(0x9A),
+        0x0178 => Some(0x9F),
+        0x0192 => Some(0x83),
+        0x02C6 => Some(0x88),
+        0x02DC => Some(0x98),
+        0x2013 => Some(0x96),
+        0x2014 => Some(0x97),
+        0x2018 => Some(0x91),
+        0x2019 => Some(0x92),
+        0x201A => Some(0x82),
+        0x201C => Some(0x93),
+        0x201D => Some(0x94),
+        0x201E => Some(0x84),
+        0x2020 => Some(0x86),
+        0x2021 => Some(0x87),
+        0x2022 => Some(0x95),
+        0x2026 => Some(0x85),
+        0x2030 => Some(0x89),
+        0x2039 => Some(0x8B),
+        0x203A => Some(0x9B),
+        0x20AC => Some(0x80),
+        0x2122 => Some(0x99),
+        _ => None,
+    }
+}
+fn encode_cp1255_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xA0),
+        0x00A1 => Some(0xA1),
+        0x00A2 => Some(0xA2),
+        0x00A3 => Some(0xA3),
+        0x00A5 => Some(0xA5),
+        0x00A6 => Some(0xA6),
+        0x00A7 => Some(0xA7),
+        0x00A8 => Some(0xA8),
+        0x00A9 => Some(0xA9),
+        0x00AB => Some(0xAB),
+        0x00AC => Some(0xAC),
+        0x00AD => Some(0xAD),
+        0x00AE => Some(0xAE),
+        0x00AF => Some(0xAF),
+        0x00B0 => Some(0xB0),
+        0x00B1 => Some(0xB1),
+        0x00B2 => Some(0xB2),
+        0x00B3 => Some(0xB3),
+        0x00B4 => Some(0xB4),
+        0x00B5 => Some(0xB5),
+        0x00B6 => Some(0xB6),
+        0x00B7 => Some(0xB7),
+        0x00B8 => Some(0xB8),
+        0x00B9 => Some(0xB9),
+        0x00BB => Some(0xBB),
+        0x00BC => Some(0xBC),
+        0x00BD => Some(0xBD),
+        0x00BE => Some(0xBE),
+        0x00BF => Some(0xBF),
+        0x00D7 => Some(0xAA),
+        0x00F7 => Some(0xBA),
+        0x0192 => Some(0x83),
+        0x02C6 => Some(0x88),
+        0x02DC => Some(0x98),
+        0x05B0 => Some(0xC0),
+        0x05B1 => Some(0xC1),
+        0x05B2 => Some(0xC2),
+        0x05B3 => Some(0xC3),
+        0x05B4 => Some(0xC4),
+        0x05B5 => Some(0xC5),
+        0x05B6 => Some(0xC6),
+        0x05B7 => Some(0xC7),
+        0x05B8 => Some(0xC8),
+        0x05B9 => Some(0xC9),
+        0x05BB => Some(0xCB),
+        0x05BC => Some(0xCC),
+        0x05BD => Some(0xCD),
+        0x05BE => Some(0xCE),
+        0x05BF => Some(0xCF),
+        0x05C0 => Some(0xD0),
+        0x05C1 => Some(0xD1),
+        0x05C2 => Some(0xD2),
+        0x05C3 => Some(0xD3),
+        0x05D0 => Some(0xE0),
+        0x05D1 => Some(0xE1),
+        0x05D2 => Some(0xE2),
+        0x05D3 => Some(0xE3),
+        0x05D4 => Some(0xE4),
+        0x05D5 => Some(0xE5),
+        0x05D6 => Some(0xE6),
+        0x05D7 => Some(0xE7),
+        0x05D8 => Some(0xE8),
+        0x05D9 => Some(0xE9),
+        0x05DA => Some(0xEA),
+        0x05DB => Some(0xEB),
+        0x05DC => Some(0xEC),
+        0x05DD => Some(0xED),
+        0x05DE => Some(0xEE),
+        0x05DF => Some(0xEF),
+        0x05E0 => Some(0xF0),
+        0x05E1 => Some(0xF1),
+        0x05E2 => Some(0xF2),
+        0x05E3 => Some(0xF3),
+        0x05E4 => Some(0xF4),
+        0x05E5 => Some(0xF5),
+        0x05E6 => Some(0xF6),
+        0x05E7 => Some(0xF7),
+        0x05E8 => Some(0xF8),
+        0x05E9 => Some(0xF9),
+        0x05EA => Some(0xFA),
+        0x05F0 => Some(0xD4),
+        0x05F1 => Some(0xD5),
+        0x05F2 => Some(0xD6),
+        0x05F3 => Some(0xD7),
+        0x05F4 => Some(0xD8),
+        0x200E => Some(0xFD),
+        0x200F => Some(0xFE),
+        0x2013 => Some(0x96),
+        0x2014 => Some(0x97),
+        0x2018 => Some(0x91),
+        0x2019 => Some(0x92),
+        0x201A => Some(0x82),
+        0x201C => Some(0x93),
+        0x201D => Some(0x94),
+        0x201E => Some(0x84),
+        0x2020 => Some(0x86),
+        0x2021 => Some(0x87),
+        0x2022 => Some(0x95),
+        0x2026 => Some(0x85),
+        0x2030 => Some(0x89),
+        0x2039 => Some(0x8B),
+        0x203A => Some(0x9B),
+        0x20AA => Some(0xA4),
+        0x20AC => Some(0x80),
+        0x2122 => Some(0x99),
+        _ => None,
+    }
+}
+fn encode_cp1256_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xA0),
+        0x00A2 => Some(0xA2),
+        0x00A3 => Some(0xA3),
+        0x00A4 => Some(0xA4),
+        0x00A5 => Some(0xA5),
+        0x00A6 => Some(0xA6),
+        0x00A7 => Some(0xA7),
+        0x00A8 => Some(0xA8),
+        0x00A9 => Some(0xA9),
+        0x00AB => Some(0xAB),
+        0x00AC => Some(0xAC),
+        0x00AD => Some(0xAD),
+        0x00AE => Some(0xAE),
+        0x00AF => Some(0xAF),
+        0x00B0 => Some(0xB0),
+        0x00B1 => Some(0xB1),
+        0x00B2 => Some(0xB2),
+        0x00B3 => Some(0xB3),
+        0x00B4 => Some(0xB4),
+        0x00B5 => Some(0xB5),
+        0x00B6 => Some(0xB6),
+        0x00B7 => Some(0xB7),
+        0x00B8 => Some(0xB8),
+        0x00B9 => Some(0xB9),
+        0x00BB => Some(0xBB),
+        0x00BC => Some(0xBC),
+        0x00BD => Some(0xBD),
+        0x00BE => Some(0xBE),
+        0x00D7 => Some(0xD7),
+        0x00E0 => Some(0xE0),
+        0x00E2 => Some(0xE2),
+        0x00E7 => Some(0xE7),
+        0x00E8 => Some(0xE8),
+        0x00E9 => Some(0xE9),
+        0x00EA => Some(0xEA),
+        0x00EB => Some(0xEB),
+        0x00EE => Some(0xEE),
+        0x00EF => Some(0xEF),
+        0x00F4 => Some(0xF4),
+        0x00F7 => Some(0xF7),
+        0x00F9 => Some(0xF9),
+        0x00FB => Some(0xFB),
+        0x00FC => Some(0xFC),
+        0x0152 => Some(0x8C),
+        0x0153 => Some(0x9C),
+        0x0192 => Some(0x83),
+        0x02C6 => Some(0x88),
+        0x060C => Some(0xA1),
+        0x061B => Some(0xBA),
+        0x061F => Some(0xBF),
+        0x0621 => Some(0xC1),
+        0x0622 => Some(0xC2),
+        0x0623 => Some(0xC3),
+        0x0624 => Some(0xC4),
+        0x0625 => Some(0xC5),
+        0x0626 => Some(0xC6),
+        0x0627 => Some(0xC7),
+        0x0628 => Some(0xC8),
+        0x0629 => Some(0xC9),
+        0x062A => Some(0xCA),
+        0x062B => Some(0xCB),
+        0x062C => Some(0xCC),
+        0x062D => Some(0xCD),
+        0x062E => Some(0xCE),
+        0x062F => Some(0xCF),
+        0x0630 => Some(0xD0),
+        0x0631 => Some(0xD1),
+        0x0632 => Some(0xD2),
+        0x0633 => Some(0xD3),
+        0x0634 => Some(0xD4),
+        0x0635 => Some(0xD5),
+        0x0636 => Some(0xD6),
+        0x0637 => Some(0xD8),
+        0x0638 => Some(0xD9),
+        0x0639 => Some(0xDA),
+        0x063A => Some(0xDB),
+        0x0640 => Some(0xDC),
+        0x0641 => Some(0xDD),
+        0x0642 => Some(0xDE),
+        0x0643 => Some(0xDF),
+        0x0644 => Some(0xE1),
+        0x0645 => Some(0xE3),
+        0x0646 => Some(0xE4),
+        0x0647 => Some(0xE5),
+        0x0648 => Some(0xE6),
+        0x0649 => Some(0xEC),
+        0x064A => Some(0xED),
+        0x064B => Some(0xF0),
+        0x064C => Some(0xF1),
+        0x064D => Some(0xF2),
+        0x064E => Some(0xF3),
+        0x064F => Some(0xF5),
+        0x0650 => Some(0xF6),
+        0x0651 => Some(0xF8),
+        0x0652 => Some(0xFA),
+        0x0679 => Some(0x8A),
+        0x067E => Some(0x81),
+        0x0686 => Some(0x8D),
+        0x0688 => Some(0x8F),
+        0x0691 => Some(0x9A),
+        0x0698 => Some(0x8E),
+        0x06A9 => Some(0x98),
+        0x06AF => Some(0x90),
+        0x06BA => Some(0x9F),
+        0x06BE => Some(0xAA),
+        0x06C1 => Some(0xC0),
+        0x06D2 => Some(0xFF),
+        0x200C => Some(0x9D),
+        0x200D => Some(0x9E),
+        0x200E => Some(0xFD),
+        0x200F => Some(0xFE),
+        0x2013 => Some(0x96),
+        0x2014 => Some(0x97),
+        0x2018 => Some(0x91),
+        0x2019 => Some(0x92),
+        0x201A => Some(0x82),
+        0x201C => Some(0x93),
+        0x201D => Some(0x94),
+        0x201E => Some(0x84),
+        0x2020 => Some(0x86),
+        0x2021 => Some(0x87),
+        0x2022 => Some(0x95),
+        0x2026 => Some(0x85),
+        0x2030 => Some(0x89),
+        0x2039 => Some(0x8B),
+        0x203A => Some(0x9B),
+        0x20AC => Some(0x80),
+        0x2122 => Some(0x99),
+        _ => None,
+    }
+}
+fn encode_cp1257_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xA0),
+        0x00A2 => Some(0xA2),
+        0x00A3 => Some(0xA3),
+        0x00A4 => Some(0xA4),
+        0x00A6 => Some(0xA6),
+        0x00A7 => Some(0xA7),
+        0x00A8 => Some(0x8D),
+        0x00A9 => Some(0xA9),
+        0x00AB => Some(0xAB),
+        0x00AC => Some(0xAC),
+        0x00AD => Some(0xAD),
+        0x00AE => Some(0xAE),
+        0x00AF => Some(0x9D),
+        0x00B0 => Some(0xB0),
+        0x00B1 => Some(0xB1),
+        0x00B2 => Some(0xB2),
+        0x00B3 => Some(0xB3),
+        0x00B4 => Some(0xB4),
+        0x00B5 => Some(0xB5),
+        0x00B6 => Some(0xB6),
+        0x00B7 => Some(0xB7),
+        0x00B8 => Some(0x8F),
+        0x00B9 => Some(0xB9),
+        0x00BB => Some(0xBB),
+        0x00BC => Some(0xBC),
+        0x00BD => Some(0xBD),
+        0x00BE => Some(0xBE),
+        0x00C4 => Some(0xC4),
+        0x00C5 => Some(0xC5),
+        0x00C6 => Some(0xAF),
+        0x00C9 => Some(0xC9),
+        0x00D3 => Some(0xD3),
+        0x00D5 => Some(0xD5),
+        0x00D6 => Some(0xD6),
+        0x00D7 => Some(0xD7),
+        0x00D8 => Some(0xA8),
+        0x00DC => Some(0xDC),
+        0x00DF => Some(0xDF),
+        0x00E4 => Some(0xE4),
+        0x00E5 => Some(0xE5),
+        0x00E6 => Some(0xBF),
+        0x00E9 => Some(0xE9),
+        0x00F3 => Some(0xF3),
+        0x00F5 => Some(0xF5),
+        0x00F6 => Some(0xF6),
+        0x00F7 => Some(0xF7),
+        0x00F8 => Some(0xB8),
+        0x00FC => Some(0xFC),
+        0x0100 => Some(0xC2),
+        0x0101 => Some(0xE2),
+        0x0104 => Some(0xC0),
+        0x0105 => Some(0xE0),
+        0x0106 => Some(0xC3),
+        0x0107 => Some(0xE3),
+        0x010C => Some(0xC8),
+        0x010D => Some(0xE8),
+        0x0112 => Some(0xC7),
+        0x0113 => Some(0xE7),
+        0x0116 => Some(0xCB),
+        0x0117 => Some(0xEB),
+        0x0118 => Some(0xC6),
+        0x0119 => Some(0xE6),
+        0x0122 => Some(0xCC),
+        0x0123 => Some(0xEC),
+        0x012A => Some(0xCE),
+        0x012B => Some(0xEE),
+        0x012E => Some(0xC1),
+        0x012F => Some(0xE1),
+        0x0136 => Some(0xCD),
+        0x0137 => Some(0xED),
+        0x013B => Some(0xCF),
+        0x013C => Some(0xEF),
+        0x0141 => Some(0xD9),
+        0x0142 => Some(0xF9),
+        0x0143 => Some(0xD1),
+        0x0144 => Some(0xF1),
+        0x0145 => Some(0xD2),
+        0x0146 => Some(0xF2),
+        0x014C => Some(0xD4),
+        0x014D => Some(0xF4),
+        0x0156 => Some(0xAA),
+        0x0157 => Some(0xBA),
+        0x015A => Some(0xDA),
+        0x015B => Some(0xFA),
+        0x0160 => Some(0xD0),
+        0x0161 => Some(0xF0),
+        0x016A => Some(0xDB),
+        0x016B => Some(0xFB),
+        0x0172 => Some(0xD8),
+        0x0173 => Some(0xF8),
+        0x0179 => Some(0xCA),
+        0x017A => Some(0xEA),
+        0x017B => Some(0xDD),
+        0x017C => Some(0xFD),
+        0x017D => Some(0xDE),
+        0x017E => Some(0xFE),
+        0x02C7 => Some(0x8E),
+        0x02D9 => Some(0xFF),
+        0x02DB => Some(0x9E),
+        0x2013 => Some(0x96),
+        0x2014 => Some(0x97),
+        0x2018 => Some(0x91),
+        0x2019 => Some(0x92),
+        0x201A => Some(0x82),
+        0x201C => Some(0x93),
+        0x201D => Some(0x94),
+        0x201E => Some(0x84),
+        0x2020 => Some(0x86),
+        0x2021 => Some(0x87),
+        0x2022 => Some(0x95),
+        0x2026 => Some(0x85),
+        0x2030 => Some(0x89),
+        0x2039 => Some(0x8B),
+        0x203A => Some(0x9B),
+        0x20AC => Some(0x80),
+        0x2122 => Some(0x99),
+        _ => None,
+    }
+}
+fn encode_koi8_r_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0x9A),
+        0x00A9 => Some(0xBF),
+        0x00B0 => Some(0x9C),
+        0x00B2 => Some(0x9D),
+        0x00B7 => Some(0x9E),
+        0x00F7 => Some(0x9F),
+        0x0401 => Some(0xB3),
+        0x0410 => Some(0xE1),
+        0x0411 => Some(0xE2),
+        0x0412 => Some(0xF7),
+        0x0413 => Some(0xE7),
+        0x0414 => Some(0xE4),
+        0x0415 => Some(0xE5),
+        0x0416 => Some(0xF6),
+        0x0417 => Some(0xFA),
+        0x0418 => Some(0xE9),
+        0x0419 => Some(0xEA),
+        0x041A => Some(0xEB),
+        0x041B => Some(0xEC),
+        0x041C => Some(0xED),
+        0x041D => Some(0xEE),
+        0x041E => Some(0xEF),
+        0x041F => Some(0xF0),
+        0x0420 => Some(0xF2),
+        0x0421 => Some(0xF3),
+        0x0422 => Some(0xF4),
+        0x0423 => Some(0xF5),
+        0x0424 => Some(0xE6),
+        0x0425 => Some(0xE8),
+        0x0426 => Some(0xE3),
+        0x0427 => Some(0xFE),
+        0x0428 => Some(0xFB),
+        0x0429 => Some(0xFD),
+        0x042A => Some(0xFF),
+        0x042B => Some(0xF9),
+        0x042C => Some(0xF8),
+        0x042D => Some(0xFC),
+        0x042E => Some(0xE0),
+        0x042F => Some(0xF1),
+        0x0430 => Some(0xC1),
+        0x0431 => Some(0xC2),
+        0x0432 => Some(0xD7),
+        0x0433 => Some(0xC7),
+        0x0434 => Some(0xC4),
+        0x0435 => Some(0xC5),
+        0x0436 => Some(0xD6),
+        0x0437 => Some(0xDA),
+        0x0438 => Some(0xC9),
+        0x0439 => Some(0xCA),
+        0x043A => Some(0xCB),
+        0x043B => Some(0xCC),
+        0x043C => Some(0xCD),
+        0x043D => Some(0xCE),
+        0x043E => Some(0xCF),
+        0x043F => Some(0xD0),
+        0x0440 => Some(0xD2),
+        0x0441 => Some(0xD3),
+        0x0442 => Some(0xD4),
+        0x0443 => Some(0xD5),
+        0x0444 => Some(0xC6),
+        0x0445 => Some(0xC8),
+        0x0446 => Some(0xC3),
+        0x0447 => Some(0xDE),
+        0x0448 => Some(0xDB),
+        0x0449 => Some(0xDD),
+        0x044A => Some(0xDF),
+        0x044B => Some(0xD9),
+        0x044C => Some(0xD8),
+        0x044D => Some(0xDC),
+        0x044E => Some(0xC0),
+        0x044F => Some(0xD1),
+        0x0451 => Some(0xA3),
+        0x2219 => Some(0x95),
+        0x221A => Some(0x96),
+        0x2248 => Some(0x97),
+        0x2264 => Some(0x98),
+        0x2265 => Some(0x99),
+        0x2320 => Some(0x93),
+        0x2321 => Some(0x9B),
+        0x2500 => Some(0x80),
+        0x2502 => Some(0x81),
+        0x250C => Some(0x82),
+        0x2510 => Some(0x83),
+        0x2514 => Some(0x84),
+        0x2518 => Some(0x85),
+        0x251C => Some(0x86),
+        0x2524 => Some(0x87),
+        0x252C => Some(0x88),
+        0x2534 => Some(0x89),
+        0x253C => Some(0x8A),
+        0x2550 => Some(0xA0),
+        0x2551 => Some(0xA1),
+        0x2552 => Some(0xA2),
+        0x2553 => Some(0xA4),
+        0x2554 => Some(0xA5),
+        0x2555 => Some(0xA6),
+        0x2556 => Some(0xA7),
+        0x2557 => Some(0xA8),
+        0x2558 => Some(0xA9),
+        0x2559 => Some(0xAA),
+        0x255A => Some(0xAB),
+        0x255B => Some(0xAC),
+        0x255C => Some(0xAD),
+        0x255D => Some(0xAE),
+        0x255E => Some(0xAF),
+        0x255F => Some(0xB0),
+        0x2560 => Some(0xB1),
+        0x2561 => Some(0xB2),
+        0x2562 => Some(0xB4),
+        0x2563 => Some(0xB5),
+        0x2564 => Some(0xB6),
+        0x2565 => Some(0xB7),
+        0x2566 => Some(0xB8),
+        0x2567 => Some(0xB9),
+        0x2568 => Some(0xBA),
+        0x2569 => Some(0xBB),
+        0x256A => Some(0xBC),
+        0x256B => Some(0xBD),
+        0x256C => Some(0xBE),
+        0x2580 => Some(0x8B),
+        0x2584 => Some(0x8C),
+        0x2588 => Some(0x8D),
+        0x258C => Some(0x8E),
+        0x2590 => Some(0x8F),
+        0x2591 => Some(0x90),
+        0x2592 => Some(0x91),
+        0x2593 => Some(0x92),
+        0x25A0 => Some(0x94),
+        _ => None,
+    }
+}
+
+fn encode_iso8859_2_byte(code: u32) -> Option<u8> {
+    match code {
+        0x0080 => Some(0x80),
+        0x0081 => Some(0x81),
+        0x0082 => Some(0x82),
+        0x0083 => Some(0x83),
+        0x0084 => Some(0x84),
+        0x0085 => Some(0x85),
+        0x0086 => Some(0x86),
+        0x0087 => Some(0x87),
+        0x0088 => Some(0x88),
+        0x0089 => Some(0x89),
+        0x008A => Some(0x8A),
+        0x008B => Some(0x8B),
+        0x008C => Some(0x8C),
+        0x008D => Some(0x8D),
+        0x008E => Some(0x8E),
+        0x008F => Some(0x8F),
+        0x0090 => Some(0x90),
+        0x0091 => Some(0x91),
+        0x0092 => Some(0x92),
+        0x0093 => Some(0x93),
+        0x0094 => Some(0x94),
+        0x0095 => Some(0x95),
+        0x0096 => Some(0x96),
+        0x0097 => Some(0x97),
+        0x0098 => Some(0x98),
+        0x0099 => Some(0x99),
+        0x009A => Some(0x9A),
+        0x009B => Some(0x9B),
+        0x009C => Some(0x9C),
+        0x009D => Some(0x9D),
+        0x009E => Some(0x9E),
+        0x009F => Some(0x9F),
+        0x00A0 => Some(0xA0),
+        0x00A4 => Some(0xA4),
+        0x00A7 => Some(0xA7),
+        0x00A8 => Some(0xA8),
+        0x00AD => Some(0xAD),
+        0x00B0 => Some(0xB0),
+        0x00B4 => Some(0xB4),
+        0x00B8 => Some(0xB8),
+        0x00C1 => Some(0xC1),
+        0x00C2 => Some(0xC2),
+        0x00C4 => Some(0xC4),
+        0x00C7 => Some(0xC7),
+        0x00C9 => Some(0xC9),
+        0x00CB => Some(0xCB),
+        0x00CD => Some(0xCD),
+        0x00CE => Some(0xCE),
+        0x00D3 => Some(0xD3),
+        0x00D4 => Some(0xD4),
+        0x00D6 => Some(0xD6),
+        0x00D7 => Some(0xD7),
+        0x00DA => Some(0xDA),
+        0x00DC => Some(0xDC),
+        0x00DD => Some(0xDD),
+        0x00DF => Some(0xDF),
+        0x00E1 => Some(0xE1),
+        0x00E2 => Some(0xE2),
+        0x00E4 => Some(0xE4),
+        0x00E7 => Some(0xE7),
+        0x00E9 => Some(0xE9),
+        0x00EB => Some(0xEB),
+        0x00ED => Some(0xED),
+        0x00EE => Some(0xEE),
+        0x00F3 => Some(0xF3),
+        0x00F4 => Some(0xF4),
+        0x00F6 => Some(0xF6),
+        0x00F7 => Some(0xF7),
+        0x00FA => Some(0xFA),
+        0x00FC => Some(0xFC),
+        0x00FD => Some(0xFD),
+        0x0102 => Some(0xC3),
+        0x0103 => Some(0xE3),
+        0x0104 => Some(0xA1),
+        0x0105 => Some(0xB1),
+        0x0106 => Some(0xC6),
+        0x0107 => Some(0xE6),
+        0x010C => Some(0xC8),
+        0x010D => Some(0xE8),
+        0x010E => Some(0xCF),
+        0x010F => Some(0xEF),
+        0x0110 => Some(0xD0),
+        0x0111 => Some(0xF0),
+        0x0118 => Some(0xCA),
+        0x0119 => Some(0xEA),
+        0x011A => Some(0xCC),
+        0x011B => Some(0xEC),
+        0x0139 => Some(0xC5),
+        0x013A => Some(0xE5),
+        0x013D => Some(0xA5),
+        0x013E => Some(0xB5),
+        0x0141 => Some(0xA3),
+        0x0142 => Some(0xB3),
+        0x0143 => Some(0xD1),
+        0x0144 => Some(0xF1),
+        0x0147 => Some(0xD2),
+        0x0148 => Some(0xF2),
+        0x0150 => Some(0xD5),
+        0x0151 => Some(0xF5),
+        0x0154 => Some(0xC0),
+        0x0155 => Some(0xE0),
+        0x0158 => Some(0xD8),
+        0x0159 => Some(0xF8),
+        0x015A => Some(0xA6),
+        0x015B => Some(0xB6),
+        0x015E => Some(0xAA),
+        0x015F => Some(0xBA),
+        0x0160 => Some(0xA9),
+        0x0161 => Some(0xB9),
+        0x0162 => Some(0xDE),
+        0x0163 => Some(0xFE),
+        0x0164 => Some(0xAB),
+        0x0165 => Some(0xBB),
+        0x016E => Some(0xD9),
+        0x016F => Some(0xF9),
+        0x0170 => Some(0xDB),
+        0x0171 => Some(0xFB),
+        0x0179 => Some(0xAC),
+        0x017A => Some(0xBC),
+        0x017B => Some(0xAF),
+        0x017C => Some(0xBF),
+        0x017D => Some(0xAE),
+        0x017E => Some(0xBE),
+        0x02C7 => Some(0xB7),
+        0x02D8 => Some(0xA2),
+        0x02D9 => Some(0xFF),
+        0x02DB => Some(0xB2),
+        0x02DD => Some(0xBD),
+        _ => None,
+    }
+}
+
+fn encode_iso8859_3_byte(code: u32) -> Option<u8> {
+    match code {
+        0x0080 => Some(0x80),
+        0x0081 => Some(0x81),
+        0x0082 => Some(0x82),
+        0x0083 => Some(0x83),
+        0x0084 => Some(0x84),
+        0x0085 => Some(0x85),
+        0x0086 => Some(0x86),
+        0x0087 => Some(0x87),
+        0x0088 => Some(0x88),
+        0x0089 => Some(0x89),
+        0x008A => Some(0x8A),
+        0x008B => Some(0x8B),
+        0x008C => Some(0x8C),
+        0x008D => Some(0x8D),
+        0x008E => Some(0x8E),
+        0x008F => Some(0x8F),
+        0x0090 => Some(0x90),
+        0x0091 => Some(0x91),
+        0x0092 => Some(0x92),
+        0x0093 => Some(0x93),
+        0x0094 => Some(0x94),
+        0x0095 => Some(0x95),
+        0x0096 => Some(0x96),
+        0x0097 => Some(0x97),
+        0x0098 => Some(0x98),
+        0x0099 => Some(0x99),
+        0x009A => Some(0x9A),
+        0x009B => Some(0x9B),
+        0x009C => Some(0x9C),
+        0x009D => Some(0x9D),
+        0x009E => Some(0x9E),
+        0x009F => Some(0x9F),
+        0x00A0 => Some(0xA0),
+        0x00A3 => Some(0xA3),
+        0x00A4 => Some(0xA4),
+        0x00A7 => Some(0xA7),
+        0x00A8 => Some(0xA8),
+        0x00AD => Some(0xAD),
+        0x00B0 => Some(0xB0),
+        0x00B2 => Some(0xB2),
+        0x00B3 => Some(0xB3),
+        0x00B4 => Some(0xB4),
+        0x00B5 => Some(0xB5),
+        0x00B7 => Some(0xB7),
+        0x00B8 => Some(0xB8),
+        0x00BD => Some(0xBD),
+        0x00C0 => Some(0xC0),
+        0x00C1 => Some(0xC1),
+        0x00C2 => Some(0xC2),
+        0x00C4 => Some(0xC4),
+        0x00C7 => Some(0xC7),
+        0x00C8 => Some(0xC8),
+        0x00C9 => Some(0xC9),
+        0x00CA => Some(0xCA),
+        0x00CB => Some(0xCB),
+        0x00CC => Some(0xCC),
+        0x00CD => Some(0xCD),
+        0x00CE => Some(0xCE),
+        0x00CF => Some(0xCF),
+        0x00D1 => Some(0xD1),
+        0x00D2 => Some(0xD2),
+        0x00D3 => Some(0xD3),
+        0x00D4 => Some(0xD4),
+        0x00D6 => Some(0xD6),
+        0x00D7 => Some(0xD7),
+        0x00D9 => Some(0xD9),
+        0x00DA => Some(0xDA),
+        0x00DB => Some(0xDB),
+        0x00DC => Some(0xDC),
+        0x00DF => Some(0xDF),
+        0x00E0 => Some(0xE0),
+        0x00E1 => Some(0xE1),
+        0x00E2 => Some(0xE2),
+        0x00E4 => Some(0xE4),
+        0x00E7 => Some(0xE7),
+        0x00E8 => Some(0xE8),
+        0x00E9 => Some(0xE9),
+        0x00EA => Some(0xEA),
+        0x00EB => Some(0xEB),
+        0x00EC => Some(0xEC),
+        0x00ED => Some(0xED),
+        0x00EE => Some(0xEE),
+        0x00EF => Some(0xEF),
+        0x00F1 => Some(0xF1),
+        0x00F2 => Some(0xF2),
+        0x00F3 => Some(0xF3),
+        0x00F4 => Some(0xF4),
+        0x00F6 => Some(0xF6),
+        0x00F7 => Some(0xF7),
+        0x00F9 => Some(0xF9),
+        0x00FA => Some(0xFA),
+        0x00FB => Some(0xFB),
+        0x00FC => Some(0xFC),
+        0x0108 => Some(0xC6),
+        0x0109 => Some(0xE6),
+        0x010A => Some(0xC5),
+        0x010B => Some(0xE5),
+        0x011C => Some(0xD8),
+        0x011D => Some(0xF8),
+        0x011E => Some(0xAB),
+        0x011F => Some(0xBB),
+        0x0120 => Some(0xD5),
+        0x0121 => Some(0xF5),
+        0x0124 => Some(0xA6),
+        0x0125 => Some(0xB6),
+        0x0126 => Some(0xA1),
+        0x0127 => Some(0xB1),
+        0x0130 => Some(0xA9),
+        0x0131 => Some(0xB9),
+        0x0134 => Some(0xAC),
+        0x0135 => Some(0xBC),
+        0x015C => Some(0xDE),
+        0x015D => Some(0xFE),
+        0x015E => Some(0xAA),
+        0x015F => Some(0xBA),
+        0x016C => Some(0xDD),
+        0x016D => Some(0xFD),
+        0x017B => Some(0xAF),
+        0x017C => Some(0xBF),
+        0x02D8 => Some(0xA2),
+        0x02D9 => Some(0xFF),
+        _ => None,
+    }
+}
+fn encode_iso8859_4_byte(code: u32) -> Option<u8> {
+    match code {
+        0x0080 => Some(0x80),
+        0x0081 => Some(0x81),
+        0x0082 => Some(0x82),
+        0x0083 => Some(0x83),
+        0x0084 => Some(0x84),
+        0x0085 => Some(0x85),
+        0x0086 => Some(0x86),
+        0x0087 => Some(0x87),
+        0x0088 => Some(0x88),
+        0x0089 => Some(0x89),
+        0x008A => Some(0x8A),
+        0x008B => Some(0x8B),
+        0x008C => Some(0x8C),
+        0x008D => Some(0x8D),
+        0x008E => Some(0x8E),
+        0x008F => Some(0x8F),
+        0x0090 => Some(0x90),
+        0x0091 => Some(0x91),
+        0x0092 => Some(0x92),
+        0x0093 => Some(0x93),
+        0x0094 => Some(0x94),
+        0x0095 => Some(0x95),
+        0x0096 => Some(0x96),
+        0x0097 => Some(0x97),
+        0x0098 => Some(0x98),
+        0x0099 => Some(0x99),
+        0x009A => Some(0x9A),
+        0x009B => Some(0x9B),
+        0x009C => Some(0x9C),
+        0x009D => Some(0x9D),
+        0x009E => Some(0x9E),
+        0x009F => Some(0x9F),
+        0x00A0 => Some(0xA0),
+        0x00A4 => Some(0xA4),
+        0x00A7 => Some(0xA7),
+        0x00A8 => Some(0xA8),
+        0x00AD => Some(0xAD),
+        0x00AF => Some(0xAF),
+        0x00B0 => Some(0xB0),
+        0x00B4 => Some(0xB4),
+        0x00B8 => Some(0xB8),
+        0x00C1 => Some(0xC1),
+        0x00C2 => Some(0xC2),
+        0x00C3 => Some(0xC3),
+        0x00C4 => Some(0xC4),
+        0x00C5 => Some(0xC5),
+        0x00C6 => Some(0xC6),
+        0x00C9 => Some(0xC9),
+        0x00CB => Some(0xCB),
+        0x00CD => Some(0xCD),
+        0x00CE => Some(0xCE),
+        0x00D4 => Some(0xD4),
+        0x00D5 => Some(0xD5),
+        0x00D6 => Some(0xD6),
+        0x00D7 => Some(0xD7),
+        0x00D8 => Some(0xD8),
+        0x00DA => Some(0xDA),
+        0x00DB => Some(0xDB),
+        0x00DC => Some(0xDC),
+        0x00DF => Some(0xDF),
+        0x00E1 => Some(0xE1),
+        0x00E2 => Some(0xE2),
+        0x00E3 => Some(0xE3),
+        0x00E4 => Some(0xE4),
+        0x00E5 => Some(0xE5),
+        0x00E6 => Some(0xE6),
+        0x00E9 => Some(0xE9),
+        0x00EB => Some(0xEB),
+        0x00ED => Some(0xED),
+        0x00EE => Some(0xEE),
+        0x00F4 => Some(0xF4),
+        0x00F5 => Some(0xF5),
+        0x00F6 => Some(0xF6),
+        0x00F7 => Some(0xF7),
+        0x00F8 => Some(0xF8),
+        0x00FA => Some(0xFA),
+        0x00FB => Some(0xFB),
+        0x00FC => Some(0xFC),
+        0x0100 => Some(0xC0),
+        0x0101 => Some(0xE0),
+        0x0104 => Some(0xA1),
+        0x0105 => Some(0xB1),
+        0x010C => Some(0xC8),
+        0x010D => Some(0xE8),
+        0x0110 => Some(0xD0),
+        0x0111 => Some(0xF0),
+        0x0112 => Some(0xAA),
+        0x0113 => Some(0xBA),
+        0x0116 => Some(0xCC),
+        0x0117 => Some(0xEC),
+        0x0118 => Some(0xCA),
+        0x0119 => Some(0xEA),
+        0x0122 => Some(0xAB),
+        0x0123 => Some(0xBB),
+        0x0128 => Some(0xA5),
+        0x0129 => Some(0xB5),
+        0x012A => Some(0xCF),
+        0x012B => Some(0xEF),
+        0x012E => Some(0xC7),
+        0x012F => Some(0xE7),
+        0x0136 => Some(0xD3),
+        0x0137 => Some(0xF3),
+        0x0138 => Some(0xA2),
+        0x013B => Some(0xA6),
+        0x013C => Some(0xB6),
+        0x0145 => Some(0xD1),
+        0x0146 => Some(0xF1),
+        0x014A => Some(0xBD),
+        0x014B => Some(0xBF),
+        0x014C => Some(0xD2),
+        0x014D => Some(0xF2),
+        0x0156 => Some(0xA3),
+        0x0157 => Some(0xB3),
+        0x0160 => Some(0xA9),
+        0x0161 => Some(0xB9),
+        0x0166 => Some(0xAC),
+        0x0167 => Some(0xBC),
+        0x0168 => Some(0xDD),
+        0x0169 => Some(0xFD),
+        0x016A => Some(0xDE),
+        0x016B => Some(0xFE),
+        0x0172 => Some(0xD9),
+        0x0173 => Some(0xF9),
+        0x017D => Some(0xAE),
+        0x017E => Some(0xBE),
+        0x02C7 => Some(0xB7),
+        0x02D9 => Some(0xFF),
+        0x02DB => Some(0xB2),
+        _ => None,
+    }
+}
+fn encode_iso8859_5_byte(code: u32) -> Option<u8> {
+    match code {
+        0x0080 => Some(0x80),
+        0x0081 => Some(0x81),
+        0x0082 => Some(0x82),
+        0x0083 => Some(0x83),
+        0x0084 => Some(0x84),
+        0x0085 => Some(0x85),
+        0x0086 => Some(0x86),
+        0x0087 => Some(0x87),
+        0x0088 => Some(0x88),
+        0x0089 => Some(0x89),
+        0x008A => Some(0x8A),
+        0x008B => Some(0x8B),
+        0x008C => Some(0x8C),
+        0x008D => Some(0x8D),
+        0x008E => Some(0x8E),
+        0x008F => Some(0x8F),
+        0x0090 => Some(0x90),
+        0x0091 => Some(0x91),
+        0x0092 => Some(0x92),
+        0x0093 => Some(0x93),
+        0x0094 => Some(0x94),
+        0x0095 => Some(0x95),
+        0x0096 => Some(0x96),
+        0x0097 => Some(0x97),
+        0x0098 => Some(0x98),
+        0x0099 => Some(0x99),
+        0x009A => Some(0x9A),
+        0x009B => Some(0x9B),
+        0x009C => Some(0x9C),
+        0x009D => Some(0x9D),
+        0x009E => Some(0x9E),
+        0x009F => Some(0x9F),
+        0x00A0 => Some(0xA0),
+        0x00A7 => Some(0xFD),
+        0x00AD => Some(0xAD),
+        0x0401 => Some(0xA1),
+        0x0402 => Some(0xA2),
+        0x0403 => Some(0xA3),
+        0x0404 => Some(0xA4),
+        0x0405 => Some(0xA5),
+        0x0406 => Some(0xA6),
+        0x0407 => Some(0xA7),
+        0x0408 => Some(0xA8),
+        0x0409 => Some(0xA9),
+        0x040A => Some(0xAA),
+        0x040B => Some(0xAB),
+        0x040C => Some(0xAC),
+        0x040E => Some(0xAE),
+        0x040F => Some(0xAF),
+        0x0410 => Some(0xB0),
+        0x0411 => Some(0xB1),
+        0x0412 => Some(0xB2),
+        0x0413 => Some(0xB3),
+        0x0414 => Some(0xB4),
+        0x0415 => Some(0xB5),
+        0x0416 => Some(0xB6),
+        0x0417 => Some(0xB7),
+        0x0418 => Some(0xB8),
+        0x0419 => Some(0xB9),
+        0x041A => Some(0xBA),
+        0x041B => Some(0xBB),
+        0x041C => Some(0xBC),
+        0x041D => Some(0xBD),
+        0x041E => Some(0xBE),
+        0x041F => Some(0xBF),
+        0x0420 => Some(0xC0),
+        0x0421 => Some(0xC1),
+        0x0422 => Some(0xC2),
+        0x0423 => Some(0xC3),
+        0x0424 => Some(0xC4),
+        0x0425 => Some(0xC5),
+        0x0426 => Some(0xC6),
+        0x0427 => Some(0xC7),
+        0x0428 => Some(0xC8),
+        0x0429 => Some(0xC9),
+        0x042A => Some(0xCA),
+        0x042B => Some(0xCB),
+        0x042C => Some(0xCC),
+        0x042D => Some(0xCD),
+        0x042E => Some(0xCE),
+        0x042F => Some(0xCF),
+        0x0430 => Some(0xD0),
+        0x0431 => Some(0xD1),
+        0x0432 => Some(0xD2),
+        0x0433 => Some(0xD3),
+        0x0434 => Some(0xD4),
+        0x0435 => Some(0xD5),
+        0x0436 => Some(0xD6),
+        0x0437 => Some(0xD7),
+        0x0438 => Some(0xD8),
+        0x0439 => Some(0xD9),
+        0x043A => Some(0xDA),
+        0x043B => Some(0xDB),
+        0x043C => Some(0xDC),
+        0x043D => Some(0xDD),
+        0x043E => Some(0xDE),
+        0x043F => Some(0xDF),
+        0x0440 => Some(0xE0),
+        0x0441 => Some(0xE1),
+        0x0442 => Some(0xE2),
+        0x0443 => Some(0xE3),
+        0x0444 => Some(0xE4),
+        0x0445 => Some(0xE5),
+        0x0446 => Some(0xE6),
+        0x0447 => Some(0xE7),
+        0x0448 => Some(0xE8),
+        0x0449 => Some(0xE9),
+        0x044A => Some(0xEA),
+        0x044B => Some(0xEB),
+        0x044C => Some(0xEC),
+        0x044D => Some(0xED),
+        0x044E => Some(0xEE),
+        0x044F => Some(0xEF),
+        0x0451 => Some(0xF1),
+        0x0452 => Some(0xF2),
+        0x0453 => Some(0xF3),
+        0x0454 => Some(0xF4),
+        0x0455 => Some(0xF5),
+        0x0456 => Some(0xF6),
+        0x0457 => Some(0xF7),
+        0x0458 => Some(0xF8),
+        0x0459 => Some(0xF9),
+        0x045A => Some(0xFA),
+        0x045B => Some(0xFB),
+        0x045C => Some(0xFC),
+        0x045E => Some(0xFE),
+        0x045F => Some(0xFF),
+        0x2116 => Some(0xF0),
+        _ => None,
+    }
+}
+
+fn encode_iso8859_6_byte(code: u32) -> Option<u8> {
+    match code {
+        0x0080 => Some(0x80),
+        0x0081 => Some(0x81),
+        0x0082 => Some(0x82),
+        0x0083 => Some(0x83),
+        0x0084 => Some(0x84),
+        0x0085 => Some(0x85),
+        0x0086 => Some(0x86),
+        0x0087 => Some(0x87),
+        0x0088 => Some(0x88),
+        0x0089 => Some(0x89),
+        0x008A => Some(0x8A),
+        0x008B => Some(0x8B),
+        0x008C => Some(0x8C),
+        0x008D => Some(0x8D),
+        0x008E => Some(0x8E),
+        0x008F => Some(0x8F),
+        0x0090 => Some(0x90),
+        0x0091 => Some(0x91),
+        0x0092 => Some(0x92),
+        0x0093 => Some(0x93),
+        0x0094 => Some(0x94),
+        0x0095 => Some(0x95),
+        0x0096 => Some(0x96),
+        0x0097 => Some(0x97),
+        0x0098 => Some(0x98),
+        0x0099 => Some(0x99),
+        0x009A => Some(0x9A),
+        0x009B => Some(0x9B),
+        0x009C => Some(0x9C),
+        0x009D => Some(0x9D),
+        0x009E => Some(0x9E),
+        0x009F => Some(0x9F),
+        0x00A0 => Some(0xA0),
+        0x00A4 => Some(0xA4),
+        0x00AD => Some(0xAD),
+        0x060C => Some(0xAC),
+        0x061B => Some(0xBB),
+        0x061F => Some(0xBF),
+        0x0621 => Some(0xC1),
+        0x0622 => Some(0xC2),
+        0x0623 => Some(0xC3),
+        0x0624 => Some(0xC4),
+        0x0625 => Some(0xC5),
+        0x0626 => Some(0xC6),
+        0x0627 => Some(0xC7),
+        0x0628 => Some(0xC8),
+        0x0629 => Some(0xC9),
+        0x062A => Some(0xCA),
+        0x062B => Some(0xCB),
+        0x062C => Some(0xCC),
+        0x062D => Some(0xCD),
+        0x062E => Some(0xCE),
+        0x062F => Some(0xCF),
+        0x0630 => Some(0xD0),
+        0x0631 => Some(0xD1),
+        0x0632 => Some(0xD2),
+        0x0633 => Some(0xD3),
+        0x0634 => Some(0xD4),
+        0x0635 => Some(0xD5),
+        0x0636 => Some(0xD6),
+        0x0637 => Some(0xD7),
+        0x0638 => Some(0xD8),
+        0x0639 => Some(0xD9),
+        0x063A => Some(0xDA),
+        0x0640 => Some(0xE0),
+        0x0641 => Some(0xE1),
+        0x0642 => Some(0xE2),
+        0x0643 => Some(0xE3),
+        0x0644 => Some(0xE4),
+        0x0645 => Some(0xE5),
+        0x0646 => Some(0xE6),
+        0x0647 => Some(0xE7),
+        0x0648 => Some(0xE8),
+        0x0649 => Some(0xE9),
+        0x064A => Some(0xEA),
+        0x064B => Some(0xEB),
+        0x064C => Some(0xEC),
+        0x064D => Some(0xED),
+        0x064E => Some(0xEE),
+        0x064F => Some(0xEF),
+        0x0650 => Some(0xF0),
+        0x0651 => Some(0xF1),
+        0x0652 => Some(0xF2),
+        _ => None,
+    }
+}
+fn encode_iso8859_7_byte(code: u32) -> Option<u8> {
+    match code {
+        0x0080 => Some(0x80),
+        0x0081 => Some(0x81),
+        0x0082 => Some(0x82),
+        0x0083 => Some(0x83),
+        0x0084 => Some(0x84),
+        0x0085 => Some(0x85),
+        0x0086 => Some(0x86),
+        0x0087 => Some(0x87),
+        0x0088 => Some(0x88),
+        0x0089 => Some(0x89),
+        0x008A => Some(0x8A),
+        0x008B => Some(0x8B),
+        0x008C => Some(0x8C),
+        0x008D => Some(0x8D),
+        0x008E => Some(0x8E),
+        0x008F => Some(0x8F),
+        0x0090 => Some(0x90),
+        0x0091 => Some(0x91),
+        0x0092 => Some(0x92),
+        0x0093 => Some(0x93),
+        0x0094 => Some(0x94),
+        0x0095 => Some(0x95),
+        0x0096 => Some(0x96),
+        0x0097 => Some(0x97),
+        0x0098 => Some(0x98),
+        0x0099 => Some(0x99),
+        0x009A => Some(0x9A),
+        0x009B => Some(0x9B),
+        0x009C => Some(0x9C),
+        0x009D => Some(0x9D),
+        0x009E => Some(0x9E),
+        0x009F => Some(0x9F),
+        0x00A0 => Some(0xA0),
+        0x00A3 => Some(0xA3),
+        0x00A6 => Some(0xA6),
+        0x00A7 => Some(0xA7),
+        0x00A8 => Some(0xA8),
+        0x00A9 => Some(0xA9),
+        0x00AB => Some(0xAB),
+        0x00AC => Some(0xAC),
+        0x00AD => Some(0xAD),
+        0x00B0 => Some(0xB0),
+        0x00B1 => Some(0xB1),
+        0x00B2 => Some(0xB2),
+        0x00B3 => Some(0xB3),
+        0x00B7 => Some(0xB7),
+        0x00BB => Some(0xBB),
+        0x00BD => Some(0xBD),
+        0x037A => Some(0xAA),
+        0x0384 => Some(0xB4),
+        0x0385 => Some(0xB5),
+        0x0386 => Some(0xB6),
+        0x0388 => Some(0xB8),
+        0x0389 => Some(0xB9),
+        0x038A => Some(0xBA),
+        0x038C => Some(0xBC),
+        0x038E => Some(0xBE),
+        0x038F => Some(0xBF),
+        0x0390 => Some(0xC0),
+        0x0391 => Some(0xC1),
+        0x0392 => Some(0xC2),
+        0x0393 => Some(0xC3),
+        0x0394 => Some(0xC4),
+        0x0395 => Some(0xC5),
+        0x0396 => Some(0xC6),
+        0x0397 => Some(0xC7),
+        0x0398 => Some(0xC8),
+        0x0399 => Some(0xC9),
+        0x039A => Some(0xCA),
+        0x039B => Some(0xCB),
+        0x039C => Some(0xCC),
+        0x039D => Some(0xCD),
+        0x039E => Some(0xCE),
+        0x039F => Some(0xCF),
+        0x03A0 => Some(0xD0),
+        0x03A1 => Some(0xD1),
+        0x03A3 => Some(0xD3),
+        0x03A4 => Some(0xD4),
+        0x03A5 => Some(0xD5),
+        0x03A6 => Some(0xD6),
+        0x03A7 => Some(0xD7),
+        0x03A8 => Some(0xD8),
+        0x03A9 => Some(0xD9),
+        0x03AA => Some(0xDA),
+        0x03AB => Some(0xDB),
+        0x03AC => Some(0xDC),
+        0x03AD => Some(0xDD),
+        0x03AE => Some(0xDE),
+        0x03AF => Some(0xDF),
+        0x03B0 => Some(0xE0),
+        0x03B1 => Some(0xE1),
+        0x03B2 => Some(0xE2),
+        0x03B3 => Some(0xE3),
+        0x03B4 => Some(0xE4),
+        0x03B5 => Some(0xE5),
+        0x03B6 => Some(0xE6),
+        0x03B7 => Some(0xE7),
+        0x03B8 => Some(0xE8),
+        0x03B9 => Some(0xE9),
+        0x03BA => Some(0xEA),
+        0x03BB => Some(0xEB),
+        0x03BC => Some(0xEC),
+        0x03BD => Some(0xED),
+        0x03BE => Some(0xEE),
+        0x03BF => Some(0xEF),
+        0x03C0 => Some(0xF0),
+        0x03C1 => Some(0xF1),
+        0x03C2 => Some(0xF2),
+        0x03C3 => Some(0xF3),
+        0x03C4 => Some(0xF4),
+        0x03C5 => Some(0xF5),
+        0x03C6 => Some(0xF6),
+        0x03C7 => Some(0xF7),
+        0x03C8 => Some(0xF8),
+        0x03C9 => Some(0xF9),
+        0x03CA => Some(0xFA),
+        0x03CB => Some(0xFB),
+        0x03CC => Some(0xFC),
+        0x03CD => Some(0xFD),
+        0x03CE => Some(0xFE),
+        0x2015 => Some(0xAF),
+        0x2018 => Some(0xA1),
+        0x2019 => Some(0xA2),
+        0x20AC => Some(0xA4),
+        0x20AF => Some(0xA5),
+        _ => None,
+    }
+}
+
+fn encode_koi8_u_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0x9A),
+        0x00A9 => Some(0xBF),
+        0x00B0 => Some(0x9C),
+        0x00B2 => Some(0x9D),
+        0x00B7 => Some(0x9E),
+        0x00F7 => Some(0x9F),
+        0x0401 => Some(0xB3),
+        0x0404 => Some(0xB4),
+        0x0406 => Some(0xB6),
+        0x0407 => Some(0xB7),
+        0x0410 => Some(0xE1),
+        0x0411 => Some(0xE2),
+        0x0412 => Some(0xF7),
+        0x0413 => Some(0xE7),
+        0x0414 => Some(0xE4),
+        0x0415 => Some(0xE5),
+        0x0416 => Some(0xF6),
+        0x0417 => Some(0xFA),
+        0x0418 => Some(0xE9),
+        0x0419 => Some(0xEA),
+        0x041A => Some(0xEB),
+        0x041B => Some(0xEC),
+        0x041C => Some(0xED),
+        0x041D => Some(0xEE),
+        0x041E => Some(0xEF),
+        0x041F => Some(0xF0),
+        0x0420 => Some(0xF2),
+        0x0421 => Some(0xF3),
+        0x0422 => Some(0xF4),
+        0x0423 => Some(0xF5),
+        0x0424 => Some(0xE6),
+        0x0425 => Some(0xE8),
+        0x0426 => Some(0xE3),
+        0x0427 => Some(0xFE),
+        0x0428 => Some(0xFB),
+        0x0429 => Some(0xFD),
+        0x042A => Some(0xFF),
+        0x042B => Some(0xF9),
+        0x042C => Some(0xF8),
+        0x042D => Some(0xFC),
+        0x042E => Some(0xE0),
+        0x042F => Some(0xF1),
+        0x0430 => Some(0xC1),
+        0x0431 => Some(0xC2),
+        0x0432 => Some(0xD7),
+        0x0433 => Some(0xC7),
+        0x0434 => Some(0xC4),
+        0x0435 => Some(0xC5),
+        0x0436 => Some(0xD6),
+        0x0437 => Some(0xDA),
+        0x0438 => Some(0xC9),
+        0x0439 => Some(0xCA),
+        0x043A => Some(0xCB),
+        0x043B => Some(0xCC),
+        0x043C => Some(0xCD),
+        0x043D => Some(0xCE),
+        0x043E => Some(0xCF),
+        0x043F => Some(0xD0),
+        0x0440 => Some(0xD2),
+        0x0441 => Some(0xD3),
+        0x0442 => Some(0xD4),
+        0x0443 => Some(0xD5),
+        0x0444 => Some(0xC6),
+        0x0445 => Some(0xC8),
+        0x0446 => Some(0xC3),
+        0x0447 => Some(0xDE),
+        0x0448 => Some(0xDB),
+        0x0449 => Some(0xDD),
+        0x044A => Some(0xDF),
+        0x044B => Some(0xD9),
+        0x044C => Some(0xD8),
+        0x044D => Some(0xDC),
+        0x044E => Some(0xC0),
+        0x044F => Some(0xD1),
+        0x0451 => Some(0xA3),
+        0x0454 => Some(0xA4),
+        0x0456 => Some(0xA6),
+        0x0457 => Some(0xA7),
+        0x0490 => Some(0xBD),
+        0x0491 => Some(0xAD),
+        0x2219 => Some(0x95),
+        0x221A => Some(0x96),
+        0x2248 => Some(0x97),
+        0x2264 => Some(0x98),
+        0x2265 => Some(0x99),
+        0x2320 => Some(0x93),
+        0x2321 => Some(0x9B),
+        0x2500 => Some(0x80),
+        0x2502 => Some(0x81),
+        0x250C => Some(0x82),
+        0x2510 => Some(0x83),
+        0x2514 => Some(0x84),
+        0x2518 => Some(0x85),
+        0x251C => Some(0x86),
+        0x2524 => Some(0x87),
+        0x252C => Some(0x88),
+        0x2534 => Some(0x89),
+        0x253C => Some(0x8A),
+        0x2550 => Some(0xA0),
+        0x2551 => Some(0xA1),
+        0x2552 => Some(0xA2),
+        0x2554 => Some(0xA5),
+        0x2557 => Some(0xA8),
+        0x2558 => Some(0xA9),
+        0x2559 => Some(0xAA),
+        0x255A => Some(0xAB),
+        0x255B => Some(0xAC),
+        0x255D => Some(0xAE),
+        0x255E => Some(0xAF),
+        0x255F => Some(0xB0),
+        0x2560 => Some(0xB1),
+        0x2561 => Some(0xB2),
+        0x2563 => Some(0xB5),
+        0x2566 => Some(0xB8),
+        0x2567 => Some(0xB9),
+        0x2568 => Some(0xBA),
+        0x2569 => Some(0xBB),
+        0x256A => Some(0xBC),
+        0x256C => Some(0xBE),
+        0x2580 => Some(0x8B),
+        0x2584 => Some(0x8C),
+        0x2588 => Some(0x8D),
+        0x258C => Some(0x8E),
+        0x2590 => Some(0x8F),
+        0x2591 => Some(0x90),
+        0x2592 => Some(0x91),
+        0x2593 => Some(0x92),
+        0x25A0 => Some(0x94),
+        _ => None,
+    }
+}
+
+
+fn encode_iso8859_8_byte(code: u32) -> Option<u8> {
+    match code {
+        0x0080 => Some(0x80),
+        0x0081 => Some(0x81),
+        0x0082 => Some(0x82),
+        0x0083 => Some(0x83),
+        0x0084 => Some(0x84),
+        0x0085 => Some(0x85),
+        0x0086 => Some(0x86),
+        0x0087 => Some(0x87),
+        0x0088 => Some(0x88),
+        0x0089 => Some(0x89),
+        0x008A => Some(0x8A),
+        0x008B => Some(0x8B),
+        0x008C => Some(0x8C),
+        0x008D => Some(0x8D),
+        0x008E => Some(0x8E),
+        0x008F => Some(0x8F),
+        0x0090 => Some(0x90),
+        0x0091 => Some(0x91),
+        0x0092 => Some(0x92),
+        0x0093 => Some(0x93),
+        0x0094 => Some(0x94),
+        0x0095 => Some(0x95),
+        0x0096 => Some(0x96),
+        0x0097 => Some(0x97),
+        0x0098 => Some(0x98),
+        0x0099 => Some(0x99),
+        0x009A => Some(0x9A),
+        0x009B => Some(0x9B),
+        0x009C => Some(0x9C),
+        0x009D => Some(0x9D),
+        0x009E => Some(0x9E),
+        0x009F => Some(0x9F),
+        0x00A0 => Some(0xA0),
+        0x00A2 => Some(0xA2),
+        0x00A3 => Some(0xA3),
+        0x00A4 => Some(0xA4),
+        0x00A5 => Some(0xA5),
+        0x00A6 => Some(0xA6),
+        0x00A7 => Some(0xA7),
+        0x00A8 => Some(0xA8),
+        0x00A9 => Some(0xA9),
+        0x00AB => Some(0xAB),
+        0x00AC => Some(0xAC),
+        0x00AD => Some(0xAD),
+        0x00AE => Some(0xAE),
+        0x00AF => Some(0xAF),
+        0x00B0 => Some(0xB0),
+        0x00B1 => Some(0xB1),
+        0x00B2 => Some(0xB2),
+        0x00B3 => Some(0xB3),
+        0x00B4 => Some(0xB4),
+        0x00B5 => Some(0xB5),
+        0x00B6 => Some(0xB6),
+        0x00B7 => Some(0xB7),
+        0x00B8 => Some(0xB8),
+        0x00B9 => Some(0xB9),
+        0x00BB => Some(0xBB),
+        0x00BC => Some(0xBC),
+        0x00BD => Some(0xBD),
+        0x00BE => Some(0xBE),
+        0x00D7 => Some(0xAA),
+        0x00F7 => Some(0xBA),
+        0x05D0 => Some(0xE0),
+        0x05D1 => Some(0xE1),
+        0x05D2 => Some(0xE2),
+        0x05D3 => Some(0xE3),
+        0x05D4 => Some(0xE4),
+        0x05D5 => Some(0xE5),
+        0x05D6 => Some(0xE6),
+        0x05D7 => Some(0xE7),
+        0x05D8 => Some(0xE8),
+        0x05D9 => Some(0xE9),
+        0x05DA => Some(0xEA),
+        0x05DB => Some(0xEB),
+        0x05DC => Some(0xEC),
+        0x05DD => Some(0xED),
+        0x05DE => Some(0xEE),
+        0x05DF => Some(0xEF),
+        0x05E0 => Some(0xF0),
+        0x05E1 => Some(0xF1),
+        0x05E2 => Some(0xF2),
+        0x05E3 => Some(0xF3),
+        0x05E4 => Some(0xF4),
+        0x05E5 => Some(0xF5),
+        0x05E6 => Some(0xF6),
+        0x05E7 => Some(0xF7),
+        0x05E8 => Some(0xF8),
+        0x05E9 => Some(0xF9),
+        0x05EA => Some(0xFA),
+        0x200E => Some(0xFD),
+        0x200F => Some(0xFE),
+        0x2017 => Some(0xDF),
+        _ => None,
+    }
+}
+fn encode_iso8859_10_byte(code: u32) -> Option<u8> {
+    match code {
+        0x0080 => Some(0x80),
+        0x0081 => Some(0x81),
+        0x0082 => Some(0x82),
+        0x0083 => Some(0x83),
+        0x0084 => Some(0x84),
+        0x0085 => Some(0x85),
+        0x0086 => Some(0x86),
+        0x0087 => Some(0x87),
+        0x0088 => Some(0x88),
+        0x0089 => Some(0x89),
+        0x008A => Some(0x8A),
+        0x008B => Some(0x8B),
+        0x008C => Some(0x8C),
+        0x008D => Some(0x8D),
+        0x008E => Some(0x8E),
+        0x008F => Some(0x8F),
+        0x0090 => Some(0x90),
+        0x0091 => Some(0x91),
+        0x0092 => Some(0x92),
+        0x0093 => Some(0x93),
+        0x0094 => Some(0x94),
+        0x0095 => Some(0x95),
+        0x0096 => Some(0x96),
+        0x0097 => Some(0x97),
+        0x0098 => Some(0x98),
+        0x0099 => Some(0x99),
+        0x009A => Some(0x9A),
+        0x009B => Some(0x9B),
+        0x009C => Some(0x9C),
+        0x009D => Some(0x9D),
+        0x009E => Some(0x9E),
+        0x009F => Some(0x9F),
+        0x00A0 => Some(0xA0),
+        0x00A7 => Some(0xA7),
+        0x00AD => Some(0xAD),
+        0x00B0 => Some(0xB0),
+        0x00B7 => Some(0xB7),
+        0x00C1 => Some(0xC1),
+        0x00C2 => Some(0xC2),
+        0x00C3 => Some(0xC3),
+        0x00C4 => Some(0xC4),
+        0x00C5 => Some(0xC5),
+        0x00C6 => Some(0xC6),
+        0x00C9 => Some(0xC9),
+        0x00CB => Some(0xCB),
+        0x00CD => Some(0xCD),
+        0x00CE => Some(0xCE),
+        0x00CF => Some(0xCF),
+        0x00D0 => Some(0xD0),
+        0x00D3 => Some(0xD3),
+        0x00D4 => Some(0xD4),
+        0x00D5 => Some(0xD5),
+        0x00D6 => Some(0xD6),
+        0x00D8 => Some(0xD8),
+        0x00DA => Some(0xDA),
+        0x00DB => Some(0xDB),
+        0x00DC => Some(0xDC),
+        0x00DD => Some(0xDD),
+        0x00DE => Some(0xDE),
+        0x00DF => Some(0xDF),
+        0x00E1 => Some(0xE1),
+        0x00E2 => Some(0xE2),
+        0x00E3 => Some(0xE3),
+        0x00E4 => Some(0xE4),
+        0x00E5 => Some(0xE5),
+        0x00E6 => Some(0xE6),
+        0x00E9 => Some(0xE9),
+        0x00EB => Some(0xEB),
+        0x00ED => Some(0xED),
+        0x00EE => Some(0xEE),
+        0x00EF => Some(0xEF),
+        0x00F0 => Some(0xF0),
+        0x00F3 => Some(0xF3),
+        0x00F4 => Some(0xF4),
+        0x00F5 => Some(0xF5),
+        0x00F6 => Some(0xF6),
+        0x00F8 => Some(0xF8),
+        0x00FA => Some(0xFA),
+        0x00FB => Some(0xFB),
+        0x00FC => Some(0xFC),
+        0x00FD => Some(0xFD),
+        0x00FE => Some(0xFE),
+        0x0100 => Some(0xC0),
+        0x0101 => Some(0xE0),
+        0x0104 => Some(0xA1),
+        0x0105 => Some(0xB1),
+        0x010C => Some(0xC8),
+        0x010D => Some(0xE8),
+        0x0110 => Some(0xA9),
+        0x0111 => Some(0xB9),
+        0x0112 => Some(0xA2),
+        0x0113 => Some(0xB2),
+        0x0116 => Some(0xCC),
+        0x0117 => Some(0xEC),
+        0x0118 => Some(0xCA),
+        0x0119 => Some(0xEA),
+        0x0122 => Some(0xA3),
+        0x0123 => Some(0xB3),
+        0x0128 => Some(0xA5),
+        0x0129 => Some(0xB5),
+        0x012A => Some(0xA4),
+        0x012B => Some(0xB4),
+        0x012E => Some(0xC7),
+        0x012F => Some(0xE7),
+        0x0136 => Some(0xA6),
+        0x0137 => Some(0xB6),
+        0x0138 => Some(0xFF),
+        0x013B => Some(0xA8),
+        0x013C => Some(0xB8),
+        0x0145 => Some(0xD1),
+        0x0146 => Some(0xF1),
+        0x014A => Some(0xAF),
+        0x014B => Some(0xBF),
+        0x014C => Some(0xD2),
+        0x014D => Some(0xF2),
+        0x0160 => Some(0xAA),
+        0x0161 => Some(0xBA),
+        0x0166 => Some(0xAB),
+        0x0167 => Some(0xBB),
+        0x0168 => Some(0xD7),
+        0x0169 => Some(0xF7),
+        0x016A => Some(0xAE),
+        0x016B => Some(0xBE),
+        0x0172 => Some(0xD9),
+        0x0173 => Some(0xF9),
+        0x017D => Some(0xAC),
+        0x017E => Some(0xBC),
+        0x2015 => Some(0xBD),
+        _ => None,
+    }
+}
+fn encode_iso8859_15_byte(code: u32) -> Option<u8> {
+    match code {
+        0x0080 => Some(0x80),
+        0x0081 => Some(0x81),
+        0x0082 => Some(0x82),
+        0x0083 => Some(0x83),
+        0x0084 => Some(0x84),
+        0x0085 => Some(0x85),
+        0x0086 => Some(0x86),
+        0x0087 => Some(0x87),
+        0x0088 => Some(0x88),
+        0x0089 => Some(0x89),
+        0x008A => Some(0x8A),
+        0x008B => Some(0x8B),
+        0x008C => Some(0x8C),
+        0x008D => Some(0x8D),
+        0x008E => Some(0x8E),
+        0x008F => Some(0x8F),
+        0x0090 => Some(0x90),
+        0x0091 => Some(0x91),
+        0x0092 => Some(0x92),
+        0x0093 => Some(0x93),
+        0x0094 => Some(0x94),
+        0x0095 => Some(0x95),
+        0x0096 => Some(0x96),
+        0x0097 => Some(0x97),
+        0x0098 => Some(0x98),
+        0x0099 => Some(0x99),
+        0x009A => Some(0x9A),
+        0x009B => Some(0x9B),
+        0x009C => Some(0x9C),
+        0x009D => Some(0x9D),
+        0x009E => Some(0x9E),
+        0x009F => Some(0x9F),
+        0x00A0 => Some(0xA0),
+        0x00A1 => Some(0xA1),
+        0x00A2 => Some(0xA2),
+        0x00A3 => Some(0xA3),
+        0x00A5 => Some(0xA5),
+        0x00A7 => Some(0xA7),
+        0x00A9 => Some(0xA9),
+        0x00AA => Some(0xAA),
+        0x00AB => Some(0xAB),
+        0x00AC => Some(0xAC),
+        0x00AD => Some(0xAD),
+        0x00AE => Some(0xAE),
+        0x00AF => Some(0xAF),
+        0x00B0 => Some(0xB0),
+        0x00B1 => Some(0xB1),
+        0x00B2 => Some(0xB2),
+        0x00B3 => Some(0xB3),
+        0x00B5 => Some(0xB5),
+        0x00B6 => Some(0xB6),
+        0x00B7 => Some(0xB7),
+        0x00B9 => Some(0xB9),
+        0x00BA => Some(0xBA),
+        0x00BB => Some(0xBB),
+        0x00BF => Some(0xBF),
+        0x00C0 => Some(0xC0),
+        0x00C1 => Some(0xC1),
+        0x00C2 => Some(0xC2),
+        0x00C3 => Some(0xC3),
+        0x00C4 => Some(0xC4),
+        0x00C5 => Some(0xC5),
+        0x00C6 => Some(0xC6),
+        0x00C7 => Some(0xC7),
+        0x00C8 => Some(0xC8),
+        0x00C9 => Some(0xC9),
+        0x00CA => Some(0xCA),
+        0x00CB => Some(0xCB),
+        0x00CC => Some(0xCC),
+        0x00CD => Some(0xCD),
+        0x00CE => Some(0xCE),
+        0x00CF => Some(0xCF),
+        0x00D0 => Some(0xD0),
+        0x00D1 => Some(0xD1),
+        0x00D2 => Some(0xD2),
+        0x00D3 => Some(0xD3),
+        0x00D4 => Some(0xD4),
+        0x00D5 => Some(0xD5),
+        0x00D6 => Some(0xD6),
+        0x00D7 => Some(0xD7),
+        0x00D8 => Some(0xD8),
+        0x00D9 => Some(0xD9),
+        0x00DA => Some(0xDA),
+        0x00DB => Some(0xDB),
+        0x00DC => Some(0xDC),
+        0x00DD => Some(0xDD),
+        0x00DE => Some(0xDE),
+        0x00DF => Some(0xDF),
+        0x00E0 => Some(0xE0),
+        0x00E1 => Some(0xE1),
+        0x00E2 => Some(0xE2),
+        0x00E3 => Some(0xE3),
+        0x00E4 => Some(0xE4),
+        0x00E5 => Some(0xE5),
+        0x00E6 => Some(0xE6),
+        0x00E7 => Some(0xE7),
+        0x00E8 => Some(0xE8),
+        0x00E9 => Some(0xE9),
+        0x00EA => Some(0xEA),
+        0x00EB => Some(0xEB),
+        0x00EC => Some(0xEC),
+        0x00ED => Some(0xED),
+        0x00EE => Some(0xEE),
+        0x00EF => Some(0xEF),
+        0x00F0 => Some(0xF0),
+        0x00F1 => Some(0xF1),
+        0x00F2 => Some(0xF2),
+        0x00F3 => Some(0xF3),
+        0x00F4 => Some(0xF4),
+        0x00F5 => Some(0xF5),
+        0x00F6 => Some(0xF6),
+        0x00F7 => Some(0xF7),
+        0x00F8 => Some(0xF8),
+        0x00F9 => Some(0xF9),
+        0x00FA => Some(0xFA),
+        0x00FB => Some(0xFB),
+        0x00FC => Some(0xFC),
+        0x00FD => Some(0xFD),
+        0x00FE => Some(0xFE),
+        0x00FF => Some(0xFF),
+        0x0152 => Some(0xBC),
+        0x0153 => Some(0xBD),
+        0x0160 => Some(0xA6),
+        0x0161 => Some(0xA8),
+        0x0178 => Some(0xBE),
+        0x017D => Some(0xB4),
+        0x017E => Some(0xB8),
+        0x20AC => Some(0xA4),
+        _ => None,
+    }
+}
+
+fn encode_mac_roman_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xCA),
+        0x00A1 => Some(0xC1),
+        0x00A2 => Some(0xA2),
+        0x00A3 => Some(0xA3),
+        0x00A5 => Some(0xB4),
+        0x00A7 => Some(0xA4),
+        0x00A8 => Some(0xAC),
+        0x00A9 => Some(0xA9),
+        0x00AA => Some(0xBB),
+        0x00AB => Some(0xC7),
+        0x00AC => Some(0xC2),
+        0x00AE => Some(0xA8),
+        0x00AF => Some(0xF8),
+        0x00B0 => Some(0xA1),
+        0x00B1 => Some(0xB1),
+        0x00B4 => Some(0xAB),
+        0x00B5 => Some(0xB5),
+        0x00B6 => Some(0xA6),
+        0x00B7 => Some(0xE1),
+        0x00B8 => Some(0xFC),
+        0x00BA => Some(0xBC),
+        0x00BB => Some(0xC8),
+        0x00BF => Some(0xC0),
+        0x00C0 => Some(0xCB),
+        0x00C1 => Some(0xE7),
+        0x00C2 => Some(0xE5),
+        0x00C3 => Some(0xCC),
+        0x00C4 => Some(0x80),
+        0x00C5 => Some(0x81),
+        0x00C6 => Some(0xAE),
+        0x00C7 => Some(0x82),
+        0x00C8 => Some(0xE9),
+        0x00C9 => Some(0x83),
+        0x00CA => Some(0xE6),
+        0x00CB => Some(0xE8),
+        0x00CC => Some(0xED),
+        0x00CD => Some(0xEA),
+        0x00CE => Some(0xEB),
+        0x00CF => Some(0xEC),
+        0x00D1 => Some(0x84),
+        0x00D2 => Some(0xF1),
+        0x00D3 => Some(0xEE),
+        0x00D4 => Some(0xEF),
+        0x00D5 => Some(0xCD),
+        0x00D6 => Some(0x85),
+        0x00D8 => Some(0xAF),
+        0x00D9 => Some(0xF4),
+        0x00DA => Some(0xF2),
+        0x00DB => Some(0xF3),
+        0x00DC => Some(0x86),
+        0x00DF => Some(0xA7),
+        0x00E0 => Some(0x88),
+        0x00E1 => Some(0x87),
+        0x00E2 => Some(0x89),
+        0x00E3 => Some(0x8B),
+        0x00E4 => Some(0x8A),
+        0x00E5 => Some(0x8C),
+        0x00E6 => Some(0xBE),
+        0x00E7 => Some(0x8D),
+        0x00E8 => Some(0x8F),
+        0x00E9 => Some(0x8E),
+        0x00EA => Some(0x90),
+        0x00EB => Some(0x91),
+        0x00EC => Some(0x93),
+        0x00ED => Some(0x92),
+        0x00EE => Some(0x94),
+        0x00EF => Some(0x95),
+        0x00F1 => Some(0x96),
+        0x00F2 => Some(0x98),
+        0x00F3 => Some(0x97),
+        0x00F4 => Some(0x99),
+        0x00F5 => Some(0x9B),
+        0x00F6 => Some(0x9A),
+        0x00F7 => Some(0xD6),
+        0x00F8 => Some(0xBF),
+        0x00F9 => Some(0x9D),
+        0x00FA => Some(0x9C),
+        0x00FB => Some(0x9E),
+        0x00FC => Some(0x9F),
+        0x00FF => Some(0xD8),
+        0x0131 => Some(0xF5),
+        0x0152 => Some(0xCE),
+        0x0153 => Some(0xCF),
+        0x0178 => Some(0xD9),
+        0x0192 => Some(0xC4),
+        0x02C6 => Some(0xF6),
+        0x02C7 => Some(0xFF),
+        0x02D8 => Some(0xF9),
+        0x02D9 => Some(0xFA),
+        0x02DA => Some(0xFB),
+        0x02DB => Some(0xFE),
+        0x02DC => Some(0xF7),
+        0x02DD => Some(0xFD),
+        0x03A9 => Some(0xBD),
+        0x03C0 => Some(0xB9),
+        0x2013 => Some(0xD0),
+        0x2014 => Some(0xD1),
+        0x2018 => Some(0xD4),
+        0x2019 => Some(0xD5),
+        0x201A => Some(0xE2),
+        0x201C => Some(0xD2),
+        0x201D => Some(0xD3),
+        0x201E => Some(0xE3),
+        0x2020 => Some(0xA0),
+        0x2021 => Some(0xE0),
+        0x2022 => Some(0xA5),
+        0x2026 => Some(0xC9),
+        0x2030 => Some(0xE4),
+        0x2039 => Some(0xDC),
+        0x203A => Some(0xDD),
+        0x2044 => Some(0xDA),
+        0x20AC => Some(0xDB),
+        0x2122 => Some(0xAA),
+        0x2202 => Some(0xB6),
+        0x2206 => Some(0xC6),
+        0x220F => Some(0xB8),
+        0x2211 => Some(0xB7),
+        0x221A => Some(0xC3),
+        0x221E => Some(0xB0),
+        0x222B => Some(0xBA),
+        0x2248 => Some(0xC5),
+        0x2260 => Some(0xAD),
+        0x2264 => Some(0xB2),
+        0x2265 => Some(0xB3),
+        0x25CA => Some(0xD7),
+        0xF8FF => Some(0xF0),
+        0xFB01 => Some(0xDE),
+        0xFB02 => Some(0xDF),
+        _ => None,
+    }
+}
+
+pub(crate) fn encode_string_with_errors(
+    bytes: &[u8],
     encoding: &str,
     errors: Option<&str>,
 ) -> Result<Vec<u8>, EncodeError> {
     let Some(kind) = normalize_encoding(encoding) else {
         return Err(EncodeError::UnknownEncoding(encoding.to_string()));
     };
+    let handler = errors.unwrap_or("strict");
+    let mut unknown_handler: Option<String> = None;
+    let handler = match handler {
+        "surrogatepass"
+        | "strict"
+        | "surrogateescape"
+        | "ignore"
+        | "replace"
+        | "backslashreplace"
+        | "namereplace"
+        | "xmlcharrefreplace" => handler,
+        other => {
+            unknown_handler = Some(other.to_string());
+            "strict"
+        }
+    };
+    let error_encoding = match kind {
+        EncodingKind::Utf8Sig => "utf-8",
+        EncodingKind::Cp1252
+        | EncodingKind::Cp437
+        | EncodingKind::Cp850
+        | EncodingKind::Cp860
+        | EncodingKind::Cp862
+        | EncodingKind::Cp863
+        | EncodingKind::Cp865
+        | EncodingKind::Cp866
+        | EncodingKind::Cp874
+        | EncodingKind::Cp1250
+        | EncodingKind::Cp1251
+        | EncodingKind::Cp1253
+        | EncodingKind::Cp1254
+        | EncodingKind::Cp1255
+        | EncodingKind::Cp1256
+        | EncodingKind::Cp1257
+        | EncodingKind::Koi8R
+        | EncodingKind::Koi8U
+        | EncodingKind::Iso8859_2
+        | EncodingKind::Iso8859_3
+        | EncodingKind::Iso8859_4
+        | EncodingKind::Iso8859_5
+        | EncodingKind::Iso8859_6
+        | EncodingKind::Iso8859_7
+        | EncodingKind::Iso8859_8
+        | EncodingKind::Iso8859_10
+        | EncodingKind::Iso8859_15
+        | EncodingKind::MacRoman => "charmap",
+        _ => kind.name(),
+    };
+    let invalid_char_err = |encoding: &'static str,
+                            code: u32,
+                            pos: usize,
+                            limit: u32|
+     -> EncodeError {
+        if let Some(name) = unknown_handler.as_ref() {
+            EncodeError::UnknownErrorHandler(name.clone())
+        } else {
+            EncodeError::InvalidChar {
+                encoding,
+                code,
+                pos,
+                limit,
+            }
+        }
+    };
+    let encode_charmap = |map: fn(u32) -> Option<u8>| -> Result<Vec<u8>, EncodeError> {
+        let mut out = Vec::new();
+        for (idx, cp) in wtf8_from_bytes(bytes).code_points().enumerate() {
+            let code = cp.to_u32();
+            if code <= 0x7F {
+                out.push(code as u8);
+                continue;
+            }
+            if let Some(byte) = map(code) {
+                out.push(byte);
+                continue;
+            }
+            match handler {
+                "ignore" => {}
+                "replace" => out.push(b'?'),
+                "backslashreplace" => {
+                    out.extend_from_slice(unicode_escape_codepoint(code).as_bytes());
+                }
+                "namereplace" => {
+                    out.extend_from_slice(unicode_name_escape(code).as_bytes());
+                }
+                "xmlcharrefreplace" => {
+                    push_xmlcharref_ascii(&mut out, code);
+                }
+                "surrogateescape" => {
+                    if (0xDC80..=0xDCFF).contains(&code) {
+                        out.push((code - 0xDC00) as u8);
+                    } else {
+                        return Err(invalid_char_err(error_encoding, code, idx, 0));
+                    }
+                }
+                "surrogatepass" | "strict" => {
+                    return Err(invalid_char_err(error_encoding, code, idx, 0));
+                }
+                other => {
+                    return Err(EncodeError::UnknownErrorHandler(other.to_string()));
+                }
+            }
+        }
+        Ok(out)
+    };
+    let mut out = Vec::new();
+    let encode_utf8 = |handler: &str,
+                       bytes: &[u8],
+                       out: &mut Vec<u8>|
+     -> Result<Vec<u8>, EncodeError> {
+        match handler {
+            "surrogatepass" => Ok(bytes.to_vec()),
+            "strict" => {
+                if !wtf8_has_surrogates(bytes) {
+                    return Ok(bytes.to_vec());
+                }
+                for (idx, cp) in wtf8_from_bytes(bytes).code_points().enumerate() {
+                    let code = cp.to_u32();
+                    if is_surrogate(code) {
+                        return Err(invalid_char_err(error_encoding, code, idx, 0x110000));
+                    }
+                }
+                Ok(bytes.to_vec())
+            }
+            "surrogateescape" => {
+                for (idx, cp) in wtf8_from_bytes(bytes).code_points().enumerate() {
+                    let code = cp.to_u32();
+                    if (0xDC80..=0xDCFF).contains(&code) {
+                        out.push((code - 0xDC00) as u8);
+                    } else if is_surrogate(code) {
+                        return Err(invalid_char_err(error_encoding, code, idx, 0x110000));
+                    } else {
+                        push_wtf8_codepoint(out, code);
+                    }
+                }
+                Ok(std::mem::take(out))
+            }
+            "ignore" | "replace" | "backslashreplace" | "namereplace" | "xmlcharrefreplace" => {
+                for (_idx, cp) in wtf8_from_bytes(bytes).code_points().enumerate() {
+                    let code = cp.to_u32();
+                    if is_surrogate(code) {
+                        match handler {
+                            "ignore" => {}
+                            "replace" => out.push(b'?'),
+                            "backslashreplace" => {
+                                out.extend_from_slice(unicode_escape_codepoint(code).as_bytes())
+                            }
+                            "namereplace" => {
+                                out.extend_from_slice(unicode_name_escape(code).as_bytes())
+                            }
+                            "xmlcharrefreplace" => {
+                                push_xmlcharref_ascii(out, code);
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+                    push_wtf8_codepoint(out, code);
+                }
+                Ok(std::mem::take(out))
+            }
+            other => Err(EncodeError::UnknownErrorHandler(other.to_string())),
+        }
+    };
     match kind {
-        EncodingKind::Utf8 => Ok(text.as_bytes().to_vec()),
-        EncodingKind::Utf16 => Ok(encode_utf16(text, native_endian(), true)),
-        EncodingKind::Utf16LE => Ok(encode_utf16(text, Endian::Little, false)),
-        EncodingKind::Utf16BE => Ok(encode_utf16(text, Endian::Big, false)),
-        EncodingKind::Utf32 => Ok(encode_utf32(text, native_endian(), true)),
-        EncodingKind::Utf32LE => Ok(encode_utf32(text, Endian::Little, false)),
-        EncodingKind::Utf32BE => Ok(encode_utf32(text, Endian::Big, false)),
+        EncodingKind::Utf8 => encode_utf8(handler, bytes, &mut out),
+        EncodingKind::Utf8Sig => {
+            let encoded = encode_utf8(handler, bytes, &mut out)?;
+            let mut with_bom = Vec::with_capacity(encoded.len() + 3);
+            with_bom.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+            with_bom.extend_from_slice(&encoded);
+            Ok(with_bom)
+        }
+        EncodingKind::Cp1252 => encode_charmap(encode_cp1252_byte),
+        EncodingKind::Cp437 => encode_charmap(encode_cp437_byte),
+        EncodingKind::Cp850 => encode_charmap(encode_cp850_byte),
+        EncodingKind::Cp860 => encode_charmap(encode_cp860_byte),
+        EncodingKind::Cp862 => encode_charmap(encode_cp862_byte),
+        EncodingKind::Cp863 => encode_charmap(encode_cp863_byte),
+        EncodingKind::Cp865 => encode_charmap(encode_cp865_byte),
+        EncodingKind::Cp866 => encode_charmap(encode_cp866_byte),
+        EncodingKind::Cp874 => encode_charmap(encode_cp874_byte),
+        EncodingKind::Cp1250 => encode_charmap(encode_cp1250_byte),
+        EncodingKind::Cp1251 => encode_charmap(encode_cp1251_byte),
+        EncodingKind::Cp1253 => encode_charmap(encode_cp1253_byte),
+        EncodingKind::Cp1254 => encode_charmap(encode_cp1254_byte),
+        EncodingKind::Cp1255 => encode_charmap(encode_cp1255_byte),
+        EncodingKind::Cp1256 => encode_charmap(encode_cp1256_byte),
+        EncodingKind::Cp1257 => encode_charmap(encode_cp1257_byte),
+        EncodingKind::Koi8R => encode_charmap(encode_koi8_r_byte),
+        EncodingKind::Koi8U => encode_charmap(encode_koi8_u_byte),
+        EncodingKind::Iso8859_2 => encode_charmap(encode_iso8859_2_byte),
+        EncodingKind::Iso8859_3 => encode_charmap(encode_iso8859_3_byte),
+        EncodingKind::Iso8859_4 => encode_charmap(encode_iso8859_4_byte),
+        EncodingKind::Iso8859_5 => encode_charmap(encode_iso8859_5_byte),
+        EncodingKind::Iso8859_6 => encode_charmap(encode_iso8859_6_byte),
+        EncodingKind::Iso8859_7 => encode_charmap(encode_iso8859_7_byte),
+        EncodingKind::Iso8859_8 => encode_charmap(encode_iso8859_8_byte),
+        EncodingKind::Iso8859_10 => encode_charmap(encode_iso8859_10_byte),
+        EncodingKind::Iso8859_15 => encode_charmap(encode_iso8859_15_byte),
+        EncodingKind::MacRoman => encode_charmap(encode_mac_roman_byte),
         EncodingKind::Latin1 | EncodingKind::Ascii => {
             let limit = kind.ordinal_limit();
-            let mut out = Vec::with_capacity(text.len());
-            for (idx, ch) in text.chars().enumerate() {
-                let code = ch as u32;
+            for (idx, cp) in wtf8_from_bytes(bytes).code_points().enumerate() {
+                let code = cp.to_u32();
                 if code < limit {
                     out.push(code as u8);
                     continue;
                 }
-                match errors.unwrap_or("strict") {
-                    "ignore" => continue,
+                match handler {
+                    "ignore" => {}
                     "replace" => out.push(b'?'),
-                    "strict" => {
-                        return Err(EncodeError::InvalidChar {
-                            encoding: kind.name(),
-                            ch,
-                            pos: idx,
-                            limit,
-                        });
+                    "backslashreplace" => {
+                        out.extend_from_slice(unicode_escape_codepoint(code).as_bytes());
                     }
-                    "surrogateescape" | "surrogatepass" => {
-                        return Err(EncodeError::InvalidChar {
-                            encoding: kind.name(),
-                            ch,
-                            pos: idx,
-                            limit,
-                        });
+                    "namereplace" => {
+                        out.extend_from_slice(unicode_name_escape(code).as_bytes());
+                    }
+                    "xmlcharrefreplace" => {
+                        push_xmlcharref_ascii(&mut out, code);
+                    }
+                    "surrogateescape" => {
+                        if (0xDC80..=0xDCFF).contains(&code) {
+                            out.push((code - 0xDC00) as u8);
+                        } else {
+                            return Err(invalid_char_err(error_encoding, code, idx, limit));
+                        }
+                    }
+                    "surrogatepass" | "strict" => {
+                        return Err(invalid_char_err(error_encoding, code, idx, limit));
                     }
                     other => {
                         return Err(EncodeError::UnknownErrorHandler(other.to_string()));
                     }
                 }
+            }
+            Ok(out)
+        }
+        EncodingKind::UnicodeEscape => {
+            for cp in wtf8_from_bytes(bytes).code_points() {
+                let code = cp.to_u32();
+                match code {
+                    0x5C => out.extend_from_slice(b"\\\\"),
+                    0x09 => out.extend_from_slice(b"\\t"),
+                    0x0A => out.extend_from_slice(b"\\n"),
+                    0x0D => out.extend_from_slice(b"\\r"),
+                    0x20..=0x7E => out.push(code as u8),
+                    _ if code <= 0xFF => push_hex_escape(&mut out, b'x', code, 2),
+                    _ if code <= 0xFFFF => push_hex_escape(&mut out, b'u', code, 4),
+                    _ => push_hex_escape(&mut out, b'U', code, 8),
+                }
+            }
+            Ok(out)
+        }
+        EncodingKind::Utf16 | EncodingKind::Utf16LE | EncodingKind::Utf16BE => {
+            let (endian, with_bom) = match kind {
+                EncodingKind::Utf16 => (native_endian(), true),
+                EncodingKind::Utf16LE => (Endian::Little, false),
+                EncodingKind::Utf16BE => (Endian::Big, false),
+                _ => (native_endian(), false),
+            };
+            if with_bom {
+                push_u16(&mut out, 0xFEFF, endian);
+            }
+            for (idx, cp) in wtf8_from_bytes(bytes).code_points().enumerate() {
+                let code = cp.to_u32();
+                if is_surrogate(code) {
+                    match handler {
+                        "surrogatepass" | "surrogateescape" => {
+                            push_u16(&mut out, code as u16, endian);
+                            continue;
+                        }
+                        "ignore" => continue,
+                        "replace" => {
+                            push_u16(&mut out, 0xFFFD, endian);
+                            continue;
+                        }
+                        "backslashreplace" => {
+                            for ch in unicode_escape_codepoint(code).chars() {
+                                push_u16(&mut out, ch as u16, endian);
+                            }
+                            continue;
+                        }
+                        "namereplace" => {
+                            for ch in unicode_name_escape(code).chars() {
+                                push_u16(&mut out, ch as u16, endian);
+                            }
+                            continue;
+                        }
+                        "xmlcharrefreplace" => {
+                            push_xmlcharref_utf16(&mut out, code, endian);
+                            continue;
+                        }
+                        "strict" => {
+                            return Err(invalid_char_err(error_encoding, code, idx, 0x110000));
+                        }
+                        other => {
+                            return Err(EncodeError::UnknownErrorHandler(other.to_string()));
+                        }
+                    }
+                }
+                if code <= 0xFFFF {
+                    push_u16(&mut out, code as u16, endian);
+                } else {
+                    let val = code - 0x10000;
+                    let high = 0xD800 | ((val >> 10) as u16);
+                    let low = 0xDC00 | ((val & 0x3FF) as u16);
+                    push_u16(&mut out, high, endian);
+                    push_u16(&mut out, low, endian);
+                }
+            }
+            Ok(out)
+        }
+        EncodingKind::Utf32 | EncodingKind::Utf32LE | EncodingKind::Utf32BE => {
+            let (endian, with_bom) = match kind {
+                EncodingKind::Utf32 => (native_endian(), true),
+                EncodingKind::Utf32LE => (Endian::Little, false),
+                EncodingKind::Utf32BE => (Endian::Big, false),
+                _ => (native_endian(), false),
+            };
+            if with_bom {
+                push_u32(&mut out, 0x0000_FEFF, endian);
+            }
+            for (idx, cp) in wtf8_from_bytes(bytes).code_points().enumerate() {
+                let code = cp.to_u32();
+                if is_surrogate(code) {
+                    match handler {
+                        "surrogatepass" | "surrogateescape" => {
+                            push_u32(&mut out, code, endian);
+                            continue;
+                        }
+                        "ignore" => continue,
+                        "replace" => {
+                            push_u32(&mut out, 0xFFFD, endian);
+                            continue;
+                        }
+                        "backslashreplace" => {
+                            for ch in unicode_escape_codepoint(code).chars() {
+                                push_u32(&mut out, ch as u32, endian);
+                            }
+                            continue;
+                        }
+                        "namereplace" => {
+                            for ch in unicode_name_escape(code).chars() {
+                                push_u32(&mut out, ch as u32, endian);
+                            }
+                            continue;
+                        }
+                        "xmlcharrefreplace" => {
+                            push_xmlcharref_utf32(&mut out, code, endian);
+                            continue;
+                        }
+                        "strict" => {
+                            return Err(invalid_char_err(kind.name(), code, idx, 0x110000));
+                        }
+                        other => {
+                            return Err(EncodeError::UnknownErrorHandler(other.to_string()));
+                        }
+                    }
+                }
+                push_u32(&mut out, code, endian);
             }
             Ok(out)
         }
@@ -13523,17 +19465,19 @@ fn read_u32(bytes: &[u8], idx: usize, endian: Endian) -> u32 {
     }
 }
 
-fn decode_ascii_with_errors(bytes: &[u8], errors: &str) -> Result<String, DecodeFailure> {
-    let mut out = String::with_capacity(bytes.len());
+fn decode_ascii_with_errors(bytes: &[u8], errors: &str) -> Result<Vec<u8>, DecodeFailure> {
+    let mut out = Vec::with_capacity(bytes.len());
     for (idx, &byte) in bytes.iter().enumerate() {
         if byte <= 0x7f {
-            out.push(byte as char);
+            out.push(byte);
             continue;
         }
         match errors {
             "ignore" => {}
-            "replace" => out.push('\u{FFFD}'),
-            "strict" => {
+            "replace" => push_wtf8_codepoint(&mut out, 0xFFFD),
+            "backslashreplace" => push_backslash_bytes_vec(&mut out, &[byte]),
+            "surrogateescape" => push_wtf8_codepoint(&mut out, 0xDC00 + byte as u32),
+            "strict" | "surrogatepass" => {
                 return Err(DecodeFailure::Byte {
                     pos: idx,
                     byte,
@@ -13548,15 +19492,928 @@ fn decode_ascii_with_errors(bytes: &[u8], errors: &str) -> Result<String, Decode
     Ok(out)
 }
 
-fn decode_utf8_bytes_with_errors(bytes: &[u8], errors: &str) -> Result<String, DecodeFailure> {
-    match decode_utf8_with_errors(bytes, errors) {
-        Ok(text) => Ok(text),
-        Err(err) => Err(DecodeFailure::Byte {
-            pos: err.pos,
-            byte: err.byte,
-            message: err.message,
-        }),
+const CP1252_DECODE_TABLE: [u16; 32] = [
+    0x20AC, 0xFFFF, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030,
+    0x0160, 0x2039, 0x0152, 0xFFFF, 0x017D, 0xFFFF, 0xFFFF, 0x2018, 0x2019, 0x201C,
+    0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0xFFFF,
+    0x017E, 0x0178,
+];
+
+const CP437_DECODE_TABLE: [u16; 128] = [
+    0x00C7, 0x00FC, 0x00E9, 0x00E2, 0x00E4, 0x00E0, 0x00E5, 0x00E7,
+    0x00EA, 0x00EB, 0x00E8, 0x00EF, 0x00EE, 0x00EC, 0x00C4, 0x00C5,
+    0x00C9, 0x00E6, 0x00C6, 0x00F4, 0x00F6, 0x00F2, 0x00FB, 0x00F9,
+    0x00FF, 0x00D6, 0x00DC, 0x00A2, 0x00A3, 0x00A5, 0x20A7, 0x0192,
+    0x00E1, 0x00ED, 0x00F3, 0x00FA, 0x00F1, 0x00D1, 0x00AA, 0x00BA,
+    0x00BF, 0x2310, 0x00AC, 0x00BD, 0x00BC, 0x00A1, 0x00AB, 0x00BB,
+    0x2591, 0x2592, 0x2593, 0x2502, 0x2524, 0x2561, 0x2562, 0x2556,
+    0x2555, 0x2563, 0x2551, 0x2557, 0x255D, 0x255C, 0x255B, 0x2510,
+    0x2514, 0x2534, 0x252C, 0x251C, 0x2500, 0x253C, 0x255E, 0x255F,
+    0x255A, 0x2554, 0x2569, 0x2566, 0x2560, 0x2550, 0x256C, 0x2567,
+    0x2568, 0x2564, 0x2565, 0x2559, 0x2558, 0x2552, 0x2553, 0x256B,
+    0x256A, 0x2518, 0x250C, 0x2588, 0x2584, 0x258C, 0x2590, 0x2580,
+    0x03B1, 0x00DF, 0x0393, 0x03C0, 0x03A3, 0x03C3, 0x00B5, 0x03C4,
+    0x03A6, 0x0398, 0x03A9, 0x03B4, 0x221E, 0x03C6, 0x03B5, 0x2229,
+    0x2261, 0x00B1, 0x2265, 0x2264, 0x2320, 0x2321, 0x00F7, 0x2248,
+    0x00B0, 0x2219, 0x00B7, 0x221A, 0x207F, 0x00B2, 0x25A0, 0x00A0,
+];
+
+const CP850_DECODE_TABLE: [u16; 128] = [
+    0x00C7, 0x00FC, 0x00E9, 0x00E2, 0x00E4, 0x00E0, 0x00E5, 0x00E7,
+    0x00EA, 0x00EB, 0x00E8, 0x00EF, 0x00EE, 0x00EC, 0x00C4, 0x00C5,
+    0x00C9, 0x00E6, 0x00C6, 0x00F4, 0x00F6, 0x00F2, 0x00FB, 0x00F9,
+    0x00FF, 0x00D6, 0x00DC, 0x00F8, 0x00A3, 0x00D8, 0x00D7, 0x0192,
+    0x00E1, 0x00ED, 0x00F3, 0x00FA, 0x00F1, 0x00D1, 0x00AA, 0x00BA,
+    0x00BF, 0x00AE, 0x00AC, 0x00BD, 0x00BC, 0x00A1, 0x00AB, 0x00BB,
+    0x2591, 0x2592, 0x2593, 0x2502, 0x2524, 0x00C1, 0x00C2, 0x00C0,
+    0x00A9, 0x2563, 0x2551, 0x2557, 0x255D, 0x00A2, 0x00A5, 0x2510,
+    0x2514, 0x2534, 0x252C, 0x251C, 0x2500, 0x253C, 0x00E3, 0x00C3,
+    0x255A, 0x2554, 0x2569, 0x2566, 0x2560, 0x2550, 0x256C, 0x00A4,
+    0x00F0, 0x00D0, 0x00CA, 0x00CB, 0x00C8, 0x0131, 0x00CD, 0x00CE,
+    0x00CF, 0x2518, 0x250C, 0x2588, 0x2584, 0x00A6, 0x00CC, 0x2580,
+    0x00D3, 0x00DF, 0x00D4, 0x00D2, 0x00F5, 0x00D5, 0x00B5, 0x00FE,
+    0x00DE, 0x00DA, 0x00DB, 0x00D9, 0x00FD, 0x00DD, 0x00AF, 0x00B4,
+    0x00AD, 0x00B1, 0x2017, 0x00BE, 0x00B6, 0x00A7, 0x00F7, 0x00B8,
+    0x00B0, 0x00A8, 0x00B7, 0x00B9, 0x00B3, 0x00B2, 0x25A0, 0x00A0,
+];
+
+const CP865_DECODE_TABLE: [u16; 128] = [
+    0x00C7, 0x00FC, 0x00E9, 0x00E2, 0x00E4, 0x00E0, 0x00E5, 0x00E7,
+    0x00EA, 0x00EB, 0x00E8, 0x00EF, 0x00EE, 0x00EC, 0x00C4, 0x00C5,
+    0x00C9, 0x00E6, 0x00C6, 0x00F4, 0x00F6, 0x00F2, 0x00FB, 0x00F9,
+    0x00FF, 0x00D6, 0x00DC, 0x00F8, 0x00A3, 0x00D8, 0x20A7, 0x0192,
+    0x00E1, 0x00ED, 0x00F3, 0x00FA, 0x00F1, 0x00D1, 0x00AA, 0x00BA,
+    0x00BF, 0x2310, 0x00AC, 0x00BD, 0x00BC, 0x00A1, 0x00AB, 0x00A4,
+    0x2591, 0x2592, 0x2593, 0x2502, 0x2524, 0x2561, 0x2562, 0x2556,
+    0x2555, 0x2563, 0x2551, 0x2557, 0x255D, 0x255C, 0x255B, 0x2510,
+    0x2514, 0x2534, 0x252C, 0x251C, 0x2500, 0x253C, 0x255E, 0x255F,
+    0x255A, 0x2554, 0x2569, 0x2566, 0x2560, 0x2550, 0x256C, 0x2567,
+    0x2568, 0x2564, 0x2565, 0x2559, 0x2558, 0x2552, 0x2553, 0x256B,
+    0x256A, 0x2518, 0x250C, 0x2588, 0x2584, 0x258C, 0x2590, 0x2580,
+    0x03B1, 0x00DF, 0x0393, 0x03C0, 0x03A3, 0x03C3, 0x00B5, 0x03C4,
+    0x03A6, 0x0398, 0x03A9, 0x03B4, 0x221E, 0x03C6, 0x03B5, 0x2229,
+    0x2261, 0x00B1, 0x2265, 0x2264, 0x2320, 0x2321, 0x00F7, 0x2248,
+    0x00B0, 0x2219, 0x00B7, 0x221A, 0x207F, 0x00B2, 0x25A0, 0x00A0,
+];
+
+const CP866_DECODE_TABLE: [u16; 128] = [
+    0x0410, 0x0411, 0x0412, 0x0413, 0x0414, 0x0415, 0x0416, 0x0417,
+    0x0418, 0x0419, 0x041A, 0x041B, 0x041C, 0x041D, 0x041E, 0x041F,
+    0x0420, 0x0421, 0x0422, 0x0423, 0x0424, 0x0425, 0x0426, 0x0427,
+    0x0428, 0x0429, 0x042A, 0x042B, 0x042C, 0x042D, 0x042E, 0x042F,
+    0x0430, 0x0431, 0x0432, 0x0433, 0x0434, 0x0435, 0x0436, 0x0437,
+    0x0438, 0x0439, 0x043A, 0x043B, 0x043C, 0x043D, 0x043E, 0x043F,
+    0x2591, 0x2592, 0x2593, 0x2502, 0x2524, 0x2561, 0x2562, 0x2556,
+    0x2555, 0x2563, 0x2551, 0x2557, 0x255D, 0x255C, 0x255B, 0x2510,
+    0x2514, 0x2534, 0x252C, 0x251C, 0x2500, 0x253C, 0x255E, 0x255F,
+    0x255A, 0x2554, 0x2569, 0x2566, 0x2560, 0x2550, 0x256C, 0x2567,
+    0x2568, 0x2564, 0x2565, 0x2559, 0x2558, 0x2552, 0x2553, 0x256B,
+    0x256A, 0x2518, 0x250C, 0x2588, 0x2584, 0x258C, 0x2590, 0x2580,
+    0x0440, 0x0441, 0x0442, 0x0443, 0x0444, 0x0445, 0x0446, 0x0447,
+    0x0448, 0x0449, 0x044A, 0x044B, 0x044C, 0x044D, 0x044E, 0x044F,
+    0x0401, 0x0451, 0x0404, 0x0454, 0x0407, 0x0457, 0x040E, 0x045E,
+    0x00B0, 0x2219, 0x00B7, 0x221A, 0x2116, 0x00A4, 0x25A0, 0x00A0,
+];
+
+const CP874_DECODE_TABLE: [u16; 128] = [
+    0x20AC, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0x2026, 0xFFFF, 0xFFFF,
+    0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+    0xFFFF, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+    0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+    0x00A0, 0x0E01, 0x0E02, 0x0E03, 0x0E04, 0x0E05, 0x0E06, 0x0E07,
+    0x0E08, 0x0E09, 0x0E0A, 0x0E0B, 0x0E0C, 0x0E0D, 0x0E0E, 0x0E0F,
+    0x0E10, 0x0E11, 0x0E12, 0x0E13, 0x0E14, 0x0E15, 0x0E16, 0x0E17,
+    0x0E18, 0x0E19, 0x0E1A, 0x0E1B, 0x0E1C, 0x0E1D, 0x0E1E, 0x0E1F,
+    0x0E20, 0x0E21, 0x0E22, 0x0E23, 0x0E24, 0x0E25, 0x0E26, 0x0E27,
+    0x0E28, 0x0E29, 0x0E2A, 0x0E2B, 0x0E2C, 0x0E2D, 0x0E2E, 0x0E2F,
+    0x0E30, 0x0E31, 0x0E32, 0x0E33, 0x0E34, 0x0E35, 0x0E36, 0x0E37,
+    0x0E38, 0x0E39, 0x0E3A, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0x0E3F,
+    0x0E40, 0x0E41, 0x0E42, 0x0E43, 0x0E44, 0x0E45, 0x0E46, 0x0E47,
+    0x0E48, 0x0E49, 0x0E4A, 0x0E4B, 0x0E4C, 0x0E4D, 0x0E4E, 0x0E4F,
+    0x0E50, 0x0E51, 0x0E52, 0x0E53, 0x0E54, 0x0E55, 0x0E56, 0x0E57,
+    0x0E58, 0x0E59, 0x0E5A, 0x0E5B, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+];
+
+const CP1250_DECODE_TABLE: [u16; 128] = [
+    0x20AC, 0xFFFF, 0x201A, 0xFFFF, 0x201E, 0x2026, 0x2020, 0x2021,
+    0xFFFF, 0x2030, 0x0160, 0x2039, 0x015A, 0x0164, 0x017D, 0x0179,
+    0xFFFF, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+    0xFFFF, 0x2122, 0x0161, 0x203A, 0x015B, 0x0165, 0x017E, 0x017A,
+    0x00A0, 0x02C7, 0x02D8, 0x0141, 0x00A4, 0x0104, 0x00A6, 0x00A7,
+    0x00A8, 0x00A9, 0x015E, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x017B,
+    0x00B0, 0x00B1, 0x02DB, 0x0142, 0x00B4, 0x00B5, 0x00B6, 0x00B7,
+    0x00B8, 0x0105, 0x015F, 0x00BB, 0x013D, 0x02DD, 0x013E, 0x017C,
+    0x0154, 0x00C1, 0x00C2, 0x0102, 0x00C4, 0x0139, 0x0106, 0x00C7,
+    0x010C, 0x00C9, 0x0118, 0x00CB, 0x011A, 0x00CD, 0x00CE, 0x010E,
+    0x0110, 0x0143, 0x0147, 0x00D3, 0x00D4, 0x0150, 0x00D6, 0x00D7,
+    0x0158, 0x016E, 0x00DA, 0x0170, 0x00DC, 0x00DD, 0x0162, 0x00DF,
+    0x0155, 0x00E1, 0x00E2, 0x0103, 0x00E4, 0x013A, 0x0107, 0x00E7,
+    0x010D, 0x00E9, 0x0119, 0x00EB, 0x011B, 0x00ED, 0x00EE, 0x010F,
+    0x0111, 0x0144, 0x0148, 0x00F3, 0x00F4, 0x0151, 0x00F6, 0x00F7,
+    0x0159, 0x016F, 0x00FA, 0x0171, 0x00FC, 0x00FD, 0x0163, 0x02D9,
+];
+
+const CP1251_DECODE_TABLE: [u16; 128] = [
+    0x0402, 0x0403, 0x201A, 0x0453, 0x201E, 0x2026, 0x2020, 0x2021,
+    0x20AC, 0x2030, 0x0409, 0x2039, 0x040A, 0x040C, 0x040B, 0x040F,
+    0x0452, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+    0xFFFF, 0x2122, 0x0459, 0x203A, 0x045A, 0x045C, 0x045B, 0x045F,
+    0x00A0, 0x040E, 0x045E, 0x0408, 0x00A4, 0x0490, 0x00A6, 0x00A7,
+    0x0401, 0x00A9, 0x0404, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x0407,
+    0x00B0, 0x00B1, 0x0406, 0x0456, 0x0491, 0x00B5, 0x00B6, 0x00B7,
+    0x0451, 0x2116, 0x0454, 0x00BB, 0x0458, 0x0405, 0x0455, 0x0457,
+    0x0410, 0x0411, 0x0412, 0x0413, 0x0414, 0x0415, 0x0416, 0x0417,
+    0x0418, 0x0419, 0x041A, 0x041B, 0x041C, 0x041D, 0x041E, 0x041F,
+    0x0420, 0x0421, 0x0422, 0x0423, 0x0424, 0x0425, 0x0426, 0x0427,
+    0x0428, 0x0429, 0x042A, 0x042B, 0x042C, 0x042D, 0x042E, 0x042F,
+    0x0430, 0x0431, 0x0432, 0x0433, 0x0434, 0x0435, 0x0436, 0x0437,
+    0x0438, 0x0439, 0x043A, 0x043B, 0x043C, 0x043D, 0x043E, 0x043F,
+    0x0440, 0x0441, 0x0442, 0x0443, 0x0444, 0x0445, 0x0446, 0x0447,
+    0x0448, 0x0449, 0x044A, 0x044B, 0x044C, 0x044D, 0x044E, 0x044F,
+];
+
+const CP860_DECODE_TABLE: [u16; 128] = [
+    0x00C7, 0x00FC, 0x00E9, 0x00E2, 0x00E3, 0x00E0, 0x00C1, 0x00E7,
+    0x00EA, 0x00CA, 0x00E8, 0x00CD, 0x00D4, 0x00EC, 0x00C3, 0x00C2,
+    0x00C9, 0x00C0, 0x00C8, 0x00F4, 0x00F5, 0x00F2, 0x00DA, 0x00F9,
+    0x00CC, 0x00D5, 0x00DC, 0x00A2, 0x00A3, 0x00D9, 0x20A7, 0x00D3,
+    0x00E1, 0x00ED, 0x00F3, 0x00FA, 0x00F1, 0x00D1, 0x00AA, 0x00BA,
+    0x00BF, 0x00D2, 0x00AC, 0x00BD, 0x00BC, 0x00A1, 0x00AB, 0x00BB,
+    0x2591, 0x2592, 0x2593, 0x2502, 0x2524, 0x2561, 0x2562, 0x2556,
+    0x2555, 0x2563, 0x2551, 0x2557, 0x255D, 0x255C, 0x255B, 0x2510,
+    0x2514, 0x2534, 0x252C, 0x251C, 0x2500, 0x253C, 0x255E, 0x255F,
+    0x255A, 0x2554, 0x2569, 0x2566, 0x2560, 0x2550, 0x256C, 0x2567,
+    0x2568, 0x2564, 0x2565, 0x2559, 0x2558, 0x2552, 0x2553, 0x256B,
+    0x256A, 0x2518, 0x250C, 0x2588, 0x2584, 0x258C, 0x2590, 0x2580,
+    0x03B1, 0x00DF, 0x0393, 0x03C0, 0x03A3, 0x03C3, 0x00B5, 0x03C4,
+    0x03A6, 0x0398, 0x03A9, 0x03B4, 0x221E, 0x03C6, 0x03B5, 0x2229,
+    0x2261, 0x00B1, 0x2265, 0x2264, 0x2320, 0x2321, 0x00F7, 0x2248,
+    0x00B0, 0x2219, 0x00B7, 0x221A, 0x207F, 0x00B2, 0x25A0, 0x00A0,
+];
+const CP862_DECODE_TABLE: [u16; 128] = [
+    0x05D0, 0x05D1, 0x05D2, 0x05D3, 0x05D4, 0x05D5, 0x05D6, 0x05D7,
+    0x05D8, 0x05D9, 0x05DA, 0x05DB, 0x05DC, 0x05DD, 0x05DE, 0x05DF,
+    0x05E0, 0x05E1, 0x05E2, 0x05E3, 0x05E4, 0x05E5, 0x05E6, 0x05E7,
+    0x05E8, 0x05E9, 0x05EA, 0x00A2, 0x00A3, 0x00A5, 0x20A7, 0x0192,
+    0x00E1, 0x00ED, 0x00F3, 0x00FA, 0x00F1, 0x00D1, 0x00AA, 0x00BA,
+    0x00BF, 0x2310, 0x00AC, 0x00BD, 0x00BC, 0x00A1, 0x00AB, 0x00BB,
+    0x2591, 0x2592, 0x2593, 0x2502, 0x2524, 0x2561, 0x2562, 0x2556,
+    0x2555, 0x2563, 0x2551, 0x2557, 0x255D, 0x255C, 0x255B, 0x2510,
+    0x2514, 0x2534, 0x252C, 0x251C, 0x2500, 0x253C, 0x255E, 0x255F,
+    0x255A, 0x2554, 0x2569, 0x2566, 0x2560, 0x2550, 0x256C, 0x2567,
+    0x2568, 0x2564, 0x2565, 0x2559, 0x2558, 0x2552, 0x2553, 0x256B,
+    0x256A, 0x2518, 0x250C, 0x2588, 0x2584, 0x258C, 0x2590, 0x2580,
+    0x03B1, 0x00DF, 0x0393, 0x03C0, 0x03A3, 0x03C3, 0x00B5, 0x03C4,
+    0x03A6, 0x0398, 0x03A9, 0x03B4, 0x221E, 0x03C6, 0x03B5, 0x2229,
+    0x2261, 0x00B1, 0x2265, 0x2264, 0x2320, 0x2321, 0x00F7, 0x2248,
+    0x00B0, 0x2219, 0x00B7, 0x221A, 0x207F, 0x00B2, 0x25A0, 0x00A0,
+];
+const CP863_DECODE_TABLE: [u16; 128] = [
+    0x00C7, 0x00FC, 0x00E9, 0x00E2, 0x00C2, 0x00E0, 0x00B6, 0x00E7,
+    0x00EA, 0x00EB, 0x00E8, 0x00EF, 0x00EE, 0x2017, 0x00C0, 0x00A7,
+    0x00C9, 0x00C8, 0x00CA, 0x00F4, 0x00CB, 0x00CF, 0x00FB, 0x00F9,
+    0x00A4, 0x00D4, 0x00DC, 0x00A2, 0x00A3, 0x00D9, 0x00DB, 0x0192,
+    0x00A6, 0x00B4, 0x00F3, 0x00FA, 0x00A8, 0x00B8, 0x00B3, 0x00AF,
+    0x00CE, 0x2310, 0x00AC, 0x00BD, 0x00BC, 0x00BE, 0x00AB, 0x00BB,
+    0x2591, 0x2592, 0x2593, 0x2502, 0x2524, 0x2561, 0x2562, 0x2556,
+    0x2555, 0x2563, 0x2551, 0x2557, 0x255D, 0x255C, 0x255B, 0x2510,
+    0x2514, 0x2534, 0x252C, 0x251C, 0x2500, 0x253C, 0x255E, 0x255F,
+    0x255A, 0x2554, 0x2569, 0x2566, 0x2560, 0x2550, 0x256C, 0x2567,
+    0x2568, 0x2564, 0x2565, 0x2559, 0x2558, 0x2552, 0x2553, 0x256B,
+    0x256A, 0x2518, 0x250C, 0x2588, 0x2584, 0x258C, 0x2590, 0x2580,
+    0x03B1, 0x00DF, 0x0393, 0x03C0, 0x03A3, 0x03C3, 0x00B5, 0x03C4,
+    0x03A6, 0x0398, 0x03A9, 0x03B4, 0x221E, 0x03C6, 0x03B5, 0x2229,
+    0x2261, 0x00B1, 0x2265, 0x2264, 0x2320, 0x2321, 0x00F7, 0x2248,
+    0x00B0, 0x2219, 0x00B7, 0x221A, 0x207F, 0x00B2, 0x25A0, 0x00A0,
+];
+const CP1253_DECODE_TABLE: [u16; 128] = [
+    0x20AC, 0xFFFF, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
+    0xFFFF, 0x2030, 0xFFFF, 0x2039, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+    0xFFFF, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+    0xFFFF, 0x2122, 0xFFFF, 0x203A, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+    0x00A0, 0x0385, 0x0386, 0x00A3, 0x00A4, 0x00A5, 0x00A6, 0x00A7,
+    0x00A8, 0x00A9, 0xFFFF, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x2015,
+    0x00B0, 0x00B1, 0x00B2, 0x00B3, 0x0384, 0x00B5, 0x00B6, 0x00B7,
+    0x0388, 0x0389, 0x038A, 0x00BB, 0x038C, 0x00BD, 0x038E, 0x038F,
+    0x0390, 0x0391, 0x0392, 0x0393, 0x0394, 0x0395, 0x0396, 0x0397,
+    0x0398, 0x0399, 0x039A, 0x039B, 0x039C, 0x039D, 0x039E, 0x039F,
+    0x03A0, 0x03A1, 0xFFFF, 0x03A3, 0x03A4, 0x03A5, 0x03A6, 0x03A7,
+    0x03A8, 0x03A9, 0x03AA, 0x03AB, 0x03AC, 0x03AD, 0x03AE, 0x03AF,
+    0x03B0, 0x03B1, 0x03B2, 0x03B3, 0x03B4, 0x03B5, 0x03B6, 0x03B7,
+    0x03B8, 0x03B9, 0x03BA, 0x03BB, 0x03BC, 0x03BD, 0x03BE, 0x03BF,
+    0x03C0, 0x03C1, 0x03C2, 0x03C3, 0x03C4, 0x03C5, 0x03C6, 0x03C7,
+    0x03C8, 0x03C9, 0x03CA, 0x03CB, 0x03CC, 0x03CD, 0x03CE, 0xFFFF,
+];
+const CP1254_DECODE_TABLE: [u16; 128] = [
+    0x20AC, 0xFFFF, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
+    0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0xFFFF, 0xFFFF, 0xFFFF,
+    0xFFFF, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+    0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0xFFFF, 0xFFFF, 0x0178,
+    0x00A0, 0x00A1, 0x00A2, 0x00A3, 0x00A4, 0x00A5, 0x00A6, 0x00A7,
+    0x00A8, 0x00A9, 0x00AA, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x00AF,
+    0x00B0, 0x00B1, 0x00B2, 0x00B3, 0x00B4, 0x00B5, 0x00B6, 0x00B7,
+    0x00B8, 0x00B9, 0x00BA, 0x00BB, 0x00BC, 0x00BD, 0x00BE, 0x00BF,
+    0x00C0, 0x00C1, 0x00C2, 0x00C3, 0x00C4, 0x00C5, 0x00C6, 0x00C7,
+    0x00C8, 0x00C9, 0x00CA, 0x00CB, 0x00CC, 0x00CD, 0x00CE, 0x00CF,
+    0x011E, 0x00D1, 0x00D2, 0x00D3, 0x00D4, 0x00D5, 0x00D6, 0x00D7,
+    0x00D8, 0x00D9, 0x00DA, 0x00DB, 0x00DC, 0x0130, 0x015E, 0x00DF,
+    0x00E0, 0x00E1, 0x00E2, 0x00E3, 0x00E4, 0x00E5, 0x00E6, 0x00E7,
+    0x00E8, 0x00E9, 0x00EA, 0x00EB, 0x00EC, 0x00ED, 0x00EE, 0x00EF,
+    0x011F, 0x00F1, 0x00F2, 0x00F3, 0x00F4, 0x00F5, 0x00F6, 0x00F7,
+    0x00F8, 0x00F9, 0x00FA, 0x00FB, 0x00FC, 0x0131, 0x015F, 0x00FF,
+];
+const CP1255_DECODE_TABLE: [u16; 128] = [
+    0x20AC, 0xFFFF, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
+    0x02C6, 0x2030, 0xFFFF, 0x2039, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+    0xFFFF, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+    0x02DC, 0x2122, 0xFFFF, 0x203A, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+    0x00A0, 0x00A1, 0x00A2, 0x00A3, 0x20AA, 0x00A5, 0x00A6, 0x00A7,
+    0x00A8, 0x00A9, 0x00D7, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x00AF,
+    0x00B0, 0x00B1, 0x00B2, 0x00B3, 0x00B4, 0x00B5, 0x00B6, 0x00B7,
+    0x00B8, 0x00B9, 0x00F7, 0x00BB, 0x00BC, 0x00BD, 0x00BE, 0x00BF,
+    0x05B0, 0x05B1, 0x05B2, 0x05B3, 0x05B4, 0x05B5, 0x05B6, 0x05B7,
+    0x05B8, 0x05B9, 0xFFFF, 0x05BB, 0x05BC, 0x05BD, 0x05BE, 0x05BF,
+    0x05C0, 0x05C1, 0x05C2, 0x05C3, 0x05F0, 0x05F1, 0x05F2, 0x05F3,
+    0x05F4, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+    0x05D0, 0x05D1, 0x05D2, 0x05D3, 0x05D4, 0x05D5, 0x05D6, 0x05D7,
+    0x05D8, 0x05D9, 0x05DA, 0x05DB, 0x05DC, 0x05DD, 0x05DE, 0x05DF,
+    0x05E0, 0x05E1, 0x05E2, 0x05E3, 0x05E4, 0x05E5, 0x05E6, 0x05E7,
+    0x05E8, 0x05E9, 0x05EA, 0xFFFF, 0xFFFF, 0x200E, 0x200F, 0xFFFF,
+];
+const CP1256_DECODE_TABLE: [u16; 128] = [
+    0x20AC, 0x067E, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
+    0x02C6, 0x2030, 0x0679, 0x2039, 0x0152, 0x0686, 0x0698, 0x0688,
+    0x06AF, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+    0x06A9, 0x2122, 0x0691, 0x203A, 0x0153, 0x200C, 0x200D, 0x06BA,
+    0x00A0, 0x060C, 0x00A2, 0x00A3, 0x00A4, 0x00A5, 0x00A6, 0x00A7,
+    0x00A8, 0x00A9, 0x06BE, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x00AF,
+    0x00B0, 0x00B1, 0x00B2, 0x00B3, 0x00B4, 0x00B5, 0x00B6, 0x00B7,
+    0x00B8, 0x00B9, 0x061B, 0x00BB, 0x00BC, 0x00BD, 0x00BE, 0x061F,
+    0x06C1, 0x0621, 0x0622, 0x0623, 0x0624, 0x0625, 0x0626, 0x0627,
+    0x0628, 0x0629, 0x062A, 0x062B, 0x062C, 0x062D, 0x062E, 0x062F,
+    0x0630, 0x0631, 0x0632, 0x0633, 0x0634, 0x0635, 0x0636, 0x00D7,
+    0x0637, 0x0638, 0x0639, 0x063A, 0x0640, 0x0641, 0x0642, 0x0643,
+    0x00E0, 0x0644, 0x00E2, 0x0645, 0x0646, 0x0647, 0x0648, 0x00E7,
+    0x00E8, 0x00E9, 0x00EA, 0x00EB, 0x0649, 0x064A, 0x00EE, 0x00EF,
+    0x064B, 0x064C, 0x064D, 0x064E, 0x00F4, 0x064F, 0x0650, 0x00F7,
+    0x0651, 0x00F9, 0x0652, 0x00FB, 0x00FC, 0x200E, 0x200F, 0x06D2,
+];
+const CP1257_DECODE_TABLE: [u16; 128] = [
+    0x20AC, 0xFFFF, 0x201A, 0xFFFF, 0x201E, 0x2026, 0x2020, 0x2021,
+    0xFFFF, 0x2030, 0xFFFF, 0x2039, 0xFFFF, 0x00A8, 0x02C7, 0x00B8,
+    0xFFFF, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+    0xFFFF, 0x2122, 0xFFFF, 0x203A, 0xFFFF, 0x00AF, 0x02DB, 0xFFFF,
+    0x00A0, 0xFFFF, 0x00A2, 0x00A3, 0x00A4, 0xFFFF, 0x00A6, 0x00A7,
+    0x00D8, 0x00A9, 0x0156, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x00C6,
+    0x00B0, 0x00B1, 0x00B2, 0x00B3, 0x00B4, 0x00B5, 0x00B6, 0x00B7,
+    0x00F8, 0x00B9, 0x0157, 0x00BB, 0x00BC, 0x00BD, 0x00BE, 0x00E6,
+    0x0104, 0x012E, 0x0100, 0x0106, 0x00C4, 0x00C5, 0x0118, 0x0112,
+    0x010C, 0x00C9, 0x0179, 0x0116, 0x0122, 0x0136, 0x012A, 0x013B,
+    0x0160, 0x0143, 0x0145, 0x00D3, 0x014C, 0x00D5, 0x00D6, 0x00D7,
+    0x0172, 0x0141, 0x015A, 0x016A, 0x00DC, 0x017B, 0x017D, 0x00DF,
+    0x0105, 0x012F, 0x0101, 0x0107, 0x00E4, 0x00E5, 0x0119, 0x0113,
+    0x010D, 0x00E9, 0x017A, 0x0117, 0x0123, 0x0137, 0x012B, 0x013C,
+    0x0161, 0x0144, 0x0146, 0x00F3, 0x014D, 0x00F5, 0x00F6, 0x00F7,
+    0x0173, 0x0142, 0x015B, 0x016B, 0x00FC, 0x017C, 0x017E, 0x02D9,
+];
+const KOI8_R_DECODE_TABLE: [u16; 128] = [
+    0x2500, 0x2502, 0x250C, 0x2510, 0x2514, 0x2518, 0x251C, 0x2524,
+    0x252C, 0x2534, 0x253C, 0x2580, 0x2584, 0x2588, 0x258C, 0x2590,
+    0x2591, 0x2592, 0x2593, 0x2320, 0x25A0, 0x2219, 0x221A, 0x2248,
+    0x2264, 0x2265, 0x00A0, 0x2321, 0x00B0, 0x00B2, 0x00B7, 0x00F7,
+    0x2550, 0x2551, 0x2552, 0x0451, 0x2553, 0x2554, 0x2555, 0x2556,
+    0x2557, 0x2558, 0x2559, 0x255A, 0x255B, 0x255C, 0x255D, 0x255E,
+    0x255F, 0x2560, 0x2561, 0x0401, 0x2562, 0x2563, 0x2564, 0x2565,
+    0x2566, 0x2567, 0x2568, 0x2569, 0x256A, 0x256B, 0x256C, 0x00A9,
+    0x044E, 0x0430, 0x0431, 0x0446, 0x0434, 0x0435, 0x0444, 0x0433,
+    0x0445, 0x0438, 0x0439, 0x043A, 0x043B, 0x043C, 0x043D, 0x043E,
+    0x043F, 0x044F, 0x0440, 0x0441, 0x0442, 0x0443, 0x0436, 0x0432,
+    0x044C, 0x044B, 0x0437, 0x0448, 0x044D, 0x0449, 0x0447, 0x044A,
+    0x042E, 0x0410, 0x0411, 0x0426, 0x0414, 0x0415, 0x0424, 0x0413,
+    0x0425, 0x0418, 0x0419, 0x041A, 0x041B, 0x041C, 0x041D, 0x041E,
+    0x041F, 0x042F, 0x0420, 0x0421, 0x0422, 0x0423, 0x0416, 0x0412,
+    0x042C, 0x042B, 0x0417, 0x0428, 0x042D, 0x0429, 0x0427, 0x042A,
+];
+
+const KOI8_U_DECODE_TABLE: [u16; 128] = [
+    0x2500, 0x2502, 0x250C, 0x2510, 0x2514, 0x2518, 0x251C, 0x2524,
+    0x252C, 0x2534, 0x253C, 0x2580, 0x2584, 0x2588, 0x258C, 0x2590,
+    0x2591, 0x2592, 0x2593, 0x2320, 0x25A0, 0x2219, 0x221A, 0x2248,
+    0x2264, 0x2265, 0x00A0, 0x2321, 0x00B0, 0x00B2, 0x00B7, 0x00F7,
+    0x2550, 0x2551, 0x2552, 0x0451, 0x0454, 0x2554, 0x0456, 0x0457,
+    0x2557, 0x2558, 0x2559, 0x255A, 0x255B, 0x0491, 0x255D, 0x255E,
+    0x255F, 0x2560, 0x2561, 0x0401, 0x0404, 0x2563, 0x0406, 0x0407,
+    0x2566, 0x2567, 0x2568, 0x2569, 0x256A, 0x0490, 0x256C, 0x00A9,
+    0x044E, 0x0430, 0x0431, 0x0446, 0x0434, 0x0435, 0x0444, 0x0433,
+    0x0445, 0x0438, 0x0439, 0x043A, 0x043B, 0x043C, 0x043D, 0x043E,
+    0x043F, 0x044F, 0x0440, 0x0441, 0x0442, 0x0443, 0x0436, 0x0432,
+    0x044C, 0x044B, 0x0437, 0x0448, 0x044D, 0x0449, 0x0447, 0x044A,
+    0x042E, 0x0410, 0x0411, 0x0426, 0x0414, 0x0415, 0x0424, 0x0413,
+    0x0425, 0x0418, 0x0419, 0x041A, 0x041B, 0x041C, 0x041D, 0x041E,
+    0x041F, 0x042F, 0x0420, 0x0421, 0x0422, 0x0423, 0x0416, 0x0412,
+    0x042C, 0x042B, 0x0417, 0x0428, 0x042D, 0x0429, 0x0427, 0x042A,
+];
+
+const ISO8859_2_DECODE_TABLE: [u16; 128] = [
+    0x0080, 0x0081, 0x0082, 0x0083, 0x0084, 0x0085, 0x0086, 0x0087,
+    0x0088, 0x0089, 0x008A, 0x008B, 0x008C, 0x008D, 0x008E, 0x008F,
+    0x0090, 0x0091, 0x0092, 0x0093, 0x0094, 0x0095, 0x0096, 0x0097,
+    0x0098, 0x0099, 0x009A, 0x009B, 0x009C, 0x009D, 0x009E, 0x009F,
+    0x00A0, 0x0104, 0x02D8, 0x0141, 0x00A4, 0x013D, 0x015A, 0x00A7,
+    0x00A8, 0x0160, 0x015E, 0x0164, 0x0179, 0x00AD, 0x017D, 0x017B,
+    0x00B0, 0x0105, 0x02DB, 0x0142, 0x00B4, 0x013E, 0x015B, 0x02C7,
+    0x00B8, 0x0161, 0x015F, 0x0165, 0x017A, 0x02DD, 0x017E, 0x017C,
+    0x0154, 0x00C1, 0x00C2, 0x0102, 0x00C4, 0x0139, 0x0106, 0x00C7,
+    0x010C, 0x00C9, 0x0118, 0x00CB, 0x011A, 0x00CD, 0x00CE, 0x010E,
+    0x0110, 0x0143, 0x0147, 0x00D3, 0x00D4, 0x0150, 0x00D6, 0x00D7,
+    0x0158, 0x016E, 0x00DA, 0x0170, 0x00DC, 0x00DD, 0x0162, 0x00DF,
+    0x0155, 0x00E1, 0x00E2, 0x0103, 0x00E4, 0x013A, 0x0107, 0x00E7,
+    0x010D, 0x00E9, 0x0119, 0x00EB, 0x011B, 0x00ED, 0x00EE, 0x010F,
+    0x0111, 0x0144, 0x0148, 0x00F3, 0x00F4, 0x0151, 0x00F6, 0x00F7,
+    0x0159, 0x016F, 0x00FA, 0x0171, 0x00FC, 0x00FD, 0x0163, 0x02D9,
+];
+
+const ISO8859_3_DECODE_TABLE: [u16; 128] = [
+    0x0080, 0x0081, 0x0082, 0x0083, 0x0084, 0x0085, 0x0086, 0x0087,
+    0x0088, 0x0089, 0x008A, 0x008B, 0x008C, 0x008D, 0x008E, 0x008F,
+    0x0090, 0x0091, 0x0092, 0x0093, 0x0094, 0x0095, 0x0096, 0x0097,
+    0x0098, 0x0099, 0x009A, 0x009B, 0x009C, 0x009D, 0x009E, 0x009F,
+    0x00A0, 0x0126, 0x02D8, 0x00A3, 0x00A4, 0xFFFF, 0x0124, 0x00A7,
+    0x00A8, 0x0130, 0x015E, 0x011E, 0x0134, 0x00AD, 0xFFFF, 0x017B,
+    0x00B0, 0x0127, 0x00B2, 0x00B3, 0x00B4, 0x00B5, 0x0125, 0x00B7,
+    0x00B8, 0x0131, 0x015F, 0x011F, 0x0135, 0x00BD, 0xFFFF, 0x017C,
+    0x00C0, 0x00C1, 0x00C2, 0xFFFF, 0x00C4, 0x010A, 0x0108, 0x00C7,
+    0x00C8, 0x00C9, 0x00CA, 0x00CB, 0x00CC, 0x00CD, 0x00CE, 0x00CF,
+    0xFFFF, 0x00D1, 0x00D2, 0x00D3, 0x00D4, 0x0120, 0x00D6, 0x00D7,
+    0x011C, 0x00D9, 0x00DA, 0x00DB, 0x00DC, 0x016C, 0x015C, 0x00DF,
+    0x00E0, 0x00E1, 0x00E2, 0xFFFF, 0x00E4, 0x010B, 0x0109, 0x00E7,
+    0x00E8, 0x00E9, 0x00EA, 0x00EB, 0x00EC, 0x00ED, 0x00EE, 0x00EF,
+    0xFFFF, 0x00F1, 0x00F2, 0x00F3, 0x00F4, 0x0121, 0x00F6, 0x00F7,
+    0x011D, 0x00F9, 0x00FA, 0x00FB, 0x00FC, 0x016D, 0x015D, 0x02D9,
+];
+const ISO8859_4_DECODE_TABLE: [u16; 128] = [
+    0x0080, 0x0081, 0x0082, 0x0083, 0x0084, 0x0085, 0x0086, 0x0087,
+    0x0088, 0x0089, 0x008A, 0x008B, 0x008C, 0x008D, 0x008E, 0x008F,
+    0x0090, 0x0091, 0x0092, 0x0093, 0x0094, 0x0095, 0x0096, 0x0097,
+    0x0098, 0x0099, 0x009A, 0x009B, 0x009C, 0x009D, 0x009E, 0x009F,
+    0x00A0, 0x0104, 0x0138, 0x0156, 0x00A4, 0x0128, 0x013B, 0x00A7,
+    0x00A8, 0x0160, 0x0112, 0x0122, 0x0166, 0x00AD, 0x017D, 0x00AF,
+    0x00B0, 0x0105, 0x02DB, 0x0157, 0x00B4, 0x0129, 0x013C, 0x02C7,
+    0x00B8, 0x0161, 0x0113, 0x0123, 0x0167, 0x014A, 0x017E, 0x014B,
+    0x0100, 0x00C1, 0x00C2, 0x00C3, 0x00C4, 0x00C5, 0x00C6, 0x012E,
+    0x010C, 0x00C9, 0x0118, 0x00CB, 0x0116, 0x00CD, 0x00CE, 0x012A,
+    0x0110, 0x0145, 0x014C, 0x0136, 0x00D4, 0x00D5, 0x00D6, 0x00D7,
+    0x00D8, 0x0172, 0x00DA, 0x00DB, 0x00DC, 0x0168, 0x016A, 0x00DF,
+    0x0101, 0x00E1, 0x00E2, 0x00E3, 0x00E4, 0x00E5, 0x00E6, 0x012F,
+    0x010D, 0x00E9, 0x0119, 0x00EB, 0x0117, 0x00ED, 0x00EE, 0x012B,
+    0x0111, 0x0146, 0x014D, 0x0137, 0x00F4, 0x00F5, 0x00F6, 0x00F7,
+    0x00F8, 0x0173, 0x00FA, 0x00FB, 0x00FC, 0x0169, 0x016B, 0x02D9,
+];
+const ISO8859_5_DECODE_TABLE: [u16; 128] = [
+    0x0080, 0x0081, 0x0082, 0x0083, 0x0084, 0x0085, 0x0086, 0x0087,
+    0x0088, 0x0089, 0x008A, 0x008B, 0x008C, 0x008D, 0x008E, 0x008F,
+    0x0090, 0x0091, 0x0092, 0x0093, 0x0094, 0x0095, 0x0096, 0x0097,
+    0x0098, 0x0099, 0x009A, 0x009B, 0x009C, 0x009D, 0x009E, 0x009F,
+    0x00A0, 0x0401, 0x0402, 0x0403, 0x0404, 0x0405, 0x0406, 0x0407,
+    0x0408, 0x0409, 0x040A, 0x040B, 0x040C, 0x00AD, 0x040E, 0x040F,
+    0x0410, 0x0411, 0x0412, 0x0413, 0x0414, 0x0415, 0x0416, 0x0417,
+    0x0418, 0x0419, 0x041A, 0x041B, 0x041C, 0x041D, 0x041E, 0x041F,
+    0x0420, 0x0421, 0x0422, 0x0423, 0x0424, 0x0425, 0x0426, 0x0427,
+    0x0428, 0x0429, 0x042A, 0x042B, 0x042C, 0x042D, 0x042E, 0x042F,
+    0x0430, 0x0431, 0x0432, 0x0433, 0x0434, 0x0435, 0x0436, 0x0437,
+    0x0438, 0x0439, 0x043A, 0x043B, 0x043C, 0x043D, 0x043E, 0x043F,
+    0x0440, 0x0441, 0x0442, 0x0443, 0x0444, 0x0445, 0x0446, 0x0447,
+    0x0448, 0x0449, 0x044A, 0x044B, 0x044C, 0x044D, 0x044E, 0x044F,
+    0x2116, 0x0451, 0x0452, 0x0453, 0x0454, 0x0455, 0x0456, 0x0457,
+    0x0458, 0x0459, 0x045A, 0x045B, 0x045C, 0x00A7, 0x045E, 0x045F,
+];
+
+const ISO8859_6_DECODE_TABLE: [u16; 128] = [
+    0x0080, 0x0081, 0x0082, 0x0083, 0x0084, 0x0085, 0x0086, 0x0087,
+    0x0088, 0x0089, 0x008A, 0x008B, 0x008C, 0x008D, 0x008E, 0x008F,
+    0x0090, 0x0091, 0x0092, 0x0093, 0x0094, 0x0095, 0x0096, 0x0097,
+    0x0098, 0x0099, 0x009A, 0x009B, 0x009C, 0x009D, 0x009E, 0x009F,
+    0x00A0, 0xFFFF, 0xFFFF, 0xFFFF, 0x00A4, 0xFFFF, 0xFFFF, 0xFFFF,
+    0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0x060C, 0x00AD, 0xFFFF, 0xFFFF,
+    0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+    0xFFFF, 0xFFFF, 0xFFFF, 0x061B, 0xFFFF, 0xFFFF, 0xFFFF, 0x061F,
+    0xFFFF, 0x0621, 0x0622, 0x0623, 0x0624, 0x0625, 0x0626, 0x0627,
+    0x0628, 0x0629, 0x062A, 0x062B, 0x062C, 0x062D, 0x062E, 0x062F,
+    0x0630, 0x0631, 0x0632, 0x0633, 0x0634, 0x0635, 0x0636, 0x0637,
+    0x0638, 0x0639, 0x063A, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+    0x0640, 0x0641, 0x0642, 0x0643, 0x0644, 0x0645, 0x0646, 0x0647,
+    0x0648, 0x0649, 0x064A, 0x064B, 0x064C, 0x064D, 0x064E, 0x064F,
+    0x0650, 0x0651, 0x0652, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+    0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+];
+const ISO8859_7_DECODE_TABLE: [u16; 128] = [
+    0x0080, 0x0081, 0x0082, 0x0083, 0x0084, 0x0085, 0x0086, 0x0087,
+    0x0088, 0x0089, 0x008A, 0x008B, 0x008C, 0x008D, 0x008E, 0x008F,
+    0x0090, 0x0091, 0x0092, 0x0093, 0x0094, 0x0095, 0x0096, 0x0097,
+    0x0098, 0x0099, 0x009A, 0x009B, 0x009C, 0x009D, 0x009E, 0x009F,
+    0x00A0, 0x2018, 0x2019, 0x00A3, 0x20AC, 0x20AF, 0x00A6, 0x00A7,
+    0x00A8, 0x00A9, 0x037A, 0x00AB, 0x00AC, 0x00AD, 0xFFFF, 0x2015,
+    0x00B0, 0x00B1, 0x00B2, 0x00B3, 0x0384, 0x0385, 0x0386, 0x00B7,
+    0x0388, 0x0389, 0x038A, 0x00BB, 0x038C, 0x00BD, 0x038E, 0x038F,
+    0x0390, 0x0391, 0x0392, 0x0393, 0x0394, 0x0395, 0x0396, 0x0397,
+    0x0398, 0x0399, 0x039A, 0x039B, 0x039C, 0x039D, 0x039E, 0x039F,
+    0x03A0, 0x03A1, 0xFFFF, 0x03A3, 0x03A4, 0x03A5, 0x03A6, 0x03A7,
+    0x03A8, 0x03A9, 0x03AA, 0x03AB, 0x03AC, 0x03AD, 0x03AE, 0x03AF,
+    0x03B0, 0x03B1, 0x03B2, 0x03B3, 0x03B4, 0x03B5, 0x03B6, 0x03B7,
+    0x03B8, 0x03B9, 0x03BA, 0x03BB, 0x03BC, 0x03BD, 0x03BE, 0x03BF,
+    0x03C0, 0x03C1, 0x03C2, 0x03C3, 0x03C4, 0x03C5, 0x03C6, 0x03C7,
+    0x03C8, 0x03C9, 0x03CA, 0x03CB, 0x03CC, 0x03CD, 0x03CE, 0xFFFF,
+];
+
+const ISO8859_8_DECODE_TABLE: [u16; 128] = [
+    0x0080, 0x0081, 0x0082, 0x0083, 0x0084, 0x0085, 0x0086, 0x0087,
+    0x0088, 0x0089, 0x008A, 0x008B, 0x008C, 0x008D, 0x008E, 0x008F,
+    0x0090, 0x0091, 0x0092, 0x0093, 0x0094, 0x0095, 0x0096, 0x0097,
+    0x0098, 0x0099, 0x009A, 0x009B, 0x009C, 0x009D, 0x009E, 0x009F,
+    0x00A0, 0xFFFF, 0x00A2, 0x00A3, 0x00A4, 0x00A5, 0x00A6, 0x00A7,
+    0x00A8, 0x00A9, 0x00D7, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x00AF,
+    0x00B0, 0x00B1, 0x00B2, 0x00B3, 0x00B4, 0x00B5, 0x00B6, 0x00B7,
+    0x00B8, 0x00B9, 0x00F7, 0x00BB, 0x00BC, 0x00BD, 0x00BE, 0xFFFF,
+    0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+    0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+    0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+    0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0x2017,
+    0x05D0, 0x05D1, 0x05D2, 0x05D3, 0x05D4, 0x05D5, 0x05D6, 0x05D7,
+    0x05D8, 0x05D9, 0x05DA, 0x05DB, 0x05DC, 0x05DD, 0x05DE, 0x05DF,
+    0x05E0, 0x05E1, 0x05E2, 0x05E3, 0x05E4, 0x05E5, 0x05E6, 0x05E7,
+    0x05E8, 0x05E9, 0x05EA, 0xFFFF, 0xFFFF, 0x200E, 0x200F, 0xFFFF,
+];
+const ISO8859_10_DECODE_TABLE: [u16; 128] = [
+    0x0080, 0x0081, 0x0082, 0x0083, 0x0084, 0x0085, 0x0086, 0x0087,
+    0x0088, 0x0089, 0x008A, 0x008B, 0x008C, 0x008D, 0x008E, 0x008F,
+    0x0090, 0x0091, 0x0092, 0x0093, 0x0094, 0x0095, 0x0096, 0x0097,
+    0x0098, 0x0099, 0x009A, 0x009B, 0x009C, 0x009D, 0x009E, 0x009F,
+    0x00A0, 0x0104, 0x0112, 0x0122, 0x012A, 0x0128, 0x0136, 0x00A7,
+    0x013B, 0x0110, 0x0160, 0x0166, 0x017D, 0x00AD, 0x016A, 0x014A,
+    0x00B0, 0x0105, 0x0113, 0x0123, 0x012B, 0x0129, 0x0137, 0x00B7,
+    0x013C, 0x0111, 0x0161, 0x0167, 0x017E, 0x2015, 0x016B, 0x014B,
+    0x0100, 0x00C1, 0x00C2, 0x00C3, 0x00C4, 0x00C5, 0x00C6, 0x012E,
+    0x010C, 0x00C9, 0x0118, 0x00CB, 0x0116, 0x00CD, 0x00CE, 0x00CF,
+    0x00D0, 0x0145, 0x014C, 0x00D3, 0x00D4, 0x00D5, 0x00D6, 0x0168,
+    0x00D8, 0x0172, 0x00DA, 0x00DB, 0x00DC, 0x00DD, 0x00DE, 0x00DF,
+    0x0101, 0x00E1, 0x00E2, 0x00E3, 0x00E4, 0x00E5, 0x00E6, 0x012F,
+    0x010D, 0x00E9, 0x0119, 0x00EB, 0x0117, 0x00ED, 0x00EE, 0x00EF,
+    0x00F0, 0x0146, 0x014D, 0x00F3, 0x00F4, 0x00F5, 0x00F6, 0x0169,
+    0x00F8, 0x0173, 0x00FA, 0x00FB, 0x00FC, 0x00FD, 0x00FE, 0x0138,
+];
+const ISO8859_15_DECODE_TABLE: [u16; 128] = [
+    0x0080, 0x0081, 0x0082, 0x0083, 0x0084, 0x0085, 0x0086, 0x0087,
+    0x0088, 0x0089, 0x008A, 0x008B, 0x008C, 0x008D, 0x008E, 0x008F,
+    0x0090, 0x0091, 0x0092, 0x0093, 0x0094, 0x0095, 0x0096, 0x0097,
+    0x0098, 0x0099, 0x009A, 0x009B, 0x009C, 0x009D, 0x009E, 0x009F,
+    0x00A0, 0x00A1, 0x00A2, 0x00A3, 0x20AC, 0x00A5, 0x0160, 0x00A7,
+    0x0161, 0x00A9, 0x00AA, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x00AF,
+    0x00B0, 0x00B1, 0x00B2, 0x00B3, 0x017D, 0x00B5, 0x00B6, 0x00B7,
+    0x017E, 0x00B9, 0x00BA, 0x00BB, 0x0152, 0x0153, 0x0178, 0x00BF,
+    0x00C0, 0x00C1, 0x00C2, 0x00C3, 0x00C4, 0x00C5, 0x00C6, 0x00C7,
+    0x00C8, 0x00C9, 0x00CA, 0x00CB, 0x00CC, 0x00CD, 0x00CE, 0x00CF,
+    0x00D0, 0x00D1, 0x00D2, 0x00D3, 0x00D4, 0x00D5, 0x00D6, 0x00D7,
+    0x00D8, 0x00D9, 0x00DA, 0x00DB, 0x00DC, 0x00DD, 0x00DE, 0x00DF,
+    0x00E0, 0x00E1, 0x00E2, 0x00E3, 0x00E4, 0x00E5, 0x00E6, 0x00E7,
+    0x00E8, 0x00E9, 0x00EA, 0x00EB, 0x00EC, 0x00ED, 0x00EE, 0x00EF,
+    0x00F0, 0x00F1, 0x00F2, 0x00F3, 0x00F4, 0x00F5, 0x00F6, 0x00F7,
+    0x00F8, 0x00F9, 0x00FA, 0x00FB, 0x00FC, 0x00FD, 0x00FE, 0x00FF,
+];
+
+const MAC_ROMAN_DECODE_TABLE: [u16; 128] = [
+    0x00C4, 0x00C5, 0x00C7, 0x00C9, 0x00D1, 0x00D6, 0x00DC, 0x00E1,
+    0x00E0, 0x00E2, 0x00E4, 0x00E3, 0x00E5, 0x00E7, 0x00E9, 0x00E8,
+    0x00EA, 0x00EB, 0x00ED, 0x00EC, 0x00EE, 0x00EF, 0x00F1, 0x00F3,
+    0x00F2, 0x00F4, 0x00F6, 0x00F5, 0x00FA, 0x00F9, 0x00FB, 0x00FC,
+    0x2020, 0x00B0, 0x00A2, 0x00A3, 0x00A7, 0x2022, 0x00B6, 0x00DF,
+    0x00AE, 0x00A9, 0x2122, 0x00B4, 0x00A8, 0x2260, 0x00C6, 0x00D8,
+    0x221E, 0x00B1, 0x2264, 0x2265, 0x00A5, 0x00B5, 0x2202, 0x2211,
+    0x220F, 0x03C0, 0x222B, 0x00AA, 0x00BA, 0x03A9, 0x00E6, 0x00F8,
+    0x00BF, 0x00A1, 0x00AC, 0x221A, 0x0192, 0x2248, 0x2206, 0x00AB,
+    0x00BB, 0x2026, 0x00A0, 0x00C0, 0x00C3, 0x00D5, 0x0152, 0x0153,
+    0x2013, 0x2014, 0x201C, 0x201D, 0x2018, 0x2019, 0x00F7, 0x25CA,
+    0x00FF, 0x0178, 0x2044, 0x20AC, 0x2039, 0x203A, 0xFB01, 0xFB02,
+    0x2021, 0x00B7, 0x201A, 0x201E, 0x2030, 0x00C2, 0x00CA, 0x00C1,
+    0x00CB, 0x00C8, 0x00CD, 0x00CE, 0x00CF, 0x00CC, 0x00D3, 0x00D4,
+    0xF8FF, 0x00D2, 0x00DA, 0x00DB, 0x00D9, 0x0131, 0x02C6, 0x02DC,
+    0x00AF, 0x02D8, 0x02D9, 0x02DA, 0x00B8, 0x02DD, 0x02DB, 0x02C7,
+];
+
+fn cp1252_decode_byte(byte: u8) -> Option<u32> {
+    if byte <= 0x7F || byte >= 0xA0 {
+        return Some(byte as u32);
     }
+    let idx = (byte - 0x80) as usize;
+    let code = CP1252_DECODE_TABLE[idx];
+    if code == 0xFFFF {
+        None
+    } else {
+        Some(code as u32)
+    }
+}
+
+fn decode_cp1252_with_errors(bytes: &[u8], errors: &str) -> Result<Vec<u8>, DecodeFailure> {
+    let mut out = Vec::with_capacity(bytes.len());
+    for (idx, &byte) in bytes.iter().enumerate() {
+        if let Some(code) = cp1252_decode_byte(byte) {
+            push_wtf8_codepoint(&mut out, code);
+            continue;
+        }
+        match errors {
+            "ignore" => {}
+            "replace" => push_wtf8_codepoint(&mut out, 0xFFFD),
+            "backslashreplace" => push_backslash_bytes_vec(&mut out, &[byte]),
+            "surrogateescape" => push_wtf8_codepoint(&mut out, 0xDC00 + byte as u32),
+            "strict" | "surrogatepass" => {
+                return Err(DecodeFailure::Byte {
+                    pos: idx,
+                    byte,
+                    message: "character maps to <undefined>",
+                });
+            }
+            other => {
+                return Err(DecodeFailure::UnknownErrorHandler(other.to_string()));
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn decode_charmap_with_errors(
+    bytes: &[u8],
+    errors: &str,
+    table: &[u16; 128],
+) -> Result<Vec<u8>, DecodeFailure> {
+    let mut out = Vec::with_capacity(bytes.len());
+    for (idx, &byte) in bytes.iter().enumerate() {
+        if byte <= 0x7F {
+            out.push(byte);
+            continue;
+        }
+        let code = table[(byte - 0x80) as usize];
+        if code != 0xFFFF {
+            push_wtf8_codepoint(&mut out, code as u32);
+            continue;
+        }
+        match errors {
+            "ignore" => {}
+            "replace" => push_wtf8_codepoint(&mut out, 0xFFFD),
+            "backslashreplace" => push_backslash_bytes_vec(&mut out, &[byte]),
+            "surrogateescape" => push_wtf8_codepoint(&mut out, 0xDC00 + byte as u32),
+            "strict" | "surrogatepass" => {
+                return Err(DecodeFailure::Byte {
+                    pos: idx,
+                    byte,
+                    message: "character maps to <undefined>",
+                });
+            }
+            other => {
+                return Err(DecodeFailure::UnknownErrorHandler(other.to_string()));
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn decode_utf8_bytes_with_errors(bytes: &[u8], errors: &str) -> Result<Vec<u8>, DecodeFailure> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut idx = 0usize;
+    let allow_surrogates = errors == "surrogatepass";
+    while idx < bytes.len() {
+        let first = bytes[idx];
+        if first < 0x80 {
+            out.push(first);
+            idx += 1;
+            continue;
+        }
+        if first < 0xC0 {
+            if let Err(err) = decode_utf8_invalid_byte(errors, &mut out, idx, first) {
+                return Err(err);
+            }
+            idx += 1;
+            continue;
+        }
+        let (needed, min_code) = if first < 0xE0 {
+            (1usize, 0x80u32)
+        } else if first < 0xF0 {
+            (2usize, 0x800u32)
+        } else if first < 0xF8 {
+            (3usize, 0x10000u32)
+        } else {
+            if let Err(err) = decode_utf8_invalid_byte(errors, &mut out, idx, first) {
+                return Err(err);
+            }
+            idx += 1;
+            continue;
+        };
+        if idx + needed >= bytes.len() {
+            if let Err(err) = decode_utf8_invalid_byte(errors, &mut out, idx, first) {
+                return Err(err);
+            }
+            idx += 1;
+            continue;
+        }
+        let mut code: u32 = (first & (0x7F >> needed)) as u32;
+        let mut ok = true;
+        for off in 1..=needed {
+            let byte = bytes[idx + off];
+            if (byte & 0xC0) != 0x80 {
+                ok = false;
+                break;
+            }
+            code = (code << 6) | (byte & 0x3F) as u32;
+        }
+        if !ok || code < min_code || code > 0x10FFFF {
+            if let Err(err) = decode_utf8_invalid_byte(errors, &mut out, idx, first) {
+                return Err(err);
+            }
+            idx += 1;
+            continue;
+        }
+        if is_surrogate(code) && !allow_surrogates {
+            if let Err(err) = decode_utf8_invalid_byte(errors, &mut out, idx, first) {
+                return Err(err);
+            }
+            idx += 1;
+            continue;
+        }
+        push_wtf8_codepoint(&mut out, code);
+        idx += needed + 1;
+    }
+    Ok(out)
+}
+
+fn decode_utf8_invalid_byte(
+    errors: &str,
+    out: &mut Vec<u8>,
+    pos: usize,
+    byte: u8,
+) -> Result<(), DecodeFailure> {
+    match errors {
+        "ignore" => Ok(()),
+        "replace" => {
+            push_wtf8_codepoint(out, 0xFFFD);
+            Ok(())
+        }
+        "backslashreplace" => {
+            push_backslash_bytes_vec(out, &[byte]);
+            Ok(())
+        }
+        "surrogateescape" => {
+            push_wtf8_codepoint(out, 0xDC00 + byte as u32);
+            Ok(())
+        }
+        "strict" | "surrogatepass" => Err(DecodeFailure::Byte {
+            pos,
+            byte,
+            message: "invalid start byte",
+        }),
+        other => Err(DecodeFailure::UnknownErrorHandler(other.to_string())),
+    }
+}
+
+fn hex_value(byte: u8) -> Option<u32> {
+    match byte {
+        b'0'..=b'9' => Some((byte - b'0') as u32),
+        b'a'..=b'f' => Some((byte - b'a' + 10) as u32),
+        b'A'..=b'F' => Some((byte - b'A' + 10) as u32),
+        _ => None,
+    }
+}
+
+fn parse_hex_prefix(bytes: &[u8], max: usize) -> (u32, usize) {
+    let mut value = 0u32;
+    let mut count = 0usize;
+    for &byte in bytes.iter().take(max) {
+        let Some(digit) = hex_value(byte) else {
+            break;
+        };
+        value = (value << 4) | digit;
+        count += 1;
+    }
+    (value, count)
+}
+
+fn parse_octal_prefix(bytes: &[u8], max: usize) -> (u32, usize) {
+    let mut value = 0u32;
+    let mut count = 0usize;
+    for &byte in bytes.iter().take(max) {
+        if !(b'0'..=b'7').contains(&byte) {
+            break;
+        }
+        value = (value << 3) | (byte - b'0') as u32;
+        count += 1;
+    }
+    (value, count)
+}
+
+fn handle_unicode_escape_failure(
+    errors: &str,
+    out: &mut Vec<u8>,
+    bytes: &[u8],
+    start: usize,
+    end: usize,
+    failure: DecodeFailure,
+) -> Result<usize, DecodeFailure> {
+    match errors {
+        "ignore" => Ok(end + 1),
+        "replace" => {
+            push_wtf8_codepoint(out, 0xFFFD);
+            Ok(end + 1)
+        }
+        "backslashreplace" => {
+            if start <= end && end < bytes.len() {
+                push_backslash_bytes_vec(out, &bytes[start..=end]);
+            }
+            Ok(end + 1)
+        }
+        "strict" | "surrogatepass" | "surrogateescape" => Err(failure),
+        other => Err(DecodeFailure::UnknownErrorHandler(other.to_string())),
+    }
+}
+
+fn decode_unicode_escape_with_errors(bytes: &[u8], errors: &str) -> Result<Vec<u8>, DecodeFailure> {
+    const TRUNC_X: &str = "truncated \\xXX escape";
+    const TRUNC_U: &str = "truncated \\uXXXX escape";
+    const TRUNC_U8: &str = "truncated \\UXXXXXXXX escape";
+    const MALFORMED_N: &str = "malformed \\N character escape";
+    const UNKNOWN_NAME: &str = "unknown Unicode character name";
+    const ILLEGAL_UNICODE: &str = "illegal Unicode character";
+    const TRAILING_SLASH: &str = "\\ at end of string";
+
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        let byte = bytes[idx];
+        if byte != b'\\' {
+            push_wtf8_codepoint(&mut out, byte as u32);
+            idx += 1;
+            continue;
+        }
+        if idx + 1 >= bytes.len() {
+            let failure = DecodeFailure::Byte {
+                pos: idx,
+                byte,
+                message: TRAILING_SLASH,
+            };
+            idx = handle_unicode_escape_failure(errors, &mut out, bytes, idx, idx, failure)?;
+            continue;
+        }
+        let esc = bytes[idx + 1];
+        match esc {
+            b'\\' => {
+                push_wtf8_codepoint(&mut out, b'\\' as u32);
+                idx += 2;
+            }
+            b'\'' => {
+                push_wtf8_codepoint(&mut out, b'\'' as u32);
+                idx += 2;
+            }
+            b'"' => {
+                push_wtf8_codepoint(&mut out, b'"' as u32);
+                idx += 2;
+            }
+            b'a' => {
+                push_wtf8_codepoint(&mut out, 0x07);
+                idx += 2;
+            }
+            b'b' => {
+                push_wtf8_codepoint(&mut out, 0x08);
+                idx += 2;
+            }
+            b't' => {
+                push_wtf8_codepoint(&mut out, 0x09);
+                idx += 2;
+            }
+            b'n' => {
+                push_wtf8_codepoint(&mut out, 0x0A);
+                idx += 2;
+            }
+            b'v' => {
+                push_wtf8_codepoint(&mut out, 0x0B);
+                idx += 2;
+            }
+            b'f' => {
+                push_wtf8_codepoint(&mut out, 0x0C);
+                idx += 2;
+            }
+            b'r' => {
+                push_wtf8_codepoint(&mut out, 0x0D);
+                idx += 2;
+            }
+            b'\n' => {
+                idx += 2;
+            }
+            b'x' => {
+                let (value, count) = parse_hex_prefix(&bytes[idx + 2..], 2);
+                if count < 2 {
+                    let end = idx + 1 + count;
+                    let failure = DecodeFailure::Range {
+                        start: idx,
+                        end,
+                        message: TRUNC_X,
+                    };
+                    idx = handle_unicode_escape_failure(errors, &mut out, bytes, idx, end, failure)?;
+                    continue;
+                }
+                push_wtf8_codepoint(&mut out, value);
+                idx += 4;
+            }
+            b'u' => {
+                let (value, count) = parse_hex_prefix(&bytes[idx + 2..], 4);
+                if count < 4 {
+                    let end = idx + 1 + count;
+                    let failure = DecodeFailure::Range {
+                        start: idx,
+                        end,
+                        message: TRUNC_U,
+                    };
+                    idx = handle_unicode_escape_failure(errors, &mut out, bytes, idx, end, failure)?;
+                    continue;
+                }
+                push_wtf8_codepoint(&mut out, value);
+                idx += 6;
+            }
+            b'U' => {
+                let (value, count) = parse_hex_prefix(&bytes[idx + 2..], 8);
+                if count < 8 {
+                    let end = idx + 1 + count;
+                    let failure = DecodeFailure::Range {
+                        start: idx,
+                        end,
+                        message: TRUNC_U8,
+                    };
+                    idx = handle_unicode_escape_failure(errors, &mut out, bytes, idx, end, failure)?;
+                    continue;
+                }
+                if value > 0x10FFFF {
+                    let end = idx + 9;
+                    let failure = DecodeFailure::Range {
+                        start: idx,
+                        end,
+                        message: ILLEGAL_UNICODE,
+                    };
+                    idx = handle_unicode_escape_failure(errors, &mut out, bytes, idx, end, failure)?;
+                    continue;
+                }
+                push_wtf8_codepoint(&mut out, value);
+                idx += 10;
+            }
+            b'N' => {
+                if idx + 2 >= bytes.len() || bytes[idx + 2] != b'{' {
+                    let end = usize::min(idx + 1, bytes.len() - 1);
+                    let failure = DecodeFailure::Range {
+                        start: idx,
+                        end,
+                        message: MALFORMED_N,
+                    };
+                    idx = handle_unicode_escape_failure(errors, &mut out, bytes, idx, end, failure)?;
+                    continue;
+                }
+                let mut close = None;
+                for pos in (idx + 3)..bytes.len() {
+                    if bytes[pos] == b'}' {
+                        close = Some(pos);
+                        break;
+                    }
+                }
+                let Some(close_idx) = close else {
+                    let end = bytes.len() - 1;
+                    let failure = DecodeFailure::Range {
+                        start: idx,
+                        end,
+                        message: MALFORMED_N,
+                    };
+                    idx = handle_unicode_escape_failure(errors, &mut out, bytes, idx, end, failure)?;
+                    continue;
+                };
+                let name_bytes = &bytes[idx + 3..close_idx];
+                let name = std::str::from_utf8(name_bytes).unwrap_or("");
+                if let Some(ch) = unicode_names2::character(name) {
+                    push_wtf8_codepoint(&mut out, ch as u32);
+                    idx = close_idx + 1;
+                } else {
+                    let failure = DecodeFailure::Range {
+                        start: idx,
+                        end: close_idx,
+                        message: UNKNOWN_NAME,
+                    };
+                    idx = handle_unicode_escape_failure(errors, &mut out, bytes, idx, close_idx, failure)?;
+                }
+            }
+            b'0'..=b'7' => {
+                let (value, count) = parse_octal_prefix(&bytes[idx + 1..], 3);
+                push_wtf8_codepoint(&mut out, value);
+                idx += 1 + count;
+            }
+            _ => {
+                push_wtf8_codepoint(&mut out, b'\\' as u32);
+                push_wtf8_codepoint(&mut out, esc as u32);
+                idx += 2;
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn utf16_decode_config(bytes: &[u8], kind: EncodingKind) -> (Endian, String, usize) {
@@ -13588,17 +20445,23 @@ fn decode_utf16_with_errors(
     errors: &str,
     endian: Endian,
     offset: usize,
-) -> Result<String, DecodeFailure> {
+) -> Result<Vec<u8>, DecodeFailure> {
     let data = if offset > 0 { &bytes[offset..] } else { bytes };
-    let mut out = String::new();
+    let mut out = Vec::new();
     let mut idx = 0usize;
     while idx + 1 < data.len() {
         let unit = read_u16(data, idx, endian);
         if (0xD800..=0xDBFF).contains(&unit) {
             if idx + 3 >= data.len() {
                 match errors {
+                    "surrogatepass" | "surrogateescape" => {
+                        push_wtf8_codepoint(&mut out, unit as u32);
+                    }
                     "ignore" => {}
-                    "replace" => out.push('\u{FFFD}'),
+                    "replace" => push_wtf8_codepoint(&mut out, 0xFFFD),
+                    "backslashreplace" => {
+                        push_backslash_bytes_vec(&mut out, &data[idx..]);
+                    }
                     "strict" => {
                         return Err(DecodeFailure::Range {
                             start: offset + idx,
@@ -13617,15 +20480,19 @@ fn decode_utf16_with_errors(
                 let high = (unit as u32) - 0xD800;
                 let low = (next as u32) - 0xDC00;
                 let code = 0x10000 + ((high << 10) | low);
-                if let Some(ch) = char::from_u32(code) {
-                    out.push(ch);
-                }
+                push_wtf8_codepoint(&mut out, code);
                 idx += 4;
                 continue;
             }
             match errors {
+                "surrogatepass" | "surrogateescape" => {
+                    push_wtf8_codepoint(&mut out, unit as u32);
+                }
                 "ignore" => {}
-                "replace" => out.push('\u{FFFD}'),
+                "replace" => push_wtf8_codepoint(&mut out, 0xFFFD),
+                "backslashreplace" => {
+                    push_backslash_bytes_vec(&mut out, &data[idx..idx + 2]);
+                }
                 "strict" => {
                     return Err(DecodeFailure::Range {
                         start: offset + idx,
@@ -13642,8 +20509,14 @@ fn decode_utf16_with_errors(
         }
         if (0xDC00..=0xDFFF).contains(&unit) {
             match errors {
+                "surrogatepass" | "surrogateescape" => {
+                    push_wtf8_codepoint(&mut out, unit as u32);
+                }
                 "ignore" => {}
-                "replace" => out.push('\u{FFFD}'),
+                "replace" => push_wtf8_codepoint(&mut out, 0xFFFD),
+                "backslashreplace" => {
+                    push_backslash_bytes_vec(&mut out, &data[idx..idx + 2]);
+                }
                 "strict" => {
                     return Err(DecodeFailure::Range {
                         start: offset + idx,
@@ -13658,13 +20531,19 @@ fn decode_utf16_with_errors(
             idx += 2;
             continue;
         }
-        out.push(char::from_u32(unit as u32).unwrap_or('\u{FFFD}'));
+        push_wtf8_codepoint(&mut out, unit as u32);
         idx += 2;
     }
     if idx < data.len() {
         match errors {
+            "surrogatepass" | "surrogateescape" => {
+                push_wtf8_codepoint(&mut out, data[idx] as u32);
+            }
             "ignore" => {}
-            "replace" => out.push('\u{FFFD}'),
+            "replace" => push_wtf8_codepoint(&mut out, 0xFFFD),
+            "backslashreplace" => {
+                push_backslash_bytes_vec(&mut out, &data[idx..]);
+            }
             "strict" => {
                 let pos = offset + data.len() - 1;
                 let byte = data[data.len() - 1];
@@ -13711,16 +20590,22 @@ fn decode_utf32_with_errors(
     errors: &str,
     endian: Endian,
     offset: usize,
-) -> Result<String, DecodeFailure> {
+) -> Result<Vec<u8>, DecodeFailure> {
     let data = if offset > 0 { &bytes[offset..] } else { bytes };
-    let mut out = String::new();
+    let mut out = Vec::new();
     let mut idx = 0usize;
     while idx + 3 < data.len() {
         let code = read_u32(data, idx, endian);
-        if (0xD800..=0xDFFF).contains(&code) {
+        if is_surrogate(code) {
             match errors {
+                "surrogatepass" | "surrogateescape" => {
+                    push_wtf8_codepoint(&mut out, code);
+                }
                 "ignore" => {}
-                "replace" => out.push('\u{FFFD}'),
+                "replace" => push_wtf8_codepoint(&mut out, 0xFFFD),
+                "backslashreplace" => {
+                    push_backslash_bytes_vec(&mut out, &data[idx..idx + 4]);
+                }
                 "strict" => {
                     return Err(DecodeFailure::Range {
                         start: offset + idx,
@@ -13738,8 +20623,11 @@ fn decode_utf32_with_errors(
         if code > 0x10FFFF {
             match errors {
                 "ignore" => {}
-                "replace" => out.push('\u{FFFD}'),
-                "strict" => {
+                "replace" => push_wtf8_codepoint(&mut out, 0xFFFD),
+                "backslashreplace" => {
+                    push_backslash_bytes_vec(&mut out, &data[idx..idx + 4]);
+                }
+                "strict" | "surrogatepass" | "surrogateescape" => {
                     return Err(DecodeFailure::Range {
                         start: offset + idx,
                         end: offset + idx + 3,
@@ -13753,15 +20641,21 @@ fn decode_utf32_with_errors(
             idx += 4;
             continue;
         }
-        if let Some(ch) = char::from_u32(code) {
-            out.push(ch);
-        }
+        push_wtf8_codepoint(&mut out, code);
         idx += 4;
     }
     if idx < data.len() {
         match errors {
+            "surrogatepass" | "surrogateescape" => {
+                for &byte in &data[idx..] {
+                    push_wtf8_codepoint(&mut out, 0xDC00 + byte as u32);
+                }
+            }
             "ignore" => {}
-            "replace" => out.push('\u{FFFD}'),
+            "replace" => push_wtf8_codepoint(&mut out, 0xFFFD),
+            "backslashreplace" => {
+                push_backslash_bytes_vec(&mut out, &data[idx..]);
+            }
             "strict" => {
                 return Err(DecodeFailure::Range {
                     start: offset + idx,
@@ -13781,20 +20675,189 @@ fn decode_bytes_with_errors(
     bytes: &[u8],
     kind: EncodingKind,
     errors: &str,
-) -> Result<(String, String), (DecodeFailure, String)> {
+) -> Result<(Vec<u8>, String), (DecodeFailure, String)> {
     match kind {
         EncodingKind::Utf8 => match decode_utf8_bytes_with_errors(bytes, errors) {
             Ok(text) => Ok((text, "utf-8".to_string())),
             Err(err) => Err((err, "utf-8".to_string())),
         },
+        EncodingKind::Utf8Sig => {
+            let data = if bytes.len() >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF {
+                &bytes[3..]
+            } else {
+                bytes
+            };
+            match decode_utf8_bytes_with_errors(data, errors) {
+                Ok(text) => Ok((text, "utf-8".to_string())),
+                Err(err) => Err((err, "utf-8".to_string())),
+            }
+        }
+        EncodingKind::Cp1252 => match decode_cp1252_with_errors(bytes, errors) {
+            Ok(text) => Ok((text, "charmap".to_string())),
+            Err(err) => Err((err, "charmap".to_string())),
+        },
+        EncodingKind::Cp437 => match decode_charmap_with_errors(bytes, errors, &CP437_DECODE_TABLE)
+        {
+            Ok(text) => Ok((text, "charmap".to_string())),
+            Err(err) => Err((err, "charmap".to_string())),
+        },
+        EncodingKind::Cp850 => match decode_charmap_with_errors(bytes, errors, &CP850_DECODE_TABLE)
+        {
+            Ok(text) => Ok((text, "charmap".to_string())),
+            Err(err) => Err((err, "charmap".to_string())),
+        },
+        EncodingKind::Cp860 => match decode_charmap_with_errors(bytes, errors, &CP860_DECODE_TABLE)
+        {
+            Ok(text) => Ok((text, "charmap".to_string())),
+            Err(err) => Err((err, "charmap".to_string())),
+        },
+        EncodingKind::Cp862 => match decode_charmap_with_errors(bytes, errors, &CP862_DECODE_TABLE)
+        {
+            Ok(text) => Ok((text, "charmap".to_string())),
+            Err(err) => Err((err, "charmap".to_string())),
+        },
+        EncodingKind::Cp863 => match decode_charmap_with_errors(bytes, errors, &CP863_DECODE_TABLE)
+        {
+            Ok(text) => Ok((text, "charmap".to_string())),
+            Err(err) => Err((err, "charmap".to_string())),
+        },
+        EncodingKind::Cp865 => match decode_charmap_with_errors(bytes, errors, &CP865_DECODE_TABLE)
+        {
+            Ok(text) => Ok((text, "charmap".to_string())),
+            Err(err) => Err((err, "charmap".to_string())),
+        },
+        EncodingKind::Cp866 => match decode_charmap_with_errors(bytes, errors, &CP866_DECODE_TABLE)
+        {
+            Ok(text) => Ok((text, "charmap".to_string())),
+            Err(err) => Err((err, "charmap".to_string())),
+        },
+        EncodingKind::Cp874 => match decode_charmap_with_errors(bytes, errors, &CP874_DECODE_TABLE)
+        {
+            Ok(text) => Ok((text, "charmap".to_string())),
+            Err(err) => Err((err, "charmap".to_string())),
+        },
+        EncodingKind::Cp1250 => match decode_charmap_with_errors(bytes, errors, &CP1250_DECODE_TABLE)
+        {
+            Ok(text) => Ok((text, "charmap".to_string())),
+            Err(err) => Err((err, "charmap".to_string())),
+        },
+        EncodingKind::Cp1251 => match decode_charmap_with_errors(bytes, errors, &CP1251_DECODE_TABLE)
+        {
+            Ok(text) => Ok((text, "charmap".to_string())),
+            Err(err) => Err((err, "charmap".to_string())),
+        },
+        EncodingKind::Cp1253 => match decode_charmap_with_errors(bytes, errors, &CP1253_DECODE_TABLE)
+        {
+            Ok(text) => Ok((text, "charmap".to_string())),
+            Err(err) => Err((err, "charmap".to_string())),
+        },
+        EncodingKind::Cp1254 => match decode_charmap_with_errors(bytes, errors, &CP1254_DECODE_TABLE)
+        {
+            Ok(text) => Ok((text, "charmap".to_string())),
+            Err(err) => Err((err, "charmap".to_string())),
+        },
+        EncodingKind::Cp1255 => match decode_charmap_with_errors(bytes, errors, &CP1255_DECODE_TABLE)
+        {
+            Ok(text) => Ok((text, "charmap".to_string())),
+            Err(err) => Err((err, "charmap".to_string())),
+        },
+        EncodingKind::Cp1256 => match decode_charmap_with_errors(bytes, errors, &CP1256_DECODE_TABLE)
+        {
+            Ok(text) => Ok((text, "charmap".to_string())),
+            Err(err) => Err((err, "charmap".to_string())),
+        },
+        EncodingKind::Cp1257 => match decode_charmap_with_errors(bytes, errors, &CP1257_DECODE_TABLE)
+        {
+            Ok(text) => Ok((text, "charmap".to_string())),
+            Err(err) => Err((err, "charmap".to_string())),
+        },
+        EncodingKind::Koi8R => {
+            match decode_charmap_with_errors(bytes, errors, &KOI8_R_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
+        EncodingKind::Koi8U => {
+            match decode_charmap_with_errors(bytes, errors, &KOI8_U_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
+        EncodingKind::Iso8859_2 => {
+            match decode_charmap_with_errors(bytes, errors, &ISO8859_2_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
+        EncodingKind::Iso8859_3 => {
+            match decode_charmap_with_errors(bytes, errors, &ISO8859_3_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
+        EncodingKind::Iso8859_4 => {
+            match decode_charmap_with_errors(bytes, errors, &ISO8859_4_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
+        EncodingKind::Iso8859_5 => {
+            match decode_charmap_with_errors(bytes, errors, &ISO8859_5_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
+        EncodingKind::Iso8859_6 => {
+            match decode_charmap_with_errors(bytes, errors, &ISO8859_6_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
+        EncodingKind::Iso8859_7 => {
+            match decode_charmap_with_errors(bytes, errors, &ISO8859_7_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
+        EncodingKind::Iso8859_8 => {
+            match decode_charmap_with_errors(bytes, errors, &ISO8859_8_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
+        EncodingKind::Iso8859_10 => {
+            match decode_charmap_with_errors(bytes, errors, &ISO8859_10_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
+        EncodingKind::Iso8859_15 => {
+            match decode_charmap_with_errors(bytes, errors, &ISO8859_15_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
+        EncodingKind::MacRoman => {
+            match decode_charmap_with_errors(bytes, errors, &MAC_ROMAN_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
         EncodingKind::Ascii => match decode_ascii_with_errors(bytes, errors) {
             Ok(text) => Ok((text, "ascii".to_string())),
             Err(err) => Err((err, "ascii".to_string())),
         },
-        EncodingKind::Latin1 => Ok((
-            bytes.iter().map(|b| char::from(*b)).collect(),
-            "latin-1".to_string(),
-        )),
+        EncodingKind::Latin1 => {
+            let mut out = Vec::with_capacity(bytes.len());
+            for &byte in bytes {
+                push_wtf8_codepoint(&mut out, byte as u32);
+            }
+            Ok((out, "latin-1".to_string()))
+        }
+        EncodingKind::UnicodeEscape => match decode_unicode_escape_with_errors(bytes, errors) {
+            Ok(text) => Ok((text, "unicodeescape".to_string())),
+            Err(err) => Err((err, "unicodeescape".to_string())),
+        },
         EncodingKind::Utf16 | EncodingKind::Utf16LE | EncodingKind::Utf16BE => {
             let (endian, label, offset) = utf16_decode_config(bytes, kind);
             match decode_utf16_with_errors(bytes, errors, endian, offset) {
@@ -13809,6 +20872,46 @@ fn decode_bytes_with_errors(
                 Err(err) => Err((err, label)),
             }
         }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum DecodeTextError {
+    UnknownEncoding(String),
+    UnknownErrorHandler(String),
+    Failure(DecodeFailure, String),
+}
+
+pub(crate) fn decode_bytes_text(
+    encoding: &str,
+    errors: &str,
+    bytes: &[u8],
+) -> Result<(Vec<u8>, String), DecodeTextError> {
+    let Some(kind) = normalize_encoding(encoding) else {
+        return Err(DecodeTextError::UnknownEncoding(encoding.to_string()));
+    };
+    let errors_known = matches!(
+        errors,
+        "strict"
+            | "ignore"
+            | "replace"
+            | "backslashreplace"
+            | "surrogateescape"
+            | "surrogatepass"
+    );
+    let result = if errors_known {
+        decode_bytes_with_errors(bytes, kind, errors)
+    } else {
+        match decode_bytes_with_errors(bytes, kind, "strict") {
+            Ok((text, label)) => return Ok((text, label)),
+            Err((_failure, _label)) => {
+                return Err(DecodeTextError::UnknownErrorHandler(errors.to_string()));
+            }
+        }
+    };
+    match result {
+        Ok((text, label)) => Ok((text, label)),
+        Err((failure, label)) => Err(DecodeTextError::Failure(failure, label)),
     }
 }
 
@@ -14284,8 +21387,8 @@ fn bytes_from_str_impl(
     let Some(encoding) = encoding else {
         return raise_exception::<_>(_py, "TypeError", "string argument without an encoding");
     };
-    let text = string_obj_to_owned(src_obj).unwrap_or_default();
-    let out = match encode_string_with_errors(&text, &encoding, errors.as_deref()) {
+    let bytes = unsafe { std::slice::from_raw_parts(string_bytes(src_ptr), string_len(src_ptr)) };
+    let out = match encode_string_with_errors(bytes, &encoding, errors.as_deref()) {
         Ok(bytes) => bytes,
         Err(EncodeError::UnknownEncoding(name)) => {
             let msg = format!("unknown encoding: {name}");
@@ -14297,15 +21400,19 @@ fn bytes_from_str_impl(
         }
         Err(EncodeError::InvalidChar {
             encoding,
-            ch,
+            code,
             pos,
             limit,
         }) => {
-            let escaped = unicode_escape(ch);
-            let msg = format!(
-                "'{encoding}' codec can't encode character '{escaped}' in position {pos}: ordinal not in range({limit})"
+            let reason = encode_error_reason(encoding, code, limit);
+            return raise_unicode_encode_error::<_>(
+                _py,
+                encoding,
+                src_bits,
+                pos,
+                pos + 1,
+                &reason,
             );
-            return raise_exception::<_>(_py, "UnicodeEncodeError", &msg);
         }
     };
     let out_ptr = match kind {
@@ -14908,7 +22015,11 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                             } else {
                                 std::slice::from_raw_parts(bytes_data(ptr), bytes_len(ptr))
                             };
-                            let len = bytes.len() as isize;
+                            let len = if type_id == TYPE_ID_STRING {
+                                utf8_codepoint_count_cached(_py, bytes, Some(ptr as usize)) as isize
+                            } else {
+                                bytes.len() as isize
+                            };
                             let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
                             let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
                             let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
@@ -14930,7 +22041,19 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                                         alloc_bytearray(_py, &[])
                                     }
                                 } else if type_id == TYPE_ID_STRING {
-                                    alloc_string(_py, &bytes[s..e])
+                                    let start_byte = utf8_char_to_byte_index_cached(
+                                        _py,
+                                        bytes,
+                                        s as i64,
+                                        Some(ptr as usize),
+                                    );
+                                    let end_byte = utf8_char_to_byte_index_cached(
+                                        _py,
+                                        bytes,
+                                        e as i64,
+                                        Some(ptr as usize),
+                                    );
+                                    alloc_string(_py, &bytes[start_byte..end_byte])
                                 } else if type_id == TYPE_ID_BYTES {
                                     alloc_bytes(_py, &bytes[s..e])
                                 } else {
@@ -14939,8 +22062,16 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                             } else {
                                 let indices = collect_slice_indices(start, stop, step);
                                 let mut out = Vec::with_capacity(indices.len());
-                                for idx in indices {
-                                    out.push(bytes[idx]);
+                                if type_id == TYPE_ID_STRING {
+                                    for idx in indices {
+                                        if let Some(code) = wtf8_codepoint_at(bytes, idx) {
+                                            push_wtf8_codepoint(&mut out, code.to_u32());
+                                        }
+                                    }
+                                } else {
+                                    for idx in indices {
+                                        out.push(bytes[idx]);
+                                    }
                                 }
                                 if type_id == TYPE_ID_STRING {
                                     alloc_string(_py, &out)
@@ -14977,11 +22108,8 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     };
                     if type_id == TYPE_ID_STRING {
                         let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
-                        let Ok(text) = std::str::from_utf8(bytes) else {
-                            return MoltObject::none().bits();
-                        };
                         let mut i = idx;
-                        let len = text.chars().count() as i64;
+                        let len = utf8_codepoint_count_cached(_py, bytes, Some(ptr as usize));
                         if i < 0 {
                             i += len;
                         }
@@ -14992,19 +22120,16 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                                 "string index out of range",
                             );
                         }
-                        let ch = match text.chars().nth(i as usize) {
-                            Some(val) => val,
-                            None => {
-                                return raise_exception::<_>(
-                                    _py,
-                                    "IndexError",
-                                    "string index out of range",
-                                )
-                            }
+                        let Some(code) = wtf8_codepoint_at(bytes, i as usize) else {
+                            return raise_exception::<_>(
+                                _py,
+                                "IndexError",
+                                "string index out of range",
+                            );
                         };
-                        let mut buf = [0u8; 4];
-                        let out = ch.encode_utf8(&mut buf);
-                        let out_ptr = alloc_string(_py, out.as_bytes());
+                        let mut out = Vec::with_capacity(4);
+                        push_wtf8_codepoint(&mut out, code.to_u32());
+                        let out_ptr = alloc_string(_py, &out);
                         if out_ptr.is_null() {
                             return MoltObject::none().bits();
                         }
@@ -15173,31 +22298,25 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                         "range indices must be integers or slices, not {}",
                         type_name(_py, key)
                     );
-                    let Some(idx) = index_i64_with_overflow(
-                        _py,
-                        key_bits,
-                        &type_err,
-                        Some("range object index out of range"),
-                    ) else {
+                    let Some(mut idx) = index_bigint_from_obj(_py, key_bits, &type_err) else {
                         return MoltObject::none().bits();
                     };
-                    let start = range_start(ptr);
-                    let stop = range_stop(ptr);
-                    let step = range_step(ptr);
-                    let len = range_len_i64(start, stop, step);
-                    let mut i = idx;
-                    if i < 0 {
-                        i += len;
+                    let Some((start, stop, step)) = range_components_bigint(ptr) else {
+                        return MoltObject::none().bits();
+                    };
+                    let len = range_len_bigint(&start, &stop, &step);
+                    if idx.is_negative() {
+                        idx += &len;
                     }
-                    if i < 0 || i >= len {
+                    if idx.is_negative() || idx >= len {
                         return raise_exception::<_>(
                             _py,
                             "IndexError",
                             "range object index out of range",
                         );
                     }
-                    let val = start + step * i;
-                    return MoltObject::from_int(val).bits();
+                    let val = start + step * idx;
+                    return int_bits_from_bigint(_py, val);
                 }
                 if let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) {
                     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
@@ -16009,11 +23128,27 @@ pub extern "C" fn molt_delitem_method(obj_bits: u64, key_bits: u64) -> u64 {
 }
 
 unsafe fn eq_bool_from_bits(_py: &PyToken<'_>, lhs_bits: u64, rhs_bits: u64) -> Option<bool> {
+    let pending_before = exception_pending(_py);
+    let prev_exc_bits = if pending_before {
+        exception_last_bits_noinc(_py).unwrap_or(0)
+    } else {
+        0
+    };
     let res_bits = molt_eq(lhs_bits, rhs_bits);
     if exception_pending(_py) {
-        return None;
+        if !pending_before {
+            return None;
+        }
+        let after_exc_bits = exception_last_bits_noinc(_py).unwrap_or(0);
+        if after_exc_bits != prev_exc_bits {
+            return None;
+        }
     }
-    Some(is_truthy(_py, obj_from_bits(res_bits)))
+    let res_obj = obj_from_bits(res_bits);
+    if pending_before && res_obj.is_none() {
+        return Some(obj_eq(_py, obj_from_bits(lhs_bits), obj_from_bits(rhs_bits)));
+    }
+    Some(is_truthy(_py, res_obj))
 }
 
 #[no_mangle]
@@ -16033,28 +23168,35 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                     }
                     let order = dict_order(dict_ptr);
                     let table = dict_table(dict_ptr);
-                    let found = dict_find_entry(_py, order, table, item_bits).is_some();
-                    return MoltObject::from_bool(found).bits();
+                    let found = dict_find_entry(_py, order, table, item_bits);
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    return MoltObject::from_bool(found.is_some()).bits();
                 }
                 match type_id {
                     TYPE_ID_LIST => {
-                        let snapshot = list_snapshot(_py, ptr);
-                        let mut found = false;
-                        for &elem_bits in snapshot.iter() {
+                        let mut idx = 0usize;
+                        loop {
+                            let elem_bits = match list_elem_at(ptr, idx) {
+                                Some(val) => val,
+                                None => break,
+                            };
+                            inc_ref_bits(_py, elem_bits);
                             let eq = match eq_bool_from_bits(_py, elem_bits, item_bits) {
                                 Some(val) => val,
                                 None => {
-                                    list_snapshot_release(_py, snapshot);
+                                    dec_ref_bits(_py, elem_bits);
                                     return MoltObject::none().bits();
                                 }
                             };
+                            dec_ref_bits(_py, elem_bits);
                             if eq {
-                                found = true;
-                                break;
+                                return MoltObject::from_bool(true).bits();
                             }
+                            idx += 1;
                         }
-                        list_snapshot_release(_py, snapshot);
-                        return MoltObject::from_bool(found).bits();
+                        return MoltObject::from_bool(false).bits();
                     }
                     TYPE_ID_TUPLE => {
                         let elems = seq_vec_ref(ptr);
@@ -16075,8 +23217,11 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                         }
                         let order = set_order(ptr);
                         let table = set_table(ptr);
-                        let found = set_find_entry(_py, order, table, item_bits).is_some();
-                        return MoltObject::from_bool(found).bits();
+                        let found = set_find_entry(_py, order, table, item_bits);
+                        if exception_pending(_py) {
+                            return MoltObject::none().bits();
+                        }
+                        return MoltObject::from_bool(found.is_some()).bits();
                     }
                     TYPE_ID_STRING => {
                         let Some(item_ptr) = item.as_ptr() else {
@@ -16147,26 +23292,41 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                         );
                     }
                     TYPE_ID_RANGE => {
-                        let Some(val) = item.as_int() else {
-                            return MoltObject::from_bool(false).bits();
+                        let candidate = if let Some(f) = item.as_float() {
+                            if !f.is_finite() || f.fract() != 0.0 {
+                                return MoltObject::from_bool(false).bits();
+                            }
+                            bigint_from_f64_trunc(f)
+                        } else {
+                            let type_err = format!(
+                                "'{}' object cannot be interpreted as an integer",
+                                type_name(_py, item)
+                            );
+                            let Some(val) = index_bigint_from_obj(_py, item_bits, &type_err) else {
+                                if exception_pending(_py) {
+                                    molt_exception_clear();
+                                }
+                                return MoltObject::from_bool(false).bits();
+                            };
+                            val
                         };
-                        let start = range_start(ptr);
-                        let stop = range_stop(ptr);
-                        let step = range_step(ptr);
-                        if step == 0 {
+                        let Some((start, stop, step)) = range_components_bigint(ptr) else {
+                            return MoltObject::none().bits();
+                        };
+                        if step.is_zero() {
                             return MoltObject::from_bool(false).bits();
                         }
-                        let in_range = if step > 0 {
-                            val >= start && val < stop
+                        let in_range = if step.is_positive() {
+                            candidate >= start && candidate < stop
                         } else {
-                            val <= start && val > stop
+                            candidate <= start && candidate > stop
                         };
                         if !in_range {
                             return MoltObject::from_bool(false).bits();
                         }
-                        let offset = val - start;
-                        let step_abs = if step < 0 { -step } else { step };
-                        let aligned = offset.rem_euclid(step_abs) == 0;
+                        let offset = candidate - start;
+                        let step_abs = if step.is_negative() { -step } else { step };
+                        let aligned = offset.mod_floor(&step_abs).is_zero();
                         return MoltObject::from_bool(aligned).bits();
                     }
                     TYPE_ID_MEMORYVIEW => {
@@ -16552,10 +23712,43 @@ pub(crate) extern "C" fn dict_fromkeys_method(
         if !issubclass_bits(class_bits, builtins.dict) {
             return raise_exception::<_>(_py, "TypeError", "dict.fromkeys expects dict type");
         }
-        // TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned):
-        // pre-size dict using iterable length hints.
+        let capacity_hint = {
+            let obj = obj_from_bits(iterable_bits);
+            let mut hint = if let Some(ptr) = obj.as_ptr() {
+                unsafe {
+                    match object_type_id(ptr) {
+                        TYPE_ID_LIST => list_len(ptr),
+                        TYPE_ID_TUPLE => tuple_len(ptr),
+                        TYPE_ID_DICT => dict_len(ptr),
+                        TYPE_ID_SET | TYPE_ID_FROZENSET => set_len(ptr),
+                        TYPE_ID_DICT_KEYS_VIEW
+                        | TYPE_ID_DICT_VALUES_VIEW
+                        | TYPE_ID_DICT_ITEMS_VIEW => dict_view_len(ptr),
+                        TYPE_ID_BYTES | TYPE_ID_BYTEARRAY => bytes_len(ptr),
+                        TYPE_ID_STRING => string_len(ptr),
+                        TYPE_ID_INTARRAY => intarray_len(ptr),
+                        TYPE_ID_RANGE => {
+                            if let Some((start, stop, step)) = range_components_bigint(ptr) {
+                                let len = range_len_bigint(&start, &stop, &step);
+                                len.to_usize().unwrap_or(usize::MAX)
+                            } else {
+                                0
+                            }
+                        }
+                        _ => 0,
+                    }
+                }
+            } else {
+                0
+            };
+            let max_entries = (isize::MAX as usize) / 2;
+            if hint > max_entries {
+                hint = max_entries;
+            }
+            hint
+        };
         let dict_bits = if class_bits == builtins.dict {
-            molt_dict_new(0)
+            molt_dict_new(capacity_hint as u64)
         } else {
             let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
                 return MoltObject::none().bits() as i64;
@@ -16893,7 +24086,11 @@ pub extern "C" fn molt_dict_pop(
             }
             let order = dict_order(dict_ptr);
             let table = dict_table(dict_ptr);
-            if let Some(entry_idx) = dict_find_entry(_py, order, table, key_bits) {
+            let found = dict_find_entry(_py, order, table, key_bits);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            if let Some(entry_idx) = found {
                 let key_idx = entry_idx * 2;
                 let val_idx = key_idx + 1;
                 let key_val = order[key_idx];
@@ -17511,7 +24708,11 @@ pub extern "C" fn molt_set_intersection_update(set_bits: u64, other_bits: u64) -
                         let set_entries = set_order(set_ptr).clone();
                         let mut new_entries = Vec::with_capacity(set_entries.len());
                         for entry in set_entries {
-                            if set_find_entry(_py, other_order, other_table, entry).is_some() {
+                            let found = set_find_entry(_py, other_order, other_table, entry);
+                            if exception_pending(_py) {
+                                return MoltObject::none().bits();
+                            }
+                            if found.is_some() {
                                 new_entries.push(entry);
                             }
                         }
@@ -17531,7 +24732,12 @@ pub extern "C" fn molt_set_intersection_update(set_bits: u64, other_bits: u64) -
                         let set_entries = set_order(set_ptr).clone();
                         let mut new_entries = Vec::with_capacity(set_entries.len());
                         for entry in set_entries {
-                            if set_find_entry(_py, other_order, other_table, entry).is_some() {
+                            let found = set_find_entry(_py, other_order, other_table, entry);
+                            if exception_pending(_py) {
+                                dec_ref_bits(_py, bits);
+                                return MoltObject::none().bits();
+                            }
+                            if found.is_some() {
                                 new_entries.push(entry);
                             }
                         }
@@ -17553,7 +24759,12 @@ pub extern "C" fn molt_set_intersection_update(set_bits: u64, other_bits: u64) -
                     let set_entries = set_order(set_ptr).clone();
                     let mut new_entries = Vec::with_capacity(set_entries.len());
                     for entry in set_entries {
-                        if set_find_entry(_py, other_order, other_table, entry).is_some() {
+                        let found = set_find_entry(_py, other_order, other_table, entry);
+                        if exception_pending(_py) {
+                            dec_ref_bits(_py, other_set_bits);
+                            return MoltObject::none().bits();
+                        }
+                        if found.is_some() {
                             new_entries.push(entry);
                         }
                     }
@@ -17586,7 +24797,11 @@ pub extern "C" fn molt_set_difference_update(set_bits: u64, other_bits: u64) -> 
                         let set_entries = set_order(set_ptr).clone();
                         let mut new_entries = Vec::with_capacity(set_entries.len());
                         for entry in set_entries {
-                            if set_find_entry(_py, other_order, other_table, entry).is_none() {
+                            let found = set_find_entry(_py, other_order, other_table, entry);
+                            if exception_pending(_py) {
+                                return MoltObject::none().bits();
+                            }
+                            if found.is_none() {
                                 new_entries.push(entry);
                             }
                         }
@@ -17606,7 +24821,12 @@ pub extern "C" fn molt_set_difference_update(set_bits: u64, other_bits: u64) -> 
                         let set_entries = set_order(set_ptr).clone();
                         let mut new_entries = Vec::with_capacity(set_entries.len());
                         for entry in set_entries {
-                            if set_find_entry(_py, other_order, other_table, entry).is_none() {
+                            let found = set_find_entry(_py, other_order, other_table, entry);
+                            if exception_pending(_py) {
+                                dec_ref_bits(_py, bits);
+                                return MoltObject::none().bits();
+                            }
+                            if found.is_none() {
                                 new_entries.push(entry);
                             }
                         }
@@ -17670,14 +24890,21 @@ pub extern "C" fn molt_set_symdiff_update(set_bits: u64, other_bits: u64) -> u64
                         let mut new_entries =
                             Vec::with_capacity(set_entries.len() + other_order.len());
                         for entry in &set_entries {
-                            if set_find_entry(_py, other_order, other_table, *entry).is_none() {
+                            let found = set_find_entry(_py, other_order, other_table, *entry);
+                            if exception_pending(_py) {
+                                return MoltObject::none().bits();
+                            }
+                            if found.is_none() {
                                 new_entries.push(*entry);
                             }
                         }
                         for entry in other_order.iter().copied() {
-                            if set_find_entry(_py, set_entries.as_slice(), set_table_ptr, entry)
-                                .is_none()
-                            {
+                            let found =
+                                set_find_entry(_py, set_entries.as_slice(), set_table_ptr, entry);
+                            if exception_pending(_py) {
+                                return MoltObject::none().bits();
+                            }
+                            if found.is_none() {
                                 new_entries.push(entry);
                             }
                         }
@@ -17699,14 +24926,23 @@ pub extern "C" fn molt_set_symdiff_update(set_bits: u64, other_bits: u64) -> u64
                         let mut new_entries =
                             Vec::with_capacity(set_entries.len() + other_order.len());
                         for entry in &set_entries {
-                            if set_find_entry(_py, other_order, other_table, *entry).is_none() {
+                            let found = set_find_entry(_py, other_order, other_table, *entry);
+                            if exception_pending(_py) {
+                                dec_ref_bits(_py, bits);
+                                return MoltObject::none().bits();
+                            }
+                            if found.is_none() {
                                 new_entries.push(*entry);
                             }
                         }
                         for entry in other_order.iter().copied() {
-                            if set_find_entry(_py, set_entries.as_slice(), set_table_ptr, entry)
-                                .is_none()
-                            {
+                            let found =
+                                set_find_entry(_py, set_entries.as_slice(), set_table_ptr, entry);
+                            if exception_pending(_py) {
+                                dec_ref_bits(_py, bits);
+                                return MoltObject::none().bits();
+                            }
+                            if found.is_none() {
                                 new_entries.push(entry);
                             }
                         }
@@ -17729,14 +24965,23 @@ pub extern "C" fn molt_set_symdiff_update(set_bits: u64, other_bits: u64) -> u64
                     let set_table_ptr = set_table(set_ptr);
                     let mut new_entries = Vec::with_capacity(set_entries.len() + other_order.len());
                     for entry in &set_entries {
-                        if set_find_entry(_py, other_order, other_table, *entry).is_none() {
+                        let found = set_find_entry(_py, other_order, other_table, *entry);
+                        if exception_pending(_py) {
+                            dec_ref_bits(_py, other_set_bits);
+                            return MoltObject::none().bits();
+                        }
+                        if found.is_none() {
                             new_entries.push(*entry);
                         }
                     }
                     for entry in other_order.iter().copied() {
-                        if set_find_entry(_py, set_entries.as_slice(), set_table_ptr, entry)
-                            .is_none()
-                        {
+                        let found =
+                            set_find_entry(_py, set_entries.as_slice(), set_table_ptr, entry);
+                        if exception_pending(_py) {
+                            dec_ref_bits(_py, other_set_bits);
+                            return MoltObject::none().bits();
+                        }
+                        if found.is_none() {
                             new_entries.push(entry);
                         }
                     }
@@ -18101,7 +25346,14 @@ pub extern "C" fn molt_set_isdisjoint(set_bits: u64, other_bits: u64) -> u64 {
             };
             let mut disjoint = true;
             for &entry in output.iter() {
-                if set_find_entry(_py, probe_order, probe_table, entry).is_some() {
+                let found = set_find_entry(_py, probe_order, probe_table, entry);
+                if exception_pending(_py) {
+                    if let Some(bits) = drop_bits {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return MoltObject::none().bits();
+                }
+                if found.is_some() {
                     disjoint = false;
                     break;
                 }
@@ -18133,7 +25385,14 @@ pub extern "C" fn molt_set_issubset(set_bits: u64, other_bits: u64) -> u64 {
             let other_table = set_table(other_ptr);
             let mut subset = true;
             for &entry in self_order.iter() {
-                if set_find_entry(_py, other_order, other_table, entry).is_none() {
+                let found = set_find_entry(_py, other_order, other_table, entry);
+                if exception_pending(_py) {
+                    if let Some(bits) = drop_bits {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return MoltObject::none().bits();
+                }
+                if found.is_none() {
                     subset = false;
                     break;
                 }
@@ -18165,7 +25424,14 @@ pub extern "C" fn molt_set_issuperset(set_bits: u64, other_bits: u64) -> u64 {
             let other_order = set_order(other_ptr);
             let mut superset = true;
             for &entry in other_order.iter() {
-                if set_find_entry(_py, self_order, self_table, entry).is_none() {
+                let found = set_find_entry(_py, self_order, self_table, entry);
+                if exception_pending(_py) {
+                    if let Some(bits) = drop_bits {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return MoltObject::none().bits();
+                }
+                if found.is_none() {
                     superset = false;
                     break;
                 }
@@ -18752,17 +26018,22 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                                 (idx - 1, Some(elems[idx - 1]), false)
                             }
                         } else if target_type == TYPE_ID_RANGE {
-                            let start = range_start(target_ptr);
-                            let stop = range_stop(target_ptr);
-                            let step = range_step(target_ptr);
-                            let len = range_len_i64(start, stop, step) as usize;
-                            let idx = idx.min(len);
+                            let Some((start, stop, step)) = range_components_bigint(target_ptr)
+                            else {
+                                return MoltObject::none().bits();
+                            };
+                            let len = range_len_bigint(&start, &stop, &step);
+                            let len_usize = len.to_usize().unwrap_or(idx);
+                            let idx = idx.min(len_usize);
                             if idx == 0 {
                                 (0, None, false)
                             } else {
-                                let pos = (idx - 1) as i64;
+                                let pos = BigInt::from((idx - 1) as u64);
                                 let val = start + step * pos;
-                                let bits = MoltObject::from_int(val).bits();
+                                let bits = int_bits_from_bigint(_py, val);
+                                if obj_from_bits(bits).is_none() {
+                                    return MoltObject::none().bits();
+                                }
                                 (idx - 1, Some(bits), false)
                             }
                         } else if target_type == TYPE_ID_STRING {
@@ -19032,6 +26303,56 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                         }
                         return MoltObject::from_ptr(tuple_ptr).bits();
                     }
+                    if target_type == TYPE_ID_RANGE {
+                        let Some((start, stop, step)) = range_components_bigint(target_ptr) else {
+                            return MoltObject::none().bits();
+                        };
+                        if idx == ITER_EXHAUSTED {
+                            let none_bits = MoltObject::none().bits();
+                            let done_bits = MoltObject::from_bool(true).bits();
+                            let tuple_ptr = alloc_tuple(_py, &[none_bits, done_bits]);
+                            if tuple_ptr.is_null() {
+                                return MoltObject::none().bits();
+                            }
+                            return MoltObject::from_ptr(tuple_ptr).bits();
+                        }
+                        if step.is_zero() {
+                            let none_bits = MoltObject::none().bits();
+                            let done_bits = MoltObject::from_bool(true).bits();
+                            let tuple_ptr = alloc_tuple(_py, &[none_bits, done_bits]);
+                            if tuple_ptr.is_null() {
+                                return MoltObject::none().bits();
+                            }
+                            return MoltObject::from_ptr(tuple_ptr).bits();
+                        }
+                        let len = range_len_bigint(&start, &stop, &step);
+                        let idx_big = BigInt::from(idx as u64);
+                        if idx_big >= len {
+                            let len_usize = len.to_usize().unwrap_or(ITER_EXHAUSTED);
+                            iter_set_index(ptr, len_usize);
+                            let none_bits = MoltObject::none().bits();
+                            let done_bits = MoltObject::from_bool(true).bits();
+                            let tuple_ptr = alloc_tuple(_py, &[none_bits, done_bits]);
+                            if tuple_ptr.is_null() {
+                                return MoltObject::none().bits();
+                            }
+                            return MoltObject::from_ptr(tuple_ptr).bits();
+                        }
+                        let val = start + step * idx_big;
+                        let val_bits = int_bits_from_bigint(_py, val);
+                        if obj_from_bits(val_bits).is_none() {
+                            return MoltObject::none().bits();
+                        }
+                        let next_idx = idx.checked_add(1).unwrap_or(ITER_EXHAUSTED);
+                        iter_set_index(ptr, next_idx);
+                        let done_bits = MoltObject::from_bool(false).bits();
+                        let tuple_ptr = alloc_tuple(_py, &[val_bits, done_bits]);
+                        if tuple_ptr.is_null() {
+                            return MoltObject::none().bits();
+                        }
+                        dec_ref_bits(_py, val_bits);
+                        return MoltObject::from_ptr(tuple_ptr).bits();
+                    }
                     if target_type != TYPE_ID_TUPLE
                         && target_type != TYPE_ID_RANGE
                         && target_type != TYPE_ID_DICT_KEYS_VIEW
@@ -19092,17 +26413,7 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                             (elems.len(), Some(elems[idx]), false)
                         }
                     } else if target_type == TYPE_ID_RANGE {
-                        let start = range_start(target_ptr);
-                        let stop = range_stop(target_ptr);
-                        let step = range_step(target_ptr);
-                        let len = range_len_i64(start, stop, step) as usize;
-                        if idx >= len {
-                            (len, None, false)
-                        } else {
-                            let val = start + step * idx as i64;
-                            let bits = MoltObject::from_int(val).bits();
-                            (len, Some(bits), false)
-                        }
+                        (0, None, false)
                     } else if target_type == TYPE_ID_DICT_KEYS_VIEW
                         || target_type == TYPE_ID_DICT_VALUES_VIEW
                         || target_type == TYPE_ID_DICT_ITEMS_VIEW
@@ -19472,7 +26783,6 @@ pub extern "C" fn molt_list_insert(list_bits: u64, index_bits: u64, val_bits: u6
 }
 
 unsafe fn list_snapshot(_py: &PyToken<'_>, list_ptr: *mut u8) -> Vec<u64> {
-    // TODO(perf, owner:runtime, milestone:TC1, priority:P2, status:planned): avoid list_snapshot allocations in membership/count/index by using a list mutation version or iterator guard.
     let elems = seq_vec_ref(list_ptr);
     let mut out = Vec::with_capacity(elems.len());
     for &elem in elems.iter() {
@@ -19486,6 +26796,11 @@ unsafe fn list_snapshot_release(_py: &PyToken<'_>, snapshot: Vec<u64>) {
     for elem in snapshot {
         dec_ref_bits(_py, elem);
     }
+}
+
+unsafe fn list_elem_at(list_ptr: *mut u8, idx: usize) -> Option<u64> {
+    let elems = seq_vec_ref(list_ptr);
+    elems.get(idx).copied()
 }
 
 #[no_mangle]
@@ -19992,21 +27307,27 @@ pub extern "C" fn molt_list_count(list_bits: u64, val_bits: u64) -> u64 {
         if let Some(ptr) = list_obj.as_ptr() {
             unsafe {
                 if object_type_id(ptr) == TYPE_ID_LIST {
-                    let snapshot = list_snapshot(_py, ptr);
                     let mut count = 0i64;
-                    for &elem_bits in snapshot.iter() {
+                    let mut idx = 0usize;
+                    loop {
+                        let elem_bits = match list_elem_at(ptr, idx) {
+                            Some(val) => val,
+                            None => break,
+                        };
+                        inc_ref_bits(_py, elem_bits);
                         let eq = match eq_bool_from_bits(_py, elem_bits, val_bits) {
                             Some(val) => val,
                             None => {
-                                list_snapshot_release(_py, snapshot);
+                                dec_ref_bits(_py, elem_bits);
                                 return MoltObject::none().bits();
                             }
                         };
+                        dec_ref_bits(_py, elem_bits);
                         if eq {
                             count += 1;
                         }
+                        idx += 1;
                     }
-                    list_snapshot_release(_py, snapshot);
                     return MoltObject::from_int(count).bits();
                 }
             }
@@ -20027,8 +27348,7 @@ pub extern "C" fn molt_list_index_range(
         if let Some(ptr) = list_obj.as_ptr() {
             unsafe {
                 if object_type_id(ptr) == TYPE_ID_LIST {
-                    let snapshot = list_snapshot(_py, ptr);
-                    let len = snapshot.len() as i64;
+                    let len = list_len(ptr) as i64;
                     let missing = missing_bits(_py);
                     let err = "slice indices must be integers or have an __index__ method";
                     let mut start = if start_bits == missing {
@@ -20042,7 +27362,6 @@ pub extern "C" fn molt_list_index_range(
                         index_i64_from_obj(_py, stop_bits, err)
                     };
                     if exception_pending(_py) {
-                        list_snapshot_release(_py, snapshot);
                         return MoltObject::none().bits();
                     }
                     if start < 0 {
@@ -20064,22 +27383,27 @@ pub extern "C" fn molt_list_index_range(
                         stop = len;
                     }
                     if start < stop {
-                        for idx in start..stop {
-                            let elem_bits = snapshot[idx as usize];
+                        let mut idx = start;
+                        while idx < stop {
+                            let elem_bits = match list_elem_at(ptr, idx as usize) {
+                                Some(val) => val,
+                                None => break,
+                            };
+                            inc_ref_bits(_py, elem_bits);
                             let eq = match eq_bool_from_bits(_py, elem_bits, val_bits) {
                                 Some(val) => val,
                                 None => {
-                                    list_snapshot_release(_py, snapshot);
+                                    dec_ref_bits(_py, elem_bits);
                                     return MoltObject::none().bits();
                                 }
                             };
+                            dec_ref_bits(_py, elem_bits);
                             if eq {
-                                list_snapshot_release(_py, snapshot);
                                 return MoltObject::from_int(idx).bits();
                             }
+                            idx += 1;
                         }
                     }
-                    list_snapshot_release(_py, snapshot);
                     return raise_exception::<_>(_py, "ValueError", "list.index(x): x not in list");
                 }
             }
@@ -20156,7 +27480,8 @@ pub extern "C" fn molt_print_obj(val: u64) {
         }
         let args_bits = MoltObject::from_ptr(args_ptr).bits();
         let none_bits = MoltObject::none().bits();
-        let res_bits = molt_print_builtin(args_bits, none_bits, none_bits, none_bits, none_bits);
+        let flush_bits = MoltObject::from_bool(true).bits();
+        let res_bits = molt_print_builtin(args_bits, none_bits, none_bits, none_bits, flush_bits);
         dec_ref_bits(_py, res_bits);
         dec_ref_bits(_py, args_bits);
     })
@@ -20171,7 +27496,8 @@ pub extern "C" fn molt_print_newline() {
         }
         let args_bits = MoltObject::from_ptr(args_ptr).bits();
         let none_bits = MoltObject::none().bits();
-        let res_bits = molt_print_builtin(args_bits, none_bits, none_bits, none_bits, none_bits);
+        let flush_bits = MoltObject::from_bool(true).bits();
+        let res_bits = molt_print_builtin(args_bits, none_bits, none_bits, none_bits, flush_bits);
         dec_ref_bits(_py, res_bits);
         dec_ref_bits(_py, args_bits);
     })
@@ -20209,7 +27535,7 @@ fn format_float_scientific(f: f64) -> String {
     }
     let digits_only: String = digits.chars().filter(|ch| *ch != '.').collect();
     let sig_digits = digits_only.trim_start_matches('0').len().max(1);
-    let precision = sig_digits.saturating_sub(1);
+    let precision = sig_digits.saturating_sub(1).min(16);
     let formatted = format!("{:.*e}", precision, f);
     normalize_scientific(&formatted)
 }
@@ -20257,8 +27583,8 @@ fn format_complex(re: f64, im: f64) -> String {
     format!("({re_text}{sign}{im_text}j)")
 }
 
-fn format_range(start: i64, stop: i64, step: i64) -> String {
-    if step == 1 {
+fn format_range(start: &BigInt, stop: &BigInt, step: &BigInt) -> String {
+    if step == &BigInt::from(1) {
         format!("range({start}, {stop})")
     } else {
         format!("range({start}, {stop}, {step})")
@@ -20415,23 +27741,35 @@ fn format_dataclass(_py: &PyToken<'_>, ptr: *mut u8) -> String {
             return "<dataclass>".to_string();
         }
         let desc = &*desc_ptr;
-        if !desc.repr {
-            return format!("<{}>", desc.name);
-        }
         let fields = dataclass_fields_ref(ptr);
         let mut out = String::new();
         out.push_str(&desc.name);
         out.push('(');
+        let mut first = true;
         for (idx, name) in desc.field_names.iter().enumerate() {
-            if idx > 0 {
+            let flag = desc.field_flags.get(idx).copied().unwrap_or(0x7);
+            if (flag & 0x1) == 0 {
+                continue;
+            }
+            if !first {
                 out.push_str(", ");
             }
+            first = false;
             out.push_str(name);
             out.push('=');
             let val = fields
                 .get(idx)
                 .copied()
                 .unwrap_or(MoltObject::none().bits());
+            if is_missing_bits(_py, val) {
+                let type_label = if desc.name.is_empty() {
+                    "dataclass"
+                } else {
+                    desc.name.as_str()
+                };
+                let _ = attr_error(_py, type_label, name);
+                return "<dataclass>".to_string();
+            }
             out.push_str(&format_obj(_py, obj_from_bits(val)));
         }
         out.push(')');
@@ -20581,8 +27919,7 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
             if type_id == TYPE_ID_STRING {
                 let len = string_len(ptr);
                 let bytes = std::slice::from_raw_parts(string_bytes(ptr), len);
-                let s = String::from_utf8_lossy(bytes);
-                return format_string_repr(&s);
+                return format_string_repr_bytes(bytes);
             }
             if type_id == TYPE_ID_BIGINT {
                 return bigint_ref(ptr).to_string();
@@ -20602,7 +27939,10 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                 return format!("bytearray({})", format_bytes(bytes));
             }
             if type_id == TYPE_ID_RANGE {
-                return format_range(range_start(ptr), range_stop(ptr), range_step(ptr));
+                if let Some((start, stop, step)) = range_components_bigint(ptr) {
+                    return format_range(&start, &stop, &step);
+                }
+                return "range(?)".to_string();
             }
             if type_id == TYPE_ID_SLICE {
                 return format_slice(_py, ptr);
@@ -20670,7 +28010,39 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                 if name.is_empty() {
                     return "<type>".to_string();
                 }
-                return format!("<class '{name}'>");
+                let mut qualname = name.clone();
+                let mut module_name: Option<String> = None;
+                if !exception_pending(_py) {
+                    let dict_bits = class_dict_bits(ptr);
+                    if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+                        if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                            if let Some(module_key) =
+                                attr_name_bits_from_bytes(_py, b"__module__")
+                            {
+                                if let Some(bits) = dict_get_in_place(_py, dict_ptr, module_key) {
+                                    if let Some(val) = string_obj_to_owned(obj_from_bits(bits)) {
+                                        module_name = Some(val);
+                                    }
+                                }
+                            }
+                            if let Some(qual_key) =
+                                attr_name_bits_from_bytes(_py, b"__qualname__")
+                            {
+                                if let Some(bits) = dict_get_in_place(_py, dict_ptr, qual_key) {
+                                    if let Some(val) = string_obj_to_owned(obj_from_bits(bits)) {
+                                        qualname = val;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(module) = module_name {
+                    if !module.is_empty() && module != "builtins" {
+                        return format!("<class '{module}.{qualname}'>");
+                    }
+                }
+                return format!("<class '{qualname}'>");
             }
             if type_id == TYPE_ID_CLASSMETHOD {
                 return "<classmethod>".to_string();
@@ -20685,7 +28057,10 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                 return "<super>".to_string();
             }
             if type_id == TYPE_ID_DATACLASS {
-                return format_dataclass(_py, ptr);
+                let desc_ptr = dataclass_desc_ptr(ptr);
+                if !desc_ptr.is_null() && (*desc_ptr).repr {
+                    return format_dataclass(_py, ptr);
+                }
             }
             if type_id == TYPE_ID_BUFFER2D {
                 let buf_ptr = buffer2d_ptr(ptr);
@@ -20900,6 +28275,41 @@ fn format_bytes(bytes: &[u8]) -> String {
         }
     }
     out.push('\'');
+    out
+}
+
+fn format_string_repr_bytes(bytes: &[u8]) -> String {
+    let use_double = bytes.contains(&b'\'') && !bytes.contains(&b'"');
+    let quote = if use_double { '"' } else { '\'' };
+    let mut out = String::new();
+    out.push(quote);
+    for cp in wtf8_from_bytes(bytes).code_points() {
+        let code = cp.to_u32();
+        match code {
+            0x5C => out.push_str("\\\\"),
+            0x0A => out.push_str("\\n"),
+            0x0D => out.push_str("\\r"),
+            0x09 => out.push_str("\\t"),
+            0x2028 => out.push_str("\\u2028"),
+            0x2029 => out.push_str("\\u2029"),
+            _ if code == quote as u32 => {
+                out.push('\\');
+                out.push(quote);
+            }
+            _ if is_surrogate(code) => {
+                out.push_str(&format!("\\u{code:04x}"));
+            }
+            _ => {
+                let ch = char::from_u32(code).unwrap_or('\u{FFFD}');
+                if ch.is_control() {
+                    out.push_str(&unicode_escape(ch));
+                } else {
+                    out.push(ch);
+                }
+            }
+        }
+    }
+    out.push(quote);
     out
 }
 
@@ -21556,50 +28966,104 @@ pub extern "C" fn molt_dec_ref_obj(bits: u64) {
     })
 }
 
-// TODO(semantics, owner:runtime, milestone:TC2, priority:P1, status:partial): move dict
-// subclass storage out of instance __dict__ so mapping contents are not exposed via attributes.
 unsafe fn dict_subclass_storage_bits(_py: &PyToken<'_>, ptr: *mut u8) -> Option<u64> {
+    let debug = std::env::var("MOLT_DEBUG_DICT_SUBCLASS").as_deref() == Ok("1");
     let class_bits = object_class_bits(ptr);
     if class_bits == 0 {
+        if debug {
+            eprintln!(
+                "dict_subclass_storage_bits: no class bits for ptr=0x{:x}",
+                ptr as usize
+            );
+        }
         return None;
     }
     let builtins = builtin_classes(_py);
     if !issubclass_bits(class_bits, builtins.dict) {
+        if debug {
+            let class_name = class_name_for_error(class_bits);
+            if class_name == "defaultdict" || class_name == "dict" {
+                eprintln!(
+                    "dict_subclass_storage_bits: class not dict-subclass ptr=0x{:x} class={}",
+                    ptr as usize, class_name
+                );
+            }
+        }
         return None;
     }
-    let mut dict_bits = instance_dict_bits(ptr);
-    if dict_bits == 0 {
+    let payload = object_payload_size(ptr);
+    if debug {
+        eprintln!(
+            "dict_subclass_storage_bits: ptr=0x{:x} payload={}",
+            ptr as usize, payload
+        );
+    }
+    if payload < 2 * std::mem::size_of::<u64>() {
+        if debug {
+            eprintln!(
+                "dict_subclass_storage_bits: using sidecar storage for ptr=0x{:x}",
+                ptr as usize
+            );
+        }
+        let slot = PtrSlot(ptr);
+        let mut storage = runtime_state(_py).dict_subclass_storage.lock().unwrap();
+        if let Some(bits) = storage.get(&slot).copied() {
+            return Some(bits);
+        }
         let dict_ptr = alloc_dict_with_pairs(_py, &[]);
         if dict_ptr.is_null() {
             return None;
         }
-        dict_bits = MoltObject::from_ptr(dict_ptr).bits();
-        instance_set_dict_bits(_py, ptr, dict_bits);
-    }
-    let dict_ptr = obj_from_bits(dict_bits).as_ptr()?;
-    if object_type_id(dict_ptr) != TYPE_ID_DICT {
-        return None;
-    }
-    let storage_name_bits = intern_static_name(
-        _py,
-        &runtime_state(_py).interned.molt_dict_data_name,
-        b"__molt_dict_data__",
-    );
-    if let Some(storage_bits) = dict_get_in_place(_py, dict_ptr, storage_name_bits) {
+        let storage_bits = MoltObject::from_ptr(dict_ptr).bits();
+        storage.insert(slot, storage_bits);
         return Some(storage_bits);
     }
-    let storage_ptr = alloc_dict_with_pairs(_py, &[]);
-    if storage_ptr.is_null() {
+    let storage_ptr = ptr.add(payload - 2 * std::mem::size_of::<u64>()) as *mut u64;
+    let mut storage_bits = *storage_ptr;
+    let mut needs_init = storage_bits == 0;
+    let mut dict_ptr_opt = if storage_bits == 0 {
+        None
+    } else {
+        obj_from_bits(storage_bits).as_ptr()
+    };
+    if let Some(dict_ptr) = dict_ptr_opt {
+        if object_type_id(dict_ptr) != TYPE_ID_DICT {
+            if debug {
+                eprintln!(
+                    "dict_subclass_storage_bits: storage not dict ptr=0x{:x} bits=0x{:x} type_id={}",
+                    ptr as usize,
+                    storage_bits,
+                    object_type_id(dict_ptr)
+                );
+            }
+            needs_init = true;
+        }
+    } else if storage_bits != 0 {
+        needs_init = true;
+    }
+    if needs_init {
+        let dict_ptr = alloc_dict_with_pairs(_py, &[]);
+        if dict_ptr.is_null() {
+            return None;
+        }
+        storage_bits = MoltObject::from_ptr(dict_ptr).bits();
+        *storage_ptr = storage_bits;
+        dict_ptr_opt = Some(dict_ptr);
+        if debug {
+            eprintln!(
+                "dict_subclass_storage_bits: initialized storage ptr=0x{:x} bits=0x{:x}",
+                ptr as usize, storage_bits
+            );
+        }
+    }
+    if let Some(dict_ptr) = dict_ptr_opt {
+        if object_type_id(dict_ptr) != TYPE_ID_DICT {
+            return None;
+        }
+    } else {
         return None;
     }
-    let storage_bits = MoltObject::from_ptr(storage_ptr).bits();
-    dict_set_in_place(_py, dict_ptr, storage_name_bits, storage_bits);
-    if exception_pending(_py) {
-        dec_ref_bits(_py, storage_bits);
-        return None;
-    }
-    dec_ref_bits(_py, storage_bits);
-    dict_get_in_place(_py, dict_ptr, storage_name_bits)
+    Some(storage_bits)
 }
 
 unsafe fn dict_like_bits_from_ptr(_py: &PyToken<'_>, ptr: *mut u8) -> Option<u64> {
@@ -21721,8 +29185,11 @@ pub(crate) fn is_truthy(_py: &PyToken<'_>, obj: MoltObject) -> bool {
                 return dict_view_len(ptr) > 0;
             }
             if type_id == TYPE_ID_RANGE {
-                let len = range_len_i64(range_start(ptr), range_stop(ptr), range_step(ptr));
-                return len > 0;
+                let Some((start, stop, step)) = range_components_bigint(ptr) else {
+                    return false;
+                };
+                let len = range_len_bigint(&start, &stop, &step);
+                return !len.is_zero();
             }
             if type_id == TYPE_ID_ITER {
                 return true;
@@ -21921,6 +29388,7 @@ pub(crate) fn type_name(_py: &PyToken<'_>, obj: MoltObject) -> Cow<'static, str>
                 TYPE_ID_GENERATOR => Cow::Borrowed("generator"),
                 TYPE_ID_ASYNC_GENERATOR => Cow::Borrowed("async_generator"),
                 TYPE_ID_ENUMERATE => Cow::Borrowed("enumerate"),
+                TYPE_ID_ITER => Cow::Borrowed("iterator"),
                 TYPE_ID_CALL_ITER => Cow::Borrowed("callable_iterator"),
                 TYPE_ID_REVERSED => Cow::Borrowed("reversed"),
                 TYPE_ID_ZIP => Cow::Borrowed("zip"),
@@ -22115,7 +29583,7 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
                     }
                     let r_table = set_table(rp);
                     for key_bits in l_elems.iter().copied() {
-                        if set_find_entry(_py, r_elems, r_table, key_bits).is_none() {
+                        if set_find_entry_fast(_py, r_elems, r_table, key_bits).is_none() {
                             return false;
                         }
                     }
@@ -22162,7 +29630,7 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
                     } else {
                         let r_table = set_table(rhs_ptr);
                         for key_bits in l_elems.iter().copied() {
-                            if set_find_entry(_py, r_elems, r_table, key_bits).is_none() {
+                            if set_find_entry_fast(_py, r_elems, r_table, key_bits).is_none() {
                                 equal = false;
                                 break;
                             }
@@ -22266,7 +29734,9 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
                 for entry_idx in 0..entries {
                     let key_bits = l_pairs[entry_idx * 2];
                     let val_bits = l_pairs[entry_idx * 2 + 1];
-                    let Some(r_entry_idx) = dict_find_entry(_py, r_pairs, r_table, key_bits) else {
+                    let Some(r_entry_idx) =
+                        dict_find_entry_fast(_py, r_pairs, r_table, key_bits)
+                    else {
                         return false;
                     };
                     let r_val_bits = r_pairs[r_entry_idx * 2 + 1];
@@ -22284,7 +29754,7 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
                 }
                 let r_table = set_table(rp);
                 for key_bits in l_elems.iter().copied() {
-                    if set_find_entry(_py, r_elems, r_table, key_bits).is_none() {
+                    if set_find_entry_fast(_py, r_elems, r_table, key_bits).is_none() {
                         return false;
                     }
                 }
@@ -22309,7 +29779,14 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
                 if l_vals.len() != r_vals.len() {
                     return false;
                 }
-                for (l_val, r_val) in l_vals.iter().zip(r_vals.iter()) {
+                for (idx, (l_val, r_val)) in l_vals.iter().zip(r_vals.iter()).enumerate() {
+                    let flag = l_desc.field_flags.get(idx).copied().unwrap_or(0x7);
+                    if (flag & 0x2) == 0 {
+                        continue;
+                    }
+                    if is_missing_bits(_py, *l_val) || is_missing_bits(_py, *r_val) {
+                        return false;
+                    }
                     if !obj_eq(_py, obj_from_bits(*l_val), obj_from_bits(*r_val)) {
                         return false;
                     }
@@ -22719,6 +30196,85 @@ fn hash_tuple(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
     }
 }
 
+fn hash_dataclass_fields(
+    _py: &PyToken<'_>,
+    fields: &[u64],
+    flags: &[u8],
+    field_names: &[String],
+    type_label: &str,
+) -> i64 {
+    #[cfg(target_pointer_width = "64")]
+    {
+        const XXPRIME_1: u64 = 11400714785074694791;
+        const XXPRIME_2: u64 = 14029467366897019727;
+        const XXPRIME_5: u64 = 2870177450012600261;
+        let mut acc = XXPRIME_5;
+        let mut count = 0usize;
+        for (idx, &elem) in fields.iter().enumerate() {
+            let flag = flags.get(idx).copied().unwrap_or(0x7);
+            if (flag & 0x4) == 0 {
+                continue;
+            }
+            if is_missing_bits(_py, elem) {
+                let name = field_names
+                    .get(idx)
+                    .map(|s| s.as_str())
+                    .unwrap_or("field");
+                let _ = attr_error(_py, type_label, name);
+                return 0;
+            }
+            count += 1;
+            let lane = hash_bits_signed(_py, elem);
+            if exception_pending(_py) {
+                return 0;
+            }
+            acc = acc.wrapping_add((lane as u64).wrapping_mul(XXPRIME_2));
+            acc = acc.rotate_left(31);
+            acc = acc.wrapping_mul(XXPRIME_1);
+        }
+        acc = acc.wrapping_add((count as u64) ^ (XXPRIME_5 ^ 3527539));
+        if acc == u64::MAX {
+            return 1546275796;
+        }
+        acc as i64
+    }
+    #[cfg(target_pointer_width = "32")]
+    {
+        const XXPRIME_1: u32 = 2654435761;
+        const XXPRIME_2: u32 = 2246822519;
+        const XXPRIME_5: u32 = 374761393;
+        let mut acc = XXPRIME_5;
+        let mut count = 0usize;
+        for (idx, &elem) in fields.iter().enumerate() {
+            let flag = flags.get(idx).copied().unwrap_or(0x7);
+            if (flag & 0x4) == 0 {
+                continue;
+            }
+            if is_missing_bits(_py, elem) {
+                let name = field_names
+                    .get(idx)
+                    .map(|s| s.as_str())
+                    .unwrap_or("field");
+                let _ = attr_error(_py, type_label, name);
+                return 0;
+            }
+            count += 1;
+            let lane = hash_bits_signed(_py, elem);
+            if exception_pending(_py) {
+                return 0;
+            }
+            acc = acc.wrapping_add((lane as u32).wrapping_mul(XXPRIME_2));
+            acc = acc.rotate_left(13);
+            acc = acc.wrapping_mul(XXPRIME_1);
+        }
+        acc = acc.wrapping_add((count as u32) ^ (XXPRIME_5 ^ 3527539));
+        if acc == u32::MAX {
+            return 1546275796;
+        }
+        (acc as i32) as i64
+    }
+}
+
 fn hash_generic_alias(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
     let origin_bits = unsafe { generic_alias_origin_bits(ptr) };
     let args_bits = unsafe { generic_alias_args_bits(ptr) };
@@ -22958,6 +30514,84 @@ fn hash_bits_signed(_py: &PyToken<'_>, bits: u64) -> i64 {
             if type_id == TYPE_ID_TUPLE {
                 return hash_tuple(_py, ptr);
             }
+            if type_id == TYPE_ID_DATACLASS {
+                let desc_ptr = dataclass_desc_ptr(ptr);
+                if desc_ptr.is_null() {
+                    return hash_pointer(ptr as u64);
+                }
+                let desc = &*desc_ptr;
+                match desc.hash_mode {
+                    2 => return hash_unhashable(_py, obj),
+                    3 => {
+                        let hash_name_bits = intern_static_name(
+                            _py,
+                            &runtime_state(_py).interned.hash_name,
+                            b"__hash__",
+                        );
+                        if let Some(call_bits) =
+                            attr_lookup_ptr_allow_missing(_py, ptr, hash_name_bits)
+                        {
+                            let res_bits = call_callable0(_py, call_bits);
+                            dec_ref_bits(_py, call_bits);
+                            if exception_pending(_py) {
+                                dec_ref_bits(_py, res_bits);
+                                return 0;
+                            }
+                            let res_obj = obj_from_bits(res_bits);
+                            if let Some(val) = to_i64(res_obj) {
+                                dec_ref_bits(_py, res_bits);
+                                return fix_hash(val);
+                            }
+                            if let Some(big_ptr) = bigint_ptr_from_bits(res_bits) {
+                                let big = bigint_ref(big_ptr);
+                                let Some(val) = big.to_i64() else {
+                                    dec_ref_bits(_py, res_bits);
+                                    return raise_exception::<i64>(
+                                        _py,
+                                        "OverflowError",
+                                        "cannot fit 'int' into an index-sized integer",
+                                    );
+                                };
+                                dec_ref_bits(_py, res_bits);
+                                return fix_hash(val);
+                            }
+                            dec_ref_bits(_py, res_bits);
+                            return raise_exception::<i64>(
+                                _py,
+                                "TypeError",
+                                "__hash__ returned non-int",
+                            );
+                        }
+                        return hash_pointer(ptr as u64);
+                    }
+                    1 => {
+                        let fields = dataclass_fields_ref(ptr);
+                        let type_label = if desc.name.is_empty() {
+                            "dataclass"
+                        } else {
+                            desc.name.as_str()
+                        };
+                        return hash_dataclass_fields(
+                            _py,
+                            fields,
+                            &desc.field_flags,
+                            &desc.field_names,
+                            type_label,
+                        );
+                    }
+                    _ => return hash_pointer(ptr as u64),
+                }
+            }
+            if type_id == TYPE_ID_TYPE {
+                let class_bits = type_of_bits(_py, obj.bits());
+                if class_bits == builtin_classes(_py).type_obj {
+                    return hash_pointer(ptr as u64);
+                }
+                if let Some(hash) = hash_from_dunder(_py, obj, ptr) {
+                    return hash;
+                }
+                return hash_pointer(ptr as u64);
+            }
             if type_id == TYPE_ID_GENERIC_ALIAS {
                 return hash_generic_alias(_py, ptr);
             }
@@ -22976,10 +30610,89 @@ fn hash_bits_signed(_py: &PyToken<'_>, bits: u64) -> i64 {
             if type_id == TYPE_ID_FROZENSET {
                 return hash_frozenset(_py, ptr);
             }
+            if let Some(hash) = hash_from_dunder(_py, obj, ptr) {
+                return hash;
+            }
         }
         return hash_pointer(ptr as u64);
     }
     hash_pointer(bits)
+}
+
+unsafe fn hash_from_dunder(_py: &PyToken<'_>, obj: MoltObject, obj_ptr: *mut u8) -> Option<i64> {
+    let hash_name_bits =
+        intern_static_name(_py, &runtime_state(_py).interned.hash_name, b"__hash__");
+    let eq_name_bits =
+        intern_static_name(_py, &runtime_state(_py).interned.eq_name, b"__eq__");
+    let class_bits = type_of_bits(_py, obj.bits());
+    let default_type_hashable = class_bits == builtin_classes(_py).type_obj;
+    if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
+        if object_type_id(class_ptr) == TYPE_ID_TYPE {
+            if !default_type_hashable {
+                let dict_bits = class_dict_bits(class_ptr);
+                if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+                    if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                        let hash_entry = dict_get_in_place(_py, dict_ptr, hash_name_bits);
+                        if exception_pending(_py) {
+                            return Some(0);
+                        }
+                        if let Some(hash_bits) = hash_entry {
+                            if obj_from_bits(hash_bits).is_none() {
+                                let name = type_name(_py, obj);
+                                let msg = format!("unhashable type: '{name}'");
+                                return Some(raise_exception::<i64>(_py, "TypeError", &msg));
+                            }
+                        } else if dict_get_in_place(_py, dict_ptr, eq_name_bits).is_some() {
+                            let name = type_name(_py, obj);
+                            let msg = format!("unhashable type: '{name}'");
+                            return Some(raise_exception::<i64>(_py, "TypeError", &msg));
+                        }
+                        if exception_pending(_py) {
+                            return Some(0);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, obj_ptr, hash_name_bits) else {
+        return None;
+    };
+    if obj_from_bits(call_bits).is_none() {
+        dec_ref_bits(_py, call_bits);
+        if default_type_hashable {
+            return None;
+        }
+        let name = type_name(_py, obj);
+        let msg = format!("unhashable type: '{name}'");
+        return Some(raise_exception::<i64>(_py, "TypeError", &msg));
+    }
+    let res_bits = call_callable0(_py, call_bits);
+    dec_ref_bits(_py, call_bits);
+    if exception_pending(_py) {
+        if !obj_from_bits(res_bits).is_none() {
+            dec_ref_bits(_py, res_bits);
+        }
+        return Some(0);
+    }
+    let res_obj = obj_from_bits(res_bits);
+    let hash = if let Some(i) = to_i64(res_obj) {
+        hash_int(i)
+    } else if let Some(ptr) = res_obj.as_ptr() {
+        if object_type_id(ptr) == TYPE_ID_BIGINT {
+            hash_bigint(ptr)
+        } else {
+            let msg = "__hash__ method should return an integer";
+            dec_ref_bits(_py, res_bits);
+            return Some(raise_exception::<i64>(_py, "TypeError", msg));
+        }
+    } else {
+        let msg = "__hash__ method should return an integer";
+        dec_ref_bits(_py, res_bits);
+        return Some(raise_exception::<i64>(_py, "TypeError", msg));
+    };
+    dec_ref_bits(_py, res_bits);
+    Some(hash)
 }
 
 fn hash_bits(_py: &PyToken<'_>, bits: u64) -> u64 {
@@ -23022,6 +30735,23 @@ fn dict_insert_entry(_py: &PyToken<'_>, order: &[u64], table: &mut [usize], entr
     }
 }
 
+fn dict_insert_entry_with_hash(
+    _py: &PyToken<'_>,
+    _order: &[u64],
+    table: &mut [usize],
+    entry_idx: usize,
+    hash: u64,
+) {
+    let mask = table.len() - 1;
+    let mut slot = (hash as usize) & mask;
+    loop {
+        if table[slot] == 0 {
+            table[slot] = entry_idx + 1;
+            return;
+        }
+        slot = (slot + 1) & mask;
+    }
+}
 fn dict_rebuild(_py: &PyToken<'_>, order: &[u64], table: &mut Vec<usize>, capacity: usize) {
     table.clear();
     table.resize(capacity, 0);
@@ -23031,7 +30761,7 @@ fn dict_rebuild(_py: &PyToken<'_>, order: &[u64], table: &mut Vec<usize>, capaci
     }
 }
 
-pub(crate) fn dict_find_entry(
+pub(crate) fn dict_find_entry_fast(
     _py: &PyToken<'_>,
     order: &[u64],
     table: &[usize],
@@ -23056,6 +30786,116 @@ pub(crate) fn dict_find_entry(
     }
 }
 
+pub(crate) fn dict_find_entry(
+    _py: &PyToken<'_>,
+    order: &[u64],
+    table: &[usize],
+    key_bits: u64,
+) -> Option<usize> {
+    if table.is_empty() {
+        return None;
+    }
+    let pending_before = exception_pending(_py);
+    let mask = table.len() - 1;
+    let mut slot = (hash_bits(_py, key_bits) as usize) & mask;
+    loop {
+        let entry = table[slot];
+        if entry == 0 {
+            return None;
+        }
+        let entry_idx = entry - 1;
+        let entry_key = order[entry_idx * 2];
+        if let Some(eq) = unsafe { string_bits_eq(entry_key, key_bits) } {
+            if eq {
+                return Some(entry_idx);
+            }
+            slot = (slot + 1) & mask;
+            continue;
+        }
+        let eq = unsafe { eq_bool_from_bits(_py, entry_key, key_bits) };
+        match eq {
+            Some(true) => return Some(entry_idx),
+            Some(false) => {
+                if pending_before {
+                    if unsafe { string_bits_eq(entry_key, key_bits) } == Some(true) {
+                        return Some(entry_idx);
+                    }
+                }
+            }
+            None => {
+                if pending_before {
+                    if unsafe { string_bits_eq(entry_key, key_bits) } == Some(true) {
+                        return Some(entry_idx);
+                    }
+                }
+                return None;
+            }
+        }
+        slot = (slot + 1) & mask;
+    }
+}
+
+unsafe fn string_bits_eq(a_bits: u64, b_bits: u64) -> Option<bool> {
+    let a_obj = obj_from_bits(a_bits);
+    let b_obj = obj_from_bits(b_bits);
+    let Some(a_ptr) = a_obj.as_ptr() else {
+        return None;
+    };
+    let Some(b_ptr) = b_obj.as_ptr() else {
+        return None;
+    };
+    if object_type_id(a_ptr) != TYPE_ID_STRING || object_type_id(b_ptr) != TYPE_ID_STRING {
+        return None;
+    }
+    if a_ptr == b_ptr {
+        return Some(true);
+    }
+    let a_len = string_len(a_ptr);
+    let b_len = string_len(b_ptr);
+    if a_len != b_len {
+        return Some(false);
+    }
+    let a_bytes = std::slice::from_raw_parts(string_bytes(a_ptr), a_len);
+    let b_bytes = std::slice::from_raw_parts(string_bytes(b_ptr), b_len);
+    Some(a_bytes == b_bytes)
+}
+
+pub(crate) fn dict_find_entry_with_hash(
+    _py: &PyToken<'_>,
+    order: &[u64],
+    table: &[usize],
+    key_bits: u64,
+    hash: u64,
+) -> Option<usize> {
+    if table.is_empty() {
+        return None;
+    }
+    let mask = table.len() - 1;
+    let mut slot = (hash as usize) & mask;
+    loop {
+        let entry = table[slot];
+        if entry == 0 {
+            return None;
+        }
+        let entry_idx = entry - 1;
+        let entry_key = order[entry_idx * 2];
+        if let Some(eq) = unsafe { string_bits_eq(entry_key, key_bits) } {
+            if eq {
+                return Some(entry_idx);
+            }
+            slot = (slot + 1) & mask;
+            continue;
+        }
+        let eq = unsafe { eq_bool_from_bits(_py, entry_key, key_bits) };
+        match eq {
+            Some(true) => return Some(entry_idx),
+            Some(false) => {}
+            None => return None,
+        }
+        slot = (slot + 1) & mask;
+    }
+}
+
 pub(crate) fn set_table_capacity(entries: usize) -> usize {
     dict_table_capacity(entries)
 }
@@ -23073,12 +30913,54 @@ fn set_insert_entry(_py: &PyToken<'_>, order: &[u64], table: &mut [usize], entry
     }
 }
 
+fn set_insert_entry_with_hash(
+    _py: &PyToken<'_>,
+    _order: &[u64],
+    table: &mut [usize],
+    entry_idx: usize,
+    hash: u64,
+) {
+    let mask = table.len() - 1;
+    let mut slot = (hash as usize) & mask;
+    loop {
+        if table[slot] == 0 {
+            table[slot] = entry_idx + 1;
+            return;
+        }
+        slot = (slot + 1) & mask;
+    }
+}
 fn set_rebuild(_py: &PyToken<'_>, order: &[u64], table: &mut Vec<usize>, capacity: usize) {
     crate::gil_assert();
     table.clear();
     table.resize(capacity, 0);
     for entry_idx in 0..order.len() {
         set_insert_entry(_py, order, table, entry_idx);
+    }
+}
+
+pub(crate) fn set_find_entry_fast(
+    _py: &PyToken<'_>,
+    order: &[u64],
+    table: &[usize],
+    key_bits: u64,
+) -> Option<usize> {
+    if table.is_empty() {
+        return None;
+    }
+    let mask = table.len() - 1;
+    let mut slot = (hash_bits(_py, key_bits) as usize) & mask;
+    loop {
+        let entry = table[slot];
+        if entry == 0 {
+            return None;
+        }
+        let entry_idx = entry - 1;
+        let entry_key = order[entry_idx];
+        if obj_eq(_py, obj_from_bits(entry_key), obj_from_bits(key_bits)) {
+            return Some(entry_idx);
+        }
+        slot = (slot + 1) & mask;
     }
 }
 
@@ -23100,8 +30982,40 @@ pub(crate) fn set_find_entry(
         }
         let entry_idx = entry - 1;
         let entry_key = order[entry_idx];
-        if obj_eq(_py, obj_from_bits(entry_key), obj_from_bits(key_bits)) {
-            return Some(entry_idx);
+        let eq = unsafe { eq_bool_from_bits(_py, entry_key, key_bits) };
+        match eq {
+            Some(true) => return Some(entry_idx),
+            Some(false) => {}
+            None => return None,
+        }
+        slot = (slot + 1) & mask;
+    }
+}
+
+pub(crate) fn set_find_entry_with_hash(
+    _py: &PyToken<'_>,
+    order: &[u64],
+    table: &[usize],
+    key_bits: u64,
+    hash: u64,
+) -> Option<usize> {
+    if table.is_empty() {
+        return None;
+    }
+    let mask = table.len() - 1;
+    let mut slot = (hash as usize) & mask;
+    loop {
+        let entry = table[slot];
+        if entry == 0 {
+            return None;
+        }
+        let entry_idx = entry - 1;
+        let entry_key = order[entry_idx];
+        let eq = unsafe { eq_bool_from_bits(_py, entry_key, key_bits) };
+        match eq {
+            Some(true) => return Some(entry_idx),
+            Some(false) => {}
+            None => return None,
         }
         slot = (slot + 1) & mask;
     }
@@ -23159,9 +31073,17 @@ pub(crate) unsafe fn dict_set_in_place(
     if !ensure_hashable(_py, key_bits) {
         return;
     }
+    let hash = hash_bits(_py, key_bits);
+    if exception_pending(_py) {
+        return;
+    }
     let order = dict_order(ptr);
     let table = dict_table(ptr);
-    if let Some(entry_idx) = dict_find_entry(_py, order, table, key_bits) {
+    let found = dict_find_entry_with_hash(_py, order, table, key_bits, hash);
+    if exception_pending(_py) {
+        return;
+    }
+    if let Some(entry_idx) = found {
         let val_idx = entry_idx * 2 + 1;
         let old_bits = order[val_idx];
         if old_bits != val_bits {
@@ -23177,6 +31099,9 @@ pub(crate) unsafe fn dict_set_in_place(
     if needs_resize {
         let capacity = dict_table_capacity(new_entries);
         dict_rebuild(_py, order, table, capacity);
+        if exception_pending(_py) {
+            return;
+        }
     }
 
     order.push(key_bits);
@@ -23184,7 +31109,7 @@ pub(crate) unsafe fn dict_set_in_place(
     inc_ref_bits(_py, key_bits);
     inc_ref_bits(_py, val_bits);
     let entry_idx = order.len() / 2 - 1;
-    dict_insert_entry(_py, order, table, entry_idx);
+    dict_insert_entry_with_hash(_py, order, table, entry_idx, hash);
 }
 
 pub(crate) unsafe fn set_add_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits: u64) {
@@ -23192,9 +31117,17 @@ pub(crate) unsafe fn set_add_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits:
     if !ensure_hashable(_py, key_bits) {
         return;
     }
+    let hash = hash_bits(_py, key_bits);
+    if exception_pending(_py) {
+        return;
+    }
     let order = set_order(ptr);
     let table = set_table(ptr);
-    if set_find_entry(_py, order, table, key_bits).is_some() {
+    let found = set_find_entry_with_hash(_py, order, table, key_bits, hash);
+    if exception_pending(_py) {
+        return;
+    }
+    if found.is_some() {
         return;
     }
 
@@ -23203,12 +31136,15 @@ pub(crate) unsafe fn set_add_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits:
     if needs_resize {
         let capacity = set_table_capacity(new_entries);
         set_rebuild(_py, order, table, capacity);
+        if exception_pending(_py) {
+            return;
+        }
     }
 
     order.push(key_bits);
     inc_ref_bits(_py, key_bits);
     let entry_idx = order.len() - 1;
-    set_insert_entry(_py, order, table, entry_idx);
+    set_insert_entry_with_hash(_py, order, table, entry_idx, hash);
 }
 
 pub(crate) unsafe fn dict_get_in_place(
@@ -23219,9 +31155,25 @@ pub(crate) unsafe fn dict_get_in_place(
     if !ensure_hashable(_py, key_bits) {
         return None;
     }
+    let pending_before = exception_pending(_py);
+    let prev_exc_bits = if pending_before {
+        exception_last_bits_noinc(_py).unwrap_or(0)
+    } else {
+        0
+    };
     let order = dict_order(ptr);
     let table = dict_table(ptr);
-    dict_find_entry(_py, order, table, key_bits).map(|idx| order[idx * 2 + 1])
+    let found = dict_find_entry(_py, order, table, key_bits);
+    if exception_pending(_py) {
+        if !pending_before {
+            return None;
+        }
+        let after_exc_bits = exception_last_bits_noinc(_py).unwrap_or(0);
+        if after_exc_bits != prev_exc_bits {
+            return None;
+        }
+    }
+    found.map(|idx| order[idx * 2 + 1])
 }
 
 pub(crate) unsafe fn set_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits: u64) -> bool {
@@ -23230,7 +31182,11 @@ pub(crate) unsafe fn set_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits:
     }
     let order = set_order(ptr);
     let table = set_table(ptr);
-    let Some(entry_idx) = set_find_entry(_py, order, table, key_bits) else {
+    let found = set_find_entry(_py, order, table, key_bits);
+    if exception_pending(_py) {
+        return false;
+    }
+    let Some(entry_idx) = found else {
         return false;
     };
     let key_val = order[entry_idx];
@@ -23264,7 +31220,11 @@ pub(crate) unsafe fn dict_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits
     }
     let order = dict_order(ptr);
     let table = dict_table(ptr);
-    let Some(entry_idx) = dict_find_entry(_py, order, table, key_bits) else {
+    let found = dict_find_entry(_py, order, table, key_bits);
+    if exception_pending(_py) {
+        return false;
+    }
+    let Some(entry_idx) = found else {
         return false;
     };
     let key_idx = entry_idx * 2;

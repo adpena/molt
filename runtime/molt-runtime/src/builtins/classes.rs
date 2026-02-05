@@ -8,12 +8,12 @@ use crate::{
     alloc_class_obj, alloc_dict_with_pairs, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
     class_break_cycles, class_bump_layout_version, class_dict_bits, class_name_bits, dec_ref_bits,
     dict_set_in_place, inc_ref_bits, intern_static_name, molt_class_set_base, obj_from_bits,
-    object_set_class_bits, object_type_id, runtime_state, string_obj_to_owned, RuntimeState,
-    BUILTIN_TAG_BASE_EXCEPTION, BUILTIN_TAG_EXCEPTION, BUILTIN_TAG_OBJECT, BUILTIN_TAG_TYPE,
-    TYPE_ID_DICT, TYPE_ID_TYPE, TYPE_TAG_BOOL, TYPE_TAG_BYTEARRAY, TYPE_TAG_BYTES,
-    TYPE_TAG_COMPLEX, TYPE_TAG_DICT, TYPE_TAG_FLOAT, TYPE_TAG_FROZENSET, TYPE_TAG_INT,
-    TYPE_TAG_LIST, TYPE_TAG_MEMORYVIEW, TYPE_TAG_NONE, TYPE_TAG_RANGE, TYPE_TAG_SET,
-    TYPE_TAG_SLICE, TYPE_TAG_STR, TYPE_TAG_TUPLE,
+    object_set_class_bits, object_type_id, runtime_state, runtime_state_for_gil,
+    string_obj_to_owned, RuntimeState, BUILTIN_TAG_BASE_EXCEPTION, BUILTIN_TAG_EXCEPTION,
+    BUILTIN_TAG_OBJECT, BUILTIN_TAG_TYPE, TYPE_ID_DICT, TYPE_ID_TYPE, TYPE_TAG_BOOL,
+    TYPE_TAG_BYTEARRAY, TYPE_TAG_BYTES, TYPE_TAG_COMPLEX, TYPE_TAG_DICT, TYPE_TAG_FLOAT,
+    TYPE_TAG_FROZENSET, TYPE_TAG_INT, TYPE_TAG_LIST, TYPE_TAG_MEMORYVIEW, TYPE_TAG_NONE,
+    TYPE_TAG_RANGE, TYPE_TAG_SET, TYPE_TAG_SLICE, TYPE_TAG_STR, TYPE_TAG_TUPLE,
 };
 
 pub(crate) struct BuiltinClasses {
@@ -36,21 +36,37 @@ pub(crate) struct BuiltinClasses {
     pub(crate) list: u64,
     pub(crate) tuple: u64,
     pub(crate) dict: u64,
+    pub(crate) dict_keys: u64,
+    pub(crate) dict_items: u64,
+    pub(crate) dict_values: u64,
     pub(crate) set: u64,
     pub(crate) frozenset: u64,
     pub(crate) range: u64,
     pub(crate) slice: u64,
     pub(crate) memoryview: u64,
+    pub(crate) io_base: u64,
+    pub(crate) raw_io_base: u64,
+    pub(crate) buffered_io_base: u64,
+    pub(crate) text_io_base: u64,
     pub(crate) file: u64,
     pub(crate) file_io: u64,
     pub(crate) buffered_reader: u64,
     pub(crate) buffered_writer: u64,
     pub(crate) buffered_random: u64,
     pub(crate) text_io_wrapper: u64,
+    pub(crate) bytes_io: u64,
+    pub(crate) string_io: u64,
     pub(crate) function: u64,
     pub(crate) coroutine: u64,
     pub(crate) generator: u64,
     pub(crate) async_generator: u64,
+    pub(crate) iterator: u64,
+    pub(crate) callable_iterator: u64,
+    pub(crate) enumerate: u64,
+    pub(crate) reversed: u64,
+    pub(crate) zip: u64,
+    pub(crate) map: u64,
+    pub(crate) filter: u64,
     pub(crate) builtin_function_or_method: u64,
     pub(crate) code: u64,
     pub(crate) frame: u64,
@@ -84,21 +100,37 @@ impl BuiltinClasses {
             self.list,
             self.tuple,
             self.dict,
+            self.dict_keys,
+            self.dict_items,
+            self.dict_values,
             self.set,
             self.frozenset,
             self.range,
             self.slice,
             self.memoryview,
+            self.io_base,
+            self.raw_io_base,
+            self.buffered_io_base,
+            self.text_io_base,
             self.file,
             self.file_io,
             self.buffered_reader,
             self.buffered_writer,
             self.buffered_random,
             self.text_io_wrapper,
+            self.bytes_io,
+            self.string_io,
             self.function,
             self.coroutine,
             self.generator,
             self.async_generator,
+            self.iterator,
+            self.callable_iterator,
+            self.enumerate,
+            self.reversed,
+            self.zip,
+            self.map,
+            self.filter,
             self.builtin_function_or_method,
             self.code,
             self.frame,
@@ -184,6 +216,36 @@ fn init_int_subclass_layout(_py: &PyToken<'_>, int_bits: u64) {
     dec_ref_bits(_py, slot_name_bits);
 }
 
+fn init_dict_subclass_layout(_py: &PyToken<'_>, dict_bits: u64) {
+    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+        return;
+    };
+    unsafe {
+        if object_type_id(dict_ptr) != TYPE_ID_TYPE {
+            return;
+        }
+    }
+    let dict_bits = unsafe { class_dict_bits(dict_ptr) };
+    let Some(dict_dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+        return;
+    };
+    unsafe {
+        if object_type_id(dict_dict_ptr) != TYPE_ID_DICT {
+            return;
+        }
+    }
+    let layout_name_bits = intern_static_name(
+        _py,
+        &runtime_state(_py).interned.molt_layout_size,
+        b"__molt_layout_size__",
+    );
+    let layout_bits = MoltObject::from_int(16).bits();
+    unsafe {
+        dict_set_in_place(_py, dict_dict_ptr, layout_name_bits, layout_bits);
+        class_bump_layout_version(dict_ptr);
+    }
+}
+
 fn union_type_class_name() -> &'static str {
     let minor = std::env::var("MOLT_SYS_VERSION_INFO")
         .ok()
@@ -221,21 +283,37 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
     let list = make_builtin_class(_py, "list");
     let tuple = make_builtin_class(_py, "tuple");
     let dict = make_builtin_class(_py, "dict");
+    let dict_keys = make_builtin_class(_py, "dict_keys");
+    let dict_items = make_builtin_class(_py, "dict_items");
+    let dict_values = make_builtin_class(_py, "dict_values");
     let set = make_builtin_class(_py, "set");
     let frozenset = make_builtin_class(_py, "frozenset");
     let range = make_builtin_class(_py, "range");
     let slice = make_builtin_class(_py, "slice");
     let memoryview = make_builtin_class(_py, "memoryview");
+    let io_base = make_builtin_class(_py, "IOBase");
+    let raw_io_base = make_builtin_class(_py, "RawIOBase");
+    let buffered_io_base = make_builtin_class(_py, "BufferedIOBase");
+    let text_io_base = make_builtin_class(_py, "TextIOBase");
     let file = make_builtin_class(_py, "file");
     let file_io = make_builtin_class(_py, "FileIO");
     let buffered_reader = make_builtin_class(_py, "BufferedReader");
     let buffered_writer = make_builtin_class(_py, "BufferedWriter");
     let buffered_random = make_builtin_class(_py, "BufferedRandom");
     let text_io_wrapper = make_builtin_class(_py, "TextIOWrapper");
+    let bytes_io = make_builtin_class(_py, "BytesIO");
+    let string_io = make_builtin_class(_py, "StringIO");
     let function = make_builtin_class(_py, "function");
     let coroutine = make_builtin_class(_py, "coroutine");
     let generator = make_builtin_class(_py, "generator");
     let async_generator = make_builtin_class(_py, "async_generator");
+    let iterator = make_builtin_class(_py, "iterator");
+    let callable_iterator = make_builtin_class(_py, "callable_iterator");
+    let enumerate = make_builtin_class(_py, "enumerate");
+    let reversed = make_builtin_class(_py, "reversed");
+    let zip = make_builtin_class(_py, "zip");
+    let map = make_builtin_class(_py, "map");
+    let filter = make_builtin_class(_py, "filter");
     let builtin_function_or_method = make_builtin_class(_py, "builtin_function_or_method");
     let code = make_builtin_class(_py, "code");
     let frame = make_builtin_class(_py, "frame");
@@ -265,21 +343,37 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
             list,
             tuple,
             dict,
+            dict_keys,
+            dict_items,
+            dict_values,
             set,
             frozenset,
             range,
             slice,
             memoryview,
+            io_base,
+            raw_io_base,
+            buffered_io_base,
+            text_io_base,
             file,
             file_io,
             buffered_reader,
             buffered_writer,
             buffered_random,
             text_io_wrapper,
+            bytes_io,
+            string_io,
             function,
             coroutine,
             generator,
             async_generator,
+            iterator,
+            callable_iterator,
+            enumerate,
+            reversed,
+            zip,
+            map,
+            filter,
             builtin_function_or_method,
             code,
             frame,
@@ -329,21 +423,38 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
     let _ = molt_class_set_base(list, object);
     let _ = molt_class_set_base(tuple, object);
     let _ = molt_class_set_base(dict, object);
+    init_dict_subclass_layout(_py, dict);
+    let _ = molt_class_set_base(dict_keys, object);
+    let _ = molt_class_set_base(dict_items, object);
+    let _ = molt_class_set_base(dict_values, object);
     let _ = molt_class_set_base(set, object);
     let _ = molt_class_set_base(frozenset, object);
     let _ = molt_class_set_base(range, object);
     let _ = molt_class_set_base(slice, object);
     let _ = molt_class_set_base(memoryview, object);
-    let _ = molt_class_set_base(file, object);
-    let _ = molt_class_set_base(file_io, file);
-    let _ = molt_class_set_base(buffered_reader, file);
-    let _ = molt_class_set_base(buffered_writer, file);
-    let _ = molt_class_set_base(buffered_random, file);
-    let _ = molt_class_set_base(text_io_wrapper, file);
+    let _ = molt_class_set_base(io_base, object);
+    let _ = molt_class_set_base(raw_io_base, io_base);
+    let _ = molt_class_set_base(buffered_io_base, io_base);
+    let _ = molt_class_set_base(text_io_base, io_base);
+    let _ = molt_class_set_base(file, io_base);
+    let _ = molt_class_set_base(file_io, raw_io_base);
+    let _ = molt_class_set_base(buffered_reader, buffered_io_base);
+    let _ = molt_class_set_base(buffered_writer, buffered_io_base);
+    let _ = molt_class_set_base(buffered_random, buffered_io_base);
+    let _ = molt_class_set_base(text_io_wrapper, text_io_base);
+    let _ = molt_class_set_base(bytes_io, buffered_io_base);
+    let _ = molt_class_set_base(string_io, text_io_base);
     let _ = molt_class_set_base(function, object);
     let _ = molt_class_set_base(coroutine, object);
     let _ = molt_class_set_base(generator, object);
     let _ = molt_class_set_base(async_generator, object);
+    let _ = molt_class_set_base(iterator, object);
+    let _ = molt_class_set_base(callable_iterator, object);
+    let _ = molt_class_set_base(enumerate, object);
+    let _ = molt_class_set_base(reversed, object);
+    let _ = molt_class_set_base(zip, object);
+    let _ = molt_class_set_base(map, object);
+    let _ = molt_class_set_base(filter, object);
     let _ = molt_class_set_base(builtin_function_or_method, object);
     let _ = molt_class_set_base(code, object);
     let _ = molt_class_set_base(frame, object);
@@ -373,21 +484,37 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
         list,
         tuple,
         dict,
+        dict_keys,
+        dict_items,
+        dict_values,
         set,
         frozenset,
         range,
         slice,
         memoryview,
+        io_base,
+        raw_io_base,
+        buffered_io_base,
+        text_io_base,
         file,
         file_io,
         buffered_reader,
         buffered_writer,
         buffered_random,
         text_io_wrapper,
+        bytes_io,
+        string_io,
         function,
         coroutine,
         generator,
         async_generator,
+        iterator,
+        callable_iterator,
+        enumerate,
+        reversed,
+        zip,
+        map,
+        filter,
         builtin_function_or_method,
         code,
         frame,
@@ -406,6 +533,16 @@ pub(crate) fn builtin_classes(_py: &PyToken<'_>) -> &'static BuiltinClasses {
         return unsafe { &*ptr };
     }
     init_builtin_classes()
+}
+
+pub(crate) fn builtin_classes_if_initialized(_py: &PyToken<'_>) -> Option<&'static BuiltinClasses> {
+    let state = runtime_state_for_gil()?;
+    let ptr = state.builtin_classes.load(AtomicOrdering::Acquire);
+    if ptr.is_null() {
+        None
+    } else {
+        Some(unsafe { &*ptr })
+    }
 }
 
 fn init_builtin_classes() -> &'static BuiltinClasses {
@@ -451,6 +588,9 @@ pub(crate) fn builtin_classes_shutdown(py: &PyToken<'_>, state: &RuntimeState) {
             builtins.list,
             builtins.tuple,
             builtins.dict,
+            builtins.dict_keys,
+            builtins.dict_items,
+            builtins.dict_values,
             builtins.set,
             builtins.frozenset,
             builtins.range,
@@ -462,10 +602,19 @@ pub(crate) fn builtin_classes_shutdown(py: &PyToken<'_>, state: &RuntimeState) {
             builtins.buffered_writer,
             builtins.buffered_random,
             builtins.text_io_wrapper,
+            builtins.bytes_io,
+            builtins.string_io,
             builtins.function,
             builtins.coroutine,
             builtins.generator,
             builtins.async_generator,
+            builtins.iterator,
+            builtins.callable_iterator,
+            builtins.enumerate,
+            builtins.reversed,
+            builtins.zip,
+            builtins.map,
+            builtins.filter,
             builtins.builtin_function_or_method,
             builtins.code,
             builtins.frame,
@@ -504,21 +653,37 @@ pub(crate) fn is_builtin_class_bits(_py: &PyToken<'_>, bits: u64) -> bool {
         || bits == builtins.list
         || bits == builtins.tuple
         || bits == builtins.dict
+        || bits == builtins.dict_keys
+        || bits == builtins.dict_items
+        || bits == builtins.dict_values
         || bits == builtins.set
         || bits == builtins.frozenset
         || bits == builtins.range
         || bits == builtins.slice
         || bits == builtins.memoryview
+        || bits == builtins.io_base
+        || bits == builtins.raw_io_base
+        || bits == builtins.buffered_io_base
+        || bits == builtins.text_io_base
         || bits == builtins.file
         || bits == builtins.file_io
         || bits == builtins.buffered_reader
         || bits == builtins.buffered_writer
         || bits == builtins.buffered_random
         || bits == builtins.text_io_wrapper
+        || bits == builtins.bytes_io
+        || bits == builtins.string_io
         || bits == builtins.function
         || bits == builtins.coroutine
         || bits == builtins.generator
         || bits == builtins.async_generator
+        || bits == builtins.iterator
+        || bits == builtins.callable_iterator
+        || bits == builtins.enumerate
+        || bits == builtins.reversed
+        || bits == builtins.zip
+        || bits == builtins.map
+        || bits == builtins.filter
         || bits == builtins.builtin_function_or_method
         || bits == builtins.code
         || bits == builtins.frame

@@ -14,6 +14,3 @@ def _ensure_src_on_path() -> None:
 
 def pytest_configure() -> None:
     _ensure_src_on_path()
-    from molt import shims
-
-    shims.install()

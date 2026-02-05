@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import multiprocessing as _multiprocessing
-import os
+
+from _intrinsics import require_intrinsic as _require_intrinsic
+
 
 
 def _debug_spawn(message: str) -> None:
@@ -15,29 +17,11 @@ def _debug_spawn(message: str) -> None:
             pass
 
 
+_MOLT_ENV_GET = _require_intrinsic("molt_env_get", globals())
+
+
 def _get_env(key: str, default: str = "") -> str:
-    try:
-        value = _molt_env_get_raw(key, default)  # type: ignore[name-defined]  # noqa: F821
-        return str(value)
-    except NameError:  # pragma: no cover - host fallback
-        pass
-    except Exception:
-        return default
-    try:
-        data = _molt_env_snapshot()  # type: ignore[name-defined]  # noqa: F821
-    except NameError:  # pragma: no cover - host fallback
-        data = None
-    except Exception:
-        data = None
-    if isinstance(data, dict):
-        try:
-            return str(data.get(key, default))
-        except Exception:
-            return default
-    try:
-        return os.environ.get(key, default)
-    except Exception:
-        return default
+    return str(_MOLT_ENV_GET(key, default))
 
 
 _spawn_flag = _get_env("MOLT_MP_SPAWN")

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 class MoltLoader:
     def __repr__(self) -> str:
         return "<MoltLoader>"
@@ -196,3 +195,8 @@ _MISSING = object()
 
 
 __all__ = ["ModuleSpec", "MOLT_LOADER", "MoltLoader", "SourceFileLoader"]
+
+import builtins as _builtins
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+_require_intrinsic("molt_stdlib_probe", globals())

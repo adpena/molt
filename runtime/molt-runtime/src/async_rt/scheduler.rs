@@ -27,11 +27,10 @@ use crate::{
     task_exception_depth_take, task_exception_handler_stack_store,
     task_exception_handler_stack_take, task_exception_stack_store, task_exception_stack_take,
     task_raise_active, thread_poll_fn_addr, to_i64, with_gil, GilGuard, GilReleaseGuard,
-    MoltHeader, MoltObject, PtrSlot, ACTIVE_EXCEPTION_STACK, ASYNC_PENDING_COUNT,
-    ASYNC_POLL_COUNT, ASYNC_SLEEP_REGISTER_COUNT, ASYNC_WAKEUP_COUNT, EXCEPTION_STACK,
-    GIL_DEPTH, HEADER_FLAG_BLOCK_ON, HEADER_FLAG_SPAWN_RETAIN,
-    HEADER_FLAG_TASK_DONE, HEADER_FLAG_TASK_QUEUED, HEADER_FLAG_TASK_RUNNING,
-    HEADER_FLAG_TASK_WAKE_PENDING,
+    MoltHeader, MoltObject, PtrSlot, ACTIVE_EXCEPTION_STACK, ASYNC_PENDING_COUNT, ASYNC_POLL_COUNT,
+    ASYNC_SLEEP_REGISTER_COUNT, ASYNC_WAKEUP_COUNT, EXCEPTION_STACK, GIL_DEPTH,
+    HEADER_FLAG_BLOCK_ON, HEADER_FLAG_SPAWN_RETAIN, HEADER_FLAG_TASK_DONE, HEADER_FLAG_TASK_QUEUED,
+    HEADER_FLAG_TASK_RUNNING, HEADER_FLAG_TASK_WAKE_PENDING,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -997,10 +996,7 @@ impl DeferredQueue {
             return false;
         }
         self.entries.insert(task_ptr, target);
-        self.by_epoch
-            .entry(target)
-            .or_default()
-            .push_back(task_ptr);
+        self.by_epoch.entry(target).or_default().push_back(task_ptr);
         true
     }
 
@@ -1495,10 +1491,7 @@ impl MoltScheduler {
                             );
                         }
                         if wake_pending
-                            || (!waiting_on_event
-                                && !scheduled
-                                && !deferred
-                                && !waiting_on_blocked)
+                            || (!waiting_on_event && !scheduled && !deferred && !waiting_on_blocked)
                         {
                             enqueue_task_ptr(_py, task_ptr);
                         }

@@ -18,9 +18,92 @@ pub extern "C" fn molt_alloc(size_bits: u64) -> u64 {
     })
 }
 
+unsafe fn alloc_dataclass_for_class_ptr(
+    _py: &PyToken<'_>,
+    class_ptr: *mut u8,
+    class_bits: u64,
+) -> Option<u64> {
+    let Some(field_names_name) =
+        attr_name_bits_from_bytes(_py, b"__molt_dataclass_field_names__")
+    else {
+        return None;
+    };
+    let field_names_bits = class_attr_lookup_raw_mro(_py, class_ptr, field_names_name);
+    dec_ref_bits(_py, field_names_name);
+    let Some(field_names_bits) = field_names_bits else {
+        return None;
+    };
+    let Some(field_names_ptr) = obj_from_bits(field_names_bits).as_ptr() else {
+        return Some(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "dataclass field names must be a list/tuple of str",
+        ));
+    };
+    let field_count = match object_type_id(field_names_ptr) {
+        TYPE_ID_TUPLE => tuple_len(field_names_ptr),
+        TYPE_ID_LIST => list_len(field_names_ptr),
+        _ => {
+            return Some(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "dataclass field names must be a list/tuple of str",
+            ))
+        }
+    };
+    let missing = missing_bits(_py);
+    let mut values = Vec::with_capacity(field_count);
+    values.resize(field_count, missing);
+    let values_ptr = alloc_tuple(_py, &values);
+    if values_ptr.is_null() {
+        return Some(MoltObject::none().bits());
+    }
+    let values_bits = MoltObject::from_ptr(values_ptr).bits();
+    let flags_bits = if let Some(flags_name) =
+        attr_name_bits_from_bytes(_py, b"__molt_dataclass_flags__")
+    {
+        let bits = class_attr_lookup_raw_mro(_py, class_ptr, flags_name)
+            .unwrap_or_else(|| MoltObject::from_int(0).bits());
+        dec_ref_bits(_py, flags_name);
+        bits
+    } else {
+        MoltObject::from_int(0).bits()
+    };
+    let name_bits = class_name_bits(class_ptr);
+    let inst_bits = molt_dataclass_new(name_bits, field_names_bits, values_bits, flags_bits);
+    dec_ref_bits(_py, values_bits);
+    if exception_pending(_py) {
+        return Some(MoltObject::none().bits());
+    }
+    let Some(inst_ptr) = obj_from_bits(inst_bits).as_ptr() else {
+        return Some(inst_bits);
+    };
+    let _ = dataclass_set_class_raw(_py, inst_ptr, class_bits);
+    if exception_pending(_py) {
+        return Some(MoltObject::none().bits());
+    }
+    Some(inst_bits)
+}
+
 #[no_mangle]
 pub extern "C" fn molt_alloc_class(size_bits: u64, class_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        if class_bits != 0 {
+            let class_obj = obj_from_bits(class_bits);
+            let Some(class_ptr) = class_obj.as_ptr() else {
+                return raise_exception::<_>(_py, "TypeError", "class must be a type object");
+            };
+            unsafe {
+                if object_type_id(class_ptr) != TYPE_ID_TYPE {
+                    return raise_exception::<_>(_py, "TypeError", "class must be a type object");
+                }
+                if let Some(inst_bits) =
+                    alloc_dataclass_for_class_ptr(_py, class_ptr, class_bits)
+                {
+                    return inst_bits;
+                }
+            }
+        }
         let size = usize_from_bits(size_bits);
         let total_size = size + std::mem::size_of::<MoltHeader>();
         let obj_ptr = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_OBJECT);
@@ -29,13 +112,6 @@ pub extern "C" fn molt_alloc_class(size_bits: u64, class_bits: u64) -> u64 {
         }
         unsafe {
             if class_bits != 0 {
-                let class_obj = obj_from_bits(class_bits);
-                let Some(class_ptr) = class_obj.as_ptr() else {
-                    return raise_exception::<_>(_py, "TypeError", "class must be a type object");
-                };
-                if object_type_id(class_ptr) != TYPE_ID_TYPE {
-                    return raise_exception::<_>(_py, "TypeError", "class must be a type object");
-                }
                 object_set_class_bits(_py, obj_ptr, class_bits);
                 inc_ref_bits(_py, class_bits);
             }
@@ -47,6 +123,22 @@ pub extern "C" fn molt_alloc_class(size_bits: u64, class_bits: u64) -> u64 {
 #[no_mangle]
 pub extern "C" fn molt_alloc_class_trusted(size_bits: u64, class_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        if class_bits != 0 {
+            let class_obj = obj_from_bits(class_bits);
+            let Some(class_ptr) = class_obj.as_ptr() else {
+                return raise_exception::<_>(_py, "TypeError", "class must be a type object");
+            };
+            unsafe {
+                if object_type_id(class_ptr) != TYPE_ID_TYPE {
+                    return raise_exception::<_>(_py, "TypeError", "class must be a type object");
+                }
+                if let Some(inst_bits) =
+                    alloc_dataclass_for_class_ptr(_py, class_ptr, class_bits)
+                {
+                    return inst_bits;
+                }
+            }
+        }
         let size = usize_from_bits(size_bits);
         let total_size = size + std::mem::size_of::<MoltHeader>();
         let obj_ptr = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_OBJECT);
@@ -66,6 +158,22 @@ pub extern "C" fn molt_alloc_class_trusted(size_bits: u64, class_bits: u64) -> u
 #[no_mangle]
 pub extern "C" fn molt_alloc_class_static(size_bits: u64, class_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        if class_bits != 0 {
+            let class_obj = obj_from_bits(class_bits);
+            let Some(class_ptr) = class_obj.as_ptr() else {
+                return raise_exception::<_>(_py, "TypeError", "class must be a type object");
+            };
+            unsafe {
+                if object_type_id(class_ptr) != TYPE_ID_TYPE {
+                    return raise_exception::<_>(_py, "TypeError", "class must be a type object");
+                }
+                if let Some(inst_bits) =
+                    alloc_dataclass_for_class_ptr(_py, class_ptr, class_bits)
+                {
+                    return inst_bits;
+                }
+            }
+        }
         let size = usize_from_bits(size_bits);
         let total_size = size + std::mem::size_of::<MoltHeader>();
         let obj_ptr = alloc_object_zeroed_with_pool(_py, total_size, TYPE_ID_OBJECT);
@@ -143,16 +251,47 @@ pub(crate) fn alloc_set_with_entries(_py: &PyToken<'_>, entries: &[u64]) -> *mut
 #[no_mangle]
 pub extern "C" fn molt_list_builder_new(capacity_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        let debug = matches!(
+            std::env::var("MOLT_DEBUG_LIST_BUILDER").ok().as_deref(),
+            Some("1")
+        );
+        if debug {
+            eprintln!(
+                "molt debug list_builder_new capacity_bits=0x{:016x}",
+                capacity_bits
+            );
+        }
         // Allocate wrapper object
         let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut Vec<u64>>(); // Store pointer to Vec
         let ptr = alloc_object(_py, total, TYPE_ID_LIST_BUILDER);
         if ptr.is_null() {
-            return 0;
+            return raise_exception::<_>(_py, "MemoryError", "list allocation failed");
         }
         unsafe {
-            let capacity_hint = usize_from_bits(capacity_bits);
-            let vec = Box::new(Vec::<u64>::with_capacity(capacity_hint));
-            let vec_ptr = Box::into_raw(vec);
+            let capacity_obj = MoltObject::from_bits(capacity_bits);
+            let capacity_hint = if capacity_obj.is_int() {
+                let val = capacity_obj.as_int_unchecked();
+                if val > 0 {
+                    val as usize
+                } else {
+                    0
+                }
+            } else if capacity_obj.is_float() {
+                usize_from_bits(capacity_bits)
+            } else {
+                0
+            };
+            if debug {
+                eprintln!(
+                    "molt debug list_builder_new capacity_hint={}",
+                    capacity_hint
+                );
+            }
+            let mut vec = Vec::<u64>::new();
+            if capacity_hint > 0 && vec.try_reserve(capacity_hint).is_err() {
+                return raise_exception::<_>(_py, "MemoryError", "list allocation failed");
+            }
+            let vec_ptr = Box::into_raw(Box::new(vec));
             *(ptr as *mut *mut Vec<u64>) = vec_ptr;
         }
         bits_from_ptr(ptr)
@@ -232,6 +371,38 @@ pub unsafe extern "C" fn molt_list_builder_finish(builder_bits: u64) -> u64 {
         // So dropping 'vec' here frees the temporary buffer. Correct.
 
         if list_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(list_ptr).bits()
+        }
+    })
+}
+
+#[no_mangle]
+/// # Safety
+/// Caller must ensure `builder_bits` is valid and points to a list builder with owned refs.
+pub unsafe extern "C" fn molt_list_builder_finish_owned(builder_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let builder_ptr = ptr_from_bits(builder_bits);
+        if builder_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let _guard = PtrDropGuard::new(builder_ptr);
+        let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
+        if vec_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        *(builder_ptr as *mut *mut Vec<u64>) = std::ptr::null_mut();
+
+        let vec = Box::from_raw(vec_ptr);
+        let slice = vec.as_slice();
+        let capacity = vec.capacity().max(MAX_SMALL_LIST);
+        let list_ptr = alloc_list_with_capacity_owned(_py, slice, capacity);
+
+        if list_ptr.is_null() {
+            for &elem in slice {
+                dec_ref_bits(_py, elem);
+            }
             MoltObject::none().bits()
         } else {
             MoltObject::from_ptr(list_ptr).bits()
@@ -417,6 +588,29 @@ pub(crate) fn alloc_list_with_capacity(
     ptr
 }
 
+pub(crate) fn alloc_list_with_capacity_owned(
+    _py: &PyToken<'_>,
+    elems: &[u64],
+    capacity: usize,
+) -> *mut u8 {
+    let cap = capacity.max(elems.len());
+    let total = std::mem::size_of::<MoltHeader>()
+        + std::mem::size_of::<*mut DataclassDesc>()
+        + std::mem::size_of::<*mut Vec<u64>>()
+        + std::mem::size_of::<u64>();
+    let ptr = alloc_object(_py, total, TYPE_ID_LIST);
+    if ptr.is_null() {
+        return ptr;
+    }
+    unsafe {
+        let mut vec = Vec::with_capacity(cap);
+        vec.extend_from_slice(elems);
+        let vec_ptr = Box::into_raw(Box::new(vec));
+        *(ptr as *mut *mut Vec<u64>) = vec_ptr;
+    }
+    ptr
+}
+
 pub(crate) fn alloc_list(_py: &PyToken<'_>, elems: &[u64]) -> *mut u8 {
     let cap = if elems.len() <= MAX_SMALL_LIST {
         MAX_SMALL_LIST
@@ -460,16 +654,24 @@ pub(crate) fn alloc_tuple(_py: &PyToken<'_>, elems: &[u64]) -> *mut u8 {
     alloc_tuple_with_capacity(_py, elems, cap)
 }
 
-pub(crate) fn alloc_range(_py: &PyToken<'_>, start: i64, stop: i64, step: i64) -> *mut u8 {
-    let total = std::mem::size_of::<MoltHeader>() + 3 * std::mem::size_of::<i64>();
+pub(crate) fn alloc_range(
+    _py: &PyToken<'_>,
+    start_bits: u64,
+    stop_bits: u64,
+    step_bits: u64,
+) -> *mut u8 {
+    let total = std::mem::size_of::<MoltHeader>() + 3 * std::mem::size_of::<u64>();
     let ptr = alloc_object(_py, total, TYPE_ID_RANGE);
     if ptr.is_null() {
         return ptr;
     }
     unsafe {
-        *(ptr as *mut i64) = start;
-        *(ptr.add(std::mem::size_of::<i64>()) as *mut i64) = stop;
-        *(ptr.add(2 * std::mem::size_of::<i64>()) as *mut i64) = step;
+        *(ptr as *mut u64) = start_bits;
+        *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = stop_bits;
+        *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = step_bits;
+        inc_ref_bits(_py, start_bits);
+        inc_ref_bits(_py, stop_bits);
+        inc_ref_bits(_py, step_bits);
     }
     ptr
 }
@@ -553,8 +755,12 @@ pub(crate) fn alloc_code_obj(
     name_bits: u64,
     firstlineno: i64,
     linetable_bits: u64,
+    varnames_bits: u64,
+    argcount: u64,
+    posonlyargcount: u64,
+    kwonlyargcount: u64,
 ) -> *mut u8 {
-    let total = std::mem::size_of::<MoltHeader>() + 4 * std::mem::size_of::<u64>();
+    let total = std::mem::size_of::<MoltHeader>() + 8 * std::mem::size_of::<u64>();
     let ptr = alloc_object(_py, total, TYPE_ID_CODE);
     if ptr.is_null() {
         return ptr;
@@ -564,6 +770,10 @@ pub(crate) fn alloc_code_obj(
         *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = name_bits;
         *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut i64) = firstlineno;
         *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64) = linetable_bits;
+        *(ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64) = varnames_bits;
+        *(ptr.add(5 * std::mem::size_of::<u64>()) as *mut u64) = argcount;
+        *(ptr.add(6 * std::mem::size_of::<u64>()) as *mut u64) = posonlyargcount;
+        *(ptr.add(7 * std::mem::size_of::<u64>()) as *mut u64) = kwonlyargcount;
         if filename_bits != 0 {
             inc_ref_bits(_py, filename_bits);
         }
@@ -572,6 +782,9 @@ pub(crate) fn alloc_code_obj(
         }
         if linetable_bits != 0 {
             inc_ref_bits(_py, linetable_bits);
+        }
+        if varnames_bits != 0 {
+            inc_ref_bits(_py, varnames_bits);
         }
     }
     ptr

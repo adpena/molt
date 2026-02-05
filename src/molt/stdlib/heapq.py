@@ -4,14 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Iterable, Protocol, TypeVar
 
-import builtins as _builtins
-
-
-def _load_intrinsic(name: str) -> Any | None:
-    direct = globals().get(name)
-    if direct is not None:
-        return direct
-    return getattr(_builtins, name, None)
+from _intrinsics import require_intrinsic as _require_intrinsic
 
 
 __all__ = [
@@ -32,20 +25,20 @@ class _SupportsLessThan(Protocol):
 
 T = TypeVar("T", bound=_SupportsLessThan)
 
-_molt_heapq_heapify: Callable[[list[Any]], None] | None = _load_intrinsic(
-    "_molt_heapq_heapify"
+_molt_heapq_heapify: Callable[[list[Any]], None] | None = _require_intrinsic(
+    "molt_heapq_heapify"
 )
-_molt_heapq_heappush: Callable[[list[Any], Any], None] | None = _load_intrinsic(
-    "_molt_heapq_heappush"
+_molt_heapq_heappush: Callable[[list[Any], Any], None] | None = _require_intrinsic(
+    "molt_heapq_heappush"
 )
-_molt_heapq_heappop: Callable[[list[Any]], Any] | None = _load_intrinsic(
-    "_molt_heapq_heappop"
+_molt_heapq_heappop: Callable[[list[Any]], Any] | None = _require_intrinsic(
+    "molt_heapq_heappop"
 )
-_molt_heapq_heapreplace: Callable[[list[Any], Any], Any] | None = _load_intrinsic(
-    "_molt_heapq_heapreplace"
+_molt_heapq_heapreplace: Callable[[list[Any], Any], Any] | None = _require_intrinsic(
+    "molt_heapq_heapreplace"
 )
-_molt_heapq_heappushpop: Callable[[list[Any], Any], Any] | None = _load_intrinsic(
-    "_molt_heapq_heappushpop"
+_molt_heapq_heappushpop: Callable[[list[Any], Any], Any] | None = _require_intrinsic(
+    "molt_heapq_heappushpop"
 )
 
 
@@ -135,7 +128,7 @@ class _ReverseKey:
 
 
 def heapify(x: list[T]) -> None:
-    if _molt_heapq_heapify is not None and type(x) is list:
+    if type(x) is list:
         _molt_heapq_heapify(x)  # type: ignore[unresolved-reference]
         return
     for idx in range(len(x) // 2 - 1, -1, -1):
@@ -143,7 +136,7 @@ def heapify(x: list[T]) -> None:
 
 
 def heappush(heap: list[T], item: T) -> None:
-    if _molt_heapq_heappush is not None and type(heap) is list:
+    if type(heap) is list:
         _molt_heapq_heappush(heap, item)  # type: ignore[unresolved-reference]
         return
     heap.append(item)
@@ -151,7 +144,7 @@ def heappush(heap: list[T], item: T) -> None:
 
 
 def heappop(heap: list[T]) -> T:
-    if _molt_heapq_heappop is not None and type(heap) is list:
+    if type(heap) is list:
         return _molt_heapq_heappop(heap)  # type: ignore[unresolved-reference]
     if not heap:
         raise IndexError("index out of range")
@@ -165,7 +158,7 @@ def heappop(heap: list[T]) -> T:
 
 
 def heapreplace(heap: list[T], item: T) -> T:
-    if _molt_heapq_heapreplace is not None and type(heap) is list:
+    if type(heap) is list:
         return _molt_heapq_heapreplace(heap, item)  # type: ignore[unresolved-reference]
     if not heap:
         raise IndexError("index out of range")
@@ -176,7 +169,7 @@ def heapreplace(heap: list[T], item: T) -> T:
 
 
 def heappushpop(heap: list[T], item: T) -> T:
-    if _molt_heapq_heappushpop is not None and type(heap) is list:
+    if type(heap) is list:
         return _molt_heapq_heappushpop(heap, item)  # type: ignore[unresolved-reference]
     if heap and heap[0] < item:
         returnitem = heap[0]

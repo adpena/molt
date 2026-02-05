@@ -31,6 +31,17 @@ pub(crate) fn builtin_func_bits_with_default(
                     function_set_dict_bits(ptr, bits);
                 }
             }
+            unsafe {
+                let builtin_bits = builtin_classes(_py).builtin_function_or_method;
+                let old_bits = object_class_bits(ptr);
+                if old_bits != builtin_bits {
+                    if old_bits != 0 {
+                        dec_ref_bits(_py, old_bits);
+                    }
+                    object_set_class_bits(_py, ptr, builtin_bits);
+                    inc_ref_bits(_py, builtin_bits);
+                }
+            }
             MoltObject::from_ptr(ptr).bits()
         }
     })
@@ -46,6 +57,17 @@ pub(crate) fn builtin_classmethod_bits(
         let func_ptr = alloc_function_obj(_py, fn_ptr, arity);
         if func_ptr.is_null() {
             return MoltObject::none().bits();
+        }
+        unsafe {
+            let builtin_bits = builtin_classes(_py).builtin_function_or_method;
+            let old_bits = object_class_bits(func_ptr);
+            if old_bits != builtin_bits {
+                if old_bits != 0 {
+                    dec_ref_bits(_py, old_bits);
+                }
+                object_set_class_bits(_py, func_ptr, builtin_bits);
+                inc_ref_bits(_py, builtin_bits);
+            }
         }
         let func_bits = MoltObject::from_ptr(func_ptr).bits();
         let cm_ptr = alloc_classmethod_obj(_py, func_bits);
@@ -74,6 +96,17 @@ pub(crate) fn builtin_classmethod_bits_with_default(
             let bits = MoltObject::from_int(default_kind).bits();
             unsafe {
                 function_set_dict_bits(func_ptr, bits);
+            }
+        }
+        unsafe {
+            let builtin_bits = builtin_classes(_py).builtin_function_or_method;
+            let old_bits = object_class_bits(func_ptr);
+            if old_bits != builtin_bits {
+                if old_bits != 0 {
+                    dec_ref_bits(_py, old_bits);
+                }
+                object_set_class_bits(_py, func_ptr, builtin_bits);
+                inc_ref_bits(_py, builtin_bits);
             }
         }
         let func_bits = MoltObject::from_ptr(func_ptr).bits();
@@ -187,6 +220,12 @@ pub(crate) fn slice_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
 
 pub(crate) fn string_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
     match name {
+        "__str__" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.str_str,
+            fn_addr!(molt_str_from_obj),
+            1,
+        )),
         "__iter__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.str_iter,
@@ -263,6 +302,12 @@ pub(crate) fn string_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             _py,
             &runtime_state(_py).method_cache.str_lower,
             fn_addr!(molt_string_lower),
+            1,
+        )),
+        "casefold" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.str_casefold,
+            fn_addr!(molt_string_casefold),
             1,
         )),
         "capitalize" => Some(builtin_func_bits(
@@ -485,6 +530,19 @@ pub(crate) fn bytes_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_bytes_hex),
             3,
         )),
+        "translate" => Some(builtin_func_bits_with_default(
+            _py,
+            &runtime_state(_py).method_cache.bytes_translate,
+            fn_addr!(molt_bytes_translate),
+            3,
+            FUNC_DEFAULT_MISSING,
+        )),
+        "maketrans" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.bytes_maketrans,
+            fn_addr!(molt_bytes_maketrans),
+            2,
+        )),
         "decode" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.bytes_decode,
@@ -532,6 +590,19 @@ pub(crate) fn bytearray_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64
             &runtime_state(_py).method_cache.bytearray_hex,
             fn_addr!(molt_bytearray_hex),
             3,
+        )),
+        "translate" => Some(builtin_func_bits_with_default(
+            _py,
+            &runtime_state(_py).method_cache.bytearray_translate,
+            fn_addr!(molt_bytearray_translate),
+            3,
+            FUNC_DEFAULT_MISSING,
+        )),
+        "maketrans" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.bytearray_maketrans,
+            fn_addr!(molt_bytes_maketrans),
+            2,
         )),
         "clear" => Some(builtin_func_bits(
             _py,
@@ -780,12 +851,132 @@ pub(crate) fn builtin_class_method_bits(
     if class_bits == builtins.memoryview {
         return memoryview_method_bits(_py, name);
     }
+    if class_bits == builtins.file_io {
+        match name {
+            "__new__" => {
+                return Some(builtin_func_bits_with_default(
+                    _py,
+                    &runtime_state(_py).method_cache.file_io_new,
+                    fn_addr!(molt_file_io_new),
+                    5,
+                    FUNC_DEFAULT_IO_RAW,
+                ))
+            }
+            "__init__" => {
+                return Some(builtin_func_bits_with_default(
+                    _py,
+                    &runtime_state(_py).method_cache.file_io_init,
+                    fn_addr!(molt_file_io_init),
+                    5,
+                    FUNC_DEFAULT_IO_RAW,
+                ))
+            }
+            _ => {}
+        }
+    }
+    if class_bits == builtins.buffered_reader
+        || class_bits == builtins.buffered_writer
+        || class_bits == builtins.buffered_random
+    {
+        match name {
+            "__new__" => {
+                return Some(builtin_func_bits_with_default(
+                    _py,
+                    &runtime_state(_py).method_cache.buffered_new,
+                    fn_addr!(molt_buffered_new),
+                    3,
+                    FUNC_DEFAULT_NEG_ONE,
+                ))
+            }
+            "__init__" => {
+                return Some(builtin_func_bits_with_default(
+                    _py,
+                    &runtime_state(_py).method_cache.buffered_init,
+                    fn_addr!(molt_buffered_init),
+                    3,
+                    FUNC_DEFAULT_NEG_ONE,
+                ))
+            }
+            _ => {}
+        }
+    }
+    if class_bits == builtins.text_io_wrapper {
+        match name {
+            "__new__" => {
+                return Some(builtin_func_bits_with_default(
+                    _py,
+                    &runtime_state(_py).method_cache.text_io_wrapper_new,
+                    fn_addr!(molt_text_io_wrapper_new),
+                    7,
+                    FUNC_DEFAULT_IO_TEXT_WRAPPER,
+                ))
+            }
+            "__init__" => {
+                return Some(builtin_func_bits_with_default(
+                    _py,
+                    &runtime_state(_py).method_cache.text_io_wrapper_init,
+                    fn_addr!(molt_text_io_wrapper_init),
+                    7,
+                    FUNC_DEFAULT_IO_TEXT_WRAPPER,
+                ))
+            }
+            _ => {}
+        }
+    }
+    if class_bits == builtins.bytes_io {
+        match name {
+            "__new__" => {
+                return Some(builtin_func_bits_with_default(
+                    _py,
+                    &runtime_state(_py).method_cache.bytes_io_new,
+                    fn_addr!(molt_bytesio_new),
+                    2,
+                    FUNC_DEFAULT_NONE,
+                ))
+            }
+            "__init__" => {
+                return Some(builtin_func_bits_with_default(
+                    _py,
+                    &runtime_state(_py).method_cache.bytes_io_init,
+                    fn_addr!(molt_bytesio_init),
+                    2,
+                    FUNC_DEFAULT_NONE,
+                ))
+            }
+            _ => {}
+        }
+    }
+    if class_bits == builtins.string_io {
+        match name {
+            "__new__" => {
+                return Some(builtin_func_bits_with_default(
+                    _py,
+                    &runtime_state(_py).method_cache.string_io_new,
+                    fn_addr!(molt_stringio_new),
+                    3,
+                    FUNC_DEFAULT_NONE2,
+                ))
+            }
+            "__init__" => {
+                return Some(builtin_func_bits_with_default(
+                    _py,
+                    &runtime_state(_py).method_cache.string_io_init,
+                    fn_addr!(molt_stringio_init),
+                    3,
+                    FUNC_DEFAULT_NONE2,
+                ))
+            }
+            _ => {}
+        }
+    }
     if class_bits == builtins.file
         || class_bits == builtins.file_io
         || class_bits == builtins.buffered_reader
         || class_bits == builtins.buffered_writer
         || class_bits == builtins.buffered_random
         || class_bits == builtins.text_io_wrapper
+        || class_bits == builtins.bytes_io
+        || class_bits == builtins.string_io
     {
         return file_method_bits(_py, name);
     }
@@ -902,6 +1093,18 @@ pub(crate) fn object_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_object_ne),
             2,
         )),
+        "__repr__" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.object_repr,
+            fn_addr!(molt_repr_from_obj),
+            1,
+        )),
+        "__str__" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.object_str,
+            fn_addr!(molt_repr_from_obj),
+            1,
+        )),
         _ => None,
     }
 }
@@ -937,9 +1140,6 @@ pub(crate) fn memoryview_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u6
 }
 
 pub(crate) fn file_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
-    // TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P2, status:partial):
-    // add remaining file APIs (encoding/errors lookups) once buffer/encoding
-    // layers are fully implemented.
     match name {
         "read" => Some(builtin_func_bits_with_default(
             _py,
@@ -961,6 +1161,19 @@ pub(crate) fn file_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_file_readlines),
             2,
             FUNC_DEFAULT_NEG_ONE,
+        )),
+        "read1" => Some(builtin_func_bits_with_default(
+            _py,
+            &runtime_state(_py).method_cache.file_read1,
+            fn_addr!(molt_file_read1),
+            2,
+            FUNC_DEFAULT_NEG_ONE,
+        )),
+        "readall" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.file_readall,
+            fn_addr!(molt_file_readall),
+            1,
         )),
         "readinto" => Some(builtin_func_bits(
             _py,
@@ -1083,6 +1296,25 @@ pub(crate) fn file_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             &runtime_state(_py).method_cache.file_exit,
             fn_addr!(molt_file_exit_method),
             4,
+        )),
+        "peek" => Some(builtin_func_bits_with_default(
+            _py,
+            &runtime_state(_py).method_cache.file_peek,
+            fn_addr!(molt_file_peek),
+            2,
+            FUNC_DEFAULT_NEG_ONE,
+        )),
+        "getvalue" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.file_getvalue,
+            fn_addr!(molt_file_getvalue),
+            1,
+        )),
+        "getbuffer" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.file_getbuffer,
+            fn_addr!(molt_file_getbuffer),
+            1,
         )),
         _ => None,
     }

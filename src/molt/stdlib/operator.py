@@ -1,6 +1,12 @@
-"""Operator helpers for Molt."""
+"""Operator helpers for Molt.
+
+Operator helpers are backed by runtime intrinsics; missing intrinsics are a hard error.
+"""
 
 from __future__ import annotations
+
+from _intrinsics import require_intrinsic as _require_intrinsic
+
 
 try:
     from typing import TYPE_CHECKING
@@ -17,95 +23,53 @@ __all__ = [
     "add",
     "attrgetter",
     "eq",
+    "index",
     "itemgetter",
     "methodcaller",
     "mul",
 ]
 
 
+def _as_callable(name: str):
+    return _require_intrinsic(name, globals())
+
+
+_MOLT_ADD = _as_callable("molt_operator_add")
+_MOLT_MUL = _as_callable("molt_operator_mul")
+_MOLT_EQ = _as_callable("molt_operator_eq")
+_MOLT_INDEX = _as_callable("molt_operator_index")
+_MOLT_ITEMGETTER = _as_callable("molt_operator_itemgetter")
+_MOLT_ATTRGETTER = _as_callable("molt_operator_attrgetter")
+_MOLT_METHODCALLER = _as_callable("molt_operator_methodcaller")
+
+
 def add(a: Any, b: Any) -> Any:
-    return a + b
+    return _MOLT_ADD(a, b)
 
 
 def mul(a: Any, b: Any) -> Any:
-    return a * b
+    return _MOLT_MUL(a, b)
 
 
 def eq(a: Any, b: Any) -> bool:
-    return a == b
+    return _MOLT_EQ(a, b)
 
 
-class _ItemGetter:
-    def __init__(self, items: tuple[Any, ...]) -> None:
-        self._items = items
-
-    def __call__(self, obj: Any) -> Any:
-        count = len(self._items)
-        if count == 1:
-            return obj[self._items[0]]
-        out: list[Any] = []
-        idx = 0
-        while idx < count:
-            out.append(obj[self._items[idx]])
-            idx += 1
-        return tuple(out)
+def index(a: Any) -> int:
+    return _MOLT_INDEX(a)
 
 
-def itemgetter(*items: Any) -> _ItemGetter:
+def itemgetter(*items: Any) -> Callable[[Any], Any]:
     if not items:
         raise TypeError("itemgetter expected at least 1 argument")
-    return _ItemGetter(items)
+    return _MOLT_ITEMGETTER(items)
 
 
-class _AttrGetter:
-    def __init__(self, attrs: tuple[str, ...]) -> None:
-        self._attrs = attrs
-
-    def __call__(self, obj: Any) -> Any:
-        count = len(self._attrs)
-        if count == 1:
-            return _resolve_attr(obj, self._attrs[0])
-        out: list[Any] = []
-        idx = 0
-        while idx < count:
-            out.append(_resolve_attr(obj, self._attrs[idx]))
-            idx += 1
-        return tuple(out)
-
-
-def _resolve_attr(obj: Any, name: str) -> Any:
-    if "." in name:
-        current = obj
-        for part in name.split("."):
-            current = getattr(current, part)
-        return current
-    return getattr(obj, name)
-
-
-def attrgetter(*attrs: str) -> _AttrGetter:
+def attrgetter(*attrs: str) -> Callable[[Any], Any]:
     if not attrs:
         raise TypeError("attrgetter expected at least 1 argument")
-    return _AttrGetter(attrs)
-
-
-class _MethodCaller:
-    def __init__(
-        self, name: str, args: tuple[Any, ...], kwargs: dict[str, Any]
-    ) -> None:
-        self._name = name
-        out: list[Any] = []
-        idx = 0
-        count = len(args)
-        while idx < count:
-            out.append(args[idx])
-            idx += 1
-        self._args = out
-        self._kwargs = kwargs
-
-    def __call__(self, obj: Any) -> Any:
-        method = getattr(obj, self._name)
-        return method(*self._args, **self._kwargs)
+    return _MOLT_ATTRGETTER(attrs)
 
 
 def methodcaller(name: str, *args: Any, **kwargs: Any) -> Callable[[Any], Any]:
-    return _MethodCaller(name, args, kwargs)
+    return _MOLT_METHODCALLER(name, args, kwargs)

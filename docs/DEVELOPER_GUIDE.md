@@ -22,6 +22,31 @@ For the canonical vision and scope, read `docs/spec/areas/core/0000-vision.md` a
   (monkeypatching, uncontrolled `eval/exec`, unrestricted reflection) unless
   explicitly guarded and documented in the specs.
 
+## Version Policy
+- Molt targets **Python 3.12+** semantics only.
+- Do not add compatibility for <=3.11.
+- When 3.12/3.13/3.14 diverge, document the target in specs/tests.
+
+## Cross-Platform Notes
+- **macOS**: install Xcode CLT (`xcode-select --install`) and LLVM via Homebrew.
+- **Linux**: install LLVM/Clang, CMake, and Ninja via your package manager.
+- **Windows**: install Visual Studio Build Tools (MSVC) plus LLVM/Clang, CMake, and Ninja (see `docs/spec/areas/tooling/0001-toolchains.md`).
+- **WASM**: linked builds require `wasm-ld` + `wasm-tools` across platforms.
+
+## Platform Pitfalls
+- **macOS SDK versioning**: if linking fails, ensure Xcode CLT is installed and `xcrun --show-sdk-version` works; set `MACOSX_DEPLOYMENT_TARGET` when cross-linking.
+- **arm64 Python 3.14**: uv-managed 3.14 can hang on macOS arm64; install a system `python3.14` and use `--no-managed-python` (see `docs/spec/STATUS.md`).
+- **Windows toolchain conflicts**: prefer a single active toolchain (MSVC or clang); ensure `clang`, `cmake`, and `ninja` are on PATH.
+- **Windows path lengths**: keep repo paths short and avoid deeply nested build output paths when possible.
+- **WASM linker availability**: `wasm-ld` and `wasm-tools` must be installed; use `--require-linked` to fail fast when they are missing.
+
+## Differential Suite Controls
+- **Memory profiling**: set `MOLT_DIFF_MEASURE_RSS=1` to collect per-test RSS metrics.
+- **Summary sidecar**: `MOLT_DIFF_ROOT/summary.json` (or `MOLT_DIFF_SUMMARY=<path>`) records jobs, limits, and RSS aggregates.
+- **Failure queue**: failed tests are written to `MOLT_DIFF_ROOT/failures.txt` (override with `MOLT_DIFF_FAILURES` or `--failures-output`).
+- **OOM retry**: OOM failures retry once with `--jobs 1` by default (`MOLT_DIFF_RETRY_OOM=0` disables).
+- **Memory caps**: default 10 GB per-process; override with `MOLT_DIFF_RLIMIT_GB`/`MOLT_DIFF_RLIMIT_MB` or disable with `MOLT_DIFF_RLIMIT_GB=0`.
+
 ## Key Concepts
 
 Molt uses specific terminology that might be new to Python developers.
@@ -183,6 +208,14 @@ If you want to modify Molt, follow these steps:
     skipped and records the reason in `junit.xml`. Regrtest runs set
     `MOLT_MODULE_ROOTS` and `MOLT_REGRTEST_CPYTHON_DIR` so CPython `Lib/test`
     sources are compiled without polluting host `PYTHONPATH`.
+    In restricted/sandboxed environments (including Codex), `uv run` may panic
+    when it tries to sync or resolve dependencies. Use `UV_NO_SYNC=1` to reuse
+    the existing environment and avoid the sync path:
+    ```bash
+    UV_NO_SYNC=1 UV_CACHE_DIR=/tmp/uv-cache uv run --python 3.12 python3 tools/dev.py test
+    ```
+    If you need to install or update deps, run `uv sync` locally outside the
+    sandbox, then re-run commands with `UV_NO_SYNC=1`.
 4.  **Explore**:
     - Start with `README.md` for CLI usage.
     - Read `docs/spec/STATUS.md` for current feature parity.
@@ -194,6 +227,10 @@ isolated by running the repo CLI directly:
 ```bash
 MOLT_HOME=~/.molt-dev PYTHONPATH=src uv run --python 3.12 python3 -m molt.cli build examples/hello.py
 ```
+
+Build knobs (optional):
+- `MOLT_BACKEND_PROFILE=release|dev` (backend compiler profile; default `release` for faster cross-target builds).
+- `MOLT_CARGO_TIMEOUT`, `MOLT_BACKEND_TIMEOUT`, `MOLT_LINK_TIMEOUT` (timeouts in seconds for cargo, backend, and linker steps).
 
 ## Tooling Quickstart (Optional but Recommended)
 
@@ -258,7 +295,7 @@ cargo flamegraph -p molt-runtime --bench ptr_registry
 - Build (linked): `PYTHONPATH=src uv run --python 3.12 python3 -m molt.cli build --target wasm --linked examples/hello.py`
 - Build (custom linked output): `PYTHONPATH=src uv run --python 3.12 python3 -m molt.cli build --target wasm --linked --linked-output dist/app_linked.wasm examples/hello.py`
 - Build (require linked): `PYTHONPATH=src uv run --python 3.12 python3 -m molt.cli build --target wasm --require-linked examples/hello.py`
-- Run (Node/WASI): `node run_wasm.js /path/to/output.wasm` (prefers `*_linked.wasm` when present; disable with `MOLT_WASM_PREFER_LINKED=0`)
+- Run (Node/WASI): `node run_wasm.js /path/to/output.wasm` (requires linked output; build with `--linked` or `--require-linked`)
 
 ## Operational Assumptions
 

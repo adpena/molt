@@ -8,7 +8,6 @@ import builtins as _builtins
 from collections import deque as _deque
 import heapq as _heapq
 import inspect as _inspect
-import logging as _logging
 import os as _os
 import sys as _sys
 import time as _time
@@ -16,10 +15,14 @@ import traceback as _traceback
 import errno as _errno
 import socket as _socket
 import types as _types
+import threading as _threading
 
 import contextvars as _contextvars
 
 from molt.concurrency import CancellationToken, spawn
+
+from _intrinsics import require_intrinsic as _intrinsic_require
+
 
 _VERSION_INFO = getattr(_sys, "version_info", (3, 12, 0, "final", 0))
 _IS_WINDOWS = _os.name == "nt"
@@ -169,13 +172,11 @@ if TYPE_CHECKING:
 
 
 def _mark_builtin(fn: Any) -> None:
-    func = _molt_function_set_builtin
-    if func is None:
-        return None
-    try:
-        func(fn)
-    except Exception:
-        return None
+    func = _require_asyncio_intrinsic(
+        _molt_function_set_builtin, "function_set_builtin"
+    )
+    func(fn)
+    return None
 
 
 _builtin_cancelled = getattr(_builtins, "CancelledError", None)
@@ -399,7 +400,7 @@ class Future:
 
     async def _wait(self) -> Any:
         while not self._done:
-            await molt_async_sleep(0.0)
+            await _async_yield_once()
         return self.result()
 
     def __await__(self) -> Any:
@@ -514,6 +515,12 @@ _PENDING = 0x7FFD_0000_0000_0000
 _PROC_STDIO_INHERIT = 0
 _PROC_STDIO_PIPE = 1
 _PROC_STDIO_DEVNULL = 2
+_PROC_STDIO_STDOUT = -2
+_PROC_STDIO_FD_BASE = 1 << 30
+_PROC_STDIO_FD_MAX = (1 << 31) - 1 - _PROC_STDIO_FD_BASE
+_SUBPROCESS_PIPE = -1
+_SUBPROCESS_STDOUT = -2
+_SUBPROCESS_DEVNULL = -3
 _WAIT_TIMEOUT_EPS = 1e-6
 
 
@@ -525,161 +532,68 @@ def _require_asyncio_intrinsic(
     return fn
 
 
-async def _io_wait(fd: int, events: int, timeout: float | None = None) -> Any:
+def _require_io_wait_new() -> Callable[..., Any]:
     if _molt_io_wait_new is None:
         raise NotImplementedError("I/O polling unavailable")
-    return await _require_asyncio_intrinsic(_molt_io_wait_new, "io_wait_new")(
-        fd, events, timeout
-    )
+    return _molt_io_wait_new
 
 
-def _load_intrinsic(name: str) -> Any | None:
-    direct = globals().get(name)
-    if direct is not None:
-        return direct
-    return getattr(_builtins, name, None)
+async def _async_yield_once() -> None:
+    fut = molt_async_sleep(0.0, None)
+    await fut
 
 
-_molt_io_wait_new = _load_intrinsic("_molt_io_wait_new")
-molt_asyncgen_shutdown: Callable[[], Any] | None = _load_intrinsic(
-    "molt_asyncgen_shutdown"
+async def _io_wait(fd: int, events: int, timeout: float | None = None) -> Any:
+    io_wait = _require_io_wait_new()
+    return await _require_asyncio_intrinsic(io_wait, "io_wait_new")(fd, events, timeout)
+
+
+_molt_io_wait_new = _intrinsic_require("molt_io_wait_new", globals())
+molt_async_sleep = _intrinsic_require("molt_async_sleep", globals())
+molt_block_on = _intrinsic_require("molt_block_on", globals())
+molt_asyncgen_shutdown = _intrinsic_require("molt_asyncgen_shutdown", globals())
+molt_cancel_token_set_current = _intrinsic_require(
+    "molt_cancel_token_set_current", globals()
 )
-_molt_module_new = _load_intrinsic("_molt_module_new")
-_molt_function_set_builtin: Callable[[Any], Any] | None = _load_intrinsic(
-    "_molt_function_set_builtin"
+molt_cancel_token_get_current = _intrinsic_require(
+    "molt_cancel_token_get_current", globals()
 )
-_molt_future_cancel_msg: Callable[[Any, Any], None] | None = _load_intrinsic(
-    "molt_future_cancel_msg"
+molt_promise_new = _intrinsic_require("molt_promise_new", globals())
+molt_promise_set_exception = _intrinsic_require(
+    "molt_promise_set_exception", globals()
 )
-if _molt_future_cancel_msg is None:
-    try:
-        _molt_future_cancel_msg = molt_future_cancel_msg  # type: ignore[name-defined]  # noqa: F821
-    except Exception:
-        _molt_future_cancel_msg = None
-_molt_future_cancel_clear: Callable[[Any], None] | None = _load_intrinsic(
-    "molt_future_cancel_clear"
+molt_promise_set_result = _intrinsic_require("molt_promise_set_result", globals())
+molt_task_register_token_owned = _intrinsic_require(
+    "molt_task_register_token_owned", globals()
 )
-if _molt_future_cancel_clear is None:
-    try:
-        _molt_future_cancel_clear = molt_future_cancel_clear  # type: ignore[name-defined]  # noqa: F821
-    except Exception:
-        _molt_future_cancel_clear = None
-_molt_thread_submit: Callable[[Any, Any, Any], Any] | None = _load_intrinsic(
-    "molt_thread_submit"
+molt_future_cancel = _intrinsic_require("molt_future_cancel", globals())
+molt_thread_submit = _intrinsic_require("molt_thread_submit", globals())
+
+_molt_module_new = _intrinsic_require("molt_module_new", globals())
+_molt_function_set_builtin = _intrinsic_require(
+    "molt_function_set_builtin", globals()
 )
-_molt_exception_pending: Callable[[], int] | None = _load_intrinsic(
-    "molt_exception_pending"
+_molt_future_cancel_msg = _intrinsic_require("molt_future_cancel_msg", globals())
+_molt_future_cancel_clear = _intrinsic_require(
+    "molt_future_cancel_clear", globals()
 )
-_molt_exception_last: Callable[[], Any] | None = _load_intrinsic("molt_exception_last")
-_molt_process_spawn: Callable[[Any, Any, Any, Any, Any, Any], Any] | None = (
-    _load_intrinsic("molt_process_spawn")
-)
-_molt_process_wait_future: Callable[[Any], Any] | None = _load_intrinsic(
-    "molt_process_wait_future"
-)
-_molt_process_pid: Callable[[Any], int] | None = _load_intrinsic("molt_process_pid")
-_molt_process_returncode: Callable[[Any], int | None] | None = _load_intrinsic(
-    "molt_process_returncode"
-)
-_molt_process_kill: Callable[[Any], None] | None = _load_intrinsic("molt_process_kill")
-_molt_process_terminate: Callable[[Any], None] | None = _load_intrinsic(
-    "molt_process_terminate"
-)
-_molt_process_stdin: Callable[[Any], Any] | None = _load_intrinsic("molt_process_stdin")
-_molt_process_stdout: Callable[[Any], Any] | None = _load_intrinsic(
-    "molt_process_stdout"
-)
-_molt_process_stderr: Callable[[Any], Any] | None = _load_intrinsic(
-    "molt_process_stderr"
-)
-_molt_process_drop: Callable[[Any], None] | None = _load_intrinsic("molt_process_drop")
-if _molt_process_spawn is None:
-    try:
-        _molt_process_spawn = molt_process_spawn  # type: ignore[name-defined]  # noqa: F821
-    except Exception:
-        _molt_process_spawn = None
-if _molt_process_wait_future is None:
-    try:
-        _molt_process_wait_future = molt_process_wait_future  # type: ignore[name-defined]  # noqa: F821
-    except Exception:
-        _molt_process_wait_future = None
-if _molt_process_pid is None:
-    try:
-        _molt_process_pid = molt_process_pid  # type: ignore[name-defined]  # noqa: F821
-    except Exception:
-        _molt_process_pid = None
-if _molt_process_returncode is None:
-    try:
-        _molt_process_returncode = molt_process_returncode  # type: ignore[name-defined]  # noqa: F821
-    except Exception:
-        _molt_process_returncode = None
-if _molt_process_kill is None:
-    try:
-        _molt_process_kill = molt_process_kill  # type: ignore[name-defined]  # noqa: F821
-    except Exception:
-        _molt_process_kill = None
-if _molt_process_terminate is None:
-    try:
-        _molt_process_terminate = molt_process_terminate  # type: ignore[name-defined]  # noqa: F821
-    except Exception:
-        _molt_process_terminate = None
-if _molt_process_stdin is None:
-    try:
-        _molt_process_stdin = molt_process_stdin  # type: ignore[name-defined]  # noqa: F821
-    except Exception:
-        _molt_process_stdin = None
-if _molt_process_stdout is None:
-    try:
-        _molt_process_stdout = molt_process_stdout  # type: ignore[name-defined]  # noqa: F821
-    except Exception:
-        _molt_process_stdout = None
-if _molt_process_stderr is None:
-    try:
-        _molt_process_stderr = molt_process_stderr  # type: ignore[name-defined]  # noqa: F821
-    except Exception:
-        _molt_process_stderr = None
-if _molt_process_drop is None:
-    try:
-        _molt_process_drop = molt_process_drop  # type: ignore[name-defined]  # noqa: F821
-    except Exception:
-        _molt_process_drop = None
-_molt_stream_new: Callable[[int], Any] | None = _load_intrinsic("molt_stream_new")
-_molt_stream_recv: Callable[[Any], Any] | None = _load_intrinsic("molt_stream_recv")
-_molt_stream_send_obj: Callable[[Any, Any], int] | None = _load_intrinsic(
-    "molt_stream_send_obj"
-)
-_molt_stream_close: Callable[[Any], None] | None = _load_intrinsic("molt_stream_close")
-_molt_stream_drop: Callable[[Any], None] | None = _load_intrinsic("molt_stream_drop")
-if _molt_stream_new is None:
-
-    def _molt_stream_new(capacity: int) -> Any:
-        return molt_stream_new(capacity)  # type: ignore[name-defined]  # noqa: F821
-
-
-if _molt_stream_recv is None:
-
-    def _molt_stream_recv(stream: Any) -> Any:
-        return molt_stream_recv(stream)  # type: ignore[name-defined]  # noqa: F821
-
-
-if _molt_stream_send_obj is None:
-
-    def _molt_stream_send_obj(stream: Any, data: Any) -> int:
-        return molt_stream_send_obj(stream, data)  # type: ignore[name-defined]  # noqa: F821
-
-
-if _molt_stream_close is None:
-
-    def _molt_stream_close(stream: Any) -> None:
-        molt_stream_close(stream)  # type: ignore[name-defined]  # noqa: F821
-        return None
-
-
-if _molt_stream_drop is None:
-
-    def _molt_stream_drop(stream: Any) -> None:
-        molt_stream_drop(stream)  # type: ignore[name-defined]  # noqa: F821
-        return None
+_molt_exception_pending = _intrinsic_require("molt_exception_pending", globals())
+_molt_exception_last = _intrinsic_require("molt_exception_last", globals())
+_molt_process_spawn = _intrinsic_require("molt_process_spawn", globals())
+_molt_process_wait_future = _intrinsic_require("molt_process_wait_future", globals())
+_molt_process_pid = _intrinsic_require("molt_process_pid", globals())
+_molt_process_returncode = _intrinsic_require("molt_process_returncode", globals())
+_molt_process_kill = _intrinsic_require("molt_process_kill", globals())
+_molt_process_terminate = _intrinsic_require("molt_process_terminate", globals())
+_molt_process_stdin = _intrinsic_require("molt_process_stdin", globals())
+_molt_process_stdout = _intrinsic_require("molt_process_stdout", globals())
+_molt_process_stderr = _intrinsic_require("molt_process_stderr", globals())
+_molt_process_drop = _intrinsic_require("molt_process_drop", globals())
+_molt_stream_new = _intrinsic_require("molt_stream_new", globals())
+_molt_stream_recv = _intrinsic_require("molt_stream_recv", globals())
+_molt_stream_send_obj = _intrinsic_require("molt_stream_send_obj", globals())
+_molt_stream_close = _intrinsic_require("molt_stream_close", globals())
+_molt_stream_drop = _intrinsic_require("molt_stream_drop", globals())
 
 
 def _debug_exc_state(tag: str) -> None:
@@ -706,9 +620,9 @@ def _debug_exc_state(tag: str) -> None:
 
 
 class _SubprocessConstants:
-    PIPE = _PROC_STDIO_PIPE
-    DEVNULL = _PROC_STDIO_DEVNULL
-    STDOUT = -2
+    PIPE = _SUBPROCESS_PIPE
+    DEVNULL = _SUBPROCESS_DEVNULL
+    STDOUT = _SUBPROCESS_STDOUT
 
 
 subprocess = _SubprocessConstants
@@ -722,17 +636,28 @@ def _fd_from_fileobj(fileobj: Any) -> int:
     raise ValueError("fileobj must be a file descriptor or have fileno()")
 
 
+def _encode_proc_fd(fd: int) -> int:
+    if fd < 0:
+        raise ValueError("file descriptor must be >= 0")
+    if fd > _PROC_STDIO_FD_MAX:
+        raise ValueError("file descriptor is too large")
+    return _PROC_STDIO_FD_BASE + int(fd)
+
+
 def _normalize_proc_stdio(value: Any, *, allow_stdout: bool) -> int:
     if value is None:
         return _PROC_STDIO_INHERIT
-    if value is subprocess.PIPE:
+    if value == subprocess.PIPE:
         return _PROC_STDIO_PIPE
-    if value is subprocess.DEVNULL:
+    if value == subprocess.DEVNULL:
         return _PROC_STDIO_DEVNULL
-    if allow_stdout and value is subprocess.STDOUT:
-        return subprocess.STDOUT
-    # TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:missing): support subprocess stdio redirection via file descriptors and asyncio.subprocess.STDOUT.
-    raise NotImplementedError("unsupported subprocess stdio option")
+    if allow_stdout and value == subprocess.STDOUT:
+        return _PROC_STDIO_STDOUT
+    try:
+        fd = _fd_from_fileobj(value)
+    except Exception as exc:
+        raise NotImplementedError("unsupported subprocess stdio option") from exc
+    return _encode_proc_fd(fd)
 
 
 class _NonBlockingSocket:
@@ -884,6 +809,16 @@ def _next_task_name() -> str:
 
 
 class Task(Future):
+    _coro: Any
+    _runner_task: Any | None
+    _token: CancellationToken
+    _loop: "EventLoop | None"
+    _name: str
+    _cancel_requested: int
+    _cancel_message: Any | None
+    _context: Any | None
+    _runner_spawned: bool
+
     def __init__(
         self,
         coro: Any,
@@ -985,7 +920,13 @@ class Task(Future):
         return True
 
     def get_coro(self) -> Any:
-        return self._coro
+        try:
+            return self._coro
+        except AttributeError:
+            task_dict = getattr(self, "__dict__", None)
+            if isinstance(task_dict, dict) and "_coro" in task_dict:
+                return task_dict["_coro"]
+            raise
 
     def get_name(self) -> str:
         return self._name
@@ -1501,9 +1442,7 @@ class StreamReader:
             self._fd = -1
 
     async def _wait_readable(self) -> None:
-        if _molt_io_wait_new is None:
-            # TODO(runtime, owner:runtime, milestone:RT2, priority:P0, status:missing): require io_wait intrinsic for asyncio streams readiness.
-            raise NotImplementedError("I/O polling unavailable")
+        _require_io_wait_new()
         await _io_wait(self._fd, 1)
 
     async def _recv(self, size: int) -> bytes:
@@ -1589,9 +1528,7 @@ class StreamWriter:
         return None
 
     async def drain(self) -> None:
-        if _molt_io_wait_new is None:
-            # TODO(runtime, owner:runtime, milestone:RT2, priority:P0, status:missing): require io_wait intrinsic for asyncio stream writes.
-            raise NotImplementedError("I/O polling unavailable")
+        _require_io_wait_new()
         while self._buffer:
             try:
                 sent = self._sock.send(self._buffer)
@@ -1667,16 +1604,12 @@ class Server(AbstractServer):
             try:
                 conn, _addr = self._sock.accept()
             except (BlockingIOError, InterruptedError):
-                if _molt_io_wait_new is None:
-                    # TODO(runtime, owner:runtime, milestone:RT2, priority:P0, status:missing): require io_wait intrinsic for asyncio server accept.
-                    raise NotImplementedError("I/O polling unavailable")
+                _require_io_wait_new()
                 await _io_wait(self._sock.fileno(), 1)
                 continue
             except OSError as exc:
                 if exc.errno in (_errno.EAGAIN, _errno.EWOULDBLOCK):
-                    if _molt_io_wait_new is None:
-                        # TODO(runtime, owner:runtime, milestone:RT2, priority:P0, status:missing): require io_wait intrinsic for asyncio server accept.
-                        raise NotImplementedError("I/O polling unavailable")
+                    _require_io_wait_new()
                     await _io_wait(self._sock.fileno(), 1)
                     continue
                 raise
@@ -1901,7 +1834,9 @@ class Process:
                 pass
         return code
 
-    async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
+    async def communicate(
+        self, input: bytes | None = None
+    ) -> tuple[bytes | None, bytes | None]:
         if input is not None:
             if self.stdin is None:
                 raise ValueError("stdin was not set to PIPE")
@@ -1909,30 +1844,31 @@ class Process:
             await self.stdin.drain()
             self.stdin.close()
 
-        tasks: list[Future] = []
+        tasks: list[tuple[str, Future]] = []
         if self.stdout is not None:
-            tasks.append(ensure_future(self.stdout.read()))
+            tasks.append(("stdout", ensure_future(self.stdout.read())))
         if self.stderr is not None:
-            tasks.append(ensure_future(self.stderr.read()))
+            tasks.append(("stderr", ensure_future(self.stderr.read())))
 
         out: bytes | None = None
         err: bytes | None = None
         try:
             if tasks:
-                results = await gather(*tasks)
-                if self.stdout is not None:
-                    out = results[0]
-                if self.stderr is not None:
-                    err = results[-1]
+                results = await gather(*[task for _, task in tasks])
+                for (kind, _), result in zip(tasks, results):
+                    if kind == "stdout":
+                        out = result
+                    else:
+                        err = result
             await self.wait()
         except BaseException:
-            for task in tasks:
+            for _, task in tasks:
                 try:
                     task.cancel()
                 except Exception:
                     pass
             raise
-        return out or b"", err or b""
+        return out, err
 
     def __del__(self) -> None:
         try:
@@ -2241,6 +2177,7 @@ class _EventLoop(AbstractEventLoop):
         self._readers: dict[int, tuple[Any, tuple[Any, ...], Task]] = {}
         self._writers: dict[int, tuple[Any, tuple[Any, ...], Task]] = {}
         self._ready: _deque[Handle] = _deque()
+        self._ready_lock = _threading.Lock()
         self._scheduled: set[TimerHandle] = set()
         self._ready_task: Task | None = None
         self._closed = False
@@ -2284,8 +2221,14 @@ class _EventLoop(AbstractEventLoop):
 
     async def _ready_loop(self) -> None:
         while not self._closed:
-            while self._ready:
-                handle = self._ready.popleft()
+            while True:
+                with self._ready_lock:
+                    if not self._ready:
+                        handle = None
+                    else:
+                        handle = self._ready.popleft()
+                if handle is None:
+                    break
                 if handle.cancelled():
                     continue
                 handle._run()
@@ -2307,7 +2250,8 @@ class _EventLoop(AbstractEventLoop):
             except Exception:
                 context = None
         handle = Handle(callback, args, self, context)
-        self._ready.append(handle)
+        with self._ready_lock:
+            self._ready.append(handle)
         if self._running:
             self._ensure_ready_runner()
         return handle
@@ -2338,12 +2282,13 @@ class _EventLoop(AbstractEventLoop):
         self._scheduled.add(handle)
 
         async def _timer() -> None:
-            await molt_async_sleep(delay)
+            await molt_async_sleep(delay, None)
             if handle.cancelled():
                 self._scheduled.discard(handle)
                 return
             self._scheduled.discard(handle)
-            self._ready.append(handle)
+            with self._ready_lock:
+                self._ready.append(handle)
             if self._running:
                 self._ensure_ready_runner()
 
@@ -2361,19 +2306,21 @@ class _EventLoop(AbstractEventLoop):
         delay = max(0.0, float(when) - self.time())
         handle = TimerHandle(float(when), callback, args, self, context)
         if delay <= 0:
-            self._ready.append(handle)
+            with self._ready_lock:
+                self._ready.append(handle)
             if self._running:
                 self._ensure_ready_runner()
             return handle
         self._scheduled.add(handle)
 
         async def _timer() -> None:
-            await molt_async_sleep(delay)
+            await molt_async_sleep(delay, None)
             if handle.cancelled():
                 self._scheduled.discard(handle)
                 return
             self._scheduled.discard(handle)
-            self._ready.append(handle)
+            with self._ready_lock:
+                self._ready.append(handle)
             if self._running:
                 self._ensure_ready_runner()
 
@@ -2437,17 +2384,22 @@ class _EventLoop(AbstractEventLoop):
                 pass
 
     def run_in_executor(self, executor: Any, func: Any, *args: Any) -> Future:
-        if executor is not None:
-            # TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:missing): support custom executors in asyncio run_in_executor.
-            raise NotImplementedError("custom executors not supported")
-        future = molt_thread_submit(func, args, {})
-        return future
+        if executor is None:
+            future = molt_thread_submit(func, args, {})
+            return future
+        submit = getattr(executor, "submit", None)
+        if submit is None or not callable(submit):
+            raise TypeError("executor must define submit()")
+        try:
+            submitted = submit(func, *args)
+        except BaseException as exc:
+            failed = Future()
+            failed.set_exception(exc)
+            return failed
+        return wrap_future(submitted, loop=self)
 
     def add_reader(self, fd: Any, callback: Any, *args: Any) -> None:
-        if _molt_io_wait_new is None:
-            # TODO(runtime, owner:runtime, milestone:RT2, priority:P0, status:missing): require io_wait intrinsic for asyncio add_reader.
-            raise NotImplementedError("I/O polling unavailable")
-        io_wait = _require_asyncio_intrinsic(_molt_io_wait_new, "io_wait_new")
+        io_wait = _require_asyncio_intrinsic(_require_io_wait_new(), "io_wait_new")
         fileno = _fd_from_fileobj(fd)
         if fileno in self._readers:
             self.remove_reader(fileno)
@@ -2483,10 +2435,7 @@ class _EventLoop(AbstractEventLoop):
         return True
 
     def add_writer(self, fd: Any, callback: Any, *args: Any) -> None:
-        if _molt_io_wait_new is None:
-            # TODO(runtime, owner:runtime, milestone:RT2, priority:P0, status:missing): require io_wait intrinsic for asyncio add_writer.
-            raise NotImplementedError("I/O polling unavailable")
-        io_wait = _require_asyncio_intrinsic(_molt_io_wait_new, "io_wait_new")
+        io_wait = _require_asyncio_intrinsic(_require_io_wait_new(), "io_wait_new")
         fileno = _fd_from_fileobj(fd)
         if fileno in self._writers:
             self.remove_writer(fileno)
@@ -2510,9 +2459,7 @@ class _EventLoop(AbstractEventLoop):
         self._writers[fileno] = (callback, args, task)
 
     async def sock_recv(self, sock: Any, n: int) -> bytes:
-        if _molt_io_wait_new is None:
-            # TODO(runtime, owner:runtime, milestone:RT2, priority:P0, status:missing): require io_wait intrinsic for asyncio sock_recv.
-            raise NotImplementedError("I/O polling unavailable")
+        _require_io_wait_new()
         flags = getattr(_socket, "MSG_DONTWAIT", 0)
         while True:
             try:
@@ -2526,9 +2473,7 @@ class _EventLoop(AbstractEventLoop):
                 raise
 
     async def sock_recv_into(self, sock: Any, buf: Any) -> int:
-        if _molt_io_wait_new is None:
-            # TODO(runtime, owner:runtime, milestone:RT2, priority:P0, status:missing): require io_wait intrinsic for asyncio sock_recv_into.
-            raise NotImplementedError("I/O polling unavailable")
+        _require_io_wait_new()
         flags = getattr(_socket, "MSG_DONTWAIT", 0)
         nbytes = len(buf)
         while True:
@@ -2543,9 +2488,7 @@ class _EventLoop(AbstractEventLoop):
                 raise
 
     async def sock_sendall(self, sock: Any, data: bytes) -> None:
-        if _molt_io_wait_new is None:
-            # TODO(runtime, owner:runtime, milestone:RT2, priority:P0, status:missing): require io_wait intrinsic for asyncio sock_sendall.
-            raise NotImplementedError("I/O polling unavailable")
+        _require_io_wait_new()
         view = memoryview(data)
         total = 0
         flags = getattr(_socket, "MSG_DONTWAIT", 0)
@@ -2565,9 +2508,7 @@ class _EventLoop(AbstractEventLoop):
                 raise
 
     async def sock_connect(self, sock: Any, address: Any) -> None:
-        if _molt_io_wait_new is None:
-            # TODO(runtime, owner:runtime, milestone:RT2, priority:P0, status:missing): require io_wait intrinsic for asyncio sock_connect.
-            raise NotImplementedError("I/O polling unavailable")
+        _require_io_wait_new()
         with _NonBlockingSocket(sock):
             err = sock.connect_ex(address)
         if err in (0,):
@@ -2581,9 +2522,7 @@ class _EventLoop(AbstractEventLoop):
             raise OSError(err, "connect")
 
     async def sock_accept(self, sock: Any) -> tuple[Any, Any]:
-        if _molt_io_wait_new is None:
-            # TODO(runtime, owner:runtime, milestone:RT2, priority:P0, status:missing): require io_wait intrinsic for asyncio sock_accept.
-            raise NotImplementedError("I/O polling unavailable")
+        _require_io_wait_new()
         while True:
             with _NonBlockingSocket(sock):
                 try:
@@ -2987,7 +2926,7 @@ def run(awaitable: Any) -> Any:
 
 async def sleep(delay: float = 0.0, result: Any | None = None) -> Any:
     if delay <= 0:
-        await molt_async_sleep(0.0)
+        await _async_yield_once()
         return result
     loop = get_running_loop()
     fut = loop.create_future()
@@ -3014,9 +2953,7 @@ async def open_connection(
     if ssl is not None:
         # TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:missing): implement asyncio SSL transport support.
         raise NotImplementedError("ssl not supported")
-    if _molt_io_wait_new is None:
-        # TODO(runtime, owner:runtime, milestone:RT2, priority:P0, status:missing): require io_wait intrinsic for asyncio open_connection.
-        raise NotImplementedError("I/O polling unavailable")
+    _require_io_wait_new()
     sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
     if local_addr is not None:
         sock.bind(local_addr)
@@ -3046,9 +2983,7 @@ async def open_unix_connection(
     if ssl is not None:
         # TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:missing): implement asyncio SSL transport support for unix sockets.
         raise NotImplementedError("ssl not supported")
-    if _molt_io_wait_new is None:
-        # TODO(runtime, owner:runtime, milestone:RT2, priority:P0, status:missing): require io_wait intrinsic for asyncio open_unix_connection.
-        raise NotImplementedError("I/O polling unavailable")
+    _require_io_wait_new()
     sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
     if local_addr is not None:
         sock.bind(local_addr)
@@ -3085,9 +3020,7 @@ async def start_server(
     backlog: int = 100,
     reuse_port: bool = False,
 ) -> Server:
-    if _molt_io_wait_new is None:
-        # TODO(runtime, owner:runtime, milestone:RT2, priority:P0, status:missing): require io_wait intrinsic for asyncio start_server.
-        raise NotImplementedError("I/O polling unavailable")
+    _require_io_wait_new()
     bind_host = host if host is not None else "0.0.0.0"
     bind_port = 0 if port is None else port
     sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
@@ -3108,9 +3041,7 @@ async def start_unix_server(
 ) -> Server:
     if _os.name == "nt" or not hasattr(_socket, "AF_UNIX"):
         raise NotImplementedError("unix sockets not supported")
-    if _molt_io_wait_new is None:
-        # TODO(runtime, owner:runtime, milestone:RT2, priority:P0, status:missing): require io_wait intrinsic for asyncio start_unix_server.
-        raise NotImplementedError("I/O polling unavailable")
+    _require_io_wait_new()
     sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
     sock.setblocking(False)
     sock.bind(path)
@@ -3131,9 +3062,6 @@ async def create_subprocess_exec(
     stdin_mode = _normalize_proc_stdio(stdin, allow_stdout=False)
     stdout_mode = _normalize_proc_stdio(stdout, allow_stdout=False)
     stderr_mode = _normalize_proc_stdio(stderr, allow_stdout=True)
-    if stderr_mode == subprocess.STDOUT:
-        # TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:missing): wire stderr=STDOUT redirection in process spawn.
-        raise NotImplementedError("stderr=STDOUT not supported")
     spawn = _require_asyncio_intrinsic(_molt_process_spawn, "process_spawn")
     handle = spawn(list(program), env, cwd, stdin_mode, stdout_mode, stderr_mode)
     if handle is None:
@@ -3321,11 +3249,17 @@ def wrap_future(fut: Any, *, loop: EventLoop | None = None) -> Future:
             return
         proxy.set_result(None)
 
+    def _schedule_transfer() -> None:
+        try:
+            loop.call_soon_threadsafe(_transfer)
+        except BaseException:
+            _transfer()
+
     try:
         if hasattr(fut, "add_done_callback"):
-            fut.add_done_callback(lambda _fut: _transfer())
+            fut.add_done_callback(lambda _fut: _schedule_transfer())
         else:
-            loop.call_soon_threadsafe(_transfer)
+            _schedule_transfer()
     except BaseException as exc:
         proxy.set_exception(exc)
     return proxy
@@ -3891,10 +3825,7 @@ class LifoQueue(Queue):
 
 
 def _module(name: str, attrs: dict[str, Any]) -> _types.ModuleType:
-    if callable(_molt_module_new):
-        mod = _molt_module_new(name)  # type: ignore[misc]
-    else:
-        mod = _types.ModuleType(name)
+    mod = _require_asyncio_intrinsic(_molt_module_new, "module_new")(name)
     mod_dict = getattr(mod, "__dict__", None)
     if isinstance(mod_dict, dict):
         mod_dict.update(attrs)
@@ -4070,6 +4001,8 @@ def _make_log_module() -> _types.ModuleType:
             return None
 
     try:
+        import logging as _logging
+
         logger = _logging.getLogger("asyncio")
     except Exception:
         logger = _NoopLogger()
@@ -4259,9 +4192,9 @@ sslproto = _module("asyncio.sslproto", {})
 subprocess = _module(
     "asyncio.subprocess",
     {
-        "PIPE": _PROC_STDIO_PIPE,
+        "PIPE": _SubprocessConstants.PIPE,
         "STDOUT": _SubprocessConstants.STDOUT,
-        "DEVNULL": _PROC_STDIO_DEVNULL,
+        "DEVNULL": _SubprocessConstants.DEVNULL,
         "Process": Process,
         "SubprocessProtocol": SubprocessProtocol,
         "SubprocessTransport": SubprocessTransport,

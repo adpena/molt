@@ -2,20 +2,54 @@
 
 from __future__ import annotations
 
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+_require_intrinsic("molt_stdlib_probe", globals())
+
 import math
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 __all__ = [
     "dump",
     "dumps",
     "load",
     "loads",
+    "JSONDecoder",
     "JSONDecodeError",
+    "JSONEncoder",
 ]
 
-JSONDecodeError = ValueError
+# TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): implement
+# full json parity (JSONDecodeError formatting parity, cls hooks, and performance tuning).
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): implement full json parity (JSONEncoder/Decoder classes, JSONDecodeError details, encoding options, and performance tuning).
+
+class JSONDecodeError(ValueError):
+    def __init__(self, msg: str, doc: str, pos: int) -> None:
+        self.msg = msg
+        self.doc = doc
+        self.pos = int(pos)
+        self.lineno, self.colno = _calc_lineno_col(doc, self.pos)
+        super().__init__(self.__str__())
+
+    def __reduce__(self):
+        return self.__class__, (self.msg, self.doc, self.pos)
+
+    def __str__(self) -> str:
+        return f"{self.msg}: line {self.lineno} column {self.colno} (char {self.pos})"
+
+
+def _calc_lineno_col(doc: str, pos: int) -> tuple[int, int]:
+    if pos < 0:
+        pos = 0
+    if pos > len(doc):
+        pos = len(doc)
+    lineno = doc.count("\n", 0, pos) + 1
+    line_start = doc.rfind("\n", 0, pos)
+    if line_start < 0:
+        colno = pos + 1
+    else:
+        colno = pos - line_start
+    return lineno, colno
 
 
 def loads(
@@ -29,7 +63,6 @@ def loads(
     object_pairs_hook: Callable[[list[tuple[str, Any]]], Any] | None = None,
     **_kwargs: Any,
 ) -> Any:
-    _ = cls
     if isinstance(s, (bytes, bytearray)):
         text = s.decode("utf-8")
     elif isinstance(s, str):
@@ -38,15 +71,15 @@ def loads(
         raise TypeError(
             f"the JSON object must be str, bytes or bytearray, not {type(s).__name__}"
         )
-    parser = _Parser(
-        text,
+    decoder_cls = cls or JSONDecoder
+    decoder = decoder_cls(
+        object_hook=object_hook,
         parse_float=parse_float,
         parse_int=parse_int,
         parse_constant=parse_constant,
-        object_hook=object_hook,
         object_pairs_hook=object_pairs_hook,
     )
-    return parser.parse()
+    return decoder.decode(text)
 
 
 def load(
@@ -74,6 +107,7 @@ def load(
 def dumps(
     obj: Any,
     *,
+    cls: Any | None = None,
     skipkeys: bool = False,
     ensure_ascii: bool = True,
     check_circular: bool = True,
@@ -87,7 +121,8 @@ def dumps(
         separators = (", ", ": ") if indent is None else (",", ": ")
     elif len(separators) != 2:
         raise ValueError("separators must be a (item, key) tuple")
-    enc = _Encoder(
+    encoder_cls = cls or JSONEncoder
+    encoder = encoder_cls(
         skipkeys=skipkeys,
         ensure_ascii=ensure_ascii,
         check_circular=check_circular,
@@ -97,13 +132,14 @@ def dumps(
         separators=separators,
         default=default,
     )
-    return enc.encode(obj)
+    return encoder.encode(obj)
 
 
 def dump(
     obj: Any,
     fp: Any,
     *,
+    cls: Any | None = None,
     skipkeys: bool = False,
     ensure_ascii: bool = True,
     check_circular: bool = True,
@@ -115,6 +151,7 @@ def dump(
 ) -> None:
     text = dumps(
         obj,
+        cls=cls,
         skipkeys=skipkeys,
         ensure_ascii=ensure_ascii,
         check_circular=check_circular,
@@ -312,6 +349,54 @@ class _Encoder:
             self._stack.pop()
 
 
+class JSONEncoder:
+    def __init__(
+        self,
+        *,
+        skipkeys: bool = False,
+        ensure_ascii: bool = True,
+        check_circular: bool = True,
+        allow_nan: bool = True,
+        sort_keys: bool = False,
+        indent: int | str | None = None,
+        separators: tuple[str, str] | None = None,
+        default: Callable[[Any], Any] | None = None,
+    ) -> None:
+        if separators is None:
+            separators = (", ", ": ") if indent is None else (",", ": ")
+        elif len(separators) != 2:
+            raise ValueError("separators must be a (item, key) tuple")
+        self.skipkeys = skipkeys
+        self.ensure_ascii = ensure_ascii
+        self.check_circular = check_circular
+        self.allow_nan = allow_nan
+        self.sort_keys = sort_keys
+        self.indent = indent
+        self.separators = separators
+        self._default = default
+
+    def default(self, obj: Any) -> Any:
+        if self._default is not None:
+            return self._default(obj)
+        raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+    def encode(self, obj: Any) -> str:
+        enc = _Encoder(
+            skipkeys=self.skipkeys,
+            ensure_ascii=self.ensure_ascii,
+            check_circular=self.check_circular,
+            allow_nan=self.allow_nan,
+            sort_keys=self.sort_keys,
+            indent=self.indent,
+            separators=self.separators,
+            default=self.default,
+        )
+        return enc.encode(obj)
+
+    def iterencode(self, obj: Any) -> Iterable[str]:
+        yield self.encode(obj)
+
+
 class _Parser:
     def __init__(
         self,
@@ -322,6 +407,7 @@ class _Parser:
         parse_constant: Callable[[str], Any] | None,
         object_hook: Callable[[dict[str, Any]], Any] | None,
         object_pairs_hook: Callable[[list[tuple[str, Any]]], Any] | None,
+        strict: bool = True,
     ) -> None:
         self.text = text
         self.length = len(text)
@@ -331,14 +417,30 @@ class _Parser:
         self.parse_constant = parse_constant
         self.object_hook = object_hook
         self.object_pairs_hook = object_pairs_hook
+        self.strict = strict
+
+    def _error(self, msg: str, pos: int | None = None) -> JSONDecodeError:
+        if pos is None:
+            pos = self.index
+        return JSONDecodeError(msg, self.text, pos)
 
     def parse(self) -> Any:
         self._consume_ws()
         value = self._parse_value()
         self._consume_ws()
         if self.index != self.length:
-            raise ValueError("Extra data")
+            raise self._error("Extra data")
         return value
+
+    def parse_raw(self, idx: int) -> tuple[Any, int]:
+        if idx < 0:
+            raise self._error("Expecting value", 0)
+        if idx > self.length:
+            raise self._error("Expecting value", self.length)
+        self.index = idx
+        self._consume_ws()
+        value = self._parse_value()
+        return value, self.index
 
     def _consume_ws(self) -> None:
         while self.index < self.length and self.text[self.index] in " \t\r\n":
@@ -376,17 +478,17 @@ class _Parser:
             return self._parse_constant("-Infinity")
         if ch == "-" or self._is_digit(ch):
             return self._parse_number()
-        raise ValueError("Expecting value")
+        raise self._error("Expecting value")
 
     def _parse_literal(self, text: str, value: Any) -> Any:
         if self._text_startswith(text):
             self.index += len(text)
             return value
-        raise ValueError("Expecting value")
+        raise self._error("Expecting value")
 
     def _parse_constant(self, text: str) -> Any:
         if not self._text_startswith(text):
-            raise ValueError("Expecting value")
+            raise self._error("Expecting value")
         self.index += len(text)
         if self.parse_constant is not None:
             return self.parse_constant(text)
@@ -401,7 +503,7 @@ class _Parser:
         if self._peek() == "-":
             self.index += 1
         if self.index >= self.length:
-            raise ValueError("Expecting value")
+            raise self._error("Expecting value", start)
         ch = self.text[self.index]
         if ch == "0":
             self.index += 1
@@ -409,11 +511,11 @@ class _Parser:
             while self.index < self.length and self._is_digit(self.text[self.index]):
                 self.index += 1
         else:
-            raise ValueError("Expecting value")
+            raise self._error("Expecting value", start)
         if self.index < self.length and self.text[self.index] == ".":
             self.index += 1
             if self.index >= self.length or not self._is_digit(self.text[self.index]):
-                raise ValueError("Expecting value")
+                raise self._error("Expecting value", start)
             while self.index < self.length and self._is_digit(self.text[self.index]):
                 self.index += 1
         if self.index < self.length and self.text[self.index] in "eE":
@@ -421,7 +523,7 @@ class _Parser:
             if self.index < self.length and self.text[self.index] in "+-":
                 self.index += 1
             if self.index >= self.length or not self._is_digit(self.text[self.index]):
-                raise ValueError("Expecting value")
+                raise self._error("Expecting value", start)
             while self.index < self.length and self._is_digit(self.text[self.index]):
                 self.index += 1
         raw = self.text[start : self.index]
@@ -435,7 +537,8 @@ class _Parser:
 
     def _parse_string(self) -> str:
         if self._advance() != '"':
-            raise ValueError("Expecting value")
+            raise self._error("Expecting value")
+        start = self.index - 1
         out: list[str] = []
         while self.index < self.length:
             ch = self._advance()
@@ -443,7 +546,7 @@ class _Parser:
                 return "".join(out)
             if ch == "\\":
                 if self.index >= self.length:
-                    raise ValueError("Invalid \\uXXXX escape")
+                    raise self._error("Invalid \\uXXXX escape", start)
                 esc = self._advance()
                 if esc == '"':
                     out.append('"')
@@ -464,43 +567,40 @@ class _Parser:
                 elif esc == "u":
                     out.append(self._parse_unicode_escape())
                 else:
-                    raise ValueError("Invalid \\uXXXX escape")
+                    raise self._error("Invalid \\uXXXX escape")
             else:
-                if ord(ch) < 0x20:
-                    raise ValueError("Invalid control character")
+                if ord(ch) < 0x20 and self.strict:
+                    raise self._error("Invalid control character")
                 out.append(ch)
-        raise ValueError("Unterminated string starting at")
+        raise self._error("Unterminated string starting at", start)
 
     def _parse_unicode_escape(self) -> str:
         if self.index + 4 > self.length:
-            raise ValueError("Invalid \\uXXXX escape")
+            raise self._error("Invalid \\uXXXX escape")
         hex_text = self.text[self.index : self.index + 4]
         if not _is_hex(hex_text):
-            raise ValueError("Invalid \\uXXXX escape")
+            raise self._error("Invalid \\uXXXX escape")
         code = int(hex_text, 16)
         self.index += 4
         if 0xD800 <= code <= 0xDBFF:
-            if not self._text_startswith("\\u"):
-                raise ValueError("Invalid \\uXXXX escape")
-            self.index += 2
-            if self.index + 4 > self.length:
-                raise ValueError("Invalid \\uXXXX escape")
-            low_text = self.text[self.index : self.index + 4]
-            if not _is_hex(low_text):
-                raise ValueError("Invalid \\uXXXX escape")
-            low = int(low_text, 16)
-            self.index += 4
-            if not 0xDC00 <= low <= 0xDFFF:
-                raise ValueError("Invalid \\uXXXX escape")
-            combined = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)
-            return chr(combined)
+            if self._text_startswith("\\u"):
+                low_start = self.index + 2
+                if low_start + 4 <= self.length:
+                    low_text = self.text[low_start : low_start + 4]
+                    if _is_hex(low_text):
+                        low = int(low_text, 16)
+                        if 0xDC00 <= low <= 0xDFFF:
+                            self.index = low_start + 4
+                            combined = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)
+                            return chr(combined)
+            return chr(code)
         if 0xDC00 <= code <= 0xDFFF:
-            raise ValueError("Invalid \\uXXXX escape")
+            return chr(code)
         return chr(code)
 
     def _parse_array(self) -> list[Any]:
         if self._advance() != "[":
-            raise ValueError("Expecting value")
+            raise self._error("Expecting value")
         items: list[Any] = []
         self._consume_ws()
         if self._peek() == "]":
@@ -510,16 +610,19 @@ class _Parser:
             self._consume_ws()
             items.append(self._parse_value())
             self._consume_ws()
-            ch = self._advance()
+            ch = self._peek()
             if ch == "]":
+                self.index += 1
                 break
-            if ch != ",":
-                raise ValueError("Expecting ',' delimiter")
+            if ch == ",":
+                self.index += 1
+                continue
+            raise self._error("Expecting ',' delimiter")
         return items
 
     def _parse_object(self) -> Any:
         if self._advance() != "{":
-            raise ValueError("Expecting value")
+            raise self._error("Expecting value")
         pairs: list[tuple[str, Any]] = []
         self._consume_ws()
         if self._peek() == "}":
@@ -528,20 +631,24 @@ class _Parser:
         while True:
             self._consume_ws()
             if self._peek() != '"':
-                raise ValueError("Expecting property name enclosed in double quotes")
+                raise self._error("Expecting property name enclosed in double quotes")
             key = self._parse_string()
             self._consume_ws()
-            if self._advance() != ":":
-                raise ValueError("Expecting ':' delimiter")
+            if self._peek() != ":":
+                raise self._error("Expecting ':' delimiter")
+            self.index += 1
             self._consume_ws()
             value = self._parse_value()
             pairs.append((key, value))
             self._consume_ws()
-            ch = self._advance()
+            ch = self._peek()
             if ch == "}":
+                self.index += 1
                 break
-            if ch != ",":
-                raise ValueError("Expecting ',' delimiter")
+            if ch == ",":
+                self.index += 1
+                continue
+            raise self._error("Expecting ',' delimiter")
         return self._finish_object(pairs)
 
     @staticmethod
@@ -563,6 +670,57 @@ class _Parser:
         if self.object_hook is not None:
             return self.object_hook(obj)
         return obj
+
+
+class JSONDecoder:
+    def __init__(
+        self,
+        *,
+        object_hook: Callable[[dict[str, Any]], Any] | None = None,
+        parse_float: Callable[[str], Any] | None = None,
+        parse_int: Callable[[str], Any] | None = None,
+        parse_constant: Callable[[str], Any] | None = None,
+        object_pairs_hook: Callable[[list[tuple[str, Any]]], Any] | None = None,
+        strict: bool = True,
+    ) -> None:
+        self.object_hook = object_hook
+        self.parse_float = parse_float
+        self.parse_int = parse_int
+        self.parse_constant = parse_constant
+        self.object_pairs_hook = object_pairs_hook
+        self.strict = strict
+
+    def decode(self, s: str) -> Any:
+        if not isinstance(s, str):
+            raise TypeError(
+                f"the JSON object must be str, bytes or bytearray, not {type(s).__name__}"
+            )
+        parser = _Parser(
+            s,
+            parse_float=self.parse_float,
+            parse_int=self.parse_int,
+            parse_constant=self.parse_constant,
+            object_hook=self.object_hook,
+            object_pairs_hook=self.object_pairs_hook,
+            strict=self.strict,
+        )
+        return parser.parse()
+
+    def raw_decode(self, s: str, idx: int = 0) -> tuple[Any, int]:
+        if not isinstance(s, str):
+            raise TypeError(
+                f"the JSON object must be str, bytes or bytearray, not {type(s).__name__}"
+            )
+        parser = _Parser(
+            s,
+            parse_float=self.parse_float,
+            parse_int=self.parse_int,
+            parse_constant=self.parse_constant,
+            object_hook=self.object_hook,
+            object_pairs_hook=self.object_pairs_hook,
+            strict=self.strict,
+        )
+        return parser.parse_raw(idx)
 
 
 def _is_hex(text: str) -> bool:

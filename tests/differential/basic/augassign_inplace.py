@@ -33,6 +33,16 @@ lst2 = [1, 2, 3]
 lst2[1] += 10
 print(f"list_sub:{lst2}")
 
+lst3 = [1, 2, 3, 4]
+lst3[1:3] += [8, 9]
+print(f"list_slice:{lst3}")
+
+try:
+    lst4 = [1, 2, 3, 4, 5, 6]
+    lst4[::2] += [10, 20, 30]
+except ValueError as exc:
+    print(f"list_slice_step_err:{exc}")
+
 box = Box([1], 1)
 items_alias = box.items
 box.items += [2]
@@ -68,6 +78,16 @@ except TypeError as exc:
 ba2 = bytearray(b"abc")
 ba2[1] += 1
 print(f"ba_sub:{bytes(ba2)}")
+
+ba3 = bytearray(b"abcd")
+ba3[1:3] += b"XY"
+print(f"ba_slice:{bytes(ba3)}")
+
+try:
+    ba4 = bytearray(b"abcdef")
+    ba4[::2] += b"XYZ"
+except ValueError as exc:
+    print(f"ba_slice_step_err:{exc}")
 
 s = {1, 2}
 s_alias = s

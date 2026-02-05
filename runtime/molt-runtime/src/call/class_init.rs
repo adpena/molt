@@ -4,6 +4,16 @@ use crate::builtins::exceptions::{
 use crate::PyToken;
 use crate::*;
 
+fn str_codec_arg(_py: &PyToken<'_>, bits: u64, arg_name: &str) -> Option<String> {
+    let obj = obj_from_bits(bits);
+    let Some(text) = string_obj_to_owned(obj) else {
+        let type_name = class_name_for_error(type_of_bits(_py, bits));
+        let msg = format!("str() argument '{arg_name}' must be str, not {type_name}");
+        return raise_exception::<Option<String>>(_py, "TypeError", &msg);
+    };
+    Some(text)
+}
+
 unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
     let size_name_bits = intern_static_name(
         _py,
@@ -24,6 +34,9 @@ unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
     let class_bits = MoltObject::from_ptr(class_ptr).bits();
     let builtins = builtin_classes(_py);
     if issubclass_bits(class_bits, builtins.int) && size < 16 {
+        size = 16;
+    }
+    if issubclass_bits(class_bits, builtins.dict) && size < 16 {
         size = 16;
     }
     size
@@ -58,6 +71,67 @@ pub(crate) unsafe fn alloc_instance_for_class_no_pool(
     MoltObject::from_ptr(obj_ptr).bits()
 }
 
+unsafe fn alloc_dataclass_for_class(_py: &PyToken<'_>, class_ptr: *mut u8) -> Option<u64> {
+    let Some(field_names_name) =
+        attr_name_bits_from_bytes(_py, b"__molt_dataclass_field_names__")
+    else {
+        return None;
+    };
+    let field_names_bits = class_attr_lookup_raw_mro(_py, class_ptr, field_names_name);
+    dec_ref_bits(_py, field_names_name);
+    let Some(field_names_bits) = field_names_bits else {
+        return None;
+    };
+    let Some(field_names_ptr) = obj_from_bits(field_names_bits).as_ptr() else {
+        return Some(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "dataclass field names must be a list/tuple of str",
+        ));
+    };
+    let field_count = match object_type_id(field_names_ptr) {
+        TYPE_ID_TUPLE => tuple_len(field_names_ptr),
+        TYPE_ID_LIST => list_len(field_names_ptr),
+        _ => {
+            return Some(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "dataclass field names must be a list/tuple of str",
+            ))
+        }
+    };
+    let missing = missing_bits(_py);
+    let mut values = Vec::with_capacity(field_count);
+    values.resize(field_count, missing);
+    let values_ptr = alloc_tuple(_py, &values);
+    if values_ptr.is_null() {
+        return Some(MoltObject::none().bits());
+    }
+    let values_bits = MoltObject::from_ptr(values_ptr).bits();
+    let flags_bits = if let Some(flags_name) =
+        attr_name_bits_from_bytes(_py, b"__molt_dataclass_flags__")
+    {
+        let bits = class_attr_lookup_raw_mro(_py, class_ptr, flags_name)
+            .unwrap_or_else(|| MoltObject::from_int(0).bits());
+        dec_ref_bits(_py, flags_name);
+        bits
+    } else {
+        MoltObject::from_int(0).bits()
+    };
+    let name_bits = class_name_bits(class_ptr);
+    let inst_bits = molt_dataclass_new(name_bits, field_names_bits, values_bits, flags_bits);
+    dec_ref_bits(_py, values_bits);
+    if exception_pending(_py) {
+        return Some(MoltObject::none().bits());
+    }
+    let class_bits = MoltObject::from_ptr(class_ptr).bits();
+    let _ = molt_dataclass_set_class(inst_bits, class_bits);
+    if exception_pending(_py) {
+        return Some(MoltObject::none().bits());
+    }
+    Some(inst_bits)
+}
+
 pub(crate) unsafe fn call_class_init_with_args(
     _py: &PyToken<'_>,
     class_ptr: *mut u8,
@@ -73,11 +147,7 @@ pub(crate) unsafe fn call_class_init_with_args(
     }
     if class_bits == builtins.not_implemented_type {
         if !args.is_empty() {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "NotImplementedType takes no arguments",
-            );
+            return raise_exception::<_>(_py, "TypeError", "NotImplementedType takes no arguments");
         }
         return not_implemented_bits(_py);
     }
@@ -419,27 +489,117 @@ pub(crate) unsafe fn call_class_init_with_args(
                 return MoltObject::from_ptr(ptr).bits();
             }
             1 => return molt_str_from_obj(args[0]),
-            _ => {
+            2 | 3 => {
                 let obj = obj_from_bits(args[0]);
-                let is_bytes_like = obj.as_ptr().is_some_and(|ptr| unsafe {
-                    let type_id = object_type_id(ptr);
-                    type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY
-                });
-                if !is_bytes_like {
+                let Some(ptr) = obj.as_ptr() else {
+                    let msg = format!(
+                        "decoding to str: need a bytes-like object, {} found",
+                        type_name(_py, obj)
+                    );
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                };
+                let type_id = object_type_id(ptr);
+                if type_id == TYPE_ID_STRING {
+                    return raise_exception::<_>(_py, "TypeError", "decoding str is not supported");
+                }
+                if type_id != TYPE_ID_BYTES
+                    && type_id != TYPE_ID_BYTEARRAY
+                    && type_id != TYPE_ID_MEMORYVIEW
+                {
                     let msg = format!(
                         "decoding to str: need a bytes-like object, {} found",
                         type_name(_py, obj)
                     );
                     return raise_exception::<_>(_py, "TypeError", &msg);
                 }
-                // TODO(stdlib-compat, owner:runtime, milestone:TC2, priority:P2, status:partial):
-                // support encoding/errors args for bytes-like inputs and match CPython's
-                // UnicodeDecodeError details.
-                return raise_exception::<_>(
-                    _py,
-                    "NotImplementedError",
-                    "str() encoding arguments are not supported yet",
-                );
+                let encoding = match str_codec_arg(_py, args[1], "encoding") {
+                    Some(val) => val,
+                    None => return MoltObject::none().bits(),
+                };
+                let errors = if args.len() == 3 {
+                    match str_codec_arg(_py, args[2], "errors") {
+                        Some(val) => val,
+                        None => return MoltObject::none().bits(),
+                    }
+                } else {
+                    "strict".to_string()
+                };
+                let bytes_bits = if type_id == TYPE_ID_BYTES {
+                    inc_ref_bits(_py, args[0]);
+                    args[0]
+                } else {
+                    let bits = molt_bytes_from_obj(args[0]);
+                    if obj_from_bits(bits).is_none() {
+                        return MoltObject::none().bits();
+                    }
+                    bits
+                };
+                let bytes_obj = obj_from_bits(bytes_bits);
+                let out_bits = if let Some(bytes_ptr) = bytes_obj.as_ptr() {
+                    let bytes = unsafe { bytes_like_slice(bytes_ptr) }.unwrap_or(&[]);
+                    match decode_bytes_text(&encoding, &errors, bytes) {
+                        Ok((text_bytes, _label)) => {
+                            let ptr = alloc_string(_py, &text_bytes);
+                            if ptr.is_null() {
+                                MoltObject::none().bits()
+                            } else {
+                                MoltObject::from_ptr(ptr).bits()
+                            }
+                        }
+                        Err(DecodeTextError::UnknownEncoding(name)) => {
+                            let msg = format!("unknown encoding: {name}");
+                            raise_exception::<_>(_py, "LookupError", &msg)
+                        }
+                        Err(DecodeTextError::UnknownErrorHandler(name)) => {
+                            let msg = format!("unknown error handler name '{name}'");
+                            raise_exception::<_>(_py, "LookupError", &msg)
+                        }
+                        Err(DecodeTextError::Failure(
+                            DecodeFailure::Byte { pos, message, .. },
+                            label,
+                        )) => raise_unicode_decode_error(
+                            _py,
+                            &label,
+                            bytes_bits,
+                            pos,
+                            pos + 1,
+                            message,
+                        ),
+                        Err(DecodeTextError::Failure(
+                            DecodeFailure::Range {
+                                start,
+                                end,
+                                message,
+                            },
+                            label,
+                        )) => {
+                            let end_exclusive = end.saturating_add(1);
+                            raise_unicode_decode_error(
+                                _py,
+                                &label,
+                                bytes_bits,
+                                start,
+                                end_exclusive,
+                                message,
+                            )
+                        }
+                        Err(DecodeTextError::Failure(
+                            DecodeFailure::UnknownErrorHandler(name),
+                            _label,
+                        )) => {
+                            let msg = format!("unknown error handler name '{name}'");
+                            raise_exception::<_>(_py, "LookupError", &msg)
+                        }
+                    }
+                } else {
+                    MoltObject::none().bits()
+                };
+                dec_ref_bits(_py, bytes_bits);
+                return out_bits;
+            }
+            _ => {
+                let msg = format!("str expected at most 3 arguments, got {}", args.len());
+                return raise_exception::<_>(_py, "TypeError", &msg);
             }
         }
     }
@@ -462,20 +622,47 @@ pub(crate) unsafe fn call_class_init_with_args(
                 }
             }
         }
-        let builder_bits = molt_callargs_new(args.len() as u64 + 1, 0);
-        if builder_bits == 0 {
-            return MoltObject::none().bits();
-        }
-        let _ = molt_callargs_push_pos(builder_bits, class_bits);
-        for &arg in args {
-            let _ = molt_callargs_push_pos(builder_bits, arg);
-        }
-        let inst_bits = molt_call_bind(new_bits, builder_bits);
+        let inst_bits = if default_new {
+            if let Some(inst_bits) = alloc_dataclass_for_class(_py, class_ptr) {
+                inst_bits
+            } else {
+                let builder_bits = molt_callargs_new(args.len() as u64 + 1, 0);
+                if builder_bits == 0 {
+                    return MoltObject::none().bits();
+                }
+                let _ = molt_callargs_push_pos(builder_bits, class_bits);
+                for &arg in args {
+                    let _ = molt_callargs_push_pos(builder_bits, arg);
+                }
+                let inst_bits = molt_call_bind(new_bits, builder_bits);
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                if !isinstance_bits(_py, inst_bits, class_bits) {
+                    return inst_bits;
+                }
+                inst_bits
+            }
+        } else {
+            let builder_bits = molt_callargs_new(args.len() as u64 + 1, 0);
+            if builder_bits == 0 {
+                return MoltObject::none().bits();
+            }
+            let _ = molt_callargs_push_pos(builder_bits, class_bits);
+            for &arg in args {
+                let _ = molt_callargs_push_pos(builder_bits, arg);
+            }
+            let inst_bits = molt_call_bind(new_bits, builder_bits);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            if !isinstance_bits(_py, inst_bits, class_bits) {
+                return inst_bits;
+            }
+            inst_bits
+        };
         if exception_pending(_py) {
             return MoltObject::none().bits();
-        }
-        if !isinstance_bits(_py, inst_bits, class_bits) {
-            return inst_bits;
         }
         inst_bits
     } else {

@@ -1,7 +1,7 @@
 use crate::{
-    alloc_code_obj, alloc_string, dec_ref_bits, dict_get_in_place, fn_ptr_code_set, inc_ref_bits,
-    intern_static_name, obj_from_bits, object_type_id, runtime_state, MoltObject, PyToken,
-    TYPE_ID_DICT, TYPE_ID_STRING,
+    alloc_code_obj, alloc_string, alloc_tuple, dec_ref_bits, dict_get_in_place, fn_ptr_code_set,
+    inc_ref_bits, intern_static_name, obj_from_bits, object_type_id, runtime_state, MoltObject,
+    PyToken, TYPE_ID_DICT, TYPE_ID_STRING,
 };
 
 pub(crate) unsafe fn seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64> {
@@ -112,16 +112,16 @@ pub(crate) unsafe fn filter_iter_bits(ptr: *mut u8) -> u64 {
     *(ptr.add(std::mem::size_of::<u64>()) as *const u64)
 }
 
-pub(crate) unsafe fn range_start(ptr: *mut u8) -> i64 {
-    *(ptr as *const i64)
+pub(crate) unsafe fn range_start_bits(ptr: *mut u8) -> u64 {
+    *(ptr as *const u64)
 }
 
-pub(crate) unsafe fn range_stop(ptr: *mut u8) -> i64 {
-    *(ptr.add(std::mem::size_of::<i64>()) as *const i64)
+pub(crate) unsafe fn range_stop_bits(ptr: *mut u8) -> u64 {
+    *(ptr.add(std::mem::size_of::<u64>()) as *const u64)
 }
 
-pub(crate) unsafe fn range_step(ptr: *mut u8) -> i64 {
-    *(ptr.add(2 * std::mem::size_of::<i64>()) as *const i64)
+pub(crate) unsafe fn range_step_bits(ptr: *mut u8) -> u64 {
+    *(ptr.add(2 * std::mem::size_of::<u64>()) as *const u64)
 }
 
 pub(crate) unsafe fn slice_start_bits(ptr: *mut u8) -> u64 {
@@ -295,7 +295,27 @@ pub(crate) unsafe fn ensure_function_code_bits(_py: &PyToken<'_>, func_ptr: *mut
         return MoltObject::none().bits();
     }
     let filename_bits = MoltObject::from_ptr(filename_ptr).bits();
-    let code_ptr = alloc_code_obj(_py, filename_bits, name_bits, 0, MoltObject::none().bits());
+    let varnames_ptr = alloc_tuple(_py, &[]);
+    if varnames_ptr.is_null() {
+        dec_ref_bits(_py, filename_bits);
+        if owned_name {
+            dec_ref_bits(_py, name_bits);
+        }
+        return MoltObject::none().bits();
+    }
+    let varnames_bits = MoltObject::from_ptr(varnames_ptr).bits();
+    let code_ptr = alloc_code_obj(
+        _py,
+        filename_bits,
+        name_bits,
+        0,
+        MoltObject::none().bits(),
+        varnames_bits,
+        0,
+        0,
+        0,
+    );
+    dec_ref_bits(_py, varnames_bits);
     dec_ref_bits(_py, filename_bits);
     if owned_name {
         dec_ref_bits(_py, name_bits);
@@ -322,6 +342,22 @@ pub(crate) unsafe fn code_firstlineno(ptr: *mut u8) -> i64 {
 
 pub(crate) unsafe fn code_linetable_bits(ptr: *mut u8) -> u64 {
     *(ptr.add(3 * std::mem::size_of::<u64>()) as *const u64)
+}
+
+pub(crate) unsafe fn code_varnames_bits(ptr: *mut u8) -> u64 {
+    *(ptr.add(4 * std::mem::size_of::<u64>()) as *const u64)
+}
+
+pub(crate) unsafe fn code_argcount(ptr: *mut u8) -> u64 {
+    *(ptr.add(5 * std::mem::size_of::<u64>()) as *const u64)
+}
+
+pub(crate) unsafe fn code_posonlyargcount(ptr: *mut u8) -> u64 {
+    *(ptr.add(6 * std::mem::size_of::<u64>()) as *const u64)
+}
+
+pub(crate) unsafe fn code_kwonlyargcount(ptr: *mut u8) -> u64 {
+    *(ptr.add(7 * std::mem::size_of::<u64>()) as *const u64)
 }
 
 pub(crate) unsafe fn bound_method_func_bits(ptr: *mut u8) -> u64 {

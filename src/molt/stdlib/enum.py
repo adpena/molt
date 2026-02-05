@@ -50,11 +50,6 @@ class EnumMeta(type):
                 if isinstance(base, type) and issubclass(base, flag_type):
                     is_flag = True
                     break
-        is_int = False
-        for base in bases:
-            if isinstance(base, type) and issubclass(base, int):
-                is_int = True
-                break
         auto_value = 0
         flag_value = 1
         for member_name, raw_value in members:

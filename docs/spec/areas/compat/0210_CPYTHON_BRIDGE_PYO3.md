@@ -2,15 +2,18 @@
 **Spec ID:** 0210
 **Status:** Draft
 **Audience:** runtime, compiler, tooling, packaging
-**Goal:** Define a safe, capability-gated CPython bridge using PyO3 for compatibility
-fallbacks without compromising Molt’s determinism or performance goals.
+**Goal:** Define a safe, capability-gated CPython bridge for compatibility
+fallbacks without compromising Molt’s determinism or performance goals. This is
+an explicit, opt-in escape hatch; the primary C-extension strategy is
+recompiling against `libmolt`.
 
 ---
 
 ## 1) Scope
 PyO3 enables CPython interoperability, not native performance. This spec defines
-how Molt can *optionally* use embedded CPython for Tier C dependencies and legacy
-extensions, while preserving correctness and security.
+how Molt can *optionally* use a CPython bridge for Tier C dependencies and legacy
+extensions, while preserving correctness and security. The bridge is never the
+default path and must be explicitly enabled.
 
 **Non-goals**
 - Using PyO3 to speed up Molt-native execution.
@@ -19,11 +22,11 @@ extensions, while preserving correctness and security.
 ---
 
 ## 2) Bridge Modes
-**A) Worker process (default, preferred)**
+**A) Worker process (preferred when enabled)**
 - CPython runs out-of-process; IPC via Arrow IPC or MsgPack/CBOR.
 - Strong isolation; deterministic mode can hard-deny nondeterministic APIs.
 
-**B) Embedded CPython (PyO3, optional)**
+**B) Embedded CPython (PyO3, optional, never default)**
 - Opt-in feature flag only (`molt --enable-cpython-bridge`).
 - Capability-scoped and disabled in strict deterministic builds.
 - Intended for dev tools, migration, or controlled production rollout.
@@ -100,6 +103,8 @@ values and enforce capability checks before invocation.
 
 ## 8) Tooling & UX
 - `molt deps` must label dependencies as Tier C with a `bridge` reason.
+- `molt run` / `molt build` must never fall back to CPython; bridge usage must
+  be explicit and always visible in logs/metrics when enabled.
 - `molt run` should print a warning when bridge calls execute in production
   without a compatibility waiver.
 - `molt verify` must fail if bridge dependencies appear in deterministic builds.

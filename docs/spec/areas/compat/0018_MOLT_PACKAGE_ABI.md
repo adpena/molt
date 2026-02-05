@@ -20,6 +20,7 @@ capability gating and determinism guarantees.
 - ABI version is a semantic version string (e.g., `0.1`).
 - Runtime refuses packages with incompatible major versions.
 - Minor versions may add optional exports or metadata fields.
+- Tooling currently enforces `abi_version` `0.1` until a newer ABI is published.
 
 ## 3. Required Exports (v0.1)
 All packages must export:

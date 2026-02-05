@@ -6,10 +6,15 @@ while keeping implementation small, explicit, and deterministic.
 
 from __future__ import annotations
 
-try:
-    import _collections_abc as _abc
-except Exception:
+from _intrinsics import require_intrinsic as _require_intrinsic
 
+
+_require_intrinsic("molt_stdlib_probe", globals())
+
+import sys as _sys
+
+
+def _install_fallback_abc():
     class _FallbackABC:
         __slots__ = ()
 
@@ -31,8 +36,16 @@ except Exception:
         MutableMapping = _MutableMapping
         Callable = _Callable
 
+    return _abc
 
-import sys as _sys
+
+try:
+    import _collections_abc as _abc
+except Exception:
+    _abc = None
+
+if _abc is None or getattr(_abc, "Iterable", None) is None:
+    _abc = _install_fallback_abc()
 
 TYPE_CHECKING = False
 

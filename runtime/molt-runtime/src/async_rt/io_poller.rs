@@ -6,7 +6,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[cfg(not(target_arch = "wasm32"))]
+use mio::net::TcpStream as MioTcpStream;
+#[cfg(not(target_arch = "wasm32"))]
 use mio::{Events, Interest, Poll, Registry, Token, Waker};
+#[cfg(all(not(target_arch = "wasm32"), unix))]
+use std::os::unix::io::AsRawFd;
+#[cfg(all(not(target_arch = "wasm32"), windows))]
+use std::os::windows::io::AsRawSocket;
 
 #[cfg(not(target_arch = "wasm32"))]
 use super::sockets::{socket_ptr_from_bits_or_fd, socket_ref_inc, with_socket_mut};
@@ -49,16 +55,38 @@ fn socket_debug_fd(socket_ptr: *mut u8) -> Option<i64> {
     .ok()
 }
 
+#[cfg(all(not(target_arch = "wasm32"), unix))]
+fn stream_debug_fd(stream: &MioTcpStream) -> i64 {
+    stream.as_raw_fd() as i64
+}
+
+#[cfg(all(not(target_arch = "wasm32"), windows))]
+fn stream_debug_fd(stream: &MioTcpStream) -> i64 {
+    stream.as_raw_socket() as i64
+}
+
+#[cfg(all(not(target_arch = "wasm32"), not(any(unix, windows))))]
+fn stream_debug_fd(_stream: &MioTcpStream) -> i64 {
+    -1
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 struct IoWaiter {
     socket_id: usize,
     events: u32,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+enum IoSource {
+    Socket(PtrSlot),
+    WebSocket(MioTcpStream),
+}
+
 #[cfg(target_arch = "wasm32")]
 struct IoWaiter {
     socket_handle: i64,
     events: u32,
+    is_ws: bool,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -67,6 +95,8 @@ struct IoSocketEntry {
     interests: Interest,
     waiters: Vec<PtrSlot>,
     blocking_waiters: Vec<Arc<BlockingWaiter>>,
+    source: IoSource,
+    debug_fd: i64,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -123,6 +153,35 @@ impl IoPoller {
             IoWaiter {
                 socket_handle,
                 events,
+                is_ws: false,
+            },
+        );
+        Ok(())
+    }
+
+    pub(crate) fn register_ws_wait(
+        &self,
+        future_ptr: *mut u8,
+        ws_handle: i64,
+        events: u32,
+    ) -> Result<(), std::io::Error> {
+        if future_ptr.is_null() || ws_handle < 0 {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                "invalid ws wait",
+            ));
+        }
+        let waiter_key = PtrSlot(future_ptr);
+        let mut waiters = self.waiters.lock().unwrap();
+        if waiters.contains_key(&waiter_key) {
+            return Ok(());
+        }
+        waiters.insert(
+            waiter_key,
+            IoWaiter {
+                socket_handle: ws_handle,
+                events,
+                is_ws: true,
             },
         );
         Ok(())
@@ -156,19 +215,23 @@ impl IoPoller {
     }
 
     pub(crate) fn poll_host(&self, _py: &PyToken<'_>) {
-        let snapshot: Vec<(PtrSlot, i64, u32)> = {
+        let snapshot: Vec<(PtrSlot, i64, u32, bool)> = {
             let waiters = self.waiters.lock().unwrap();
             waiters
                 .iter()
-                .map(|(key, waiter)| (*key, waiter.socket_handle, waiter.events))
+                .map(|(key, waiter)| (*key, waiter.socket_handle, waiter.events, waiter.is_ws))
                 .collect()
         };
         if snapshot.is_empty() {
             return;
         }
         let mut ready: Vec<(PtrSlot, u32)> = Vec::new();
-        for (future, handle, events) in snapshot {
-            let rc = unsafe { crate::molt_socket_poll_host(handle, events) };
+        for (future, handle, events, is_ws) in snapshot {
+            let rc = if is_ws {
+                unsafe { crate::molt_ws_poll_host(handle, events) }
+            } else {
+                unsafe { crate::molt_socket_poll_host(handle, events) }
+            };
             if rc == 0 {
                 continue;
             }
@@ -277,6 +340,7 @@ impl IoPoller {
             .map(|entry| entry.token)
             .unwrap_or_else(|| {
                 let token = Token(self.next_token.fetch_add(1, AtomicOrdering::Relaxed));
+                let debug_fd = socket_debug_fd(socket_ptr).unwrap_or(-1);
                 sockets.insert(
                     socket_id,
                     IoSocketEntry {
@@ -284,6 +348,8 @@ impl IoPoller {
                         interests: Interest::READABLE,
                         waiters: Vec::new(),
                         blocking_waiters: Vec::new(),
+                        source: IoSource::Socket(PtrSlot(socket_ptr)),
+                        debug_fd,
                     },
                 );
                 self.tokens.lock().unwrap().insert(token, socket_id);
@@ -307,6 +373,7 @@ impl IoPoller {
             }
         }
         let interests = entry.interests;
+        let debug_fd = entry.debug_fd;
         drop(sockets);
         if needs_register {
             with_socket_mut(socket_ptr, |sock| {
@@ -325,10 +392,116 @@ impl IoPoller {
         }
         let _ = self.waker.wake();
         if trace_io_poller() {
-            let fd = socket_debug_fd(socket_ptr).unwrap_or(-1);
             eprintln!(
                 "molt io poller: register future=0x{:x} socket=0x{:x} fd={} events={}",
-                future_ptr as usize, socket_ptr as usize, fd, events
+                future_ptr as usize, socket_ptr as usize, debug_fd, events
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) fn register_ws_wait(
+        &self,
+        future_ptr: *mut u8,
+        ws_ptr: *mut u8,
+        events: u32,
+        stream: Option<MioTcpStream>,
+    ) -> Result<(), std::io::Error> {
+        if future_ptr.is_null() || ws_ptr.is_null() {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                "invalid io wait",
+            ));
+        }
+        let waiter_key = PtrSlot(future_ptr);
+        {
+            let mut waiters = self.waiters.lock().unwrap();
+            if waiters.contains_key(&waiter_key) {
+                return Ok(());
+            }
+            waiters.insert(
+                waiter_key,
+                IoWaiter {
+                    socket_id: ws_ptr as usize,
+                    events,
+                },
+            );
+        }
+        let socket_id = ws_ptr as usize;
+        let mut sockets = self.sockets.lock().unwrap();
+        let token = match sockets.get(&socket_id) {
+            Some(entry) => entry.token,
+            None => {
+                let stream = match stream {
+                    Some(stream) => stream,
+                    None => {
+                        drop(sockets);
+                        let mut waiters = self.waiters.lock().unwrap();
+                        waiters.remove(&waiter_key);
+                        return Err(std::io::Error::new(
+                            ErrorKind::InvalidInput,
+                            "websocket not registered",
+                        ));
+                    }
+                };
+                let token = Token(self.next_token.fetch_add(1, AtomicOrdering::Relaxed));
+                let debug_fd = stream_debug_fd(&stream);
+                sockets.insert(
+                    socket_id,
+                    IoSocketEntry {
+                        token,
+                        interests: Interest::READABLE,
+                        waiters: Vec::new(),
+                        blocking_waiters: Vec::new(),
+                        source: IoSource::WebSocket(stream),
+                        debug_fd,
+                    },
+                );
+                self.tokens.lock().unwrap().insert(token, socket_id);
+                token
+            }
+        };
+        let entry = sockets.get_mut(&socket_id).expect("socket entry");
+        if !entry.waiters.contains(&waiter_key) {
+            entry.waiters.push(waiter_key);
+        }
+        let interest = interest_from_events(events);
+        let needs_register = entry.waiters.len() == 1;
+        let mut updated = false;
+        if needs_register {
+            entry.interests = interest;
+            updated = true;
+        } else {
+            let new_interest = entry.interests | interest;
+            if new_interest != entry.interests {
+                entry.interests = new_interest;
+                updated = true;
+            }
+        }
+        let interests = entry.interests;
+        let debug_fd = entry.debug_fd;
+        let register_result = match &mut entry.source {
+            IoSource::WebSocket(stream) => {
+                if needs_register {
+                    self.registry.register(stream, token, interests)
+                } else if updated {
+                    self.registry.reregister(stream, token, interests)
+                } else {
+                    Ok(())
+                }
+            }
+            IoSource::Socket(_) => Err(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                "websocket not pollable",
+            )),
+        };
+        drop(sockets);
+        register_result?;
+        let _ = self.waker.wake();
+        if trace_io_poller() {
+            eprintln!(
+                "molt io poller: register future=0x{:x} socket=0x{:x} fd={} events={}",
+                future_ptr as usize, ws_ptr as usize, debug_fd, events
             );
         }
         Ok(())
@@ -350,16 +523,13 @@ impl IoPoller {
             }
             if entry.waiters.is_empty() {
                 let token = entry.token;
-                sockets.remove(&waiter.socket_id);
+                let entry = sockets.remove(&waiter.socket_id);
                 self.tokens.lock().unwrap().remove(&token);
                 drop(sockets);
                 let _ = self.waker.wake();
-                let _ = with_socket_mut(waiter.socket_id as *mut u8, |sock| {
-                    let source = sock.source_mut().ok_or_else(|| {
-                        std::io::Error::new(ErrorKind::InvalidInput, "socket not pollable")
-                    })?;
-                    self.registry.deregister(source)
-                });
+                if let Some(entry) = entry {
+                    self.deregister_entry(entry);
+                }
             }
         }
     }
@@ -385,6 +555,22 @@ impl IoPoller {
         tokens.get(&token).copied()
     }
 
+    fn deregister_entry(&self, mut entry: IoSocketEntry) {
+        match &mut entry.source {
+            IoSource::Socket(socket_ptr) => {
+                let _ = with_socket_mut(socket_ptr.0, |sock| {
+                    let source = sock.source_mut().ok_or_else(|| {
+                        std::io::Error::new(ErrorKind::InvalidInput, "socket not pollable")
+                    })?;
+                    self.registry.deregister(source)
+                });
+            }
+            IoSource::WebSocket(stream) => {
+                let _ = self.registry.deregister(stream);
+            }
+        }
+    }
+
     pub(crate) fn deregister_socket(&self, _py: &PyToken<'_>, socket_ptr: *mut u8) {
         if socket_ptr.is_null() {
             return;
@@ -393,14 +579,16 @@ impl IoPoller {
         let mut waiters = self.waiters.lock().unwrap();
         let mut sockets = self.sockets.lock().unwrap();
         let entry = sockets.remove(&socket_id);
-        if let Some(entry) = entry {
+        if let Some(mut entry) = entry {
             self.tokens.lock().unwrap().remove(&entry.token);
             let mut ready_futures: Vec<PtrSlot> = Vec::new();
-            for waiter in entry.waiters {
+            let entry_waiters = std::mem::take(&mut entry.waiters);
+            for waiter in entry_waiters {
                 waiters.remove(&waiter);
                 ready_futures.push(waiter);
             }
-            for waiter in entry.blocking_waiters {
+            let blocking_waiters = std::mem::take(&mut entry.blocking_waiters);
+            for waiter in blocking_waiters {
                 let mut guard = waiter.ready.lock().unwrap();
                 *guard = Some(IO_EVENT_ERROR);
                 drop(guard);
@@ -409,12 +597,7 @@ impl IoPoller {
             drop(waiters);
             drop(sockets);
             let _ = self.waker.wake();
-            let _ = with_socket_mut(socket_ptr, |sock| {
-                let source = sock.source_mut().ok_or_else(|| {
-                    std::io::Error::new(ErrorKind::InvalidInput, "socket not pollable")
-                })?;
-                self.registry.deregister(source)
-            });
+            self.deregister_entry(entry);
             for future in ready_futures {
                 self.mark_ready(future, IO_EVENT_ERROR);
                 let tasks = await_waiters_take(_py, future.0);
@@ -450,6 +633,7 @@ impl IoPoller {
             .map(|entry| entry.token)
             .unwrap_or_else(|| {
                 let token = Token(self.next_token.fetch_add(1, AtomicOrdering::Relaxed));
+                let debug_fd = socket_debug_fd(socket_ptr).unwrap_or(-1);
                 sockets.insert(
                     socket_id,
                     IoSocketEntry {
@@ -457,6 +641,8 @@ impl IoPoller {
                         interests: Interest::READABLE,
                         waiters: Vec::new(),
                         blocking_waiters: Vec::new(),
+                        source: IoSource::Socket(PtrSlot(socket_ptr)),
+                        debug_fd,
                     },
                 );
                 self.tokens.lock().unwrap().insert(token, socket_id);
@@ -573,7 +759,7 @@ fn io_worker(poller: Arc<IoPoller>) {
         if !poller.running.load(AtomicOrdering::Acquire) {
             break;
         }
-        let mut ready_futures: Vec<(PtrSlot, u32, usize)> = Vec::new();
+        let mut ready_futures: Vec<(PtrSlot, u32, usize, i64)> = Vec::new();
         {
             let mut waiters = poller.waiters.lock().unwrap();
             let mut sockets = poller.sockets.lock().unwrap();
@@ -605,7 +791,7 @@ fn io_worker(poller: Arc<IoPoller>) {
                     if let Some(info) = waiters.get(&waiter) {
                         if (info.events & ready_mask) != 0 {
                             if trace_io_poller() {
-                                let fd = socket_debug_fd(socket_id as *mut u8).unwrap_or(-1);
+                                let fd = entry.debug_fd;
                                 eprintln!(
                                     "molt io poller: event socket=0x{:x} fd={} future=0x{:x} ready_mask={} interest={}",
                                     socket_id,
@@ -615,7 +801,7 @@ fn io_worker(poller: Arc<IoPoller>) {
                                     info.events
                                 );
                             }
-                            ready_futures.push((waiter, ready_mask, socket_id));
+                            ready_futures.push((waiter, ready_mask, socket_id, entry.debug_fd));
                             waiters.remove(&waiter);
                         } else {
                             remaining.push(waiter);
@@ -644,16 +830,15 @@ fn io_worker(poller: Arc<IoPoller>) {
         if !ready_futures.is_empty() {
             let gil = GilGuard::new();
             let py = gil.token();
-            for (future, mask, socket_id) in ready_futures {
+            for (future, mask, socket_id, debug_fd) in ready_futures {
                 poller.mark_ready(future, mask);
                 let waiters = await_waiters_take(&py, future.0);
                 if trace_io_poller() {
-                    let fd = socket_debug_fd(socket_id as *mut u8).unwrap_or(-1);
                     eprintln!(
                         "molt io poller: ready future=0x{:x} socket=0x{:x} fd={} mask={} waiters={}",
                         future.0 as usize,
                         socket_id,
-                        fd,
+                        debug_fd,
                         mask,
                         waiters.len()
                     );

@@ -8,9 +8,10 @@
 
 ## 1. Definition
 The verified subset is the set of language/runtime/stdlib behaviors for which
-Molt guarantees CPython 3.12 equivalence under deterministic inputs. Equivalence
+Molt guarantees CPython 3.12+ equivalence under deterministic inputs. Equivalence
 means identical stdout/stderr/exit codes and matching exception types/messages
-for covered behaviors.
+for covered behaviors. Version-specific divergences across 3.12/3.13/3.14 must
+be documented in specs and tests.
 
 ## 2. Scope
 - Applies to Tier 0 builds with fallback policy `error`.
@@ -51,7 +52,7 @@ true:
 ## 8. Verification Targets (machine readable)
 ```json
 {
-  "python_version": "3.12",
+  "python_version_min": "3.12",
   "differential_suites": [
     "tests/differential/basic"
   ],

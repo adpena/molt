@@ -1,14 +1,37 @@
 import asyncio
-import ctypes
-import os
 
 import pytest
 
 from molt import net
-from molt import shims
+from molt import intrinsics as _intrinsics
+
+
+def _has_intrinsic(name: str) -> bool:
+    try:
+        return _intrinsics.load(name) is not None
+    except Exception:
+        return False
+
+
+def _require_intrinsics(names: tuple[str, ...]) -> None:
+    missing = [name for name in names if not _has_intrinsic(name)]
+    if missing:
+        pytest.skip("Missing Molt intrinsics: " + ", ".join(missing))
 
 
 def test_stream_channel_backpressure():
+    _require_intrinsics(
+        (
+            "molt_stream_new",
+            "molt_stream_send_obj",
+            "molt_stream_recv",
+            "molt_stream_close",
+            "molt_stream_drop",
+            "molt_async_sleep",
+            "molt_pending",
+        )
+    )
+
     async def run() -> list[bytes]:
         stream, sender = net.stream_channel(maxsize=1)
         first_sent = asyncio.Event()
@@ -41,6 +64,18 @@ def test_stream_channel_backpressure():
 
 
 def test_websocket_backpressure():
+    _require_intrinsics(
+        (
+            "molt_ws_pair_obj",
+            "molt_ws_send_obj",
+            "molt_ws_recv",
+            "molt_ws_close",
+            "molt_ws_drop",
+            "molt_async_sleep",
+            "molt_pending",
+        )
+    )
+
     async def run() -> list[bytes]:
         left, right = net.ws_pair(maxsize=1)
         first_sent = asyncio.Event()
@@ -69,54 +104,4 @@ def test_websocket_backpressure():
 
 
 def test_ws_connect_hook_runtime():
-    lib = shims.load_runtime()
-    if lib is None:
-        pytest.skip("runtime library not available")
-    if not all(
-        hasattr(lib, name)
-        for name in ("molt_ws_set_connect_hook", "molt_ws_pair", "molt_ws_connect")
-    ):
-        pytest.skip("runtime ws connect hook not available")
-
-    peer_handle: dict[str, ctypes.c_void_p] = {}
-    seen_url: dict[str, str] = {}
-
-    def _hook(url_ptr: ctypes.c_void_p, url_len: int) -> int:
-        url = ctypes.string_at(url_ptr, url_len).decode("utf-8")
-        seen_url["url"] = url
-        left = ctypes.c_void_p()
-        right = ctypes.c_void_p()
-        rc = lib.molt_ws_pair(1, ctypes.byref(left), ctypes.byref(right))
-        if rc != 0:
-            return 0
-        peer_handle["peer"] = right
-        return left.value or 0
-
-    hook_type = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t)
-    hook_fn = hook_type(_hook)
-    original_caps = os.environ.get("MOLT_CAPABILITIES")
-
-    try:
-        os.environ["MOLT_CAPABILITIES"] = "websocket.connect"
-        lib.molt_ws_set_connect_hook(ctypes.cast(hook_fn, ctypes.c_void_p).value)
-        ws = net.ws_connect("wss://example.test/echo")
-        peer = net.RuntimeWebSocket(peer_handle["peer"], lib)
-
-        async def run() -> list[bytes]:
-            await ws.send(b"ping")
-            first = await peer.recv()
-            await peer.send(b"pong")
-            second = await ws.recv()
-            await ws.close()
-            await peer.close()
-            return [first, second]
-
-        items = asyncio.run(run())
-        assert seen_url["url"] == "wss://example.test/echo"
-        assert items == [b"ping", b"pong"]
-    finally:
-        lib.molt_ws_set_connect_hook(0)
-        if original_caps is None:
-            os.environ.pop("MOLT_CAPABILITIES", None)
-        else:
-            os.environ["MOLT_CAPABILITIES"] = original_caps
+    pytest.skip("runtime connect hooks are no longer exposed via CPython shims")

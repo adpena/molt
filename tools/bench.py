@@ -72,6 +72,10 @@ SMOKE_BENCHMARKS = [
     "tests/benchmarks/bench_bytes_find.py",
 ]
 
+WS_BENCHMARKS = [
+    "tests/benchmarks/bench_ws_wait.py",
+]
+
 MOLT_ARGS_BY_BENCH = {
     "tests/benchmarks/bench_sum_list_hints.py": ["--type-hints", "trust"],
 }
@@ -95,6 +99,7 @@ DEPYLER_SKIP_BENCHMARKS: dict[str, str] = {
     "tests/benchmarks/bench_bytearray_find.py": "bytearray find not available in depyler runtime",
     "tests/benchmarks/bench_bytearray_replace.py": "bytearray replace not available in depyler runtime",
     "tests/benchmarks/bench_json_roundtrip.py": "heterogeneous dict/json payload not supported",
+    "tests/benchmarks/bench_ws_wait.py": "requires Molt websocket intrinsics",
 }
 
 
@@ -850,6 +855,11 @@ def main():
     parser.add_argument("--no-codon", action="store_true")
     parser.add_argument("--no-depyler", action="store_true")
     parser.add_argument(
+        "--ws",
+        action="store_true",
+        help="Include websocket wait benchmark (also honors MOLT_BENCH_WS=1).",
+    )
+    parser.add_argument(
         "--script",
         action="append",
         help="Benchmark a custom script path (repeatable).",
@@ -879,7 +889,12 @@ def main():
         if missing:
             parser.error(f"Script(s) not found: {', '.join(missing)}")
     else:
-        benchmarks = SMOKE_BENCHMARKS if args.smoke else BENCHMARKS
+        benchmarks = list(SMOKE_BENCHMARKS) if args.smoke else list(BENCHMARKS)
+    include_ws = args.ws or os.environ.get("MOLT_BENCH_WS") == "1"
+    if include_ws:
+        for bench in WS_BENCHMARKS:
+            if bench not in benchmarks:
+                benchmarks.append(bench)
     samples = (
         SUPER_SAMPLES
         if args.super

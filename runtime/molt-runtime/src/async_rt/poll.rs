@@ -15,6 +15,7 @@ use crate::{
     raise_exception, WASM_TABLE_BASE, WASM_TABLE_IDX_ANEXT_DEFAULT_POLL,
     WASM_TABLE_IDX_ASYNCGEN_POLL, WASM_TABLE_IDX_ASYNC_SLEEP, WASM_TABLE_IDX_IO_WAIT,
     WASM_TABLE_IDX_PROCESS_POLL, WASM_TABLE_IDX_PROMISE_POLL, WASM_TABLE_IDX_THREAD_POLL,
+    WASM_TABLE_IDX_WS_WAIT,
 };
 
 use super::scheduler::CURRENT_TASK;
@@ -80,6 +81,18 @@ pub(crate) fn io_wait_poll_fn_addr() -> u64 {
     #[cfg(not(target_arch = "wasm32"))]
     {
         fn_addr!(crate::molt_io_wait)
+    }
+}
+
+#[inline]
+pub(crate) fn ws_wait_poll_fn_addr() -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        WASM_TABLE_IDX_WS_WAIT
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        fn_addr!(crate::molt_ws_wait)
     }
 }
 

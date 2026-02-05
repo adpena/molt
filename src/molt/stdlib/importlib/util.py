@@ -4,13 +4,17 @@
 
 from __future__ import annotations
 
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+_require_intrinsic("molt_stdlib_probe", globals())
+
 from types import ModuleType
 import sys
 import os
 import builtins
 
 from importlib.machinery import ModuleSpec, SourceFileLoader
-from importlib.machinery import MOLT_LOADER
+import importlib.machinery as machinery
 
 __all__ = [
     "find_spec",
@@ -23,6 +27,18 @@ __all__ = [
 
 _SPEC_CACHE: dict[tuple[str, tuple[str, ...], str | None], ModuleSpec | None] = {}
 _BUILTIN_MODULES = {"math"}
+
+
+def _molt_loader():
+    loader = getattr(machinery, "MOLT_LOADER", None)
+    if loader is not None:
+        return loader
+    cls = getattr(machinery, "MoltLoader", None)
+    if cls is None:
+        raise AttributeError("module 'importlib.machinery' has no attribute 'MoltLoader'")
+    loader = cls()
+    setattr(machinery, "MOLT_LOADER", loader)
+    return loader
 
 
 def _cache_from_source(path: str) -> str:
@@ -145,7 +161,7 @@ def find_spec(name: str, package: str | None = None):
     resolved = resolve_name(name, package)
     if resolved in _BUILTIN_MODULES:
         spec = ModuleSpec(
-            resolved, loader=MOLT_LOADER, origin="built-in", is_package=False
+            resolved, loader=_molt_loader(), origin="built-in", is_package=False
         )
         spec.cached = None
         spec.has_location = False

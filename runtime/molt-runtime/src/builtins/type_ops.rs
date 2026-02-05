@@ -75,12 +75,25 @@ pub(crate) fn type_of_bits(_py: &PyToken<'_>, val_bits: u64) -> u64 {
                 return class_bits;
             }
             return match object_type_id(ptr) {
+                TYPE_ID_DATACLASS => {
+                    let desc_ptr = dataclass_desc_ptr(ptr);
+                    if !desc_ptr.is_null() {
+                        let class_bits = (*desc_ptr).class_bits;
+                        if class_bits != 0 {
+                            return class_bits;
+                        }
+                    }
+                    builtins.object
+                }
                 TYPE_ID_STRING => builtins.str,
                 TYPE_ID_BYTES => builtins.bytes,
                 TYPE_ID_BYTEARRAY => builtins.bytearray,
                 TYPE_ID_LIST => builtins.list,
                 TYPE_ID_TUPLE => builtins.tuple,
                 TYPE_ID_DICT => builtins.dict,
+                TYPE_ID_DICT_KEYS_VIEW => builtins.dict_keys,
+                TYPE_ID_DICT_ITEMS_VIEW => builtins.dict_items,
+                TYPE_ID_DICT_VALUES_VIEW => builtins.dict_values,
                 TYPE_ID_SET => builtins.set,
                 TYPE_ID_FROZENSET => builtins.frozenset,
                 TYPE_ID_BIGINT => builtins.int,
@@ -116,8 +129,30 @@ pub(crate) fn type_of_bits(_py: &PyToken<'_>, val_bits: u64) -> u64 {
                         builtins.function
                     }
                 }
+                TYPE_ID_BOUND_METHOD => {
+                    let func_bits = bound_method_func_bits(ptr);
+                    let func_obj = obj_from_bits(func_bits);
+                    let func_ptr = func_obj.as_ptr();
+                    if let Some(func_ptr) = func_ptr {
+                        let func_class_bits = object_class_bits(func_ptr);
+                        if func_class_bits == builtins.builtin_function_or_method {
+                            func_class_bits
+                        } else {
+                            crate::builtins::types::method_class(_py)
+                        }
+                    } else {
+                        crate::builtins::types::method_class(_py)
+                    }
+                }
                 TYPE_ID_GENERATOR => builtins.generator,
                 TYPE_ID_ASYNC_GENERATOR => builtins.async_generator,
+                TYPE_ID_ITER => builtins.iterator,
+                TYPE_ID_ENUMERATE => builtins.enumerate,
+                TYPE_ID_CALL_ITER => builtins.callable_iterator,
+                TYPE_ID_REVERSED => builtins.reversed,
+                TYPE_ID_ZIP => builtins.zip,
+                TYPE_ID_MAP => builtins.map,
+                TYPE_ID_FILTER => builtins.filter,
                 TYPE_ID_CODE => builtins.code,
                 TYPE_ID_MODULE => builtins.module,
                 TYPE_ID_TYPE => {
@@ -131,16 +166,6 @@ pub(crate) fn type_of_bits(_py: &PyToken<'_>, val_bits: u64) -> u64 {
                 TYPE_ID_GENERIC_ALIAS => builtins.generic_alias,
                 TYPE_ID_UNION => builtins.union_type,
                 TYPE_ID_SUPER => builtins.super_type,
-                TYPE_ID_DATACLASS => {
-                    let desc_ptr = dataclass_desc_ptr(ptr);
-                    if !desc_ptr.is_null() {
-                        let class_bits = (*desc_ptr).class_bits;
-                        if class_bits != 0 {
-                            return class_bits;
-                        }
-                    }
-                    builtins.object
-                }
                 TYPE_ID_OBJECT => {
                     let header = header_from_obj_ptr(ptr);
                     if ((*header).flags & HEADER_FLAG_COROUTINE) != 0 {
@@ -186,13 +211,11 @@ fn collect_classinfo_isinstance(_py: &PyToken<'_>, class_bits: u64, out: &mut Ve
                     collect_classinfo_isinstance(_py, *item, out);
                 }
             }
-            _ => {
-                raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "isinstance() arg 2 must be a type or tuple of types",
-                )
-            }
+            _ => raise_exception::<_>(
+                _py,
+                "TypeError",
+                "isinstance() arg 2 must be a type or tuple of types",
+            ),
         }
     }
 }
@@ -279,13 +302,23 @@ pub(crate) fn isinstance_runtime(_py: &PyToken<'_>, val_bits: u64, class_bits: u
     } else {
         MoltObject::none().bits()
     };
-    if !obj_from_bits(saved_exc_bits).is_none() && saved_exc_bits != 0 {
+    let has_saved_exc = !obj_from_bits(saved_exc_bits).is_none() && saved_exc_bits != 0;
+    let skip_clear = has_saved_exc && saved_exc_bits == val_bits;
+    if has_saved_exc && !skip_clear {
         molt_exception_clear();
     }
     let mut saw_new_exception = false;
     let mut matched = false;
     let mut classes = Vec::new();
     collect_classinfo_isinstance(_py, class_bits, &mut classes);
+    let debug_match = std::env::var("MOLT_DEBUG_EXCEPTION_MATCH").as_deref() == Ok("1");
+    if debug_match && has_saved_exc && classes.is_empty() {
+        let class_type = class_name_for_error(type_of_bits(_py, class_bits));
+        eprintln!(
+            "molt isinstance match pending=1 classes_empty=1 class_type={}",
+            class_type
+        );
+    }
     for class_bits in classes {
         let class_obj = obj_from_bits(class_bits);
         let Some(class_ptr) = class_obj.as_ptr() else {
@@ -296,54 +329,66 @@ pub(crate) fn isinstance_runtime(_py: &PyToken<'_>, val_bits: u64, class_bits: u
                 continue;
             }
         }
-        let meta_bits = unsafe { object_class_bits(class_ptr) };
-        let meta_ptr = if meta_bits != 0 {
-            obj_from_bits(meta_bits).as_ptr()
-        } else {
-            obj_from_bits(builtin_classes(_py).type_obj).as_ptr()
-        };
-        if let Some(meta_ptr) = meta_ptr {
-            unsafe {
-                if object_type_id(meta_ptr) == TYPE_ID_TYPE {
-                    let name_bits = intern_static_name(
-                        _py,
-                        &runtime_state(_py).interned.instancecheck_name,
-                        b"__instancecheck__",
-                    );
-                    if let Some(check_bits) =
-                        class_attr_lookup(_py, meta_ptr, meta_ptr, Some(class_ptr), name_bits)
-                    {
-                        let res_bits = call_callable1(_py, check_bits, val_bits);
-                        dec_ref_bits(_py, check_bits);
-                        if exception_pending(_py) {
-                            saw_new_exception = true;
-                            break;
+        if !skip_clear {
+            let meta_bits = unsafe { object_class_bits(class_ptr) };
+            let meta_ptr = if meta_bits != 0 {
+                obj_from_bits(meta_bits).as_ptr()
+            } else {
+                obj_from_bits(builtin_classes(_py).type_obj).as_ptr()
+            };
+            if let Some(meta_ptr) = meta_ptr {
+                unsafe {
+                    if object_type_id(meta_ptr) == TYPE_ID_TYPE {
+                        let name_bits = intern_static_name(
+                            _py,
+                            &runtime_state(_py).interned.instancecheck_name,
+                            b"__instancecheck__",
+                        );
+                        if let Some(check_bits) =
+                            class_attr_lookup(_py, meta_ptr, meta_ptr, Some(class_ptr), name_bits)
+                        {
+                            let res_bits = call_callable1(_py, check_bits, val_bits);
+                            dec_ref_bits(_py, check_bits);
+                            if exception_pending(_py) {
+                                saw_new_exception = true;
+                                break;
+                            }
+                            let res = is_truthy(_py, obj_from_bits(res_bits));
+                            dec_ref_bits(_py, res_bits);
+                            if res {
+                                matched = true;
+                                break;
+                            }
+                            continue;
                         }
-                        let res = is_truthy(_py, obj_from_bits(res_bits));
-                        dec_ref_bits(_py, res_bits);
-                        if res {
-                            matched = true;
-                            break;
-                        }
-                        continue;
                     }
                 }
             }
         }
         let val_type = type_of_bits(_py, val_bits);
+        if debug_match && has_saved_exc {
+            let val_name = class_name_for_error(val_type);
+            let class_name = class_name_for_error(class_bits);
+            eprintln!(
+                "molt isinstance match pending=1 val_type={} class={}",
+                val_name, class_name
+            );
+        }
         if issubclass_bits(val_type, class_bits) {
             matched = true;
             break;
         }
     }
     if saw_new_exception {
-        if !obj_from_bits(saved_exc_bits).is_none() && saved_exc_bits != 0 {
+        if has_saved_exc {
             dec_ref_bits(_py, saved_exc_bits);
         }
         return false;
     }
-    if !obj_from_bits(saved_exc_bits).is_none() && saved_exc_bits != 0 {
-        let _ = molt_exception_set_last(saved_exc_bits);
+    if has_saved_exc {
+        if !skip_clear {
+            let _ = molt_exception_set_last(saved_exc_bits);
+        }
         dec_ref_bits(_py, saved_exc_bits);
     }
     matched

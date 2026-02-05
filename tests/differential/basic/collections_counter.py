@@ -1,6 +1,6 @@
 """Purpose: differential coverage for collections counter."""
 
-from molt.stdlib import collections
+import collections
 
 
 def show(label, value):

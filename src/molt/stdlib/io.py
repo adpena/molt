@@ -3,10 +3,55 @@
 from __future__ import annotations
 
 import os
-from typing import IO, Any
+from typing import IO, Any, TYPE_CHECKING
 
-from molt import capabilities
-from molt import net
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+
+if TYPE_CHECKING:
+    from molt import net as _net
+
+    Stream = _net.Stream
+else:
+    Stream = Any
+
+
+_CAP_REQUIRE = None
+_MOLT_FILE_OPEN_EX = None
+_MOLT_FILE_READ = None
+_MOLT_FILE_CLOSE = None
+_MOLT_IO_CLASS = None
+
+
+def _ensure_caps() -> None:
+    global _CAP_REQUIRE
+    if _CAP_REQUIRE is not None:
+        return
+    _CAP_REQUIRE = _require_intrinsic("molt_capabilities_require", globals())
+
+
+def _ensure_io_intrinsics() -> None:
+    global _MOLT_FILE_OPEN_EX, _MOLT_FILE_READ, _MOLT_FILE_CLOSE
+    if _MOLT_FILE_OPEN_EX is None:
+        _MOLT_FILE_OPEN_EX = _require_intrinsic("molt_file_open_ex", globals())
+    if _MOLT_FILE_READ is None:
+        _MOLT_FILE_READ = _require_intrinsic("molt_file_read", globals())
+    if _MOLT_FILE_CLOSE is None:
+        _MOLT_FILE_CLOSE = _require_intrinsic("molt_file_close", globals())
+
+
+def _ensure_io_class() -> None:
+    global _MOLT_IO_CLASS
+    if _MOLT_IO_CLASS is not None:
+        return
+    _MOLT_IO_CLASS = _require_intrinsic("molt_io_class", globals())
+
+
+def _io_class(name: str):
+    _ensure_io_class()
+    if _MOLT_IO_CLASS is None:
+        raise RuntimeError("io intrinsics unavailable")
+    return _MOLT_IO_CLASS(name)
 
 
 class UnsupportedOperation(OSError, ValueError):
@@ -25,88 +70,59 @@ class _StreamIter:
     def __next__(self) -> bytes | str:
         if self._done:
             raise StopIteration
-        chunk = self._handle.read(self._chunk_size)
+        if _MOLT_FILE_READ is None or _MOLT_FILE_CLOSE is None:
+            raise RuntimeError("io intrinsics unavailable")
+        chunk = _MOLT_FILE_READ(self._handle, self._chunk_size)
         if not chunk:
             self._done = True
-            self._handle.close()
+            _MOLT_FILE_CLOSE(self._handle)
             raise StopIteration
         return chunk
 
 
-class StringIO:
-    def __init__(self, initial_value: str = "") -> None:
-        if not isinstance(initial_value, str):
-            name = type(initial_value).__name__
-            raise TypeError(f"initial_value must be str, not {name}")
-        self._value = initial_value
-        self._pos = 0
-        self.closed = False
+DEFAULT_BUFFER_SIZE = 8192
 
-    def write(self, s: str) -> int:
-        if self.closed:
-            raise ValueError("I/O operation on closed file.")
-        if not isinstance(s, str):
-            name = type(s).__name__
-            raise TypeError(f"string argument expected, got {name}")
-        if self._pos > len(self._value):
-            self._value += "\x00" * (self._pos - len(self._value))
-        if self._pos == len(self._value):
-            self._value += s
-        else:
-            prefix = self._value[: self._pos]
-            suffix_start = self._pos + len(s)
-            suffix = (
-                self._value[suffix_start:] if suffix_start < len(self._value) else ""
-            )
-            self._value = prefix + s + suffix
-        self._pos += len(s)
-        return len(s)
+IOBase = _io_class("IOBase")
+RawIOBase = _io_class("RawIOBase")
+BufferedIOBase = _io_class("BufferedIOBase")
+TextIOBase = _io_class("TextIOBase")
+FileIO = _io_class("FileIO")
+BufferedReader = _io_class("BufferedReader")
+BufferedWriter = _io_class("BufferedWriter")
+BufferedRandom = _io_class("BufferedRandom")
+TextIOWrapper = _io_class("TextIOWrapper")
+BytesIO = _io_class("BytesIO")
+StringIO = _io_class("StringIO")
 
-    def read(self, n: int = -1) -> str:
-        if self.closed:
-            raise ValueError("I/O operation on closed file.")
-        if n is None or n < 0:
-            out = self._value[self._pos :]
-            self._pos = len(self._value)
-            return out
-        end = min(len(self._value), self._pos + n)
-        out = self._value[self._pos : end]
-        self._pos = end
-        return out
-
-    def getvalue(self) -> str:
-        return self._value
-
-    def seek(self, pos: int, whence: int = 0) -> int:
-        if self.closed:
-            raise ValueError("I/O operation on closed file.")
-        if whence == 0:
-            new_pos = pos
-        elif whence == 1:
-            new_pos = self._pos + pos
-        elif whence == 2:
-            new_pos = len(self._value) + pos
-        else:
-            raise ValueError("invalid whence")
-        if new_pos < 0:
-            raise ValueError("negative seek position")
-        self._pos = new_pos
-        return self._pos
-
-    def tell(self) -> int:
-        return self._pos
-
-    def close(self) -> None:
-        self.closed = True
+__all__ = [
+    "DEFAULT_BUFFER_SIZE",
+    "IOBase",
+    "RawIOBase",
+    "BufferedIOBase",
+    "TextIOBase",
+    "FileIO",
+    "BufferedReader",
+    "BufferedWriter",
+    "BufferedRandom",
+    "TextIOWrapper",
+    "BytesIO",
+    "StringIO",
+    "UnsupportedOperation",
+    "open",
+    "stream",
+]
 
 
 def _require_caps_for_mode(mode: str) -> None:
+    _ensure_caps()
+    if _CAP_REQUIRE is None:
+        return None
     needs_read = "r" in mode or "+" in mode
     needs_write = "w" in mode or "a" in mode or "x" in mode or "+" in mode
     if needs_read:
-        capabilities.require("fs.read")
+        _CAP_REQUIRE("fs.read")
     if needs_write:
-        capabilities.require("fs.write")
+        _CAP_REQUIRE("fs.write")
 
 
 def open(
@@ -120,9 +136,10 @@ def open(
     opener: Any | None = None,
 ) -> IO[Any]:
     _require_caps_for_mode(mode)
-    import builtins as _builtins
-
-    return _builtins.open(
+    _ensure_io_intrinsics()
+    if _MOLT_FILE_OPEN_EX is None:
+        raise RuntimeError("io intrinsics unavailable")
+    return _MOLT_FILE_OPEN_EX(
         file,
         mode,
         buffering,
@@ -139,10 +156,10 @@ def stream(
     mode: str = "rb",
     chunk_size: int = 65536,
     **kwargs: Any,
-) -> net.Stream:
+) -> Stream:
     _require_caps_for_mode(mode)
-    import builtins as _builtins
+    handle = open(file, mode, **kwargs)
 
-    handle = _builtins.open(file, mode, **kwargs)
+    from molt import net as _net
 
-    return net.Stream(_StreamIter(handle, chunk_size))
+    return _net.Stream(_StreamIter(handle, chunk_size))

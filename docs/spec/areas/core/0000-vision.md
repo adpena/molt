@@ -7,10 +7,11 @@ Molt compiles a **verified per-application subset of Python** into **small, fast
 - **Whole-program optimization**: Tiered compilation with aggressive specialization for stable code paths.
 - **Production-grade safety**: Soundness rules and explicit guard/deopt for dynamic behavior.
 - **Practical deployment**: Single-file executables with clear capability boundaries.
+- **Version focus**: Target Python 3.12+ semantics; document any version-specific differences.
 
 ## Non-goals (near-term)
 - Full CPython compatibility for every dynamic feature.
-- C-extension ABI compatibility in Tier 0.
+- CPython C-extension ABI compatibility in Tier 0 (recompile against `libmolt` instead).
 - Browser-side JIT or hidden nondeterminism.
 
 ## Compatibility model
@@ -32,13 +33,14 @@ Molt compiles a **verified per-application subset of Python** into **small, fast
 
 ## Runtime contracts
 - NaN-boxed object model with RC + incremental cycle detection.
-- No GIL; concurrency via tasks/channels.
+- **Current RT1 contract:** a single GIL serializes runtime mutation and Python-visible execution
+  (see `docs/spec/areas/runtime/0026_CONCURRENCY_AND_GIL.md`).
 - FFI and WASM packages are capability-gated with explicit effects.
 - Lockfile enforcement and SBOM generation for reproducible builds.
 
 ## Concurrency & parallelism
 - **CPython-correct asyncio** by default: a single-threaded event loop with deterministic ordering,
-  structured cancellation, and explicit async boundaries.
+  structured cancellation, and explicit async boundaries under the GIL contract.
 - **True parallelism is explicit**: CPU work goes through executors or isolated runtimes/actors with
   message passing; shared mutable parallelism is opt-in, capability-gated, and limited to
   explicitly safe types.

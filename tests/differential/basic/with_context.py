@@ -1,6 +1,6 @@
 """Purpose: differential coverage for with context."""
 
-from molt.stdlib import contextlib
+import contextlib
 
 
 def main():

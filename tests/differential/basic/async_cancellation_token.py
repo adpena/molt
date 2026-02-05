@@ -1,21 +1,25 @@
-"""Purpose: differential coverage for async cancellation token."""
+"""Purpose: differential coverage for asyncio cancellation semantics."""
 
 import asyncio
 
-from molt import CancellationToken, cancelled, set_current_token
-
 
 async def main() -> None:
-    token = CancellationToken()
-    prev = set_current_token(token)
-    print(cancelled())
-    token.cancel()
+    async def worker() -> None:
+        try:
+            await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            print("worker-cancelled")
+            raise
+
+    task = asyncio.create_task(worker())
     await asyncio.sleep(0)
-    print(cancelled())
-    child = token.child()
-    print(child.cancelled())
-    set_current_token(prev)
-    print(cancelled())
+    print("task-done-before", task.done())
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        print("cancelled-error")
+    print("task-cancelled", task.cancelled())
 
 
 asyncio.run(main())

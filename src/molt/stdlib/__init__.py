@@ -2,6 +2,18 @@
 
 from __future__ import annotations
 
+import sys as _sys
+
+from . import _intrinsics as _stdlib_intrinsics
+
+_intrinsics = _stdlib_intrinsics
+_require_intrinsic = _stdlib_intrinsics.require_intrinsic
+_require_intrinsic("molt_stdlib_probe", globals())
+
+_modules = getattr(_sys, "modules", None)
+if isinstance(_modules, dict):
+    _modules.setdefault("_intrinsics", _stdlib_intrinsics)
+
 __all__ = [
     "abc",
     "asyncio",
@@ -10,12 +22,20 @@ __all__ = [
     "bisect",
     "builtins",
     "collections",
+    "concurrent",
     "contextlib",
     "contextvars",
+    "codecs",
+    "compileall",
     "copy",
+    "copyreg",
+    "py_compile",
+    "csv",
     "ctypes",
     "dataclasses",
+    "decimal",
     "doctest",
+    "encodings",
     "enum",
     "__future__",
     "fnmatch",
@@ -33,6 +53,7 @@ __all__ = [
     "ipaddress",
     "json",
     "keyword",
+    "linecache",
     "logging",
     "locale",
     "multiprocessing",
@@ -41,10 +62,12 @@ __all__ = [
     "operator",
     "pathlib",
     "pickle",
+    "pkgutil",
     "pprint",
     "select",
     "random",
     "re",
+    "reprlib",
     "shutil",
     "socket",
     "selectors",
@@ -62,6 +85,14 @@ __all__ = [
     "types",
     "urllib",
     "uuid",
+    "zipfile",
+    "zipimport",
+    "_abc",
+    "_collections_abc",
+    "_asyncio",
+    "_bz2",
+    "_weakref",
+    "_weakrefset",
     "weakref",
     "typing",
     "unittest",

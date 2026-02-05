@@ -16,6 +16,7 @@ Long-form topic docs live under `docs/spec/areas/`.
 
 ## Runtime And Execution
 - 0003 Runtime: `docs/spec/areas/runtime/0003-runtime.md`
+- 0031 Stdlib Intrinsics Loading: `docs/spec/areas/runtime/0031_STDLIB_INTRINSICS_LOADING.md`
 - 0009 GC Design: `docs/spec/areas/runtime/0009_GC_DESIGN.md`
 - 0024 Runtime State Lifecycle: `docs/spec/areas/runtime/0024_RUNTIME_STATE_LIFECYCLE.md`
 - 0026 Concurrency And GIL: `docs/spec/areas/runtime/0026_CONCURRENCY_AND_GIL.md`
@@ -52,6 +53,7 @@ Long-form topic docs live under `docs/spec/areas/`.
 - 0210 CPython Bridge PyO3: `docs/spec/areas/compat/0210_CPYTHON_BRIDGE_PYO3.md`
 - 0211 Compatibility And Fallback Contract: `docs/spec/areas/compat/0211_COMPATIBILITY_AND_FALLBACK_CONTRACT.md`
 - 0212 C API Symbol Matrix: `docs/spec/areas/compat/0212_C_API_SYMBOL_MATRIX.md`
+- 0214 libmolt C-API v0: `docs/spec/areas/compat/0214_LIBMOLT_C_API_V0.md`
 
 ## Security
 - 0010 Security: `docs/spec/areas/security/0010-security.md`
@@ -64,6 +66,7 @@ Long-form topic docs live under `docs/spec/areas/`.
 - 0012 Molt Commands: `docs/spec/areas/tooling/0012_MOLT_COMMANDS.md`
 - 0013 Python Dependencies: `docs/spec/areas/tooling/0013_PYTHON_DEPENDENCIES.md`
 - 0200 Profile Artifact: `docs/spec/areas/tooling/0200_PROFILE_ARTIFACT.md`
+- 0215 Molt Extension Build Pipeline: `docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md`
 - 0602 When To Write Extensions Or Binaries: `docs/spec/areas/tooling/0602_WHEN_TO_WRITE_EXTENSIONS_OR_BINARIES.md`
 
 ## Testing

@@ -1,6 +1,6 @@
 # Molt Performance Benchmarks
 
-Molt aims to bridge the gap between Python's developer productivity and C/Rust's runtime efficiency. The following benchmarks compare Molt's AOT-compiled binaries against CPython 3.12.
+Molt aims to bridge the gap between Python's developer productivity and C/Rust's runtime efficiency. The following benchmarks compare Molt's AOT-compiled binaries against CPython 3.12+ (primary baseline: 3.12.x).
 
 ## 🚀 Execution Speed (Native macOS arm64)
 
@@ -42,7 +42,7 @@ Molt aims to bridge the gap between Python's developer productivity and C/Rust's
 
 ## 🛠 Methodology
 - **Molt Target:** `aarch64-apple-darwin` (Release mode).
-- **CPython:** Standard 3.12.x from Homebrew.
+- **CPython:** Standard 3.12.x from Homebrew (3.12+ baselines tracked as needed).
 - **Environment:** MacBook Pro M2, 16GB RAM.
 - **Tooling:** Automated via `tools/bench.py`.
 
