@@ -907,7 +907,17 @@ pub unsafe extern "C" fn molt_io_wait(obj_bits: u64) -> i64 {
             }
             if let Some(val) = timeout {
                 if val == 0.0 {
-                    return raise_exception::<i64>(_py, "TimeoutError", "timed out");
+                    match runtime_state(_py).io_poller().wait_blocking(
+                        socket_ptr,
+                        events,
+                        Some(Duration::from_millis(5)),
+                    ) {
+                        Ok(mask) => {
+                            let res_bits = MoltObject::from_int(mask as i64).bits();
+                            return res_bits as i64;
+                        }
+                        Err(err) => return raise_os_error::<i64>(_py, err, "io_wait"),
+                    }
                 }
                 let deadline = monotonic_now_secs(_py) + val;
                 let deadline_bits = MoltObject::from_float(deadline).bits();

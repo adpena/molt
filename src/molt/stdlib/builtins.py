@@ -6,12 +6,9 @@ compiled code without introducing dynamic indirection.
 
 from __future__ import annotations
 
-import builtins as _py_builtins
 import types as _types  # noqa: F401
 
 from _intrinsics import require_intrinsic as _require_intrinsic
-
-# TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): eliminate host-builtins bootstrap probing in this shim and source descriptor/builtin surfaces from Rust intrinsics only.
 
 TYPE_CHECKING = False
 
@@ -30,64 +27,27 @@ else:
         def __getitem__(self, _item):
             return self
 
-    Any = object()
-    Callable = _TypingAlias()
-    Optional = _TypingAlias()
 
-_builtin_property = getattr(_py_builtins, "property", None)
-if _builtin_property is None or _builtin_property is object:
+Any = object()
+Callable = _TypingAlias()
+Optional = _TypingAlias()
 
-    class _PropertyProbe:
-        @property
-        def value(self):
-            return None
-
-    property = type(_PropertyProbe.value)
-else:
-    property = _builtin_property
+_MOLT_CLASSMETHOD_NEW = _require_intrinsic("molt_classmethod_new", globals())
+_MOLT_STATICMETHOD_NEW = _require_intrinsic("molt_staticmethod_new", globals())
+_MOLT_PROPERTY_NEW = _require_intrinsic("molt_property_new", globals())
 
 
-def _is_valid_classmethod(candidate) -> bool:
-    try:
+def _molt_descriptor_types():
+    def _probe():
+        return None
 
-        def _probe(cls, value):
-            return cls, value
-
-        bound = candidate(_probe).__get__(None, int)
-        return bound(1) == (int, 1)
-    except Exception:
-        return False
+    classmethod_type = type(_MOLT_CLASSMETHOD_NEW(_probe))
+    staticmethod_type = type(_MOLT_STATICMETHOD_NEW(_probe))
+    property_type = type(_MOLT_PROPERTY_NEW(None, None, None))
+    return classmethod_type, staticmethod_type, property_type
 
 
-_builtin_classmethod = getattr(_py_builtins, "classmethod", None)
-if (
-    _builtin_classmethod is None
-    or _builtin_classmethod is object
-    or not _is_valid_classmethod(_builtin_classmethod)
-):
-
-    class classmethod:  # type: ignore[no-redef]
-        def __init__(self, func):
-            self.__func__ = func
-
-        def __get__(self, instance, owner=None):
-            if owner is None:
-                owner = type(instance)
-            return self.__func__.__get__(owner, owner)
-else:
-    classmethod = _builtin_classmethod
-
-_builtin_staticmethod = getattr(_py_builtins, "staticmethod", None)
-if _builtin_staticmethod is None or _builtin_staticmethod is object:
-
-    class staticmethod:  # type: ignore[no-redef]
-        def __init__(self, func):
-            self.__func__ = func
-
-        def __get__(self, instance, owner=None):
-            return self.__func__
-else:
-    staticmethod = _builtin_staticmethod
+classmethod, staticmethod, property = _molt_descriptor_types()
 
 try:
     import _molt_importer as _molt_importer
@@ -424,18 +384,10 @@ BaseException = BaseException
 BaseExceptionGroup = BaseExceptionGroup
 Exception = Exception
 ExceptionGroup = ExceptionGroup
-try:
-    _cancelled_error = getattr(_py_builtins, "CancelledError")
-except AttributeError:
-    _cancelled_error = None
 
-if _cancelled_error is None:
 
-    class CancelledError(_py_builtins.BaseException):
-        pass
-
-else:
-    CancelledError = _cancelled_error
+class CancelledError(BaseException):
+    pass
 
 
 ArithmeticError = ArithmeticError
@@ -504,7 +456,7 @@ BytesWarning = BytesWarning
 ResourceWarning = ResourceWarning
 EncodingWarning = EncodingWarning
 
-WindowsError = getattr(_py_builtins, "WindowsError", OSError)
+WindowsError = OSError
 
 _molt_getargv = cast(Callable[[], list[str]], _load_intrinsic("molt_getargv"))
 _molt_getframe = cast(Callable[[object], object], _load_intrinsic("molt_getframe"))

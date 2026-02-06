@@ -116,6 +116,11 @@ def main() -> None:
             python=TEST_PYTHONS[0],
             tty=use_tty,
         )
+        run_uv(
+            ["python3", "tools/check_core_lane_lowering.py"],
+            python=TEST_PYTHONS[0],
+            tty=use_tty,
+        )
     elif cmd[0] == "test":
         env = os.environ.copy()
         _apply_dev_trusted(env)

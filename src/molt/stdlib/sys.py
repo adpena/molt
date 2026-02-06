@@ -211,6 +211,9 @@ def _append_cwd_path(paths: list[str]) -> None:
     dev_trusted = _read_env_flag("MOLT_DEV_TRUSTED").strip().lower()
     if dev_trusted in {"0", "false", "no"}:
         return
+    pwd = _read_env_flag("PWD")
+    if pwd and pwd not in paths:
+        paths.append(pwd)
     if "" not in paths:
         paths.insert(0, "")
 

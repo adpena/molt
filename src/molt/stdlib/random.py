@@ -98,6 +98,41 @@ def _next_power_of_four(value: int) -> int:
     return size
 
 
+def _gammavariate_alpha_gt1(random_fn, alpha: float, beta: float) -> float:
+    ainv = _sqrt(2.0 * alpha - 1.0)
+    bbb = alpha - LOG4
+    ccc = alpha + ainv
+    while True:
+        u1 = random_fn()
+        if not 1e-7 < u1 < 0.9999999:
+            continue
+        u2 = 1.0 - random_fn()
+        v = _log(u1 / (1.0 - u1)) / ainv
+        x = alpha * _exp(v)
+        z = u1 * u1 * u2
+        r = bbb + ccc * v - x
+        if r + SG_MAGICCONST - 4.5 * z >= 0.0 or r >= _log(z):
+            return x * beta
+
+
+def _gammavariate_alpha_lt1(random_fn, alpha: float, beta: float) -> float:
+    while True:
+        u = random_fn()
+        b = (_e + alpha) / _e
+        p = b * u
+        if p <= 1.0:
+            x = p ** (1.0 / alpha)
+        else:
+            x = -_log((b - p) / alpha)
+        u1 = random_fn()
+        if p > 1.0:
+            if u1 <= x ** (alpha - 1.0):
+                break
+        elif u1 == 0.0 or _log(u1) <= 0.0 - x:
+            break
+    return x * beta
+
+
 class Random:
     VERSION = 3
 
@@ -291,43 +326,12 @@ class Random:
         if alpha <= 0.0 or beta <= 0.0:
             raise ValueError("gammavariate: alpha and beta must be > 0.0")
 
-        random = self.random
+        random_fn = self.random
         if alpha > 1.0:
-            ainv = _sqrt(2.0 * alpha - 1.0)
-            bbb = alpha - LOG4
-            ccc = alpha + ainv
-
-            while True:
-                u1 = random()
-                if not 1e-7 < u1 < 0.9999999:
-                    continue
-                u2 = 1.0 - random()
-                v = _log(u1 / (1.0 - u1)) / ainv
-                x = alpha * _exp(v)
-                z = u1 * u1 * u2
-                r = bbb + ccc * v - x
-                if r + SG_MAGICCONST - 4.5 * z >= 0.0 or r >= _log(z):
-                    return x * beta
-
+            return _gammavariate_alpha_gt1(random_fn, alpha, beta)
         elif alpha == 1.0:
-            return -_log(1.0 - random()) * beta
-
-        else:
-            while True:
-                u = random()
-                b = (_e + alpha) / _e
-                p = b * u
-                if p <= 1.0:
-                    x = p ** (1.0 / alpha)
-                else:
-                    x = -_log((b - p) / alpha)
-                u1 = random()
-                if p > 1.0:
-                    if u1 <= x ** (alpha - 1.0):
-                        break
-                elif u1 <= _exp(-x):
-                    break
-            return x * beta
+            return -_log(1.0 - random_fn()) * beta
+        return _gammavariate_alpha_lt1(random_fn, alpha, beta)
 
     def betavariate(self, alpha, beta):
         """Beta distribution."""

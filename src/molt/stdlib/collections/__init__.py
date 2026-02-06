@@ -449,8 +449,8 @@ class Counter(dict):
         if len(self) == 0:
             return "Counter()"
         items: list[str] = []
-        for key in self:
-            items.append(f"{key!r}: {dict.get(self, key, 0)!r}")
+        for key, count in self.most_common():
+            items.append(f"{key!r}: {count!r}")
         return f"Counter({{{', '.join(items)}}})"
 
     def __eq__(self, other: Any) -> bool:

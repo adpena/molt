@@ -21,56 +21,27 @@ _MOLT_GENERIC_ALIAS_NEW = _require_intrinsic("molt_generic_alias_new", globals()
 _MOLT_TYPING_TYPE_PARAM = _require_intrinsic("molt_typing_type_param", globals())
 
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): remove typing's Python fallback ABC scaffolding by lowering protocol/ABC bootstrap helpers to Rust intrinsics only.
-def _install_fallback_abc() -> ModuleType:
-    class _FallbackABC:
-        __slots__ = ()
-
-    class _Iterable(_FallbackABC):
-        pass
-
-    class _Iterator(_Iterable):
-        pass
-
-    class _MutableMapping(_FallbackABC):
-        pass
-
-    class _Callable(_FallbackABC):
-        pass
-
-    fallback = ModuleType("_molt_fallback_abc")
-    setattr(fallback, "Iterable", _Iterable)
-    setattr(fallback, "Iterator", _Iterator)
-    setattr(fallback, "MutableMapping", _MutableMapping)
-    setattr(fallback, "Callable", _Callable)
-    return fallback
-
-
-_abc_mod: ModuleType | None
 _abc: ModuleType
 try:
     import _collections_abc as _abc_mod_raw
-except Exception:
-    _abc_mod = None
-else:
-    _abc_mod = _typing_cast(ModuleType, _abc_mod_raw)
+except Exception as exc:
+    raise RuntimeError(
+        "typing requires intrinsic-lowered _collections_abc support"
+    ) from exc
 
-if _abc_mod is None:
-    _abc_mod = _install_fallback_abc()
-else:
-    _abc_iterable = getattr(_abc_mod, "Iterable", None)
-    if _abc_iterable is None:
-        _abc_mod = _install_fallback_abc()
-    elif getattr(_abc_mod, "__name__", None) == "_abc":
-        _abc_mod = _install_fallback_abc()
-
-_abc = _abc_mod
+_abc = _typing_cast(ModuleType, _abc_mod_raw)
+if getattr(_abc, "__name__", None) == "_abc":
+    raise RuntimeError("typing requires _collections_abc, not _abc")
+for _required in ("Awaitable", "Iterable", "Iterator", "MutableMapping", "Callable"):
+    if getattr(_abc, _required, None) is None:
+        raise RuntimeError(f"typing missing _collections_abc.{_required}")
 
 TYPE_CHECKING = False
 
 __all__ = [
     "Annotated",
     "Any",
+    "Awaitable",
     "Callable",
     "ClassVar",
     "Concatenate",
@@ -97,6 +68,7 @@ __all__ = [
     "Dict",
     "Tuple",
     "SupportsIndex",
+    "SupportsInt",
     "TextIO",
     "BinaryIO",
     "TYPE_CHECKING",
@@ -420,6 +392,7 @@ NotRequired = _SpecialForm(
     "NotRequired", lambda params: _GenericAlias(NotRequired, params, "NotRequired")
 )
 
+Awaitable = _SpecialGenericAlias(_abc.Awaitable, "Awaitable")
 Iterable = _SpecialGenericAlias(_abc.Iterable, "Iterable")
 Iterator = _SpecialGenericAlias(_abc.Iterator, "Iterator")
 MutableMapping = _SpecialGenericAlias(_abc.MutableMapping, "MutableMapping")
@@ -697,6 +670,12 @@ def runtime_checkable(cls):
 @runtime_checkable
 class SupportsIndex(Protocol):
     def __index__(self) -> int:
+        raise NotImplementedError
+
+
+@runtime_checkable
+class SupportsInt(Protocol):
+    def __int__(self) -> int:
         raise NotImplementedError
 
 

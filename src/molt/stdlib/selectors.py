@@ -224,15 +224,15 @@ class _MoltSelectorImpl(_BaseSelectorImpl):
         io_wait = _molt_io_wait_new
         block_on = _molt_block_on
 
-        def _deadline_from_timeout(value):
+        def _timeout_from_select(value):
             if value is None:
                 return None
             if value <= 0:
-                return _time.monotonic()
-            return _time.monotonic() + value
+                return 0.0
+            return float(value)
 
         async def _wait_ready():
-            deadline = _deadline_from_timeout(timeout)
+            wait_timeout = _timeout_from_select(timeout)
             chan = _molt_concurrency.channel()
             futures: list[tuple[SelectorKey, object]] = []
 
@@ -248,7 +248,7 @@ class _MoltSelectorImpl(_BaseSelectorImpl):
 
             for key in self._fd_to_key.values():
                 handle = _fileobj_to_handle(key.fileobj)
-                fut = io_wait(handle, key.events, deadline)
+                fut = io_wait(handle, key.events, wait_timeout)
                 futures.append((key, fut))
                 _molt_concurrency.spawn(_wait_one(key, fut))
 

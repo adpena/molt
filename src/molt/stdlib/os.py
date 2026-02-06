@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import ItemsView, KeysView, ValuesView
+from _intrinsics import require_intrinsic as _require_intrinsic
 
 TYPE_CHECKING = False
 
@@ -19,8 +20,6 @@ else:
     Any = object
     Iterator = _TypingAlias()
     MutableMapping = _TypingAlias()
-
-from _intrinsics import require_intrinsic as _require_intrinsic
 
 
 _MOLT_ENV_GET = _require_intrinsic("molt_env_get", globals())
@@ -482,7 +481,29 @@ class _Path:
 
     @staticmethod
     def abspath(path: str) -> str:
+        if not _Path.isabs(path):
+            path = _Path.join(getcwd(), path)
         return _Path.normpath(path)
+
+    @staticmethod
+    def relpath(path: str, start: str | None = None) -> str:
+        if path == "":
+            raise ValueError("no path specified")
+        if start is None:
+            start = curdir
+        start_abs = _Path.abspath(start)
+        path_abs = _Path.abspath(path)
+        start_parts = [part for part in start_abs.split(sep) if part]
+        path_parts = [part for part in path_abs.split(sep) if part]
+        common = 0
+        limit = min(len(start_parts), len(path_parts))
+        while common < limit and start_parts[common] == path_parts[common]:
+            common += 1
+        rel_parts = [pardir] * (len(start_parts) - common)
+        rel_parts.extend(path_parts[common:])
+        if not rel_parts:
+            return curdir
+        return sep.join(rel_parts)
 
     @staticmethod
     def exists(path: Any) -> bool:
