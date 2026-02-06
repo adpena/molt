@@ -23,8 +23,7 @@ unsafe fn alloc_dataclass_for_class_ptr(
     class_ptr: *mut u8,
     class_bits: u64,
 ) -> Option<u64> {
-    let Some(field_names_name) =
-        attr_name_bits_from_bytes(_py, b"__molt_dataclass_field_names__")
+    let Some(field_names_name) = attr_name_bits_from_bytes(_py, b"__molt_dataclass_field_names__")
     else {
         return None;
     };
@@ -59,16 +58,15 @@ unsafe fn alloc_dataclass_for_class_ptr(
         return Some(MoltObject::none().bits());
     }
     let values_bits = MoltObject::from_ptr(values_ptr).bits();
-    let flags_bits = if let Some(flags_name) =
-        attr_name_bits_from_bytes(_py, b"__molt_dataclass_flags__")
-    {
-        let bits = class_attr_lookup_raw_mro(_py, class_ptr, flags_name)
-            .unwrap_or_else(|| MoltObject::from_int(0).bits());
-        dec_ref_bits(_py, flags_name);
-        bits
-    } else {
-        MoltObject::from_int(0).bits()
-    };
+    let flags_bits =
+        if let Some(flags_name) = attr_name_bits_from_bytes(_py, b"__molt_dataclass_flags__") {
+            let bits = class_attr_lookup_raw_mro(_py, class_ptr, flags_name)
+                .unwrap_or_else(|| MoltObject::from_int(0).bits());
+            dec_ref_bits(_py, flags_name);
+            bits
+        } else {
+            MoltObject::from_int(0).bits()
+        };
     let name_bits = class_name_bits(class_ptr);
     let inst_bits = molt_dataclass_new(name_bits, field_names_bits, values_bits, flags_bits);
     dec_ref_bits(_py, values_bits);
@@ -97,9 +95,7 @@ pub extern "C" fn molt_alloc_class(size_bits: u64, class_bits: u64) -> u64 {
                 if object_type_id(class_ptr) != TYPE_ID_TYPE {
                     return raise_exception::<_>(_py, "TypeError", "class must be a type object");
                 }
-                if let Some(inst_bits) =
-                    alloc_dataclass_for_class_ptr(_py, class_ptr, class_bits)
-                {
+                if let Some(inst_bits) = alloc_dataclass_for_class_ptr(_py, class_ptr, class_bits) {
                     return inst_bits;
                 }
             }
@@ -132,9 +128,7 @@ pub extern "C" fn molt_alloc_class_trusted(size_bits: u64, class_bits: u64) -> u
                 if object_type_id(class_ptr) != TYPE_ID_TYPE {
                     return raise_exception::<_>(_py, "TypeError", "class must be a type object");
                 }
-                if let Some(inst_bits) =
-                    alloc_dataclass_for_class_ptr(_py, class_ptr, class_bits)
-                {
+                if let Some(inst_bits) = alloc_dataclass_for_class_ptr(_py, class_ptr, class_bits) {
                     return inst_bits;
                 }
             }
@@ -167,9 +161,7 @@ pub extern "C" fn molt_alloc_class_static(size_bits: u64, class_bits: u64) -> u6
                 if object_type_id(class_ptr) != TYPE_ID_TYPE {
                     return raise_exception::<_>(_py, "TypeError", "class must be a type object");
                 }
-                if let Some(inst_bits) =
-                    alloc_dataclass_for_class_ptr(_py, class_ptr, class_bits)
-                {
+                if let Some(inst_bits) = alloc_dataclass_for_class_ptr(_py, class_ptr, class_bits) {
                     return inst_bits;
                 }
             }

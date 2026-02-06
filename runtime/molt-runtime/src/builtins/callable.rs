@@ -20,8 +20,18 @@ pub extern "C" fn molt_is_bound_method(obj_bits: u64) -> u64 {
 #[no_mangle]
 pub extern "C" fn molt_is_function_obj(obj_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let is_func = maybe_ptr_from_bits(obj_bits)
-            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_FUNCTION });
+        let trace_mode = std::env::var("MOLT_TRACE_IS_FUNCTION").ok();
+        let log_all = matches!(trace_mode.as_deref(), Some("all"));
+        let log_none = matches!(trace_mode.as_deref(), Some("1"));
+        let ptr = maybe_ptr_from_bits(obj_bits);
+        let is_func = ptr.is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_FUNCTION });
+        if log_all || (log_none && obj_bits == MoltObject::none().bits()) {
+            let type_id = ptr.map(|ptr| unsafe { object_type_id(ptr) });
+            eprintln!(
+                "molt is_function_obj bits=0x{obj_bits:x} ptr={:?} type_id={:?} is_func={}",
+                ptr, type_id, is_func
+            );
+        }
         MoltObject::from_bool(is_func).bits()
     })
 }
@@ -89,10 +99,14 @@ pub extern "C" fn molt_is_callable(obj_bits: u64) -> u64 {
                     let dict_bits = instance_dict_bits(ptr);
                     if dict_bits != 0 {
                         if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                            if object_type_id(dict_ptr) == TYPE_ID_DICT
-                                && dict_get_in_place(_py, dict_ptr, call_bits).is_some()
-                            {
-                                return true;
+                            if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                                if let Some(found_bits) =
+                                    dict_get_in_place(_py, dict_ptr, call_bits)
+                                {
+                                    if !obj_from_bits(found_bits).is_none() {
+                                        return true;
+                                    }
+                                }
                             }
                         }
                     }
@@ -100,8 +114,12 @@ pub extern "C" fn molt_is_callable(obj_bits: u64) -> u64 {
                     if class_bits != 0 {
                         if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
                             if object_type_id(class_ptr) == TYPE_ID_TYPE {
-                                return class_attr_lookup_raw_mro(_py, class_ptr, call_bits)
-                                    .is_some();
+                                if let Some(found_bits) =
+                                    class_attr_lookup_raw_mro(_py, class_ptr, call_bits)
+                                {
+                                    return !obj_from_bits(found_bits).is_none();
+                                }
+                                return false;
                             }
                         }
                     }
@@ -118,10 +136,14 @@ pub extern "C" fn molt_is_callable(obj_bits: u64) -> u64 {
                         let dict_bits = dataclass_dict_bits(ptr);
                         if dict_bits != 0 {
                             if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                                if object_type_id(dict_ptr) == TYPE_ID_DICT
-                                    && dict_get_in_place(_py, dict_ptr, call_bits).is_some()
-                                {
-                                    return true;
+                                if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                                    if let Some(found_bits) =
+                                        dict_get_in_place(_py, dict_ptr, call_bits)
+                                    {
+                                        if !obj_from_bits(found_bits).is_none() {
+                                            return true;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -131,8 +153,12 @@ pub extern "C" fn molt_is_callable(obj_bits: u64) -> u64 {
                         if class_bits != 0 {
                             if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
                                 if object_type_id(class_ptr) == TYPE_ID_TYPE {
-                                    return class_attr_lookup_raw_mro(_py, class_ptr, call_bits)
-                                        .is_some();
+                                    if let Some(found_bits) =
+                                        class_attr_lookup_raw_mro(_py, class_ptr, call_bits)
+                                    {
+                                        return !obj_from_bits(found_bits).is_none();
+                                    }
+                                    return false;
                                 }
                             }
                         }

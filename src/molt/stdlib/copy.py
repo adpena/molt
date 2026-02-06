@@ -5,14 +5,19 @@ from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 
+from types import ModuleType
+from typing import Any, Callable, Iterable, cast
+
 _require_intrinsic("molt_stdlib_probe", globals())
 
-from typing import Any, Callable, Iterable
 
+_copyreg: ModuleType | None
 try:
-    import copyreg as _copyreg
+    import copyreg as _copyreg_raw
 except Exception:
     _copyreg = None
+else:
+    _copyreg = cast(ModuleType, _copyreg_raw)
 
 __all__ = ["copy", "deepcopy", "Error", "dispatch_table"]
 
@@ -22,7 +27,11 @@ class Error(Exception):
 
 
 if _copyreg is not None:
-    dispatch_table: dict[type, Callable[[Any], Any]] = _copyreg.dispatch_table
+    _copyreg_dispatch = getattr(_copyreg, "dispatch_table", None)
+    if isinstance(_copyreg_dispatch, dict):
+        dispatch_table: dict[type, Callable[[Any], Any]] = _copyreg_dispatch
+    else:
+        dispatch_table = {}
 else:
     dispatch_table = {}
 

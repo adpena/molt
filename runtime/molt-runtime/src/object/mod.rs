@@ -19,11 +19,11 @@ pub(crate) mod weakref;
 #[allow(unused_imports)]
 pub(crate) use type_ids::*;
 
+use crate::async_rt::poll::ws_wait_poll_fn_addr;
 use crate::builtins::{
     functools::functools_drop_instance, itertools::itertools_drop_instance,
     operator::operator_drop_instance, types::types_drop_instance,
 };
-use crate::async_rt::poll::ws_wait_poll_fn_addr;
 use crate::provenance::{register_ptr, release_ptr, resolve_ptr};
 use crate::{
     asyncgen_call_finalizer, asyncgen_gen_bits, asyncgen_pending_bits, asyncgen_registry_remove,
@@ -81,6 +81,11 @@ fn debug_alloc_object() -> bool {
             Some("1")
         )
     })
+}
+
+fn debug_oom() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| matches!(std::env::var("MOLT_DEBUG_OOM").ok().as_deref(), Some("1")))
 }
 
 fn flush_file_handle_on_drop(_py: &PyToken<'_>, handle: &mut MoltFileHandle) {
@@ -420,6 +425,12 @@ pub(crate) fn alloc_object_zeroed_with_pool(
         unsafe { std::alloc::alloc_zeroed(layout) }
     });
     if header_ptr.is_null() {
+        if debug_oom() {
+            eprintln!(
+                "molt OOM alloc_object_zeroed_with_pool type_id={} total_size={}",
+                type_id, total_size
+            );
+        }
         return std::ptr::null_mut();
     }
     profile_hit(_py, &ALLOC_COUNT);
@@ -442,6 +453,12 @@ pub(crate) fn alloc_object_zeroed(_py: &PyToken<'_>, total_size: usize, type_id:
     unsafe {
         let ptr = std::alloc::alloc_zeroed(layout);
         if ptr.is_null() {
+            if debug_oom() {
+                eprintln!(
+                    "molt OOM alloc_object_zeroed type_id={} total_size={}",
+                    type_id, total_size
+                );
+            }
             return std::ptr::null_mut();
         }
         profile_hit(_py, &ALLOC_COUNT);
@@ -482,6 +499,12 @@ pub(crate) fn alloc_object(_py: &PyToken<'_>, total_size: usize, type_id: u32) -
     unsafe {
         let ptr = std::alloc::alloc(layout);
         if ptr.is_null() {
+            if debug_oom() {
+                eprintln!(
+                    "molt OOM alloc_object type_id={} total_size={}",
+                    type_id, total_size
+                );
+            }
             return std::ptr::null_mut();
         }
         profile_hit(_py, &ALLOC_COUNT);

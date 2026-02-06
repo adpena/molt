@@ -11,7 +11,6 @@ from molt import intrinsics as _intrinsics
 Payload = object
 _IO_EVENT_READ = 1
 _IO_EVENT_WRITE = 1 << 1
-_PENDING_FALLBACK = 0x7FFD_0000_0000_0000
 _PENDING_SENTINEL: Any | None = None
 
 
@@ -35,19 +34,12 @@ def _pending_sentinel() -> Any:
     global _PENDING_SENTINEL
     if _PENDING_SENTINEL is not None:
         return _PENDING_SENTINEL
-    try:
-        _PENDING_SENTINEL = molt_pending()
-        return _PENDING_SENTINEL
-    except Exception:
-        _PENDING_SENTINEL = _PENDING_FALLBACK
-        return _PENDING_SENTINEL
+    _PENDING_SENTINEL = molt_pending()
+    return _PENDING_SENTINEL
 
 
 def _is_pending(value: Any) -> bool:
-    sentinel = _pending_sentinel()
-    if sentinel is _PENDING_FALLBACK:
-        return value == _PENDING_FALLBACK
-    return value is sentinel
+    return value is _pending_sentinel()
 
 
 def _stream_payload_bytes(payload: Payload) -> bytes:

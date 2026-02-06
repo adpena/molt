@@ -30,7 +30,8 @@ def _resolve_digestmod(digestmod: Any) -> tuple[str, dict[str, Any] | None, int,
         digest = digest_new()
     if not isinstance(digest, _hashlib._Hash):
         raise TypeError("digestmod must be a name or callable")
-    return digest.name, digest._options, digest.digest_size, digest.block_size
+    options = getattr(digest, "_options", None)
+    return digest.name, options, digest.digest_size, digest.block_size
 
 
 class HMAC:

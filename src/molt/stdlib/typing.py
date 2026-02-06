@@ -8,13 +8,18 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
+import sys as _sys
+from types import ModuleType
+
+
+def _typing_cast(_tp: object, value: object) -> object:
+    return value
+
 
 _require_intrinsic("molt_stdlib_probe", globals())
 
-import sys as _sys
 
-
-def _install_fallback_abc():
+def _install_fallback_abc() -> ModuleType:
     class _FallbackABC:
         __slots__ = ()
 
@@ -30,22 +35,33 @@ def _install_fallback_abc():
     class _Callable(_FallbackABC):
         pass
 
-    class _abc:
-        Iterable = _Iterable
-        Iterator = _Iterator
-        MutableMapping = _MutableMapping
-        Callable = _Callable
+    fallback = ModuleType("_molt_fallback_abc")
+    setattr(fallback, "Iterable", _Iterable)
+    setattr(fallback, "Iterator", _Iterator)
+    setattr(fallback, "MutableMapping", _MutableMapping)
+    setattr(fallback, "Callable", _Callable)
+    return fallback
 
-    return _abc
 
-
+_abc_mod: ModuleType | None
+_abc: ModuleType
 try:
-    import _collections_abc as _abc
+    import _collections_abc as _abc_mod_raw
 except Exception:
-    _abc = None
+    _abc_mod = None
+else:
+    _abc_mod = _typing_cast(ModuleType, _abc_mod_raw)
 
-if _abc is None or getattr(_abc, "Iterable", None) is None:
-    _abc = _install_fallback_abc()
+if _abc_mod is None:
+    _abc_mod = _install_fallback_abc()
+else:
+    _abc_iterable = getattr(_abc_mod, "Iterable", None)
+    if _abc_iterable is None:
+        _abc_mod = _install_fallback_abc()
+    elif getattr(_abc_mod, "__name__", None) == "_abc":
+        _abc_mod = _install_fallback_abc()
+
+_abc = _abc_mod
 
 TYPE_CHECKING = False
 
@@ -77,6 +93,7 @@ __all__ = [
     "List",
     "Dict",
     "Tuple",
+    "SupportsIndex",
     "TextIO",
     "BinaryIO",
     "TYPE_CHECKING",
@@ -100,6 +117,15 @@ try:
     _UnionType = type(int | str)
 except Exception:
     _UnionType = None
+
+
+class _AnnotatedOrigin:
+    pass
+
+
+_AnnotatedOrigin.__module__ = "typing"
+_AnnotatedOrigin.__name__ = "Annotated"
+_AnnotatedOrigin.__qualname__ = "Annotated"
 
 
 def _as_tuple(params: object) -> tuple[object, ...]:
@@ -188,6 +214,12 @@ class _GenericAlias(_TypingBase):
             base = _type_repr(self.__origin__)
         return f"{base}[{_format_args(self.__args__)}]"
 
+    def __mro_entries__(self, _bases: tuple[object, ...]) -> tuple[object, ...]:
+        origin = self.__origin__
+        if isinstance(origin, type):
+            return (origin,)
+        return ()
+
 
 class _UnionAlias(_TypingBase):
     __slots__ = ("__args__", "__origin__")
@@ -243,11 +275,13 @@ class _CallableAlias(_TypingBase):
     __slots__ = ("__args__", "__origin__", "_arglist", "_return")
 
     def __init__(self, arglist: object, ret: object) -> None:
-        self.__origin__ = _abc.Callable
+        self.__origin__ = getattr(_abc, "Callable")
         self._arglist = arglist
         self._return = ret
         if arglist is Ellipsis:
             self.__args__ = (Ellipsis, ret)
+        elif isinstance(arglist, _ConcatenateAlias):
+            self.__args__ = (arglist, ret)
         else:
             args = _as_tuple(arglist)
             self.__args__ = args + (ret,)
@@ -255,6 +289,8 @@ class _CallableAlias(_TypingBase):
     def __repr__(self) -> str:
         if self._arglist is Ellipsis:
             args = (Ellipsis, self._return)
+        elif isinstance(self._arglist, _ConcatenateAlias):
+            args = (self._arglist, self._return)
         else:
             args = (list(_as_tuple(self._arglist)), self._return)
         return f"typing.Callable[{_format_args(args)}]"
@@ -355,8 +391,8 @@ MutableMapping = _SpecialGenericAlias(_abc.MutableMapping, "MutableMapping")
 _types_mod = _sys.modules.get("types")
 if _types_mod is not None:
     try:
-        _types_mod.Any = Any
-        _types_mod.Iterable = Iterable
+        setattr(_types_mod, "Any", Any)
+        setattr(_types_mod, "Iterable", Iterable)
     except Exception:
         pass
 
@@ -593,6 +629,12 @@ def runtime_checkable(cls):
     return cls
 
 
+@runtime_checkable
+class SupportsIndex(Protocol):
+    def __index__(self) -> int:
+        raise NotImplementedError
+
+
 class NamedTuple(tuple):
     __slots__ = ()
     _fields: tuple[str, ...] = ()
@@ -706,7 +748,7 @@ def overload(func):
 
 def get_origin(tp: object) -> object | None:
     if isinstance(tp, _AnnotatedAlias):
-        return Annotated
+        return _AnnotatedOrigin
     if isinstance(tp, _LiteralAlias):
         return Literal
     if isinstance(tp, _UnionAlias):
@@ -714,7 +756,7 @@ def get_origin(tp: object) -> object | None:
     if isinstance(tp, _ConcatenateAlias):
         return Concatenate
     if isinstance(tp, _CallableAlias):
-        return _abc.Callable
+        return getattr(_abc, "Callable")
     if _UnionType is not None and isinstance(tp, _UnionType):
         return _UnionType
     return getattr(tp, "__origin__", None)
@@ -732,6 +774,8 @@ def get_args(tp: object) -> tuple[object, ...]:
     if isinstance(tp, _CallableAlias):
         if tp._arglist is Ellipsis:
             return (Ellipsis, tp._return)
+        if isinstance(tp._arglist, _ConcatenateAlias):
+            return (tp._arglist, tp._return)
         return (list(_as_tuple(tp._arglist)), tp._return)
     args = getattr(tp, "__args__", ())
     if isinstance(args, tuple):

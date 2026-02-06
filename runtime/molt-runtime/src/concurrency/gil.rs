@@ -1,7 +1,7 @@
 use std::cell::RefCell;
-use std::sync::{Mutex, MutexGuard};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::{Mutex, MutexGuard};
 
 use crate::{runtime_state_for_gil, GIL_DEPTH};
 

@@ -75,8 +75,21 @@ WS_BENCHMARKS = [
 MOLT_ARGS_BY_BENCH = {
     "tests/benchmarks/bench_sum_list_hints.py": ["--type-hints", "trust"],
 }
-RUNTIME_WASM = Path("wasm/molt_runtime.wasm")
-RUNTIME_WASM_RELOC = Path("wasm/molt_runtime_reloc.wasm")
+
+
+def _wasm_runtime_root() -> Path:
+    env_root = os.environ.get("MOLT_WASM_RUNTIME_DIR")
+    if env_root:
+        return Path(env_root).expanduser()
+    external_root = Path("/Volumes/APDataStore/Molt")
+    if external_root.is_dir():
+        return external_root / "wasm"
+    return Path("wasm")
+
+
+_RUNTIME_ROOT = _wasm_runtime_root()
+RUNTIME_WASM = _RUNTIME_ROOT / "molt_runtime.wasm"
+RUNTIME_WASM_RELOC = _RUNTIME_ROOT / "molt_runtime_reloc.wasm"
 LINKED_WASM = Path("output_linked.wasm")
 WASM_LD = shutil.which("wasm-ld")
 _LINK_WARNED = False
@@ -97,6 +110,21 @@ class _RunResult:
     returncode: int
     stdout: str = ""
     stderr: str = ""
+
+
+def _external_root() -> Path | None:
+    root = Path("/Volumes/APDataStore/Molt")
+    return root if root.is_dir() else None
+
+
+def _cargo_target_root() -> Path:
+    env_root = os.environ.get("CARGO_TARGET_DIR")
+    if env_root:
+        return Path(env_root).expanduser()
+    external_root = _external_root()
+    if external_root is not None:
+        return external_root / "target"
+    return Path("target")
 
 
 def _enable_line_buffering() -> None:
@@ -219,6 +247,10 @@ def _base_env() -> dict[str, str]:
     env.setdefault("PYTHONHASHSEED", "0")
     env.setdefault("PYTHONUNBUFFERED", "1")
     env.setdefault("MOLT_MACOSX_DEPLOYMENT_TARGET", "26.2")
+    external_root = _external_root()
+    if external_root is not None:
+        env.setdefault("CARGO_TARGET_DIR", str(external_root / "target"))
+        env.setdefault("MOLT_WASM_RUNTIME_DIR", str(external_root / "wasm"))
     return env
 
 
@@ -249,6 +281,9 @@ def build_runtime_wasm(
     *, reloc: bool, output: Path, tty: bool, log: TextIO | None
 ) -> bool:
     env = os.environ.copy()
+    external_root = _external_root()
+    if external_root is not None:
+        env.setdefault("CARGO_TARGET_DIR", str(external_root / "target"))
     if reloc:
         base_flags = (
             "-C link-arg=--relocatable -C link-arg=--no-gc-sections"
@@ -283,7 +318,7 @@ def build_runtime_wasm(
         else:
             print("WASM runtime build failed.", file=sys.stderr)
         return False
-    src = Path("target/wasm32-wasip1/release/molt_runtime.wasm")
+    src = _cargo_target_root() / "wasm32-wasip1" / "release" / "molt_runtime.wasm"
     if not src.exists():
         print("WASM runtime build succeeded but artifact is missing.", file=sys.stderr)
         return False

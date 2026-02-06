@@ -1,9 +1,8 @@
 use crate::{
     alloc_object, dict_len, dict_table_capacity, dict_update_apply, dict_update_set_in_place,
     exception_pending, is_truthy, maybe_ptr_from_bits, molt_iter, molt_iter_next, obj_from_bits,
-    object_type_id, raise_exception, seq_vec_ref, set_table_capacity, usize_from_bits,
-    MoltHeader, MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_FROZENSET, TYPE_ID_LIST, TYPE_ID_SET,
-    TYPE_ID_TUPLE,
+    object_type_id, raise_exception, seq_vec_ref, set_table_capacity, usize_from_bits, MoltHeader,
+    MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_FROZENSET, TYPE_ID_LIST, TYPE_ID_SET, TYPE_ID_TUPLE,
 };
 
 #[no_mangle]

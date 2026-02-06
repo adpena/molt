@@ -28,7 +28,6 @@ if TYPE_CHECKING:
     )
 
 T = TypeVar("T")
-_PENDING = 0x7FFD_0000_0000_0000
 _PENDING_SENTINEL: Any | None = None
 
 
@@ -56,25 +55,52 @@ molt_cancel_token_set_current = _intrinsics.require(
 molt_cancel_token_get_current = _intrinsics.require(
     "molt_cancel_token_get_current", globals()
 )
+_INTRINSIC_CALL_CACHE: dict[str, Any] = {}
+
+
+def _invoke_intrinsic_arity(intrinsic: Any, args: tuple[Any, ...]) -> Any:
+    argc = len(args)
+    if argc == 0:
+        return intrinsic()
+    if argc == 1:
+        return intrinsic(args[0])
+    if argc == 2:
+        return intrinsic(args[0], args[1])
+    if argc == 3:
+        return intrinsic(args[0], args[1], args[2])
+    if argc == 4:
+        return intrinsic(args[0], args[1], args[2], args[3])
+    if argc == 5:
+        return intrinsic(args[0], args[1], args[2], args[3], args[4])
+    if argc == 6:
+        return intrinsic(args[0], args[1], args[2], args[3], args[4], args[5])
+    if argc == 7:
+        return intrinsic(args[0], args[1], args[2], args[3], args[4], args[5], args[6])
+    if argc == 8:
+        return intrinsic(
+            args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7]
+        )
+    raise TypeError("_call_intrinsic supports up to 8 arguments")
+
+
+def _call_intrinsic(name: str, *args: Any) -> Any:
+    intrinsic = _INTRINSIC_CALL_CACHE.get(name)
+    if intrinsic is None:
+        intrinsic = _intrinsics.require(name, globals())
+        _INTRINSIC_CALL_CACHE[name] = intrinsic
+    return _invoke_intrinsic_arity(intrinsic, args)
 
 
 def _pending_sentinel() -> Any:
     global _PENDING_SENTINEL
     if _PENDING_SENTINEL is not None:
         return _PENDING_SENTINEL
-    try:
-        _PENDING_SENTINEL = molt_pending()
-        return _PENDING_SENTINEL
-    except Exception:
-        _PENDING_SENTINEL = _PENDING
+    _PENDING_SENTINEL = molt_pending()
     return _PENDING_SENTINEL
 
 
 def _is_pending(value: Any) -> bool:
-    sentinel = _pending_sentinel()
-    if sentinel is _PENDING:
-        return value == _PENDING
-    return value is sentinel
+    return value is _pending_sentinel()
 
 
 class Channel:

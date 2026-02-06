@@ -511,7 +511,6 @@ def _debug_asyncio_condition_enabled() -> bool:
 _DEBUG_ASYNCIO_CONDITION = _debug_asyncio_condition_enabled()
 
 _UNSET = object()
-_PENDING = 0x7FFD_0000_0000_0000
 _PROC_STDIO_INHERIT = 0
 _PROC_STDIO_PIPE = 1
 _PROC_STDIO_DEVNULL = 2
@@ -549,6 +548,7 @@ async def _io_wait(fd: int, events: int, timeout: float | None = None) -> Any:
 
 
 _molt_io_wait_new = _intrinsic_require("molt_io_wait_new", globals())
+molt_pending = _intrinsic_require("molt_pending", globals())
 molt_async_sleep = _intrinsic_require("molt_async_sleep", globals())
 molt_block_on = _intrinsic_require("molt_block_on", globals())
 molt_asyncgen_shutdown = _intrinsic_require("molt_asyncgen_shutdown", globals())
@@ -559,9 +559,7 @@ molt_cancel_token_get_current = _intrinsic_require(
     "molt_cancel_token_get_current", globals()
 )
 molt_promise_new = _intrinsic_require("molt_promise_new", globals())
-molt_promise_set_exception = _intrinsic_require(
-    "molt_promise_set_exception", globals()
-)
+molt_promise_set_exception = _intrinsic_require("molt_promise_set_exception", globals())
 molt_promise_set_result = _intrinsic_require("molt_promise_set_result", globals())
 molt_task_register_token_owned = _intrinsic_require(
     "molt_task_register_token_owned", globals()
@@ -570,13 +568,9 @@ molt_future_cancel = _intrinsic_require("molt_future_cancel", globals())
 molt_thread_submit = _intrinsic_require("molt_thread_submit", globals())
 
 _molt_module_new = _intrinsic_require("molt_module_new", globals())
-_molt_function_set_builtin = _intrinsic_require(
-    "molt_function_set_builtin", globals()
-)
+_molt_function_set_builtin = _intrinsic_require("molt_function_set_builtin", globals())
 _molt_future_cancel_msg = _intrinsic_require("molt_future_cancel_msg", globals())
-_molt_future_cancel_clear = _intrinsic_require(
-    "molt_future_cancel_clear", globals()
-)
+_molt_future_cancel_clear = _intrinsic_require("molt_future_cancel_clear", globals())
 _molt_exception_pending = _intrinsic_require("molt_exception_pending", globals())
 _molt_exception_last = _intrinsic_require("molt_exception_last", globals())
 _molt_process_spawn = _intrinsic_require("molt_process_spawn", globals())
@@ -594,6 +588,34 @@ _molt_stream_recv = _intrinsic_require("molt_stream_recv", globals())
 _molt_stream_send_obj = _intrinsic_require("molt_stream_send_obj", globals())
 _molt_stream_close = _intrinsic_require("molt_stream_close", globals())
 _molt_stream_drop = _intrinsic_require("molt_stream_drop", globals())
+_molt_stream_reader_new = _intrinsic_require("molt_stream_reader_new", globals())
+_molt_stream_reader_read = _intrinsic_require("molt_stream_reader_read", globals())
+_molt_stream_reader_readline = _intrinsic_require(
+    "molt_stream_reader_readline", globals()
+)
+_molt_stream_reader_at_eof = _intrinsic_require("molt_stream_reader_at_eof", globals())
+_molt_stream_reader_drop = _intrinsic_require("molt_stream_reader_drop", globals())
+_molt_socket_reader_new = _intrinsic_require("molt_socket_reader_new", globals())
+_molt_socket_reader_read = _intrinsic_require("molt_socket_reader_read", globals())
+_molt_socket_reader_readline = _intrinsic_require(
+    "molt_socket_reader_readline", globals()
+)
+_molt_socket_reader_at_eof = _intrinsic_require("molt_socket_reader_at_eof", globals())
+_molt_socket_reader_drop = _intrinsic_require("molt_socket_reader_drop", globals())
+
+_PENDING_SENTINEL: Any | None = None
+
+
+def _pending_sentinel() -> Any:
+    global _PENDING_SENTINEL
+    if _PENDING_SENTINEL is None:
+        _PENDING_SENTINEL = molt_pending()
+    return _PENDING_SENTINEL
+
+
+def _is_pending(value: Any) -> bool:
+    pending = _pending_sentinel()
+    return value is pending or value == pending
 
 
 def _debug_exc_state(tag: str) -> None:
@@ -1440,24 +1462,40 @@ class StreamReader:
             self._fd = self._sock.fileno()
         except Exception:
             self._fd = -1
+        self._reader = _require_asyncio_intrinsic(
+            _molt_socket_reader_new, "socket_reader_new"
+        )(self._sock._require_handle())
 
     async def _wait_readable(self) -> None:
+        if self._fd < 0:
+            await sleep(0.0)
+            return None
         _require_io_wait_new()
         await _io_wait(self._fd, 1)
 
-    async def _recv(self, size: int) -> bytes:
+    async def _read_raw(self, n: int) -> bytes:
         while True:
-            try:
-                return self._sock.recv(size)
-            except (BlockingIOError, InterruptedError):
+            res = _require_asyncio_intrinsic(
+                _molt_socket_reader_read, "socket_reader_read"
+            )(self._reader, n)
+            if _is_pending(res):
                 await self._wait_readable()
-            except OSError as exc:
-                if exc.errno in (_errno.EAGAIN, _errno.EWOULDBLOCK):
-                    await self._wait_readable()
-                    continue
-                raise
+                continue
+            if isinstance(res, (bytes, bytearray, memoryview)):
+                self._eof = bool(
+                    _require_asyncio_intrinsic(
+                        _molt_socket_reader_at_eof, "socket_reader_at_eof"
+                    )(self._reader)
+                )
+                return bytes(res)
+            raise TypeError("socket stream reader returned non-bytes")
 
     def at_eof(self) -> bool:
+        self._eof = bool(
+            _require_asyncio_intrinsic(
+                _molt_socket_reader_at_eof, "socket_reader_at_eof"
+            )(self._reader)
+        )
         return self._eof and not self._buffer
 
     async def read(self, n: int = -1) -> bytes:
@@ -1468,41 +1506,80 @@ class StreamReader:
             if self._buffer:
                 chunks.append(bytes(self._buffer))
                 self._buffer.clear()
-            while not self._eof:
-                data = await self._recv(4096)
-                if not data:
-                    self._eof = True
-                    break
+            data = await self._read_raw(-1)
+            if data:
                 chunks.append(data)
             return b"".join(chunks)
-        while len(self._buffer) < n and not self._eof:
-            data = await self._recv(n - len(self._buffer))
-            if not data:
-                self._eof = True
-                break
-            self._buffer.extend(data)
-        if not self._buffer:
-            return b""
-        out = bytes(self._buffer[:n])
-        del self._buffer[:n]
-        return out
+        if self._buffer:
+            out = bytes(self._buffer[:n])
+            del self._buffer[:n]
+            return out
+        return await self._read_raw(n)
 
     async def readexactly(self, n: int) -> bytes:
         if n <= 0:
             return b""
-        while len(self._buffer) < n and not self._eof:
-            data = await self._recv(n - len(self._buffer))
+        out = bytearray()
+        while len(out) < n:
+            chunk = await self.read(n - len(out))
+            if not chunk:
+                raise IncompleteReadError(bytes(out), n)
+            out.extend(chunk)
+        return bytes(out)
+
+    async def readuntil(self, separator: bytes = b"\n") -> bytes:
+        sep = bytes(separator)
+        if not sep:
+            raise ValueError("Separator should be at least one-byte string")
+        while True:
+            idx = self._buffer.find(sep)
+            if idx != -1:
+                end = idx + len(sep)
+                out = bytes(self._buffer[:end])
+                del self._buffer[:end]
+                return out
+            if self._eof:
+                partial = bytes(self._buffer)
+                self._buffer.clear()
+                raise IncompleteReadError(partial, len(sep))
+            data = await self._read_raw(4096)
             if not data:
                 self._eof = True
-                break
+                continue
             self._buffer.extend(data)
-        if len(self._buffer) < n:
-            partial = bytes(self._buffer)
-            self._buffer.clear()
-            raise IncompleteReadError(partial, n)
-        out = bytes(self._buffer[:n])
-        del self._buffer[:n]
-        return out
+
+    async def readline(self) -> bytes:
+        if self._buffer:
+            try:
+                return await self.readuntil(b"\n")
+            except IncompleteReadError as exc:
+                return exc.partial
+        while True:
+            res = _require_asyncio_intrinsic(
+                _molt_socket_reader_readline, "socket_reader_readline"
+            )(self._reader)
+            if _is_pending(res):
+                await self._wait_readable()
+                continue
+            if isinstance(res, (bytes, bytearray, memoryview)):
+                self._eof = bool(
+                    _require_asyncio_intrinsic(
+                        _molt_socket_reader_at_eof, "socket_reader_at_eof"
+                    )(self._reader)
+                )
+                return bytes(res)
+            raise TypeError("socket stream reader returned non-bytes")
+
+    def __del__(self) -> None:
+        reader = getattr(self, "_reader", None)
+        if reader is None:
+            return
+        try:
+            _require_asyncio_intrinsic(_molt_socket_reader_drop, "socket_reader_drop")(
+                reader
+            )
+        except Exception:
+            pass
 
 
 class StreamWriter:
@@ -1658,89 +1735,62 @@ class Server(AbstractServer):
 class ProcessStreamReader:
     def __init__(self, handle: Any) -> None:
         self._handle = handle
-        self._buffer = bytearray()
-        self._eof = False
-
-    async def _recv_chunk(self) -> bytes:
-        while True:
-            res = _require_asyncio_intrinsic(_molt_stream_recv, "stream_recv")(
-                self._handle
-            )
-            if res == _PENDING:
-                await sleep(0.0)
-                continue
-            if res is not None and not isinstance(res, (bytes, bytearray, memoryview)):
-                await sleep(0.0)
-                continue
-            if res is None:
-                self._eof = True
-                return b""
-            if isinstance(res, (bytes, bytearray, memoryview)):
-                return bytes(res)
-            raise TypeError("process stream recv returned non-bytes")
+        self._reader = _require_asyncio_intrinsic(
+            _molt_stream_reader_new, "stream_reader_new"
+        )(handle)
 
     def at_eof(self) -> bool:
-        return self._eof and not self._buffer
+        return bool(
+            _require_asyncio_intrinsic(
+                _molt_stream_reader_at_eof, "stream_reader_at_eof"
+            )(self._reader)
+        )
 
     async def read(self, n: int = -1) -> bytes:
-        if n == 0:
-            return b""
-        if n < 0:
-            buf = bytearray()
-            if self._buffer:
-                buf += bytes(self._buffer)
-                self._buffer.clear()
-            while not self._eof:
-                data = await self._recv_chunk()
-                if not data:
-                    break
-                buf += data
-            return bytes(buf)
-        while len(self._buffer) < n and not self._eof:
-            data = await self._recv_chunk()
-            if not data:
-                break
-            self._buffer.extend(data)
-        if not self._buffer:
-            return b""
-        out = bytes(self._buffer[:n])
-        del self._buffer[:n]
-        return out
+        while True:
+            res = _require_asyncio_intrinsic(
+                _molt_stream_reader_read, "stream_reader_read"
+            )(self._reader, n)
+            if _is_pending(res):
+                await sleep(0.0)
+                continue
+            if isinstance(res, (bytes, bytearray, memoryview)):
+                return bytes(res)
+            raise TypeError("process stream reader returned non-bytes")
 
     async def readline(self) -> bytes:
         while True:
-            if self._eof and not self._buffer:
-                return b""
-            idx = self._buffer.find(b"\n")
-            if idx != -1:
-                idx += 1
-                out = bytes(self._buffer[:idx])
-                del self._buffer[:idx]
-                return out
-            data = await self._recv_chunk()
-            if not data:
-                if not self._buffer:
-                    return b""
-                out = bytes(self._buffer)
-                self._buffer.clear()
-                return out
-            self._buffer.extend(data)
+            res = _require_asyncio_intrinsic(
+                _molt_stream_reader_readline, "stream_reader_readline"
+            )(self._reader)
+            if _is_pending(res):
+                await sleep(0.0)
+                continue
+            if isinstance(res, (bytes, bytearray, memoryview)):
+                return bytes(res)
+            raise TypeError("process stream reader returned non-bytes")
 
     async def readexactly(self, n: int) -> bytes:
         if n <= 0:
             return b""
-        while len(self._buffer) < n and not self._eof:
-            data = await self._recv_chunk()
-            if not data:
-                break
-            self._buffer.extend(data)
-        if len(self._buffer) < n:
-            partial = bytes(self._buffer)
-            self._buffer.clear()
-            raise IncompleteReadError(partial, n)
-        out = bytes(self._buffer[:n])
-        del self._buffer[:n]
-        return out
+        buf = bytearray()
+        while len(buf) < n:
+            chunk = await self.read(n - len(buf))
+            if not chunk:
+                raise IncompleteReadError(bytes(buf), n)
+            buf.extend(chunk)
+        return bytes(buf)
+
+    def __del__(self) -> None:
+        reader = getattr(self, "_reader", None)
+        if reader is None:
+            return
+        try:
+            _require_asyncio_intrinsic(_molt_stream_reader_drop, "stream_reader_drop")(
+                reader
+            )
+        except Exception:
+            pass
 
 
 class ProcessStreamWriter:
@@ -1762,7 +1812,7 @@ class ProcessStreamWriter:
             res = _require_asyncio_intrinsic(_molt_stream_send_obj, "stream_send_obj")(
                 self._handle, bytes(self._buffer)
             )
-            if res == _PENDING or not isinstance(res, int) or res != 0:
+            if _is_pending(res) or not isinstance(res, int) or res != 0:
                 await sleep(0.0)
                 continue
             self._buffer.clear()
@@ -1855,7 +1905,8 @@ class Process:
         try:
             if tasks:
                 results = await gather(*[task for _, task in tasks])
-                for (kind, _), result in zip(tasks, results):
+                for idx, result in enumerate(results):
+                    kind, _task = tasks[idx]
                     if kind == "stdout":
                         out = result
                     else:

@@ -44,9 +44,13 @@ def lookup(encoding: object) -> CodecInfo:
     return info
 
 
-def decode(obj: object, encoding: object = "utf-8", errors: object = "strict") -> object:
+def decode(
+    obj: object, encoding: object = "utf-8", errors: object = "strict"
+) -> object:
     return _MOLT_CODECS_DECODE(obj, encoding, errors)
 
 
-def encode(obj: object, encoding: object = "utf-8", errors: object = "strict") -> object:
+def encode(
+    obj: object, encoding: object = "utf-8", errors: object = "strict"
+) -> object:
     return _MOLT_CODECS_ENCODE(obj, encoding, errors)

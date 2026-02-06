@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
-
+from collections.abc import Callable
 
 _require_intrinsic("molt_stdlib_probe", globals())
 
-from typing import Any, Callable
 
 __all__ = [
     "dispatch_table",
@@ -18,17 +17,17 @@ __all__ = [
     "clear_extension_cache",
 ]
 
-dispatch_table: dict[type, Callable[[Any], Any]] = {}
+dispatch_table: dict[type, Callable[[object], object]] = {}
 _extension_registry: dict[tuple[str, str], int] = {}
 _inverted_registry: dict[int, tuple[str, str]] = {}
-_extension_cache: dict[int, Any] = {}
-_constructor_registry: set[Callable[..., Any]] = set()
+_extension_cache: dict[int, object] = {}
+_constructor_registry: set[Callable[..., object]] = set()
 
 
 def pickle(
     cls: type,
-    reducer: Callable[[Any], Any] | None,
-    constructor_func: Callable[..., Any] | None = None,
+    reducer: Callable[[object], object] | None,
+    constructor_func: Callable[..., object] | None = None,
 ) -> None:
     if not isinstance(cls, type):
         raise TypeError("pickle() argument 1 must be a type")
@@ -42,14 +41,16 @@ def pickle(
         constructor(constructor_func)
 
 
-def constructor(func: Callable[..., Any]) -> Callable[..., Any]:
+def constructor(func: Callable[..., object]) -> Callable[..., object]:
     if not callable(func):
         raise TypeError("constructor() argument must be callable")
     _constructor_registry.add(func)
     return func
 
 
-def _validate_extension_args(module: Any, name: Any, code: Any) -> tuple[str, str, int]:
+def _validate_extension_args(
+    module: object, name: object, code: object
+) -> tuple[str, str, int]:
     if not isinstance(module, str) or not module:
         raise ValueError("extension module name must be a non-empty string")
     if not isinstance(name, str) or not name:

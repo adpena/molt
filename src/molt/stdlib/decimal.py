@@ -57,7 +57,9 @@ _MOLT_DECIMAL_TO_FLOAT = _require_intrinsic("molt_decimal_to_float", globals())
 _MOLT_DECIMAL_DIV = _require_intrinsic("molt_decimal_div", globals())
 _MOLT_DECIMAL_QUANTIZE = _require_intrinsic("molt_decimal_quantize", globals())
 _MOLT_DECIMAL_COMPARE = _require_intrinsic("molt_decimal_compare", globals())
-_MOLT_DECIMAL_COMPARE_TOTAL = _require_intrinsic("molt_decimal_compare_total", globals())
+_MOLT_DECIMAL_COMPARE_TOTAL = _require_intrinsic(
+    "molt_decimal_compare_total", globals()
+)
 _MOLT_DECIMAL_NORMALIZE = _require_intrinsic("molt_decimal_normalize", globals())
 _MOLT_DECIMAL_EXP = _require_intrinsic("molt_decimal_exp", globals())
 
@@ -290,7 +292,9 @@ class Context:
         return Decimal(value, context=self)
 
     def divide(self, a: "Decimal", b: "Decimal") -> "Decimal":
-        return _decimal_from_handle(_MOLT_DECIMAL_DIV(self._handle, a._handle, b._handle))
+        return _decimal_from_handle(
+            _MOLT_DECIMAL_DIV(self._handle, a._handle, b._handle)
+        )
 
     def __del__(self) -> None:
         try:
@@ -301,6 +305,7 @@ class Context:
 
 class Decimal:
     __slots__ = ("_handle",)
+    _handle: object
 
     def __new__(cls, value: object = 0, context: Context | None = None) -> "Decimal":
         handle = _decimal_handle(value, context)
@@ -341,7 +346,9 @@ class Decimal:
         )
 
     def compare_total(self, other: "Decimal") -> "Decimal":
-        return _decimal_from_handle(_MOLT_DECIMAL_COMPARE_TOTAL(self._handle, other._handle))
+        return _decimal_from_handle(
+            _MOLT_DECIMAL_COMPARE_TOTAL(self._handle, other._handle)
+        )
 
     def exp(self) -> "Decimal":
         return _with_current_context(

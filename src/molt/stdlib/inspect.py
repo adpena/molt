@@ -8,6 +8,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 import sys as _sys
 
+
 __all__ = [
     "AGEN_CLOSED",
     "AGEN_CREATED",
@@ -61,8 +62,10 @@ CORO_CLOSED = "CORO_CLOSED"
 _MOLT_ASYNCGEN_LOCALS = _require_intrinsic("molt_asyncgen_locals", globals())
 _MOLT_GEN_LOCALS = _require_intrinsic("molt_gen_locals", globals())
 
+
 class _Empty:
     pass
+
 
 _empty = _Empty()
 
@@ -71,6 +74,7 @@ POSITIONAL_OR_KEYWORD = 1
 VAR_POSITIONAL = 2
 KEYWORD_ONLY = 3
 VAR_KEYWORD = 4
+
 
 class Parameter:
     POSITIONAL_ONLY = POSITIONAL_ONLY
@@ -110,6 +114,7 @@ class Parameter:
             out = f"{out}={self.default!r}"
         return out
 
+
 class Signature:
     def __init__(
         self, parameters: list[Parameter], return_annotation: Any = _empty
@@ -146,6 +151,7 @@ class Signature:
             parts.append("/")
         return f"({', '.join(parts)})"
 
+
 def cleandoc(doc: str | None) -> str:
     if not doc:
         return ""
@@ -169,6 +175,7 @@ def cleandoc(doc: str | None) -> str:
     trimmed = [line[indent:] for line in lines]
     return "\n".join(trimmed)
 
+
 def _expandtabs(text: str, tabsize: int = 8) -> str:
     parts: list[str] = []
     col = 0
@@ -185,6 +192,7 @@ def _expandtabs(text: str, tabsize: int = 8) -> str:
             col += 1
     return "".join(parts)
 
+
 def currentframe() -> object | None:
     if hasattr(_sys, "_getframe"):
         try:
@@ -193,20 +201,25 @@ def currentframe() -> object | None:
             return None
     return None
 
+
 def getdoc(obj: Any) -> str | None:
     doc = getattr(obj, "__doc__", None)
     if doc is None:
         return None
     return cleandoc(doc)
 
+
 def isfunction(obj: Any) -> bool:
     return hasattr(obj, "__code__") or hasattr(obj, "__molt_arg_names__")
+
 
 def isclass(obj: Any) -> bool:
     return hasattr(obj, "__mro__")
 
+
 def ismodule(obj: Any) -> bool:
     return hasattr(obj, "__dict__") and hasattr(obj, "__name__")
+
 
 def iscoroutinefunction(obj: Any) -> bool:
     if getattr(obj, "__molt_is_coroutine__", False):
@@ -214,17 +227,20 @@ def iscoroutinefunction(obj: Any) -> bool:
     flags = getattr(getattr(obj, "__code__", None), "co_flags", 0)
     return bool(flags & 0x80)
 
+
 def isasyncgenfunction(obj: Any) -> bool:
     if getattr(obj, "__molt_is_async_generator__", False):
         return True
     flags = getattr(getattr(obj, "__code__", None), "co_flags", 0)
     return bool(flags & 0x200)
 
+
 def isgeneratorfunction(obj: Any) -> bool:
     if getattr(obj, "__molt_is_generator__", False):
         return True
     flags = getattr(getattr(obj, "__code__", None), "co_flags", 0)
     return bool(flags & 0x20)
+
 
 def isawaitable(obj: Any) -> bool:
     if getattr(obj, "__molt_is_coroutine__", False):
@@ -233,6 +249,7 @@ def isawaitable(obj: Any) -> bool:
         return True
     flags = getattr(getattr(obj, "gi_code", None), "co_flags", 0)
     return bool(flags & 0x100)
+
 
 def getgeneratorstate(gen: Any) -> str:
     if getattr(gen, "gi_running", False):
@@ -245,6 +262,7 @@ def getgeneratorstate(gen: Any) -> str:
         return GEN_CREATED
     return GEN_SUSPENDED
 
+
 def getasyncgenstate(agen: Any) -> str:
     if getattr(agen, "ag_running", False):
         return AGEN_RUNNING
@@ -256,6 +274,7 @@ def getasyncgenstate(agen: Any) -> str:
         return AGEN_CREATED
     return AGEN_SUSPENDED
 
+
 def getgeneratorlocals(gen: Any) -> dict[str, Any]:
     if callable(_MOLT_GEN_LOCALS):
         return _MOLT_GEN_LOCALS(gen)
@@ -266,6 +285,7 @@ def getgeneratorlocals(gen: Any) -> dict[str, Any]:
         return {}
     return getattr(frame, "f_locals", {}) or {}
 
+
 def getasyncgenlocals(agen: Any) -> dict[str, Any]:
     if callable(_MOLT_ASYNCGEN_LOCALS):
         return _MOLT_ASYNCGEN_LOCALS(agen)
@@ -275,6 +295,7 @@ def getasyncgenlocals(agen: Any) -> dict[str, Any]:
     if frame is None:
         return {}
     return getattr(frame, "f_locals", {}) or {}
+
 
 def getcoroutinestate(coro: Any) -> str:
     if getattr(coro, "cr_running", False):
@@ -290,6 +311,7 @@ def getcoroutinestate(coro: Any) -> str:
     if lasti == -1:
         return CORO_CREATED
     return CORO_SUSPENDED
+
 
 def _signature_from_molt(obj: Any) -> Signature | None:
     arg_names = getattr(obj, "__molt_arg_names__", None)
@@ -323,6 +345,7 @@ def _signature_from_molt(obj: Any) -> Signature | None:
     if varkw:
         params.append(Parameter(varkw, Parameter.VAR_KEYWORD, _empty))
     return Signature(params)
+
 
 def _signature_from_code(obj: Any) -> Signature | None:
     code = getattr(obj, "__code__", None)
@@ -369,6 +392,7 @@ def _signature_from_code(obj: Any) -> Signature | None:
         params.append(Parameter(varnames[offset], Parameter.VAR_KEYWORD))
 
     return Signature(params)
+
 
 def signature(obj: Any) -> Signature:
     sig = getattr(obj, "__signature__", None)

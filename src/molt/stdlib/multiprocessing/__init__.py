@@ -18,6 +18,7 @@ from _intrinsics import require_intrinsic as _intrinsics_require
 
 from molt import capabilities as _capabilities_mod
 
+
 _capabilities: ModuleType | None = _capabilities_mod
 
 
@@ -25,6 +26,7 @@ def _require_intrinsic(func: Any | None, name: str) -> Callable[..., Any]:
     if not callable(func):
         raise RuntimeError(f"Missing intrinsic: {name}")
     return cast(Callable[..., Any], func)
+
 
 __all__ = [
     "Array",
@@ -39,7 +41,6 @@ __all__ = [
     "set_start_method",
 ]
 
-_PENDING = 0x7FFD_0000_0000_0000
 _STDIO_INHERIT = 0
 _STDIO_PIPE = 1
 _STDIO_DEVNULL = 2
@@ -68,6 +69,8 @@ _MOLT_STREAM_CLOSE = _intrinsics_require("molt_stream_close", globals())
 _MOLT_STREAM_DROP = _intrinsics_require("molt_stream_drop", globals())
 _MOLT_ENV_GET = _intrinsics_require("molt_env_get", globals())
 _MOLT_ENV_SNAPSHOT = _intrinsics_require("molt_env_snapshot", globals())
+_MOLT_PENDING = _intrinsics_require("molt_pending", globals())
+_PENDING_SENTINEL: Any | None = None
 
 _MAX_MESSAGE = 64 * 1024 * 1024
 _MAX_DEPTH = 100
@@ -103,14 +106,29 @@ _MSG_VALUE_SET = "value_set"
 _MSG_ARRAY_SET = "array_set"
 _MSG_CLOSE = "close"
 
+
+def _pending_sentinel() -> Any:
+    global _PENDING_SENTINEL
+    if _PENDING_SENTINEL is None:
+        _PENDING_SENTINEL = _MOLT_PENDING()
+    return _PENDING_SENTINEL
+
+
+def _is_pending(value: Any) -> bool:
+    sentinel = _pending_sentinel()
+    return value is sentinel or value == sentinel
+
+
 @dataclass(frozen=True)
 class _FunctionRef:
     module: str
     qualname: str
 
+
 @dataclass(frozen=True)
 class _QueueRef:
     queue_id: int
+
 
 @dataclass(frozen=True)
 class _PipeRef:
@@ -118,17 +136,20 @@ class _PipeRef:
     readable: bool
     writable: bool
 
+
 @dataclass(frozen=True)
 class _ValueRef:
     value_id: int
     typecode: str
     value: Any
 
+
 @dataclass(frozen=True)
 class _ArrayRef:
     array_id: int
     typecode: str
     values: list[Any]
+
 
 class _ExceptionRef:
     __slots__ = ("module", "name", "message")
@@ -138,20 +159,25 @@ class _ExceptionRef:
         self.name = name
         self.message = message
 
+
 class _RemoteError(Exception):
     pass
+
 
 def _require_process_capability() -> None:
     if _capabilities is None:
         raise PermissionError("Missing capability")
     _capabilities.require("process.exec")
 
+
 def _get_env_value(key: str, default: str) -> str:
     getter = _require_intrinsic(_MOLT_ENV_GET, "molt_env_get")
     return str(getter(key, default))
 
+
 def _mp_debug_enabled() -> bool:
     return _get_env_value("MOLT_MP_DEBUG", "") == "1"
+
 
 def _mp_debug(message: str) -> None:
     if not _mp_debug_enabled():
@@ -163,8 +189,10 @@ def _mp_debug(message: str) -> None:
     except Exception:
         pass
 
+
 def _spawn_trace_enabled() -> bool:
     return _get_env_value("MOLT_MP_TRACE_SPAWN", "") == "1"
+
 
 def _spawn_trace(message: str) -> None:
     if not _spawn_trace_enabled():
@@ -176,11 +204,13 @@ def _spawn_trace(message: str) -> None:
     except Exception:
         pass
 
+
 def _build_spawn_env() -> dict[str, str]:
     snapshot = _require_intrinsic(_MOLT_ENV_SNAPSHOT, "molt_env_snapshot")()
     if not isinstance(snapshot, dict):
         raise RuntimeError("molt_env_snapshot must return a dict")
     return {str(key): str(val) for key, val in snapshot.items()}
+
 
 def _exception_ref_from_exc(exc: BaseException) -> _ExceptionRef:
     exc_type = type(exc)
@@ -194,26 +224,37 @@ def _exception_ref_from_exc(exc: BaseException) -> _ExceptionRef:
         message = repr(exc)
     return _ExceptionRef(str(module), str(name), message)
 
+
 def _now() -> float:
     return time.monotonic()
+
 
 def _resolve_entry_module_name() -> str:
     main_mod = sys.modules.get("__main__")
     if main_mod is None:
         return "__main__"
-    for name, mod in sys.modules.items():
-        if name != "__main__" and mod is main_mod:
-            return name
     spec = getattr(main_mod, "__spec__", None)
     spec_name = getattr(spec, "name", None) if spec is not None else None
-    if isinstance(spec_name, str) and spec_name:
+    _mp_debug(
+        "mp: resolve_entry"
+        + f" spec={spec_name!r}"
+        + f" file={getattr(main_mod, '__file__', None)!r}"
+    )
+    if isinstance(spec_name, str) and spec_name and spec_name != "__main__":
         return spec_name
     main_path = getattr(main_mod, "__file__", None)
     if isinstance(main_path, str) and main_path:
         resolved = _module_name_from_path(main_path)
-        if resolved is not None:
+        if resolved is not None and resolved != "__main__":
             return resolved
+    for name, mod in sys.modules.items():
+        if name == "__main__" or mod is not main_mod:
+            continue
+        if name == "__mp_main__":
+            continue
+        return name
     return "__main__"
+
 
 def _module_name_from_path(path: str) -> str | None:
     try:
@@ -226,6 +267,7 @@ def _module_name_from_path(path: str) -> str | None:
             roots[roots.index("")] = os.getcwd()
         except Exception:
             pass
+    best_parts: list[str] | None = None
     for root in roots:
         if not root:
             continue
@@ -252,13 +294,18 @@ def _module_name_from_path(path: str) -> str | None:
             parts = parts[:-1]
         if not parts:
             continue
-        return ".".join(parts)
-    return None
+        if best_parts is None or len(parts) > len(best_parts):
+            best_parts = parts
+    if best_parts is None:
+        return None
+    return ".".join(best_parts)
+
 
 try:
     _COMPLEX_TYPE = type(0j)
 except Exception:
     _COMPLEX_TYPE = None
+
 
 def _complex_from_parts(real: float, imag: float) -> Any:
     if _COMPLEX_TYPE is not None:
@@ -267,6 +314,7 @@ def _complex_from_parts(real: float, imag: float) -> Any:
         except Exception:
             pass
     return real + imag * 1j
+
 
 def _encode_varint(value: int, out: bytearray) -> None:
     while True:
@@ -277,6 +325,7 @@ def _encode_varint(value: int, out: bytearray) -> None:
         else:
             out.append(byte)
             break
+
 
 def _decode_varint(data: bytes, idx: int) -> tuple[int, int]:
     shift = 0
@@ -293,6 +342,7 @@ def _decode_varint(data: bytes, idx: int) -> tuple[int, int]:
         if shift > 10_000:
             raise ValueError("varint too large")
 
+
 def _encode_int(value: int, out: bytearray) -> None:
     if value < 0:
         out.append(1)
@@ -300,6 +350,7 @@ def _encode_int(value: int, out: bytearray) -> None:
     else:
         out.append(0)
         _encode_varint(value, out)
+
 
 def _decode_int(data: bytes, idx: int) -> tuple[int, int]:
     if idx >= len(data):
@@ -309,9 +360,11 @@ def _decode_int(data: bytes, idx: int) -> tuple[int, int]:
     magnitude, idx = _decode_varint(data, idx)
     return (-magnitude if sign else magnitude), idx
 
+
 def _encode_bytes(value: bytes, out: bytearray) -> None:
     _encode_varint(len(value), out)
     out.extend(value)
+
 
 def _decode_bytes(data: bytes, idx: int) -> tuple[bytes, int]:
     length, idx = _decode_varint(data, idx)
@@ -319,6 +372,7 @@ def _decode_bytes(data: bytes, idx: int) -> tuple[bytes, int]:
     if end > len(data):
         raise ValueError("truncated bytes")
     return data[idx:end], end
+
 
 def _encode_value(value: Any, out: bytearray, hub: "_Hub | None", depth: int) -> None:
     if depth > _MAX_DEPTH:
@@ -392,10 +446,6 @@ def _encode_value(value: Any, out: bytearray, hub: "_Hub | None", depth: int) ->
         if callable(value):
             module = getattr(value, "__module__", None)
             qual = getattr(value, "__qualname__", None)
-            if module == "__main__":
-                resolved = _resolve_entry_module_name()
-                if resolved != "__main__":
-                    module = resolved
             if isinstance(module, str) and isinstance(qual, str):
                 out.append(_TAG_FUNC)
                 _encode_value(module, out, hub, depth + 1)
@@ -461,6 +511,7 @@ def _encode_value(value: Any, out: bytearray, hub: "_Hub | None", depth: int) ->
             _encode_value(item, out, hub, depth + 1)
         return
     raise TypeError(f"cannot serialize {type(value).__name__}")
+
 
 def _decode_value(
     data: bytes, idx: int, hub: "_Hub | None", depth: int
@@ -590,6 +641,7 @@ def _decode_value(
         return hub.resolve_exception(module, name, message), idx
     raise ValueError(f"unknown tag {tag}")
 
+
 def _encode_message(message: Any, hub: "_Hub | None") -> bytes:
     out = bytearray()
     _encode_value(message, out, hub, 0)
@@ -597,11 +649,13 @@ def _encode_message(message: Any, hub: "_Hub | None") -> bytes:
         raise ValueError("message too large")
     return bytes(out)
 
+
 def _decode_message(data: bytes, hub: "_Hub | None") -> Any:
     value, idx = _decode_value(data, 0, hub, 0)
     if idx != len(data):
         raise ValueError("trailing bytes")
     return value
+
 
 def _bind_hub(value: Any, hub: "_Hub", depth: int, seen: set[int]) -> None:
     if depth > _MAX_DEPTH:
@@ -633,6 +687,7 @@ def _bind_hub(value: Any, hub: "_Hub", depth: int, seen: set[int]) -> None:
             _bind_hub(item, hub, depth + 1, seen)
         return
 
+
 def _stream_send_frame(stream: Any, payload: bytes) -> None:
     if _MOLT_STREAM_SEND is None:
         raise RuntimeError("stream send unavailable")
@@ -645,9 +700,10 @@ def _stream_send_frame(stream: Any, payload: bytes) -> None:
     data = header + payload
     while True:
         res = _MOLT_STREAM_SEND(stream, data)
-        if res != _PENDING:
+        if not _is_pending(res):
             return
         time.sleep(0)
+
 
 def _stream_poll_frame(stream: Any, buf: bytearray) -> bytes | None:
     if len(buf) >= 4:
@@ -661,12 +717,13 @@ def _stream_poll_frame(stream: Any, buf: bytearray) -> bytes | None:
     if _MOLT_STREAM_RECV is None:
         raise RuntimeError("stream recv unavailable")
     chunk = _MOLT_STREAM_RECV(stream)
-    if chunk == _PENDING or chunk is None:
+    if chunk is None or _is_pending(chunk):
         return None
     if isinstance(chunk, (bytes, bytearray)):
         buf.extend(chunk)
         return _stream_poll_frame(stream, buf)
     return None
+
 
 def _stream_recv_frame(
     stream: Any, buf: bytearray, timeout: float | None
@@ -679,6 +736,7 @@ def _stream_recv_frame(
         if deadline is not None and _now() >= deadline:
             return None
         time.sleep(0.001)
+
 
 class _StreamTransport:
     def __init__(self, recv_stream: Any, send_stream: Any) -> None:
@@ -713,7 +771,7 @@ class _StreamTransport:
             raise TypeError("stream send unavailable")
         while True:
             res = _MOLT_STREAM_SEND(self._send, data)
-            if res != _PENDING:
+            if not _is_pending(res):
                 return
             time.sleep(0)
 
@@ -728,7 +786,7 @@ class _StreamTransport:
         if _MOLT_STREAM_RECV is None:
             raise RuntimeError("stream recv unavailable")
         chunk = _MOLT_STREAM_RECV(self._recv)
-        if chunk == _PENDING:
+        if _is_pending(chunk):
             return False
         if chunk is None:
             return False
@@ -759,6 +817,7 @@ class _StreamTransport:
             if deadline is not None and _now() >= deadline:
                 return None
             time.sleep(0.001)
+
 
 class _FdTransport:
     def __init__(self, reader: Any, writer: Any) -> None:
@@ -795,6 +854,7 @@ class _FdTransport:
         payload = bytes(self._buf[4:needed])
         del self._buf[:needed]
         return payload
+
 
 class _Hub:
     def __init__(
@@ -871,7 +931,37 @@ class _Hub:
         return ArrayProxy(array_id, typecode, values, self)
 
     def resolve_function(self, module: str, qualname: str) -> Callable[..., Any]:
-        mod = importlib.import_module(module)
+        _mp_debug(
+            "mp: resolve_function"
+            + f" module={module!r}"
+            + f" qualname={qualname!r}"
+            + f" has_main={('__main__' in sys.modules)!r}"
+            + f" has_mp_main={('__mp_main__' in sys.modules)!r}"
+        )
+        mod = None
+        if module == "__main__":
+            mod = sys.modules.get("__main__") or sys.modules.get("__mp_main__")
+            if mod is None:
+                entry_module = _get_env_value(_MP_ENTRY_ENV, "")
+                if entry_module:
+                    try:
+                        mod = __import__(entry_module, fromlist=["*"])
+                        _mp_debug(
+                            f"mp: resolve_function loaded entry module {entry_module!r}"
+                        )
+                    except Exception as exc:
+                        _mp_debug(
+                            "mp: resolve_function entry import failed "
+                            + f"{type(exc).__name__}: {exc}"
+                        )
+                        mod = None
+        if mod is None:
+            mod = sys.modules.get(module)
+        if mod is None:
+            try:
+                mod = __import__(module, fromlist=["*"])
+            except Exception:
+                mod = importlib.import_module(module)
         target: Any = mod
         for part in qualname.split("."):
             target = getattr(target, part)
@@ -982,6 +1072,7 @@ class _Hub:
         if isinstance(transport, _StreamTransport):
             transport.close()
 
+
 class _Queue:
     def __init__(self, maxsize: int = 0) -> None:
         self._id = _next_object_id()
@@ -1033,6 +1124,7 @@ class _Queue:
     def join_thread(self) -> None:
         return None
 
+
 class QueueProxy:
     def __init__(self, queue_id: int, hub: _Hub) -> None:
         self._id = queue_id
@@ -1050,6 +1142,7 @@ class QueueProxy:
 
     def join_thread(self) -> None:
         return None
+
 
 class PipeConnection:
     def __init__(self, pipe_id: int, readable: bool, writable: bool) -> None:
@@ -1092,6 +1185,7 @@ class PipeConnection:
     def close(self) -> None:
         return None
 
+
 class PipeProxy:
     def __init__(self, pipe_id: int, readable: bool, writable: bool, hub: _Hub) -> None:
         self._id = pipe_id
@@ -1120,6 +1214,7 @@ class PipeProxy:
     def close(self) -> None:
         return None
 
+
 class SharedValue:
     def __init__(self, typecode: str, value: Any) -> None:
         self._id = _next_object_id()
@@ -1137,6 +1232,7 @@ class SharedValue:
         if self._hub is not None and self._hub._role == "child":
             self._hub.send((_MSG_VALUE_SET, self._id, new_value))
 
+
 class ValueProxy:
     def __init__(self, value_id: int, typecode: str, value: Any, hub: _Hub) -> None:
         self._id = value_id
@@ -1152,6 +1248,7 @@ class ValueProxy:
     def value(self, new_value: Any) -> None:
         self._value = new_value
         self._hub.send((_MSG_VALUE_SET, self._id, new_value))
+
 
 class SharedArray:
     def __init__(self, typecode: str, values: Iterable[Any]) -> None:
@@ -1173,6 +1270,7 @@ class SharedArray:
 
     def __iter__(self) -> Iterator[Any]:
         return iter(self._values)
+
 
 class ArrayProxy:
     def __init__(
@@ -1196,13 +1294,16 @@ class ArrayProxy:
     def __iter__(self) -> Iterator[Any]:
         return iter(self._values)
 
+
 _NEXT_OBJECT_ID = 1
+
 
 def _next_object_id() -> int:
     global _NEXT_OBJECT_ID
     value = _NEXT_OBJECT_ID
     _NEXT_OBJECT_ID += 1
     return value
+
 
 class Process:
     def __init__(
@@ -1244,16 +1345,20 @@ class Process:
         env[_MP_ENTRY_ENV] = entry_module
         env[_MP_SPAWN_ENV] = "1"
         env[_MP_START_METHOD_ENV] = method
-        if entry_module == "__main__":
-            main_mod = sys.modules.get("__main__")
-            main_path = (
-                getattr(main_mod, "__file__", None) if main_mod is not None else None
-            )
-            if isinstance(main_path, str) and main_path:
-                try:
-                    env[_MP_MAIN_PATH_ENV] = os.path.abspath(main_path)
-                except Exception:
-                    pass
+        main_mod = sys.modules.get("__main__")
+        main_path = (
+            getattr(main_mod, "__file__", None) if main_mod is not None else None
+        )
+        if not isinstance(main_path, str) or not main_path:
+            argv0 = sys.argv[0] if sys.argv else None
+            if isinstance(argv0, str) and argv0:
+                main_path = argv0
+        _mp_debug(f"mp: process spawn entry={entry_module!r} main_path={main_path!r}")
+        if isinstance(main_path, str) and main_path:
+            try:
+                env[_MP_MAIN_PATH_ENV] = os.path.abspath(main_path)
+            except Exception:
+                pass
         trusted = _get_env_value("MOLT_TRUSTED", "")
         if trusted:
             env["MOLT_TRUSTED"] = trusted
@@ -1379,6 +1484,7 @@ class Process:
         except Exception:
             return 0
 
+
 class AsyncResult:
     def __init__(
         self,
@@ -1419,6 +1525,7 @@ class AsyncResult:
         if self._unwrap_single and len(self._results) == 1:
             return self._results[0]
         return list(self._results)
+
 
 class IMapIterator:
     def __init__(self, pool: "Pool", ordered: bool, total: int) -> None:
@@ -1471,6 +1578,7 @@ class IMapIterator:
             if deadline is not None and _now() >= deadline:
                 raise TimeoutError("result not ready")
             time.sleep(0.001)
+
 
 class Pool:
     def __init__(
@@ -1744,6 +1852,7 @@ class Pool:
         self.close()
         self.join()
 
+
 class _Worker:
     def __init__(
         self,
@@ -1776,16 +1885,20 @@ class _Worker:
         env[_MP_ENTRY_ENV] = entry_module
         env[_MP_SPAWN_ENV] = "1"
         env[_MP_START_METHOD_ENV] = start_method
-        if entry_module == "__main__":
-            main_mod = sys.modules.get("__main__")
-            main_path = (
-                getattr(main_mod, "__file__", None) if main_mod is not None else None
-            )
-            if isinstance(main_path, str) and main_path:
-                try:
-                    env[_MP_MAIN_PATH_ENV] = os.path.abspath(main_path)
-                except Exception:
-                    pass
+        main_mod = sys.modules.get("__main__")
+        main_path = (
+            getattr(main_mod, "__file__", None) if main_mod is not None else None
+        )
+        if not isinstance(main_path, str) or not main_path:
+            argv0 = sys.argv[0] if sys.argv else None
+            if isinstance(argv0, str) and argv0:
+                main_path = argv0
+        _mp_debug(f"mp: worker spawn entry={entry_module!r} main_path={main_path!r}")
+        if isinstance(main_path, str) and main_path:
+            try:
+                env[_MP_MAIN_PATH_ENV] = os.path.abspath(main_path)
+            except Exception:
+                pass
         trusted = _get_env_value("MOLT_TRUSTED", "")
         if trusted:
             env["MOLT_TRUSTED"] = trusted
@@ -1807,7 +1920,7 @@ class _Worker:
             cwd,
             _STDIO_PIPE,
             _STDIO_PIPE,
-            _STDIO_DEVNULL,
+            _STDIO_INHERIT,
         )
         if handle is None:
             raise RuntimeError("worker spawn failed")
@@ -1884,8 +1997,10 @@ class _Worker:
         if self._transport is not None:
             self._transport.close()
 
+
 ProcessType = Process
 PoolType = Pool
+
 
 class Context:
     def __init__(self, method: str | None) -> None:
@@ -1938,12 +2053,15 @@ class Context:
     def Array(self, typecode: str, values: Iterable[Any]) -> SharedArray:
         return SharedArray(typecode, values)
 
+
 _DEFAULT_START_METHOD: str | None = None
+
 
 def get_all_start_methods() -> list[str]:
     if os.name == "nt":
         return ["spawn"]
     return ["spawn", "fork", "forkserver"]
+
 
 def set_start_method(method: str, force: bool = False) -> None:
     global _DEFAULT_START_METHOD
@@ -1953,10 +2071,12 @@ def set_start_method(method: str, force: bool = False) -> None:
         raise ValueError("unknown start method")
     _DEFAULT_START_METHOD = method
 
+
 def get_start_method(allow_none: bool = False) -> str | None:
     if _DEFAULT_START_METHOD is None:
         return None if allow_none else "spawn"
     return _DEFAULT_START_METHOD
+
 
 def get_context(method: str | None = None) -> Context:
     if method is None:
@@ -1969,23 +2089,29 @@ def get_context(method: str | None = None) -> Context:
         return Context(method)
     return Context(method)
 
+
 def _effective_start_method(ctx: "Context | None") -> str:
     if ctx is not None:
         return ctx.get_start_method()
     method = get_start_method(allow_none=True)
     return method if method is not None else "spawn"
 
+
 def Queue(maxsize: int = 0) -> _Queue:
     return get_context("spawn").Queue(maxsize)
+
 
 def Pipe(duplex: bool = True) -> tuple[PipeConnection, PipeConnection]:
     return get_context("spawn").Pipe(duplex=duplex)
 
+
 def Value(typecode: str, value: Any) -> SharedValue:
     return get_context("spawn").Value(typecode, value)
 
+
 def Array(typecode: str, values: Iterable[Any]) -> SharedArray:
     return get_context("spawn").Array(typecode, values)
+
 
 def _spawn_main() -> None:
     _mp_debug("mp: spawn_main start")
@@ -1995,22 +2121,28 @@ def _spawn_main() -> None:
         _DEFAULT_START_METHOD = start_method
     entry_module = _get_env_value(_MP_ENTRY_ENV, "__main__")
     main_path = _get_env_value(_MP_MAIN_PATH_ENV, "")
-    if entry_module == "__main__" and main_path:
+    _mp_debug(f"mp: spawn_main entry={entry_module!r} main_path={main_path!r}")
+    candidate_names: list[str] = []
+    if entry_module and entry_module != "__main__":
+        candidate_names.append(entry_module)
+    if main_path:
+        resolved = _module_name_from_path(main_path)
+        if resolved and resolved not in candidate_names and resolved != "__main__":
+            candidate_names.append(resolved)
+    for module_name in candidate_names:
         try:
-            import runpy
-
-            runpy.run_path(main_path, run_name="__mp_main__")
-            mp_main = sys.modules.get("__mp_main__")
-            if mp_main is not None:
-                sys.modules["__main__"] = mp_main
-        except Exception:
-            pass
-    elif entry_module and entry_module != "__main__":
-        try:
-            mod = importlib.import_module(entry_module)
+            mod = importlib.import_module(module_name)
             sys.modules["__main__"] = mod
-        except Exception:
-            pass
+            sys.modules["__mp_main__"] = mod
+            _mp_debug(
+                "mp: spawn_main loaded __main__ from module " + f"{module_name!r}"
+            )
+            break
+        except Exception as exc:
+            _mp_debug(
+                f"mp: spawn_main module import failed {module_name!r}: "
+                + f"{type(exc).__name__}: {exc}"
+            )
     reader = open(0, "rb", closefd=False)
     writer = open(1, "wb", closefd=False)
     transport = _FdTransport(reader, writer)
@@ -2042,6 +2174,7 @@ def _spawn_main() -> None:
         _worker_loop(hub, msg)
         return
 
+
 def _run_child(hub: _Hub, msg: tuple[Any, ...]) -> None:
     target = msg[1]
     args = msg[2] if len(msg) > 2 else ()
@@ -2069,6 +2202,7 @@ def _run_child(hub: _Hub, msg: tuple[Any, ...]) -> None:
         hub.send((_MSG_TASK_ERROR, 0, 0, _exception_ref_from_exc(exc)))
         sys.exit(1)
 
+
 def _worker_loop(hub: _Hub, msg: tuple[Any, ...]) -> None:
     initializer = msg[1] if len(msg) > 1 else None
     initargs = msg[2] if len(msg) > 2 else ()
@@ -2078,13 +2212,14 @@ def _worker_loop(hub: _Hub, msg: tuple[Any, ...]) -> None:
     if callable(initializer):
         try:
             initializer(*initargs)
-        except Exception:
-            pass
+        except Exception as exc:
+            _mp_debug(f"mp: worker initializer failed {type(exc).__name__}: {exc}")
     tasks_done = 0
     while True:
         try:
             message = hub.recv(timeout=None)
-        except Exception:
+        except Exception as exc:
+            _mp_debug(f"mp: worker recv error {type(exc).__name__}: {exc}")
             break
         if not isinstance(message, tuple) or not message:
             continue

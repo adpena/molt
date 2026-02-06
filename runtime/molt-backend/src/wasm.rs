@@ -430,16 +430,16 @@ impl WasmBackend {
             std::iter::repeat_n(ValType::I64, 5),
             std::iter::once(ValType::I64),
         );
-        // Type 13: (i64) -> i32 (chan_new, handle_resolve)
+        // Type 13: (i64) -> i32 (handle_resolve)
         self.types
             .function(std::iter::once(ValType::I64), std::iter::once(ValType::I32));
-        // Type 14: (i32) -> i64 (chan_recv)
+        // Type 14: (i32) -> i64 (reserved)
         self.types
             .function(std::iter::once(ValType::I32), std::iter::once(ValType::I64));
-        // Type 15: (i32) -> () (chan_drop)
+        // Type 15: (i32) -> () (reserved)
         self.types
             .function(std::iter::once(ValType::I32), std::iter::empty::<ValType>());
-        // Type 16: (i32, i64) -> i64 (chan_send, object_field_get_ptr, closure_load, object_set_class)
+        // Type 16: (i32, i64) -> i64 (object_field_get_ptr, closure_load, object_set_class)
         self.types
             .function([ValType::I32, ValType::I64], std::iter::once(ValType::I64));
         // Type 17: (i32, i64, i64) -> i64 (guard_layout_ptr, closure_store, object_field_set/init)
@@ -649,14 +649,14 @@ impl WasmBackend {
         add_import("rlock_release", 2, &mut self.import_ids);
         add_import("rlock_locked", 2, &mut self.import_ids);
         add_import("rlock_drop", 2, &mut self.import_ids);
-        add_import("chan_new", 13, &mut self.import_ids);
-        add_import("chan_send", 16, &mut self.import_ids);
-        add_import("chan_send_blocking", 16, &mut self.import_ids);
-        add_import("chan_try_send", 16, &mut self.import_ids);
-        add_import("chan_recv", 14, &mut self.import_ids);
-        add_import("chan_recv_blocking", 14, &mut self.import_ids);
-        add_import("chan_try_recv", 14, &mut self.import_ids);
-        add_import("chan_drop", 15, &mut self.import_ids);
+        add_import("chan_new", 2, &mut self.import_ids);
+        add_import("chan_send", 3, &mut self.import_ids);
+        add_import("chan_send_blocking", 3, &mut self.import_ids);
+        add_import("chan_try_send", 3, &mut self.import_ids);
+        add_import("chan_recv", 2, &mut self.import_ids);
+        add_import("chan_recv_blocking", 2, &mut self.import_ids);
+        add_import("chan_try_recv", 2, &mut self.import_ids);
+        add_import("chan_drop", 2, &mut self.import_ids);
         add_import("add", 3, &mut self.import_ids);
         add_import("inplace_add", 3, &mut self.import_ids);
         add_import("vec_sum_int", 3, &mut self.import_ids);
@@ -1427,17 +1427,10 @@ impl WasmBackend {
                 builtin_wrapper_funcs.push(((*runtime_name).to_string(), *import_name, *arity));
             }
         }
-        let builtin_i32_arg0_imports: HashSet<&str> = [
-            "chan_send",
-            "chan_send_blocking",
-            "chan_try_send",
-            "chan_recv",
-            "chan_recv_blocking",
-            "chan_try_recv",
-        ]
-        .into_iter()
-        .collect();
-        let builtin_i32_return_imports: HashSet<&str> = ["chan_new"].into_iter().collect();
+        // Intrinsic ABIs are canonicalized to i64/u64 for dynamic function-object dispatch.
+        // Keep wrapper conversion sets empty so generated wrappers preserve 64-bit bits values.
+        let builtin_i32_arg0_imports: HashSet<&str> = [].into_iter().collect();
+        let builtin_i32_return_imports: HashSet<&str> = [].into_iter().collect();
         let void_builtin_imports: HashSet<&str> = [
             "process_drop",
             "socket_drop",
@@ -2282,23 +2275,23 @@ impl WasmBackend {
         } else {
             None
         };
-let block_map_base_local = if stateful || jumpful {
-    let idx = local_count;
-    local_types.push(ValType::I64);
-    local_count += 1;
-    Some(idx)
-} else {
-    None
-};
-let return_local = if stateful || jumpful {
-    let idx = local_count;
-    local_types.push(ValType::I64);
-    local_count += 1;
-    Some(idx)
-} else {
-    None
-};
-let _ = local_count;
+        let block_map_base_local = if stateful || jumpful {
+            let idx = local_count;
+            local_types.push(ValType::I64);
+            local_count += 1;
+            Some(idx)
+        } else {
+            None
+        };
+        let return_local = if stateful || jumpful {
+            let idx = local_count;
+            local_types.push(ValType::I64);
+            local_count += 1;
+            Some(idx)
+        } else {
+            None
+        };
+        let _ = local_count;
         let mut func = Function::new_with_locals_types(local_types);
         #[derive(Clone, Copy)]
         enum ControlKind {
@@ -4857,8 +4850,18 @@ let _ = local_count;
                     }
                     "set_attr_generic_obj" => {
                         let args = op.args.as_ref().unwrap();
-                        let obj = locals[&args[0]];
-                        let val = locals[&args[1]];
+                        let obj = *locals.get(&args[0]).unwrap_or_else(|| {
+                            panic!(
+                                "missing local {} in {} for {}",
+                                args[0], func_ir.name, op.kind
+                            )
+                        });
+                        let val = *locals.get(&args[1]).unwrap_or_else(|| {
+                            panic!(
+                                "missing local {} in {} for {}",
+                                args[1], func_ir.name, op.kind
+                            )
+                        });
                         let attr = op.s_value.as_ref().unwrap();
                         let bytes = attr.as_bytes();
                         let data = self.add_data_segment(reloc_enabled, bytes);
@@ -5623,6 +5626,20 @@ let _ = local_count;
                         func.instruction(&Instruction::LocalSet(out));
                         func.instruction(&Instruction::End);
                     }
+                    "call_internal" => {
+                        let target_name = op.s_value.as_ref().unwrap();
+                        let args_names = op.args.as_ref().unwrap();
+                        let out = locals[op.out.as_ref().unwrap()];
+                        let func_idx = *func_indices
+                            .get(target_name)
+                            .expect("call_internal target not found");
+                        for arg_name in args_names {
+                            let arg = locals[arg_name];
+                            func.instruction(&Instruction::LocalGet(arg));
+                        }
+                        emit_call(func, reloc_enabled, func_idx);
+                        func.instruction(&Instruction::LocalSet(out));
+                    }
                     "call_guarded" => {
                         let target_name = op.s_value.as_ref().unwrap();
                         let args_names = op.args.as_ref().unwrap();
@@ -5935,15 +5952,14 @@ let _ = local_count;
                         let cap = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(cap));
                         emit_call(func, reloc_enabled, import_ids["chan_new"]);
-                        func.instruction(&Instruction::I64ExtendI32U);
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                     }
                     "chan_drop" => {
                         let args = op.args.as_ref().unwrap();
                         let chan = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(chan));
-                        func.instruction(&Instruction::I32WrapI64);
                         emit_call(func, reloc_enabled, import_ids["chan_drop"]);
+                        func.instruction(&Instruction::Drop);
                     }
                     "module_new" => {
                         let args = op.args.as_ref().unwrap();
@@ -6732,13 +6748,13 @@ let _ = local_count;
             }
             func.instruction(&Instruction::End);
 
-let dispatch_depths: Vec<u32> = (0..block_count)
-    .map(|idx| (block_count - 1 - idx) as u32)
-    .collect();
+            let dispatch_depths: Vec<u32> = (0..block_count)
+                .map(|idx| (block_count - 1 - idx) as u32)
+                .collect();
 
-let return_local = return_local.expect("stateful/jumpful missing return local");
-func.instruction(&Instruction::Block(BlockType::Empty));
-func.instruction(&Instruction::Loop(BlockType::Empty));
+            let return_local = return_local.expect("stateful/jumpful missing return local");
+            func.instruction(&Instruction::Block(BlockType::Empty));
+            func.instruction(&Instruction::Loop(BlockType::Empty));
             for _ in (0..block_count).rev() {
                 func.instruction(&Instruction::Block(BlockType::Empty));
             }
@@ -6814,11 +6830,11 @@ func.instruction(&Instruction::Loop(BlockType::Empty));
                                 .and_then(|state_id| state_map.get(state_id).copied())
                                 .map(|idx| !(idx as i64));
                             let next_state_id = op.value.unwrap();
-            let out = locals[op.out.as_ref().unwrap()];
-            let next_block = idx + 1;
-            let return_depth = depth + 2;
-            func.instruction(&Instruction::I64Const(next_block as i64));
-            func.instruction(&Instruction::LocalSet(state_local));
+                            let out = locals[op.out.as_ref().unwrap()];
+                            let next_block = idx + 1;
+                            let return_depth = depth + 2;
+                            func.instruction(&Instruction::I64Const(next_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
                             func.instruction(&Instruction::LocalGet(self_ptr_local));
                             func.instruction(&Instruction::I32WrapI64);
                             func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
@@ -6840,18 +6856,18 @@ func.instruction(&Instruction::Loop(BlockType::Empty));
                             func.instruction(&Instruction::LocalSet(out));
                             func.instruction(&Instruction::LocalGet(out));
                             func.instruction(&Instruction::I64Const(box_pending()));
-            func.instruction(&Instruction::I64Eq);
-            func.instruction(&Instruction::If(BlockType::Empty));
-            func.instruction(&Instruction::LocalGet(self_ptr_local));
-            func.instruction(&Instruction::I32WrapI64);
-            func.instruction(&Instruction::LocalGet(future));
-            emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-            emit_call(func, reloc_enabled, import_ids["sleep_register"]);
-            func.instruction(&Instruction::Drop);
-            func.instruction(&Instruction::I64Const(box_pending()));
-            func.instruction(&Instruction::LocalSet(return_local));
-            func.instruction(&Instruction::Br(return_depth));
-            func.instruction(&Instruction::End);
+                            func.instruction(&Instruction::I64Eq);
+                            func.instruction(&Instruction::If(BlockType::Empty));
+                            func.instruction(&Instruction::LocalGet(self_ptr_local));
+                            func.instruction(&Instruction::I32WrapI64);
+                            func.instruction(&Instruction::LocalGet(future));
+                            emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+                            emit_call(func, reloc_enabled, import_ids["sleep_register"]);
+                            func.instruction(&Instruction::Drop);
+                            func.instruction(&Instruction::I64Const(box_pending()));
+                            func.instruction(&Instruction::LocalSet(return_local));
+                            func.instruction(&Instruction::Br(return_depth));
+                            func.instruction(&Instruction::End);
                             if let Some(slot) = slot_bits {
                                 func.instruction(&Instruction::LocalGet(self_ptr_local));
                                 func.instruction(&Instruction::I32WrapI64);
@@ -6935,7 +6951,6 @@ func.instruction(&Instruction::Loop(BlockType::Empty));
                                 memory_index: 0,
                             }));
                             func.instruction(&Instruction::LocalGet(chan));
-                            func.instruction(&Instruction::I32WrapI64);
                             func.instruction(&Instruction::LocalGet(val));
                             emit_call(func, reloc_enabled, import_ids["chan_send"]);
                             let out = locals[op.out.as_ref().unwrap()];
@@ -6990,7 +7005,6 @@ func.instruction(&Instruction::Loop(BlockType::Empty));
                                 memory_index: 0,
                             }));
                             func.instruction(&Instruction::LocalGet(chan));
-                            func.instruction(&Instruction::I32WrapI64);
                             emit_call(func, reloc_enabled, import_ids["chan_recv"]);
                             let out = locals[op.out.as_ref().unwrap()];
                             func.instruction(&Instruction::LocalSet(out));
@@ -7236,14 +7250,14 @@ func.instruction(&Instruction::Loop(BlockType::Empty));
                 }
             }
 
-func.instruction(&Instruction::Br(0));
-func.instruction(&Instruction::End);
-func.instruction(&Instruction::I64Const(box_none()));
-func.instruction(&Instruction::LocalSet(return_local));
-func.instruction(&Instruction::End);
-func.instruction(&Instruction::LocalGet(return_local));
-func.instruction(&Instruction::Return);
-func.instruction(&Instruction::End);
+            func.instruction(&Instruction::Br(0));
+            func.instruction(&Instruction::End);
+            func.instruction(&Instruction::I64Const(box_none()));
+            func.instruction(&Instruction::LocalSet(return_local));
+            func.instruction(&Instruction::End);
+            func.instruction(&Instruction::LocalGet(return_local));
+            func.instruction(&Instruction::Return);
+            func.instruction(&Instruction::End);
         } else if jumpful {
             let func = &mut func;
             let state_local = state_local.expect("state local missing for jumpful wasm");

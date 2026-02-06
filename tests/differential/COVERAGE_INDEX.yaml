@@ -196,10 +196,6 @@ stdlib:
   ipaddress:
     tests:
       - tests/differential/planned/ipaddress_basic.py
-  importlib:
-    tests:
-      - tests/differential/basic/test_support_findfile_basic.py
-      - tests/differential/basic/test_support_import_helper_basic.py
   json:
     tests:
       - tests/differential/basic/stdlib_json_basic.py
@@ -745,6 +741,7 @@ stdlib:
   test.support:
     tests:
       - tests/differential/basic/test_support_findfile_basic.py
+      - tests/differential/basic/test_support_import_helper_basic.py
   importlib:
     tests:
       - tests/differential/planned/importlib_import_module_basic.py

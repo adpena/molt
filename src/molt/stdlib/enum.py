@@ -28,6 +28,10 @@ def _is_auto_value(obj: object) -> bool:
 
 
 class EnumMeta(type):
+    _member_names_: list[str]
+    _member_map_: dict[str, Any]
+    _value2member_map_: dict[Any, Any]
+
     def __new__(
         mcls, name: str, bases: tuple[type, ...], namespace: dict[str, Any], **kwargs
     ):
@@ -141,17 +145,17 @@ class IntEnum(int, Enum):
 class Flag(Enum):
     def __or__(self, other: Any):
         if isinstance(other, Flag):
-            other_val = int(other)
+            other_val = int(other._value_)
         else:
             other_val = int(other)
-        return self.__class__(int(self) | other_val)
+        return self.__class__(int(self._value_) | other_val)
 
     def __and__(self, other: Any):
         if isinstance(other, Flag):
-            other_val = int(other)
+            other_val = int(other._value_)
         else:
             other_val = int(other)
-        return self.__class__(int(self) & other_val)
+        return self.__class__(int(self._value_) & other_val)
 
 
 class IntFlag(int, Flag):

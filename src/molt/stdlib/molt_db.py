@@ -9,16 +9,16 @@ import asyncio as _asyncio
 from _intrinsics import require_intrinsic as _intrinsics_require
 
 
-
-_PENDING = getattr(_asyncio, "_PENDING", 0x7FFD_0000_0000_0000)
-
 _molt_db_query_obj = _intrinsics_require("molt_db_query_obj", globals())
 _molt_db_exec_obj = _intrinsics_require("molt_db_exec_obj", globals())
 _molt_stream_recv = _intrinsics_require("molt_stream_recv", globals())
 _molt_stream_drop = _intrinsics_require("molt_stream_drop", globals())
+_molt_pending = _intrinsics_require("molt_pending", globals())
 _molt_msgpack_parse_scalar_obj = _intrinsics_require(
     "molt_msgpack_parse_scalar_obj", globals()
 )
+
+_PENDING_SENTINEL: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -36,11 +36,23 @@ def _require_intrinsic(fn: Any, name: str) -> Any:
     return fn
 
 
+def _pending_sentinel() -> Any:
+    global _PENDING_SENTINEL
+    if _PENDING_SENTINEL is None:
+        _PENDING_SENTINEL = _require_intrinsic(_molt_pending, "molt_pending")()
+    return _PENDING_SENTINEL
+
+
+def _is_pending(value: Any) -> bool:
+    pending = _pending_sentinel()
+    return value is pending or value == pending
+
+
 async def _recv_frame(handle: Any) -> bytes | None:
     recv = _require_intrinsic(_molt_stream_recv, "molt_stream_recv")
     while True:
         res = recv(handle)
-        if res == _PENDING:
+        if _is_pending(res):
             await _asyncio.sleep(0.0)
             continue
         if res is None:

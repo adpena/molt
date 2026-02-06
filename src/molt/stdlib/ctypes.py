@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any
+from types import ModuleType
+from typing import Any, cast
 
+_capabilities: ModuleType | None
 try:
-    from molt import capabilities as _capabilities
+    from molt import capabilities as _capabilities_raw
 except Exception:
     _capabilities = None
+else:
+    _capabilities = cast(ModuleType, _capabilities_raw)
 
 __all__ = [
     "Structure",

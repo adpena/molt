@@ -71,6 +71,12 @@ struct MoltSocket {
     refs: AtomicUsize,
 }
 
+struct MoltSocketReader {
+    socket_bits: u64,
+    buffer: Vec<u8>,
+    eof: bool,
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(unix)]
 type SocketFd = RawFd;
@@ -542,6 +548,239 @@ pub(crate) fn require_process_capability<T: ExceptionSentinel>(
     caps: &[&str],
 ) -> Result<(), T> {
     require_capability(_py, caps, "process")
+}
+
+enum SocketReaderPull {
+    Pending,
+    Eof,
+    Data,
+}
+
+unsafe fn socket_reader_pull(_py: &PyToken<'_>, reader: &mut MoltSocketReader) -> Result<SocketReaderPull, u64> {
+    if reader.eof {
+        return Ok(SocketReaderPull::Eof);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let socket_ptr = socket_ptr_from_bits_or_fd(reader.socket_bits);
+        if socket_ptr.is_null() {
+            return Err(raise_exception::<u64>(_py, "TypeError", "invalid socket handle"));
+        }
+        let mut buf = vec![0u8; 4096];
+        let res = with_socket_mut(socket_ptr, |inner| {
+            #[cfg(unix)]
+            let fd = inner
+                .raw_fd()
+                .ok_or_else(|| std::io::Error::new(ErrorKind::NotConnected, "socket closed"))?;
+            #[cfg(windows)]
+            let fd = inner
+                .raw_socket()
+                .ok_or_else(|| std::io::Error::new(ErrorKind::NotConnected, "socket closed"))?;
+            let ret = unsafe {
+                libc::recv(
+                    libc_socket(fd),
+                    buf.as_mut_ptr() as *mut c_void,
+                    buf.len(),
+                    0,
+                )
+            };
+            if ret >= 0 {
+                Ok(ret as usize)
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+        match res {
+            Ok(0) => {
+                reader.eof = true;
+                Ok(SocketReaderPull::Eof)
+            }
+            Ok(n) => {
+                reader.buffer.extend_from_slice(&buf[..n]);
+                Ok(SocketReaderPull::Data)
+            }
+            Err(err) => {
+                let raw = err.raw_os_error();
+                let would_block = err.kind() == ErrorKind::WouldBlock
+                    || matches!(raw, Some(code) if code == libc::EAGAIN || code == libc::EWOULDBLOCK);
+                if would_block {
+                    Ok(SocketReaderPull::Pending)
+                } else {
+                    Err(raise_os_error::<u64>(_py, err, "recv"))
+                }
+            }
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let handle = match socket_handle_from_bits(_py, reader.socket_bits) {
+            Ok(val) => val,
+            Err(msg) => return Err(raise_exception::<u64>(_py, "TypeError", &msg)),
+        };
+        let mut buf = vec![0u8; 4096];
+        let rc = unsafe { crate::molt_socket_recv_host(handle, buf.as_mut_ptr() as u32, buf.len() as u32, 0) };
+        if rc >= 0 {
+            let n = rc as usize;
+            if n == 0 {
+                reader.eof = true;
+                return Ok(SocketReaderPull::Eof);
+            }
+            reader.buffer.extend_from_slice(&buf[..n]);
+            return Ok(SocketReaderPull::Data);
+        }
+        let errno = errno_from_rc(rc);
+        if would_block_errno(errno) {
+            Ok(SocketReaderPull::Pending)
+        } else {
+            Err(raise_os_error_errno::<u64>(_py, errno as i64, "recv"))
+        }
+    }
+}
+
+fn socket_reader_take(_py: &PyToken<'_>, reader: &mut MoltSocketReader, count: usize) -> u64 {
+    let n = count.min(reader.buffer.len());
+    let ptr = alloc_bytes(_py, &reader.buffer[..n]);
+    if ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    reader.buffer.drain(..n);
+    MoltObject::from_ptr(ptr).bits()
+}
+
+#[no_mangle]
+/// # Safety
+/// Caller must pass a valid socket handle from `molt_socket_new`/`molt_socket_clone`.
+pub unsafe extern "C" fn molt_socket_reader_new(sock_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let clone_bits = molt_socket_clone(sock_bits);
+        if obj_from_bits(clone_bits).is_none() {
+            return MoltObject::none().bits();
+        }
+        let reader = Box::new(MoltSocketReader {
+            socket_bits: clone_bits,
+            buffer: Vec::new(),
+            eof: false,
+        });
+        bits_from_ptr(Box::into_raw(reader) as *mut u8)
+    })
+}
+
+#[no_mangle]
+/// # Safety
+/// Caller must pass a valid socket reader handle from `molt_socket_reader_new`.
+pub unsafe extern "C" fn molt_socket_reader_drop(reader_bits: u64) {
+    crate::with_gil_entry!(_py, {
+        let reader_ptr = ptr_from_bits(reader_bits);
+        if reader_ptr.is_null() {
+            return;
+        }
+        let reader = Box::from_raw(reader_ptr as *mut MoltSocketReader);
+        molt_socket_drop(reader.socket_bits);
+    })
+}
+
+#[no_mangle]
+/// # Safety
+/// Caller must pass a valid socket reader handle from `molt_socket_reader_new`.
+pub unsafe extern "C" fn molt_socket_reader_at_eof(reader_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let reader_ptr = ptr_from_bits(reader_bits);
+        if reader_ptr.is_null() {
+            return MoltObject::from_bool(true).bits();
+        }
+        let reader = &*(reader_ptr as *mut MoltSocketReader);
+        MoltObject::from_bool(reader.eof && reader.buffer.is_empty()).bits()
+    })
+}
+
+#[no_mangle]
+/// # Safety
+/// Caller must pass a valid socket reader handle from `molt_socket_reader_new`.
+pub unsafe extern "C" fn molt_socket_reader_read(reader_bits: u64, n_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let reader_ptr = ptr_from_bits(reader_bits);
+        if reader_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let reader = &mut *(reader_ptr as *mut MoltSocketReader);
+        let n = to_i64(obj_from_bits(n_bits)).unwrap_or(-1);
+        if n == 0 {
+            let ptr = alloc_bytes(_py, &[]);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(ptr).bits();
+        }
+        if n < 0 {
+            loop {
+                if reader.eof {
+                    return socket_reader_take(_py, reader, reader.buffer.len());
+                }
+                match socket_reader_pull(_py, reader) {
+                    Ok(SocketReaderPull::Pending) => return pending_bits_i64() as u64,
+                    Ok(SocketReaderPull::Eof) | Ok(SocketReaderPull::Data) => {}
+                    Err(bits) => return bits,
+                }
+            }
+        }
+        if !reader.buffer.is_empty() {
+            return socket_reader_take(_py, reader, n as usize);
+        }
+        if reader.eof {
+            let ptr = alloc_bytes(_py, &[]);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(ptr).bits();
+        }
+        loop {
+            match socket_reader_pull(_py, reader) {
+                Ok(SocketReaderPull::Pending) => return pending_bits_i64() as u64,
+                Ok(SocketReaderPull::Eof) => {
+                    if reader.buffer.is_empty() {
+                        let ptr = alloc_bytes(_py, &[]);
+                        if ptr.is_null() {
+                            return MoltObject::none().bits();
+                        }
+                        return MoltObject::from_ptr(ptr).bits();
+                    }
+                    return socket_reader_take(_py, reader, n as usize);
+                }
+                Ok(SocketReaderPull::Data) => {
+                    if !reader.buffer.is_empty() {
+                        return socket_reader_take(_py, reader, n as usize);
+                    }
+                }
+                Err(bits) => return bits,
+            }
+        }
+    })
+}
+
+#[no_mangle]
+/// # Safety
+/// Caller must pass a valid socket reader handle from `molt_socket_reader_new`.
+pub unsafe extern "C" fn molt_socket_reader_readline(reader_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let reader_ptr = ptr_from_bits(reader_bits);
+        if reader_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let reader = &mut *(reader_ptr as *mut MoltSocketReader);
+        loop {
+            if let Some(idx) = reader.buffer.iter().position(|&b| b == b'\n') {
+                return socket_reader_take(_py, reader, idx + 1);
+            }
+            if reader.eof {
+                return socket_reader_take(_py, reader, reader.buffer.len());
+            }
+            match socket_reader_pull(_py, reader) {
+                Ok(SocketReaderPull::Pending) => return pending_bits_i64() as u64,
+                Ok(SocketReaderPull::Eof) | Ok(SocketReaderPull::Data) => {}
+                Err(bits) => return bits,
+            }
+        }
+    })
 }
 
 fn host_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<Option<String>, String> {

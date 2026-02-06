@@ -1,8 +1,8 @@
 use crate::intrinsics::generated::{resolve_symbol, INTRINSICS};
 use crate::{
     alloc_dict_with_pairs, alloc_function_obj, alloc_string, builtin_classes, dec_ref_bits,
-    dict_get_in_place, dict_set_in_place, inc_ref_bits, module_dict_bits, obj_from_bits,
-    object_set_class_bits, object_type_id, function_set_trampoline_ptr, MoltObject, PyToken,
+    dict_get_in_place, dict_set_in_place, function_set_trampoline_ptr, inc_ref_bits,
+    module_dict_bits, obj_from_bits, object_set_class_bits, object_type_id, MoltObject, PyToken,
     TYPE_ID_DICT, TYPE_ID_MODULE,
 };
 

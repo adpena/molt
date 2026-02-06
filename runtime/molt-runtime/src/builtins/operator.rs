@@ -2,6 +2,7 @@ use std::sync::atomic::AtomicU64;
 
 use molt_obj_model::MoltObject;
 
+use crate::builtins::numbers::{index_bigint_from_obj, int_bits_from_bigint};
 use crate::{
     alloc_class_obj, alloc_function_obj, alloc_string, alloc_tuple, builtin_classes,
     class_dict_bits, dec_ref_bits, dict_set_in_place, exception_pending, inc_ref_bits,
@@ -10,7 +11,6 @@ use crate::{
     object_set_class_bits, object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned,
     type_name, PyToken, TYPE_ID_DICT, TYPE_ID_STRING, TYPE_ID_TUPLE,
 };
-use crate::builtins::numbers::{index_bigint_from_obj, int_bits_from_bigint};
 
 static ITEMGETTER_CLASS: AtomicU64 = AtomicU64::new(0);
 static ATTRGETTER_CLASS: AtomicU64 = AtomicU64::new(0);
@@ -73,12 +73,7 @@ fn operator_class(
     })
 }
 
-fn builtin_func_bits(
-    _py: &PyToken<'_>,
-    slot: &AtomicU64,
-    fn_ptr: u64,
-    arity: u64,
-) -> u64 {
+fn builtin_func_bits(_py: &PyToken<'_>, slot: &AtomicU64, fn_ptr: u64, arity: u64) -> u64 {
     init_atomic_bits(_py, slot, || {
         let ptr = alloc_function_obj(_py, fn_ptr, arity);
         if ptr.is_null() {
@@ -192,15 +187,27 @@ pub extern "C" fn molt_operator_itemgetter(items_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let items_obj = obj_from_bits(items_bits);
         let Some(items_ptr) = items_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "itemgetter expected at least 1 argument");
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "itemgetter expected at least 1 argument",
+            );
         };
         unsafe {
             if object_type_id(items_ptr) != TYPE_ID_TUPLE {
-                return raise_exception::<_>(_py, "TypeError", "itemgetter expected at least 1 argument");
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "itemgetter expected at least 1 argument",
+                );
             }
             let items = seq_vec_ref(items_ptr);
             if items.is_empty() {
-                return raise_exception::<_>(_py, "TypeError", "itemgetter expected at least 1 argument");
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "itemgetter expected at least 1 argument",
+                );
             }
         }
         let class_bits = itemgetter_class(_py);
@@ -225,22 +232,42 @@ pub extern "C" fn molt_operator_attrgetter(attrs_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let attrs_obj = obj_from_bits(attrs_bits);
         let Some(attrs_ptr) = attrs_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "attrgetter expected at least 1 argument");
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "attrgetter expected at least 1 argument",
+            );
         };
         unsafe {
             if object_type_id(attrs_ptr) != TYPE_ID_TUPLE {
-                return raise_exception::<_>(_py, "TypeError", "attrgetter expected at least 1 argument");
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "attrgetter expected at least 1 argument",
+                );
             }
             let attrs = seq_vec_ref(attrs_ptr);
             if attrs.is_empty() {
-                return raise_exception::<_>(_py, "TypeError", "attrgetter expected at least 1 argument");
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "attrgetter expected at least 1 argument",
+                );
             }
             for &attr_bits in attrs.iter() {
                 let Some(attr_ptr) = obj_from_bits(attr_bits).as_ptr() else {
-                    return raise_exception::<_>(_py, "TypeError", "attrgetter expects string attributes");
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "attrgetter expects string attributes",
+                    );
                 };
                 if object_type_id(attr_ptr) != TYPE_ID_STRING {
-                    return raise_exception::<_>(_py, "TypeError", "attrgetter expects string attributes");
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "attrgetter expects string attributes",
+                    );
                 }
             }
         }
@@ -262,7 +289,11 @@ pub extern "C" fn molt_operator_attrgetter(attrs_bits: u64) -> u64 {
 }
 
 #[no_mangle]
-pub extern "C" fn molt_operator_methodcaller(name_bits: u64, args_bits: u64, kwargs_bits: u64) -> u64 {
+pub extern "C" fn molt_operator_methodcaller(
+    name_bits: u64,
+    args_bits: u64,
+    kwargs_bits: u64,
+) -> u64 {
     crate::with_gil_entry!(_py, {
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {

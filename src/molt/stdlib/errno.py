@@ -9,7 +9,6 @@ from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 
-
 def _load_errno_constants() -> tuple[dict[str, int], dict[int, str]]:
     intrinsic = _require_intrinsic("molt_errno_constants", globals())
     try:

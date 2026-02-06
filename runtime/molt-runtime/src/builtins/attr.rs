@@ -929,6 +929,26 @@ pub(crate) unsafe fn attr_lookup_ptr_allow_missing(
 ) -> Option<u64> {
     crate::gil_assert();
     let res = attr_lookup_ptr_any(_py, obj_ptr, attr_bits);
+    if matches!(
+        std::env::var("MOLT_TRACE_INIT_SUBCLASS").ok().as_deref(),
+        Some("1")
+    ) && string_obj_to_owned(obj_from_bits(attr_bits)).as_deref() == Some("__init_subclass__")
+    {
+        match res {
+            Some(bits) => {
+                let obj = obj_from_bits(bits);
+                eprintln!(
+                    "molt init_subclass allow_missing res_bits=0x{:x} none={} ptr={}",
+                    bits,
+                    obj.is_none(),
+                    obj.as_ptr().is_some(),
+                );
+            }
+            None => {
+                eprintln!("molt init_subclass allow_missing res=None");
+            }
+        }
+    }
     if res.is_some() {
         return res;
     }

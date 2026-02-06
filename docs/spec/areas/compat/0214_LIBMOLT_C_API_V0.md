@@ -1,7 +1,7 @@
 # libmolt C-API v0 (Extension Compatibility)
-**Spec ID:** 0214  
-**Status:** Draft  
-**Owner:** runtime + tooling  
+**Spec ID:** 0214
+**Status:** Draft
+**Owner:** runtime + tooling
 **Goal:** Define the minimal, stable `libmolt` C-API subset that enables
 performance-first C-extension compatibility without embedding CPython.
 
@@ -106,4 +106,3 @@ Extensions should declare:
 ## 9. Relationship to Bridge Modes
 - The CPython bridge remains an explicit, capability-gated escape hatch.
 - `libmolt` is the primary compatibility path and the performance default.
-

@@ -6,12 +6,13 @@ from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 
-_require_intrinsic("molt_stdlib_probe", globals())
-
 # TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): tighten
 # _abc parity once weakref/GC semantics are complete and ABC caching is validated.
 
 from _weakrefset import WeakSet
+
+_require_intrinsic("molt_stdlib_probe", globals())
+
 
 _abc_invalidation_counter = 0
 
@@ -35,54 +36,15 @@ def _is_abstract(value):
 
 
 def _call_subclasshook(cls, subclass):
-    hook = cls.__dict__.get("__subclasshook__")
-    if hook is None:
-        hook = type.__dict__.get("__subclasshook__")
+    hook = getattr(cls, "__subclasshook__", None)
     if hook is None:
         return NotImplemented
-
-    def _try_call(func, *args):
-        try:
-            return func(*args)
-        except TypeError as exc:
-            if "call arity mismatch" in str(exc):
-                return None
-            raise
-
-    if hasattr(hook, "__func__"):
-        func = hook.__func__
-        if func is not None:
-            result = _try_call(func, cls, subclass)
-            if result is not None:
-                return result
-
-    if hasattr(hook, "__get__"):
-        try:
-            bound = hook.__get__(None, cls)
-        except TypeError as exc:
-            if "call arity mismatch" not in str(exc):
-                raise
-            bound = None
-        if callable(bound):
-            result = _try_call(bound, subclass)
-            if result is not None:
-                return result
-
-    if callable(hook):
-        result = _try_call(hook, subclass)
-        if result is not None:
-            return result
-
-    bound = getattr(cls, "__subclasshook__", None)
-    if callable(bound):
-        result = _try_call(bound, subclass)
-        if result is not None:
-            return result
-        result = _try_call(bound, cls, subclass)
-        if result is not None:
-            return result
-
-    return NotImplemented
+    try:
+        return hook(subclass)
+    except TypeError as exc:
+        if "call arity mismatch" in str(exc):
+            return NotImplemented
+        raise
 
 
 def _get_subclasshook(cls):

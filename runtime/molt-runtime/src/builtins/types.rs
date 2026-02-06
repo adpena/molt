@@ -14,15 +14,15 @@ use crate::{
     class_set_mro_bits, class_set_qualname_bits, dataclass_set_class_raw, dec_ref_bits,
     dict_del_in_place, dict_get_in_place, dict_order, dict_set_in_place, dict_update_apply,
     dict_update_set_in_place, exception_pending, header_from_obj_ptr, inc_ref_bits,
-    init_atomic_bits, intern_static_name, instance_dict_bits, is_builtin_class_bits, is_truthy,
+    init_atomic_bits, instance_dict_bits, intern_static_name, is_builtin_class_bits, is_truthy,
     isinstance_runtime, issubclass_bits, issubclass_runtime, maybe_ptr_from_bits, missing_bits,
     molt_alloc, molt_call_bind, molt_callargs_new, molt_callargs_push_kw, molt_callargs_push_pos,
-    molt_contains, molt_eq, molt_getattr_builtin, molt_index, molt_iter,
+    molt_contains, molt_dict_get, molt_eq, molt_getattr_builtin, molt_index, molt_iter,
     molt_iter_next, molt_len, molt_object_setattr, molt_repr_from_obj, obj_from_bits,
-    object_class_bits, object_set_class_bits, object_type_id, property_del_bits,
-    property_get_bits, property_set_bits, raise_exception, raise_not_iterable, runtime_state,
-    seq_vec_ref, string_obj_to_owned, to_i64, tuple_from_iter_bits, type_name, type_of_bits,
-    PyToken, HEADER_FLAG_SKIP_CLASS_DECREF, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_PROPERTY,
+    object_class_bits, object_set_class_bits, object_type_id, property_del_bits, property_get_bits,
+    property_set_bits, raise_exception, raise_not_iterable, runtime_state, seq_vec_ref,
+    string_obj_to_owned, to_i64, tuple_from_iter_bits, type_name, type_of_bits, PyToken,
+    HEADER_FLAG_SKIP_CLASS_DECREF, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_PROPERTY,
     TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE,
 };
 
@@ -1168,8 +1168,18 @@ fn mark_vararg_method(_py: &PyToken<'_>, func_bits: u64, include_self: bool) {
         b"__molt_varkw__",
     );
     unsafe {
-        dict_set_in_place(_py, dict_ptr, vararg_name, MoltObject::from_bool(true).bits());
-        dict_set_in_place(_py, dict_ptr, varkw_name, MoltObject::from_bool(true).bits());
+        dict_set_in_place(
+            _py,
+            dict_ptr,
+            vararg_name,
+            MoltObject::from_bool(true).bits(),
+        );
+        dict_set_in_place(
+            _py,
+            dict_ptr,
+            varkw_name,
+            MoltObject::from_bool(true).bits(),
+        );
     }
 }
 
@@ -1280,12 +1290,7 @@ fn mappingproxy_class(_py: &PyToken<'_>) -> u64 {
 
 pub(crate) fn method_class(_py: &PyToken<'_>) -> u64 {
     let class_bits = types_class(_py, &METHOD_CLASS, "method", 16);
-    let new_bits = builtin_func_bits(
-        _py,
-        &METHOD_NEW_FN,
-        crate::molt_types_method_new as u64,
-        3,
-    );
+    let new_bits = builtin_func_bits(_py, &METHOD_NEW_FN, crate::molt_types_method_new as u64, 3);
     let init_bits = builtin_func_bits(
         _py,
         &METHOD_INIT_FN,
@@ -1340,12 +1345,7 @@ fn cell_class(_py: &PyToken<'_>) -> u64 {
     // TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): replace
     // placeholder cell type once closure cell objects are implemented.
     let class_bits = types_class(_py, &CELL_CLASS, "cell", 8);
-    let new_bits = builtin_func_bits(
-        _py,
-        &CELL_NEW_FN,
-        crate::molt_types_cell_new as u64,
-        1,
-    );
+    let new_bits = builtin_func_bits(_py, &CELL_NEW_FN, crate::molt_types_cell_new as u64, 1);
     set_class_method(_py, class_bits, "__new__", new_bits);
     class_bits
 }
@@ -1393,7 +1393,11 @@ pub extern "C" fn molt_types_method_init(_self_bits: u64, _func_bits: u64, _self
 pub extern "C" fn molt_types_mappingproxy_new(cls_bits: u64, mapping_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if obj_from_bits(mapping_bits).is_none() {
-            return raise_exception::<_>(_py, "TypeError", "mappingproxy() argument cannot be None");
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "mappingproxy() argument cannot be None",
+            );
         }
         let cls_obj = obj_from_bits(cls_bits);
         let Some(cls_ptr) = cls_obj.as_ptr() else {
@@ -1463,7 +1467,11 @@ pub extern "C" fn molt_types_mappingproxy_contains(self_bits: u64, key_bits: u64
 }
 
 #[no_mangle]
-pub extern "C" fn molt_types_mappingproxy_get(self_bits: u64, args_bits: u64, kwargs_bits: u64) -> u64 {
+pub extern "C" fn molt_types_mappingproxy_get(
+    self_bits: u64,
+    args_bits: u64,
+    kwargs_bits: u64,
+) -> u64 {
     crate::with_gil_entry!(_py, {
         let args_ptr = obj_from_bits(args_bits).as_ptr();
         let Some(args_ptr) = args_ptr else {
@@ -1471,12 +1479,20 @@ pub extern "C" fn molt_types_mappingproxy_get(self_bits: u64, args_bits: u64, kw
         };
         unsafe {
             if object_type_id(args_ptr) != TYPE_ID_TUPLE {
-                return raise_exception::<_>(_py, "TypeError", "mappingproxy.get() expects arguments");
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "mappingproxy.get() expects arguments",
+                );
             }
         }
         let args = unsafe { seq_vec_ref(args_ptr) };
         if args.len() == 0 || args.len() > 2 {
-            return raise_exception::<_>(_py, "TypeError", "mappingproxy.get() takes 1 or 2 arguments");
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "mappingproxy.get() takes 1 or 2 arguments",
+            );
         }
         if let Some(kwargs_ptr) = obj_from_bits(kwargs_bits).as_ptr() {
             unsafe {
@@ -1500,26 +1516,21 @@ pub extern "C" fn molt_types_mappingproxy_get(self_bits: u64, args_bits: u64, kw
         };
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let mapping_bits = unsafe { mappingproxy_mapping_bits(self_ptr) };
-        let missing = missing_bits(_py);
-        let name_bits = intern_static_name(
-            _py,
-            &runtime_state(_py).interned.get_name,
-            b"get",
-        );
-        let method_bits = molt_getattr_builtin(mapping_bits, name_bits, missing);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        if method_bits == missing {
-            return raise_exception::<_>(_py, "AttributeError", "get");
-        }
-        let res_bits = if args.len() == 2 {
-            unsafe { call_callable2(_py, method_bits, key_bits, default_bits) }
-        } else {
-            unsafe { call_callable1(_py, method_bits, key_bits) }
+        // mappingproxy instances in Molt always wrap a class dict, so route to
+        // direct dict.get semantics to avoid descriptor re-resolution.
+        let Some(mapping_ptr) = obj_from_bits(mapping_bits).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "mappingproxy backing store is invalid");
         };
-        dec_ref_bits(_py, method_bits);
-        res_bits
+        unsafe {
+            if object_type_id(mapping_ptr) != TYPE_ID_DICT {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "mappingproxy backing store must be a dict",
+                );
+            }
+        }
+        molt_dict_get(mapping_bits, key_bits, default_bits)
     })
 }
 
@@ -1566,7 +1577,8 @@ pub extern "C" fn molt_types_mappingproxy_repr(self_bits: u64) -> u64 {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let mapping_bits = unsafe { mappingproxy_mapping_bits(self_ptr) };
         let mapping_repr_bits = molt_repr_from_obj(mapping_bits);
-        let mapping_repr = string_obj_to_owned(obj_from_bits(mapping_repr_bits)).unwrap_or_default();
+        let mapping_repr =
+            string_obj_to_owned(obj_from_bits(mapping_repr_bits)).unwrap_or_default();
         dec_ref_bits(_py, mapping_repr_bits);
         let out = format!("mappingproxy({mapping_repr})");
         let out_ptr = alloc_string(_py, out.as_bytes());
@@ -1584,14 +1596,22 @@ pub extern "C" fn molt_types_mappingproxy_setitem(
     _val_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        raise_exception::<_>(_py, "TypeError", "'mappingproxy' object does not support item assignment")
+        raise_exception::<_>(
+            _py,
+            "TypeError",
+            "'mappingproxy' object does not support item assignment",
+        )
     })
 }
 
 #[no_mangle]
 pub extern "C" fn molt_types_mappingproxy_delitem(_self_bits: u64, _key_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        raise_exception::<_>(_py, "TypeError", "'mappingproxy' object does not support item deletion")
+        raise_exception::<_>(
+            _py,
+            "TypeError",
+            "'mappingproxy' object does not support item deletion",
+        )
     })
 }
 
@@ -1625,7 +1645,11 @@ pub extern "C" fn molt_types_simplenamespace_init(
         let args = if let Some(args_ptr) = args_ptr {
             unsafe {
                 if object_type_id(args_ptr) != TYPE_ID_TUPLE {
-                    return raise_exception::<_>(_py, "TypeError", "SimpleNamespace expects arguments");
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "SimpleNamespace expects arguments",
+                    );
                 }
                 seq_vec_ref(args_ptr).clone()
             }
@@ -1633,7 +1657,10 @@ pub extern "C" fn molt_types_simplenamespace_init(
             Vec::new()
         };
         if args.len() > 1 {
-            let msg = format!("SimpleNamespace expected at most 1 argument, got {}", args.len());
+            let msg = format!(
+                "SimpleNamespace expected at most 1 argument, got {}",
+                args.len()
+            );
             return raise_exception::<_>(_py, "TypeError", &msg);
         }
         let dict_ptr = alloc_dict_with_pairs(_py, &[]);
@@ -1653,12 +1680,8 @@ pub extern "C" fn molt_types_simplenamespace_init(
         if let Some(kwargs_ptr) = obj_from_bits(kwargs_bits).as_ptr() {
             unsafe {
                 if object_type_id(kwargs_ptr) == TYPE_ID_DICT {
-                    let _ = dict_update_apply(
-                        _py,
-                        dict_bits,
-                        dict_update_set_in_place,
-                        kwargs_bits,
-                    );
+                    let _ =
+                        dict_update_apply(_py, dict_bits, dict_update_set_in_place, kwargs_bits);
                     if exception_pending(_py) {
                         dec_ref_bits(_py, dict_bits);
                         return MoltObject::none().bits();
@@ -1719,8 +1742,8 @@ pub extern "C" fn molt_types_simplenamespace_repr(self_bits: u64) -> u64 {
                             let key_str = string_obj_to_owned(obj_from_bits(key_bits))
                                 .unwrap_or_else(|| "<key>".to_string());
                             let val_repr_bits = molt_repr_from_obj(val_bits);
-                            let val_repr =
-                                string_obj_to_owned(obj_from_bits(val_repr_bits)).unwrap_or_default();
+                            let val_repr = string_obj_to_owned(obj_from_bits(val_repr_bits))
+                                .unwrap_or_default();
                             dec_ref_bits(_py, val_repr_bits);
                             if !first {
                                 out.push_str(", ");
@@ -1817,7 +1840,11 @@ pub extern "C" fn molt_types_coroutine(func_bits: u64) -> u64 {
 // types.get_original_bases with full CPython semantics.
 pub extern "C" fn molt_types_get_original_bases(_cls_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        raise_exception::<_>(_py, "NotImplementedError", "types.get_original_bases is not implemented")
+        raise_exception::<_>(
+            _py,
+            "NotImplementedError",
+            "types.get_original_bases is not implemented",
+        )
     })
 }
 
@@ -1826,7 +1853,11 @@ pub extern "C" fn molt_types_get_original_bases(_cls_bits: u64) -> u64 {
 // types.prepare_class with full CPython semantics.
 pub extern "C" fn molt_types_prepare_class(_args_bits: u64, _kwargs_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        raise_exception::<_>(_py, "NotImplementedError", "types.prepare_class is not implemented")
+        raise_exception::<_>(
+            _py,
+            "NotImplementedError",
+            "types.prepare_class is not implemented",
+        )
     })
 }
 
@@ -1835,7 +1866,11 @@ pub extern "C" fn molt_types_prepare_class(_args_bits: u64, _kwargs_bits: u64) -
 // types.resolve_bases with full CPython semantics.
 pub extern "C" fn molt_types_resolve_bases(_args_bits: u64, _kwargs_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        raise_exception::<_>(_py, "NotImplementedError", "types.resolve_bases is not implemented")
+        raise_exception::<_>(
+            _py,
+            "NotImplementedError",
+            "types.resolve_bases is not implemented",
+        )
     })
 }
 
@@ -1844,7 +1879,11 @@ pub extern "C" fn molt_types_resolve_bases(_args_bits: u64, _kwargs_bits: u64) -
 // types.new_class with full CPython semantics.
 pub extern "C" fn molt_types_new_class(_args_bits: u64, _kwargs_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        raise_exception::<_>(_py, "NotImplementedError", "types.new_class is not implemented")
+        raise_exception::<_>(
+            _py,
+            "NotImplementedError",
+            "types.new_class is not implemented",
+        )
     })
 }
 
@@ -1926,7 +1965,9 @@ pub extern "C" fn molt_types_bootstrap() -> u64 {
                 return MoltObject::none().bits();
             }
             let func_bits = MoltObject::from_ptr(func_ptr).bits();
-            let inst_bits = unsafe { alloc_instance_for_class(_py, obj_from_bits(builtins.object).as_ptr().unwrap()) };
+            let inst_bits = unsafe {
+                alloc_instance_for_class(_py, obj_from_bits(builtins.object).as_ptr().unwrap())
+            };
             if obj_from_bits(inst_bits).is_none() {
                 dec_ref_bits(_py, func_bits);
                 return MoltObject::none().bits();

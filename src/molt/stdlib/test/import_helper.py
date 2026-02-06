@@ -90,10 +90,13 @@ def _save_and_remove_modules(names: Iterable[str]) -> dict[str, object]:
 
 @contextlib.contextmanager
 def frozen_modules(enabled: bool = True):
+    _imp_mod: ModuleType | None
     try:
-        import _imp as _imp_mod
+        import _imp as _imp_mod_raw
     except Exception:
         _imp_mod = None
+    else:
+        _imp_mod = cast(ModuleType, _imp_mod_raw)
     if _imp_mod is None or not hasattr(_imp_mod, "_override_frozen_modules_for_tests"):
         yield
         return
@@ -106,10 +109,13 @@ def frozen_modules(enabled: bool = True):
 
 @contextlib.contextmanager
 def multi_interp_extensions_check(enabled: bool = True):
+    _imp_mod: ModuleType | None
     try:
-        import _imp as _imp_mod
+        import _imp as _imp_mod_raw
     except Exception:
         _imp_mod = None
+    else:
+        _imp_mod = cast(ModuleType, _imp_mod_raw)
     override = getattr(_imp_mod, "_override_multi_interp_extensions_check", None)
     if _imp_mod is None or override is None:
         yield

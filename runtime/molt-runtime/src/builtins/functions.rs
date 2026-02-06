@@ -2,13 +2,18 @@ use molt_obj_model::MoltObject;
 use std::collections::HashSet;
 
 use crate::{
-    alloc_bound_method_obj, alloc_code_obj, alloc_function_obj, alloc_string, alloc_tuple,
-    attr_name_bits_from_bytes, builtin_classes, dec_ref_bits, dict_get_in_place,
-    ensure_function_code_bits, function_dict_bits, function_set_closure_bits,
-    function_set_trampoline_ptr, inc_ref_bits, module_dict_bits, obj_from_bits, object_class_bits,
-    object_set_class_bits, object_type_id, raise_exception, string_obj_to_owned, to_i64, type_name,
-    TYPE_ID_DICT, TYPE_ID_FUNCTION, TYPE_ID_MODULE, TYPE_ID_STRING, TYPE_ID_TUPLE,
+    alloc_bound_method_obj, alloc_code_obj, alloc_function_obj, alloc_list_with_capacity,
+    alloc_string, alloc_tuple, attr_name_bits_from_bytes, bits_from_ptr, builtin_classes,
+    dec_ref_bits, dict_get_in_place, ensure_function_code_bits, function_dict_bits,
+    function_set_closure_bits, function_set_trampoline_ptr, inc_ref_bits, module_dict_bits,
+    molt_trace_enter_slot, obj_from_bits, object_class_bits, object_set_class_bits, object_type_id,
+    ptr_from_bits, raise_exception, string_obj_to_owned, to_i64, type_name, TYPE_ID_DICT,
+    TYPE_ID_FUNCTION, TYPE_ID_MODULE, TYPE_ID_STRING, TYPE_ID_TUPLE,
 };
+
+struct MoltEmailMessage {
+    headers: Vec<(String, String)>,
+}
 
 struct CompileScope {
     indent: usize,
@@ -85,6 +90,257 @@ fn binding_in_outer(scopes: &[CompileScope], name: &str) -> bool {
         .iter()
         .rev()
         .any(|scope| scope.assigned.contains(name) || scope.params.contains(name))
+}
+
+#[no_mangle]
+pub extern "C" fn molt_re_literal_matches(
+    segment_bits: u64,
+    literal_bits: u64,
+    flags_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(segment) = string_obj_to_owned(obj_from_bits(segment_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "segment must be str");
+        };
+        let Some(literal) = string_obj_to_owned(obj_from_bits(literal_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "literal must be str");
+        };
+        let Some(flags) = to_i64(obj_from_bits(flags_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "flags must be int");
+        };
+        const RE_IGNORECASE: i64 = 2;
+        let matched = if flags & RE_IGNORECASE != 0 {
+            segment.to_lowercase() == literal.to_lowercase()
+        } else {
+            segment == literal
+        };
+        MoltObject::from_bool(matched).bits()
+    })
+}
+
+fn shlex_is_safe(s: &str) -> bool {
+    s.bytes().all(|b| {
+        matches!(
+            b,
+            b'a'..=b'z'
+                | b'A'..=b'Z'
+                | b'0'..=b'9'
+                | b'_'
+                | b'@'
+                | b'%'
+                | b'+'
+                | b'='
+                | b':'
+                | b','
+                | b'.'
+                | b'/'
+                | b'-'
+        )
+    })
+}
+
+fn shlex_quote_impl(input: &str) -> String {
+    if input.is_empty() {
+        return "''".to_string();
+    }
+    if shlex_is_safe(input) {
+        return input.to_string();
+    }
+    let escaped = input.replace('\'', "'\"'\"'");
+    format!("'{escaped}'")
+}
+
+fn shlex_split_impl(input: &str, whitespace: &str) -> Vec<String> {
+    let mut tokens: Vec<String> = Vec::new();
+    let mut buf = String::new();
+    let mut quote_char: Option<char> = None;
+    let mut escape = false;
+    for ch in input.chars() {
+        if escape {
+            buf.push(ch);
+            escape = false;
+            continue;
+        }
+        if ch == '\\' && quote_char != Some('\'') {
+            escape = true;
+            continue;
+        }
+        if let Some(q) = quote_char {
+            if ch == q {
+                quote_char = None;
+            } else {
+                buf.push(ch);
+            }
+            continue;
+        }
+        if ch == '\'' || ch == '"' {
+            quote_char = Some(ch);
+            continue;
+        }
+        if whitespace.contains(ch) {
+            if !buf.is_empty() {
+                tokens.push(std::mem::take(&mut buf));
+            }
+            continue;
+        }
+        buf.push(ch);
+    }
+    if !buf.is_empty() {
+        tokens.push(buf);
+    }
+    tokens
+}
+
+#[no_mangle]
+pub extern "C" fn molt_email_message_new() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let msg = Box::new(MoltEmailMessage {
+            headers: Vec::new(),
+        });
+        bits_from_ptr(Box::into_raw(msg) as *mut u8)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_email_message_set(
+    message_bits: u64,
+    name_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let message_ptr = ptr_from_bits(message_bits);
+        if message_ptr.is_null() {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "email message handle is invalid",
+            );
+        }
+        let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "header name must be str");
+        };
+        let Some(value) = string_obj_to_owned(obj_from_bits(value_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "header value must be str");
+        };
+        let message = unsafe { &mut *(message_ptr as *mut MoltEmailMessage) };
+        message.headers.push((name, value));
+        MoltObject::none().bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_email_message_items(message_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let message_ptr = ptr_from_bits(message_bits);
+        if message_ptr.is_null() {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "email message handle is invalid",
+            );
+        }
+        let message = unsafe { &*(message_ptr as *mut MoltEmailMessage) };
+        let mut pair_bits: Vec<u64> = Vec::with_capacity(message.headers.len());
+        for (name, value) in &message.headers {
+            let name_ptr = alloc_string(_py, name.as_bytes());
+            if name_ptr.is_null() {
+                for bits in pair_bits {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
+            }
+            let value_ptr = alloc_string(_py, value.as_bytes());
+            if value_ptr.is_null() {
+                let name_bits = MoltObject::from_ptr(name_ptr).bits();
+                dec_ref_bits(_py, name_bits);
+                for bits in pair_bits {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
+            }
+            let name_bits = MoltObject::from_ptr(name_ptr).bits();
+            let value_bits = MoltObject::from_ptr(value_ptr).bits();
+            let tuple_ptr = alloc_tuple(_py, &[name_bits, value_bits]);
+            dec_ref_bits(_py, name_bits);
+            dec_ref_bits(_py, value_bits);
+            if tuple_ptr.is_null() {
+                for bits in pair_bits {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
+            }
+            pair_bits.push(MoltObject::from_ptr(tuple_ptr).bits());
+        }
+        let list_ptr = alloc_list_with_capacity(_py, pair_bits.as_slice(), pair_bits.len());
+        for bits in pair_bits {
+            dec_ref_bits(_py, bits);
+        }
+        if list_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(list_ptr).bits()
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_email_message_drop(message_bits: u64) {
+    crate::with_gil_entry!(_py, {
+        let message_ptr = ptr_from_bits(message_bits);
+        if message_ptr.is_null() {
+            return;
+        }
+        unsafe {
+            drop(Box::from_raw(message_ptr as *mut MoltEmailMessage));
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_shlex_quote(text_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "shlex.quote argument must be str");
+        };
+        let out = shlex_quote_impl(&text);
+        let out_ptr = alloc_string(_py, out.as_bytes());
+        if out_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(out_ptr).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_shlex_split(text_bits: u64, whitespace_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "shlex.split argument must be str");
+        };
+        let Some(whitespace) = string_obj_to_owned(obj_from_bits(whitespace_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "shlex.split whitespace must be str");
+        };
+        let parts = shlex_split_impl(&text, &whitespace);
+        let mut item_bits: Vec<u64> = Vec::with_capacity(parts.len());
+        for part in &parts {
+            let ptr = alloc_string(_py, part.as_bytes());
+            if ptr.is_null() {
+                for bits in item_bits {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
+            }
+            item_bits.push(MoltObject::from_ptr(ptr).bits());
+        }
+        let list_ptr = alloc_list_with_capacity(_py, item_bits.as_slice(), item_bits.len());
+        for bits in item_bits {
+            dec_ref_bits(_py, bits);
+        }
+        if list_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(list_ptr).bits()
+    })
 }
 
 fn compile_check_nonlocal(source: &str) -> Option<String> {
@@ -280,9 +536,25 @@ pub extern "C" fn molt_func_new(fn_ptr: u64, trampoline_ptr: u64, arity: u64) ->
 #[no_mangle]
 pub extern "C" fn molt_func_new_builtin(fn_ptr: u64, trampoline_ptr: u64, arity: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        let trace = matches!(
+            std::env::var("MOLT_TRACE_BUILTIN_FUNC").ok().as_deref(),
+            Some("1")
+        );
+        let trace_enter_ptr = fn_addr!(molt_trace_enter_slot);
+        if trace {
+            eprintln!(
+                "molt builtin_func new: fn_ptr=0x{fn_ptr:x} tramp_ptr=0x{trampoline_ptr:x} arity={arity}"
+            );
+        }
+        if fn_ptr == 0 || trampoline_ptr == 0 {
+            let msg = format!(
+                "builtin func pointer missing: fn=0x{fn_ptr:x} tramp=0x{trampoline_ptr:x} arity={arity}"
+            );
+            return raise_exception::<_>(_py, "RuntimeError", &msg);
+        }
         let ptr = alloc_function_obj(_py, fn_ptr, arity);
         if ptr.is_null() {
-            return MoltObject::none().bits();
+            return raise_exception::<_>(_py, "RuntimeError", "builtin func alloc failed");
         }
         unsafe {
             function_set_trampoline_ptr(ptr, trampoline_ptr);
@@ -290,7 +562,14 @@ pub extern "C" fn molt_func_new_builtin(fn_ptr: u64, trampoline_ptr: u64, arity:
             object_set_class_bits(_py, ptr, builtin_bits);
             inc_ref_bits(_py, builtin_bits);
         }
-        MoltObject::from_ptr(ptr).bits()
+        let bits = MoltObject::from_ptr(ptr).bits();
+        if trace && fn_ptr == trace_enter_ptr {
+            eprintln!(
+                "molt builtin_func trace_enter_slot bits=0x{bits:x} ptr=0x{:x}",
+                ptr as usize
+            );
+        }
+        bits
     })
 }
 

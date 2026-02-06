@@ -164,13 +164,22 @@ else:
     ] = {}
 
     def _shared_runtime_enabled() -> bool:
+        explicit = os.getenv("MOLT_THREAD_SHARED", "").strip().lower()
+        if explicit in {"0", "false", "no", "off"}:
+            return False
+        if explicit in {"1", "true", "yes", "on"}:
+            return True
+        isolated = os.getenv("MOLT_THREAD_ISOLATED", "").strip().lower()
+        if isolated in {"1", "true", "yes", "on"}:
+            return False
         trusted = os.getenv("MOLT_TRUSTED", "").strip().lower()
         if trusted in {"1", "true", "yes", "on"}:
             return True
         caps = os.getenv("MOLT_CAPABILITIES", "")
-        return "thread.shared" in {
-            cap.strip() for cap in caps.split(",") if cap.strip()
-        }
+        if "thread.shared" in {cap.strip() for cap in caps.split(",") if cap.strip()}:
+            return True
+        # Default to shared-runtime semantics for CPython-compatible threading.
+        return True
 
     _THREAD_SHARED_RUNTIME = _shared_runtime_enabled()
 
@@ -193,10 +202,12 @@ else:
             self.thread = thread
 
     def _default_excepthook(args: ExceptHookArgs) -> None:
-        import traceback
-
+        tb_mod = __import__("traceback")
+        print_exception = getattr(tb_mod, "print_exception", None)
+        if not callable(print_exception):
+            raise RuntimeError("traceback.print_exception unavailable")
         print(f"Exception in thread {args.thread.name}:", file=sys.stderr)
-        traceback.print_exception(args.exc_type, args.exc_value, args.exc_traceback)
+        print_exception(args.exc_type, args.exc_value, args.exc_traceback)
 
     excepthook: Callable[[ExceptHookArgs], Any] | None = _default_excepthook
 
@@ -733,7 +744,7 @@ else:
             if lock is None:
                 lock = RLock()
             self._lock = lock
-            self._waiters: list[Any] = []
+            self._waiters: list[dict[str, bool]] = []
 
         def acquire(self, *args: Any, **kwargs: Any) -> bool:
             return bool(self._lock.acquire(*args, **kwargs))
@@ -786,23 +797,22 @@ else:
                 if timeout_val < 0.0:
                     raise ValueError("timeout value must be a non-negative number")
                 _check_timeout_max(timeout_val)
-            from molt.concurrency import channel
-
-            waiter = channel(1)
+            waiter: dict[str, bool] = {"ready": False}
             self._waiters.append(waiter)
             saved = self._release_save()
             try:
                 if timeout_val is None:
-                    waiter.recv()
+                    while not waiter["ready"]:
+                        time.sleep(0.001)
                     return True
                 if timeout_val == 0.0:
-                    ok, _ = waiter.try_recv()
+                    ok = waiter["ready"]
                     if not ok and waiter in self._waiters:
                         self._waiters.remove(waiter)
                     return ok
                 deadline = time.monotonic() + timeout_val
                 while True:
-                    ok, _ = waiter.try_recv()
+                    ok = waiter["ready"]
                     if ok:
                         return True
                     remaining = deadline - time.monotonic()
@@ -812,10 +822,7 @@ else:
                         return False
                     time.sleep(min(remaining, 0.05))
             finally:
-                try:
-                    waiter.close()
-                finally:
-                    self._acquire_restore(saved)
+                self._acquire_restore(saved)
 
         def wait_for(
             self, predicate: Callable[[], bool], timeout: float | None = None
@@ -840,13 +847,7 @@ else:
                 return
             for _ in range(min(n, len(self._waiters))):
                 waiter = self._waiters.pop(0)
-                try:
-                    if hasattr(waiter, "try_send"):
-                        waiter.try_send(True)
-                    else:
-                        waiter.send(True)
-                except RuntimeError:
-                    pass
+                waiter["ready"] = True
 
         def notify_all(self) -> None:
             self.notify(len(self._waiters))
@@ -871,10 +872,30 @@ else:
                 self._flag = False
 
         def wait(self, timeout: float | None = None) -> bool:
-            with self._cond:
-                if self._flag:
-                    return True
-                return self._cond.wait_for(lambda: self._flag, timeout)
+            if timeout is None:
+                while True:
+                    with self._cond:
+                        if self._flag:
+                            return True
+                    time.sleep(0.001)
+            try:
+                timeout_val = float(timeout)
+            except (TypeError, ValueError) as exc:
+                raise TypeError(
+                    f"'{type(timeout).__name__}' object cannot be interpreted as an integer or float"
+                ) from exc
+            if timeout_val < 0.0:
+                raise ValueError("timeout value must be a non-negative number")
+            _check_timeout_max(timeout_val)
+            deadline = time.monotonic() + timeout_val
+            while True:
+                with self._cond:
+                    if self._flag:
+                        return True
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                time.sleep(min(remaining, 0.001))
 
     class Semaphore:
         def __init__(self, value: int = 1) -> None:

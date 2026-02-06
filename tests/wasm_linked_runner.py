@@ -58,6 +58,11 @@ def build_wasm_linked(
     env["PYTHONPATH"] = str(root / "src")
     external_root = Path("/Volumes/APDataStore/Molt")
     if external_root.exists():
+        tmp_root = external_root / "tmp"
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        env.setdefault("TMPDIR", str(tmp_root))
+        env.setdefault("MOLT_HOME", str(external_root))
+        env.setdefault("MOLT_CACHE", str(external_root / "molt_cache"))
         env.setdefault("CARGO_TARGET_DIR", str(external_root / "target"))
     out_dir = _select_out_dir(out_dir, root)
     args = [
@@ -94,8 +99,16 @@ def run_wasm_linked(
     if env_overrides:
         env.update(env_overrides)
     runner = root / "run_wasm.js"
+    node_args = [
+        "node",
+        "--no-wasm-tier-up",
+        "--no-wasm-dynamic-tiering",
+        "--wasm-num-compilation-tasks=1",
+        str(runner),
+        str(wasm_path),
+    ]
     return subprocess.run(
-        ["node", str(runner), str(wasm_path)],
+        node_args,
         cwd=root,
         env=env,
         capture_output=True,

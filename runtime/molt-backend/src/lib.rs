@@ -6182,12 +6182,14 @@ impl SimpleBackend {
                     let chan = var_get(&mut builder, &vars, &args[0]).expect("Chan not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
                     let callee = self
                         .module
                         .declare_function("molt_chan_drop", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    builder.ins().call(local_callee, &[*chan]);
+                    let call = builder.ins().call(local_callee, &[*chan]);
+                    let _ = builder.inst_results(call)[0];
                 }
                 "spawn" => {
                     let args = op.args.as_ref().unwrap();
@@ -6889,6 +6891,29 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let _ = builder.ins().call(local_callee, &[count_val]);
                 }
+                "trace_enter_slot" => {
+                    let code_id = op.value.unwrap_or(0);
+                    let code_id_val = builder.ins().iconst(types::I64, code_id);
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_trace_enter_slot", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let _ = builder.ins().call(local_callee, &[code_id_val]);
+                }
+                "trace_exit" => {
+                    let mut sig = self.module.make_signature();
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_trace_exit", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let _ = builder.ins().call(local_callee, &[]);
+                }
                 "line" => {
                     let line = op.value.unwrap_or(0);
                     let line_val = builder.ins().iconst(types::I64, line);
@@ -6915,7 +6940,7 @@ impl SimpleBackend {
                                     builder.ins().call(local_dec_ref, &[tracked.value]);
                                 }
                             }
-                            if block == entry_block && loop_depth == 0 {
+                            if loop_depth == 0 {
                                 let cleanup = drain_cleanup_entry_tracked(
                                     &mut tracked_obj_vars,
                                     &entry_vars,
@@ -7057,16 +7082,79 @@ impl SimpleBackend {
                     let res = builder.inst_results(call)[0];
                     let _ = builder.ins().call(trace_exit_local, &[]);
                     let _ = builder.ins().call(guard_exit_local, &[]);
+                    if loop_depth == 0 {
+                        let cleanup = drain_cleanup_entry_tracked(
+                            &mut tracked_obj_vars,
+                            &entry_vars,
+                            &last_use,
+                            op_idx,
+                        );
+                        for val in cleanup {
+                            builder.ins().call(local_dec_ref_obj, &[val]);
+                        }
+                        let cleanup = drain_cleanup_entry_tracked(
+                            &mut tracked_vars,
+                            &entry_vars,
+                            &last_use,
+                            op_idx,
+                        );
+                        for val in cleanup {
+                            builder.ins().call(local_dec_ref, &[val]);
+                        }
+                    }
                     builder.ins().jump(merge_block, &[res]);
 
                     builder.switch_to_block(fail_block);
                     builder.seal_block(fail_block);
                     let none_bits = builder.ins().iconst(types::I64, box_none());
+                    if loop_depth == 0 {
+                        let cleanup = drain_cleanup_entry_tracked(
+                            &mut tracked_obj_vars,
+                            &entry_vars,
+                            &last_use,
+                            op_idx,
+                        );
+                        for val in cleanup {
+                            builder.ins().call(local_dec_ref_obj, &[val]);
+                        }
+                        let cleanup = drain_cleanup_entry_tracked(
+                            &mut tracked_vars,
+                            &entry_vars,
+                            &last_use,
+                            op_idx,
+                        );
+                        for val in cleanup {
+                            builder.ins().call(local_dec_ref, &[val]);
+                        }
+                    }
                     builder.ins().jump(merge_block, &[none_bits]);
 
                     builder.switch_to_block(merge_block);
                     builder.seal_block(merge_block);
                     let res = builder.block_params(merge_block)[0];
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                }
+                "call_internal" => {
+                    let target_name = op.s_value.as_ref().unwrap();
+                    let args_names = op.args.as_ref().unwrap();
+                    let mut args = Vec::new();
+                    for name in args_names {
+                        args.push(*var_get(&mut builder, &vars, name).expect("Arg not found"));
+                    }
+
+                    let mut sig = self.module.make_signature();
+                    for _ in 0..args.len() {
+                        sig.params.push(AbiParam::new(types::I64));
+                    }
+                    sig.returns.push(AbiParam::new(types::I64));
+
+                    let callee = self
+                        .module
+                        .declare_function(target_name, Linkage::Export, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &args);
+                    let res = builder.inst_results(call)[0];
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "call_guarded" => {
@@ -10931,6 +11019,23 @@ impl SimpleBackend {
                     }
                 } else {
                     last_out = None;
+                }
+            }
+
+            if !is_block_filled && loop_depth == 0 {
+                let cleanup = drain_cleanup_entry_tracked(
+                    &mut tracked_obj_vars,
+                    &entry_vars,
+                    &last_use,
+                    op_idx,
+                );
+                for val in cleanup {
+                    builder.ins().call(local_dec_ref_obj, &[val]);
+                }
+                let cleanup =
+                    drain_cleanup_entry_tracked(&mut tracked_vars, &entry_vars, &last_use, op_idx);
+                for val in cleanup {
+                    builder.ins().call(local_dec_ref, &[val]);
                 }
             }
 

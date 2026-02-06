@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
 import operator as _operator
+from typing import SupportsIndex, cast
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
@@ -57,7 +57,7 @@ class Struct:
 
 
 def _index(value: object) -> int:
-    return _operator.index(value)
+    return _operator.index(cast(SupportsIndex, value))
 
 
 def _format_type_error(value: object) -> TypeError:

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_stdlib_probe", globals())
 
 from typing import Any
+
+_require_intrinsic("molt_stdlib_probe", globals())
+
 
 __all__ = [
     "encode",

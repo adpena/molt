@@ -26,14 +26,17 @@ saferepr()
 
 from __future__ import annotations
 
-from _intrinsics import require_intrinsic as _require_intrinsic
+from typing import Any, cast
 
-_require_intrinsic("molt_stdlib_probe", globals())
+from _intrinsics import require_intrinsic as _require_intrinsic
 
 import collections as _collections
 import sys as _sys
 import types as _types
 from io import StringIO as _StringIO
+
+_require_intrinsic("molt_stdlib_probe", globals())
+
 
 __all__ = [
     "pprint",
@@ -298,16 +301,24 @@ class PrettyPrinter:
                 is_dataclass is not None
                 and is_dataclass(object)
                 and not isinstance(object, type)
-                and object.__dataclass_params__.repr
-                and hasattr(object.__repr__, "__wrapped__")
-                and "__create_fn__" in object.__repr__.__wrapped__.__qualname__
             ):
-                context[objid] = 1
-                self._pprint_dataclass(
-                    object, stream, indent, allowance, context, level + 1
+                params = getattr(object, "__dataclass_params__", None)
+                wrapped = getattr(
+                    getattr(object, "__repr__", None), "__wrapped__", None
                 )
-                del context[objid]
-                return
+                qualname = getattr(wrapped, "__qualname__", "")
+                if (
+                    params is not None
+                    and getattr(params, "repr", False)
+                    and wrapped is not None
+                    and "__create_fn__" in qualname
+                ):
+                    context[objid] = 1
+                    self._pprint_dataclass(
+                        object, stream, indent, allowance, context, level + 1
+                    )
+                    del context[objid]
+                    return
         stream.write(rep)
 
     def _pprint_dataclass(
@@ -326,7 +337,7 @@ class PrettyPrinter:
         indent += len(cls_name) + 1
         items = [
             (f.name, getattr(object, f.name))
-            for f in dataclass_fields(object)
+            for f in dataclass_fields(cast(Any, object))
             if f.repr
         ]
         stream.write(cls_name + "(")
@@ -918,7 +929,8 @@ class PrettyPrinter:
             return repr(object), True, False
 
         if typ is dict and ((r is _DICT_REPR) or (_DICT_REPR is None)):
-            if not object:
+            obj_dict = cast(dict[Any, Any], object)
+            if not obj_dict:
                 return "{}", True, False
             objid = id(object)
             if maxlevels and level >= maxlevels:
@@ -932,9 +944,9 @@ class PrettyPrinter:
             append = components.append
             level += 1
             if self._sort_dicts:
-                items = _sorted_dict_items(object.items())
+                items = _sorted_dict_items(obj_dict.items())
             else:
-                items = object.items()
+                items = obj_dict.items()
             for key, value in items:
                 krepr, kreadable, krecur = self.format(key, context, maxlevels, level)
                 vrepr, vreadable, vrecur = self.format(value, context, maxlevels, level)
@@ -946,16 +958,17 @@ class PrettyPrinter:
             return "{" + ", ".join(components) + "}", readable, recursive
 
         if typ is list or typ is tuple:
+            seq = cast(list[Any] | tuple[Any, ...], object)
             if typ is list:
-                if not object:
+                if not seq:
                     return "[]", True, False
                 open_char = "["
                 close_char = "]"
-            elif len(object) == 1:
+            elif len(seq) == 1:
                 open_char = "("
                 close_char = ",)"
             else:
-                if not object:
+                if not seq:
                     return "()", True, False
                 open_char = "("
                 close_char = ")"
@@ -970,7 +983,7 @@ class PrettyPrinter:
             components = []
             append = components.append
             level += 1
-            for entry in object:
+            for entry in seq:
                 erepr, ereadable, erecur = self.format(entry, context, maxlevels, level)
                 append(erepr)
                 if not ereadable:
@@ -985,7 +998,7 @@ class PrettyPrinter:
             )
 
         rep = repr(object)
-        return rep, (rep and not rep.startswith("<")), False
+        return rep, bool(rep and not rep.startswith("<")), False
 
 
 def _ensure_dispatch() -> None:

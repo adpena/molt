@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from types import ModuleType
+from typing import cast
 
 from molt.stdlib import enum as _enum
 
+_capabilities: ModuleType | None
 try:
-    from molt import capabilities as _capabilities
+    from molt import capabilities as _capabilities_raw
 except Exception:
     _capabilities = None
+else:
+    _capabilities = cast(ModuleType, _capabilities_raw)
 
 __all__ = [
     "SIGINT",

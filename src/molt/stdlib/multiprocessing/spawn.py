@@ -7,7 +7,6 @@ import multiprocessing as _multiprocessing
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 
-
 def _debug_spawn(message: str) -> None:
     trace = getattr(_multiprocessing, "_spawn_trace", None)
     if callable(trace):

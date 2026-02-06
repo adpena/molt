@@ -8,9 +8,9 @@ from types import ModuleType
 import os
 import sys
 
-from importlib.machinery import ModuleSpec
-from importlib.machinery import _exec_restricted
 from molt import capabilities
+
+from importlib.machinery import ModuleSpec, _exec_restricted
 from zipfile import BadZipFile, ZipFile
 
 __all__ = ["zipimporter", "ZipImportError"]
@@ -50,10 +50,10 @@ class zipimporter:
         module = ModuleType(fullname)
         origin = f"{self.archive}/{inner_path}"
         spec = ModuleSpec(fullname, loader=self, origin=origin, is_package=is_package)
-        module.__spec__ = spec
+        setattr(module, "__spec__", spec)
         module.__loader__ = self
         module.__file__ = origin
-        module.__cached__ = None
+        setattr(module, "__cached__", None)
         if is_package:
             module.__package__ = fullname
             module.__path__ = [f"{self.archive}/{fullname.replace('.', '/')}"]

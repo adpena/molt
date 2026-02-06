@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import sys as _sys
 
-from . import _intrinsics as _stdlib_intrinsics
+import _intrinsics as _stdlib_intrinsics
+from _intrinsics import require_intrinsic as _require_intrinsic
 
 _intrinsics = _stdlib_intrinsics
-_require_intrinsic = _stdlib_intrinsics.require_intrinsic
+
 _require_intrinsic("molt_stdlib_probe", globals())
 
 _modules = getattr(_sys, "modules", None)
@@ -66,6 +67,7 @@ __all__ = [
     "pprint",
     "select",
     "random",
+    "runpy",
     "re",
     "reprlib",
     "shutil",

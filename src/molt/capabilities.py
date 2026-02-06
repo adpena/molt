@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from typing import Any
 
-from _intrinsics import require_intrinsic as _intrinsics_require
+import builtins as _builtins
 
 
 def _parse_caps(raw: str) -> set[str]:
@@ -16,20 +17,23 @@ def _parse_caps(raw: str) -> set[str]:
     return caps
 
 
-_MOLT_ENV_GET = _intrinsics_require("molt_env_get", globals())
-_MOLT_CAP_TRUSTED = _intrinsics_require("molt_capabilities_trusted", globals())
-_MOLT_CAP_HAS = _intrinsics_require("molt_capabilities_has", globals())
-_MOLT_CAP_REQUIRE = _intrinsics_require("molt_capabilities_require", globals())
-
-
-def _require_intrinsic(name: str, value: object) -> object:
-    if not callable(value):
-        raise RuntimeError(f"{name} intrinsic unavailable")
-    return value
+def _load_intrinsic(name: str) -> Callable[..., Any]:
+    value = globals().get(name)
+    if callable(value):
+        return value
+    direct = getattr(_builtins, name, None)
+    if callable(direct):
+        return direct
+    reg = getattr(_builtins, "_molt_intrinsics", None)
+    if isinstance(reg, dict):
+        value = reg.get(name)
+        if callable(value):
+            return value
+    raise RuntimeError(f"{name} intrinsic unavailable")
 
 
 def _env_get(key: str, default: str = "") -> str:
-    getter = _require_intrinsic("molt_env_get", _MOLT_ENV_GET)
+    getter = _load_intrinsic("molt_env_get")
     value = getter(key, default)
     return str(value)
 
@@ -40,17 +44,17 @@ def capabilities() -> set[str]:
 
 
 def trusted() -> bool:
-    fn = _require_intrinsic("molt_capabilities_trusted", _MOLT_CAP_TRUSTED)
+    fn = _load_intrinsic("molt_capabilities_trusted")
     return bool(fn())
 
 
 def has(capability: str) -> bool:
-    fn = _require_intrinsic("molt_capabilities_has", _MOLT_CAP_HAS)
+    fn = _load_intrinsic("molt_capabilities_has")
     return bool(fn(capability))
 
 
 def require(capability: str) -> None:
-    fn = _require_intrinsic("molt_capabilities_require", _MOLT_CAP_REQUIRE)
+    fn = _load_intrinsic("molt_capabilities_require")
     fn(capability)
     return None
 

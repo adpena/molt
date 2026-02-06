@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable, Iterator
+from typing import Iterable, Iterator, cast
 
 __all__ = [
     "Dialect",
@@ -95,14 +95,16 @@ class Dialect:
     strict: bool = False
 
     def clone(self, **overrides: object) -> Dialect:
-        delimiter = overrides.get("delimiter", self.delimiter)
-        quotechar = overrides.get("quotechar", self.quotechar)
-        escapechar = overrides.get("escapechar", self.escapechar)
-        doublequote = overrides.get("doublequote", self.doublequote)
-        skipinitialspace = overrides.get("skipinitialspace", self.skipinitialspace)
-        lineterminator = overrides.get("lineterminator", self.lineterminator)
-        quoting = overrides.get("quoting", self.quoting)
-        strict = overrides.get("strict", self.strict)
+        delimiter = cast(str, overrides.get("delimiter", self.delimiter))
+        quotechar = cast(str | None, overrides.get("quotechar", self.quotechar))
+        escapechar = cast(str | None, overrides.get("escapechar", self.escapechar))
+        doublequote = cast(bool, overrides.get("doublequote", self.doublequote))
+        skipinitialspace = cast(
+            bool, overrides.get("skipinitialspace", self.skipinitialspace)
+        )
+        lineterminator = cast(str, overrides.get("lineterminator", self.lineterminator))
+        quoting = cast(int, overrides.get("quoting", self.quoting))
+        strict = cast(bool, overrides.get("strict", self.strict))
         return Dialect(
             delimiter,
             quotechar,

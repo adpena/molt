@@ -21,8 +21,8 @@ _RLOCK_ACQUIRE = None
 _RLOCK_RELEASE = None
 _RLOCK_LOCKED = None
 _RLOCK_DROP = None
-_THREAD_CURRENT_IDENT = None
-_GETPID = None
+_THREAD_CURRENT_IDENT: Callable[[], int] | None = None
+_GETPID: Callable[[], int] | None = None
 _MAIN_THREAD_IDENT: int | None = None
 _MAIN_PROCESS_ID: int | None = None
 
@@ -54,11 +54,12 @@ def _ensure_lock_intrinsics() -> None:
 def _ensure_record_intrinsics() -> None:
     global _THREAD_CURRENT_IDENT, _GETPID, _MAIN_THREAD_IDENT, _MAIN_PROCESS_ID
     if _THREAD_CURRENT_IDENT is None:
-        _THREAD_CURRENT_IDENT = _require_intrinsic(
-            "molt_thread_current_ident", globals()
+        _THREAD_CURRENT_IDENT = cast(
+            Callable[[], int],
+            _require_intrinsic("molt_thread_current_ident", globals()),
         )
     if _GETPID is None:
-        _GETPID = _require_intrinsic("molt_getpid", globals())
+        _GETPID = cast(Callable[[], int], _require_intrinsic("molt_getpid", globals()))
     if _MAIN_THREAD_IDENT is None:
         _MAIN_THREAD_IDENT = int(_THREAD_CURRENT_IDENT())
     if _MAIN_PROCESS_ID is None:
@@ -307,6 +308,8 @@ class LogRecord:
         self.exc_text = None
         self.stack_info = sinfo
         _ensure_record_intrinsics()
+        assert _THREAD_CURRENT_IDENT is not None
+        assert _GETPID is not None
         thread_ident = int(_THREAD_CURRENT_IDENT())
         self.thread = thread_ident
         if _MAIN_THREAD_IDENT is not None and thread_ident == _MAIN_THREAD_IDENT:

@@ -2,42 +2,34 @@
 
 from __future__ import annotations
 
-import builtins as _builtins
-
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-
-_require_intrinsic("molt_stdlib_probe", globals())
-
-
-class _TypingAlias:
-    __slots__ = ()
-
-    def __getitem__(self, _item):
-        return self
-
-
-Any = object()  # type: ignore[assignment]
-Callable = _TypingAlias()  # type: ignore[assignment]
-Iterable = _TypingAlias()  # type: ignore[assignment]
-Iterator = _TypingAlias()  # type: ignore[assignment]
-Mapping = _TypingAlias()  # type: ignore[assignment]
-MutableMapping = _TypingAlias()  # type: ignore[assignment]
-Sequence = _TypingAlias()  # type: ignore[assignment]
+# Avoid importing typing/abc during weakref bootstrap; these can recurse
+# through _weakrefset while this module is still initializing.
+Any = object  # type: ignore[assignment]
+Callable = Iterable = Iterator = Mapping = object  # type: ignore[assignment]
 
 
 def cast(_tp, value):  # type: ignore[override]
     return value
 
 
-_molt_weakref_register = getattr(_builtins, "molt_weakref_register", None)
-_molt_weakref_get = getattr(_builtins, "molt_weakref_get", None)
-_molt_weakref_drop = getattr(_builtins, "molt_weakref_drop", None)
-_HAS_INTRINSICS = (
-    callable(_molt_weakref_register)
-    and callable(_molt_weakref_get)
-    and callable(_molt_weakref_drop)
-)
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+_require_intrinsic("molt_stdlib_probe", globals())
+
+
+def _require_callable_intrinsic(name: str):
+    value = _require_intrinsic(name, globals())
+    if not callable(value):
+        raise RuntimeError(f"{name} intrinsic unavailable")
+    return value
+
+
+_molt_weakref_register = _require_callable_intrinsic("molt_weakref_register")
+_molt_weakref_get = _require_callable_intrinsic("molt_weakref_get")
+_molt_weakref_peek = _require_callable_intrinsic("molt_weakref_peek")
+_molt_weakref_drop = _require_callable_intrinsic("molt_weakref_drop")
+_molt_weakref_collect = _require_callable_intrinsic("molt_weakref_collect")
+_HAS_INTRINSICS = True
 
 _WEAKREFS: list["ReferenceType"] = []
 _WEAKREF_REGISTRY: dict[int, list["ReferenceType"]] = {}
@@ -84,7 +76,7 @@ class ReferenceType:
     def __init__(
         self,
         obj: object,
-        callback: object | None = None,
+        callback: Callable[["ReferenceType"], object] | None = None,
         *,
         track: bool = True,
         register: bool = True,
@@ -95,20 +87,23 @@ class ReferenceType:
         self._callback = callback
         self._hash: int | None = None
         self._tracked = track
-        self._registered = register and _HAS_INTRINSICS
-        if self._registered:
+        self._registered = register
+        if register:
             self._obj = None
             _molt_weakref_register(self, obj, callback)  # type: ignore[misc]
         else:
             self._obj = obj
-            if register:
-                _WEAKREFS.append(self)
         if self._tracked:
             _registry_add(obj, self)
 
     def __call__(self) -> object | None:
         if self._registered:
             return _molt_weakref_get(self)  # type: ignore[misc]
+        return self._obj
+
+    def _peek_obj(self) -> object | None:
+        if self._registered:
+            return _molt_weakref_peek(self)  # type: ignore[misc]
         return self._obj
 
     def __repr__(self) -> str:
@@ -122,7 +117,7 @@ class ReferenceType:
     def __hash__(self) -> int:
         if self._hash is not None:
             return self._hash
-        obj = self()
+        obj = self._peek_obj()
         if obj is None:
             raise TypeError("weak object has gone away")
         hashed = hash(obj)
@@ -132,8 +127,8 @@ class ReferenceType:
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, ReferenceType):
             return False
-        self_obj = self()
-        other_obj = other()
+        self_obj = self._peek_obj()
+        other_obj = other._peek_obj()
         if self_obj is None or other_obj is None:
             return self_obj is other_obj and self._key == other._key
         return self_obj == other_obj
@@ -151,7 +146,7 @@ class KeyedRef(ReferenceType):
     def __init__(
         self,
         obj: object,
-        callback: object | None,
+        callback: Callable[[ReferenceType], object] | None,
         key_hash: int | None = None,
         *,
         track: bool = True,
@@ -163,12 +158,22 @@ class KeyedRef(ReferenceType):
         self._hash = key_hash
 
 
-def ref(obj: object, callback: object | None = None) -> ReferenceType:
+def ref(
+    obj: object, callback: Callable[[ReferenceType], object] | None = None
+) -> ReferenceType:
+    result: ReferenceType
     if callback is None:
         for ref_obj in _registry_prune(obj):
             if ref_obj._callback is None:
                 return ref_obj
-    return ReferenceType(obj, callback)
+        result = ReferenceType(obj, callback, track=True)
+    else:
+        result = ReferenceType(obj, callback, track=False)
+    # Drop local strong refs eagerly; some runtime paths keep frame locals alive
+    # longer than CPython, which can delay weakref invalidation/callbacks.
+    obj = None
+    callback = None
+    return result
 
 
 def getweakrefcount(obj: object) -> int:
@@ -181,6 +186,7 @@ def getweakrefs(obj: object) -> list[ReferenceType]:
 
 def _gc_collect_hook() -> None:
     if _HAS_INTRINSICS:
+        _molt_weakref_collect()  # type: ignore[misc]
         return
     for entry in list(_WEAKREFS):
         if entry._obj is None:
@@ -196,15 +202,16 @@ def _gc_collect_hook() -> None:
 
 class ProxyType:
     __slots__ = ("_ref",)
+    _ref: ReferenceType
 
     def __init__(self, ref_obj: ReferenceType) -> None:
         object.__setattr__(self, "_ref", ref_obj)
 
-    def _get(self) -> object:
+    def _get(self) -> Any:
         obj = self._ref()
         if obj is None:
             raise ReferenceError("weakly-referenced object no longer exists")
-        return obj
+        return cast(Any, obj)
 
     def __getattr__(self, name: str) -> object:
         return getattr(self._get(), name)
@@ -382,11 +389,24 @@ class CallableProxyType(ProxyType):
         return self._get()(*args, **kwargs)
 
 
-def proxy(obj: object, callback: object | None = None) -> object:
+def proxy(
+    obj: object, callback: Callable[[ReferenceType], object] | None = None
+) -> object:
     ref_obj = ref(obj, callback)
     if callable(obj):
         return CallableProxyType(ref_obj)
     return ProxyType(ref_obj)
+
+
+class _BoundMethodFallback:
+    __slots__ = ("__func__", "__self__")
+
+    def __init__(self, func: Callable[..., object], inst: object) -> None:
+        self.__func__ = func
+        self.__self__ = inst
+
+    def __call__(self, *args: object, **kwargs: object) -> object:
+        return self.__func__(self.__self__, *args, **kwargs)
 
 
 class WeakMethod:
@@ -401,6 +421,8 @@ class WeakMethod:
         self._callback = callback
         self._func = func
         self._self_ref = ref(self_obj, self._handle_dead)
+        self_obj = None
+        meth = None
 
     def _handle_dead(self, _ref: ReferenceType) -> None:
         if self._callback is not None:
@@ -413,7 +435,10 @@ class WeakMethod:
         obj = self._self_ref()
         if obj is None:
             return None
-        return self._func.__get__(obj, type(obj))
+        getter = getattr(self._func, "__get__", None)
+        if callable(getter):
+            return getter(obj, type(obj))
+        return _BoundMethodFallback(self._func, obj)
 
     def __repr__(self) -> str:
         state = "dead" if self() is None else "alive"
@@ -427,7 +452,7 @@ class finalize:
     __slots__ = ("_ref", "_func", "_args", "_kwargs", "_alive")
 
     def __init__(
-        self, obj: object, func: object, /, *args: object, **kwargs: object
+        self, obj: object, func: Callable[..., Any], /, *args: Any, **kwargs: Any
     ) -> None:
         if not callable(func):
             raise TypeError("finalize() func must be callable")
@@ -436,6 +461,7 @@ class finalize:
         self._args = args
         self._kwargs = kwargs
         self._ref = ref(obj, self)
+        obj = None
 
     def __call__(self, _ref: ReferenceType | None = None) -> object | None:
         if not self._alive:
@@ -481,7 +507,10 @@ class WeakKeyDictionary:
             self.update(mapping)
 
     def _remove(self, ref_obj: ReferenceType) -> None:
-        self._data.pop(ref_obj, None)
+        for key in list(self._data.keys()):
+            if key is ref_obj:
+                self._data.pop(key, None)
+                break
 
     def _purge(self) -> None:
         for ref_obj in list(self._data.keys()):
@@ -491,6 +520,7 @@ class WeakKeyDictionary:
     def __setitem__(self, key: object, value: Any) -> None:
         ref_obj = KeyedRef(key, self._remove, hash(key))
         self._data[ref_obj] = value
+        key = None
 
     def __getitem__(self, key: object) -> Any:
         ref_obj = KeyedRef(key, None, hash(key), track=False, register=False)
@@ -627,6 +657,7 @@ class WeakValueDictionary:
 
     def __setitem__(self, key: object, value: Any) -> None:
         self._data[key] = ref(value, self._remove(key))
+        value = None
 
     def __getitem__(self, key: object) -> Any:
         ref_obj = self._data[key]
@@ -761,7 +792,10 @@ class WeakSet:
             self.update(data)
 
     def _remove(self, ref_obj: ReferenceType) -> None:
-        self._data.pop(ref_obj, None)
+        for key in list(self._data.keys()):
+            if key is ref_obj:
+                self._data.pop(key, None)
+                break
 
     def _purge(self) -> None:
         for ref_obj in list(self._data.keys()):
@@ -773,10 +807,7 @@ class WeakSet:
         try:
             self._data[ref_obj] = None
         except TypeError:
-            raise TypeError(
-                "cannot use 'weakref.ReferenceType' as a set element "
-                f"(unhashable type: '{type(item).__name__}')"
-            ) from None
+            raise
 
     def discard(self, item: object) -> None:
         for ref_obj in list(self._data.keys()):

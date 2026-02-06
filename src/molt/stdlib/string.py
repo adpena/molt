@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from typing import Any, NoReturn, cast
+
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_stdlib_probe", globals())
+
 
 __all__ = [
     "ascii_letters",
@@ -68,7 +71,7 @@ class Template:
     def __init__(self, template: str) -> None:
         self.template = template
 
-    def _invalid(self, index: int) -> None:
+    def _invalid(self, index: int) -> NoReturn:
         lines = self.template[:index].splitlines(keepends=True)
         if not lines:
             colno = 1
@@ -135,6 +138,7 @@ class Template:
                     idx = next_idx + delim_len
                     continue
                 self._invalid(next_idx + delim_len)
+            assert ident is not None
             name, end = ident
             if safe:
                 try:
@@ -471,9 +475,9 @@ class Formatter:
         obj = self.get_value(first, args, kwargs)
         for is_attr, key in rest:
             if is_attr:
-                obj = getattr(obj, key)
+                obj = getattr(obj, cast(str, key))
             else:
-                obj = obj[key]
+                obj = cast(Any, obj)[key]
         return obj, first
 
 

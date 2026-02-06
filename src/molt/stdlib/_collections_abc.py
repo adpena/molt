@@ -1,6 +1,7 @@
 # Copyright 2007 Google, Inc. All Rights Reserved.
 # Licensed to PSF under a Contributor Agreement.
 
+
 """Abstract Base Classes (ABCs) for collections, according to PEP 3119.
 
 Unit tests are in test_collections.
@@ -9,8 +10,6 @@ Unit tests are in test_collections.
 # Intrinsic-only stdlib guard.
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-
-_require_intrinsic("molt_stdlib_probe", globals())
 
 ############ Maintenance notes #########################################
 #
@@ -40,6 +39,16 @@ _require_intrinsic("molt_stdlib_probe", globals())
 
 from abc import ABCMeta, abstractmethod
 import sys
+
+Any = object  # type: ignore[assignment]
+
+
+def cast(_tp, value):  # type: ignore[override]
+    return value
+
+
+_require_intrinsic("molt_stdlib_probe", globals())
+
 
 GenericAlias = type(list[int])
 EllipsisType = type(...)
@@ -459,7 +468,7 @@ class Container(metaclass=ABCMeta):
     __slots__ = ()
 
     @abstractmethod
-    def __contains__(self, x):
+    def __contains__(self, x: object) -> bool:
         return False
 
     @classmethod
@@ -506,6 +515,7 @@ class _CallableGenericAlias(GenericAlias):
     """
 
     __slots__ = ()
+    __args__: tuple[Any, ...]
 
     def __new__(cls, origin, args):
         if not (isinstance(args, tuple) and len(args) == 2):
@@ -541,14 +551,15 @@ class _CallableGenericAlias(GenericAlias):
         if not isinstance(item, tuple):
             item = (item,)
 
-        new_args = super().__getitem__(item).__args__
+        super_obj = cast(Any, super())
+        new_args = super_obj.__getitem__(item).__args__
 
         # args[0] occurs due to things like Z[[int, str, bool]] from PEP 612
         if not isinstance(new_args[0], (tuple, list)):
             t_result = new_args[-1]
             t_args = new_args[:-1]
             new_args = (t_args, t_result)
-        return _CallableGenericAlias(Callable, tuple(new_args))
+        return cast(Any, _CallableGenericAlias)(Callable, tuple(new_args))
 
 
 def _simple_type_repr(value):
@@ -648,7 +659,7 @@ class Set(Collection):
         Must override this method if the class constructor signature
         does not accept an iterable for an input.
         """
-        return cls(it)
+        return cast(Any, cls)(it)
 
     def __and__(self, other):
         if not isinstance(other, Iterable):
@@ -842,7 +853,7 @@ class Mapping(Collection):
         except KeyError:
             return default
 
-    def __contains__(self, key):
+    def __contains__(self, key: object) -> bool:  # type: ignore[override]
         try:
             self[key]
         except KeyError:
@@ -896,7 +907,7 @@ class KeysView(MappingView, Set):
     def _from_iterable(cls, it):
         return set(it)
 
-    def __contains__(self, key):
+    def __contains__(self, key: object) -> bool:  # type: ignore[override]
         return key in self._mapping
 
     def __iter__(self):
@@ -913,8 +924,11 @@ class ItemsView(MappingView, Set):
     def _from_iterable(cls, it):
         return set(it)
 
-    def __contains__(self, item):
-        key, value = item
+    def __contains__(self, item: object) -> bool:  # type: ignore[override]
+        try:
+            key, value = item  # type: ignore[misc]
+        except Exception:
+            return False
         try:
             v = self._mapping[key]
         except KeyError:
@@ -933,7 +947,7 @@ ItemsView.register(dict_items)
 class ValuesView(MappingView, Collection):
     __slots__ = ()
 
-    def __contains__(self, value):
+    def __contains__(self, value: object) -> bool:  # type: ignore[override]
         for key in self._mapping:
             v = self._mapping[key]
             if v is value or v == value:
@@ -1013,8 +1027,9 @@ class MutableMapping(Mapping):
             for key in other:
                 self[key] = other[key]
         elif hasattr(other, "keys"):
-            for key in other.keys():
-                self[key] = other[key]
+            other_map = cast(Any, other)
+            for key in other_map.keys():
+                self[key] = other_map[key]
         else:
             for key, value in other:
                 self[key] = value
@@ -1062,7 +1077,7 @@ class Sequence(Reversible, Collection):
         except IndexError:
             return
 
-    def __contains__(self, value):
+    def __contains__(self, value: object) -> bool:  # type: ignore[override]
         for v in self:
             if v is value or v == value:
                 return True
@@ -1112,19 +1127,23 @@ class _DeprecateByteStringMeta(ABCMeta):
         if name != "ByteString":
             import warnings
 
-            warnings._deprecated(
-                "collections.abc.ByteString",
-                remove=(3, 17),
-            )
+            deprecated = getattr(warnings, "_deprecated", None)
+            if callable(deprecated):
+                deprecated(
+                    "collections.abc.ByteString",
+                    remove=(3, 17),
+                )
         return super().__new__(cls, name, bases, namespace, **kwargs)
 
     def __instancecheck__(cls, instance):
         import warnings
 
-        warnings._deprecated(
-            "collections.abc.ByteString",
-            remove=(3, 17),
-        )
+        deprecated = getattr(warnings, "_deprecated", None)
+        if callable(deprecated):
+            deprecated(
+                "collections.abc.ByteString",
+                remove=(3, 17),
+            )
         return super().__instancecheck__(instance)
 
 

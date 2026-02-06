@@ -33,7 +33,37 @@ let runtimeBuffer = null;
 let witSource = null;
 let wasmEnv = null;
 let wasi = null;
+let wasiImport = null;
+let wasiExitCode = null;
 const callIndirectDebug = process.env.MOLT_WASM_CALL_INDIRECT_DEBUG === '1';
+const traceExit = process.env.MOLT_WASM_TRACE_EXIT === '1';
+const traceRun = process.env.MOLT_WASM_TRACE_RUN === '1';
+const traceRunFile = process.env.MOLT_WASM_TRACE_FILE || null;
+const trapOnExit = process.env.MOLT_WASM_TRAP_ON_EXIT === '1';
+const traceOsClose = process.env.MOLT_WASM_TRACE_OS_CLOSE === '1';
+const traceWasiIo = process.env.MOLT_WASM_TRACE_WASI_IO === '1';
+const traceWasiIoStack = process.env.MOLT_WASM_TRACE_WASI_IO_STACK === '1';
+const formatTraceError = (err) => {
+  if (err instanceof Error) {
+    return err.stack || err.message || String(err);
+  }
+  if (typeof err === 'symbol') {
+    return String(err);
+  }
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return String(err);
+  }
+};
+const traceMark = (message) => {
+  if (!traceRunFile) return;
+  try {
+    fs.appendFileSync(traceRunFile, `${message}\n`);
+  } catch {
+    // Ignore tracing write errors to keep runtime behavior unchanged.
+  }
+};
 const getWebSocketCtor = () => globalThis.WebSocket || UndiciWebSocket || null;
 
 const ensureWasmLocaleEnv = (env) => {
@@ -78,16 +108,22 @@ const ensureWasmLocaleEnv = (env) => {
 const initWasmAssets = () => {
   const wasmArg = process.argv[2];
   const wasmEnvPath = process.env.MOLT_WASM_PATH;
+  const explicitWasmPath = wasmArg || wasmEnvPath || null;
   const localWasm = path.join(__dirname, 'output.wasm');
   const tempWasm = path.join(os.tmpdir(), 'output.wasm');
   wasmPath =
-    wasmArg || wasmEnvPath || (fs.existsSync(localWasm) ? localWasm : tempWasm);
+    explicitWasmPath || (fs.existsSync(localWasm) ? localWasm : tempWasm);
   if (!wasmPath || !fs.existsSync(wasmPath)) {
     throw new Error('WASM path not found (arg, MOLT_WASM_PATH, ./output.wasm, or temp output.wasm)');
   }
   wasmBuffer = fs.readFileSync(wasmPath);
   const linkedEnvPath = process.env.MOLT_WASM_LINKED_PATH;
   const defaultLinkedPath = path.join(__dirname, 'output_linked.wasm');
+  const explicitLinkedPath = (() => {
+    if (!explicitWasmPath) return null;
+    const parsed = path.parse(explicitWasmPath);
+    return parsed.name.endsWith('_linked') ? explicitWasmPath : null;
+  })();
   const siblingLinkedPath = (() => {
     if (!wasmPath) return null;
     const parsed = path.parse(wasmPath);
@@ -97,9 +133,15 @@ const initWasmAssets = () => {
   })();
   linkedPath =
     linkedEnvPath ||
+    explicitLinkedPath ||
     siblingLinkedPath ||
-    (fs.existsSync(defaultLinkedPath) ? defaultLinkedPath : null);
-  linkedBuffer = linkedPath && fs.existsSync(linkedPath) ? fs.readFileSync(linkedPath) : null;
+    (!explicitWasmPath && fs.existsSync(defaultLinkedPath) ? defaultLinkedPath : null);
+  linkedBuffer = null;
+  if (linkedPath && linkedPath === wasmPath) {
+    linkedBuffer = wasmBuffer;
+  } else if (linkedPath && fs.existsSync(linkedPath)) {
+    linkedBuffer = fs.readFileSync(linkedPath);
+  }
   runtimePath =
     process.env.MOLT_RUNTIME_WASM || path.join(__dirname, 'wasm', 'molt_runtime.wasm');
   runtimeBuffer = fs.readFileSync(runtimePath);
@@ -115,14 +157,91 @@ const initWasmAssets = () => {
       '.': '.',
     },
   });
+  wasiExitCode = null;
+  wasiImport = { ...wasi.wasiImport };
+  const originalProcExit = wasiImport.proc_exit;
+  if (typeof originalProcExit === 'function') {
+    wasiImport.proc_exit = (code) => {
+      let exitCode = 1;
+      try {
+        exitCode = Number(code);
+      } catch {
+        exitCode = 1;
+      }
+      wasiExitCode = exitCode;
+      traceMark(`proc_exit:${exitCode}`);
+      if (traceExit) {
+        const stack = new Error().stack;
+        console.error(`[molt wasm] wasi proc_exit(${exitCode}) wasm=${wasmPath}`);
+        if (stack) {
+          console.error(stack);
+        }
+      }
+      if (trapOnExit) {
+        throw new Error(`WASI proc_exit(${exitCode})`);
+      }
+      return originalProcExit(code);
+    };
+  }
+  if (traceWasiIo) {
+    const originalFdClose = wasiImport.fd_close;
+    if (typeof originalFdClose === 'function') {
+      wasiImport.fd_close = (fd) => {
+        const code = originalFdClose(fd);
+        traceMark(`wasi_fd_close:fd=${Number(fd)} code=${Number(code)}`);
+        if (traceWasiIoStack) {
+          const stack = new Error().stack;
+          if (stack) {
+            traceMark(`wasi_fd_close_stack:${stack.replaceAll('\n', '\\n')}`);
+          }
+        }
+        return code;
+      };
+    }
+    const originalFdWrite = wasiImport.fd_write;
+    if (typeof originalFdWrite === 'function') {
+      wasiImport.fd_write = (fd, iovsPtr, iovsLen, nwrittenPtr) => {
+        const code = originalFdWrite(fd, iovsPtr, iovsLen, nwrittenPtr);
+        traceMark(`wasi_fd_write:fd=${Number(fd)} code=${Number(code)}`);
+        if (traceWasiIoStack && Number(code) !== 0) {
+          const stack = new Error().stack;
+          if (stack) {
+            traceMark(`wasi_fd_write_stack:${stack.replaceAll('\n', '\\n')}`);
+          }
+        }
+        return code;
+      };
+    }
+  }
 };
 
 let runtimeInstance = null;
 let wasmMemory = null;
 const traceImports = process.env.MOLT_WASM_TRACE === '1';
+const isWasiExitSymbol = (err) => typeof err === 'symbol' && String(err) === 'Symbol(kExitCode)';
+const runMainWithWasiExit = (fn) => {
+  try {
+    fn();
+  } catch (err) {
+    if (isWasiExitSymbol(err)) return;
+    throw err;
+  }
+};
 
 const setWasmMemory = (mem) => {
   if (mem) wasmMemory = mem;
+};
+
+const initializeWasiForInstance = (instance, memory) => {
+  const exports = instance && instance.exports ? instance.exports : null;
+  if (exports && typeof exports._initialize === 'function') {
+    wasi.initialize(instance);
+    return;
+  }
+  if (memory) {
+    // Fallback for modules that expose memory but no explicit reactor init.
+    wasi.initialize({ exports: { memory } });
+  }
 };
 
 const QNAN = 0x7ff8000000000000n;
@@ -2522,6 +2641,9 @@ const socketHostDetach = (handle) => {
 
 const osCloseHost = (fd) => {
   const fdNum = typeof fd === 'bigint' ? Number(fd) : Number(fd);
+  if (traceOsClose) {
+    traceMark(`os_close:${fdNum}`);
+  }
   if (!Number.isFinite(fdNum)) return -EINVAL;
   const res = socketCall('close_detached', { handle: fdNum }, 0);
   if (res.status === 0) return 0;
@@ -3472,7 +3594,7 @@ const runDirectLink = async () => {
 
   const runtimeModule = await WebAssembly.instantiate(runtimeBuffer, {
     env,
-    wasi_snapshot_preview1: wasi.wasiImport,
+    wasi_snapshot_preview1: wasiImport,
   });
   const runtimeInst = runtimeModule.instance;
   runtimeInstance = runtimeInst;
@@ -3505,8 +3627,10 @@ const runDirectLink = async () => {
     const res = outputModule.instance.exports.molt_call_indirect2(298n, 0n, 0n);
     console.error(`[molt wasm] call_indirect2 smoke result=${res}`);
   }
-  wasi.initialize({ exports: { memory } });
-  molt_main();
+  initializeWasiForInstance(runtimeInst, memory);
+  runMainWithWasiExit(() => {
+    molt_main();
+  });
 };
 
 const runLinked = async () => {
@@ -3532,7 +3656,7 @@ const runLinked = async () => {
   }
 
   const importObject = {
-    wasi_snapshot_preview1: wasi.wasiImport,
+    wasi_snapshot_preview1: wasiImport,
   };
   if (linkedImports.memory || linkedImports.table) {
     const memory = makeMemory(linkedImports.memory);
@@ -3604,19 +3728,27 @@ const runLinked = async () => {
     linkedModule.instance.exports.memory ||
     (importObject.env && importObject.env.memory);
   if (linkedMemory) {
-    wasi.initialize({ exports: { memory: linkedMemory } });
+    initializeWasiForInstance(linkedModule.instance, linkedMemory);
     setWasmMemory(linkedMemory);
   }
-  molt_main();
+  runMainWithWasiExit(() => {
+    molt_main();
+  });
 };
 
 const runMain = async () => {
   initWasmAssets();
+  traceMark('runMain:init');
   outputImports = parseWasmImports(wasmBuffer);
   runtimeImportsDesc = parseWasmImports(runtimeBuffer);
   inputHasRuntimeImports = outputImports.funcImports.some(
     (entry) => entry.module === 'molt_runtime'
   );
+  if (traceRun) {
+    console.error(
+      `[molt wasm] runMain wasm=${wasmPath} linked=${linkedPath || 'none'} imports_runtime=${inputHasRuntimeImports}`
+    );
+  }
   if (inputHasRuntimeImports && !linkedBuffer) {
     throw new Error(
       'Linked wasm required for Molt runtime outputs. Rebuild with --linked or set MOLT_WASM_LINK=1 to emit output_linked.wasm.'
@@ -3641,12 +3773,44 @@ const runMain = async () => {
     process.env.MOLT_WASM_LINKED === '1' ||
     (preferLinked && linkedBuffer);
   const runner = useLinked ? runLinked : runDirectLink;
+  traceMark(`runMain:runner:${useLinked ? 'linked' : 'direct'}`);
+  if (traceRun) {
+    console.error(`[molt wasm] runner=${useLinked ? 'linked' : 'direct'}`);
+  }
   await runner();
+  traceMark('runMain:runner_completed');
+  if (traceRun) {
+    console.error('[molt wasm] runner completed');
+  }
+  if (wasiExitCode !== null && wasiExitCode !== 0) {
+    traceMark(`runMain:exit_wasi:${wasiExitCode}`);
+    if (traceRun) {
+      console.error(`[molt wasm] exiting with wasi code ${wasiExitCode}`);
+    }
+    process.exit(wasiExitCode);
+  }
 };
 
 if (!IS_DB_WORKER && !IS_SOCKET_WORKER) {
   runMain().catch((err) => {
+    traceMark('runMain:catch');
+    traceMark(`runMain:catch_err:${formatTraceError(err).replaceAll('\n', '\\n')}`);
+    if (traceRun) {
+      console.error('[molt wasm] runMain rejected');
+    }
+    if (isWasiExitSymbol(err)) {
+      traceMark(`runMain:catch_wasi_symbol:${wasiExitCode === null ? 0 : wasiExitCode}`);
+      if (traceRun) {
+        console.error(
+          `[molt wasm] caught wasi exit symbol, code=${wasiExitCode === null ? 0 : wasiExitCode}`
+        );
+      }
+      process.exit(wasiExitCode === null ? 0 : wasiExitCode);
+      return;
+    }
+    traceMark('runMain:catch_non_wasi');
     console.error(err);
+    traceMark('runMain:exit_1');
     process.exit(1);
   });
 }

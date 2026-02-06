@@ -10,8 +10,9 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 from typing import Any, Callable, Iterable, TYPE_CHECKING
 
+
 if TYPE_CHECKING:
-    from typing import TypeVar
+    pass
 
 __all__ = [
     "cmp_to_key",

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
 import subprocess
@@ -36,6 +37,16 @@ CALL_INDIRECT_RE = re.compile(r"molt_call_indirect(\d+)")
 # Rust wasm symbol names include a hash suffix like "17h<hex...>E". Capture the arity
 # digits that precede the 2-digit hash-length tag so 10+ arities don't get truncated.
 CALL_INDIRECT_MANGLED_RE = re.compile(r"molt_call_indirect(\d+)(?=\d{2}h[0-9a-fA-F]+E)")
+
+
+def _default_runtime_path() -> Path:
+    env_root = os.environ.get("MOLT_WASM_RUNTIME_DIR")
+    if env_root:
+        return Path(env_root).expanduser() / "molt_runtime.wasm"
+    external_root = Path("/Volumes/APDataStore/Molt")
+    if external_root.is_dir():
+        return external_root / "wasm" / "molt_runtime.wasm"
+    return Path("wasm/molt_runtime.wasm")
 
 
 def _find_tool(names: list[str]) -> str | None:
@@ -912,9 +923,7 @@ def _run_wasm_ld(wasm_ld: str, runtime: Path, output: Path, linked: Path) -> int
         output_memory_min = _memory_import_min(output.read_bytes())
         if output_memory_min is not None:
             try:
-                updated = _rewrite_memory_min(
-                    linked.read_bytes(), output_memory_min
-                )
+                updated = _rewrite_memory_min(linked.read_bytes(), output_memory_min)
             except ValueError as exc:
                 print(f"Failed to rewrite linked memory min: {exc}", file=sys.stderr)
                 return 1
@@ -945,7 +954,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Attempt to link Molt output/runtime into a single WASM module.",
     )
-    parser.add_argument("--runtime", type=Path, default=Path("wasm/molt_runtime.wasm"))
+    parser.add_argument("--runtime", type=Path, default=_default_runtime_path())
     parser.add_argument("--input", type=Path, default=Path("output.wasm"))
     parser.add_argument("--output", type=Path, default=Path("output_linked.wasm"))
     args = parser.parse_args()
