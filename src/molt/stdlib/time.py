@@ -20,6 +20,8 @@ _MOLT_TIME_GMTIME = _require_intrinsic("molt_time_gmtime", globals())
 _MOLT_TIME_STRFTIME = _require_intrinsic("molt_time_strftime", globals())
 _MOLT_TIME_TIMEZONE = _require_intrinsic("molt_time_timezone", globals())
 _MOLT_TIME_TZNAME = _require_intrinsic("molt_time_tzname", globals())
+_MOLT_TIME_ASCTIME = _require_intrinsic("molt_time_asctime", globals())
+_MOLT_TIME_GET_CLOCK_INFO = _require_intrinsic("molt_time_get_clock_info", globals())
 _MOLT_ASYNC_SLEEP = _require_intrinsic("molt_async_sleep", globals())
 _MOLT_BLOCK_ON = _require_intrinsic("molt_block_on", globals())
 
@@ -257,43 +259,29 @@ timezone = _init_timezone()
 tzname = _init_tzname()
 
 
-_WEEKDAY_ABBR = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-_MONTH_ABBR = (
-    "Jan",
-    "Feb",
-    "Mar",
-    "Apr",
-    "May",
-    "Jun",
-    "Jul",
-    "Aug",
-    "Sep",
-    "Oct",
-    "Nov",
-    "Dec",
-)
-
-
 def _wrap_clock_info(info: Any, name: str) -> ClockInfo:
-    return ClockInfo(
-        getattr(info, "name", name),
-        getattr(info, "implementation", "molt"),
-        getattr(info, "resolution", 1e-9),
-        getattr(info, "monotonic", False),
-        getattr(info, "adjustable", False),
-    )
+    if not isinstance(info, (tuple, list)) or len(info) != 5:
+        raise RuntimeError("time get_clock_info intrinsic returned invalid value")
+    try:
+        return ClockInfo(
+            str(info[0]),
+            str(info[1]),
+            float(info[2]),
+            bool(info[3]),
+            bool(info[4]),
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "time get_clock_info intrinsic returned invalid value"
+        ) from exc
 
 
 def get_clock_info(name: str) -> ClockInfo:
     name = str(name)
-    if name in ("monotonic", "perf_counter"):
-        return ClockInfo(name, "molt", 1e-9, True, False)
-    if name == "process_time":
-        return ClockInfo(name, "molt", 1e-9, True, False)
     if name == "time":
         _require_time_wall()
-        return ClockInfo(name, "molt", 1e-6, False, True)
-    raise ValueError("unknown clock")
+    info = _MOLT_TIME_GET_CLOCK_INFO(name)
+    return _wrap_clock_info(info, name)
 
 
 def _has_time_wall() -> bool:
@@ -389,24 +377,7 @@ def asctime(t: Any | None = None) -> str:
     if t is None:
         t = localtime()
     tt = struct_time(t)
-    try:
-        wday = int(tt.tm_wday)
-        mon = int(tt.tm_mon)
-        mday = int(tt.tm_mday)
-        hour = int(tt.tm_hour)
-        minute = int(tt.tm_min)
-        sec = int(tt.tm_sec)
-        year = int(tt.tm_year)
-    except Exception as exc:
-        raise TypeError("time tuple elements must be integers") from exc
-    if not (0 <= wday <= 6 and 1 <= mon <= 12 and 1 <= mday <= 31):
-        raise ValueError("time tuple elements out of range")
-    day_name = _WEEKDAY_ABBR[wday]
-    mon_name = _MONTH_ABBR[mon - 1]
-    return (
-        f"{day_name} {mon_name} {mday:2d} "
-        f"{hour:02d}:{minute:02d}:{sec:02d} {year:04d}"
-    )
+    return str(_MOLT_TIME_ASCTIME(tuple(tt)))
 
 
 def ctime(secs: float | None = None) -> str:

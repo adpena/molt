@@ -103,6 +103,7 @@ _MOLT_SYS_STDIN = _as_callable(_require_intrinsic("molt_sys_stdin", globals()))
 _MOLT_SYS_STDOUT = _as_callable(_require_intrinsic("molt_sys_stdout", globals()))
 _MOLT_SYS_STDERR = _as_callable(_require_intrinsic("molt_sys_stderr", globals()))
 _MOLT_ENV_GET = _as_callable(_require_intrinsic("molt_env_get", globals()))
+_MOLT_PATH_DIRNAME = _as_callable(_require_intrinsic("molt_path_dirname", globals()))
 
 if _MOLT_GETARGV is None:
     raise RuntimeError("molt_getargv intrinsic missing")
@@ -143,45 +144,11 @@ if isinstance(raw_path, str) and raw_path:
     path = [part for part in raw_path.split(sep) if part]
 
 
-def _path_sep() -> str:
-    return "\\" if platform.startswith("win") else "/"
-
-
 def _path_dirname(value: str) -> str:
-    sep = _path_sep()
-    alt = "/" if sep == "\\" else "\\"
-    raw = value.replace(alt, sep).rstrip(sep)
-    if not raw:
-        return sep if value.startswith(sep) else ""
-    idx = raw.rfind(sep)
-    if idx < 0:
-        return ""
-    if idx == 0:
-        return sep
-    return raw[:idx]
-
-
-def _path_basename(value: str) -> str:
-    sep = _path_sep()
-    alt = "/" if sep == "\\" else "\\"
-    raw = value.replace(alt, sep).rstrip(sep)
-    if not raw:
-        return ""
-    idx = raw.rfind(sep)
-    if idx < 0:
-        return raw
-    return raw[idx + 1 :]
-
-
-def _path_join(*parts: str) -> str:
-    sep = _path_sep()
-    cleaned = [part for part in parts if part]
-    if not cleaned:
-        return ""
-    out = cleaned[0].rstrip("/\\")
-    for part in cleaned[1:]:
-        out = f"{out}{sep}{part.lstrip('/\\')}"
-    return out
+    value = _MOLT_PATH_DIRNAME(value)
+    if not isinstance(value, str):
+        raise RuntimeError("path dirname intrinsic returned invalid value")
+    return value
 
 
 def _append_stdlib_path(paths: list[str]) -> None:
@@ -218,40 +185,9 @@ def _append_cwd_path(paths: list[str]) -> None:
         paths.insert(0, "")
 
 
-def _append_host_site_packages(paths: list[str]) -> None:
-    trusted = str(_MOLT_ENV_GET("MOLT_TRUSTED", ""))
-    if trusted.strip().lower() not in {"1", "true", "yes", "on"}:
-        return
-    exe_path = executable
-    if not exe_path:
-        return
-    exe_dir = _path_dirname(exe_path)
-    candidates: list[str] = []
-    if platform.startswith("win"):
-        base = (
-            _path_dirname(exe_dir)
-            if _path_basename(exe_dir).lower() == "scripts"
-            else exe_dir
-        )
-        candidates.append(_path_join(base, "Lib", "site-packages"))
-    else:
-        base = _path_dirname(exe_dir) if _path_basename(exe_dir) == "bin" else exe_dir
-        major, minor = int(version_info[0]), int(version_info[1])
-        candidates.append(
-            _path_join(base, "lib", f"python{major}.{minor}", "site-packages")
-        )
-        candidates.append(
-            _path_join(base, "lib", f"python{major}.{minor}", "dist-packages")
-        )
-    for candidate in candidates:
-        if candidate and candidate not in paths:
-            paths.append(candidate)
-
-
 _append_stdlib_path(path)
 _append_module_roots(path)
 _append_cwd_path(path)
-_append_host_site_packages(path)
 
 
 class _NullIO:
@@ -346,8 +282,6 @@ __stderr__ = stderr
 _default_encoding = "utf-8"
 _fs_encoding = "utf-8"
 
-_recursionlimit = 1000
-
 
 class asyncgen_hooks(tuple):
     __slots__ = ()
@@ -366,36 +300,19 @@ class asyncgen_hooks(tuple):
         return self[1]
 
 
-_ASYNCGEN_FIRSTITER: object | None = None
-_ASYNCGEN_FINALIZER: object | None = None
-
-
 def getrecursionlimit() -> int:
-    if _MOLT_GETRECURSIONLIMIT is not None:
-        return int(cast(int, _MOLT_GETRECURSIONLIMIT()))
-    return _recursionlimit
+    return int(cast(int, _MOLT_GETRECURSIONLIMIT()))
 
 
 def setrecursionlimit(limit: int) -> None:
-    global _recursionlimit
-    if _MOLT_SETRECURSIONLIMIT is not None:
-        _MOLT_SETRECURSIONLIMIT(limit)
-        return
-    if not isinstance(limit, int):
-        name = type(limit).__name__
-        raise TypeError(f"'{name}' object cannot be interpreted as an integer")
-    if limit < 1:
-        raise ValueError("recursion limit must be greater or equal than 1")
-    _recursionlimit = limit
+    _MOLT_SETRECURSIONLIMIT(limit)
+    return None
 
 
 def exc_info() -> tuple[object, object, object]:
-    exc = None
-    if _MOLT_EXCEPTION_ACTIVE is not None:
-        exc = _MOLT_EXCEPTION_ACTIVE()
+    exc = _MOLT_EXCEPTION_ACTIVE()
     if exc is None:
-        if _MOLT_EXCEPTION_LAST is not None:
-            exc = _MOLT_EXCEPTION_LAST()
+        exc = _MOLT_EXCEPTION_LAST()
     if exc is None:
         return None, None, None
     return type(exc), exc, getattr(exc, "__traceback__", None)
@@ -508,16 +425,11 @@ def _patch_frame(frame: object | None, depth: int) -> object | None:
 
 
 def _getframe(depth: int = 0) -> object | None:
-    global _MOLT_GETFRAME
-    if _MOLT_GETFRAME is None:
-        _MOLT_GETFRAME = _as_callable(_require_intrinsic("molt_getframe", globals()))
-    if _MOLT_GETFRAME is not None:
-        try:
-            frame = _MOLT_GETFRAME(depth + 2)
-            return _patch_frame(frame, depth + 2)
-        except Exception:
-            return None
-    return None
+    try:
+        frame = _MOLT_GETFRAME(depth + 2)
+        return _patch_frame(frame, depth + 2)
+    except Exception:
+        return None
 
 
 def getdefaultencoding() -> str:
@@ -529,27 +441,15 @@ def getfilesystemencoding() -> str:
 
 
 def get_asyncgen_hooks() -> object:
-    if _MOLT_ASYNCGEN_HOOKS_GET is not None:
-        hooks = _MOLT_ASYNCGEN_HOOKS_GET()
-        if isinstance(hooks, tuple) and len(hooks) == 2:
-            firstiter, finalizer = hooks
-        else:
-            firstiter, finalizer = None, None
-        return asyncgen_hooks(firstiter, finalizer)
-    return asyncgen_hooks(_ASYNCGEN_FIRSTITER, _ASYNCGEN_FINALIZER)
+    hooks = _MOLT_ASYNCGEN_HOOKS_GET()
+    if not isinstance(hooks, tuple) or len(hooks) != 2:
+        raise RuntimeError("asyncgen hooks intrinsic returned invalid value")
+    firstiter, finalizer = hooks
+    return asyncgen_hooks(firstiter, finalizer)
 
 
 def set_asyncgen_hooks(
     *, firstiter: object | None = None, finalizer: object | None = None
 ) -> None:
-    global _ASYNCGEN_FIRSTITER, _ASYNCGEN_FINALIZER
-    if _MOLT_ASYNCGEN_HOOKS_SET is not None:
-        _MOLT_ASYNCGEN_HOOKS_SET(firstiter, finalizer)
-        return None
-    if firstiter is not None and not callable(firstiter):
-        raise TypeError("firstiter must be callable or None")
-    if finalizer is not None and not callable(finalizer):
-        raise TypeError("finalizer must be callable or None")
-    _ASYNCGEN_FIRSTITER = firstiter
-    _ASYNCGEN_FINALIZER = finalizer
+    _MOLT_ASYNCGEN_HOOKS_SET(firstiter, finalizer)
     return None
