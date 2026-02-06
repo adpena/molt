@@ -74,6 +74,54 @@ BOOTSTRAP_MODULES = {
     "warnings",
     "weakref",
 }
+PRIORITY_LOWERING_QUEUES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "P0 queue (Phase 2: concurrency substrate)",
+        ("socket", "select", "selectors", "threading", "asyncio"),
+    ),
+    (
+        "P1 queue (Phase 3: core-adjacent stdlib)",
+        (
+            "builtins",
+            "types",
+            "weakref",
+            "math",
+            "re",
+            "struct",
+            "time",
+            "inspect",
+            "functools",
+            "itertools",
+            "operator",
+            "contextlib",
+        ),
+    ),
+    (
+        "P2 queue (Phase 4: import/data/network long tail)",
+        (
+            "pathlib",
+            "importlib",
+            "importlib.util",
+            "importlib.machinery",
+            "pkgutil",
+            "glob",
+            "shutil",
+            "py_compile",
+            "compileall",
+            "json",
+            "csv",
+            "pickle",
+            "enum",
+            "ipaddress",
+            "encodings",
+            "ssl",
+            "subprocess",
+            "concurrent.futures",
+            "http.client",
+            "http.server",
+        ),
+    ),
+)
 INTRINSIC_CALL_NAMES = {
     "load_intrinsic",
     "require_intrinsic",
@@ -207,6 +255,8 @@ def _build_audit_doc(audits: list[ModuleAudit]) -> str:
     )
     probe_only = sorted(a.module for a in audits if a.status == STATUS_PROBE_ONLY)
     python_only = sorted(a.module for a in audits if a.status == STATUS_PYTHON_ONLY)
+    status_by_module = {audit.module: audit.status for audit in audits}
+    total_modules = len(audits)
 
     lines = [
         "# Stdlib Intrinsics Audit",
@@ -219,9 +269,31 @@ def _build_audit_doc(audits: list[ModuleAudit]) -> str:
         "- Every stdlib module must be backed by Rust intrinsics (Python files are allowed only as thin, intrinsic-forwarding wrappers).",
         "- Modules without intrinsic usage are forbidden in compiled builds and must raise immediately until fully lowered.",
         "",
-        "## Audit (Generated)",
-        "### Intrinsic-backed modules (lowering complete)",
+        "## Progress Summary (Generated)",
+        f"- Total audited modules: `{total_modules}`",
+        f"- `intrinsic-backed`: `{len(intrinsic)}`",
+        f"- `intrinsic-partial`: `{len(intrinsic_partial)}`",
+        f"- `probe-only`: `{len(probe_only)}`",
+        f"- `python-only`: `{len(python_only)}`",
+        "",
+        "## Priority Lowering Queue (Generated)",
     ]
+    for title, modules in PRIORITY_LOWERING_QUEUES:
+        lines.append(f"### {title}")
+        for module in modules:
+            status = status_by_module.get(module)
+            if status is None:
+                lines.append(f"- `{module}`: `not-audited`")
+            else:
+                lines.append(f"- `{module}`: `{status}`")
+        lines.append("")
+
+    lines.extend(
+        [
+            "## Audit (Generated)",
+            "### Intrinsic-backed modules (lowering complete)",
+        ]
+    )
     lines.extend(f"- `{name}`" for name in intrinsic)
     lines.extend(["", "### Intrinsic-backed modules (partial lowering pending)"])
     lines.extend(f"- `{name}`" for name in intrinsic_partial)

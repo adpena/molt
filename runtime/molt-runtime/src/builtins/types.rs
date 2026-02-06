@@ -2265,7 +2265,10 @@ pub extern "C" fn molt_types_bootstrap() -> u64 {
         let mappingproxy_bits = mappingproxy_class(_py);
         let simplenamespace_bits = simplenamespace_class(_py);
         let capsule_bits = capsule_class(_py);
-        let cell_bits = cell_class(_py);
+        let _cell_type_placeholder_bits = cell_class(_py);
+        // Closure slots are currently exposed as list objects at runtime, so map
+        // CellType to the concrete runtime carrier type for isinstance parity.
+        let cell_bits = builtins.list;
         // TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): replace
         // DynamicClassAttribute placeholder with a dedicated descriptor type.
         let prop_type_bits = property_type_bits(_py).unwrap_or(builtins.object);

@@ -67,39 +67,109 @@ def _imports_from_ast(
     known_modules: set[str],
 ) -> set[str]:
     out: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                resolved = _canonical_module(alias.name, known_modules)
-                if resolved:
-                    out.add(resolved)
-        elif isinstance(node, ast.ImportFrom):
-            module_name = _resolve_from_target(
-                current_module=current_module,
-                current_path=current_path,
-                level=node.level,
-                module=node.module,
-                name=None,
-            )
-            if module_name:
-                resolved = _canonical_module(module_name, known_modules)
-                if resolved:
-                    out.add(resolved)
-            for alias in node.names:
-                if alias.name == "*":
-                    continue
-                target = _resolve_from_target(
+
+    def _static_bool(expr: ast.expr) -> bool | None:
+        if isinstance(expr, ast.Constant) and isinstance(expr.value, bool):
+            return expr.value
+        if isinstance(expr, ast.Name) and expr.id == "TYPE_CHECKING":
+            return False
+        if isinstance(expr, ast.Attribute) and expr.attr == "TYPE_CHECKING":
+            return False
+        if isinstance(expr, ast.UnaryOp) and isinstance(expr.op, ast.Not):
+            val = _static_bool(expr.operand)
+            return None if val is None else not val
+        if isinstance(expr, ast.BoolOp):
+            values = [_static_bool(value) for value in expr.values]
+            if isinstance(expr.op, ast.And):
+                if any(value is False for value in values):
+                    return False
+                if all(value is True for value in values):
+                    return True
+                return None
+            if isinstance(expr.op, ast.Or):
+                if any(value is True for value in values):
+                    return True
+                if all(value is False for value in values):
+                    return False
+                return None
+        return None
+
+    def _collect_stmt_list(statements: list[ast.stmt]) -> None:
+        for stmt in statements:
+            if isinstance(stmt, ast.Import):
+                for alias in stmt.names:
+                    resolved = _canonical_module(alias.name, known_modules)
+                    if resolved:
+                        out.add(resolved)
+                continue
+            if isinstance(stmt, ast.ImportFrom):
+                module_name = _resolve_from_target(
                     current_module=current_module,
                     current_path=current_path,
-                    level=node.level,
-                    module=node.module,
-                    name=alias.name,
+                    level=stmt.level,
+                    module=stmt.module,
+                    name=None,
                 )
-                if not target:
-                    continue
-                resolved = _canonical_module(target, known_modules)
-                if resolved:
-                    out.add(resolved)
+                if module_name:
+                    resolved = _canonical_module(module_name, known_modules)
+                    if resolved:
+                        out.add(resolved)
+                for alias in stmt.names:
+                    if alias.name == "*":
+                        continue
+                    target = _resolve_from_target(
+                        current_module=current_module,
+                        current_path=current_path,
+                        level=stmt.level,
+                        module=stmt.module,
+                        name=alias.name,
+                    )
+                    if not target:
+                        continue
+                    resolved = _canonical_module(target, known_modules)
+                    if resolved:
+                        out.add(resolved)
+                continue
+            if isinstance(stmt, ast.If):
+                truth = _static_bool(stmt.test)
+                if truth is True:
+                    _collect_stmt_list(stmt.body)
+                elif truth is False:
+                    _collect_stmt_list(stmt.orelse)
+                else:
+                    _collect_stmt_list(stmt.body)
+                    _collect_stmt_list(stmt.orelse)
+                continue
+            if isinstance(stmt, ast.Try):
+                _collect_stmt_list(stmt.body)
+                for handler in stmt.handlers:
+                    _collect_stmt_list(handler.body)
+                _collect_stmt_list(stmt.orelse)
+                _collect_stmt_list(stmt.finalbody)
+                continue
+            if isinstance(
+                stmt,
+                (
+                    ast.FunctionDef,
+                    ast.AsyncFunctionDef,
+                    ast.ClassDef,
+                ),
+            ):
+                continue
+            child_bodies: list[list[ast.stmt]] = []
+            for field_name in ("body", "orelse", "finalbody"):
+                child = getattr(stmt, field_name, None)
+                if (
+                    isinstance(child, list)
+                    and child
+                    and all(isinstance(item, ast.stmt) for item in child)
+                ):
+                    child_bodies.append(child)
+            for child_body in child_bodies:
+                _collect_stmt_list(child_body)
+
+    if isinstance(tree, ast.Module):
+        _collect_stmt_list(tree.body)
     return out
 
 

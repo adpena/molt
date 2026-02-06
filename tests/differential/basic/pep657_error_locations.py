@@ -1,7 +1,5 @@
 """Purpose: differential coverage for PEP 657 error location metadata."""
 
-import traceback
-
 
 def boom(x: int) -> float:
     return (1 + x) / (x - x)
@@ -10,6 +8,13 @@ def boom(x: int) -> float:
 try:
     boom(1)
 except Exception as exc:
-    tb = traceback.TracebackException.from_exception(exc)
-    frame = tb.stack[-1]
-    print(frame.lineno, frame.end_lineno, frame.colno, frame.end_colno)
+    tb = exc.__traceback__
+    while tb is not None and tb.tb_next is not None:
+        tb = tb.tb_next
+    if tb is None:
+        print(None, None, None, None)
+    else:
+        positions = list(tb.tb_frame.f_code.co_positions())
+        idx = tb.tb_lasti // 2
+        lineno, end_lineno, colno, end_colno = positions[idx]
+        print(lineno, end_lineno, colno, end_colno)

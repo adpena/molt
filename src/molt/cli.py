@@ -4272,8 +4272,9 @@ def build(
         module_roots.extend(_vendor_roots(root))
     source_path: Path | None = None
     entry_module: str | None = None
+    entry_module_import_alias: str | None = None
     if file_path:
-        source_path = Path(file_path)
+        source_path = Path(file_path).resolve()
         if not source_path.exists():
             return _fail(f"File not found: {source_path}", json_output, command="build")
         module_roots.append(source_path.parent)
@@ -4361,6 +4362,13 @@ def build(
                 module_roots.append(root)
                 entry_module = _module_name_from_path(source_path, [root], stdlib_root)
     module_roots = list(dict.fromkeys(root.resolve() for root in module_roots))
+    if source_path is not None and entry_module is not None:
+        source_parent = source_path.parent.resolve()
+        alias_roots = [root for root in module_roots if root != source_parent]
+        if alias_roots:
+            alias_name = _module_name_from_path(source_path, alias_roots, stdlib_root)
+            if alias_name and alias_name != entry_module:
+                entry_module_import_alias = alias_name
     entry_imports = set(
         _collect_imports(entry_tree, entry_module, source_path.name == "__init__.py")
     )
@@ -4376,6 +4384,12 @@ def build(
         skip_modules=STUB_MODULES,
         stub_parents=stub_parents,
     )
+    if (
+        entry_module_import_alias
+        and entry_module_import_alias not in module_graph
+        and source_path is not None
+    ):
+        module_graph[entry_module_import_alias] = source_path
     _collect_package_parents(module_graph, roots, stdlib_root, stdlib_allowlist)
     _ensure_core_stdlib_modules(module_graph, stdlib_root)
     intrinsic_enforced = _enforce_intrinsic_stdlib(

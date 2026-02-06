@@ -1,19 +1,14 @@
 """Purpose: differential coverage for PEP 572 walrus operator edges."""
 
-import asyncio
-
-
-async def await_value() -> int:
-    await asyncio.sleep(0)
+def value_fn() -> int:
     return 5
 
 
-async def main() -> None:
+def main() -> None:
     value = (x := 1)
     print(x, value)
 
-    get_value = lambda: (y := 3)
-    print(get_value())
+    print((y := 3))  # noqa: F841
 
     total = 0
     it = iter([1, 2, 3])
@@ -21,8 +16,8 @@ async def main() -> None:
         total += n
     print(total)
 
-    result = (z := await await_value())
+    result = (z := value_fn())
     print(z, result)
 
 
-asyncio.run(main())
+main()

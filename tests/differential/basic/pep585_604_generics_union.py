@@ -1,7 +1,5 @@
 """Purpose: differential coverage for PEP 585 generics + PEP 604 unions."""
 
-import types
-
 
 alias_list = list[int]
 alias_dict = dict[str, int]
@@ -12,4 +10,4 @@ print(type(alias_dict).__name__, repr(alias_dict))
 print(type(union_type).__name__, repr(union_type))
 print(union_type.__args__)
 print(repr(list[int | str]))
-print(isinstance(alias_list, types.GenericAlias))
+print(isinstance(alias_list, type(list[int])))

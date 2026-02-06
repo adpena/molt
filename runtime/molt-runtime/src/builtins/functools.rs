@@ -41,6 +41,7 @@ static LRU_FACTORY_CALL_FN: AtomicU64 = AtomicU64::new(0);
 
 static CACHEINFO_ITER_FN: AtomicU64 = AtomicU64::new(0);
 static CACHEINFO_REPR_FN: AtomicU64 = AtomicU64::new(0);
+static CACHEINFO_GETATTR_FN: AtomicU64 = AtomicU64::new(0);
 
 static WRAPS_CALL_FN: AtomicU64 = AtomicU64::new(0);
 static TOTAL_ORDERING_OP_FN: AtomicU64 = AtomicU64::new(0);
@@ -175,6 +176,22 @@ fn partial_class(_py: &PyToken<'_>) -> u64 {
                 &crate::runtime_state(_py).interned.molt_varkw,
                 b"__molt_varkw__",
             );
+            let arg_names_name = intern_static_name(
+                _py,
+                &crate::runtime_state(_py).interned.molt_arg_names,
+                b"__molt_arg_names__",
+            );
+            let self_name_ptr = alloc_string(_py, b"self");
+            if !self_name_ptr.is_null() {
+                let self_name_bits = MoltObject::from_ptr(self_name_ptr).bits();
+                let arg_names_ptr = alloc_tuple(_py, &[self_name_bits]);
+                dec_ref_bits(_py, self_name_bits);
+                if !arg_names_ptr.is_null() {
+                    let arg_names_bits = MoltObject::from_ptr(arg_names_ptr).bits();
+                    unsafe { dict_set_in_place(_py, dict_ptr, arg_names_name, arg_names_bits) };
+                    dec_ref_bits(_py, arg_names_bits);
+                }
+            }
             unsafe {
                 dict_set_in_place(
                     _py,
@@ -189,7 +206,6 @@ fn partial_class(_py: &PyToken<'_>) -> u64 {
                     MoltObject::from_bool(true).bits(),
                 );
             }
-            dec_ref_bits(_py, dict_bits);
         }
     }
     class_bits
@@ -283,6 +299,22 @@ fn lru_wrapper_class(_py: &PyToken<'_>) -> u64 {
                 &crate::runtime_state(_py).interned.molt_varkw,
                 b"__molt_varkw__",
             );
+            let arg_names_name = intern_static_name(
+                _py,
+                &crate::runtime_state(_py).interned.molt_arg_names,
+                b"__molt_arg_names__",
+            );
+            let self_name_ptr = alloc_string(_py, b"self");
+            if !self_name_ptr.is_null() {
+                let self_name_bits = MoltObject::from_ptr(self_name_ptr).bits();
+                let arg_names_ptr = alloc_tuple(_py, &[self_name_bits]);
+                dec_ref_bits(_py, self_name_bits);
+                if !arg_names_ptr.is_null() {
+                    let arg_names_bits = MoltObject::from_ptr(arg_names_ptr).bits();
+                    unsafe { dict_set_in_place(_py, dict_ptr, arg_names_name, arg_names_bits) };
+                    dec_ref_bits(_py, arg_names_bits);
+                }
+            }
             unsafe {
                 dict_set_in_place(
                     _py,
@@ -297,7 +329,6 @@ fn lru_wrapper_class(_py: &PyToken<'_>) -> u64 {
                     MoltObject::from_bool(true).bits(),
                 );
             }
-            dec_ref_bits(_py, dict_bits);
         }
     }
     class_bits
@@ -329,8 +360,15 @@ fn cacheinfo_class(_py: &PyToken<'_>) -> u64 {
         crate::molt_functools_cacheinfo_repr as u64,
         1,
     );
+    let getattr_bits = builtin_func_bits(
+        _py,
+        &CACHEINFO_GETATTR_FN,
+        crate::molt_functools_cacheinfo_getattr as u64,
+        2,
+    );
     set_class_method(_py, class_bits, "__iter__", iter_bits);
     set_class_method(_py, class_bits, "__repr__", repr_bits);
+    set_class_method(_py, class_bits, "__getattr__", getattr_bits);
     class_bits
 }
 
@@ -447,6 +485,19 @@ unsafe fn cacheinfo_set_currsize(ptr: *mut u8, val: i64) {
     *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut i64) = val;
 }
 
+fn extend_positional_from_call_arg(arg_bits: u64, out: &mut Vec<u64>) {
+    let Some(arg_ptr) = obj_from_bits(arg_bits).as_ptr() else {
+        return;
+    };
+    unsafe {
+        if object_type_id(arg_ptr) == TYPE_ID_TUPLE {
+            out.extend_from_slice(seq_vec_ref(arg_ptr));
+            return;
+        }
+    }
+    out.push(arg_bits);
+}
+
 #[no_mangle]
 pub extern "C" fn molt_functools_partial(func_bits: u64, args_bits: u64, kwargs_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -491,20 +542,8 @@ pub extern "C" fn molt_functools_partial_call(
         let stored_args_bits = unsafe { partial_args_bits(self_ptr) };
         let stored_kwargs_bits = unsafe { partial_kwargs_bits(self_ptr) };
         let mut pos: Vec<u64> = Vec::new();
-        if let Some(ptr) = obj_from_bits(stored_args_bits).as_ptr() {
-            unsafe {
-                if object_type_id(ptr) == TYPE_ID_TUPLE {
-                    pos.extend_from_slice(seq_vec_ref(ptr));
-                }
-            }
-        }
-        if let Some(ptr) = obj_from_bits(args_bits).as_ptr() {
-            unsafe {
-                if object_type_id(ptr) == TYPE_ID_TUPLE {
-                    pos.extend_from_slice(seq_vec_ref(ptr));
-                }
-            }
-        }
+        extend_positional_from_call_arg(stored_args_bits, &mut pos);
+        extend_positional_from_call_arg(args_bits, &mut pos);
         let merged_kwargs_bits =
             if stored_kwargs_bits != 0 && !obj_from_bits(stored_kwargs_bits).is_none() {
                 let copy_bits = crate::dict_copy_method(stored_kwargs_bits) as u64;
@@ -1281,13 +1320,7 @@ fn default_wrapper_updates(_py: &PyToken<'_>) -> u64 {
 
 fn make_lru_key(_py: &PyToken<'_>, args_bits: u64, kwargs_bits: u64, typed: bool) -> u64 {
     let mut parts: Vec<u64> = Vec::new();
-    if let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() {
-        unsafe {
-            if object_type_id(args_ptr) == TYPE_ID_TUPLE {
-                parts.extend_from_slice(seq_vec_ref(args_ptr));
-            }
-        }
-    }
+    extend_positional_from_call_arg(args_bits, &mut parts);
     if kwargs_bits != 0 && !obj_from_bits(kwargs_bits).is_none() {
         parts.push(kwd_mark_bits(_py));
         if let Some(dict_ptr) = obj_from_bits(kwargs_bits).as_ptr() {
@@ -1308,15 +1341,11 @@ fn make_lru_key(_py: &PyToken<'_>, args_bits: u64, kwargs_bits: u64, typed: bool
         }
     }
     if typed {
-        if let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() {
-            unsafe {
-                if object_type_id(args_ptr) == TYPE_ID_TUPLE {
-                    for &val_bits in seq_vec_ref(args_ptr).iter() {
-                        let type_bits = crate::type_of_bits(_py, val_bits);
-                        parts.push(type_bits);
-                    }
-                }
-            }
+        let mut typed_args: Vec<u64> = Vec::new();
+        extend_positional_from_call_arg(args_bits, &mut typed_args);
+        for val_bits in typed_args {
+            let type_bits = crate::type_of_bits(_py, val_bits);
+            parts.push(type_bits);
         }
         if kwargs_bits != 0 && !obj_from_bits(kwargs_bits).is_none() {
             if let Some(dict_ptr) = obj_from_bits(kwargs_bits).as_ptr() {
@@ -1373,14 +1402,11 @@ pub extern "C" fn molt_functools_lru_call(self_bits: u64, args_bits: u64, kwargs
             if builder_bits == 0 {
                 return MoltObject::none().bits();
             }
-            // args_bits is tuple of varargs; kwargs_bits is dict.
-            if let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() {
+            let mut call_pos: Vec<u64> = Vec::new();
+            extend_positional_from_call_arg(args_bits, &mut call_pos);
+            for val_bits in call_pos {
                 unsafe {
-                    if object_type_id(args_ptr) == TYPE_ID_TUPLE {
-                        for &val_bits in seq_vec_ref(args_ptr).iter() {
-                            let _ = crate::molt_callargs_push_pos(builder_bits, val_bits);
-                        }
-                    }
+                    let _ = crate::molt_callargs_push_pos(builder_bits, val_bits);
                 }
             }
             if kwargs_bits != 0 && !obj_from_bits(kwargs_bits).is_none() {
@@ -1443,13 +1469,11 @@ pub extern "C" fn molt_functools_lru_call(self_bits: u64, args_bits: u64, kwargs
             dec_ref_bits(_py, key_bits);
             return MoltObject::none().bits();
         }
-        if let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() {
+        let mut call_pos: Vec<u64> = Vec::new();
+        extend_positional_from_call_arg(args_bits, &mut call_pos);
+        for val_bits in call_pos {
             unsafe {
-                if object_type_id(args_ptr) == TYPE_ID_TUPLE {
-                    for &val_bits in seq_vec_ref(args_ptr).iter() {
-                        let _ = crate::molt_callargs_push_pos(builder_bits, val_bits);
-                    }
-                }
+                let _ = crate::molt_callargs_push_pos(builder_bits, val_bits);
             }
         }
         if kwargs_bits != 0 && !obj_from_bits(kwargs_bits).is_none() {
@@ -1576,6 +1600,34 @@ pub extern "C" fn molt_functools_cacheinfo_repr(self_bits: u64) -> u64 {
             return MoltObject::none().bits();
         }
         MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_functools_cacheinfo_getattr(self_bits: u64, name_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
+        let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
+            return raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "attribute name must be string",
+            );
+        };
+        match name.as_str() {
+            "hits" => MoltObject::from_int(unsafe { cacheinfo_hits(self_ptr) }).bits(),
+            "misses" => MoltObject::from_int(unsafe { cacheinfo_misses(self_ptr) }).bits(),
+            "maxsize" => {
+                let value_bits = unsafe { cacheinfo_maxsize_bits(self_ptr) };
+                inc_ref_bits(_py, value_bits);
+                value_bits
+            }
+            "currsize" => MoltObject::from_int(unsafe { cacheinfo_currsize(self_ptr) }).bits(),
+            _ => {
+                let msg = format!("'CacheInfo' object has no attribute '{name}'");
+                raise_exception::<u64>(_py, "AttributeError", &msg)
+            }
+        }
     })
 }
 

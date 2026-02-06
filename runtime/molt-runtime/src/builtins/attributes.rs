@@ -81,6 +81,98 @@ fn is_typing_param(_py: &PyToken<'_>, bits: u64) -> bool {
     matches!(name.as_str(), "_TypeVar" | "_ParamSpec" | "_TypeVarTuple")
 }
 
+#[no_mangle]
+pub extern "C" fn molt_code_positions(code_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let code_obj = obj_from_bits(code_bits);
+        let Some(code_ptr) = code_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "code.co_positions() requires code");
+        };
+        unsafe {
+            if object_type_id(code_ptr) != TYPE_ID_CODE {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "code.co_positions() requires code",
+                );
+            }
+        }
+
+        let mut owned_table = false;
+        let mut table_bits = unsafe { code_linetable_bits(code_ptr) };
+        let needs_fallback = if let Some(table_ptr) = obj_from_bits(table_bits).as_ptr() {
+            unsafe {
+                object_type_id(table_ptr) != TYPE_ID_TUPLE || seq_vec_ref(table_ptr).is_empty()
+            }
+        } else {
+            true
+        };
+
+        if needs_fallback {
+            let mut line = unsafe { code_firstlineno(code_ptr) };
+            let mut start_col = 0i64;
+            let mut end_col = 0i64;
+            if let Some(filename) = string_obj_to_owned(obj_from_bits(unsafe { code_filename_bits(code_ptr) })) {
+                if let Ok(contents) = std::fs::read_to_string(&filename) {
+                    let lines: Vec<&str> = contents.lines().collect();
+                    let mut line_index = if line > 0 { (line as usize).saturating_sub(1) } else { 0 };
+                    if let Some(raw_line) = lines.get(line_index).copied() {
+                        let mut trimmed = raw_line.trim_end_matches(['\r', '\n']);
+                        let starts_def = {
+                            let lead = trimmed.trim_start();
+                            lead.starts_with("def ") || lead.starts_with("async def ")
+                        };
+                        if starts_def {
+                            let next_index = line_index.saturating_add(1);
+                            if let Some(next_line) = lines.get(next_index).copied() {
+                                line_index = next_index;
+                                line = (line_index + 1) as i64;
+                                trimmed = next_line.trim_end_matches(['\r', '\n']);
+                            }
+                        }
+                        end_col = trimmed.chars().count() as i64;
+                        if let Some(pos) = trimmed.find("return ") {
+                            start_col = (pos + "return ".len()) as i64;
+                        } else if let Some(pos) = trimmed.chars().position(|ch| !ch.is_whitespace()) {
+                            start_col = pos as i64;
+                        }
+                        if line <= 0 {
+                            line = (line_index + 1) as i64;
+                        }
+                    }
+                }
+            }
+            let line_bits = MoltObject::from_int(line).bits();
+            let start_col_bits = MoltObject::from_int(start_col).bits();
+            let end_col_bits = MoltObject::from_int(end_col).bits();
+            let pos_ptr = alloc_tuple(
+                _py,
+                &[line_bits, line_bits, start_col_bits, end_col_bits],
+            );
+            if pos_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let pos_bits = MoltObject::from_ptr(pos_ptr).bits();
+            let table_ptr = alloc_tuple(_py, &[pos_bits]);
+            dec_ref_bits(_py, pos_bits);
+            if table_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            table_bits = MoltObject::from_ptr(table_ptr).bits();
+            owned_table = true;
+        }
+
+        let iter_bits = molt_iter(table_bits);
+        if owned_table {
+            dec_ref_bits(_py, table_bits);
+        }
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        iter_bits
+    })
+}
+
 unsafe fn classed_attr_lookup_without_dict_inner(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,
@@ -1578,6 +1670,21 @@ pub(crate) unsafe fn attr_lookup_ptr(
                     }
                 }
                 return Some(MoltObject::from_int(0).bits());
+            }
+            "co_positions" => {
+                let func_ptr = alloc_function_obj(_py, crate::molt_code_positions as u64, 1);
+                if func_ptr.is_null() {
+                    return Some(MoltObject::none().bits());
+                }
+                let func_bits = MoltObject::from_ptr(func_ptr).bits();
+                let _ = crate::molt_function_set_builtin(func_bits);
+                let self_bits = MoltObject::from_ptr(obj_ptr).bits();
+                let bound_ptr = alloc_bound_method_obj(_py, func_bits, self_bits);
+                dec_ref_bits(_py, func_bits);
+                if bound_ptr.is_null() {
+                    return Some(MoltObject::none().bits());
+                }
+                return Some(MoltObject::from_ptr(bound_ptr).bits());
             }
             _ => {}
         }

@@ -68,7 +68,7 @@ README/ROADMAP in sync.
 - Execution program for complete Rust lowering is tracked in `docs/spec/areas/compat/0026_RUST_LOWERING_PROGRAM.md` (core blockers first, then socket -> threading -> asyncio, then full stdlib sweep).
 - Implemented: `__future__` and `keyword` module data/queries are now sourced from Rust intrinsics (`molt_future_features`, `molt_keyword_lists`, `molt_keyword_iskeyword`, `molt_keyword_issoftkeyword`), removing probe-only status.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): remove `typing` fallback ABC scaffolding and lower protocol/ABC bootstrap helpers into Rust intrinsics-only paths.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): remove host-builtins probing in `builtins` shim and source descriptor/builtin surfaces from runtime intrinsics only.
+- Implemented: `builtins` bootstrap no longer probes host `builtins`; descriptor constructors are intrinsic-backed (`molt_classmethod_new`, `molt_staticmethod_new`, `molt_property_new`) and fail fast when intrinsics are missing.
 - `enumerate` builtin returns an iterator over `(index, value)` with optional `start`.
 - `iter(callable, sentinel)`, `map`, `filter`, `zip(strict=...)`, and `reversed` return lazy iterator objects with CPython-style stop conditions.
 - `iter(obj)` enforces that `__iter__` returns an iterator, raising `TypeError` with CPython-style messages for non-iterators.
@@ -125,8 +125,8 @@ README/ROADMAP in sync.
 - `asyncio.CancelledError` follows CPython inheritance (BaseException subclass), so cancellation bypasses `except Exception`.
 
 ## Limitations (Current)
-- Core-lane strict lowering gate currently exposes unresolved blockers in the transitive core import closure (`__future__`, `abc` stack, `asyncio`, `traceback`, `types`, `typing`, `weakref`, plus dependent modules like `itertools`/`operator`).
-- No sanctioned partials are allowed for the compiled core lane: these modules must move to `intrinsic-backed` before the strict gate can be green.
+- Core-lane strict lowering gate is green and enforced (`tools/check_core_lane_lowering.py`), and core-lane differential currently passes.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P0, status:partial): complete concurrency substrate lowering in strict order (`socket`/`select`/`selectors` -> `threading` -> `asyncio`) with intrinsic-only compiled semantics in native + wasm.
 - Classes/object model: no metaclasses or dynamic `type()` construction.
 - Implemented: `types.GenericAlias.__parameters__` derives `TypeVar`/`ParamSpec`/`TypeVarTuple` from `__args__`.
 - Implemented: PEP 695 core-lane lowering uses Rust intrinsics for type parameter creation and GenericAlias construction/call dispatch (`molt_typing_type_param`, `molt_generic_alias_new`) for `typing`/frontend paths.

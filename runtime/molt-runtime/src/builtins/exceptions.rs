@@ -18,7 +18,8 @@ use crate::{
     alloc_object, alloc_string, alloc_tuple, attr_lookup_ptr_allow_missing,
     attr_name_bits_from_bytes, builtin_classes, builtin_func_bits, bytes_like_slice,
     call_callable1, call_class_init_with_args, class_break_cycles, class_name_bits,
-    class_name_for_error, code_filename_bits, code_firstlineno, code_name_bits,
+    class_name_for_error, code_filename_bits, code_firstlineno, code_linetable_bits,
+    code_name_bits,
     context_stack_unwind, current_task_key, current_task_ptr, current_token_id, dec_ref_bits,
     dict_find_entry_fast, dict_get_in_place, dict_order, dict_set_in_place, dict_table, format_obj,
     format_obj_str, header_from_obj_ptr, inc_ref_bits, index_bigint_from_obj, instance_dict_bits,
@@ -105,6 +106,7 @@ thread_local! {
 }
 
 static STOPASYNC_BT_PRINTED: AtomicBool = AtomicBool::new(false);
+static TB_LASTI_NAME: AtomicU64 = AtomicU64::new(0);
 
 #[inline]
 fn debug_exception_flow() -> bool {
@@ -3122,6 +3124,73 @@ unsafe fn alloc_traceback_obj(
     line: i64,
     next_bits: u64,
 ) -> Option<u64> {
+    fn compute_tb_lasti(_py: &PyToken<'_>, frame_bits: u64, line: i64) -> i64 {
+        let Some(frame_ptr) = obj_from_bits(frame_bits).as_ptr() else {
+            return -1;
+        };
+        unsafe {
+            let dict_bits = instance_dict_bits(frame_ptr);
+            let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+                return -1;
+            };
+            if object_type_id(dict_ptr) != TYPE_ID_DICT {
+                return -1;
+            }
+            let f_code_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.f_code_name, b"f_code");
+            let Some(code_bits) = dict_get_in_place(_py, dict_ptr, f_code_bits) else {
+                return -1;
+            };
+            let Some(code_ptr) = obj_from_bits(code_bits).as_ptr() else {
+                return -1;
+            };
+            if object_type_id(code_ptr) != TYPE_ID_CODE {
+                return -1;
+            }
+            let linetable_bits = code_linetable_bits(code_ptr);
+            let Some(linetable_ptr) = obj_from_bits(linetable_bits).as_ptr() else {
+                return -1;
+            };
+            if object_type_id(linetable_ptr) != TYPE_ID_TUPLE {
+                return -1;
+            }
+            let mut best: Option<(usize, i64)> = None;
+            for (idx, entry_bits) in seq_vec_ref(linetable_ptr).iter().copied().enumerate() {
+                let Some(entry_ptr) = obj_from_bits(entry_bits).as_ptr() else {
+                    continue;
+                };
+                if object_type_id(entry_ptr) != TYPE_ID_TUPLE {
+                    continue;
+                }
+                let parts = seq_vec_ref(entry_ptr);
+                if parts.len() < 4 {
+                    continue;
+                }
+                let Some(start_line) = to_i64(obj_from_bits(parts[0])) else {
+                    continue;
+                };
+                if start_line != line {
+                    continue;
+                }
+                let start_col = to_i64(obj_from_bits(parts[2])).unwrap_or(-1);
+                let end_col = to_i64(obj_from_bits(parts[3])).unwrap_or(start_col);
+                let span = if start_col >= 0 && end_col >= start_col {
+                    end_col - start_col
+                } else {
+                    -1
+                };
+                match best {
+                    Some((_, best_span)) if span <= best_span => {}
+                    _ => best = Some((idx, span)),
+                }
+            }
+            if let Some((idx, _)) = best {
+                return (idx as i64) * 2;
+            }
+            -1
+        }
+    }
+
     let builtins = builtin_classes(_py);
     let class_obj = obj_from_bits(builtins.traceback);
     let class_ptr = class_obj.as_ptr()?;
@@ -3139,7 +3208,9 @@ unsafe fn alloc_traceback_obj(
     );
     let tb_next_bits =
         intern_static_name(_py, &runtime_state(_py).interned.tb_next_name, b"tb_next");
+    let tb_lasti_bits = intern_static_name(_py, &TB_LASTI_NAME, b"tb_lasti");
     let line_bits = MoltObject::from_int(line).bits();
+    let lasti_bits = MoltObject::from_int(compute_tb_lasti(_py, frame_bits, line)).bits();
     let dict_ptr = alloc_dict_with_pairs(
         _py,
         &[
@@ -3149,6 +3220,8 @@ unsafe fn alloc_traceback_obj(
             line_bits,
             tb_next_bits,
             next_bits,
+            tb_lasti_bits,
+            lasti_bits,
         ],
     );
     if dict_ptr.is_null() {

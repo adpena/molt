@@ -51,12 +51,15 @@ jobs:
       - name: Build runtime (release)
         if: matrix.python-version == '3.12'
         run: cargo build -p molt-runtime --release
+      - name: Run molt-diff core lane
+        if: matrix.python-version == '3.12'
+        run: MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_RLIMIT_GB=10 uv run python tests/molt_diff.py --jobs 2 tests/differential/core
       - name: Run molt-diff basic suite
         if: matrix.python-version == '3.12'
-        run: uv run python tests/molt_diff.py tests/differential/basic
+        run: MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_RLIMIT_GB=10 uv run python tests/molt_diff.py tests/differential/basic
       - name: Run molt-diff patterns suite
         if: matrix.python-version == '3.12'
-        run: uv run python tests/molt_diff.py tests/differential/patterns
+        run: MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_RLIMIT_GB=10 uv run python tests/molt_diff.py tests/differential/patterns
       - name: Type coverage TODO sync
         if: matrix.python-version == '3.12'
         run: uv run python tools/check_type_coverage_todos.py

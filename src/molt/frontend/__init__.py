@@ -685,7 +685,9 @@ MOLT_DIRECT_CALL_BIND_ALWAYS = {
     "asyncio": {"gather"},
     "functools": {"partial"},
     "operator": {"attrgetter", "itemgetter", "methodcaller"},
-    "itertools": {"chain"},
+    # itertools wrappers have vararg/default binding semantics that must go
+    # through CALL_BIND unless we explicitly materialize packed args.
+    "itertools": {"chain", "islice", "repeat"},
 }
 
 STDLIB_DIRECT_CALL_MODULES = {
@@ -13656,9 +13658,18 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     if return_hint and return_hint in self.classes:
                         res_hint = return_hint
                     res = MoltValue(self.next_var(), type_hint=res_hint)
-                    target_name = func_val.type_hint.split(":", 1)[1]
+                    # Route known-method calls through CALL_BIND so descriptor binding and
+                    # handle semantics stay aligned with dynamic attribute calls.
+                    callee = load_attr_callee()
+                    if callee is None:
+                        target_name = func_val.type_hint.split(":", 1)[1]
+                        self.emit(
+                            MoltOp(kind="CALL", args=[target_name] + args, result=res)
+                        )
+                        return res
+                    callargs = self._emit_call_args_builder(node)
                     self.emit(
-                        MoltOp(kind="CALL", args=[target_name] + args, result=res)
+                        MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res)
                     )
                     return res
             if method == "add" and receiver.type_hint == "set":
@@ -17251,11 +17262,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         raise NotImplementedError("Unsupported map iterable")
                     iter_vals.append(iter_val)
                 callee = self._emit_builtin_function(func_id)
+                iterables_tuple = MoltValue(self.next_var(), type_hint="tuple")
+                self.emit(
+                    MoltOp(kind="TUPLE_NEW", args=iter_vals, result=iterables_tuple)
+                )
                 res = MoltValue(self.next_var(), type_hint="Any")
                 self.emit(
                     MoltOp(
                         kind="CALL_FUNC",
-                        args=[callee, func_val] + iter_vals,
+                        args=[callee, func_val, iterables_tuple],
                         result=res,
                     )
                 )
@@ -17279,11 +17294,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         raise NotImplementedError("Unsupported zip iterable")
                     iter_vals.append(iter_val)
                 callee = self._emit_builtin_function(func_id)
+                iterables_tuple = MoltValue(self.next_var(), type_hint="tuple")
+                self.emit(
+                    MoltOp(kind="TUPLE_NEW", args=iter_vals, result=iterables_tuple)
+                )
+                strict_val = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(MoltOp(kind="CONST_BOOL", args=[False], result=strict_val))
                 res = MoltValue(self.next_var(), type_hint="Any")
                 self.emit(
                     MoltOp(
                         kind="CALL_FUNC",
-                        args=[callee] + iter_vals,
+                        args=[callee, iterables_tuple, strict_val],
                         result=res,
                     )
                 )
@@ -17354,8 +17375,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                 f"Unsupported {func_id} positional argument"
                             )
                         arg_vals.append(arg_val)
+                    args_tuple = MoltValue(self.next_var(), type_hint="tuple")
                     self.emit(
-                        MoltOp(kind="CALL_FUNC", args=[callee] + arg_vals, result=res)
+                        MoltOp(kind="TUPLE_NEW", args=arg_vals, result=args_tuple)
+                    )
+                    key_val = MoltValue(self.next_var(), type_hint="None")
+                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=key_val))
+                    default_val = self._emit_missing_value()
+                    self.emit(
+                        MoltOp(
+                            kind="CALL_FUNC",
+                            args=[callee, args_tuple, key_val, default_val],
+                            result=res,
+                        )
                     )
                 return res
             if func_id == "sorted":
@@ -18016,6 +18048,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if func_id in BUILTIN_FUNC_SPECS:
                 if func_id == "open":
                     needs_bind = True
+                spec = BUILTIN_FUNC_SPECS[func_id]
+                # CALL_FUNC bypasses argument binding; vararg/kwonly builtins must
+                # route through CALL_BIND to preserve Python call semantics.
+                needs_bind = needs_bind or (
+                    spec.vararg is not None or bool(spec.kwonly_params)
+                )
                 callee = self._emit_builtin_function(func_id)
                 res = MoltValue(self.next_var(), type_hint="Any")
                 if needs_bind:

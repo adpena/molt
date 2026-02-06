@@ -121,7 +121,8 @@ Ten-item parity plan details live in `docs/spec/areas/compat/0015_STDLIB_COMPATI
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib.metadata full parsing + dependency/entry point semantics.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P0, status:missing): replace Python stdlib modules with Rust intrinsics-only implementations (thin wrappers only); compiled binaries must reject Python-only stdlib modules. See `docs/spec/areas/compat/0016_STDLIB_INTRINSICS_AUDIT.md`.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): remove `typing` fallback ABC scaffolding and lower protocol/ABC bootstrap helpers into Rust intrinsics-only paths.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): remove host-builtins probing in `builtins` shim and source descriptor/builtin surfaces from runtime intrinsics only.
+- Implemented: `builtins` bootstrap no longer probes host `builtins`; descriptor constructors are intrinsic-backed (`molt_classmethod_new`, `molt_staticmethod_new`, `molt_property_new`) with fail-fast missing-intrinsic behavior.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P0, status:partial): complete concurrency substrate lowering in strict order (`socket`/`select`/`selectors` -> `threading` -> `asyncio`) with intrinsic-only compiled semantics in native + wasm.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): import-only allowlisted stdlib modules (`argparse`, `ast`, `atexit`, `collections.abc`, `_collections_abc`, `_abc`, `_py_abc`, `_asyncio`, `_bz2`, `_weakref`, `_weakrefset`, `platform`, `queue`, `shlex`, `shutil`, `textwrap`, `time`, `tomllib`, `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `copyreg`, `string`, `numbers`, `unicodedata`, `glob`, `tempfile`, `ctypes`) to minimal parity.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): pkgutil loader/zipimport/iter_importers parity (filesystem-only iter_modules/walk_packages today).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): compileall/py_compile parity (pyc output, invalidation modes, optimize levels).
@@ -133,6 +134,13 @@ Ten-item parity plan details live in `docs/spec/areas/compat/0015_STDLIB_COMPATI
 
 ## Rust Lowering Program (Core -> Stdlib)
 Execution contract: `docs/spec/areas/compat/0026_RUST_LOWERING_PROGRAM.md`
+
+Program board:
+- Phase 0 (enforcement spine): completed, keep strict in CI + local lint.
+- Phase 1 (core-lane blockers): completed; core lane closure is now intrinsic-backed only.
+- Phase 2 (concurrency substrate): active P0 queue (`socket`/`select`/`selectors` -> `threading` -> `asyncio`).
+- Phase 3 (core-adjacent stdlib): queued behind phase 2.
+- Phase 4 (long tail + capability-gated families): queued behind phase 3.
 
 1. Phase 0 (enforcement spine)
 - Keep `tools/check_stdlib_intrinsics.py` as generated-audit + lint gate in CI.
@@ -252,4 +260,4 @@ Language feature TODOs tracked here for parity:
 
 ---
 
-*Last Updated: Friday, February 6, 2026 - 03:38 CST*
+*Last Updated: Friday, February 6, 2026 - 08:01 CST*
