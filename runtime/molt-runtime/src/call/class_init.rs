@@ -3,6 +3,7 @@ use crate::builtins::exceptions::{
 };
 use crate::PyToken;
 use crate::*;
+use std::borrow::Cow;
 
 fn str_codec_arg(_py: &PyToken<'_>, bits: u64, arg_name: &str) -> Option<String> {
     let obj = obj_from_bits(bits);
@@ -41,16 +42,39 @@ unsafe fn max_slot_end_from_mro_offsets(
     class_ptr: *mut u8,
     fields_name_bits: u64,
 ) -> usize {
-    let Some(offsets_bits) = class_attr_lookup_raw_mro(_py, class_ptr, fields_name_bits) else {
-        return 0;
+    let class_bits = MoltObject::from_ptr(class_ptr).bits();
+    let mro: Cow<'_, [u64]> = if let Some(mro) = class_mro_ref(class_ptr) {
+        Cow::Borrowed(mro.as_slice())
+    } else {
+        Cow::Owned(class_mro_vec(class_bits))
     };
-    let Some(offsets_ptr) = obj_from_bits(offsets_bits).as_ptr() else {
-        return 0;
-    };
-    if object_type_id(offsets_ptr) != TYPE_ID_DICT {
-        return 0;
+    let mut max_end = 0usize;
+    for mro_class_bits in mro.iter().copied() {
+        let Some(mro_class_ptr) = obj_from_bits(mro_class_bits).as_ptr() else {
+            continue;
+        };
+        if object_type_id(mro_class_ptr) != TYPE_ID_TYPE {
+            continue;
+        }
+        let dict_bits = class_dict_bits(mro_class_ptr);
+        let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+            continue;
+        };
+        if object_type_id(dict_ptr) != TYPE_ID_DICT {
+            continue;
+        }
+        let Some(offsets_bits) = dict_get_in_place(_py, dict_ptr, fields_name_bits) else {
+            continue;
+        };
+        let Some(offsets_ptr) = obj_from_bits(offsets_bits).as_ptr() else {
+            continue;
+        };
+        if object_type_id(offsets_ptr) != TYPE_ID_DICT {
+            continue;
+        }
+        max_end = max_end.max(max_slot_end_from_offsets_dict(_py, offsets_ptr));
     }
-    max_slot_end_from_offsets_dict(_py, offsets_ptr)
+    max_end
 }
 
 unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
@@ -74,6 +98,7 @@ unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
     let class_dict_ptr = obj_from_bits(class_dict_bits(class_ptr)).as_ptr();
     let mut size = 0usize;
     let mut has_own_layout = false;
+    let mut own_has_offsets = false;
     if let Some(class_dict_ptr) = class_dict_ptr {
         if object_type_id(class_dict_ptr) == TYPE_ID_DICT {
             if let Some(size_bits) = dict_get_in_place(_py, class_dict_ptr, size_name_bits) {
@@ -84,6 +109,11 @@ unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
                     }
                 }
             }
+            if let Some(offsets_bits) = dict_get_in_place(_py, class_dict_ptr, fields_name_bits) {
+                own_has_offsets = obj_from_bits(offsets_bits)
+                    .as_ptr()
+                    .is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_DICT);
+            }
         }
     }
     if let Some(size_bits) = class_attr_lookup_raw_mro(_py, class_ptr, size_name_bits) {
@@ -93,9 +123,12 @@ unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
             }
         }
     }
-    let needs_recompute = !has_own_layout || size < reserved_tail;
+    let max_end = max_slot_end_from_mro_offsets(_py, class_ptr, fields_name_bits);
+    let needs_recompute = !has_own_layout
+        || size < reserved_tail
+        || !own_has_offsets
+        || size < max_end.saturating_add(reserved_tail);
     if needs_recompute {
-        let max_end = max_slot_end_from_mro_offsets(_py, class_ptr, fields_name_bits);
         if max_end != 0 {
             size = size.max(max_end.saturating_add(reserved_tail));
         }

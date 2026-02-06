@@ -11,6 +11,7 @@ import types as _types  # noqa: F401
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
+# TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): eliminate host-builtins bootstrap probing in this shim and source descriptor/builtin surfaces from Rust intrinsics only.
 
 TYPE_CHECKING = False
 

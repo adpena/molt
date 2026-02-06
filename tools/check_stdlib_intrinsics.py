@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import ast
 import io
+import json
 import re
 import tokenize
 from dataclasses import dataclass
@@ -46,8 +47,13 @@ MANIFEST_INTRINSIC_RE = re.compile(r"^def\s+(molt_[a-zA-Z0-9_]+)\(")
 
 PROBE_INTRINSIC = "molt_stdlib_probe"
 STATUS_INTRINSIC = "intrinsic-backed"
+STATUS_INTRINSIC_PARTIAL = "intrinsic-partial"
 STATUS_PROBE_ONLY = "probe-only"
 STATUS_PYTHON_ONLY = "python-only"
+
+STDLIB_TODO_RE = re.compile(
+    r"TODO\(stdlib-compat,[^)]*status:(?:missing|partial|planned|divergent)\)"
+)
 
 BOOTSTRAP_MODULES = {
     "__future__",
@@ -145,7 +151,7 @@ def _extract_intrinsic_names(text: str) -> tuple[str, ...]:
     return tuple(sorted(names))
 
 
-def _scan_file(path: Path) -> tuple[list[str], tuple[str, ...], str]:
+def _scan_file(path: Path) -> tuple[list[str], tuple[str, ...], str, bool]:
     text = path.read_text(encoding="utf-8")
     code_text = _code_text(text)
     errors: list[str] = []
@@ -170,6 +176,7 @@ def _scan_file(path: Path) -> tuple[list[str], tuple[str, ...], str]:
             errors.append("Intrinsic loader usage requires importing from _intrinsics.")
 
     intrinsic_names = _extract_intrinsic_names(text)
+    has_stdlib_todo = bool(STDLIB_TODO_RE.search(text))
     if is_registry_file:
         status = STATUS_INTRINSIC
     elif not intrinsic_names:
@@ -179,7 +186,7 @@ def _scan_file(path: Path) -> tuple[list[str], tuple[str, ...], str]:
     else:
         status = STATUS_INTRINSIC
 
-    return errors, intrinsic_names, status
+    return errors, intrinsic_names, status, has_stdlib_todo
 
 
 def _load_manifest_intrinsics() -> set[str]:
@@ -195,6 +202,9 @@ def _load_manifest_intrinsics() -> set[str]:
 
 def _build_audit_doc(audits: list[ModuleAudit]) -> str:
     intrinsic = sorted(a.module for a in audits if a.status == STATUS_INTRINSIC)
+    intrinsic_partial = sorted(
+        a.module for a in audits if a.status == STATUS_INTRINSIC_PARTIAL
+    )
     probe_only = sorted(a.module for a in audits if a.status == STATUS_PROBE_ONLY)
     python_only = sorted(a.module for a in audits if a.status == STATUS_PYTHON_ONLY)
 
@@ -210,15 +220,22 @@ def _build_audit_doc(audits: list[ModuleAudit]) -> str:
         "- Modules without intrinsic usage are forbidden in compiled builds and must raise immediately until fully lowered.",
         "",
         "## Audit (Generated)",
-        "### Intrinsic-backed modules",
+        "### Intrinsic-backed modules (lowering complete)",
     ]
     lines.extend(f"- `{name}`" for name in intrinsic)
+    lines.extend(["", "### Intrinsic-backed modules (partial lowering pending)"])
+    lines.extend(f"- `{name}`" for name in intrinsic_partial)
     lines.extend(["", "### Probe-only modules (thin wrappers + policy gate only)"])
     lines.extend(f"- `{name}`" for name in probe_only)
     lines.extend(["", "### Python-only modules (intrinsic missing)"])
     lines.extend(f"- `{name}`" for name in python_only)
     lines.extend(
         [
+            "",
+            "## Core Lane Gate",
+            "- Required lane: `tests/differential/core/TESTS.txt` (import closure).",
+            "- Gate rule: core-lane imports must be `intrinsic-backed` only (no `intrinsic-partial`, `probe-only`, or `python-only`).",
+            "- Enforced by: `python3 tools/check_core_lane_lowering.py`.",
             "",
             "## Bootstrap Gate",
             "- Required modules: "
@@ -243,6 +260,11 @@ def main() -> int:
             "with generated audit output."
         ),
     )
+    parser.add_argument(
+        "--json-out",
+        type=Path,
+        help="Write machine-readable audit report JSON to this path.",
+    )
     args = parser.parse_args()
 
     if not STDLIB_ROOT.is_dir():
@@ -257,7 +279,10 @@ def main() -> int:
     for path in sorted(STDLIB_ROOT.rglob("*.py")):
         if path.name.startswith("."):
             continue
-        errors, intrinsic_names, status = _scan_file(path)
+        errors, intrinsic_names, status, has_stdlib_todo = _scan_file(path)
+        module = _module_name(path)
+        if status == STATUS_INTRINSIC and has_stdlib_todo:
+            status = STATUS_INTRINSIC_PARTIAL
         if errors:
             failures.append((path, errors))
         for name in intrinsic_names:
@@ -265,7 +290,7 @@ def main() -> int:
                 missing_intrinsics.append((str(path.relative_to(ROOT)), name))
         audits.append(
             ModuleAudit(
-                module=_module_name(path),
+                module=module,
                 path=path,
                 intrinsic_names=intrinsic_names,
                 status=status,
@@ -313,6 +338,23 @@ def main() -> int:
                 "Run: python3 tools/check_stdlib_intrinsics.py --update-doc"
             )
             return 1
+
+    if args.json_out is not None:
+        report = {
+            "modules": [
+                {
+                    "module": audit.module,
+                    "path": str(audit.path.relative_to(ROOT)),
+                    "status": audit.status,
+                    "intrinsics": list(audit.intrinsic_names),
+                }
+                for audit in sorted(audits, key=lambda a: a.module)
+            ]
+        }
+        args.json_out.parent.mkdir(parents=True, exist_ok=True)
+        args.json_out.write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
 
     print("stdlib intrinsics lint: ok")
     return 0

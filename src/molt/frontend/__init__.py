@@ -3474,7 +3474,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     ) -> tuple[list[MoltValue], dict[str, MoltValue]]:
         if not type_params:
             return [], {}
-        type_param_func = self._emit_module_attr_get_on("typing", "TypeVar")
+        type_param_func = self._emit_module_attr_get_on("typing", "_molt_type_param")
         values: list[MoltValue] = []
         mapping: dict[str, MoltValue] = {}
         for param in type_params:
@@ -3485,15 +3485,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.emit(
                     MoltOp(
                         kind="CALL_FUNC", args=[type_param_func, name_val], result=res
-                    )
-                )
-                pep_val = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=pep_val))
-                self.emit(
-                    MoltOp(
-                        kind="SETATTR_GENERIC_OBJ",
-                        args=[res, "_pep695", pep_val],
-                        result=MoltValue("none"),
                     )
                 )
                 values.append(res)
@@ -14149,8 +14140,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if method == "tobytes":
                 if node.args:
                     raise NotImplementedError("tobytes expects 0 arguments")
-                if receiver.type_hint in {"Any", "Unknown"}:
-                    receiver.type_hint = "memoryview"
                 if receiver.type_hint == "memoryview":
                     res = MoltValue(self.next_var(), type_hint="bytes")
                     self.emit(
@@ -14338,13 +14327,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if len(node.args) not in (1, 2, 3):
                     raise NotImplementedError("startswith expects 1-3 arguments")
                 needle = self.visit(node.args[0])
-                if receiver.type_hint in {"Any", "Unknown"}:
-                    if needle.type_hint == "str":
-                        receiver.type_hint = "str"
-                    elif needle.type_hint == "bytes":
-                        receiver.type_hint = "bytes"
-                    elif needle.type_hint == "bytearray":
-                        receiver.type_hint = "bytearray"
                 res = MoltValue(self.next_var(), type_hint="bool")
                 if receiver.type_hint == "str":
                     if len(node.args) == 1:
@@ -14452,13 +14434,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if len(node.args) not in (1, 2, 3):
                     raise NotImplementedError("endswith expects 1-3 arguments")
                 needle = self.visit(node.args[0])
-                if receiver.type_hint in {"Any", "Unknown"}:
-                    if needle.type_hint == "str":
-                        receiver.type_hint = "str"
-                    elif needle.type_hint == "bytes":
-                        receiver.type_hint = "bytes"
-                    elif needle.type_hint == "bytearray":
-                        receiver.type_hint = "bytearray"
                 res = MoltValue(self.next_var(), type_hint="bool")
                 if receiver.type_hint == "str":
                     if len(node.args) == 1:
@@ -14583,13 +14558,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     self.emit(MoltOp(kind="CONST_NONE", args=[], result=needle))
                 if len(node.args) == 2:
                     maxsplit = self.visit(node.args[1])
-                if receiver.type_hint in {"Any", "Unknown"}:
-                    if needle.type_hint == "str":
-                        receiver.type_hint = "str"
-                    elif needle.type_hint == "bytearray":
-                        receiver.type_hint = "bytearray"
-                    elif needle.type_hint == "bytes":
-                        receiver.type_hint = "bytes"
                 res = MoltValue(self.next_var(), type_hint="list")
                 if receiver.type_hint == "str":
                     if len(node.args) == 2:
@@ -14770,13 +14738,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if len(node.args) not in (1, 2, 3):
                     raise NotImplementedError("find expects 1-3 arguments")
                 needle = self.visit(node.args[0])
-                if receiver.type_hint in {"Any", "Unknown"}:
-                    if needle.type_hint == "str":
-                        receiver.type_hint = "str"
-                    elif needle.type_hint == "bytearray":
-                        receiver.type_hint = "bytearray"
-                    elif needle.type_hint == "bytes":
-                        receiver.type_hint = "bytes"
                 res = MoltValue(self.next_var(), type_hint="int")
                 if receiver.type_hint == "bytes":
                     if len(node.args) == 1:
@@ -14879,7 +14840,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             module_name = self.imported_modules.get(obj_name) if obj_name else None
             if module_name is None:
                 callee = load_attr_callee()
-                return self._emit_dynamic_call(node, callee, needs_bind)
+                # Dynamic attribute calls must use binder semantics so bound methods
+                # receive `self` even when local type inference is imprecise.
+                return self._emit_dynamic_call(node, callee, True)
 
         if isinstance(node.func, ast.Attribute):
             module_name = None
@@ -21638,7 +21601,63 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             else:
                 self._emit_guarded_body(node.orelse, None)
         if node.finalbody:
-            self._emit_finalbody(node.finalbody, None, popped_scopes=0)
+            else_final_exc = MoltValue(self.next_var(), type_hint="exception")
+            self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=else_final_exc))
+            else_final_slot = None
+            if self.is_async():
+                else_final_slot = self._async_local_offset(
+                    f"__final_else_exc_{len(self.async_locals)}"
+                )
+                self.emit(
+                    MoltOp(
+                        kind="STORE_CLOSURE",
+                        args=["self", else_final_slot, else_final_exc],
+                        result=MoltValue("none"),
+                    )
+                )
+            else_final_entry = ActiveException(
+                value=else_final_exc, slot=else_final_slot
+            )
+            self.active_exceptions.append(else_final_entry)
+            self.emit(
+                MoltOp(
+                    kind="EXCEPTION_CONTEXT_SET",
+                    args=[else_final_exc],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
+            self._emit_finalbody(node.finalbody, else_final_entry, popped_scopes=0)
+            else_after = MoltValue(self.next_var(), type_hint="exception")
+            self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=else_after))
+            none_after = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_after))
+            is_none_after = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(
+                MoltOp(kind="IS", args=[else_after, none_after], result=is_none_after)
+            )
+            self.emit(MoltOp(kind="IF", args=[is_none_after], result=MoltValue("none")))
+            restored_exc = self._active_exception_value(else_final_entry)
+            is_restore_none = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(
+                MoltOp(
+                    kind="IS", args=[restored_exc, none_after], result=is_restore_none
+                )
+            )
+            self.emit(
+                MoltOp(kind="IF", args=[is_restore_none], result=MoltValue("none"))
+            )
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+            self.emit(
+                MoltOp(
+                    kind="EXCEPTION_SET_LAST",
+                    args=[restored_exc],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            self.active_exceptions.pop()
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         self.emit(
             MoltOp(
@@ -22062,7 +22081,63 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             else:
                 self._emit_guarded_body(node.orelse, None)
         if node.finalbody:
-            self._emit_finalbody(node.finalbody, None, popped_scopes=0)
+            else_final_exc = MoltValue(self.next_var(), type_hint="exception")
+            self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=else_final_exc))
+            else_final_slot = None
+            if self.is_async():
+                else_final_slot = self._async_local_offset(
+                    f"__final_star_else_exc_{len(self.async_locals)}"
+                )
+                self.emit(
+                    MoltOp(
+                        kind="STORE_CLOSURE",
+                        args=["self", else_final_slot, else_final_exc],
+                        result=MoltValue("none"),
+                    )
+                )
+            else_final_entry = ActiveException(
+                value=else_final_exc, slot=else_final_slot
+            )
+            self.active_exceptions.append(else_final_entry)
+            self.emit(
+                MoltOp(
+                    kind="EXCEPTION_CONTEXT_SET",
+                    args=[else_final_exc],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
+            self._emit_finalbody(node.finalbody, else_final_entry, popped_scopes=0)
+            else_after = MoltValue(self.next_var(), type_hint="exception")
+            self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=else_after))
+            none_after = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_after))
+            is_none_after = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(
+                MoltOp(kind="IS", args=[else_after, none_after], result=is_none_after)
+            )
+            self.emit(MoltOp(kind="IF", args=[is_none_after], result=MoltValue("none")))
+            restored_exc = self._active_exception_value(else_final_entry)
+            is_restore_none = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(
+                MoltOp(
+                    kind="IS", args=[restored_exc, none_after], result=is_restore_none
+                )
+            )
+            self.emit(
+                MoltOp(kind="IF", args=[is_restore_none], result=MoltValue("none"))
+            )
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+            self.emit(
+                MoltOp(
+                    kind="EXCEPTION_SET_LAST",
+                    args=[restored_exc],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            self.active_exceptions.pop()
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         self.emit(
             MoltOp(
@@ -22247,6 +22322,18 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         else:
             should_exit = len(self.try_end_labels) > self.try_suppress_depth
 
+        def emit_raise_or_defer(exc: MoltValue) -> None:
+            if should_exit:
+                self.emit(MoltOp(kind="RAISE", args=[exc], result=MoltValue("none")))
+            else:
+                self.emit(
+                    MoltOp(
+                        kind="EXCEPTION_SET_LAST",
+                        args=[exc],
+                        result=MoltValue("none"),
+                    )
+                )
+
         def emit_exception_value(
             expr: ast.expr, *, allow_none: bool, context: str
         ) -> MoltValue | None:
@@ -22285,13 +22372,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 err_val = self._emit_exception_new(
                     "RuntimeError", "No active exception to reraise"
                 )
-                self.emit(
-                    MoltOp(kind="RAISE", args=[err_val], result=MoltValue("none"))
-                )
+                emit_raise_or_defer(err_val)
                 self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-                self.emit(
-                    MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none"))
-                )
+                emit_raise_or_defer(exc_val)
                 self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
                 if should_exit:
                     self._emit_raise_exit()
@@ -22314,9 +22397,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             err_val = self._emit_exception_new(
                 "RuntimeError", "No active exception to reraise"
             )
-            self.emit(MoltOp(kind="RAISE", args=[err_val], result=MoltValue("none")))
+            emit_raise_or_defer(err_val)
             self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-            self.emit(MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none")))
+            emit_raise_or_defer(exc_val)
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
             if should_exit:
                 self._emit_raise_exit()
@@ -22355,7 +22438,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     result=MoltValue("none"),
                 )
             )
-        self.emit(MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none")))
+        emit_raise_or_defer(exc_val)
         if should_exit:
             self._emit_raise_exit()
         return None

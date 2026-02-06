@@ -36,6 +36,8 @@ Molt targets **Python 3.12+** semantics only. Do not spend effort on <=3.11.
 - 0014 Type Coverage Matrix: `docs/spec/areas/compat/0014_TYPE_COVERAGE_MATRIX.md`
 - 0015 Stdlib Compatibility Matrix: `docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md`
 - 0015-IB Stdlib Intrinsics Backing Tracker: `docs/spec/areas/compat/0015_STDLIB_INTRINSICS_BACKING.md`
+- 0016 Stdlib Intrinsics Audit: `docs/spec/areas/compat/0016_STDLIB_INTRINSICS_AUDIT.md`
+- 0026 Rust Lowering Program: `docs/spec/areas/compat/0026_RUST_LOWERING_PROGRAM.md`
 - 0214 libmolt C-API v0: `docs/spec/areas/compat/0214_LIBMOLT_C_API_V0.md`
 
 ## Testing and Benchmarks

@@ -9,38 +9,41 @@
 - Modules without intrinsic usage are forbidden in compiled builds and must raise immediately until fully lowered.
 
 ## Audit (Generated)
-### Intrinsic-backed modules
+### Intrinsic-backed modules (lowering complete)
 - `_intrinsics`
-- `asyncio`
-- `builtins`
 - `codecs`
 - `collections`
-- `concurrent.futures`
-- `decimal`
-- `email.message`
 - `errno`
-- `hashlib`
 - `heapq`
 - `hmac`
-- `inspect`
 - `io`
 - `logging`
-- `math`
 - `molt_db`
 - `multiprocessing`
 - `multiprocessing.spawn`
 - `os`
+- `selectors`
+- `shlex`
+- `sys`
+
+### Intrinsic-backed modules (partial lowering pending)
+- `asyncio`
+- `builtins`
+- `concurrent.futures`
+- `decimal`
+- `email.message`
+- `hashlib`
+- `inspect`
+- `math`
 - `re`
 - `runpy`
 - `select`
-- `selectors`
-- `shlex`
 - `socket`
 - `struct`
-- `sys`
 - `threading`
 - `time`
 - `types`
+- `typing`
 - `weakref`
 - `zipfile`
 
@@ -75,7 +78,6 @@
 - `string`
 - `tempfile`
 - `traceback`
-- `typing`
 - `unittest`
 - `warnings`
 
@@ -124,6 +126,11 @@
 - `urllib.parse`
 - `uuid`
 - `zipimport`
+
+## Core Lane Gate
+- Required lane: `tests/differential/core/TESTS.txt` (import closure).
+- Gate rule: core-lane imports must be `intrinsic-backed` only (no `intrinsic-partial`, `probe-only`, or `python-only`).
+- Enforced by: `python3 tools/check_core_lane_lowering.py`.
 
 ## Bootstrap Gate
 - Required modules: `__future__`, `_abc`, `_collections_abc`, `_weakrefset`, `abc`, `collections.abc`, `copy`, `copyreg`, `dataclasses`, `keyword`, `linecache`, `re`, `reprlib`, `types`, `typing`, `warnings`, `weakref`

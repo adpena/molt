@@ -1,6 +1,6 @@
 # STATUS (Canonical)
 
-Last updated: 2026-02-03
+Last updated: 2026-02-06
 
 This document is the source of truth for Molt's current capabilities and
 limitations. Update this file whenever behavior or scope changes, and keep
@@ -63,6 +63,11 @@ README/ROADMAP in sync.
 - `errno` constants + `errorcode` mapping are generated from the host CPython errno table at build time for native targets (WASM keeps the minimal errno set).
 - Importable `builtins` module binds supported builtins (see stdlib matrix).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P0, status:missing): migrate all Python stdlib modules to Rust intrinsics-only implementations (Python files may only be thin intrinsic-forwarding wrappers); compiled binaries must reject Python-only stdlib modules. See `docs/spec/areas/compat/0016_STDLIB_INTRINSICS_AUDIT.md`.
+- Intrinsics audit is enforced by `tools/check_stdlib_intrinsics.py` (generated doc + lint), including `intrinsic-backed` / `intrinsic-partial` / `probe-only` / `python-only` status tracking.
+- Core compiled-surface gate is enforced by `tools/check_core_lane_lowering.py`: modules imported (transitively) by `tests/differential/core/TESTS.txt` must be `intrinsic-backed` only.
+- Execution program for complete Rust lowering is tracked in `docs/spec/areas/compat/0026_RUST_LOWERING_PROGRAM.md` (core blockers first, then socket -> threading -> asyncio, then full stdlib sweep).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): remove `typing` fallback ABC scaffolding and lower protocol/ABC bootstrap helpers into Rust intrinsics-only paths.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): remove host-builtins probing in `builtins` shim and source descriptor/builtin surfaces from runtime intrinsics only.
 - `enumerate` builtin returns an iterator over `(index, value)` with optional `start`.
 - `iter(callable, sentinel)`, `map`, `filter`, `zip(strict=...)`, and `reversed` return lazy iterator objects with CPython-style stop conditions.
 - `iter(obj)` enforces that `__iter__` returns an iterator, raising `TypeError` with CPython-style messages for non-iterators.
@@ -119,8 +124,11 @@ README/ROADMAP in sync.
 - `asyncio.CancelledError` follows CPython inheritance (BaseException subclass), so cancellation bypasses `except Exception`.
 
 ## Limitations (Current)
+- Core-lane strict lowering gate currently exposes unresolved blockers in the transitive core import closure (`__future__`, `abc` stack, `asyncio`, `traceback`, `types`, `typing`, `weakref`, plus dependent modules like `itertools`/`operator`).
+- No sanctioned partials are allowed for the compiled core lane: these modules must move to `intrinsic-backed` before the strict gate can be green.
 - Classes/object model: no metaclasses or dynamic `type()` construction.
 - Implemented: `types.GenericAlias.__parameters__` derives `TypeVar`/`ParamSpec`/`TypeVarTuple` from `__args__`.
+- Implemented: PEP 695 core-lane lowering uses Rust intrinsics for type parameter creation and GenericAlias construction/call dispatch (`molt_typing_type_param`, `molt_generic_alias_new`) for `typing`/frontend paths.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): finish PEP 695 type params (defaults + alias metadata/TypeAliasType; ParamSpec/TypeVarTuple + bounds/constraints now implemented).
 - Attributes: fixed struct fields with dynamic instance-dict fallback; no
   user-defined `__slots__` beyond dataclass lowering; object-level

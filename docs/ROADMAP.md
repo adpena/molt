@@ -120,6 +120,8 @@ Ten-item parity plan details live in `docs/spec/areas/compat/0015_STDLIB_COMPATI
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib.resources loader-backed readers + namespace/zip parity.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib.metadata full parsing + dependency/entry point semantics.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P0, status:missing): replace Python stdlib modules with Rust intrinsics-only implementations (thin wrappers only); compiled binaries must reject Python-only stdlib modules. See `docs/spec/areas/compat/0016_STDLIB_INTRINSICS_AUDIT.md`.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): remove `typing` fallback ABC scaffolding and lower protocol/ABC bootstrap helpers into Rust intrinsics-only paths.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): remove host-builtins probing in `builtins` shim and source descriptor/builtin surfaces from runtime intrinsics only.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): import-only allowlisted stdlib modules (`argparse`, `ast`, `atexit`, `collections.abc`, `_collections_abc`, `_abc`, `_py_abc`, `_asyncio`, `_bz2`, `_weakref`, `_weakrefset`, `platform`, `queue`, `shlex`, `shutil`, `textwrap`, `time`, `tomllib`, `warnings`, `traceback`, `types`, `inspect`, `fnmatch`, `copy`, `copyreg`, `string`, `numbers`, `unicodedata`, `glob`, `tempfile`, `ctypes`) to minimal parity.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): pkgutil loader/zipimport/iter_importers parity (filesystem-only iter_modules/walk_packages today).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): compileall/py_compile parity (pyc output, invalidation modes, optimize levels).
@@ -127,6 +129,30 @@ Ten-item parity plan details live in `docs/spec/areas/compat/0015_STDLIB_COMPATI
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): unittest/test/doctest stubs for regrtest (support: captured_output/captured_stdout/captured_stderr, check_syntax_error, findfile, run_with_tz, warnings_helper utilities: check_warnings/check_no_warnings/check_no_resource_warning/check_syntax_warning/ignore_warnings/import_deprecated/save_restore_warnings_filters/WarningsRecorder, cpython_only, requires, swap_attr/swap_item, import_helper basics: import_module/import_fresh_module/make_legacy_pyc/ready_to_import/frozen_modules/multi_interp_extensions_check/DirsOnSysPath/isolated_modules/modules_setup/modules_cleanup, os_helper basics: temp_dir/temp_cwd/unlink/rmtree/rmdir/make_bad_fd/can_symlink/skip_unless_symlink + TESTFN constants); doctest blocked on eval/exec/compile gating, full unittest parity pending.
 - linecache module implemented (`getline`, `getlines`, `checkcache`, `lazycache`) with `fs.read` gating.
 - reprlib module implemented (`Repr`, `repr`, `recursive_repr` parity).
+
+## Rust Lowering Program (Core -> Stdlib)
+Execution contract: `docs/spec/areas/compat/0026_RUST_LOWERING_PROGRAM.md`
+
+1. Phase 0 (enforcement spine)
+- Keep `tools/check_stdlib_intrinsics.py` as generated-audit + lint gate in CI.
+- Keep strict core-lane gate in CI (`tools/check_core_lane_lowering.py`), requiring `intrinsic-backed` status only for the core-lane import closure.
+- Keep core differential lane as the first green gate before broader stdlib sweeps.
+
+2. Phase 1 (core-lane blockers, P0)
+- Lower core closure bootstrap modules to intrinsic-backed: `types`, `abc` stack (`abc`, `_abc`, `collections.abc`, `_collections_abc`), `weakref` stack (`weakref`, `_weakrefset`), `typing`, `traceback`, `__future__`, and core-used `asyncio` surface.
+- Exit only when core-lane closure contains zero `probe-only`, `intrinsic-partial`, and `python-only` modules.
+
+3. Phase 2 (concurrency substrate, P0)
+- Lower in dependency order: `socket` -> `threading` -> `asyncio`.
+- Require native + wasm differential parity for each module family before promoting to the next.
+
+4. Phase 3 (core-adjacent stdlib, P1)
+- Lower `builtins`, `math`, `re`, `struct`, `time`, `inspect`, `functools`, `itertools`, `operator`, `contextlib` to intrinsic-backed status.
+
+5. Phase 4 (capability-gated + long tail, P2/P3)
+- Lower import/tooling family (`pathlib`, `importlib.*`, `pkgutil`, `glob`, `shutil`, `py_compile`, `compileall`).
+- Lower data/codec family (`json`, `csv`, `pickle`, `enum`, `ipaddress`, encodings family).
+- Lower remaining network/process modules (`ssl`, `subprocess`, `concurrent.futures`, remaining `http.*`).
 
 ---
 
@@ -225,4 +251,4 @@ Language feature TODOs tracked here for parity:
 
 ---
 
-*Last Updated: Wednesday, February 4, 2026 - 11:17 CST*
+*Last Updated: Friday, February 6, 2026 - 03:38 CST*

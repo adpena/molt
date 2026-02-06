@@ -79,7 +79,7 @@ class HTTPConnection:
         skip_accept_encoding: bool = False,
     ) -> None:
         del skip_host, skip_accept_encoding
-        self._request_line = f"{method} {url} HTTP/1.1\\r\\n".encode(
+        self._request_line = f"{method} {url} HTTP/1.1\r\n".encode(
             "ascii", "surrogateescape"
         )
         self._headers = []
@@ -101,11 +101,11 @@ class HTTPConnection:
             host_value = self.host
             if self.port not in (80, 443):
                 host_value = f"{host_value}:{self.port}"
-            lines.append(f"Host: {host_value}\\r\\n".encode("ascii", "surrogateescape"))
+            lines.append(f"Host: {host_value}\r\n".encode("ascii", "surrogateescape"))
         for name, value in self._headers:
-            line = f"{name}: {value}\\r\\n".encode("ascii", "surrogateescape")
+            line = f"{name}: {value}\r\n".encode("ascii", "surrogateescape")
             lines.append(line)
-        lines.append(b"\\r\\n")
+        lines.append(b"\r\n")
         return b"".join(lines)
 
     def endheaders(self, message_body: bytes | None = None) -> None:

@@ -17,8 +17,11 @@ def _typing_cast(_tp: object, value: object) -> object:
 
 
 _require_intrinsic("molt_stdlib_probe", globals())
+_MOLT_GENERIC_ALIAS_NEW = _require_intrinsic("molt_generic_alias_new", globals())
+_MOLT_TYPING_TYPE_PARAM = _require_intrinsic("molt_typing_type_param", globals())
 
 
+# TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): remove typing's Python fallback ABC scaffolding by lowering protocol/ABC bootstrap helpers to Rust intrinsics only.
 def _install_fallback_abc() -> ModuleType:
     class _FallbackABC:
         __slots__ = ()
@@ -221,6 +224,39 @@ class _GenericAlias(_TypingBase):
         return ()
 
 
+class _MoltTypeAlias(_TypingBase):
+    __slots__ = ("__name__", "__value__", "__type_params__", "__parameters__")
+
+    def __init__(
+        self, name: str, value: object, type_params: tuple[object, ...]
+    ) -> None:
+        self.__name__ = name
+        self.__value__ = value
+        self.__type_params__ = type_params
+        self.__parameters__ = type_params
+
+    def __repr__(self) -> str:
+        return self.__name__
+
+    def __getitem__(self, params: object) -> "_MoltTypeAliasApplied":
+        args = _as_tuple(params)
+        return _MoltTypeAliasApplied(self, args)
+
+
+class _MoltTypeAliasApplied(_TypingBase):
+    __slots__ = ("_alias", "__args__", "__origin__", "__value__", "__parameters__")
+
+    def __init__(self, alias: _MoltTypeAlias, args: tuple[object, ...]) -> None:
+        self._alias = alias
+        self.__args__ = args
+        self.__origin__ = alias
+        self.__value__ = alias.__value__
+        self.__parameters__ = alias.__type_params__
+
+    def __repr__(self) -> str:
+        return f"{self._alias.__name__}[{_format_args(self.__args__)}]"
+
+
 class _UnionAlias(_TypingBase):
     __slots__ = ("__args__", "__origin__")
 
@@ -404,7 +440,14 @@ FrozenSet = _SpecialGenericAlias(frozenset, "FrozenSet")
 
 
 class _TypeVarLike(_TypingBase):
-    __slots__ = ("__name__", "_covariant", "_contravariant", "_bound", "_constraints")
+    __slots__ = (
+        "__name__",
+        "_covariant",
+        "_contravariant",
+        "_bound",
+        "_constraints",
+        "_pep695",
+    )
 
     def __init__(
         self,
@@ -413,12 +456,14 @@ class _TypeVarLike(_TypingBase):
         contravariant: bool,
         bound: object | None,
         constraints: tuple[object, ...],
+        pep695: bool = False,
     ) -> None:
         self.__name__ = name
         self._covariant = covariant
         self._contravariant = contravariant
         self._bound = bound
         self._constraints = constraints
+        self._pep695 = pep695
 
     @property
     def __constraints__(self) -> tuple[object, ...]:
@@ -441,6 +486,8 @@ class _TypeVar(_TypeVarLike):
     __slots__ = ()
 
     def __repr__(self) -> str:
+        if self._pep695:
+            return self.__name__
         if self._covariant:
             return f"+{self.__name__}"
         if self._contravariant:
@@ -528,6 +575,7 @@ def TypeVar(
         contravariant=contravariant,
         bound=bound,
         constraints=tuple(constraints),
+        pep695=False,
     )
 
 
@@ -551,6 +599,23 @@ def ParamSpec(
 
 def TypeVarTuple(name: str) -> _TypeVarTuple:
     return _TypeVarTuple(name)
+
+
+def _molt_type_param(name: str) -> _TypeVar:
+    return _typing_cast(_TypeVar, _MOLT_TYPING_TYPE_PARAM(TypeVar, name))
+
+
+def _molt_class_getitem(cls: object, params: object) -> object:
+    args = _as_tuple(params)
+    runtime_args = args[0] if len(args) == 1 else args
+    return _MOLT_GENERIC_ALIAS_NEW(cls, runtime_args)
+
+
+def _molt_type_alias(
+    name: str, value: object, type_params: tuple[object, ...]
+) -> _MoltTypeAlias:
+    params = _as_tuple(type_params)
+    return _MoltTypeAlias(name, value, params)
 
 
 class Generic:

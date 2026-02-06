@@ -10,14 +10,15 @@ use crate::{
     dict_get_method, dict_order, dict_pop_method, dict_setdefault_method, dict_update_apply,
     dict_update_method, dict_update_set_in_place, dict_update_set_via_store, exception_class_bits,
     exception_pending, exception_type_bits_from_name, function_arity, function_attr_bits,
-    function_closure_bits, function_fn_ptr, inc_ref_bits, init_atomic_bits, intern_static_name,
-    is_builtin_class_bits, is_truthy, isinstance_bits, issubclass_bits, list_len, lookup_call_attr,
-    maybe_ptr_from_bits, missing_bits, molt_bytearray_count_slice, molt_bytearray_decode,
-    molt_bytearray_endswith_slice, molt_bytearray_find_slice, molt_bytearray_hex,
-    molt_bytearray_rfind_slice, molt_bytearray_rsplit_max, molt_bytearray_split_max,
-    molt_bytearray_splitlines, molt_bytearray_startswith_slice, molt_bytes_count_slice,
-    molt_bytes_decode, molt_bytes_endswith_slice, molt_bytes_find_slice, molt_bytes_hex,
-    molt_bytes_rfind_slice, molt_bytes_rsplit_max, molt_bytes_split_max, molt_bytes_splitlines,
+    function_closure_bits, function_fn_ptr, function_name_bits, generic_alias_origin_bits,
+    inc_ref_bits, init_atomic_bits, intern_static_name, is_builtin_class_bits, is_truthy,
+    isinstance_bits, issubclass_bits, list_len, lookup_call_attr, maybe_ptr_from_bits,
+    missing_bits, molt_bytearray_count_slice, molt_bytearray_decode, molt_bytearray_endswith_slice,
+    molt_bytearray_find_slice, molt_bytearray_hex, molt_bytearray_rfind_slice,
+    molt_bytearray_rsplit_max, molt_bytearray_split_max, molt_bytearray_splitlines,
+    molt_bytearray_startswith_slice, molt_bytes_count_slice, molt_bytes_decode,
+    molt_bytes_endswith_slice, molt_bytes_find_slice, molt_bytes_hex, molt_bytes_rfind_slice,
+    molt_bytes_rsplit_max, molt_bytes_split_max, molt_bytes_splitlines,
     molt_bytes_startswith_slice, molt_class_set_base, molt_dataclass_new, molt_dataclass_set_class,
     molt_dict_from_obj, molt_dict_new, molt_file_reconfigure, molt_frozenset_copy_method,
     molt_frozenset_difference_multi, molt_frozenset_intersection_multi, molt_frozenset_isdisjoint,
@@ -40,8 +41,8 @@ use crate::{
     FUNC_DEFAULT_IO_TEXT_WRAPPER, FUNC_DEFAULT_MISSING, FUNC_DEFAULT_NEG_ONE, FUNC_DEFAULT_NONE,
     FUNC_DEFAULT_NONE2, FUNC_DEFAULT_REPLACE_COUNT, FUNC_DEFAULT_ZERO, GEN_CONTROL_SIZE,
     TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_EXCEPTION,
-    TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_LIST, TYPE_ID_OBJECT, TYPE_ID_SET, TYPE_ID_STRING,
-    TYPE_ID_TUPLE, TYPE_ID_TYPE,
+    TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_LIST, TYPE_ID_OBJECT,
+    TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE,
 };
 pub(crate) struct CallArgs {
     pos: Vec<u64>,
@@ -949,6 +950,11 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                         &mut builder_guard,
                     );
                 }
+                TYPE_ID_GENERIC_ALIAS => {
+                    let origin_bits = generic_alias_origin_bits(call_ptr);
+                    builder_guard.release();
+                    return molt_call_bind(origin_bits, builder_bits);
+                }
                 TYPE_ID_OBJECT | TYPE_ID_DATACLASS => {
                     let Some(call_attr_bits) = lookup_call_attr(_py, call_ptr) else {
                         return raise_not_callable(_py, call_obj);
@@ -1227,14 +1233,13 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
             }
 
             if !posonly_kw_names.is_empty() {
-                let func_name_bits = function_attr_bits(
-                    _py,
-                    func_ptr,
-                    intern_static_name(_py, &runtime_state(_py).interned.name_name, b"__name__"),
-                );
-                let func_name = func_name_bits
-                    .and_then(|bits| string_obj_to_owned(obj_from_bits(bits)))
-                    .unwrap_or_else(|| "function".to_string());
+                let func_name_bits = function_name_bits(_py, func_ptr);
+                let func_name = if func_name_bits == 0 || obj_from_bits(func_name_bits).is_none() {
+                    "function".to_string()
+                } else {
+                    string_obj_to_owned(obj_from_bits(func_name_bits))
+                        .unwrap_or_else(|| "function".to_string())
+                };
                 let name_list = posonly_kw_names.join(", ");
                 let msg = format!(
                     "{func_name}() got some positional-only arguments passed as keyword arguments: '{name_list}'"

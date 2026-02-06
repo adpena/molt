@@ -392,6 +392,35 @@ def _default_jobs() -> int:
 
 def _collect_test_files(target: Path) -> list[Path]:
     if target.is_dir():
+        manifest = target / "TESTS.txt"
+        if manifest.is_file():
+            files: list[Path] = []
+            seen: set[Path] = set()
+            for raw in manifest.read_text(encoding="utf-8").splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                path = Path(line)
+                if not path.is_absolute():
+                    path = Path.cwd() / path
+                if not path.exists():
+                    raise FileNotFoundError(
+                        f"Manifest entry missing: {line} (from {manifest})"
+                    )
+                if path.is_dir():
+                    pattern = _diff_glob()
+                    matches = sorted(path.glob(pattern))
+                else:
+                    matches = [path]
+                for match in matches:
+                    if match.suffix != ".py":
+                        continue
+                    resolved = match.resolve()
+                    if resolved in seen:
+                        continue
+                    seen.add(resolved)
+                    files.append(match)
+            return files
         pattern = _diff_glob()
         return sorted(target.glob(pattern))
     return [target]
