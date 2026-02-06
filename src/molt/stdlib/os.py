@@ -32,6 +32,13 @@ _MOLT_PATH_RMDIR = _require_intrinsic("molt_path_rmdir", globals())
 _MOLT_PATH_CHMOD = _require_intrinsic("molt_path_chmod", globals())
 _MOLT_GETCWD = _require_intrinsic("molt_getcwd", globals())
 _MOLT_GETPID = _require_intrinsic("molt_getpid", globals())
+_MOLT_PATH_JOIN = _require_intrinsic("molt_path_join", globals())
+_MOLT_PATH_ISABS = _require_intrinsic("molt_path_isabs", globals())
+_MOLT_PATH_DIRNAME = _require_intrinsic("molt_path_dirname", globals())
+_MOLT_PATH_SPLITEXT = _require_intrinsic("molt_path_splitext", globals())
+_MOLT_PATH_NORMPATH = _require_intrinsic("molt_path_normpath", globals())
+_MOLT_PATH_ABSPATH = _require_intrinsic("molt_path_abspath", globals())
+_MOLT_PATH_PARTS = _require_intrinsic("molt_path_parts", globals())
 _MOLT_OS_CLOSE = _require_intrinsic("molt_os_close", globals())
 _MOLT_OS_DUP = _require_intrinsic("molt_os_dup", globals())
 _MOLT_OS_GET_INHERITABLE = _require_intrinsic("molt_os_get_inheritable", globals())
@@ -131,6 +138,23 @@ def _molt_env_get(key: str, default: Any = None) -> Any:
 def _require_cap(name: str) -> None:
     _MOLT_CAP_REQUIRE(name)
     return None
+
+
+def _expect_str(value: Any, intrinsic: str) -> str:
+    if not isinstance(value, str):
+        raise RuntimeError(f"os {intrinsic} intrinsic returned invalid value")
+    return value
+
+
+def _expect_splitext(value: Any) -> tuple[str, str]:
+    if (
+        isinstance(value, (tuple, list))
+        and len(value) == 2
+        and isinstance(value[0], str)
+        and isinstance(value[1], str)
+    ):
+        return value[0], value[1]
+    raise RuntimeError("os splitext intrinsic returned invalid value")
 
 
 class _Environ:
@@ -334,43 +358,33 @@ class _Path:
             return ""
         path = parts[0]
         for part in parts[1:]:
-            if part.startswith(sep):
-                path = part
-            else:
-                if not path.endswith(sep):
-                    path += sep
-                path += part
+            path = _expect_str(_MOLT_PATH_JOIN(path, part), "path_join")
         return path
 
     @staticmethod
     def isabs(path: str) -> bool:
-        return path.startswith(sep)
+        return bool(_MOLT_PATH_ISABS(path))
 
     @staticmethod
     def dirname(path: str) -> str:
-        if not path:
-            return ""
-        stripped = path.rstrip(sep)
-        if not stripped:
-            return sep
-        idx = stripped.rfind(sep)
-        if idx == -1:
-            return ""
-        if idx == 0:
-            return sep
-        return stripped[:idx]
+        return _expect_str(_MOLT_PATH_DIRNAME(path), "path_dirname")
 
     @staticmethod
     def basename(path: str) -> str:
         if not path:
             return ""
-        stripped = path.rstrip(sep)
-        if not stripped:
-            return sep
-        idx = stripped.rfind(sep)
-        if idx == -1:
-            return stripped
-        return stripped[idx + 1 :]
+        parts = _MOLT_PATH_PARTS(path)
+        if not isinstance(parts, list):
+            raise RuntimeError("os path_parts intrinsic returned invalid value")
+        if not parts:
+            normalized = _expect_str(_MOLT_PATH_NORMPATH(path), "path_normpath")
+            if normalized in (".", ".."):
+                return normalized
+            return ""
+        tail = parts[-1]
+        if isinstance(tail, str):
+            return tail
+        raise RuntimeError("os path_parts intrinsic returned invalid value")
 
     @staticmethod
     def split(path: str) -> tuple[str, str]:
@@ -378,38 +392,11 @@ class _Path:
 
     @staticmethod
     def splitext(path: str) -> tuple[str, str]:
-        base = _Path.basename(path)
-        if "." not in base or base == "." or base == "..":
-            return path, ""
-        idx = base.rfind(".")
-        root = path[: len(path) - len(base) + idx]
-        return root, base[idx:]
+        return _expect_splitext(_MOLT_PATH_SPLITEXT(path))
 
     @staticmethod
     def normpath(path: str) -> str:
-        if path == "":
-            return "."
-        absolute = path.startswith(sep)
-        parts = []
-        for part in path.split(sep):
-            if part == "" or part == ".":
-                continue
-            if part == "..":
-                if parts and parts[-1] != "..":
-                    parts.pop()
-                elif not absolute:
-                    parts.append(part)
-                continue
-            parts.append(part)
-        if absolute:
-            normalized = sep + sep.join(parts)
-            if normalized:
-                return normalized
-            return sep
-        normalized = sep.join(parts)
-        if normalized:
-            return normalized
-        return "."
+        return _expect_str(_MOLT_PATH_NORMPATH(path), "path_normpath")
 
     @staticmethod
     def expandvars(path: str) -> str:
@@ -481,9 +468,7 @@ class _Path:
 
     @staticmethod
     def abspath(path: str) -> str:
-        if not _Path.isabs(path):
-            path = _Path.join(getcwd(), path)
-        return _Path.normpath(path)
+        return _expect_str(_MOLT_PATH_ABSPATH(path), "path_abspath")
 
     @staticmethod
     def relpath(path: str, start: str | None = None) -> str:

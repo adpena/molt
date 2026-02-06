@@ -18,7 +18,7 @@ use std::collections::HashSet;
 use std::ffi::CStr;
 #[cfg(not(target_arch = "wasm32"))]
 use std::ffi::CString;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, OnceLock};
 use unicode_casefold::{Locale, UnicodeCaseFold, Variant};
@@ -7194,6 +7194,25 @@ fn parse_time_tuple(_py: &PyToken<'_>, tuple_bits: u64) -> Result<TimeParts, u64
     }
 }
 
+fn asctime_from_parts(parts: TimeParts) -> Result<String, String> {
+    const WEEKDAY_ABBR: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const MONTH_ABBR: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    if !(0..=6).contains(&parts.wday)
+        || !(1..=12).contains(&parts.month)
+        || !(1..=31).contains(&parts.day)
+    {
+        return Err("time tuple elements out of range".to_string());
+    }
+    let wday = WEEKDAY_ABBR[parts.wday as usize];
+    let month = MONTH_ABBR[(parts.month - 1) as usize];
+    Ok(format!(
+        "{wday} {month} {:2} {:02}:{:02}:{:02} {:04}",
+        parts.day, parts.hour, parts.minute, parts.second, parts.year
+    ))
+}
+
 fn parse_mktime_tuple(_py: &PyToken<'_>, tuple_bits: u64) -> Result<TimeParts, u64> {
     let obj = obj_from_bits(tuple_bits);
     let Some(ptr) = obj.as_ptr() else {
@@ -7864,6 +7883,410 @@ pub extern "C" fn molt_time_tzname() -> u64 {
             } else {
                 MoltObject::from_ptr(tuple_ptr).bits()
             }
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_time_asctime(time_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let parts = match parse_time_tuple(_py, time_bits) {
+            Ok(parts) => parts,
+            Err(bits) => return bits,
+        };
+        let text = match asctime_from_parts(parts) {
+            Ok(text) => text,
+            Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
+        };
+        let ptr = alloc_string(_py, text.as_bytes());
+        if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_time_get_clock_info(name_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "unknown clock");
+        };
+        let (name_value, implementation, resolution, monotonic, adjustable) = match name.as_str() {
+            "monotonic" | "perf_counter" => (name.as_str(), "molt", 1e-9f64, true, false),
+            "process_time" => ("process_time", "molt", 1e-9f64, true, false),
+            "time" => {
+                #[cfg(not(target_arch = "wasm32"))]
+                if require_time_wall_capability::<u64>(_py).is_err() {
+                    return MoltObject::none().bits();
+                }
+                ("time", "molt", 1e-6f64, false, true)
+            }
+            _ => return raise_exception::<_>(_py, "ValueError", "unknown clock"),
+        };
+        let name_ptr = alloc_string(_py, name_value.as_bytes());
+        if name_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let impl_ptr = alloc_string(_py, implementation.as_bytes());
+        if impl_ptr.is_null() {
+            dec_ref_bits(_py, MoltObject::from_ptr(name_ptr).bits());
+            return MoltObject::none().bits();
+        }
+        let name_bits = MoltObject::from_ptr(name_ptr).bits();
+        let impl_bits = MoltObject::from_ptr(impl_ptr).bits();
+        let resolution_bits = MoltObject::from_float(resolution).bits();
+        let monotonic_bits = MoltObject::from_bool(monotonic).bits();
+        let adjustable_bits = MoltObject::from_bool(adjustable).bits();
+        let tuple_ptr = alloc_tuple(
+            _py,
+            &[
+                name_bits,
+                impl_bits,
+                resolution_bits,
+                monotonic_bits,
+                adjustable_bits,
+            ],
+        );
+        dec_ref_bits(_py, name_bits);
+        dec_ref_bits(_py, impl_bits);
+        if tuple_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(tuple_ptr).bits()
+        }
+    })
+}
+
+fn traceback_limit_from_bits(_py: &PyToken<'_>, limit_bits: u64) -> Result<Option<usize>, u64> {
+    let obj = obj_from_bits(limit_bits);
+    if obj.is_none() {
+        return Ok(None);
+    }
+    let Some(limit) = to_i64(obj) else {
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "limit must be an integer",
+        ));
+    };
+    if limit < 0 {
+        return Ok(Some(0));
+    }
+    Ok(Some(limit as usize))
+}
+
+fn traceback_frames(
+    _py: &PyToken<'_>,
+    tb_bits: u64,
+    limit: Option<usize>,
+) -> Vec<(String, i64, String)> {
+    if obj_from_bits(tb_bits).is_none() {
+        return Vec::new();
+    }
+    let tb_frame_bits =
+        intern_static_name(_py, &runtime_state(_py).interned.tb_frame_name, b"tb_frame");
+    let tb_lineno_bits = intern_static_name(
+        _py,
+        &runtime_state(_py).interned.tb_lineno_name,
+        b"tb_lineno",
+    );
+    let tb_next_bits =
+        intern_static_name(_py, &runtime_state(_py).interned.tb_next_name, b"tb_next");
+    let f_code_bits = intern_static_name(_py, &runtime_state(_py).interned.f_code_name, b"f_code");
+    let f_lineno_bits =
+        intern_static_name(_py, &runtime_state(_py).interned.f_lineno_name, b"f_lineno");
+    let mut out: Vec<(String, i64, String)> = Vec::new();
+    let mut current_bits = tb_bits;
+    let mut depth = 0usize;
+    while !obj_from_bits(current_bits).is_none() {
+        if let Some(max) = limit {
+            if out.len() >= max {
+                break;
+            }
+        }
+        if depth > 512 {
+            break;
+        }
+        let tb_obj = obj_from_bits(current_bits);
+        let Some(tb_ptr) = tb_obj.as_ptr() else {
+            break;
+        };
+        let (frame_bits, line, next_bits) = unsafe {
+            let dict_bits = instance_dict_bits(tb_ptr);
+            let mut frame_bits = MoltObject::none().bits();
+            let mut line = 0i64;
+            let mut next_bits = MoltObject::none().bits();
+            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+                if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                    if let Some(bits) = dict_get_in_place(_py, dict_ptr, tb_frame_bits) {
+                        frame_bits = bits;
+                    }
+                    if let Some(bits) = dict_get_in_place(_py, dict_ptr, tb_lineno_bits) {
+                        if let Some(val) = to_i64(obj_from_bits(bits)) {
+                            line = val;
+                        }
+                    }
+                    if let Some(bits) = dict_get_in_place(_py, dict_ptr, tb_next_bits) {
+                        next_bits = bits;
+                    }
+                }
+            }
+            (frame_bits, line, next_bits)
+        };
+        let (filename, func_name, frame_line) = unsafe {
+            let mut filename = "<unknown>".to_string();
+            let mut func_name = "<module>".to_string();
+            let mut frame_line = line;
+            if let Some(frame_ptr) = obj_from_bits(frame_bits).as_ptr() {
+                let dict_bits = instance_dict_bits(frame_ptr);
+                if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+                    if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                        if let Some(bits) = dict_get_in_place(_py, dict_ptr, f_lineno_bits) {
+                            if let Some(val) = to_i64(obj_from_bits(bits)) {
+                                frame_line = val;
+                            }
+                        }
+                        if let Some(bits) = dict_get_in_place(_py, dict_ptr, f_code_bits) {
+                            if let Some(code_ptr) = obj_from_bits(bits).as_ptr() {
+                                if object_type_id(code_ptr) == TYPE_ID_CODE {
+                                    let filename_bits = code_filename_bits(code_ptr);
+                                    if let Some(name) =
+                                        string_obj_to_owned(obj_from_bits(filename_bits))
+                                    {
+                                        filename = name;
+                                    }
+                                    let name_bits = code_name_bits(code_ptr);
+                                    if let Some(name) =
+                                        string_obj_to_owned(obj_from_bits(name_bits))
+                                    {
+                                        if !name.is_empty() {
+                                            func_name = name;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            (filename, func_name, frame_line)
+        };
+        let final_line = if line > 0 { line } else { frame_line };
+        out.push((filename, final_line, func_name));
+        current_bits = next_bits;
+        depth += 1;
+    }
+    out
+}
+
+fn traceback_source_line_native(_py: &PyToken<'_>, filename: &str, lineno: i64) -> String {
+    if lineno <= 0 {
+        return String::new();
+    }
+    if !has_capability(_py, "fs.read") {
+        return String::new();
+    }
+    let Ok(file) = std::fs::File::open(filename) else {
+        return String::new();
+    };
+    let reader = BufReader::new(file);
+    let target = lineno as usize;
+    for (idx, line_result) in reader.lines().enumerate() {
+        if idx + 1 == target {
+            if let Ok(line) = line_result {
+                return line;
+            }
+            return String::new();
+        }
+    }
+    String::new()
+}
+
+fn traceback_format_exception_only_line(
+    _py: &PyToken<'_>,
+    exc_type_bits: u64,
+    value_bits: u64,
+) -> String {
+    let value_obj = obj_from_bits(value_bits);
+    if let Some(exc_ptr) = value_obj.as_ptr() {
+        unsafe {
+            if object_type_id(exc_ptr) == TYPE_ID_EXCEPTION {
+                let mut kind = "Exception".to_string();
+                let class_bits = exception_class_bits(exc_ptr);
+                if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
+                    if object_type_id(class_ptr) == TYPE_ID_TYPE {
+                        let name_bits = class_name_bits(class_ptr);
+                        if let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) {
+                            kind = name;
+                        }
+                    }
+                }
+                let message = format_exception_message(_py, exc_ptr);
+                if message.is_empty() {
+                    return format!("{kind}\n");
+                }
+                return format!("{kind}: {message}\n");
+            }
+        }
+    }
+    let type_name = if !obj_from_bits(exc_type_bits).is_none() {
+        if let Some(tp_ptr) = obj_from_bits(exc_type_bits).as_ptr() {
+            unsafe {
+                if object_type_id(tp_ptr) == TYPE_ID_TYPE {
+                    let name_bits = class_name_bits(tp_ptr);
+                    if let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) {
+                        name
+                    } else {
+                        "Exception".to_string()
+                    }
+                } else {
+                    class_name_for_error(type_of_bits(_py, exc_type_bits))
+                }
+            }
+        } else {
+            "Exception".to_string()
+        }
+    } else if !value_obj.is_none() {
+        class_name_for_error(type_of_bits(_py, value_bits))
+    } else {
+        "Exception".to_string()
+    };
+    if value_obj.is_none() {
+        return format!("{type_name}\n");
+    }
+    let text = format_obj_str(_py, value_obj);
+    if text.is_empty() {
+        format!("{type_name}\n")
+    } else {
+        format!("{type_name}: {text}\n")
+    }
+}
+
+fn traceback_lines_to_list(_py: &PyToken<'_>, lines: &[String]) -> u64 {
+    let mut bits_vec: Vec<u64> = Vec::with_capacity(lines.len());
+    for line in lines {
+        let ptr = alloc_string(_py, line.as_bytes());
+        if ptr.is_null() {
+            for bits in bits_vec {
+                dec_ref_bits(_py, bits);
+            }
+            return MoltObject::none().bits();
+        }
+        bits_vec.push(MoltObject::from_ptr(ptr).bits());
+    }
+    let list_ptr = alloc_list(_py, bits_vec.as_slice());
+    for bits in bits_vec {
+        dec_ref_bits(_py, bits);
+    }
+    if list_ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(list_ptr).bits()
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_traceback_source_line(filename_bits: u64, lineno_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(filename) = string_obj_to_owned(obj_from_bits(filename_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "filename must be str");
+        };
+        let Some(lineno) = to_i64(obj_from_bits(lineno_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "lineno must be int");
+        };
+        let text = traceback_source_line_native(_py, &filename, lineno);
+        let ptr = alloc_string(_py, text.as_bytes());
+        if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_traceback_format_exception_only(exc_type_bits: u64, value_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let line = traceback_format_exception_only_line(_py, exc_type_bits, value_bits);
+        traceback_lines_to_list(_py, &[line])
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_traceback_format_tb(tb_bits: u64, limit_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let limit = match traceback_limit_from_bits(_py, limit_bits) {
+            Ok(limit) => limit,
+            Err(bits) => return bits,
+        };
+        let mut lines: Vec<String> = Vec::new();
+        for (filename, line, name) in traceback_frames(_py, tb_bits, limit) {
+            lines.push(format!("  File \"{filename}\", line {line}, in {name}\n"));
+        }
+        traceback_lines_to_list(_py, &lines)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_traceback_extract_tb(tb_bits: u64, limit_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let limit = match traceback_limit_from_bits(_py, limit_bits) {
+            Ok(limit) => limit,
+            Err(bits) => return bits,
+        };
+        let mut tuples: Vec<u64> = Vec::new();
+        for (filename, lineno, name) in traceback_frames(_py, tb_bits, limit) {
+            let line_text = traceback_source_line_native(_py, &filename, lineno);
+            let filename_ptr = alloc_string(_py, filename.as_bytes());
+            if filename_ptr.is_null() {
+                for bits in tuples {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
+            }
+            let name_ptr = alloc_string(_py, name.as_bytes());
+            if name_ptr.is_null() {
+                dec_ref_bits(_py, MoltObject::from_ptr(filename_ptr).bits());
+                for bits in tuples {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
+            }
+            let line_ptr = alloc_string(_py, line_text.as_bytes());
+            if line_ptr.is_null() {
+                dec_ref_bits(_py, MoltObject::from_ptr(filename_ptr).bits());
+                dec_ref_bits(_py, MoltObject::from_ptr(name_ptr).bits());
+                for bits in tuples {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
+            }
+            let filename_bits = MoltObject::from_ptr(filename_ptr).bits();
+            let lineno_bits = MoltObject::from_int(lineno).bits();
+            let name_bits = MoltObject::from_ptr(name_ptr).bits();
+            let line_bits = MoltObject::from_ptr(line_ptr).bits();
+            let tuple_ptr = alloc_tuple(_py, &[filename_bits, lineno_bits, name_bits, line_bits]);
+            dec_ref_bits(_py, filename_bits);
+            dec_ref_bits(_py, name_bits);
+            dec_ref_bits(_py, line_bits);
+            if tuple_ptr.is_null() {
+                for bits in tuples {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
+            }
+            tuples.push(MoltObject::from_ptr(tuple_ptr).bits());
+        }
+        let list_ptr = alloc_list(_py, tuples.as_slice());
+        for bits in tuples {
+            dec_ref_bits(_py, bits);
+        }
+        if list_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(list_ptr).bits()
         }
     })
 }

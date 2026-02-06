@@ -90,11 +90,7 @@ pub extern "C" fn molt_code_positions(code_bits: u64) -> u64 {
         };
         unsafe {
             if object_type_id(code_ptr) != TYPE_ID_CODE {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "code.co_positions() requires code",
-                );
+                return raise_exception::<_>(_py, "TypeError", "code.co_positions() requires code");
             }
         }
 
@@ -112,10 +108,16 @@ pub extern "C" fn molt_code_positions(code_bits: u64) -> u64 {
             let mut line = unsafe { code_firstlineno(code_ptr) };
             let mut start_col = 0i64;
             let mut end_col = 0i64;
-            if let Some(filename) = string_obj_to_owned(obj_from_bits(unsafe { code_filename_bits(code_ptr) })) {
+            if let Some(filename) =
+                string_obj_to_owned(obj_from_bits(unsafe { code_filename_bits(code_ptr) }))
+            {
                 if let Ok(contents) = std::fs::read_to_string(&filename) {
                     let lines: Vec<&str> = contents.lines().collect();
-                    let mut line_index = if line > 0 { (line as usize).saturating_sub(1) } else { 0 };
+                    let mut line_index = if line > 0 {
+                        (line as usize).saturating_sub(1)
+                    } else {
+                        0
+                    };
                     if let Some(raw_line) = lines.get(line_index).copied() {
                         let mut trimmed = raw_line.trim_end_matches(['\r', '\n']);
                         let starts_def = {
@@ -133,7 +135,8 @@ pub extern "C" fn molt_code_positions(code_bits: u64) -> u64 {
                         end_col = trimmed.chars().count() as i64;
                         if let Some(pos) = trimmed.find("return ") {
                             start_col = (pos + "return ".len()) as i64;
-                        } else if let Some(pos) = trimmed.chars().position(|ch| !ch.is_whitespace()) {
+                        } else if let Some(pos) = trimmed.chars().position(|ch| !ch.is_whitespace())
+                        {
                             start_col = pos as i64;
                         }
                         if line <= 0 {
@@ -145,10 +148,7 @@ pub extern "C" fn molt_code_positions(code_bits: u64) -> u64 {
             let line_bits = MoltObject::from_int(line).bits();
             let start_col_bits = MoltObject::from_int(start_col).bits();
             let end_col_bits = MoltObject::from_int(end_col).bits();
-            let pos_ptr = alloc_tuple(
-                _py,
-                &[line_bits, line_bits, start_col_bits, end_col_bits],
-            );
+            let pos_ptr = alloc_tuple(_py, &[line_bits, line_bits, start_col_bits, end_col_bits]);
             if pos_ptr.is_null() {
                 return MoltObject::none().bits();
             }

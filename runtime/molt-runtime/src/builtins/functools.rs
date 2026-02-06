@@ -1608,11 +1608,7 @@ pub extern "C" fn molt_functools_cacheinfo_getattr(self_bits: u64, name_bits: u6
     crate::with_gil_entry!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-            return raise_exception::<u64>(
-                _py,
-                "TypeError",
-                "attribute name must be string",
-            );
+            return raise_exception::<u64>(_py, "TypeError", "attribute name must be string");
         };
         match name.as_str() {
             "hits" => MoltObject::from_int(unsafe { cacheinfo_hits(self_ptr) }).bits(),

@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from typing import Any, Callable, cast
-import os
 import struct
 import sys
-import time
+import traceback as _traceback
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
@@ -32,6 +31,15 @@ _MOLT_RLOCK_RELEASE = _require_intrinsic("molt_rlock_release", globals())
 _MOLT_RLOCK_LOCKED = _require_intrinsic("molt_rlock_locked", globals())
 _MOLT_RLOCK_DROP = _require_intrinsic("molt_rlock_drop", globals())
 _MOLT_MODULE_CACHE_SET = _require_intrinsic("molt_module_cache_set", globals())
+_MOLT_ENV_GET = _require_intrinsic("molt_env_get", globals())
+_MOLT_CAPABILITIES_TRUSTED = _require_intrinsic("molt_capabilities_trusted", globals())
+_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has", globals())
+_MOLT_TIME_MONOTONIC = _require_intrinsic("molt_time_monotonic", globals())
+_MOLT_ASYNC_SLEEP = _require_intrinsic("molt_async_sleep", globals())
+_MOLT_BLOCK_ON = _require_intrinsic("molt_block_on", globals())
+_MOLT_PATH_ABSPATH = _require_intrinsic("molt_path_abspath", globals())
+_MOLT_GETCWD = _require_intrinsic("molt_getcwd", globals())
+_MOLT_OS_NAME = _require_intrinsic("molt_os_name", globals())
 
 
 def _require_callable(value: object, name: str) -> Callable[..., object]:
@@ -42,6 +50,27 @@ def _require_callable(value: object, name: str) -> Callable[..., object]:
 
 def _expect_int(value: object) -> int:
     return int(cast(int, value))
+
+
+def _env_get_str(name: str, default: str = "") -> str:
+    value = _MOLT_ENV_GET(name, default)
+    if value is None:
+        return default
+    return str(value)
+
+
+def _thread_sleep(delay: float) -> None:
+    fut = _MOLT_ASYNC_SLEEP(float(delay), None)
+    _MOLT_BLOCK_ON(fut)
+
+
+def _thread_monotonic() -> float:
+    return float(_MOLT_TIME_MONOTONIC())
+
+
+def _path_sep() -> str:
+    name = str(_MOLT_OS_NAME())
+    return "\\" if name == "nt" else "/"
 
 
 _HAVE_INTRINSICS = all(
@@ -164,19 +193,17 @@ else:
     ] = {}
 
     def _shared_runtime_enabled() -> bool:
-        explicit = os.getenv("MOLT_THREAD_SHARED", "").strip().lower()
+        explicit = _env_get_str("MOLT_THREAD_SHARED", "").strip().lower()
         if explicit in {"0", "false", "no", "off"}:
             return False
         if explicit in {"1", "true", "yes", "on"}:
             return True
-        isolated = os.getenv("MOLT_THREAD_ISOLATED", "").strip().lower()
+        isolated = _env_get_str("MOLT_THREAD_ISOLATED", "").strip().lower()
         if isolated in {"1", "true", "yes", "on"}:
             return False
-        trusted = os.getenv("MOLT_TRUSTED", "").strip().lower()
-        if trusted in {"1", "true", "yes", "on"}:
+        if bool(_MOLT_CAPABILITIES_TRUSTED()):
             return True
-        caps = os.getenv("MOLT_CAPABILITIES", "")
-        if "thread.shared" in {cap.strip() for cap in caps.split(",") if cap.strip()}:
+        if bool(_MOLT_CAPABILITIES_HAS("thread.shared")):
             return True
         # Default to shared-runtime semantics for CPython-compatible threading.
         return True
@@ -202,8 +229,7 @@ else:
             self.thread = thread
 
     def _default_excepthook(args: ExceptHookArgs) -> None:
-        tb_mod = __import__("traceback")
-        print_exception = getattr(tb_mod, "print_exception", None)
+        print_exception = getattr(_traceback, "print_exception", None)
         if not callable(print_exception):
             raise RuntimeError("traceback.print_exception unavailable")
         print(f"Exception in thread {args.thread.name}:", file=sys.stderr)
@@ -462,36 +488,39 @@ else:
         return "__main__"
 
     def _module_name_from_path(path: str) -> str | None:
+        sep = _path_sep()
+
+        def _abspath_str(value: str) -> str:
+            return str(_MOLT_PATH_ABSPATH(value))
+
         try:
-            abs_path = os.path.abspath(path)
+            abs_path = _abspath_str(path)
         except Exception:
             return None
         roots = list(sys.path)
         if "" in roots:
             try:
-                roots[roots.index("")] = os.getcwd()
+                roots[roots.index("")] = str(_MOLT_GETCWD())
             except Exception:
                 pass
         for root in roots:
             if not root:
                 continue
             try:
-                root_abs = os.path.abspath(root)
+                root_abs = _abspath_str(str(root))
             except Exception:
                 continue
             if abs_path == root_abs:
                 continue
-            if not abs_path.startswith(root_abs.rstrip(os.sep) + os.sep):
+            prefix = root_abs.rstrip(sep) + sep
+            if not abs_path.startswith(prefix):
                 continue
-            try:
-                rel = os.path.relpath(abs_path, root_abs)
-            except Exception:
-                continue
+            rel = abs_path[len(prefix) :]
             if rel.startswith(".."):
                 continue
             if rel.endswith(".py"):
                 rel = rel[:-3]
-            parts = [p for p in rel.split(os.sep) if p]
+            parts = [p for p in rel.split(sep) if p]
             if not parts:
                 continue
             if parts[-1] == "__init__":
@@ -528,7 +557,9 @@ else:
             )
             if isinstance(main_file, str) and isinstance(target_file, str):
                 try:
-                    if os.path.samefile(main_file, target_file):
+                    if str(_MOLT_PATH_ABSPATH(main_file)) == str(
+                        _MOLT_PATH_ABSPATH(target_file)
+                    ):
                         module = "__main__"
                 except Exception:
                     if main_file == target_file:
@@ -803,37 +834,37 @@ else:
             try:
                 if timeout_val is None:
                     while not waiter["ready"]:
-                        time.sleep(0.001)
+                        _thread_sleep(0.001)
                     return True
                 if timeout_val == 0.0:
                     ok = waiter["ready"]
                     if not ok and waiter in self._waiters:
                         self._waiters.remove(waiter)
                     return ok
-                deadline = time.monotonic() + timeout_val
+                deadline = _thread_monotonic() + timeout_val
                 while True:
                     ok = waiter["ready"]
                     if ok:
                         return True
-                    remaining = deadline - time.monotonic()
+                    remaining = deadline - _thread_monotonic()
                     if remaining <= 0:
                         if waiter in self._waiters:
                             self._waiters.remove(waiter)
                         return False
-                    time.sleep(min(remaining, 0.05))
+                    _thread_sleep(min(remaining, 0.05))
             finally:
                 self._acquire_restore(saved)
 
         def wait_for(
             self, predicate: Callable[[], bool], timeout: float | None = None
         ) -> bool:
-            end = None if timeout is None else time.monotonic() + float(timeout)
+            end = None if timeout is None else _thread_monotonic() + float(timeout)
             result = predicate()
             while not result:
                 if end is None:
                     self.wait(None)
                 else:
-                    remaining = end - time.monotonic()
+                    remaining = end - _thread_monotonic()
                     if remaining <= 0:
                         break
                     self.wait(remaining)
@@ -877,7 +908,7 @@ else:
                     with self._cond:
                         if self._flag:
                             return True
-                    time.sleep(0.001)
+                    _thread_sleep(0.001)
             try:
                 timeout_val = float(timeout)
             except (TypeError, ValueError) as exc:
@@ -887,15 +918,15 @@ else:
             if timeout_val < 0.0:
                 raise ValueError("timeout value must be a non-negative number")
             _check_timeout_max(timeout_val)
-            deadline = time.monotonic() + timeout_val
+            deadline = _thread_monotonic() + timeout_val
             while True:
                 with self._cond:
                     if self._flag:
                         return True
-                remaining = deadline - time.monotonic()
+                remaining = deadline - _thread_monotonic()
                 if remaining <= 0:
                     return False
-                time.sleep(min(remaining, 0.001))
+                _thread_sleep(min(remaining, 0.001))
 
     class Semaphore:
         def __init__(self, value: int = 1) -> None:
@@ -927,12 +958,12 @@ else:
                         self._value -= 1
                         return True
                     return False
-                end = None if timeout_val is None else time.monotonic() + timeout_val
+                end = None if timeout_val is None else _thread_monotonic() + timeout_val
                 while self._value <= 0:
                     if end is None:
                         self._cond.wait()
                     else:
-                        remaining = end - time.monotonic()
+                        remaining = end - _thread_monotonic()
                         if remaining <= 0:
                             return False
                         self._cond.wait(remaining)
@@ -1029,12 +1060,12 @@ else:
                             raise
                     self._next_generation()
                     return index
-                end = None if timeout_val is None else time.monotonic() + timeout_val
+                end = None if timeout_val is None else _thread_monotonic() + timeout_val
                 while True:
                     if end is None:
                         self._cond.wait()
                     else:
-                        remaining = end - time.monotonic()
+                        remaining = end - _thread_monotonic()
                         if remaining <= 0:
                             self._break()
                             raise BrokenBarrierError
@@ -1293,7 +1324,7 @@ else:
                 timer.function(*timer.args, **timer.kwargs)
             timer.finished.set()
             return
-        time.sleep(float(interval))
+        _thread_sleep(float(interval))
         target = _resolve_qualname(str(module), str(qualname))
         if not isinstance(args, tuple):
             args = tuple(args)

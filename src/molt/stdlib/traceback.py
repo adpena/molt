@@ -9,6 +9,14 @@ import sys
 from typing import Any
 
 _require_intrinsic("molt_stdlib_probe", globals())
+_MOLT_TRACEBACK_SOURCE_LINE = _require_intrinsic(
+    "molt_traceback_source_line", globals()
+)
+_MOLT_TRACEBACK_FORMAT_EXCEPTION_ONLY = _require_intrinsic(
+    "molt_traceback_format_exception_only", globals()
+)
+_MOLT_TRACEBACK_FORMAT_TB = _require_intrinsic("molt_traceback_format_tb", globals())
+_MOLT_TRACEBACK_EXTRACT_TB = _require_intrinsic("molt_traceback_extract_tb", globals())
 
 
 __all__ = [
@@ -49,13 +57,12 @@ def _exc_name(exc_type: Any, value: Any) -> str:
 
 
 def format_exception_only(exc_type: Any, value: Any) -> list[str]:
-    name = _exc_name(exc_type, value)
-    if value is None:
-        return [f"{name}\n"]
-    text = str(value)
-    if text == "":
-        return [f"{name}\n"]
-    return [f"{name}: {text}\n"]
+    lines = _MOLT_TRACEBACK_FORMAT_EXCEPTION_ONLY(exc_type, value)
+    if not isinstance(lines, list) or not all(isinstance(line, str) for line in lines):
+        raise RuntimeError(
+            "traceback format_exception_only intrinsic returned invalid value"
+        )
+    return list(lines)
 
 
 def _split_molt_symbol(name: str) -> tuple[str, str]:
@@ -118,14 +125,15 @@ def _format_tb_entry(tb: Any) -> str:
 
 
 def _get_source_line(filename: str, lineno: int) -> str:
+    if lineno <= 0:
+        return ""
     try:
-        with open(filename, "r") as handle:  # noqa: PTH123 - trusted mode in diff tests
-            for idx, line in enumerate(handle, 1):
-                if idx == lineno:
-                    return line.rstrip("\n")
+        line = _MOLT_TRACEBACK_SOURCE_LINE(filename, int(lineno))
     except Exception:
         return ""
-    return ""
+    if not isinstance(line, str):
+        return ""
+    return line
 
 
 def _infer_col_offsets(line: str) -> tuple[int, int]:
@@ -177,11 +185,18 @@ class StackSummary:
                 if limit is not None and len(frames) >= limit:
                     break
         else:
-            while tb is not None:
-                frames.append(_frame_summary_from_tb(tb))
-                tb = getattr(tb, "tb_next", None)
-            if limit is not None:
-                frames = frames[:limit]
+            extracted = _MOLT_TRACEBACK_EXTRACT_TB(tb, limit)
+            if isinstance(extracted, list):
+                for entry in extracted:
+                    frame = _frame_summary_from_entry(entry)
+                    if frame is not None:
+                        frames.append(frame)
+            else:
+                while tb is not None:
+                    frames.append(_frame_summary_from_tb(tb))
+                    tb = getattr(tb, "tb_next", None)
+                if limit is not None:
+                    frames = frames[:limit]
         return cls(frames)
 
     @classmethod
@@ -363,11 +378,17 @@ class TracebackException:
 
 
 def format_tb(tb: Any, limit: int | None = None) -> list[str]:
-    return StackSummary.extract(tb, limit).format()
+    lines = _MOLT_TRACEBACK_FORMAT_TB(tb, limit)
+    if not isinstance(lines, list) or not all(isinstance(line, str) for line in lines):
+        raise RuntimeError("traceback format_tb intrinsic returned invalid value")
+    return list(lines)
 
 
 def extract_tb(tb: Any, limit: int | None = None) -> StackSummary:
-    return StackSummary.extract(tb, limit)
+    extracted = _MOLT_TRACEBACK_EXTRACT_TB(tb, limit)
+    if not isinstance(extracted, list):
+        raise RuntimeError("traceback extract_tb intrinsic returned invalid value")
+    return StackSummary.from_list(extracted)
 
 
 def format_list(extracted_list: list[Any]) -> list[str]:
@@ -504,20 +525,10 @@ def print_tb(tb: Any, limit: int | None = None, file: Any | None = None) -> None
 
 
 def format_exc(limit: int | None = None) -> str:
-    try:
-        import sys
-
-        exc_type, value, tb = sys.exc_info()
-    except Exception:
-        return ""
+    exc_type, value, tb = sys.exc_info()
     return "".join(format_exception(exc_type, value, tb, limit))
 
 
 def print_exc(limit: int | None = None, file: Any | None = None) -> None:
-    try:
-        import sys
-
-        exc_type, value, tb = sys.exc_info()
-    except Exception:
-        return None
+    exc_type, value, tb = sys.exc_info()
     print_exception(exc_type, value, tb, limit, file)

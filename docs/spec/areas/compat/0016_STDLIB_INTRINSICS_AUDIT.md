@@ -11,9 +11,9 @@
 ## Progress Summary (Generated)
 - Total audited modules: `110`
 - `intrinsic-backed`: `21`
-- `intrinsic-partial`: `17`
-- `probe-only`: `30`
-- `python-only`: `42`
+- `intrinsic-partial`: `19`
+- `probe-only`: `29`
+- `python-only`: `41`
 
 ## Priority Lowering Queue (Generated)
 ### P0 queue (Phase 2: concurrency substrate)
@@ -38,7 +38,7 @@
 - `contextlib`: `python-only`
 
 ### P2 queue (Phase 4: import/data/network long tail)
-- `pathlib`: `python-only`
+- `pathlib`: `intrinsic-partial`
 - `importlib`: `probe-only`
 - `importlib.util`: `probe-only`
 - `importlib.machinery`: `probe-only`
@@ -91,6 +91,7 @@
 - `hashlib`
 - `inspect`
 - `math`
+- `pathlib`
 - `re`
 - `runpy`
 - `select`
@@ -98,6 +99,7 @@
 - `struct`
 - `threading`
 - `time`
+- `traceback`
 - `types`
 - `weakref`
 - `zipfile`
@@ -130,7 +132,6 @@
 - `socketserver`
 - `string`
 - `tempfile`
-- `traceback`
 - `unittest`
 - `warnings`
 
@@ -155,7 +156,6 @@
 - `importlib.resources`
 - `ipaddress`
 - `locale`
-- `pathlib`
 - `pickle`
 - `pkgutil`
 - `py_compile`
