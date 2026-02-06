@@ -1992,12 +1992,57 @@ def _stdlib_allowlist() -> set[str]:
     return allowlist
 
 
-def _stdlib_module_uses_intrinsics(path: Path) -> bool:
+_INTRINSIC_NAME_RE = re.compile(r"""['"](molt_[A-Za-z0-9_]+)['"]""")
+_INTRINSIC_CALL_NAMES = {
+    "load_intrinsic",
+    "require_intrinsic",
+    "require_optional_intrinsic",
+    "_load_intrinsic",
+    "_intrinsic_load",
+    "_intrinsics_require",
+    "_intrinsic_require",
+    "_require_intrinsic",
+    "_require_callable_intrinsic",
+}
+_STDLIB_PROBE_INTRINSIC = "molt_stdlib_probe"
+
+
+def _stdlib_module_intrinsic_status(path: Path) -> str:
     try:
         source = path.read_text(encoding="utf-8")
     except Exception:
-        return False
-    return "require_intrinsic" in source or "_molt_intrinsics" in source
+        return "python-only"
+
+    if path.name == "_intrinsics.py":
+        return "intrinsic-backed"
+
+    intrinsic_names: set[str] = set(_INTRINSIC_NAME_RE.findall(source))
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        pass
+    else:
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not node.args:
+                continue
+            call_name: str | None = None
+            if isinstance(node.func, ast.Name):
+                call_name = node.func.id
+            elif isinstance(node.func, ast.Attribute):
+                call_name = node.func.attr
+            if call_name not in _INTRINSIC_CALL_NAMES:
+                continue
+            first = node.args[0]
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                name = first.value
+                if name.startswith("molt_"):
+                    intrinsic_names.add(name)
+
+    if not intrinsic_names:
+        return "python-only"
+    if intrinsic_names == {_STDLIB_PROBE_INTRINSIC}:
+        return "probe-only"
+    return "intrinsic-backed"
 
 
 def _enforce_intrinsic_stdlib(
@@ -2006,6 +2051,7 @@ def _enforce_intrinsic_stdlib(
     json_output: bool,
 ) -> int | None:
     missing: list[str] = []
+    probe_only: list[str] = []
     stdlib_root = stdlib_root.resolve()
     for name, path in module_graph.items():
         if not path or not path.suffix == ".py":
@@ -2014,16 +2060,25 @@ def _enforce_intrinsic_stdlib(
             path.resolve().relative_to(stdlib_root)
         except ValueError:
             continue
-        if not _stdlib_module_uses_intrinsics(path):
+        status = _stdlib_module_intrinsic_status(path)
+        if status == "python-only":
             missing.append(name)
+        elif status == "probe-only":
+            probe_only.append(name)
     if not missing:
         return None
     missing.sort()
+    probe_only.sort()
     message = (
         "Intrinsic-only stdlib enforcement failed. These modules are Python-only "
         "and must be lowered to Rust intrinsics (or become thin intrinsic wrappers):\n"
         + "\n".join(f"  - {name}" for name in missing)
     )
+    if probe_only:
+        message += (
+            "\n\nProbe-only modules in this build (thin wrappers + policy gate only):\n"
+            + "\n".join(f"  - {name}" for name in probe_only)
+        )
     return _fail(message, json_output, command="build")
 
 

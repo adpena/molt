@@ -8,8 +8,8 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_stdlib_probe", globals())
 
-import socket as _socket
-import socketserver as _socketserver
+import socket as _socket  # noqa: E402
+import socketserver as _socketserver  # noqa: E402
 
 
 class HTTPResponse:
@@ -140,9 +140,12 @@ class HTTPConnection:
         if headers:
             for name, value in headers.items():
                 self.putheader(name, value)
-        if body is not None and not any(
-            name.lower() == "content-length" for name, _ in self._headers
-        ):
+        has_content_length = False
+        for header_name, _ in self._headers:
+            if str(header_name).lower() == "content-length":
+                has_content_length = True
+                break
+        if body is not None and not has_content_length:
             self.putheader("Content-Length", str(len(body)))
         self.endheaders(body)
 
