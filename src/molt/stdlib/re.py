@@ -5,25 +5,51 @@ from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 
-_require_intrinsic("molt_stdlib_probe", globals())
-
 from dataclasses import dataclass
 from typing import Any
+import warnings as _warnings
+
+_require_intrinsic("molt_stdlib_probe", globals())
+
+
+def _require_callable_intrinsic(name: str):
+    value = _require_intrinsic(name, globals())
+    if not callable(value):
+        raise RuntimeError(f"{name} intrinsic unavailable")
+    return value
+
+
+_molt_re_literal_matches = _require_callable_intrinsic("molt_re_literal_matches")
+
 
 __all__ = [
     "ASCII",
+    "A",
     "DOTALL",
+    "S",
     "IGNORECASE",
+    "I",
     "LOCALE",
+    "L",
     "MULTILINE",
+    "M",
+    "UNICODE",
+    "U",
     "VERBOSE",
+    "X",
     "Pattern",
     "Match",
     "compile",
     "error",
+    "escape",
+    "findall",
+    "finditer",
     "fullmatch",
     "match",
     "search",
+    "split",
+    "sub",
+    "subn",
 ]
 
 # TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): complete native re parity (lookarounds, backreferences, named groups, verbose/ASCII flags, and Unicode casefold/class semantics).
@@ -33,10 +59,19 @@ DOTALL = 16
 IGNORECASE = 2
 LOCALE = 4
 MULTILINE = 8
+UNICODE = 32
 VERBOSE = 64
 
+A = ASCII
+I = IGNORECASE
+L = LOCALE
+M = MULTILINE
+S = DOTALL
+U = UNICODE
+X = VERBOSE
+
 _META_CHARS = set(".^$*+?{}[]\\|()")
-_SUPPORTED_FLAGS = IGNORECASE | MULTILINE | DOTALL
+_SUPPORTED_FLAGS = IGNORECASE | MULTILINE | DOTALL | ASCII | UNICODE | VERBOSE
 
 
 class error(Exception):
@@ -95,17 +130,46 @@ class _Group:
     index: int
 
 
+@dataclass(frozen=True)
+class _Backref:
+    index: int
+
+
+@dataclass(frozen=True)
+class _Look:
+    node: Any
+    behind: bool
+    positive: bool
+
+
+@dataclass(frozen=True)
+class _ScopedFlags:
+    node: Any
+    add_flags: int
+    clear_flags: int
+
+
+@dataclass(frozen=True)
+class _Conditional:
+    group_index: int
+    yes: Any
+    no: Any
+
+
 class _Parser:
     def __init__(self, pattern: str) -> None:
         self.pattern = pattern
         self.pos = 0
         self.group_count = 0
+        self.group_names: dict[str, int] = {}
+        self.inline_flags = 0
+        self.nested_set_warning_pos: int | None = None
 
-    def parse(self) -> tuple[Any, int]:
+    def parse(self) -> tuple[Any, int, dict[str, int], int]:
         node = self._parse_expr()
         if self.pos != len(self.pattern):
             raise error("unexpected pattern text")
-        return node, self.group_count
+        return node, self.group_count, dict(self.group_names), self.inline_flags
 
     def _peek(self) -> str | None:
         if self.pos >= len(self.pattern):
@@ -206,6 +270,139 @@ class _Parser:
             return _Anchor("end")
         if ch == "(":
             if self._peek() == "?":
+                self._next()
+                marker = self._peek()
+                if marker == "=":
+                    self._next()
+                    node = self._parse_expr()
+                    if self._peek() != ")":
+                        raise error("missing )")
+                    self._next()
+                    return _Look(node, behind=False, positive=True)
+                if marker == "!":
+                    raise NotImplementedError("negative lookahead is not supported")
+                if marker == "<":
+                    self._next()
+                    look_kind = self._peek()
+                    if look_kind == "=":
+                        self._next()
+                        node = self._parse_expr()
+                        if self._peek() != ")":
+                            raise error("missing )")
+                        self._next()
+                        if _fixed_width(node) is None:
+                            raise error("look-behind requires fixed-width pattern")
+                        return _Look(node, behind=True, positive=True)
+                    if look_kind == "!":
+                        raise NotImplementedError(
+                            "negative lookbehind is not supported"
+                        )
+                    raise error("unknown extension")
+                if marker == "(":
+                    self._next()
+                    digits: list[str] = []
+                    while True:
+                        token = self._peek()
+                        if token is None:
+                            raise error("missing )")
+                        if not ("0" <= token <= "9"):
+                            break
+                        digits.append(self._next())
+                    if not digits or self._peek() != ")":
+                        raise error("bad character in group name")
+                    self._next()
+                    group_index = int("".join(digits))
+                    yes_node = self._parse_term()
+                    no_node: Any = _Empty()
+                    if self._peek() == "|":
+                        self._next()
+                        no_node = self._parse_term()
+                    if self._peek() != ")":
+                        raise error("missing )")
+                    self._next()
+                    return _Conditional(group_index, yes_node, no_node)
+                if marker == ":":
+                    self._next()
+                    node = self._parse_expr()
+                    if self._peek() != ")":
+                        raise error("missing )")
+                    self._next()
+                    return node
+                if marker == "P":
+                    self._next()
+                    if self._next() != "<":
+                        raise error("bad character in group name")
+                    name_chars: list[str] = []
+                    while True:
+                        token = self._peek()
+                        if token is None:
+                            raise error("unterminated group name")
+                        if token == ">":
+                            self._next()
+                            break
+                        if token in _META_CHARS or token in "<>":
+                            raise error("bad character in group name")
+                        name_chars.append(self._next())
+                    if not name_chars:
+                        raise error("missing group name")
+                    name = "".join(name_chars)
+                    if name in self.group_names:
+                        raise error("redefinition of group name")
+                    node = self._parse_expr()
+                    if self._peek() != ")":
+                        raise error("missing )")
+                    self._next()
+                    self.group_count += 1
+                    self.group_names[name] = self.group_count
+                    return _Group(node, self.group_count)
+                # Inline flags: (?i), (?s), (?x), (?-i:...), (?i:...)
+                flags = 0
+                clear_flags = 0
+                seen_minus = False
+                while True:
+                    token = self._peek()
+                    if token is None:
+                        raise error("unterminated inline flag")
+                    if token == "-":
+                        seen_minus = True
+                        self._next()
+                        continue
+                    if token in "imsxaLu":
+                        self._next()
+                        bit = 0
+                        if token in ("i", "I"):
+                            bit = IGNORECASE
+                        elif token in ("m", "M"):
+                            bit = MULTILINE
+                        elif token in ("s", "S"):
+                            bit = DOTALL
+                        elif token in ("x", "X"):
+                            bit = VERBOSE
+                        elif token in ("a", "A"):
+                            bit = ASCII
+                        elif token in ("u", "U"):
+                            bit = UNICODE
+                        elif token in ("L", "l"):
+                            bit = LOCALE
+                        if seen_minus:
+                            clear_flags |= bit
+                        else:
+                            flags |= bit
+                        continue
+                    break
+                token = self._peek()
+                if token == ")":
+                    self._next()
+                    self.inline_flags |= flags
+                    self.inline_flags &= ~clear_flags
+                    return _Empty()
+                if token == ":":
+                    self._next()
+                    node = self._parse_expr()
+                    if self._peek() != ")":
+                        raise error("missing )")
+                    self._next()
+                    return _ScopedFlags(node, flags, clear_flags)
                 raise NotImplementedError(
                     "group flags and non-capturing groups unsupported"
                 )
@@ -226,8 +423,11 @@ class _Parser:
     def _parse_escape(self) -> Any:
         ch = self._next()
         if ch in "dDsSwW":
-            negated = ch.isupper()
-            category = ch.lower()
+            negated = "A" <= ch <= "Z"
+            if negated:
+                category = chr(ord(ch) + 32)
+            else:
+                category = ch
             return _CharClass(negated, (), (), (category,))
         if ch in "ntrfv":
             mapped = {
@@ -238,8 +438,14 @@ class _Parser:
                 "v": "\v",
             }
             return _Literal(mapped[ch])
-        if ch.isdigit():
-            raise NotImplementedError("backreferences are not supported")
+        if "0" <= ch <= "9":
+            digits = [ch]
+            while True:
+                nxt = self._peek()
+                if nxt is None or not ("0" <= nxt <= "9"):
+                    break
+                digits.append(self._next())
+            return _Backref(int("".join(digits)))
         if ch in "AbBzZ":
             raise NotImplementedError("escape anchors are not supported")
         return _Literal(ch)
@@ -276,7 +482,9 @@ class _Parser:
         if ch == "\\":
             esc = self._next()
             if esc in "dDsSwW":
-                return ("category", esc.lower())
+                if "A" <= esc <= "Z":
+                    esc = chr(ord(esc) + 32)
+                return ("category", esc)
             if esc in "ntrfv":
                 mapped = {
                     "n": "\n",
@@ -289,6 +497,24 @@ class _Parser:
             if esc.isdigit():
                 raise NotImplementedError("backreferences are not supported")
             return esc
+        if ch == "[" and self._peek() == ":":
+            if self.nested_set_warning_pos is None:
+                self.nested_set_warning_pos = self.pos - 1
+            self._next()
+            name_chars: list[str] = []
+            while True:
+                token = self._peek()
+                if token is None:
+                    raise error("unterminated character class")
+                if token == ":":
+                    self._next()
+                    if self._peek() != "]":
+                        name_chars.append(":")
+                        continue
+                    self._next()
+                    break
+                name_chars.append(self._next())
+            return ("category", "posix:" + "".join(name_chars))
         if ch == "-" or ch == "]":
             return ch
         if self._peek() == "-":
@@ -305,6 +531,64 @@ class _Parser:
         return ch
 
 
+def _fixed_width(node: Any) -> int | None:
+    if isinstance(node, _Empty):
+        return 0
+    if isinstance(node, _Literal):
+        return len(node.text)
+    if isinstance(node, _Any):
+        return 1
+    if isinstance(node, _Anchor):
+        return 0
+    if isinstance(node, _CharClass):
+        return 1
+    if isinstance(node, _Backref):
+        return None
+    if isinstance(node, _Group):
+        return _fixed_width(node.node)
+    if isinstance(node, _Look):
+        return 0
+    if isinstance(node, _ScopedFlags):
+        return _fixed_width(node.node)
+    if isinstance(node, _Conditional):
+        yes_width = _fixed_width(node.yes)
+        no_width = _fixed_width(node.no)
+        if yes_width is None or no_width is None:
+            return None
+        if yes_width != no_width:
+            return None
+        return yes_width
+    if isinstance(node, _Concat):
+        total = 0
+        for item in node.nodes:
+            width = _fixed_width(item)
+            if width is None:
+                return None
+            total += width
+        return total
+    if isinstance(node, _Alt):
+        if not node.options:
+            return 0
+        first = _fixed_width(node.options[0])
+        if first is None:
+            return None
+        for item in node.options[1:]:
+            width = _fixed_width(item)
+            if width is None or width != first:
+                return None
+        return first
+    if isinstance(node, _Repeat):
+        width = _fixed_width(node.node)
+        if width is None:
+            return None
+        if node.max_count is None:
+            return None
+        if node.min_count != node.max_count:
+            return None
+        return width * node.min_count
+    return None
+
+
 class Match:
     def __init__(
         self,
@@ -313,25 +597,39 @@ class Match:
         start: int,
         end: int,
         groups: tuple[tuple[int, int] | None, ...],
+        group_names: dict[str, int],
     ) -> None:
         self._pattern = pattern
         self._string = string
         self._start = start
         self._end = end
         self._groups = groups
+        self._group_names = group_names
 
-    def group(self, *indices: int) -> Any:
+    def group(self, *indices: int | str) -> Any:
         if not indices:
             indices = (0,)
         if len(indices) == 1:
             return self._group_value(indices[0])
         return tuple(self._group_value(idx) for idx in indices)
 
-    def groups(self) -> tuple[Any, ...]:
-        return tuple(self._group_value(idx) for idx in range(1, len(self._groups)))
+    def groups(self, default: Any = None) -> tuple[Any, ...]:
+        out = []
+        for idx in range(1, len(self._groups)):
+            value = self._group_value(idx)
+            if value is None:
+                value = default
+            out.append(value)
+        return tuple(out)
 
-    def groupdict(self) -> dict[str, Any]:
-        return {}
+    def groupdict(self, default: Any = None) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for name, idx in self._group_names.items():
+            value = self._group_value(idx)
+            if value is None:
+                value = default
+            out[name] = value
+        return out
 
     def start(self, index: int = 0) -> int:
         span = self._group_span(index)
@@ -344,7 +642,11 @@ class Match:
     def span(self, index: int = 0) -> tuple[int, int]:
         return self._group_span(index)
 
-    def _group_span(self, index: int) -> tuple[int, int]:
+    def _group_span(self, index: int | str) -> tuple[int, int]:
+        if isinstance(index, str):
+            if index not in self._group_names:
+                raise IndexError("no such group")
+            index = self._group_names[index]
         if index < 0 or index >= len(self._groups):
             raise IndexError("no such group")
         span = self._groups[index]
@@ -352,7 +654,7 @@ class Match:
             return (-1, -1)
         return span
 
-    def _group_value(self, index: int) -> Any:
+    def _group_value(self, index: int | str) -> Any:
         span = self._group_span(index)
         if span == (-1, -1):
             return None
@@ -360,11 +662,19 @@ class Match:
 
 
 class Pattern:
-    def __init__(self, pattern: str, node: Any, groups: int, flags: int) -> None:
+    def __init__(
+        self,
+        pattern: str,
+        node: Any,
+        groups: int,
+        flags: int,
+        group_names: dict[str, int] | None = None,
+    ) -> None:
         self.pattern = pattern
         self.flags = flags
         self.groups = groups
         self._node = node
+        self._group_names = dict(group_names or {})
 
     def search(
         self, string: str, pos: int = 0, endpos: int | None = None
@@ -380,6 +690,25 @@ class Pattern:
         self, string: str, pos: int = 0, endpos: int | None = None
     ) -> Match | None:
         return _fullmatch(self, string, pos, endpos)
+
+    def finditer(
+        self, string: str, pos: int = 0, endpos: int | None = None
+    ) -> Iterator[Match]:
+        return _finditer(self, string, pos, endpos)
+
+    def findall(
+        self, string: str, pos: int = 0, endpos: int | None = None
+    ) -> list[Any]:
+        return _findall(self, string, pos, endpos)
+
+    def split(self, string: str, maxsplit: int = 0) -> list[str]:
+        return _split(self, string, maxsplit=maxsplit)
+
+    def sub(self, repl: object, string: str, count: int = 0) -> str:
+        return _sub(self, repl, string, count=count)
+
+    def subn(self, repl: object, string: str, count: int = 0) -> tuple[str, int]:
+        return _subn(self, repl, string, count=count)
 
 
 def _clamp_span(length: int, pos: int, endpos: int | None) -> tuple[int, int]:
@@ -403,6 +732,29 @@ def _casefold(text: str) -> str:
     if casefold is not None:
         return casefold()
     return text.lower()
+
+
+def _is_ascii_digit(ch: str) -> bool:
+    return "0" <= ch <= "9"
+
+
+def _is_ascii_alpha(ch: str) -> bool:
+    return ("a" <= ch <= "z") or ("A" <= ch <= "Z")
+
+
+def _is_space(ch: str) -> bool:
+    return ch in " \t\n\r\f\v"
+
+
+def _is_word_char(ch: str, flags: int) -> bool:
+    if ch == "_":
+        return True
+    if _is_ascii_alpha(ch) or _is_ascii_digit(ch):
+        return True
+    if flags & ASCII:
+        return False
+    # Unicode fallback: treat non-ASCII, non-space runes as word-ish.
+    return ord(ch) >= 128 and not _is_space(ch)
 
 
 def _class_matches(node: _CharClass, ch: str, flags: int) -> bool:
@@ -429,17 +781,21 @@ def _class_matches(node: _CharClass, ch: str, flags: int) -> bool:
     if not hit:
         for category in node.categories:
             if category == "d" or category == "digit":
-                if ch.isdigit():
+                if _is_ascii_digit(ch):
                     hit = True
                     break
             elif category == "w" or category == "word":
-                if ch.isalnum() or ch == "_":
+                if _is_word_char(ch, flags):
                     hit = True
                     break
             elif category == "s" or category == "space":
-                if ch.isspace():
+                if _is_space(ch):
                     hit = True
                     break
+            elif category.startswith("posix:"):
+                # CPython currently treats POSIX classes as nested set syntax and
+                # does not implement them as active character categories.
+                continue
     if node.negated:
         return not hit
     return hit
@@ -470,12 +826,8 @@ def _match_literal(
     length = len(node.text)
     if pos + length <= end:
         segment = text[pos : pos + length]
-        if flags & IGNORECASE:
-            if segment.casefold() == node.text.casefold():
-                results.append((pos + length, groups))
-        else:
-            if segment == node.text:
-                results.append((pos + length, groups))
+        if _molt_re_literal_matches(segment, node.text, flags):
+            results.append((pos + length, groups))
     return results
 
 
@@ -551,6 +903,93 @@ def _match_group(
     return results
 
 
+def _match_backref(
+    node: _Backref,
+    text: str,
+    pos: int,
+    end: int,
+    _origin: int,
+    groups: tuple[tuple[int, int] | None, ...],
+    _flags: int,
+) -> list[tuple[int, tuple[tuple[int, int] | None, ...]]]:
+    if node.index <= 0 or node.index >= len(groups):
+        return []
+    span = groups[node.index]
+    if span is None:
+        return []
+    start_ref, end_ref = span
+    if start_ref < 0 or end_ref < start_ref:
+        return []
+    value = text[start_ref:end_ref]
+    if pos + len(value) > end:
+        return []
+    if text[pos : pos + len(value)] != value:
+        return []
+    return [(pos + len(value), groups)]
+
+
+def _match_look(
+    node: _Look,
+    text: str,
+    pos: int,
+    end: int,
+    origin: int,
+    groups: tuple[tuple[int, int] | None, ...],
+    flags: int,
+) -> list[tuple[int, tuple[tuple[int, int] | None, ...]]]:
+    if node.behind:
+        width = _fixed_width(node.node)
+        if width is None:
+            raise error("look-behind requires fixed-width pattern")
+        start = pos - width
+        if start < 0:
+            return [] if node.positive else [(pos, groups)]
+        matches: list[tuple[int, tuple[tuple[int, int] | None, ...]]] = []
+        for end_pos, new_groups in _match_node(
+            node.node, text, start, pos, start, groups, flags
+        ):
+            if end_pos == pos:
+                matches.append((pos, new_groups))
+        if node.positive:
+            return matches
+        return [] if matches else [(pos, groups)]
+    matches = _match_node(node.node, text, pos, end, origin, groups, flags)
+    if node.positive:
+        return [(pos, new_groups) for _, new_groups in matches]
+    if matches:
+        return []
+    return [(pos, groups)]
+
+
+def _match_scoped_flags(
+    node: _ScopedFlags,
+    text: str,
+    pos: int,
+    end: int,
+    origin: int,
+    groups: tuple[tuple[int, int] | None, ...],
+    flags: int,
+) -> list[tuple[int, tuple[tuple[int, int] | None, ...]]]:
+    scoped = (flags | node.add_flags) & ~node.clear_flags
+    return _match_node(node.node, text, pos, end, origin, groups, scoped)
+
+
+def _match_conditional(
+    node: _Conditional,
+    text: str,
+    pos: int,
+    end: int,
+    origin: int,
+    groups: tuple[tuple[int, int] | None, ...],
+    flags: int,
+) -> list[tuple[int, tuple[tuple[int, int] | None, ...]]]:
+    matched = False
+    if 0 < node.group_index < len(groups):
+        matched = groups[node.group_index] is not None
+    branch = node.yes if matched else node.no
+    return _match_node(branch, text, pos, end, origin, groups, flags)
+
+
 def _match_alt(
     node: _Alt,
     text: str,
@@ -587,6 +1026,14 @@ def _match_node(
         return _match_charclass(node, text, pos, end, origin, groups, flags)
     if isinstance(node, _Group):
         return _match_group(node, text, pos, end, origin, groups, flags)
+    if isinstance(node, _Backref):
+        return _match_backref(node, text, pos, end, origin, groups, flags)
+    if isinstance(node, _Look):
+        return _match_look(node, text, pos, end, origin, groups, flags)
+    if isinstance(node, _ScopedFlags):
+        return _match_scoped_flags(node, text, pos, end, origin, groups, flags)
+    if isinstance(node, _Conditional):
+        return _match_conditional(node, text, pos, end, origin, groups, flags)
     if isinstance(node, _Concat):
         return _match_concat(node.nodes, text, pos, end, origin, groups, flags)
     if isinstance(node, _Alt):
@@ -662,11 +1109,22 @@ def _match_repeat(
 
 
 def _compile_native(pattern: str, flags: int) -> Pattern:
-    if flags & ~_SUPPORTED_FLAGS:
-        raise NotImplementedError("regex flags are not supported yet")
+    if flags & LOCALE:
+        raise ValueError("cannot use LOCALE flag with a str pattern")
+    if flags & ASCII and flags & UNICODE:
+        raise ValueError("ASCII and UNICODE flags are incompatible")
+    if not (flags & ASCII):
+        flags |= UNICODE
     parser = _Parser(pattern)
-    node, groups = parser.parse()
-    return Pattern(pattern, node, groups, flags)
+    node, groups, group_names, inline_flags = parser.parse()
+    effective_flags = (flags | inline_flags) & ~(LOCALE)
+    if parser.nested_set_warning_pos is not None:
+        _warnings.warn(
+            f"Possible nested set at position {parser.nested_set_warning_pos}",
+            FutureWarning,
+            stacklevel=2,
+        )
+    return Pattern(pattern, node, groups, effective_flags, group_names)
 
 
 def _coerce_pattern(pattern: Any, flags: int) -> Any:
@@ -701,7 +1159,9 @@ def _match(
     ):
         updated = list(new_groups)
         updated[0] = (start, new_pos)
-        return Match(pattern, text, start, new_pos, tuple(updated))
+        return Match(
+            pattern, text, start, new_pos, tuple(updated), pattern._group_names
+        )
     return None
 
 
@@ -722,7 +1182,9 @@ def _fullmatch(
             continue
         updated = list(new_groups)
         updated[0] = (start, new_pos)
-        return Match(pattern, text, start, new_pos, tuple(updated))
+        return Match(
+            pattern, text, start, new_pos, tuple(updated), pattern._group_names
+        )
     return None
 
 
@@ -743,7 +1205,9 @@ def _search(
         ):
             updated = list(new_groups)
             updated[0] = (start, new_pos)
-            return Match(pattern, text, start, new_pos, tuple(updated))
+            return Match(
+                pattern, text, start, new_pos, tuple(updated), pattern._group_names
+            )
         return None
     for offset in range(start, end + 1):
         for new_pos, new_groups in _match_node(
@@ -751,8 +1215,143 @@ def _search(
         ):
             updated = list(new_groups)
             updated[0] = (offset, new_pos)
-            return Match(pattern, text, offset, new_pos, tuple(updated))
+            return Match(
+                pattern, text, offset, new_pos, tuple(updated), pattern._group_names
+            )
     return None
+
+
+def _finditer(
+    pattern: Pattern,
+    string: str,
+    pos: int = 0,
+    endpos: int | None = None,
+) -> Iterator[Match]:
+    text = _ensure_text(string)
+    start, end = _clamp_span(len(text), pos, endpos)
+    cursor = start
+    while cursor <= end:
+        match_obj = _search(pattern, text, cursor, end)
+        if match_obj is None:
+            break
+        yield match_obj
+        m_start, m_end = match_obj.span()
+        if m_end > m_start:
+            cursor = m_end
+        else:
+            # Zero-width match: force forward progress.
+            if cursor >= end:
+                break
+            cursor = m_start + 1
+
+
+def _findall(
+    pattern: Pattern,
+    string: str,
+    pos: int = 0,
+    endpos: int | None = None,
+) -> list[Any]:
+    out: list[Any] = []
+    for match_obj in _finditer(pattern, string, pos, endpos):
+        if pattern.groups == 0:
+            out.append(match_obj.group(0))
+        elif pattern.groups == 1:
+            out.append(match_obj.group(1))
+        else:
+            out.append(match_obj.groups())
+    return out
+
+
+def _expand_replacement(repl: object, match_obj: Match) -> str:
+    if callable(repl):
+        return str(repl(match_obj))
+    if not isinstance(repl, str):
+        repl = str(repl)
+    text = repl
+    out = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "\\" and i + 1 < n:
+            nxt = text[i + 1]
+            if "0" <= nxt <= "9":
+                j = i + 1
+                while j < n and "0" <= text[j] <= "9":
+                    j += 1
+                idx = int(text[i + 1 : j])
+                value = match_obj.group(idx)
+                if value is None:
+                    value = ""
+                out.append(value)
+                i = j
+                continue
+            escapes = {
+                "n": "\n",
+                "t": "\t",
+                "r": "\r",
+                "f": "\f",
+                "v": "\v",
+                "\\": "\\",
+            }
+            out.append(escapes.get(nxt, nxt))
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _subn(
+    pattern: Pattern,
+    repl: object,
+    string: str,
+    *,
+    count: int = 0,
+) -> tuple[str, int]:
+    if count < 0:
+        raise ValueError("count must be non-negative")
+    text = _ensure_text(string)
+    parts: list[str] = []
+    last = 0
+    replaced = 0
+    limit = None if count == 0 else count
+    for match_obj in _finditer(pattern, text, 0, None):
+        if limit is not None and replaced >= limit:
+            break
+        m_start, m_end = match_obj.span()
+        parts.append(text[last:m_start])
+        parts.append(_expand_replacement(repl, match_obj))
+        last = m_end
+        replaced += 1
+    parts.append(text[last:])
+    return ("".join(parts), replaced)
+
+
+def _sub(pattern: Pattern, repl: object, string: str, *, count: int = 0) -> str:
+    return _subn(pattern, repl, string, count=count)[0]
+
+
+def _split(pattern: Pattern, string: str, *, maxsplit: int = 0) -> list[str]:
+    if maxsplit < 0:
+        raise ValueError("maxsplit must be non-negative")
+    text = _ensure_text(string)
+    out: list[str] = []
+    last = 0
+    splits = 0
+    limit = None if maxsplit == 0 else maxsplit
+    for match_obj in _finditer(pattern, text, 0, None):
+        if limit is not None and splits >= limit:
+            break
+        m_start, m_end = match_obj.span()
+        out.append(text[last:m_start])
+        if pattern.groups:
+            for value in match_obj.groups():
+                out.append("" if value is None else value)
+        last = m_end
+        splits += 1
+    out.append(text[last:])
+    return out
 
 
 def _is_anchored_start(node: Any) -> bool:
@@ -797,3 +1396,63 @@ def fullmatch(pattern: str, string: str, flags: int = 0) -> Match | None:
     if isinstance(compiled, Pattern):
         return _fullmatch(compiled, string, 0, None)
     return compiled.fullmatch(string)
+
+
+def finditer(pattern: str, string: str, flags: int = 0) -> Iterator[Match]:
+    compiled = _coerce_pattern(pattern, flags)
+    if isinstance(compiled, Pattern):
+        return _finditer(compiled, string, 0, None)
+    return compiled.finditer(string)
+
+
+def findall(pattern: str, string: str, flags: int = 0) -> list[Any]:
+    compiled = _coerce_pattern(pattern, flags)
+    if isinstance(compiled, Pattern):
+        return _findall(compiled, string, 0, None)
+    return compiled.findall(string)
+
+
+def split(pattern: str, string: str, maxsplit: int = 0, flags: int = 0) -> list[str]:
+    compiled = _coerce_pattern(pattern, flags)
+    if isinstance(compiled, Pattern):
+        return _split(compiled, string, maxsplit=maxsplit)
+    return compiled.split(string, maxsplit=maxsplit)
+
+
+def sub(
+    pattern: str,
+    repl: object,
+    string: str,
+    count: int = 0,
+    flags: int = 0,
+) -> str:
+    compiled = _coerce_pattern(pattern, flags)
+    if isinstance(compiled, Pattern):
+        return _sub(compiled, repl, string, count=count)
+    return compiled.sub(repl, string, count=count)
+
+
+def subn(
+    pattern: str,
+    repl: object,
+    string: str,
+    count: int = 0,
+    flags: int = 0,
+) -> tuple[str, int]:
+    compiled = _coerce_pattern(pattern, flags)
+    if isinstance(compiled, Pattern):
+        return _subn(compiled, repl, string, count=count)
+    return compiled.subn(repl, string, count=count)
+
+
+def escape(pattern: object) -> str:
+    if not isinstance(pattern, str):
+        pattern = str(pattern)
+    out: list[str] = []
+    for ch in pattern:
+        if ("a" <= ch <= "z") or ("A" <= ch <= "Z") or ("0" <= ch <= "9") or ch == "_":
+            out.append(ch)
+        else:
+            out.append("\\")
+            out.append(ch)
+    return "".join(out)

@@ -1,6 +1,6 @@
-use crate::*;
 use crate::object::ops::{DecodeTextError as OpsDecodeTextError, EncodeError as OpsEncodeError};
 use crate::DecodeFailure as OpsDecodeFailure;
+use crate::*;
 
 fn codec_arg_to_str(
     _py: &PyToken<'_>,
@@ -43,11 +43,7 @@ fn decode_error_range(label: &str, start: usize, end: usize, message: &str) -> S
 }
 
 #[no_mangle]
-pub extern "C" fn molt_codecs_decode(
-    obj_bits: u64,
-    encoding_bits: u64,
-    errors_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_codecs_decode(obj_bits: u64, encoding_bits: u64, errors_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let encoding = match codec_arg_to_str(_py, encoding_bits, "decode", "encoding") {
             Some(val) => val,
@@ -130,11 +126,7 @@ pub extern "C" fn molt_codecs_decode(
 }
 
 #[no_mangle]
-pub extern "C" fn molt_codecs_encode(
-    obj_bits: u64,
-    encoding_bits: u64,
-    errors_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_codecs_encode(obj_bits: u64, encoding_bits: u64, errors_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let encoding = match codec_arg_to_str(_py, encoding_bits, "encode", "encoding") {
             Some(val) => val,
@@ -160,7 +152,11 @@ pub extern "C" fn molt_codecs_encode(
 
         let obj = obj_from_bits(obj_bits);
         let Some(ptr) = obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "utf_8_encode() argument 1 must be str, not None");
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "utf_8_encode() argument 1 must be str, not None",
+            );
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_STRING {
@@ -216,10 +212,7 @@ pub extern "C" fn molt_codecs_lookup_name(encoding_bits: u64) -> u64 {
             let msg = format!("unknown encoding: {encoding}");
             return raise_exception::<_>(_py, "LookupError", &msg);
         };
-        let ptr = alloc_string(
-            _py,
-            crate::object::ops::encoding_kind_name(kind).as_bytes(),
-        );
+        let ptr = alloc_string(_py, crate::object::ops::encoding_kind_name(kind).as_bytes());
         if ptr.is_null() {
             return MoltObject::none().bits();
         }

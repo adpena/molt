@@ -1,7 +1,7 @@
-use crate::object::ops::{format_obj, type_name};
-use crate::PyToken;
 use crate::builtins::callable::molt_is_callable;
 use crate::builtins::numbers::{index_bigint_from_obj, index_i64_from_obj, int_bits_from_bigint};
+use crate::object::ops::{format_obj, type_name};
+use crate::PyToken;
 use crate::{
     alloc_tuple, attr_lookup_ptr_allow_missing, bigint_bits, bigint_from_f64_trunc,
     bigint_ptr_from_bits, bigint_ref, bigint_to_inline, call_callable0, class_name_for_error,
@@ -479,7 +479,11 @@ fn coerce_to_f64(_py: &PyToken<'_>, value: RealValue) -> Option<f64> {
             if let Some(val) = big.to_f64() {
                 Some(val)
             } else {
-                raise_exception::<Option<f64>>(_py, "OverflowError", "int too large to convert to float")
+                raise_exception::<Option<f64>>(
+                    _py,
+                    "OverflowError",
+                    "int too large to convert to float",
+                )
             }
         }
     }
@@ -606,15 +610,27 @@ fn collect_real_vec(_py: &PyToken<'_>, iter_bits: u64) -> Option<Vec<f64>> {
         }
         let pair_obj = obj_from_bits(pair_bits);
         let Some(pair_ptr) = pair_obj.as_ptr() else {
-            return raise_exception::<Option<Vec<f64>>>(_py, "TypeError", "object is not an iterator");
+            return raise_exception::<Option<Vec<f64>>>(
+                _py,
+                "TypeError",
+                "object is not an iterator",
+            );
         };
         unsafe {
             if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                return raise_exception::<Option<Vec<f64>>>(_py, "TypeError", "object is not an iterator");
+                return raise_exception::<Option<Vec<f64>>>(
+                    _py,
+                    "TypeError",
+                    "object is not an iterator",
+                );
             }
             let elems = seq_vec_ref(pair_ptr);
             if elems.len() < 2 {
-                return raise_exception::<Option<Vec<f64>>>(_py, "TypeError", "object is not an iterator");
+                return raise_exception::<Option<Vec<f64>>>(
+                    _py,
+                    "TypeError",
+                    "object is not an iterator",
+                );
             }
             let val_bits = elems[0];
             let done_bits = elems[1];
@@ -1344,9 +1360,7 @@ pub extern "C" fn molt_math_floor(val_bits: u64) -> u64 {
             unsafe {
                 let floor_name_bits =
                     intern_static_name(_py, &runtime_state(_py).interned.floor_name, b"__floor__");
-                if let Some(call_bits) =
-                    attr_lookup_ptr_allow_missing(_py, ptr, floor_name_bits)
-                {
+                if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, floor_name_bits) {
                     let callable_bits = molt_is_callable(call_bits);
                     let callable_ok = is_truthy(_py, obj_from_bits(callable_bits));
                     if obj_from_bits(callable_bits).as_ptr().is_some() {
@@ -1397,9 +1411,7 @@ pub extern "C" fn molt_math_ceil(val_bits: u64) -> u64 {
             unsafe {
                 let ceil_name_bits =
                     intern_static_name(_py, &runtime_state(_py).interned.ceil_name, b"__ceil__");
-                if let Some(call_bits) =
-                    attr_lookup_ptr_allow_missing(_py, ptr, ceil_name_bits)
-                {
+                if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, ceil_name_bits) {
                     let callable_bits = molt_is_callable(call_bits);
                     let callable_ok = is_truthy(_py, obj_from_bits(callable_bits));
                     if obj_from_bits(callable_bits).as_ptr().is_some() {
@@ -1450,9 +1462,7 @@ pub extern "C" fn molt_math_trunc(val_bits: u64) -> u64 {
             unsafe {
                 let trunc_name_bits =
                     intern_static_name(_py, &runtime_state(_py).interned.trunc_name, b"__trunc__");
-                if let Some(call_bits) =
-                    attr_lookup_ptr_allow_missing(_py, ptr, trunc_name_bits)
-                {
+                if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, trunc_name_bits) {
                     let callable_bits = molt_is_callable(call_bits);
                     let callable_ok = is_truthy(_py, obj_from_bits(callable_bits));
                     if obj_from_bits(callable_bits).as_ptr().is_some() {
@@ -1599,12 +1609,7 @@ pub extern "C" fn molt_math_ldexp(val_bits: u64, exp_bits: u64) -> u64 {
 }
 
 #[no_mangle]
-pub extern "C" fn molt_math_isclose(
-    a_bits: u64,
-    b_bits: u64,
-    rel_bits: u64,
-    abs_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_math_isclose(a_bits: u64, b_bits: u64, rel_bits: u64, abs_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(rel_val) = coerce_real_named(_py, rel_bits, "isclose") else {
             return MoltObject::none().bits();
@@ -1899,18 +1904,10 @@ pub extern "C" fn molt_math_comb(n_bits: u64, k_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if n_val.is_negative() {
-            return raise_exception::<_>(
-                _py,
-                "ValueError",
-                "n must be a non-negative integer",
-            );
+            return raise_exception::<_>(_py, "ValueError", "n must be a non-negative integer");
         }
         if k_val.is_negative() {
-            return raise_exception::<_>(
-                _py,
-                "ValueError",
-                "k must be a non-negative integer",
-            );
+            return raise_exception::<_>(_py, "ValueError", "k must be a non-negative integer");
         }
         if k_val > n_val {
             return MoltObject::from_int(0).bits();
@@ -1964,18 +1961,10 @@ pub extern "C" fn molt_math_perm(n_bits: u64, k_bits: u64) -> u64 {
             val
         };
         if n_val.is_negative() {
-            return raise_exception::<_>(
-                _py,
-                "ValueError",
-                "n must be a non-negative integer",
-            );
+            return raise_exception::<_>(_py, "ValueError", "n must be a non-negative integer");
         }
         if k_val.is_negative() {
-            return raise_exception::<_>(
-                _py,
-                "ValueError",
-                "k must be a non-negative integer",
-            );
+            return raise_exception::<_>(_py, "ValueError", "k must be a non-negative integer");
         }
         if k_val > n_val {
             return MoltObject::from_int(0).bits();
@@ -2095,18 +2084,10 @@ pub extern "C" fn molt_math_isqrt(val_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if value.is_negative() {
-            return raise_exception::<_>(
-                _py,
-                "ValueError",
-                "isqrt() argument must be nonnegative",
-            );
+            return raise_exception::<_>(_py, "ValueError", "isqrt() argument must be nonnegative");
         }
         let Some(biguint) = value.to_biguint() else {
-            return raise_exception::<_>(
-                _py,
-                "ValueError",
-                "isqrt() argument must be nonnegative",
-            );
+            return raise_exception::<_>(_py, "ValueError", "isqrt() argument must be nonnegative");
         };
         let root = isqrt_biguint(&biguint);
         int_bits_from_bigint(_py, BigInt::from(root))

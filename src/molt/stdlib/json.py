@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_stdlib_probe", globals())
 
 import math
 from typing import Any, Callable, Iterable
+
+_require_intrinsic("molt_stdlib_probe", globals())
+
 
 __all__ = [
     "dump",
@@ -591,7 +593,9 @@ class _Parser:
                         low = int(low_text, 16)
                         if 0xDC00 <= low <= 0xDFFF:
                             self.index = low_start + 4
-                            combined = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)
+                            combined = (
+                                0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)
+                            )
                             return chr(combined)
             return chr(code)
         if 0xDC00 <= code <= 0xDFFF:

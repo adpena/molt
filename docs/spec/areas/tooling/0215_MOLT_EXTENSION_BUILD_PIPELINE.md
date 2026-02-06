@@ -1,7 +1,7 @@
 # Molt Extension Build Pipeline
-**Spec ID:** 0215  
-**Status:** Draft  
-**Owner:** tooling + runtime  
+**Spec ID:** 0215
+**Status:** Draft
+**Owner:** tooling + runtime
 **Goal:** Define the build, packaging, and validation pipeline for C-extensions
 recompiled against `libmolt`.
 

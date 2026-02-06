@@ -53,6 +53,7 @@ Planned milestones:
 - Implemented: websocket readiness integration via io_poller for native + wasm (`molt_ws_wait_new`) to avoid busy-polling and enable batch wakeups.
 - TODO(perf, owner:runtime, milestone:RT3, priority:P2, status:planned): cache mio websocket poll streams/registrations to avoid per-wait `TcpStream` clones.
 - TODO(perf, owner:runtime, milestone:RT2, priority:P1, status:planned): re-enable safe direct-linking by relocating the runtime heap base or enforcing non-overlapping memory layouts to avoid wasm-ld in hot loops.
+- Implemented: removed linked-wasm static intrinsic dispatch workaround for channel intrinsics by canonicalizing the runtime channel-handle ABI to 64-bit bits values, restoring stable dynamic intrinsic call dispatch.
 - Implemented: use i32 locals for wasm pointer temporaries in the backend to trim wrap/extend churn.
 - Wasmtime host runner is available (`molt-wasm-host`) with shared memory/table wiring and a `tools/bench_wasm.py --runner wasmtime` path for perf comparison against Node.
 - Implemented: Wasmtime DB host delivery is non-blocking via `molt_db_host_poll` with stream semantics + cancellation checks; parity coverage still pending.

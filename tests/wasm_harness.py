@@ -53,12 +53,20 @@ def _intrinsic_registry_js() -> str:
     lines.append("  if (!builtins) return;")
     lines.append("  const dict = getDict(builtins.dictBits);")
     lines.append("  if (!dict) return;")
-    lines.append("  const registryBits = boxPtr({ type: 'dict', entries: [], lookup: new Map() });")
+    lines.append(
+        "  const registryBits = boxPtr({ type: 'dict', entries: [], lookup: new Map() });"
+    )
     lines.append("  const registry = getDict(registryBits);")
     lines.append("  if (!registry) return;")
-    lines.append("  dictSetValue(dict, boxPtr({ type: 'str', value: '_molt_intrinsics' }), registryBits);")
-    lines.append("  dictSetValue(dict, boxPtr({ type: 'str', value: '_molt_intrinsics_strict' }), boxBool(true));")
-    lines.append("  dictSetValue(dict, boxPtr({ type: 'str', value: '_molt_runtime' }), boxBool(true));")
+    lines.append(
+        "  dictSetValue(dict, boxPtr({ type: 'str', value: '_molt_intrinsics' }), registryBits);"
+    )
+    lines.append(
+        "  dictSetValue(dict, boxPtr({ type: 'str', value: '_molt_intrinsics_strict' }), boxBool(true));"
+    )
+    lines.append(
+        "  dictSetValue(dict, boxPtr({ type: 'str', value: '_molt_runtime' }), boxBool(true));"
+    )
     lines.append("  for (const [name, importName, arity] of intrinsicSpecs) {")
     lines.append("    let fn = baseImports[importName];")
     lines.append("    if (!fn) {")
@@ -66,7 +74,9 @@ def _intrinsic_registry_js() -> str:
     lines.append("    }")
     lines.append("    const idx = getOrAddTableFunc(fn, arity);")
     lines.append("    if (idx === null) continue;")
-    lines.append("    const fnBits = baseImports.func_new(BigInt(idx), 0n, BigInt(arity));")
+    lines.append(
+        "    const fnBits = baseImports.func_new(BigInt(idx), 0n, BigInt(arity));"
+    )
     lines.append("    const nameBits = boxPtr({ type: 'str', value: name });")
     lines.append("    dictSetValue(dict, nameBits, fnBits);")
     lines.append("    dictSetValue(registry, nameBits, fnBits);")
@@ -6913,24 +6923,26 @@ BASE_IMPORTS = """\
     chanQueues.set(id, []);
     const cap = Number(unboxInt(capacity));
     chanCaps.set(id, cap);
-    return id;
+    return BigInt(id);
   },
   chan_send: (chan, val) => {
-    const queue = chanQueues.get(chan);
+    const queue = chanQueues.get(Number(chan));
     if (!queue) return boxPending();
-    const cap = chanCaps.get(chan) || 0;
+    const cap = chanCaps.get(Number(chan)) || 0;
     if (cap > 0 && queue.length >= cap) return boxPending();
     queue.push(val);
     return 0n;
   },
   chan_recv: (chan) => {
-    const queue = chanQueues.get(chan);
+    const queue = chanQueues.get(Number(chan));
     if (!queue || queue.length === 0) return boxPending();
     return queue.shift();
   },
   chan_drop: (chan) => {
-    chanQueues.delete(chan);
-    chanCaps.delete(chan);
+    const id = Number(chan);
+    chanQueues.delete(id);
+    chanCaps.delete(id);
+    return boxNone();
   },
   add: (a, b) => {
     if (isIntLike(a) && isIntLike(b)) {

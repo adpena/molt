@@ -174,9 +174,7 @@ algorithms_available = set(_HASH_INFO.keys())
 
 def new(name: str, data: Any = b"", **kwargs: Any) -> _Hash:
     if not isinstance(name, str):
-        raise TypeError(
-            f"new() argument 'name' must be str, not {type(name).__name__}"
-        )
+        raise TypeError(f"new() argument 'name' must be str, not {type(name).__name__}")
     normalized = _normalize_name(name)
     if normalized not in _HASH_INFO:
         raise ValueError(f"unsupported hash type {name}")

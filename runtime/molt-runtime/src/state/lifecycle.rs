@@ -7,12 +7,11 @@ use crate::PyToken;
 use crate::{
     alloc_string, builtin_classes_shutdown, call_callable0, clear_exception, clear_exception_state,
     clear_exception_type_cache, dec_ref_bits, default_cancel_tokens, dict_get_in_place,
-    exception_pending, inc_ref_bits, intern_static_name, molt_file_flush, molt_get_attr_name,
-    module_dict_bits, obj_from_bits, object_type_id, reset_ptr_registry, runtime_state,
-    GilReleaseGuard, MoltObject,
-    ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, BLOCK_ON_TASK, CONTEXT_STACK, CURRENT_TASK,
-    CURRENT_TOKEN, DEFAULT_RECURSION_LIMIT, EXCEPTION_STACK, FRAME_STACK,
-    GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE, GIL_DEPTH, NEXT_CANCEL_TOKEN_ID,
+    exception_pending, inc_ref_bits, intern_static_name, module_dict_bits, molt_file_flush,
+    molt_get_attr_name, obj_from_bits, object_type_id, reset_ptr_registry, runtime_state,
+    GilReleaseGuard, MoltObject, ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, BLOCK_ON_TASK,
+    CONTEXT_STACK, CURRENT_TASK, CURRENT_TOKEN, DEFAULT_RECURSION_LIMIT, EXCEPTION_STACK,
+    FRAME_STACK, GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE, GIL_DEPTH, NEXT_CANCEL_TOKEN_ID,
     OBJECT_POOL_BUCKETS, OBJECT_POOL_TLS, PARSE_ARENA, RECURSION_DEPTH, RECURSION_LIMIT,
     TASK_RAISE_ACTIVE, TYPE_ID_DICT, TYPE_ID_FILE_HANDLE, TYPE_ID_MODULE,
 };
@@ -413,8 +412,7 @@ fn flush_stdio_target(_py: &PyToken<'_>, target_bits: u64) {
             }
         }
     }
-    let flush_name_bits =
-        intern_static_name(_py, &state_interned(_py).flush_name, b"flush");
+    let flush_name_bits = intern_static_name(_py, &state_interned(_py).flush_name, b"flush");
     let flush_bits = molt_get_attr_name(target_bits, flush_name_bits);
     if exception_pending(_py) {
         clear_exception(_py);

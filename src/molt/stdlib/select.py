@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import Any, Awaitable, Iterable
 
 import selectors as _selectors
 import time as _time
@@ -44,9 +44,9 @@ def select(
     async def _wait_ready() -> tuple[list[Any], list[Any], list[Any]]:
         deadline = _deadline_from_timeout(timeout)
         chan = _molt_concurrency.channel()
-        futures: list[object] = []
+        futures: list[Awaitable[int]] = []
 
-        async def _wait_one(obj: Any, fut: object) -> None:
+        async def _wait_one(obj: Any, fut: Awaitable[int]) -> None:
             try:
                 mask = int(await fut)
             except TimeoutError:

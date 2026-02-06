@@ -1,3 +1,4 @@
+use crate::state::tls::FRAME_STACK;
 use crate::{
     alloc_class_obj, alloc_dict_with_pairs, alloc_exception_from_class_bits,
     alloc_instance_for_class, alloc_object, alloc_string, alloc_tuple, apply_class_slots_layout,
@@ -5,46 +6,42 @@ use crate::{
     bound_method_func_bits, bound_method_self_bits, builtin_classes, call_callable0,
     call_callable1, call_class_init_with_args, call_function_obj_vec, class_attr_lookup,
     class_attr_lookup_raw_mro, class_dict_bits, class_name_bits, class_name_for_error,
-    dec_ref_bits,
-    dict_fromkeys_method, dict_get_in_place, dict_get_method, dict_order, dict_pop_method,
-    dict_setdefault_method, dict_update_apply, dict_update_method, dict_update_set_in_place,
-    dict_update_set_via_store, exception_class_bits, exception_pending,
-    exception_type_bits_from_name, function_arity, function_attr_bits, function_closure_bits,
-    function_fn_ptr, inc_ref_bits, init_atomic_bits, intern_static_name, is_builtin_class_bits,
-    is_truthy, isinstance_bits, issubclass_bits, lookup_call_attr, missing_bits,
-    molt_bytearray_count_slice, molt_bytearray_decode, molt_bytearray_endswith_slice,
-    molt_bytearray_find_slice, molt_bytearray_hex, molt_bytearray_rfind_slice,
-    molt_bytearray_rsplit_max, molt_bytearray_split_max, molt_bytearray_splitlines,
-    molt_bytearray_startswith_slice, molt_bytes_count_slice, molt_bytes_decode,
-    molt_bytes_endswith_slice, molt_bytes_find_slice, molt_bytes_hex, molt_bytes_rfind_slice,
-    molt_bytes_rsplit_max, molt_bytes_split_max, molt_bytes_splitlines,
-    molt_bytes_startswith_slice, molt_class_set_base, molt_dataclass_new,
-    molt_dataclass_set_class, molt_dict_from_obj, molt_dict_new, molt_file_reconfigure,
-    molt_frozenset_copy_method, molt_frozenset_difference_multi,
-    molt_frozenset_intersection_multi, molt_frozenset_isdisjoint, molt_frozenset_issubset,
-    molt_frozenset_issuperset, molt_frozenset_symmetric_difference, molt_frozenset_union_multi,
-    molt_function_default_kind, molt_generator_new, molt_int_new, molt_iter, molt_iter_next,
-    list_len, molt_list_index_range, molt_list_pop, molt_list_sort, molt_memoryview_cast,
-    molt_object_init,
-    molt_object_init_subclass, molt_object_new_bound, molt_open_builtin, molt_set_clear,
-    molt_set_copy_method, molt_set_difference_multi, molt_set_difference_update_multi,
-    molt_set_intersection_multi, molt_set_intersection_update_multi, molt_set_isdisjoint,
-    molt_set_issubset, molt_set_issuperset, molt_set_symmetric_difference,
-    molt_set_symmetric_difference_update, molt_set_union_multi, molt_set_update_multi,
-    molt_string_count_slice, molt_string_encode, molt_string_endswith_slice,
-    molt_string_find_slice, molt_string_format_method, molt_string_rfind_slice,
-    molt_string_rsplit_max, molt_string_split_max, molt_string_splitlines,
+    code_filename_bits, code_name_bits, dec_ref_bits, dict_fromkeys_method, dict_get_in_place,
+    dict_get_method, dict_order, dict_pop_method, dict_setdefault_method, dict_update_apply,
+    dict_update_method, dict_update_set_in_place, dict_update_set_via_store, exception_class_bits,
+    exception_pending, exception_type_bits_from_name, function_arity, function_attr_bits,
+    function_closure_bits, function_fn_ptr, inc_ref_bits, init_atomic_bits, intern_static_name,
+    is_builtin_class_bits, is_truthy, isinstance_bits, issubclass_bits, list_len, lookup_call_attr,
+    maybe_ptr_from_bits, missing_bits, molt_bytearray_count_slice, molt_bytearray_decode,
+    molt_bytearray_endswith_slice, molt_bytearray_find_slice, molt_bytearray_hex,
+    molt_bytearray_rfind_slice, molt_bytearray_rsplit_max, molt_bytearray_split_max,
+    molt_bytearray_splitlines, molt_bytearray_startswith_slice, molt_bytes_count_slice,
+    molt_bytes_decode, molt_bytes_endswith_slice, molt_bytes_find_slice, molt_bytes_hex,
+    molt_bytes_rfind_slice, molt_bytes_rsplit_max, molt_bytes_split_max, molt_bytes_splitlines,
+    molt_bytes_startswith_slice, molt_class_set_base, molt_dataclass_new, molt_dataclass_set_class,
+    molt_dict_from_obj, molt_dict_new, molt_file_reconfigure, molt_frozenset_copy_method,
+    molt_frozenset_difference_multi, molt_frozenset_intersection_multi, molt_frozenset_isdisjoint,
+    molt_frozenset_issubset, molt_frozenset_issuperset, molt_frozenset_symmetric_difference,
+    molt_frozenset_union_multi, molt_function_default_kind, molt_generator_new, molt_int_new,
+    molt_iter, molt_iter_next, molt_list_index_range, molt_list_pop, molt_list_sort,
+    molt_memoryview_cast, molt_object_init, molt_object_init_subclass, molt_object_new_bound,
+    molt_open_builtin, molt_set_clear, molt_set_copy_method, molt_set_difference_multi,
+    molt_set_difference_update_multi, molt_set_intersection_multi,
+    molt_set_intersection_update_multi, molt_set_isdisjoint, molt_set_issubset,
+    molt_set_issuperset, molt_set_symmetric_difference, molt_set_symmetric_difference_update,
+    molt_set_union_multi, molt_set_update_multi, molt_string_count_slice, molt_string_encode,
+    molt_string_endswith_slice, molt_string_find_slice, molt_string_format_method,
+    molt_string_rfind_slice, molt_string_rsplit_max, molt_string_split_max, molt_string_splitlines,
     molt_string_startswith_slice, molt_type_call, molt_type_init, molt_type_new, obj_eq,
     obj_from_bits, object_class_bits, object_set_class_bits, object_type_id, ptr_from_bits,
     raise_exception, raise_not_callable, raise_not_iterable, runtime_state, seq_vec_ref,
-    string_obj_to_owned, tuple_len, type_name, type_of_bits, MoltHeader, MoltObject,
-    PtrDropGuard, PyToken,
-    BIND_KIND_OPEN, FUNC_DEFAULT_DICT_POP, FUNC_DEFAULT_DICT_UPDATE, FUNC_DEFAULT_IO_RAW,
+    string_obj_to_owned, tuple_len, type_name, type_of_bits, MoltHeader, MoltObject, PtrDropGuard,
+    PyToken, BIND_KIND_OPEN, FUNC_DEFAULT_DICT_POP, FUNC_DEFAULT_DICT_UPDATE, FUNC_DEFAULT_IO_RAW,
     FUNC_DEFAULT_IO_TEXT_WRAPPER, FUNC_DEFAULT_MISSING, FUNC_DEFAULT_NEG_ONE, FUNC_DEFAULT_NONE,
-    FUNC_DEFAULT_NONE2, FUNC_DEFAULT_REPLACE_COUNT, FUNC_DEFAULT_ZERO,
-    GEN_CONTROL_SIZE, TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS, TYPE_ID_DATACLASS, TYPE_ID_DICT,
-    TYPE_ID_EXCEPTION, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_LIST, TYPE_ID_OBJECT,
-    TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE,
+    FUNC_DEFAULT_NONE2, FUNC_DEFAULT_REPLACE_COUNT, FUNC_DEFAULT_ZERO, GEN_CONTROL_SIZE,
+    TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_EXCEPTION,
+    TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_LIST, TYPE_ID_OBJECT, TYPE_ID_SET, TYPE_ID_STRING,
+    TYPE_ID_TUPLE, TYPE_ID_TYPE,
 };
 pub(crate) struct CallArgs {
     pos: Vec<u64>,
@@ -68,8 +65,7 @@ unsafe fn is_default_type_call(_py: &PyToken<'_>, call_bits: u64) -> bool {
 }
 
 unsafe fn alloc_dataclass_for_class(_py: &PyToken<'_>, class_ptr: *mut u8) -> Option<u64> {
-    let Some(field_names_name) =
-        attr_name_bits_from_bytes(_py, b"__molt_dataclass_field_names__")
+    let Some(field_names_name) = attr_name_bits_from_bytes(_py, b"__molt_dataclass_field_names__")
     else {
         return None;
     };
@@ -104,16 +100,15 @@ unsafe fn alloc_dataclass_for_class(_py: &PyToken<'_>, class_ptr: *mut u8) -> Op
         return Some(MoltObject::none().bits());
     }
     let values_bits = MoltObject::from_ptr(values_ptr).bits();
-    let flags_bits = if let Some(flags_name) =
-        attr_name_bits_from_bytes(_py, b"__molt_dataclass_flags__")
-    {
-        let bits = class_attr_lookup_raw_mro(_py, class_ptr, flags_name)
-            .unwrap_or_else(|| MoltObject::from_int(0).bits());
-        dec_ref_bits(_py, flags_name);
-        bits
-    } else {
-        MoltObject::from_int(0).bits()
-    };
+    let flags_bits =
+        if let Some(flags_name) = attr_name_bits_from_bytes(_py, b"__molt_dataclass_flags__") {
+            let bits = class_attr_lookup_raw_mro(_py, class_ptr, flags_name)
+                .unwrap_or_else(|| MoltObject::from_int(0).bits());
+            dec_ref_bits(_py, flags_name);
+            bits
+        } else {
+            MoltObject::from_int(0).bits()
+        };
     let name_bits = class_name_bits(class_ptr);
     let inst_bits = molt_dataclass_new(name_bits, field_names_bits, values_bits, flags_bits);
     dec_ref_bits(_py, values_bits);
@@ -201,9 +196,7 @@ unsafe fn call_type_with_builder(
         if class_bits == builtins.text_io_wrapper {
             if let Some(ptr) = args_ptr {
                 if !(*ptr).kw_names.is_empty() {
-                    if let Some(bound_args) =
-                        bind_builtin_class_text_io_wrapper(_py, &*ptr)
-                    {
+                    if let Some(bound_args) = bind_builtin_class_text_io_wrapper(_py, &*ptr) {
                         return call_class_init_with_args(_py, call_ptr, &bound_args);
                     }
                     return MoltObject::none().bits();
@@ -854,7 +847,65 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
             let builder_ptr = ptr_from_bits(builder_bits);
             let mut builder_guard = PtrDropGuard::new(builder_ptr);
             let call_obj = obj_from_bits(call_bits);
+            let trace = matches!(
+                std::env::var("MOLT_TRACE_CALL_BIND").ok().as_deref(),
+                Some("1")
+            );
             let Some(call_ptr) = call_obj.as_ptr() else {
+                if trace {
+                    if let Some(frame) = FRAME_STACK.with(|stack| stack.borrow().last().copied()) {
+                        if let Some(code_ptr) = maybe_ptr_from_bits(frame.code_bits) {
+                            let (name_bits, file_bits) =
+                                unsafe { (code_name_bits(code_ptr), code_filename_bits(code_ptr)) };
+                            let name = string_obj_to_owned(obj_from_bits(name_bits))
+                                .unwrap_or_else(|| "<code>".to_string());
+                            let file = string_obj_to_owned(obj_from_bits(file_bits))
+                                .unwrap_or_else(|| "<file>".to_string());
+                            eprintln!(
+                                "molt call_bind frame name={} file={} line={}",
+                                name, file, frame.line
+                            );
+                        }
+                    }
+                    let none_flag = call_obj.is_none();
+                    let bool_flag = call_obj.as_bool();
+                    let int_flag = call_obj.as_int();
+                    let float_flag = call_obj.as_float();
+                    eprintln!(
+                        "molt call_bind callee bits=0x{call_bits:x} none={} bool={:?} int={:?} float={:?}",
+                        none_flag,
+                        bool_flag,
+                        int_flag,
+                        float_flag,
+                    );
+                    let bt = std::backtrace::Backtrace::force_capture();
+                    eprintln!("molt call_bind: not ptr bits=0x{call_bits:x}\n{bt}",);
+                    if !builder_ptr.is_null() {
+                        let args_ptr = callargs_ptr(builder_ptr);
+                        if !args_ptr.is_null() {
+                            let pos_slice = &(*args_ptr).pos;
+                            let kw_slice = &(*args_ptr).kw_names;
+                            let pos_len = pos_slice.len();
+                            let kw_len = kw_slice.len();
+                            let first_pos = pos_slice.first().copied();
+                            let second_pos = pos_slice.get(1).copied();
+                            eprintln!(
+                                "molt call_bind args pos_len={} kw_len={} first_pos={:?} second_pos={:?}",
+                                pos_len,
+                                kw_len,
+                                first_pos,
+                                second_pos,
+                            );
+                            if let Some(bits) = second_pos {
+                                if let Some(s) = string_obj_to_owned(obj_from_bits(bits)) {
+                                    eprintln!("molt call_bind args second_pos_str={}", s);
+                                }
+                            }
+                        } else {
+                            eprintln!("molt call_bind args ptr is null");
+                        }
+                    }
+                }
                 return raise_not_callable(_py, call_obj);
             };
             let mut func_bits = call_bits;

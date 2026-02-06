@@ -17,6 +17,7 @@ EVENT_WRITE = 1 << 1
 _molt_io_wait_new = _require_intrinsic("molt_io_wait_new")
 _molt_block_on = _require_intrinsic("molt_block_on")
 
+
 def _fileobj_to_fd(fileobj):
     """Return a file descriptor from a file object."""
     if isinstance(fileobj, int):
@@ -30,6 +31,7 @@ def _fileobj_to_fd(fileobj):
     if fd < 0:
         raise ValueError(f"Invalid file descriptor: {fd}")
     return fd
+
 
 def _fileobj_to_handle(fileobj):
     if isinstance(fileobj, int):
@@ -46,6 +48,7 @@ def _fileobj_to_handle(fileobj):
     if hasattr(fileobj, "_handle"):
         return getattr(fileobj, "_handle")
     raise ValueError("fileobj must be a socket or file descriptor")
+
 
 class SelectorKey:
     """SelectorKey(fileobj, fd, events, data)."""
@@ -82,6 +85,7 @@ class SelectorKey:
             f"events={self.events!r}, data={self.data!r})"
         )
 
+
 class _SelectorMapping(Mapping):
     """Mapping of file objects to selector keys."""
 
@@ -104,6 +108,7 @@ class _SelectorMapping(Mapping):
 
     def __iter__(self):
         return iter(self._selector._fd_to_key)
+
 
 class BaseSelector(metaclass=ABCMeta):
     """Selector abstract base class."""
@@ -145,6 +150,7 @@ class BaseSelector(metaclass=ABCMeta):
 
     def __exit__(self, *args):
         self.close()
+
 
 class _BaseSelectorImpl(BaseSelector):
     """Base selector implementation."""
@@ -200,6 +206,7 @@ class _BaseSelectorImpl(BaseSelector):
 
     def get_map(self):
         return self._map
+
 
 class _MoltSelectorImpl(_BaseSelectorImpl):
     def register(self, fileobj, events, data=None):
@@ -276,8 +283,10 @@ class _MoltSelectorImpl(_BaseSelectorImpl):
 
         return block_on(_wait_ready())
 
+
 class SelectSelector(_MoltSelectorImpl):
     """Select-based selector."""
+
 
 _IS_LINUX = _sys.platform.startswith("linux")
 _IS_WIN = _sys.platform == "win32"
@@ -289,15 +298,18 @@ if _HAS_POLL:
     class PollSelector(_MoltSelectorImpl):
         """Poll-based selector."""
 
+
 if _IS_LINUX:
 
     class EpollSelector(_MoltSelectorImpl):
         """Epoll-based selector."""
 
+
 if _HAS_KQUEUE:
 
     class KqueueSelector(_MoltSelectorImpl):
         """Kqueue-based selector."""
+
 
 if _HAS_KQUEUE:
     DefaultSelector = KqueueSelector

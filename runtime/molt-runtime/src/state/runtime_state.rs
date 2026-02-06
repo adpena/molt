@@ -10,6 +10,7 @@ use super::{runtime_reset_for_init, runtime_teardown, touch_tls_guard};
 #[cfg(not(target_arch = "wasm32"))]
 use libc;
 
+use crate::concurrency::gil::{gil_held, hold_runtime_gil, release_runtime_gil};
 use crate::object::utf8_cache::{build_utf8_count_cache, Utf8CacheStore, Utf8CountCacheStore};
 use crate::IoPoller;
 use crate::ProcessTaskState;
@@ -18,7 +19,6 @@ use crate::{
     InternedNames, MethodCache, MoltObject, MoltScheduler, PtrSlot, PyToken, SleepQueue,
     OBJECT_POOL_BUCKETS,
 };
-use crate::concurrency::gil::{gil_held, hold_runtime_gil, release_runtime_gil};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{sleep_worker, ThreadPool, ThreadTaskState};
 

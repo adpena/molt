@@ -2,15 +2,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use molt_obj_model::MoltObject;
 
+use crate::builtins::numbers::index_i64_from_obj;
 use crate::{
     alloc_class_obj, alloc_function_obj, alloc_list, alloc_object, alloc_string, alloc_tuple,
     builtin_classes, class_dict_bits, dec_ref_bits, dict_set_in_place, exception_pending,
     inc_ref_bits, init_atomic_bits, intern_static_name, is_truthy, molt_add, molt_class_set_base,
-    molt_eq, molt_iter, molt_iter_next, obj_from_bits, object_class_bits,
-    object_set_class_bits, object_type_id, raise_exception, raise_not_iterable, seq_vec_ref,
-    PyToken, TYPE_ID_DICT, TYPE_ID_LIST, TYPE_ID_TUPLE,
+    molt_eq, molt_iter, molt_iter_next, obj_from_bits, object_class_bits, object_set_class_bits,
+    object_type_id, raise_exception, raise_not_iterable, seq_vec_ref, PyToken, TYPE_ID_DICT,
+    TYPE_ID_LIST, TYPE_ID_TUPLE,
 };
-use crate::builtins::numbers::index_i64_from_obj;
 
 static ITER_SELF_FN: AtomicU64 = AtomicU64::new(0);
 static KWD_MARK_BITS: AtomicU64 = AtomicU64::new(0);
@@ -615,7 +615,12 @@ pub extern "C" fn molt_itertools_chain_next(self_bits: u64) -> u64 {
 }
 
 #[no_mangle]
-pub extern "C" fn molt_itertools_islice(iterable_bits: u64, start_bits: u64, stop_bits: u64, step_bits: u64) -> u64 {
+pub extern "C" fn molt_itertools_islice(
+    iterable_bits: u64,
+    start_bits: u64,
+    stop_bits: u64,
+    step_bits: u64,
+) -> u64 {
     crate::with_gil_entry!(_py, {
         let missing = kwd_mark_bits(_py);
         let stop_only = stop_bits == missing;
@@ -941,7 +946,11 @@ pub extern "C" fn molt_itertools_cycle_next(self_bits: u64) -> u64 {
 }
 
 #[no_mangle]
-pub extern "C" fn molt_itertools_accumulate(iterable_bits: u64, func_bits: u64, initial_bits: u64) -> u64 {
+pub extern "C" fn molt_itertools_accumulate(
+    iterable_bits: u64,
+    func_bits: u64,
+    initial_bits: u64,
+) -> u64 {
     crate::with_gil_entry!(_py, {
         let iter_bits = molt_iter(iterable_bits);
         if obj_from_bits(iter_bits).is_none() {

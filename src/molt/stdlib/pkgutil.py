@@ -67,6 +67,8 @@ def walk_packages(
             continue
         base = info.module_finder
         pkg_name = info.name
+        if not isinstance(base, str):
+            continue
         if prefix and pkg_name.startswith(prefix):
             pkg_name = pkg_name[len(prefix) :]
         subdir = _path_join(base, pkg_name)

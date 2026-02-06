@@ -52,12 +52,40 @@ struct mpd_t {
 extern "C" {
     fn mpd_new(ctx: *mut mpd_context_t) -> *mut mpd_t;
     fn mpd_del(dec: *mut mpd_t);
-    fn mpd_qset_string(dec: *mut mpd_t, s: *const c_char, ctx: *const mpd_context_t, status: *mut u32);
+    fn mpd_qset_string(
+        dec: *mut mpd_t,
+        s: *const c_char,
+        ctx: *const mpd_context_t,
+        status: *mut u32,
+    );
     fn mpd_qcopy(result: *mut mpd_t, a: *const mpd_t, status: *mut u32) -> c_int;
-    fn mpd_qdiv(result: *mut mpd_t, a: *const mpd_t, b: *const mpd_t, ctx: *const mpd_context_t, status: *mut u32);
-    fn mpd_qquantize(result: *mut mpd_t, a: *const mpd_t, b: *const mpd_t, ctx: *const mpd_context_t, status: *mut u32);
-    fn mpd_qreduce(result: *mut mpd_t, a: *const mpd_t, ctx: *const mpd_context_t, status: *mut u32);
-    fn mpd_qcompare(result: *mut mpd_t, a: *const mpd_t, b: *const mpd_t, ctx: *const mpd_context_t, status: *mut u32) -> c_int;
+    fn mpd_qdiv(
+        result: *mut mpd_t,
+        a: *const mpd_t,
+        b: *const mpd_t,
+        ctx: *const mpd_context_t,
+        status: *mut u32,
+    );
+    fn mpd_qquantize(
+        result: *mut mpd_t,
+        a: *const mpd_t,
+        b: *const mpd_t,
+        ctx: *const mpd_context_t,
+        status: *mut u32,
+    );
+    fn mpd_qreduce(
+        result: *mut mpd_t,
+        a: *const mpd_t,
+        ctx: *const mpd_context_t,
+        status: *mut u32,
+    );
+    fn mpd_qcompare(
+        result: *mut mpd_t,
+        a: *const mpd_t,
+        b: *const mpd_t,
+        ctx: *const mpd_context_t,
+        status: *mut u32,
+    ) -> c_int;
     fn mpd_compare_total(result: *mut mpd_t, a: *const mpd_t, b: *const mpd_t) -> c_int;
     fn mpd_qexp(result: *mut mpd_t, a: *const mpd_t, ctx: *const mpd_context_t, status: *mut u32);
     fn mpd_to_sci(dec: *const mpd_t, fmt: c_int) -> *mut c_char;
@@ -204,10 +232,17 @@ fn decimal_handle_from_bits(bits: u64) -> Option<&'static mut DecimalHandle> {
     Some(unsafe { &mut *(ptr as *mut DecimalHandle) })
 }
 
-fn decimal_new_for_context(_py: &PyToken<'_>, ctx: &mut DecimalContextHandle) -> Result<*mut mpd_t, u64> {
+fn decimal_new_for_context(
+    _py: &PyToken<'_>,
+    ctx: &mut DecimalContextHandle,
+) -> Result<*mut mpd_t, u64> {
     let dec = unsafe { mpd_new(&mut ctx.ctx) };
     if dec.is_null() {
-        return Err(raise_exception::<u64>(_py, "MemoryError", "decimal allocation failed"));
+        return Err(raise_exception::<u64>(
+            _py,
+            "MemoryError",
+            "decimal allocation failed",
+        ));
     }
     Ok(dec)
 }
@@ -252,7 +287,11 @@ fn apply_status(_py: &PyToken<'_>, ctx: &mut DecimalContextHandle, status: u32) 
     }
     ctx.ctx.status |= status;
     if status & MPD_MALLOC_ERROR != 0 {
-        return Err(raise_exception::<u64>(_py, "MemoryError", "decimal allocation failed"));
+        return Err(raise_exception::<u64>(
+            _py,
+            "MemoryError",
+            "decimal allocation failed",
+        ));
     }
     let trapped = ctx.ctx.traps & status;
     if trapped != 0 {
@@ -267,9 +306,8 @@ fn decimal_handle_from_str(
     ctx: &mut DecimalContextHandle,
     value: &str,
 ) -> Result<u64, u64> {
-    let cstr = CString::new(value).map_err(|_| {
-        raise_exception::<u64>(_py, "ValueError", "invalid decimal")
-    })?;
+    let cstr = CString::new(value)
+        .map_err(|_| raise_exception::<u64>(_py, "ValueError", "invalid decimal"))?;
     let dec = decimal_new_for_context(_py, ctx)?;
     let mut status: u32 = 0;
     unsafe {
@@ -292,7 +330,11 @@ fn decimal_to_string(
 ) -> Result<String, u64> {
     let raw = unsafe { mpd_to_sci(dec.dec, if capitals != 0 { 1 } else { 0 }) };
     if raw.is_null() {
-        return Err(raise_exception::<u64>(_py, "MemoryError", "decimal to string failed"));
+        return Err(raise_exception::<u64>(
+            _py,
+            "MemoryError",
+            "decimal to string failed",
+        ));
     }
     let text = unsafe { CStr::from_ptr(raw) }
         .to_string_lossy()

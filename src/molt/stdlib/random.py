@@ -4,13 +4,16 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_stdlib_probe", globals())
 
 from bisect import bisect as _bisect
 from collections.abc import Sequence as _Sequence
 from itertools import accumulate as _accumulate, repeat as _repeat
+from typing import SupportsInt, cast
 from molt.stdlib import math as _math
 from molt.stdlib import os as _os
+
+_require_intrinsic("molt_stdlib_probe", globals())
+
 
 __all__ = [
     "Random",
@@ -119,10 +122,9 @@ class Random:
         elif version == 2 and isinstance(a, (str, bytes, bytearray)):
             global _sha512
             if _sha512 is None:
-                try:
-                    from _sha2 import sha512 as _sha512
-                except ImportError:
-                    from hashlib import sha512 as _sha512
+                import hashlib as _hashlib
+
+                _sha512 = _hashlib.sha512
             if isinstance(a, str):
                 a = a.encode()
             a = int.from_bytes(a + _sha512(a).digest(), "big")
@@ -145,7 +147,7 @@ class Random:
             return hash(a) & _MASK_64
         if isinstance(a, (str, bytes, bytearray)):
             return hash(a) & _MASK_64
-        return abs(int(a))
+        return abs(int(cast(SupportsInt, a)))
 
     def _init_genrand(self, seed: int) -> None:
         self._mt[0] = seed & _MASK_32
@@ -208,6 +210,7 @@ class Random:
 
     def uniform(self, a, b):
         """Get a random number in the range [a, b) or [a, b] depending on rounding."""
+
         return a + (b - a) * self.random()
 
     def triangular(self, low=0.0, high=1.0, mode=None):

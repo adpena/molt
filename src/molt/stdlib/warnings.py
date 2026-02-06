@@ -5,10 +5,10 @@ from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 
-_require_intrinsic("molt_stdlib_probe", globals())
-
 from typing import Any
 import sys as _sys
+
+_require_intrinsic("molt_stdlib_probe", globals())
 
 
 class _WarningRecord:
@@ -184,7 +184,7 @@ def _bump_filters_version() -> None:
 
 def _resolve_registry(
     registry: Any | None, module_globals: Any | None
-) -> dict[str, Any] | None:
+) -> dict[object, Any] | None:
     reg: Any | None = registry if isinstance(registry, dict) else None
     if (
         reg is None
@@ -209,7 +209,7 @@ def _should_suppress(
     msg_text: str,
     category: type,
     lineno: int,
-    registry: dict[str, Any] | None,
+    registry: dict[object, Any] | None,
 ) -> bool:
     if action in {"ignore", "off"}:
         return True

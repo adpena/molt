@@ -72,8 +72,7 @@ pub(crate) unsafe fn alloc_instance_for_class_no_pool(
 }
 
 unsafe fn alloc_dataclass_for_class(_py: &PyToken<'_>, class_ptr: *mut u8) -> Option<u64> {
-    let Some(field_names_name) =
-        attr_name_bits_from_bytes(_py, b"__molt_dataclass_field_names__")
+    let Some(field_names_name) = attr_name_bits_from_bytes(_py, b"__molt_dataclass_field_names__")
     else {
         return None;
     };
@@ -108,16 +107,15 @@ unsafe fn alloc_dataclass_for_class(_py: &PyToken<'_>, class_ptr: *mut u8) -> Op
         return Some(MoltObject::none().bits());
     }
     let values_bits = MoltObject::from_ptr(values_ptr).bits();
-    let flags_bits = if let Some(flags_name) =
-        attr_name_bits_from_bytes(_py, b"__molt_dataclass_flags__")
-    {
-        let bits = class_attr_lookup_raw_mro(_py, class_ptr, flags_name)
-            .unwrap_or_else(|| MoltObject::from_int(0).bits());
-        dec_ref_bits(_py, flags_name);
-        bits
-    } else {
-        MoltObject::from_int(0).bits()
-    };
+    let flags_bits =
+        if let Some(flags_name) = attr_name_bits_from_bytes(_py, b"__molt_dataclass_flags__") {
+            let bits = class_attr_lookup_raw_mro(_py, class_ptr, flags_name)
+                .unwrap_or_else(|| MoltObject::from_int(0).bits());
+            dec_ref_bits(_py, flags_name);
+            bits
+        } else {
+            MoltObject::from_int(0).bits()
+        };
     let name_bits = class_name_bits(class_ptr);
     let inst_bits = molt_dataclass_new(name_bits, field_names_bits, values_bits, flags_bits);
     dec_ref_bits(_py, values_bits);

@@ -4,9 +4,36 @@ macro_rules! fn_addr {
     };
 }
 
+fn debug_oom() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| matches!(std::env::var("MOLT_DEBUG_OOM").ok().as_deref(), Some("1")))
+}
+
+use crate::builtins::frames::FrameEntry;
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
 use crate::PyToken;
+use crate::{
+    alloc_class_obj, alloc_dict_with_pairs, alloc_instance_for_class_no_pool, alloc_list,
+    alloc_object, alloc_string, alloc_tuple, attr_lookup_ptr_allow_missing,
+    attr_name_bits_from_bytes, builtin_classes, builtin_func_bits, bytes_like_slice,
+    call_callable1, call_class_init_with_args, class_break_cycles, class_name_bits,
+    class_name_for_error, code_filename_bits, code_firstlineno, code_name_bits,
+    context_stack_unwind, current_task_key, current_task_ptr, current_token_id, dec_ref_bits,
+    dict_find_entry_fast, dict_get_in_place, dict_order, dict_set_in_place, dict_table, format_obj,
+    format_obj_str, header_from_obj_ptr, inc_ref_bits, index_bigint_from_obj, instance_dict_bits,
+    instance_set_dict_bits, int_bits_from_i64, intern_static_name, is_truthy, isinstance_bits,
+    issubclass_bits, maybe_ptr_from_bits, module_dict_bits, molt_class_set_base, molt_dec_ref,
+    molt_index, molt_is_callable, molt_iter_checked, molt_iter_next, molt_repr_from_obj,
+    molt_str_from_obj, obj_from_bits, object_class_bits, object_mark_has_ptrs, object_type_id,
+    profile_enabled, runtime_state, seq_vec, seq_vec_ref, string_bytes, string_len,
+    string_obj_to_owned, task_exception_depths, task_exception_handler_stacks,
+    task_exception_stacks, task_last_exceptions, to_i64, token_is_cancelled, traceback_suppressed,
+    type_name, type_of_bits, MoltHeader, PtrSlot, RuntimeState, FRAME_STACK,
+    HEADER_FLAG_TRACEBACK_SUPPRESSED, TRACEBACK_BUILD_COUNT, TRACEBACK_BUILD_FRAMES,
+    TRACEBACK_SUPPRESS_COUNT, TYPE_ID_CODE, TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_LIST,
+    TYPE_ID_MODULE, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE,
+};
 use molt_obj_model::MoltObject;
 use num_traits::ToPrimitive;
 use std::backtrace::Backtrace;
@@ -15,29 +42,6 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Mutex, OnceLock};
 use wtf8::Wtf8;
-use crate::builtins::frames::FrameEntry;
-use crate::{
-    alloc_class_obj, alloc_dict_with_pairs, alloc_instance_for_class_no_pool, alloc_list,
-    alloc_object, alloc_string, alloc_tuple, attr_lookup_ptr_allow_missing,
-    attr_name_bits_from_bytes, builtin_classes, builtin_func_bits, bytes_like_slice,
-    call_callable1, call_class_init_with_args, class_break_cycles, class_name_bits,
-    class_name_for_error, code_filename_bits, code_firstlineno, code_name_bits,
-    context_stack_unwind, current_task_key, current_task_ptr, current_token_id, dec_ref_bits,
-    dict_find_entry_fast, dict_get_in_place, dict_order, dict_set_in_place, dict_table,
-    format_obj, format_obj_str, header_from_obj_ptr,
-    inc_ref_bits, index_bigint_from_obj, instance_dict_bits, instance_set_dict_bits,
-    int_bits_from_i64, intern_static_name, is_truthy, isinstance_bits, issubclass_bits,
-    maybe_ptr_from_bits, module_dict_bits, molt_class_set_base, molt_dec_ref, molt_index,
-    molt_is_callable, molt_iter_checked, molt_iter_next, molt_repr_from_obj, molt_str_from_obj,
-    obj_from_bits, object_class_bits, object_mark_has_ptrs, object_type_id, profile_enabled,
-    runtime_state, seq_vec, seq_vec_ref, string_bytes, string_len, string_obj_to_owned,
-    task_exception_depths,
-    task_exception_handler_stacks, task_exception_stacks, task_last_exceptions, to_i64,
-    token_is_cancelled, traceback_suppressed, type_name, type_of_bits, MoltHeader, PtrSlot,
-    RuntimeState, FRAME_STACK, HEADER_FLAG_TRACEBACK_SUPPRESSED, TRACEBACK_BUILD_COUNT,
-    TRACEBACK_BUILD_FRAMES, TRACEBACK_SUPPRESS_COUNT, TYPE_ID_CODE, TYPE_ID_DICT,
-    TYPE_ID_EXCEPTION, TYPE_ID_LIST, TYPE_ID_MODULE, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE,
-};
 
 pub(crate) trait ExceptionSentinel {
     fn exception_sentinel() -> Self;
@@ -232,11 +236,22 @@ pub(crate) fn exception_group_method_bits(_py: &PyToken<'_>, name: &str) -> Opti
     }
 }
 
+#[track_caller]
 pub(crate) fn raise_exception<T: ExceptionSentinel>(
     _py: &PyToken<'_>,
     kind: &str,
     message: &str,
 ) -> T {
+    if debug_oom() && kind == "MemoryError" {
+        let loc = std::panic::Location::caller();
+        eprintln!(
+            "molt MemoryError at {}:{}:{} ({})",
+            loc.file(),
+            loc.line(),
+            loc.column(),
+            message
+        );
+    }
     let ptr = alloc_exception(_py, kind, message);
     if !ptr.is_null() {
         record_exception(_py, ptr);
@@ -4016,7 +4031,6 @@ mod tests {
             }
         });
     }
-
 }
 
 #[no_mangle]
@@ -4474,7 +4488,11 @@ pub extern "C" fn molt_raise(exc_bits: u64) -> u64 {
                 handle_system_exit(_py, exc_ptr);
             }
             context_stack_unwind(_py, MoltObject::from_ptr(exc_ptr).bits());
-            eprintln!("{}", format_exception_with_traceback(_py, exc_ptr));
+            let formatted = format_exception_with_traceback(_py, exc_ptr);
+            eprintln!("{}", formatted);
+            if let Ok(path) = std::env::var("MOLT_EXCEPTION_LOG_PATH") {
+                let _ = std::fs::write(path, formatted.as_bytes());
+            }
             std::process::exit(1);
         }
         MoltObject::none().bits()

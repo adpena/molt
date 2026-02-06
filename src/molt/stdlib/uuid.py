@@ -10,6 +10,9 @@ import hashlib as _hashlib
 import random as _random
 import time as _time
 
+Int = _builtins.int
+BytesLike = _builtins.bytes | bytearray | memoryview
+
 __all__ = [
     "UUID",
     "SafeUUID",
@@ -51,11 +54,11 @@ class UUID:
     def __init__(
         self,
         hex: str | None = None,
-        bytes: bytes | bytearray | memoryview | None = None,
-        bytes_le: bytes | bytearray | memoryview | None = None,
-        fields: tuple[int, int, int, int, int, int] | None = None,
-        int: int | None = None,
-        version: int | None = None,
+        bytes: BytesLike | None = None,
+        bytes_le: BytesLike | None = None,
+        fields: tuple[Int, Int, Int, Int, Int, Int] | None = None,
+        int: Int | None = None,
+        version: Int | None = None,
     ) -> None:
         int_value = int
         provided = sum(
@@ -94,48 +97,48 @@ class UUID:
         self._is_safe = SafeUUID.unknown
 
     @property
-    def bytes(self) -> bytes:
+    def bytes(self) -> _builtins.bytes:
         return self._bytes
 
     @property
-    def bytes_le(self) -> bytes:
+    def bytes_le(self) -> _builtins.bytes:
         return _bytes_to_bytes_le(self._bytes)
 
     @property
-    def fields(self) -> tuple[int, int, int, int, int, int]:
+    def fields(self) -> tuple[Int, Int, Int, Int, Int, Int]:
         return _fields_from_bytes(self._bytes)
 
     @property
-    def time_low(self) -> int:
+    def time_low(self) -> Int:
         return self.fields[0]
 
     @property
-    def time_mid(self) -> int:
+    def time_mid(self) -> Int:
         return self.fields[1]
 
     @property
-    def time_hi_version(self) -> int:
+    def time_hi_version(self) -> Int:
         return self.fields[2]
 
     @property
-    def clock_seq_hi_variant(self) -> int:
+    def clock_seq_hi_variant(self) -> Int:
         return self.fields[3]
 
     @property
-    def clock_seq_low(self) -> int:
+    def clock_seq_low(self) -> Int:
         return self.fields[4]
 
     @property
-    def node(self) -> int:
+    def node(self) -> Int:
         return self.fields[5]
 
     @property
-    def time(self) -> int:
+    def time(self) -> Int:
         time_hi = self.time_hi_version & 0x0FFF
         return (time_hi << 48) | (self.time_mid << 32) | self.time_low
 
     @property
-    def clock_seq(self) -> int:
+    def clock_seq(self) -> Int:
         return ((self.clock_seq_hi_variant & 0x3F) << 8) | self.clock_seq_low
 
     @property
@@ -143,7 +146,7 @@ class UUID:
         return _bytes_to_hex(self._bytes)
 
     @property
-    def int(self) -> int:
+    def int(self) -> Int:
         return int(self._int)
 
     @property
@@ -162,7 +165,7 @@ class UUID:
         return RESERVED_FUTURE
 
     @property
-    def version(self) -> int | None:
+    def version(self) -> Int | None:
         if self.variant != RFC_4122:
             return None
         return (self._bytes[6] >> 4) & 0x0F
@@ -193,7 +196,7 @@ class UUID:
             return self._int == other._int
         return NotImplemented
 
-    def __hash__(self) -> int:
+    def __hash__(self) -> Int:
         return hash(self._int)
 
 
@@ -368,7 +371,7 @@ def _int_from_hex(text: str) -> int:
         raise ValueError("badly formed hexadecimal UUID string") from exc
 
 
-def _int_from_bytes(data: bytes) -> int:
+def _int_from_bytes(data: _builtins.bytes | bytearray) -> Int:
     value = 0
     for byte in data:
         value = (value << 8) | int(byte)

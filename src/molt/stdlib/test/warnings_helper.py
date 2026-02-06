@@ -45,7 +45,7 @@ def check_syntax_warning(
     lineno: int | None = 1,
     offset: int | None = None,
 ):
-    from test import support as test_support
+    from . import support as test_support
 
     with warnings.catch_warnings(record=True) as warns:
         warnings.simplefilter("always", SyntaxWarning)
@@ -98,7 +98,8 @@ class WarningsRecorder:
     def __getattr__(self, attr):
         if len(self._warnings) > self._last:
             return getattr(self._warnings[-1], attr)
-        if attr in warnings.WarningMessage._WARNING_DETAILS:
+        warning_details = getattr(warnings.WarningMessage, "_WARNING_DETAILS", ())
+        if attr in warning_details:
             return None
         raise AttributeError(f"{self!r} has no attribute {attr!r}")
 
@@ -129,7 +130,7 @@ def check_warnings(*filters, **kwargs):
 def check_no_warnings(
     testcase, message: str = "", category=Warning, force_gc: bool = False
 ):
-    from test.support import gc_collect
+    from .support import gc_collect
 
     with warnings.catch_warnings(record=True) as warns:
         warnings.filterwarnings("always", message=message, category=category)
@@ -187,7 +188,7 @@ def save_restore_warnings_filters():
     try:
         yield
     finally:
-        warnings.filters[:] = old_filters
+        warnings.filters = list(old_filters)
 
 
 def _warn_about_deprecation():

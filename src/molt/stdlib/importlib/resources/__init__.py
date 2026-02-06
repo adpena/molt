@@ -206,8 +206,10 @@ def as_file(traversable: Traversable | object):
     if isinstance(traversable, Traversable):
         yield traversable
         return
+    if not isinstance(traversable, (str, bytes, os.PathLike)):
+        raise TypeError("as_file expects a Traversable or path-like object")
     path = os.fspath(traversable)
-    yield Traversable(path)
+    yield Traversable(os.fsdecode(path))
 
 
 def contents(package: str | object) -> list[str]:

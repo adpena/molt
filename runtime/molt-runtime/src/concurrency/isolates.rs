@@ -250,7 +250,19 @@ pub unsafe extern "C" fn molt_thread_spawn(payload_bits: u64) -> u64 {
         if !has_capability(_py, "thread") && !has_capability(_py, "thread.spawn") {
             return raise_exception::<_>(_py, "PermissionError", "missing thread capability");
         }
-        let shared_runtime = has_capability(_py, "thread.shared");
+        let isolated_override = matches!(
+            std::env::var("MOLT_THREAD_ISOLATED")
+                .ok()
+                .as_deref()
+                .map(|value| value.to_ascii_lowercase()),
+            Some(value) if matches!(value.as_str(), "1" | "true" | "yes" | "on")
+        );
+        // Default to shared-runtime threads for CPython parity of thread-visible
+        // global/module state; keep an escape hatch for isolate-only mode.
+        let shared_runtime = !isolated_override
+            && (has_capability(_py, "thread.shared")
+                || has_capability(_py, "thread")
+                || has_capability(_py, "thread.spawn"));
         let payload = match payload_from_bits(_py, payload_bits) {
             Ok(val) => val,
             Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),

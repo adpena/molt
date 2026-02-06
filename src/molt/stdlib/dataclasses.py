@@ -5,12 +5,12 @@ from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 
-_require_intrinsic("molt_stdlib_probe", globals())
-
 import copy
 from reprlib import recursive_repr
 from types import MappingProxyType
-from typing import ClassVar
+from typing import Callable, ClassVar, cast
+
+_require_intrinsic("molt_stdlib_probe", globals())
 
 
 class _MISSING_TYPE:
@@ -336,35 +336,39 @@ def _dataclass_init(self, *args, **kwargs):
         )
     values: dict[str, object] = {}
     for idx, field_obj in enumerate(positional):
+        field_name = cast(str, field_obj.name)
         if idx < len(args):
-            if field_obj.name in kwargs:
+            if field_name in kwargs:
                 raise TypeError(
-                    f"{init_name}() got multiple values for argument '{field_obj.name}'"
+                    f"{init_name}() got multiple values for argument '{field_name}'"
                 )
-            values[field_obj.name] = args[idx]
+            values[field_name] = args[idx]
             continue
-        if field_obj.name in kwargs:
-            values[field_obj.name] = kwargs.pop(field_obj.name)
+        if field_name in kwargs:
+            values[field_name] = kwargs.pop(field_name)
             continue
         if field_obj.default is not MISSING:
-            values[field_obj.name] = field_obj.default
+            values[field_name] = field_obj.default
         elif field_obj.default_factory is not MISSING:
-            values[field_obj.name] = field_obj.default_factory()
+            factory = cast(Callable[[], object], field_obj.default_factory)
+            values[field_name] = factory()
         else:
             raise TypeError(
-                f"{init_name}() missing 1 required positional argument: '{field_obj.name}'"
+                f"{init_name}() missing 1 required positional argument: '{field_name}'"
             )
     for field_obj in kw_only:
-        if field_obj.name in kwargs:
-            values[field_obj.name] = kwargs.pop(field_obj.name)
+        field_name = cast(str, field_obj.name)
+        if field_name in kwargs:
+            values[field_name] = kwargs.pop(field_name)
             continue
         if field_obj.default is not MISSING:
-            values[field_obj.name] = field_obj.default
+            values[field_name] = field_obj.default
         elif field_obj.default_factory is not MISSING:
-            values[field_obj.name] = field_obj.default_factory()
+            factory = cast(Callable[[], object], field_obj.default_factory)
+            values[field_name] = factory()
         else:
             raise TypeError(
-                f"{init_name}() missing 1 required keyword-only argument: '{field_obj.name}'"
+                f"{init_name}() missing 1 required keyword-only argument: '{field_name}'"
             )
     if kwargs:
         unexpected = next(iter(kwargs))
@@ -374,21 +378,24 @@ def _dataclass_init(self, *args, **kwargs):
     initvar_values: list[object] = []
     for field_obj in fields_map.values():
         if field_obj._field_type is _FIELD:
+            field_name = cast(str, field_obj.name)
             if field_obj.init:
-                val = values[field_obj.name]
+                val = values[field_name]
             else:
                 if field_obj.default is not MISSING:
                     val = field_obj.default
                 elif field_obj.default_factory is not MISSING:
-                    val = field_obj.default_factory()
+                    factory = cast(Callable[[], object], field_obj.default_factory)
+                    val = factory()
                 else:
                     continue
             if frozen:
-                object.__setattr__(self, field_obj.name, val)
+                object.__setattr__(self, field_name, val)
             else:
-                setattr(self, field_obj.name, val)
+                setattr(self, field_name, val)
         elif field_obj._field_type is _FIELD_INITVAR and field_obj.init:
-            initvar_values.append(values[field_obj.name])
+            field_name = cast(str, field_obj.name)
+            initvar_values.append(values[field_name])
     post_init = getattr(self, "__post_init__", None)
     if post_init is not None:
         post_init(*initvar_values)
@@ -522,15 +529,16 @@ def _molt_apply_dataclass(
     _check_default_order(fields)
 
     for field_obj in fields.values():
+        field_name = cast(str, field_obj.name)
         if field_obj.default_factory is not MISSING:
-            if isinstance(cls.__dict__.get(field_obj.name), Field):
-                delattr(cls, field_obj.name)
+            if isinstance(cls.__dict__.get(field_name), Field):
+                delattr(cls, field_name)
             continue
         if field_obj.default is MISSING:
-            if isinstance(cls.__dict__.get(field_obj.name), Field):
-                delattr(cls, field_obj.name)
+            if isinstance(cls.__dict__.get(field_name), Field):
+                delattr(cls, field_name)
             continue
-        setattr(cls, field_obj.name, field_obj.default)
+        setattr(cls, field_name, field_obj.default)
 
     params = _DataclassParams(
         init=init,
@@ -593,7 +601,7 @@ def _molt_apply_dataclass(
         match_fields = tuple(
             field_obj.name
             for field_obj in fields.values()
-            if field_obj._field_type is _FIELD
+            if field_obj._field_type in (_FIELD, _FIELD_INITVAR)
             and field_obj.init
             and not field_obj.kw_only
         )
@@ -690,7 +698,7 @@ def dataclass(
 def is_dataclass(obj) -> bool:
     if isinstance(obj, type):
         return hasattr(obj, "__dataclass_fields__")
-    return hasattr(obj.__class__, "__dataclass_fields__")
+    return hasattr(type(obj), "__dataclass_fields__")
 
 
 def fields(class_or_instance):
@@ -699,7 +707,7 @@ def fields(class_or_instance):
     cls = (
         class_or_instance
         if isinstance(class_or_instance, type)
-        else class_or_instance.__class__
+        else type(class_or_instance)
     )
     return tuple(
         field_obj
@@ -714,14 +722,25 @@ def asdict(obj, *, dict_factory=dict):
 
     def _inner(value):
         if is_dataclass(value):
-            return dict_factory(
-                (field_obj.name, _inner(getattr(value, field_obj.name)))
-                for field_obj in fields(value)
-            )
-        if isinstance(value, (list, tuple)):
-            return type(value)(_inner(item) for item in value)
+            items: list[tuple[object, object]] = []
+            for field_obj in fields(value):
+                items.append((field_obj.name, _inner(getattr(value, field_obj.name))))
+            return dict_factory(items)
+        if isinstance(value, list):
+            copied: list[object] = []
+            for item in value:
+                copied.append(_inner(item))
+            return type(value)(copied)
+        if isinstance(value, tuple):
+            copied = []
+            for item in value:
+                copied.append(_inner(item))
+            return type(value)(copied)
         if isinstance(value, dict):
-            return type(value)((_inner(k), _inner(v)) for k, v in value.items())
+            copied_items = []
+            for key, item_value in value.items():
+                copied_items.append((_inner(key), _inner(item_value)))
+            return type(value)(copied_items)
         return copy.deepcopy(value)
 
     return _inner(obj)
@@ -733,11 +752,25 @@ def astuple(obj, *, tuple_factory=tuple):
 
     def _inner(value):
         if is_dataclass(value):
-            return tuple_factory(_inner(getattr(value, f.name)) for f in fields(value))
-        if isinstance(value, (list, tuple)):
-            return type(value)(_inner(item) for item in value)
+            copied = []
+            for field_obj in fields(value):
+                copied.append(_inner(getattr(value, field_obj.name)))
+            return tuple_factory(copied)
+        if isinstance(value, list):
+            copied = []
+            for item in value:
+                copied.append(_inner(item))
+            return type(value)(copied)
+        if isinstance(value, tuple):
+            copied = []
+            for item in value:
+                copied.append(_inner(item))
+            return type(value)(copied)
         if isinstance(value, dict):
-            return type(value)((_inner(k), _inner(v)) for k, v in value.items())
+            copied_items = []
+            for key, item_value in value.items():
+                copied_items.append((_inner(key), _inner(item_value)))
+            return type(value)(copied_items)
         return copy.deepcopy(value)
 
     return _inner(obj)

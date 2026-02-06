@@ -3,7 +3,22 @@
 from __future__ import annotations
 
 from collections.abc import ItemsView, KeysView, ValuesView
-from typing import TYPE_CHECKING, Any, Iterator, MutableMapping
+
+TYPE_CHECKING = False
+
+if TYPE_CHECKING:
+    from typing import Any, Iterator, MutableMapping
+else:
+
+    class _TypingAlias:
+        __slots__ = ()
+
+        def __getitem__(self, _item):
+            return self
+
+    Any = object
+    Iterator = _TypingAlias()
+    MutableMapping = _TypingAlias()
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
@@ -31,6 +46,7 @@ def _resolve_os_name() -> str:
     if not isinstance(value, str):
         raise RuntimeError("os name intrinsic returned invalid value")
     return value
+
 
 __all__ = [
     "name",
@@ -106,14 +122,17 @@ if TYPE_CHECKING:
     def _molt_path_rmdir(path: Any) -> None:
         return None
 
+
 def _molt_env_get(key: str, default: Any = None) -> Any:
     if key in _ENV_STORE:
         return _ENV_STORE[key]
     return _MOLT_ENV_GET(key, default)
 
+
 def _require_cap(name: str) -> None:
     _MOLT_CAP_REQUIRE(name)
     return None
+
 
 class _Environ:
     def __init__(self) -> None:
@@ -264,11 +283,13 @@ class _Environ:
         _require_cap("env.read")
         return self._backend().values()
 
+
 class PathLike:
     __slots__ = ()
 
     def __fspath__(self) -> str | bytes:
         raise NotImplementedError
+
 
 def fspath(path: Any) -> str | bytes:
     if isinstance(path, (str, bytes)):
@@ -284,6 +305,7 @@ def fspath(path: Any) -> str | bytes:
     raise TypeError(
         f"expected str, bytes or os.PathLike object, not {type(path).__name__}"
     )
+
 
 class _Path:
     sep = sep
@@ -505,7 +527,9 @@ class _Path:
         intrinsic = _require_intrinsic("_molt_path_rmdir", _MOLT_PATH_RMDIR)
         intrinsic(path)
 
+
 path = _Path()
+
 
 def listdir(path: Any = ".") -> list[str]:
     _require_cap("fs.read")
@@ -515,44 +539,55 @@ def listdir(path: Any = ".") -> list[str]:
         return res
     raise FileNotFoundError(path)
 
+
 environ = _Environ()
+
 
 def getpid() -> int:
     intrinsic = _require_intrinsic("_molt_getpid", _MOLT_GETPID)
     return int(intrinsic())
+
 
 def urandom(n: Any) -> bytes:
     _require_cap("rand")
     intrinsic = _require_intrinsic("_molt_os_urandom", _MOLT_OS_URANDOM)
     return intrinsic(n)
 
+
 def getcwd() -> str:
     _require_cap("fs.read")
     intrinsic = _require_intrinsic("_molt_getcwd", _MOLT_GETCWD)
     return intrinsic()
 
+
 def getenv(key: str, default: Any = None) -> Any:
     _require_cap("env.read")
     return _molt_env_get(key, default)
 
+
 def unlink(path: Any) -> None:
     _Path.unlink(path)
+
 
 def remove(path: Any) -> None:
     unlink(path)
 
+
 def rmdir(path: Any) -> None:
     _Path.rmdir(path)
+
 
 def mkdir(path: Any, mode: int = 0o777) -> None:
     _require_cap("fs.write")
     intrinsic = _require_intrinsic("_molt_path_mkdir", _MOLT_PATH_MKDIR)
     intrinsic(path)
 
+
 def chmod(path: Any, mode: int) -> None:
     _require_cap("fs.write")
     intrinsic = _require_intrinsic("_molt_path_chmod", _MOLT_PATH_CHMOD)
     intrinsic(path, mode)
+
 
 def makedirs(name: Any, mode: int = 0o777, exist_ok: bool = False) -> None:
     path = fspath(name)
@@ -581,17 +616,21 @@ def makedirs(name: Any, mode: int = 0o777, exist_ok: bool = False) -> None:
     if not exist_ok and not _Path.exists(path):
         raise FileNotFoundError(path)
 
+
 def close(fd: int) -> None:
     intrinsic = _require_intrinsic("_molt_os_close", _MOLT_OS_CLOSE)
     intrinsic(fd)
+
 
 def dup(fd: int) -> int:
     intrinsic = _require_intrinsic("_molt_os_dup", _MOLT_OS_DUP)
     return int(intrinsic(fd))
 
+
 def get_inheritable(fd: int) -> bool:
     intrinsic = _require_intrinsic("_molt_os_get_inheritable", _MOLT_OS_GET_INHERITABLE)
     return bool(intrinsic(fd))
+
 
 def set_inheritable(fd: int, inheritable: bool) -> None:
     intrinsic = _require_intrinsic("_molt_os_set_inheritable", _MOLT_OS_SET_INHERITABLE)

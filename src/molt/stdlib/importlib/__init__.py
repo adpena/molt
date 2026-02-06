@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_stdlib_probe", globals())
 
 import builtins as _builtins
 import os as _os
@@ -12,6 +11,9 @@ import sys as _sys
 
 import importlib.machinery as machinery
 import importlib.util as util
+
+_require_intrinsic("molt_stdlib_probe", globals())
+
 
 __all__ = [
     "import_module",
@@ -56,18 +58,7 @@ def import_module(name: str, package: str | None = None):
             return modules[resolved]
         if mod is not None:
             return mod
-    spec = util.find_spec(resolved, None)
-    if spec is None:
-        raise ImportError(f"No module named '{resolved}'")
-    module = util.module_from_spec(spec)
-    if isinstance(modules, dict):
-        modules[resolved] = module
-    if spec.loader is not None:
-        if hasattr(spec.loader, "exec_module"):
-            spec.loader.exec_module(module)
-        elif hasattr(spec.loader, "load_module"):
-            module = spec.loader.load_module(resolved)
-    return module
+    raise ImportError(f"No module named '{resolved}'")
 
 
 def invalidate_caches() -> None:

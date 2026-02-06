@@ -7,7 +7,6 @@ import hashlib
 import http.client
 import tempfile
 import json
-import keyword
 import os
 import platform
 import posixpath
@@ -25,7 +24,7 @@ import uuid
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Literal, NamedTuple
+from typing import Any, Iterable, Literal, NamedTuple, cast
 
 from packaging.markers import InvalidMarker, Marker
 from packaging.requirements import InvalidRequirement, Requirement
@@ -165,26 +164,19 @@ def _fail(
 
 def _write_importer_module(module_names: list[str], output_dir: Path) -> Path:
     filtered_names = [name for name in module_names if name]
-
-    def needs_importlib(name: str) -> bool:
-        return any(
-            not part.isidentifier() or keyword.iskeyword(part)
-            for part in name.split(".")
-        )
-
-    importlib_needed = any(needs_importlib(name) for name in filtered_names)
     lines = [
         '"""Auto-generated import dispatcher for Molt-compiled modules."""',
         "",
         "from __future__ import annotations",
         "",
     ]
-    if importlib_needed:
-        lines.append("import importlib as _importlib")
-        lines.append("")
     lines.extend(
         [
             "import sys as _sys",
+            "from _intrinsics import require_intrinsic as _require_intrinsic",
+            "",
+            f"_KNOWN_MODULES = {sorted(filtered_names)!r}",
+            "_MODULE_IMPORT = _require_intrinsic('molt_module_import', globals())",
             "",
             "def _resolve_name(name: str, package: str | None, level: int) -> str:",
             "    if level <= 0:",
@@ -193,11 +185,11 @@ def _write_importer_module(module_names: list[str], output_dir: Path) -> Path:
             '        raise ImportError("relative import requires package")',
             '    parts = package.split(".")',
             "    if level > len(parts):",
-            '        raise ImportError(\"attempted relative import beyond top-level package\")',
+            '        raise ImportError("attempted relative import beyond top-level package")',
             "    cut = len(parts) - level + 1",
-            "    base = \".\".join(parts[:cut])",
+            '    base = ".".join(parts[:cut])',
             "    if name:",
-            "        return f\"{base}.{name}\" if base else name",
+            '        return f"{base}.{name}" if base else name',
             "    return base",
             "",
             "def _molt_import(name, globals=None, locals=None, fromlist=(), level=0):",
@@ -205,35 +197,30 @@ def _write_importer_module(module_names: list[str], output_dir: Path) -> Path:
             '        raise ImportError("Empty module name")',
             "    package = None",
             "    if isinstance(globals, dict):",
-            '        package = globals.get(\"__package__\")',
-            "        if not package and globals.get(\"__path__\") and globals.get(\"__name__\"):",
-            '            package = globals.get(\"__name__\")',
+            '        package = globals.get("__package__")',
+            '        if not package and globals.get("__path__") and globals.get("__name__"):',
+            '            package = globals.get("__name__")',
             "    resolved = _resolve_name(name, package, level) if level else name",
             '    modules = getattr(_sys, "modules", {})',
             "    if resolved in modules:",
             "        mod = modules[resolved]",
             "        if mod is None:",
-            '            raise ImportError(f\"import of {resolved} halted; None in sys.modules\")',
+            '            raise ImportError(f"import of {resolved} halted; None in sys.modules")',
             "        if fromlist:",
             "            return mod",
-            '        top = resolved.split(\".\", 1)[0]',
+            '        top = resolved.split(".", 1)[0]',
             "        return modules.get(top, mod)",
+            "    if resolved not in _KNOWN_MODULES:",
+            "        raise ImportError(f\"No module named '{resolved}'\")",
+            "    mod = _MODULE_IMPORT(resolved)",
+            "    if mod is None:",
+            "        raise ImportError(f\"No module named '{resolved}'\")",
+            "    if fromlist:",
+            "        return mod",
+            '    top = resolved.split(".", 1)[0]',
+            "    return modules.get(top, mod)",
         ]
     )
-    for module_name in filtered_names:
-        lines.append(f"    if resolved == {module_name!r}:")
-        if needs_importlib(module_name):
-            lines.append("        _importlib.import_module(resolved)")
-        else:
-            lines.append(f"        import {module_name}")
-        lines.append("        mod = modules.get(resolved)")
-        lines.append("        if mod is None:")
-        lines.append("            raise ImportError(f\"No module named '{resolved}'\")")
-        lines.append("        if fromlist:")
-        lines.append("            return mod")
-        lines.append('        top = resolved.split(".", 1)[0]')
-        lines.append("        return modules.get(top, mod)")
-    lines.append("    raise ImportError(f\"No module named '{resolved}'\")")
     path = output_dir / f"{IMPORTER_MODULE_NAME}.py"
     path.write_text("\n".join(lines) + "\n")
     return path
@@ -673,17 +660,14 @@ def _build_cyclonedx_sbom(
             {"name": "molt.deterministic", "value": str(deterministic)},
         ],
     }
+    properties = cast(list[dict[str, str]], component["properties"])
     if effects is not None:
-        component["properties"].append(
-            {"name": "molt.effects", "value": json.dumps(effects)}
-        )
+        properties.append({"name": "molt.effects", "value": json.dumps(effects)})
     if capabilities is not None:
-        component["properties"].append(
+        properties.append(
             {"name": "molt.capabilities", "value": json.dumps(capabilities)}
         )
-    component["properties"].append(
-        {"name": "molt.artifact", "value": str(artifact_path)}
-    )
+    properties.append({"name": "molt.artifact", "value": str(artifact_path)})
     meta_properties: list[dict[str, str]] = []
     if compiler_version:
         meta_properties.append(
@@ -1082,11 +1066,13 @@ def _load_trust_policy(path: Path) -> TrustPolicy:
         data = tomllib.loads(path.read_text())
     cosign = data.get("cosign", {})
     codesign = data.get("codesign", {})
-    cosign_keys = {
-        _normalize_sha256(key)
-        for key in cosign.get("keys", [])
-        if isinstance(key, str) and _normalize_sha256(key)
-    }
+    cosign_keys: set[str] = set()
+    for key in cosign.get("keys", []):
+        if not isinstance(key, str):
+            continue
+        normalized = _normalize_sha256(key)
+        if normalized:
+            cosign_keys.add(normalized)
     cosign_cert_substrings = [
         value
         for value in cosign.get("certificates", [])
@@ -1701,6 +1687,8 @@ def _collect_imports(
     tree: ast.AST,
     module_name: str | None = None,
     is_package: bool = False,
+    *,
+    include_nested: bool = True,
 ) -> list[str]:
     imports: list[str] = []
     needs_typing = False
@@ -1725,7 +1713,14 @@ def _collect_imports(
                 return ".".join(reversed(parts))
         return None
 
-    for node in ast.walk(tree):
+    if include_nested:
+        scan_nodes: list[ast.AST] = list(ast.walk(tree))
+    elif isinstance(tree, ast.Module):
+        scan_nodes = list(tree.body)
+    else:
+        scan_nodes = list(ast.walk(tree))
+
+    for node in scan_nodes:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 imports.append(alias.name)
@@ -1773,6 +1768,14 @@ def _collect_imports(
     if needs_typing:
         imports.append("typing")
     return imports
+
+
+def _is_stdlib_path(path: Path, stdlib_root: Path) -> bool:
+    try:
+        path.resolve().relative_to(stdlib_root.resolve())
+        return True
+    except ValueError:
+        return False
 
 
 def _module_dependencies(
@@ -2089,7 +2092,13 @@ def _discover_module_graph(
         except SyntaxError:
             continue
         is_package = path.name == "__init__.py"
-        for name in _collect_imports(tree, module_name, is_package):
+        include_nested_imports = not _is_stdlib_path(path, stdlib_root)
+        for name in _collect_imports(
+            tree,
+            module_name,
+            is_package,
+            include_nested=include_nested_imports,
+        ):
             explicit_imports.add(name)
             for candidate in _expand_module_chain(name):
                 if candidate in stub_parents:
@@ -2144,7 +2153,10 @@ def _runtime_fingerprint_path(
 ) -> Path:
     target = (target_triple or "native").replace(os.sep, "_").replace(":", "_")
     root = project_root / "target" / "runtime_fingerprints"
-    return root / f"{artifact.name}.{profile}.{target}.fingerprint"
+    artifact_key = hashlib.sha256(str(artifact.resolve()).encode("utf-8")).hexdigest()[
+        :16
+    ]
+    return root / f"{artifact.name}.{profile}.{target}.{artifact_key}.fingerprint"
 
 
 def _hash_runtime_file(path: Path, root: Path, hasher: Any) -> None:
@@ -2954,7 +2966,7 @@ def _resolve_backend_profile() -> tuple[BuildProfile, str | None]:
     value = raw.strip().lower()
     if value not in {"dev", "release"}:
         return "release", f"Invalid MOLT_BACKEND_PROFILE value: {raw}"
-    return value, None
+    return cast(BuildProfile, value), None
 
 
 def _backend_fingerprint_path(
@@ -2963,7 +2975,10 @@ def _backend_fingerprint_path(
     profile: BuildProfile,
 ) -> Path:
     root = project_root / "target" / "backend_fingerprints"
-    return root / f"{artifact.name}.{profile}.fingerprint"
+    artifact_key = hashlib.sha256(str(artifact.resolve()).encode("utf-8")).hexdigest()[
+        :16
+    ]
+    return root / f"{artifact.name}.{profile}.{artifact_key}.fingerprint"
 
 
 def _backend_fingerprint(
@@ -3145,6 +3160,20 @@ def _append_rustflags(env: dict[str, str], flags: str) -> None:
     env["RUSTFLAGS"] = joined
 
 
+def _configure_wasm_cc_env(env: dict[str, str]) -> None:
+    if env.get("CC_wasm32-wasip1") or env.get("CC_wasm32_wasip1"):
+        return
+    for candidate in (
+        "/opt/homebrew/opt/llvm/bin/clang",
+        "/usr/local/opt/llvm/bin/clang",
+    ):
+        cc_path = Path(candidate)
+        if cc_path.exists() and os.access(cc_path, os.X_OK):
+            env["CC_wasm32-wasip1"] = str(cc_path)
+            env["CC_wasm32_wasip1"] = str(cc_path)
+            return
+
+
 def _ensure_runtime_wasm(
     runtime_wasm: Path,
     *,
@@ -3195,6 +3224,7 @@ def _ensure_runtime_wasm(
     if not json_output:
         print("Runtime sources changed; rebuilding runtime...")
     _append_rustflags(env, flags)
+    _configure_wasm_cc_env(env)
     cmd = [
         "cargo",
         "build",
@@ -3231,7 +3261,8 @@ def _ensure_runtime_wasm(
             print("Runtime wasm build failed", file=sys.stderr)
         return False
     profile_dir = _cargo_profile_dir(profile)
-    src = root / "target" / "wasm32-wasip1" / profile_dir / "molt_runtime.wasm"
+    target_root = _cargo_target_root(root)
+    src = target_root / "wasm32-wasip1" / profile_dir / "molt_runtime.wasm"
     if not src.exists():
         if not json_output:
             print(
@@ -3468,6 +3499,16 @@ def _default_molt_cache() -> Path:
 
 def _cargo_target_root(project_root: Path) -> Path:
     return _resolve_env_path("CARGO_TARGET_DIR", project_root / "target")
+
+
+def _wasm_runtime_root(project_root: Path) -> Path:
+    env_root = os.environ.get("MOLT_WASM_RUNTIME_DIR")
+    if env_root:
+        return Path(env_root).expanduser()
+    external_root = Path("/Volumes/APDataStore/Molt")
+    if external_root.is_dir():
+        return external_root / "wasm"
+    return project_root / "wasm"
 
 
 def _default_build_root(output_base: str) -> Path:
@@ -3750,10 +3791,11 @@ def _cache_fingerprint() -> str:
     hasher.update(f"rustc:{rustc_info}\n".encode("utf-8"))
     hasher.update(f"rustflags:{rustflags}\n".encode("utf-8"))
     seen: set[Path] = set()
-    for path in sorted(
-        _backend_source_paths(root) + _runtime_source_paths(root),
-        key=lambda p: str(p),
-    ):
+    stdlib_root = _stdlib_root_path()
+    source_paths = _backend_source_paths(root) + _runtime_source_paths(root)
+    if stdlib_root.exists():
+        source_paths.append(stdlib_root)
+    for path in sorted(source_paths, key=lambda p: str(p)):
         if path in seen:
             continue
         seen.add(path)
@@ -4304,20 +4346,21 @@ def build(
         for name, path in core_graph.items():
             module_graph.setdefault(name, path)
     spawn_enabled = False
-    spawn_path = _resolve_module_path(ENTRY_OVERRIDE_SPAWN, [stdlib_root])
-    if spawn_path is not None:
-        spawn_enabled = True
-        spawn_graph, _ = _discover_module_graph(
-            spawn_path,
-            roots,
-            module_roots,
-            stdlib_root,
-            stdlib_allowlist,
-            skip_modules=STUB_MODULES,
-            stub_parents=stub_parents,
-        )
-        for name, path in spawn_graph.items():
-            module_graph.setdefault(name, path)
+    if target != "wasm":
+        spawn_path = _resolve_module_path(ENTRY_OVERRIDE_SPAWN, [stdlib_root])
+        if spawn_path is not None:
+            spawn_enabled = True
+            spawn_graph, _ = _discover_module_graph(
+                spawn_path,
+                roots,
+                module_roots,
+                stdlib_root,
+                stdlib_allowlist,
+                skip_modules=STUB_MODULES,
+                stub_parents=stub_parents,
+            )
+            for name, path in spawn_graph.items():
+                module_graph.setdefault(name, path)
     namespace_parents = _collect_namespace_parents(
         module_graph, roots, stdlib_root, stdlib_allowlist, explicit_imports
     )
@@ -4572,7 +4615,7 @@ def build(
                 kind = op.get("kind")
                 if kind == "code_slots_init":
                     continue
-                if kind == "call":
+                if kind in {"call", "call_internal"}:
                     symbol = op.get("s_value")
                     if symbol:
                         op["value"] = _register_global_code_id(symbol)
@@ -4585,10 +4628,30 @@ def build(
                             f"{local_id} in module {module_name}"
                         )
                     op["value"] = _register_global_code_id(symbol)
+                elif kind == "trace_enter_slot":
+                    local_id = op.get("value")
+                    symbol = local_id_to_symbol.get(local_id)
+                    if symbol is None:
+                        raise ValueError(
+                            "Missing code symbol for id "
+                            f"{local_id} in module {module_name}"
+                        )
+                    op["value"] = _register_global_code_id(symbol)
                 remapped_ops.append(op)
             func["ops"] = remapped_ops
 
     enable_phi = not is_wasm
+    module_chunk_max_ops = 0
+    if is_wasm:
+        module_chunk_max_ops = 2000
+        env_chunk_ops = os.environ.get("MOLT_WASM_MODULE_CHUNK_OPS")
+        if env_chunk_ops:
+            try:
+                module_chunk_max_ops = max(0, int(env_chunk_ops))
+            except ValueError:
+                warnings.append(
+                    "Invalid MOLT_WASM_MODULE_CHUNK_OPS; using default of 2000."
+                )
     if target_triple:
         _ensure_rustup_target(target_triple, warnings)
     known_classes: dict[str, Any] = {}
@@ -4638,6 +4701,8 @@ def build(
             known_classes=known_classes,
             stdlib_allowlist=stdlib_allowlist,
             known_func_defaults=known_func_defaults,
+            module_chunking=is_wasm and module_chunk_max_ops > 0,
+            module_chunk_max_ops=module_chunk_max_ops,
         )
         try:
             gen.visit(tree)
@@ -4708,6 +4773,8 @@ def build(
             known_classes=known_classes,
             stdlib_allowlist=stdlib_allowlist,
             known_func_defaults=known_func_defaults,
+            module_chunking=is_wasm and module_chunk_max_ops > 0,
+            module_chunk_max_ops=module_chunk_max_ops,
         )
         try:
             main_gen.visit(tree)
@@ -5080,7 +5147,7 @@ def build(
             return _fail(f"Failed to write IR: {exc}", json_output, command="build")
     runtime_lib: Path | None = None
     if is_wasm:
-        runtime_wasm = molt_root / "wasm" / "molt_runtime.wasm"
+        runtime_wasm = _wasm_runtime_root(molt_root) / "molt_runtime.wasm"
         if not _ensure_runtime_wasm(
             runtime_wasm,
             reloc=False,
@@ -5146,7 +5213,7 @@ def build(
         )
         if is_wasm and backend_env is not None:
             if "MOLT_WASM_DATA_BASE" not in backend_env:
-                runtime_wasm = molt_root / "wasm" / "molt_runtime.wasm"
+                runtime_wasm = _wasm_runtime_root(molt_root) / "molt_runtime.wasm"
                 if not _ensure_runtime_wasm(
                     runtime_wasm,
                     reloc=False,
@@ -5172,7 +5239,9 @@ def build(
         if reloc_requested and backend_env is not None:
             backend_env["MOLT_WASM_LINK"] = "1"
             if "MOLT_WASM_TABLE_BASE" not in backend_env:
-                runtime_reloc = molt_root / "wasm" / "molt_runtime_reloc.wasm"
+                runtime_reloc = (
+                    _wasm_runtime_root(molt_root) / "molt_runtime_reloc.wasm"
+                )
                 if linked and not _ensure_runtime_wasm(
                     runtime_reloc,
                     reloc=True,
@@ -5282,7 +5351,7 @@ def build(
     if is_wasm:
         output_wasm = output_artifact
         if linked:
-            runtime_reloc = molt_root / "wasm" / "molt_runtime_reloc.wasm"
+            runtime_reloc = _wasm_runtime_root(molt_root) / "molt_runtime_reloc.wasm"
             if not _ensure_runtime_wasm(
                 runtime_reloc,
                 reloc=True,
@@ -5881,6 +5950,10 @@ def run_script(
             verbose=verbose,
             capture_output=json_output,
         )
+        if not isinstance(build_res, _TimedResult) or not isinstance(
+            run_res, _TimedResult
+        ):
+            raise RuntimeError("timed run expected")
         if json_output:
             data = {
                 "returncode": run_res.returncode,
@@ -5902,10 +5975,7 @@ def run_script(
             _emit_json(payload, json_output=True)
         else:
             print("Timing (compiled):", file=sys.stderr)
-            print(
-                f"- build: {_format_duration(build_res.duration_s)}",
-                file=sys.stderr,
-            )
+            print(f"- build: {_format_duration(build_res.duration_s)}", file=sys.stderr)
             print(
                 f"- run: {_format_duration(run_res.duration_s)}",
                 file=sys.stderr,
@@ -7405,13 +7475,14 @@ def verify(
         key = signing_key or os.environ.get("COSIGN_KEY")
         with tempfile.TemporaryDirectory(prefix="molt_verify_") as tmpdir:
             temp_dir = Path(tmpdir)
-            artifact_path = artifact_file
-            if artifact_path is None:
+            if artifact_file is None:
                 filename = Path(artifact_name).name if artifact_name else "artifact.bin"
-                artifact_path = temp_dir / filename
-                artifact_path.write_bytes(artifact_bytes)
+                artifact_fs_path = temp_dir / filename
+                artifact_fs_path.write_bytes(artifact_bytes)
+            else:
+                artifact_fs_path = artifact_file
             tool = _resolve_signature_tool(
-                signer, signer_meta, artifact_path, signature_bytes
+                signer, signer_meta, artifact_fs_path, signature_bytes
             )
             try:
                 if tool == "cosign":
@@ -7421,13 +7492,13 @@ def verify(
                         raise RuntimeError(
                             "cosign verification requires --signing-key or COSIGN_KEY"
                         )
-                    _verify_cosign_signature(artifact_path, signature_bytes, key)
+                    _verify_cosign_signature(artifact_fs_path, signature_bytes, key)
                 elif tool == "codesign":
-                    if not _is_macho(artifact_path):
+                    if not _is_macho(artifact_fs_path):
                         raise RuntimeError(
                             "codesign verification requires a Mach-O artifact"
                         )
-                    _verify_codesign_signature(artifact_path)
+                    _verify_codesign_signature(artifact_fs_path)
                 else:
                     raise RuntimeError(
                         "unable to resolve signing tool for verification"
@@ -7805,6 +7876,12 @@ def vendor(
             if resolved_error:
                 return _fail(
                     resolved_error,
+                    json_output,
+                    command="vendor",
+                )
+            if resolved_ref is None:
+                return _fail(
+                    "unable to resolve git ref",
                     json_output,
                     command="vendor",
                 )

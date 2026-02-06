@@ -207,7 +207,7 @@ class ZipFile:
 
     def namelist(self) -> list[str]:
         if self.mode == "w":
-            return [name.decode("utf-8") for name, _, _, _ in self._entries]
+            return [entry[0].decode("utf-8") for entry in self._entries]
         return list(self._index.keys())
 
     def read(self, name: str) -> bytes:

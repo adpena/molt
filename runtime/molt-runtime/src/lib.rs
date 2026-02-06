@@ -22,9 +22,9 @@ mod builtins;
 mod call;
 mod concurrency;
 mod constants;
+mod intrinsics;
 #[cfg(target_arch = "wasm32")]
 mod libc_compat;
-mod intrinsics;
 mod object;
 mod provenance;
 mod state;
@@ -32,23 +32,23 @@ mod utils;
 
 #[allow(unused_imports)]
 pub(crate) use crate::async_rt::*;
-#[allow(unused_imports)]
-pub(crate) use crate::concurrency::{
-    gil_assert, gil_held, with_gil, GilGuard, GilReleaseGuard, PyToken,
-};
 pub use crate::concurrency::isolates::*;
 pub(crate) use crate::concurrency::locks::{
     molt_lock_acquire, molt_lock_drop, molt_lock_locked, molt_lock_new, molt_lock_release,
     molt_rlock_acquire, molt_rlock_drop, molt_rlock_locked, molt_rlock_new, molt_rlock_release,
 };
 #[allow(unused_imports)]
+pub(crate) use crate::concurrency::{
+    gil_assert, gil_held, with_gil, GilGuard, GilReleaseGuard, PyToken,
+};
+#[allow(unused_imports)]
 pub(crate) use crate::state::RuntimeState;
 #[allow(unused_imports)]
 pub(crate) use molt_obj_model::MoltObject;
 
+pub use crate::async_rt::cancellation::*;
 pub(crate) use crate::async_rt::channels::has_capability;
 pub use crate::async_rt::channels::*;
-pub use crate::async_rt::cancellation::*;
 #[allow(unused_imports)]
 pub use crate::async_rt::generators::*;
 pub(crate) use crate::async_rt::io_poller::IoPoller;
@@ -86,6 +86,7 @@ pub(crate) use crate::builtins::classes::{
     builtin_classes, builtin_classes_if_initialized, builtin_classes_shutdown, builtin_type_bits,
     class_name_for_error, is_builtin_class_bits, BuiltinClasses,
 };
+pub use crate::builtins::codecs::*;
 pub(crate) use crate::builtins::containers::{
     dict_len, dict_method_bits, dict_order, dict_order_ptr, dict_table, dict_table_ptr,
     dict_view_as_set_bits, dict_view_dict_bits, dict_view_entry, dict_view_len,
@@ -99,6 +100,7 @@ pub use crate::builtins::containers_alloc::{
 };
 pub use crate::builtins::context::*;
 pub(crate) use crate::builtins::context::{context_payload_bits, context_stack_unwind};
+pub use crate::builtins::decimal::*;
 pub(crate) use crate::builtins::exceptions::{
     alloc_exception, alloc_exception_from_class_bits, clear_exception, clear_exception_state,
     clear_exception_type_cache, exception_args_bits, exception_args_from_iterable,
@@ -117,8 +119,7 @@ pub(crate) use crate::builtins::exceptions::{
     molt_exception_active, molt_exception_clear, molt_exception_kind, molt_exception_last,
     molt_exception_pending, molt_exception_set_last, molt_getframe, molt_raise, raise_exception,
     raise_key_error_with_key, raise_not_iterable, raise_unicode_decode_error,
-    raise_unicode_encode_error,
-    raise_unsupported_inplace, record_exception, set_generator_raise,
+    raise_unicode_encode_error, raise_unsupported_inplace, record_exception, set_generator_raise,
     set_task_raise_active, task_exception_baseline_drop, task_exception_baseline_store,
     task_exception_baseline_take, task_exception_depth_drop, task_exception_depth_store,
     task_exception_depth_take, task_exception_handler_stack_drop,
@@ -130,20 +131,17 @@ pub(crate) use crate::builtins::exceptions::{
 };
 pub(crate) use crate::builtins::exceptions::{raise_os_error, raise_os_error_errno};
 pub use crate::builtins::functions::*;
+pub use crate::builtins::functools::*;
+pub use crate::builtins::hashlib::*;
+pub use crate::builtins::hmac::*;
 pub use crate::builtins::io::*;
-pub use crate::builtins::codecs::*;
-pub use crate::builtins::decimal::*;
 pub(crate) use crate::builtins::io::{
     close_payload, file_handle_detached_message, file_handle_enter, file_handle_exit,
     file_handle_is_closed, path_from_bits, DecodeFailure,
 };
-pub use crate::builtins::json::*;
-pub use crate::builtins::hashlib::*;
-pub use crate::builtins::hmac::*;
-pub use crate::builtins::functools::*;
 pub use crate::builtins::itertools::*;
+pub use crate::builtins::json::*;
 pub use crate::builtins::math::*;
-pub use crate::builtins::operator::*;
 pub(crate) use crate::builtins::methods::*;
 pub use crate::builtins::modules::*;
 pub(crate) use crate::builtins::numbers::{
@@ -154,6 +152,7 @@ pub(crate) use crate::builtins::numbers::{
     int_bits_from_i128, int_bits_from_i64, int_subclass_value_bits_raw, round_float_ndigits,
     round_half_even, split_maxsplit_from_obj, to_bigint, to_f64, to_i64, ComplexParts,
 };
+pub use crate::builtins::operator::*;
 pub use crate::builtins::platform::*;
 pub(crate) use crate::builtins::strings::{
     bytes_count_impl, bytes_find_impl, bytes_rfind_impl, bytes_strip_range, replace_bytes_impl,
@@ -164,13 +163,12 @@ pub(crate) use crate::builtins::strings::{
     split_string_whitespace_to_list_maxsplit, splitlines_bytes_to_list, splitlines_string_to_list,
 };
 pub use crate::builtins::structs::*;
-pub use crate::builtins::zlib::*;
 pub(crate) use crate::builtins::type_ops::{
     class_bases_vec, class_mro_ref, class_mro_vec, isinstance_bits, isinstance_runtime,
     issubclass_bits, issubclass_runtime, type_of_bits,
 };
 pub use crate::builtins::types::*;
-pub use crate::intrinsics::capabilities::*;
+pub use crate::builtins::zlib::*;
 #[allow(unused_imports)]
 pub(crate) use crate::call::bind::molt_callargs_push_kw;
 pub(crate) use crate::call::bind::{
@@ -190,6 +188,7 @@ pub(crate) use crate::call::function::{
 };
 pub(crate) use crate::call::lookup_call_attr;
 pub(crate) use crate::constants::*;
+pub use crate::intrinsics::capabilities::*;
 pub(crate) use crate::object::accessors::{
     object_field_get_ptr_raw, object_field_set_ptr_raw, resolve_obj_ptr,
 };
@@ -244,6 +243,10 @@ pub(crate) use crate::object::ops::{
 };
 pub(crate) use crate::object::type_ids::*;
 pub(crate) use crate::object::weakref::weakref_clear_for_ptr;
+pub use crate::object::weakref::{
+    molt_weakref_collect, molt_weakref_drop, molt_weakref_get, molt_weakref_peek,
+    molt_weakref_register,
+};
 pub(crate) use crate::object::{
     alloc_object, alloc_object_zeroed, alloc_object_zeroed_with_pool, bits_from_ptr, buffer2d_ptr,
     bytes_data, bytes_len, dataclass_desc_ptr, dataclass_dict_bits, dataclass_fields_mut,

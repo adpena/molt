@@ -6,7 +6,6 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_stdlib_probe", globals())
 
 from types import ModuleType
 import sys
@@ -15,6 +14,9 @@ import builtins
 
 from importlib.machinery import ModuleSpec, SourceFileLoader
 import importlib.machinery as machinery
+
+_require_intrinsic("molt_stdlib_probe", globals())
+
 
 __all__ = [
     "find_spec",
@@ -35,8 +37,14 @@ def _molt_loader():
         return loader
     cls = getattr(machinery, "MoltLoader", None)
     if cls is None:
-        raise AttributeError("module 'importlib.machinery' has no attribute 'MoltLoader'")
-    loader = cls()
+
+        class MoltLoader:
+            def __repr__(self) -> str:
+                return "<MoltLoader>"
+
+        loader = MoltLoader()
+    else:
+        loader = cls()
     setattr(machinery, "MOLT_LOADER", loader)
     return loader
 
@@ -213,7 +221,7 @@ def module_from_spec(spec: ModuleSpec):
         module.__package__ = spec.parent
     if spec.origin is not None:
         module.__file__ = spec.origin
-    module.__cached__ = spec.cached
+    setattr(module, "__cached__", spec.cached)
     return module
 
 

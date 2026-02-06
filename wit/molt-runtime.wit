@@ -165,14 +165,14 @@ interface intrinsics {
     rlock_release: func(handle: molt-object) -> molt-object;
     rlock_locked: func(handle: molt-object) -> molt-object;
     rlock_drop: func(handle: molt-object) -> molt-object;
-    chan_new: func(capacity: molt-object) -> molt-ptr;
-    chan_send: func(chan: molt-ptr, val: molt-object) -> molt-object;
-    chan_send_blocking: func(chan: molt-ptr, val: molt-object) -> molt-object;
-    chan_try_send: func(chan: molt-ptr, val: molt-object) -> molt-object;
-    chan_recv: func(chan: molt-ptr) -> molt-object;
-    chan_recv_blocking: func(chan: molt-ptr) -> molt-object;
-    chan_try_recv: func(chan: molt-ptr) -> molt-object;
-    chan_drop: func(chan: molt-ptr);
+    chan_new: func(capacity: molt-object) -> u64;
+    chan_send: func(chan: u64, val: molt-object) -> molt-object;
+    chan_send_blocking: func(chan: u64, val: molt-object) -> molt-object;
+    chan_try_send: func(chan: u64, val: molt-object) -> molt-object;
+    chan_recv: func(chan: u64) -> molt-object;
+    chan_recv_blocking: func(chan: u64) -> molt-object;
+    chan_try_recv: func(chan: u64) -> molt-object;
+    chan_drop: func(chan: u64) -> molt-object;
 
     add: func(a: molt-object, b: molt-object) -> molt-object;
     inplace_add: func(a: molt-object, b: molt-object) -> molt-object;

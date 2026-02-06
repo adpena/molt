@@ -191,11 +191,7 @@ fn bytes_like_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<&'static [u8], u
     ))
 }
 
-fn bytes_like_required(
-    _py: &PyToken<'_>,
-    bits: u64,
-    label: &str,
-) -> Result<&'static [u8], u64> {
+fn bytes_like_required(_py: &PyToken<'_>, bits: u64, label: &str) -> Result<&'static [u8], u64> {
     let obj = obj_from_bits(bits);
     let Some(ptr) = obj.as_ptr() else {
         let msg = format!("a bytes-like object is required, not '{label}'");
@@ -211,11 +207,7 @@ fn bytes_like_required(
     Err(raise_exception::<u64>(_py, "TypeError", &msg))
 }
 
-fn int_from_bits(
-    _py: &PyToken<'_>,
-    bits: u64,
-    name: &str,
-) -> Result<i64, u64> {
+fn int_from_bits(_py: &PyToken<'_>, bits: u64, name: &str) -> Result<i64, u64> {
     let obj = obj_from_bits(bits);
     let type_name = type_name(_py, obj);
     let msg = format!("'{type_name}' object cannot be interpreted as an integer");
@@ -226,12 +218,7 @@ fn int_from_bits(
     Ok(val)
 }
 
-fn bigint_from_bits(
-    _py: &PyToken<'_>,
-    bits: u64,
-    name: &str,
-    overflow: &str,
-) -> Result<i64, u64> {
+fn bigint_from_bits(_py: &PyToken<'_>, bits: u64, name: &str, overflow: &str) -> Result<i64, u64> {
     let obj = obj_from_bits(bits);
     let type_name = type_name(_py, obj);
     let msg = format!("'{type_name}' object cannot be interpreted as an integer");
@@ -768,9 +755,7 @@ pub extern "C" fn molt_pbkdf2_hmac(
         let name_obj = obj_from_bits(name_bits);
         let Some(name) = string_obj_to_owned(name_obj) else {
             let type_name = type_name(_py, name_obj);
-            let msg = format!(
-                "pbkdf2_hmac() argument 'hash_name' must be str, not {type_name}"
-            );
+            let msg = format!("pbkdf2_hmac() argument 'hash_name' must be str, not {type_name}");
             return raise_exception::<u64>(_py, "TypeError", &msg);
         };
         let normalized = normalize_hash_name(&name);
@@ -833,17 +818,8 @@ pub extern "C" fn molt_pbkdf2_hmac(
     })
 }
 
-fn scrypt_int_required(
-    _py: &PyToken<'_>,
-    bits: u64,
-    name: &str,
-) -> Result<u64, u64> {
-    let value = bigint_from_bits(
-        _py,
-        bits,
-        name,
-        "Python int too large to convert to C long",
-    )?;
+fn scrypt_int_required(_py: &PyToken<'_>, bits: u64, name: &str) -> Result<u64, u64> {
+    let value = bigint_from_bits(_py, bits, name, "Python int too large to convert to C long")?;
     if value < 0 {
         return Err(raise_exception::<u64>(
             _py,
@@ -940,8 +916,7 @@ pub extern "C" fn molt_scrypt(
         };
         if maxmem > 0 {
             let r128 = r.saturating_mul(128);
-            let required = r128
-                .saturating_mul(n.saturating_add(p).saturating_add(1));
+            let required = r128.saturating_mul(n.saturating_add(p).saturating_add(1));
             if required as i64 > maxmem {
                 return raise_exception::<u64>(
                     _py,

@@ -10,8 +10,9 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 from typing import Any, Iterable, Iterator, TYPE_CHECKING, TypeVar
 
+
 if TYPE_CHECKING:
-    from typing import Callable
+    pass
 
 __all__ = [
     "accumulate",
@@ -105,7 +106,9 @@ def product(*iterables: Iterable[T], repeat: Any = 1) -> Iterator[tuple[Any, ...
     return _MOLT_PRODUCT(iterables, repeat)
 
 
-def permutations(iterable: Iterable[T], r: Any | None = None) -> Iterator[tuple[T, ...]]:
+def permutations(
+    iterable: Iterable[T], r: Any | None = None
+) -> Iterator[tuple[T, ...]]:
     return _MOLT_PERMUTATIONS(iterable, r)
 
 

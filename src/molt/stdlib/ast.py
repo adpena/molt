@@ -170,7 +170,7 @@ def get_docstring(node: AST, clean: bool = True) -> str | None:
     return None
 
 
-def _iter_child_nodes(node: AST) -> list[AST]:
+def _iter_child_nodes(node: Any) -> list[AST]:
     node_type = type(node)
     if node_type is Module:
         return list(node.body)

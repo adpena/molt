@@ -18,6 +18,11 @@ use crate::{
     type_name, type_of_bits, TYPE_ID_DICT, TYPE_ID_MODULE, TYPE_ID_STRING, TYPE_ID_TUPLE,
 };
 
+#[cfg(not(target_arch = "wasm32"))]
+unsafe extern "C" {
+    fn molt_isolate_import(name_bits: u64) -> u64;
+}
+
 fn trace_module_cache() -> bool {
     static TRACE: OnceLock<bool> = OnceLock::new();
     *TRACE.get_or_init(|| {
@@ -371,6 +376,143 @@ pub extern "C" fn molt_module_cache_get(name_bits: u64) -> u64 {
             eprintln!("module cache miss: {name}");
         }
         MoltObject::none().bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_module_import(name_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let name = match string_obj_to_owned(obj_from_bits(name_bits)) {
+            Some(val) => val,
+            None => return raise_exception::<_>(_py, "TypeError", "module name must be str"),
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let module_bits = unsafe { molt_isolate_import(name_bits) };
+        #[cfg(target_arch = "wasm32")]
+        let module_bits = {
+            let cache = crate::builtins::exceptions::internals::module_cache(_py);
+            let guard = cache.lock().unwrap();
+            if let Some(bits) = guard.get(&name) {
+                inc_ref_bits(_py, *bits);
+                *bits
+            } else {
+                MoltObject::none().bits()
+            }
+        };
+        if obj_from_bits(module_bits).is_none() && !exception_pending(_py) {
+            let msg = format!("No module named '{name}'");
+            return raise_exception::<_>(_py, "ImportError", &msg);
+        }
+        module_bits
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_runpy_run_module(
+    mod_name_bits: u64,
+    run_name_bits: u64,
+    init_globals_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let mod_name = match string_obj_to_owned(obj_from_bits(mod_name_bits)) {
+            Some(val) => val,
+            None => return raise_exception::<_>(_py, "TypeError", "mod_name must be str"),
+        };
+        let target_name = {
+            let run_name_obj = obj_from_bits(run_name_bits);
+            if run_name_obj.is_none() {
+                mod_name.clone()
+            } else {
+                match string_obj_to_owned(run_name_obj) {
+                    Some(val) => val,
+                    None => {
+                        return raise_exception::<_>(_py, "TypeError", "run_name must be str");
+                    }
+                }
+            }
+        };
+        let init_dict_ptr = {
+            let init_obj = obj_from_bits(init_globals_bits);
+            if init_obj.is_none() {
+                None
+            } else {
+                match init_obj.as_ptr() {
+                    Some(ptr) if unsafe { object_type_id(ptr) == TYPE_ID_DICT } => Some(ptr),
+                    _ => {
+                        return raise_exception::<_>(
+                            _py,
+                            "TypeError",
+                            "init_globals must be dict or None",
+                        );
+                    }
+                }
+            }
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let module_bits = unsafe { molt_isolate_import(mod_name_bits) };
+        #[cfg(target_arch = "wasm32")]
+        let module_bits = {
+            let cache = crate::builtins::exceptions::internals::module_cache(_py);
+            let guard = cache.lock().unwrap();
+            if let Some(bits) = guard.get(&mod_name) {
+                inc_ref_bits(_py, *bits);
+                *bits
+            } else {
+                MoltObject::none().bits()
+            }
+        };
+        if obj_from_bits(module_bits).is_none() && !exception_pending(_py) {
+            let msg = format!("No module named '{mod_name}'");
+            return raise_exception::<_>(_py, "ImportError", &msg);
+        }
+        let module_ptr = match obj_from_bits(module_bits).as_ptr() {
+            Some(ptr) if unsafe { object_type_id(ptr) == TYPE_ID_MODULE } => ptr,
+            _ => return raise_exception::<_>(_py, "TypeError", "module import expects module"),
+        };
+        let module_dict_ptr = unsafe {
+            match obj_from_bits(module_dict_bits(module_ptr)).as_ptr() {
+                Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
+                _ => return raise_exception::<_>(_py, "TypeError", "module dict missing"),
+            }
+        };
+        let out_ptr = alloc_dict_with_pairs(_py, &[]);
+        if out_ptr.is_null() {
+            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        }
+        unsafe {
+            let source_order = dict_order(module_dict_ptr);
+            for idx in (0..source_order.len()).step_by(2) {
+                let key_bits = source_order[idx];
+                let val_bits = source_order[idx + 1];
+                dict_set_in_place(_py, out_ptr, key_bits, val_bits);
+            }
+            if let Some(init_ptr) = init_dict_ptr {
+                let init_order = dict_order(init_ptr);
+                for idx in (0..init_order.len()).step_by(2) {
+                    let key_bits = init_order[idx];
+                    let val_bits = init_order[idx + 1];
+                    dict_set_in_place(_py, out_ptr, key_bits, val_bits);
+                }
+            }
+        }
+        let name_key_ptr = alloc_string(_py, b"__name__");
+        if name_key_ptr.is_null() {
+            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        }
+        let target_name_ptr = alloc_string(_py, target_name.as_bytes());
+        if target_name_ptr.is_null() {
+            let name_key_bits = MoltObject::from_ptr(name_key_ptr).bits();
+            dec_ref_bits(_py, name_key_bits);
+            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        }
+        let name_key_bits = MoltObject::from_ptr(name_key_ptr).bits();
+        let target_name_bits = MoltObject::from_ptr(target_name_ptr).bits();
+        unsafe {
+            dict_set_in_place(_py, out_ptr, name_key_bits, target_name_bits);
+        }
+        dec_ref_bits(_py, name_key_bits);
+        dec_ref_bits(_py, target_name_bits);
+        MoltObject::from_ptr(out_ptr).bits()
     })
 }
 

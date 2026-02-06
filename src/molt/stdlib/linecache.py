@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-
 _require_intrinsic("molt_stdlib_probe", globals())
+
 
 __all__ = ["getline", "clearcache", "checkcache", "lazycache"]
 
@@ -464,14 +464,8 @@ def _detect_encoding(readline, filename: str | None) -> tuple[str, list[bytes]]:
 
 
 def _open_source(filename: str):
-    try:
-        import tokenize as _tokenize
-    except ImportError:
-        return _open_with_fallback(filename)
-    open_fn = getattr(_tokenize, "open", None)
-    if open_fn is None:
-        return _open_with_fallback(filename)
-    return open_fn(filename)
+    # Keep linecache intrinsic-only by avoiding tokenize's tempfile dependency.
+    return _open_with_fallback(filename)
 
 
 def _open_with_fallback(filename: str):

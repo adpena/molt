@@ -19,6 +19,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 from builtins import TimeoutError as _BuiltinTimeoutError
 
+
 if TYPE_CHECKING:
 
     def molt_thread_submit(_func: Any, _args: Any, _kwargs: Any) -> Any:

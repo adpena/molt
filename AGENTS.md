@@ -15,6 +15,15 @@
 - Standardize intrinsic naming and registration through `runtime/molt-runtime/src/intrinsics/manifest.pyi`, and regenerate `src/molt/_intrinsics.pyi` plus `runtime/molt-runtime/src/intrinsics/generated.rs` via `tools/gen_intrinsics.py`.
 - Prefer standardization, performance, and correctness: push hot paths and semantics into Rust, keep Python shims minimal and deterministic, and avoid CPython/host-stdlib dependencies.
 
+## Hard Gate: Rust-Only Stdlib Turn Blocker (Non-Negotiable)
+- If a change adds or modifies stdlib behavior in `src/molt/stdlib/**`, the behavior must be implemented in Rust intrinsics first; Python code may only wire arguments, errors, and capability checks.
+- Do not add Python-side fallback logic, compatibility emulation, or host-stdlib implementation paths to make tests pass.
+- For every stdlib behavior change, include an explicit intrinsic mapping in the same change:
+`runtime/molt-runtime/src/intrinsics/manifest.pyi` entry, Rust implementation, and regenerated `src/molt/_intrinsics.pyi` + `runtime/molt-runtime/src/intrinsics/generated.rs`.
+- If no intrinsic exists for required behavior, stop immediately and raise the missing intrinsic as the blocker; do not proceed with a Python implementation.
+- Before ending a turn, provide a short Rust-lowering audit for touched stdlib modules:
+module path, intrinsic names used, and confirmation that no host-Python fallback path was added.
+
 ## Mission (Non-Negotiable)
 Build relentlessly with high productivity, velocity, and vision in the spirit and honor of Jeff Dean. Always build fully, completely, correctly, and performantly; avoid workarounds. Guiding question: "What would Jeff Dean do?"
 

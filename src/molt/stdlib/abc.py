@@ -1,14 +1,13 @@
 # Copyright 2007 Google, Inc. All Rights Reserved.
 # Licensed to PSF under a Contributor Agreement.
 
+
 """Abstract Base Classes (ABCs) according to PEP 3119."""
 
 import builtins as _builtins
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-
-_require_intrinsic("molt_stdlib_probe", globals())
 
 from _abc import (
     get_cache_token,
@@ -20,6 +19,8 @@ from _abc import (
     _reset_registry,
     _reset_caches,
 )
+
+_require_intrinsic("molt_stdlib_probe", globals())
 
 classmethod = _builtins.classmethod
 staticmethod = _builtins.staticmethod

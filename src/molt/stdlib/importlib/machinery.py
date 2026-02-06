@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+# Delay intrinsic probing until the module namespace is fully initialized to
+# avoid circular import hazards during bootstrap.
+
+
 class MoltLoader:
     def __repr__(self) -> str:
         return "<MoltLoader>"
@@ -191,12 +195,12 @@ def _exec_restricted(module, source: str, filename: str) -> None:
         namespace[target] = value
 
 
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+_require_intrinsic("molt_stdlib_probe", globals())
+
+
 _MISSING = object()
 
 
 __all__ = ["ModuleSpec", "MOLT_LOADER", "MoltLoader", "SourceFileLoader"]
-
-import builtins as _builtins
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_require_intrinsic("molt_stdlib_probe", globals())

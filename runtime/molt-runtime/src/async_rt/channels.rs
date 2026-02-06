@@ -46,6 +46,12 @@ pub struct MoltStream {
     pub hook_ctx: *mut u8,
 }
 
+struct MoltStreamReader {
+    stream_bits: u64,
+    buffer: Vec<u8>,
+    eof: bool,
+}
+
 pub struct MoltWebSocket {
     pub sender: Sender<Vec<u8>>,
     pub receiver: Receiver<Vec<u8>>,
@@ -80,50 +86,29 @@ struct WsPollStream {
     ctx: *const Mutex<NativeWebSocket>,
 }
 
-#[cfg(target_arch = "wasm32")]
-type ChanHandle = *mut u8;
-#[cfg(not(target_arch = "wasm32"))]
 type ChanHandle = u64;
 
-#[cfg(target_arch = "wasm32")]
-#[inline]
-fn chan_handle_from_ptr(ptr: *mut u8) -> ChanHandle {
-    ptr
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 #[inline]
 fn chan_handle_from_ptr(ptr: *mut u8) -> ChanHandle {
     bits_from_ptr(ptr)
 }
 
-#[cfg(target_arch = "wasm32")]
-#[inline]
-unsafe fn chan_ptr_from_handle(handle: ChanHandle) -> *mut u8 {
-    handle
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 #[inline]
 unsafe fn chan_ptr_from_handle(handle: ChanHandle) -> *mut u8 {
     ptr_from_bits(handle)
 }
 
-#[cfg(target_arch = "wasm32")]
-#[inline]
-unsafe fn chan_release_ptr(_ptr: *mut u8) {}
-
-#[cfg(not(target_arch = "wasm32"))]
 #[inline]
 unsafe fn chan_release_ptr(ptr: *mut u8) {
     release_ptr(ptr);
 }
 
 fn chan_try_send_impl(_py: &PyToken<'_>, chan: &MoltChannel, val: i64) -> i64 {
+    let ok_bits = MoltObject::from_int(0).bits() as i64;
     let bits = val as u64;
     inc_ref_bits(_py, bits);
     match chan.sender.try_send(val) {
-        Ok(_) => 0,
+        Ok(_) => ok_bits,
         Err(TrySendError::Full(_)) => {
             dec_ref_bits(_py, bits);
             pending_bits_i64()
@@ -146,14 +131,15 @@ fn chan_try_recv_impl(_py: &PyToken<'_>, chan: &MoltChannel) -> i64 {
 }
 
 fn chan_send_blocking_impl(_py: &PyToken<'_>, chan: &MoltChannel, val: i64) -> i64 {
+    let ok_bits = MoltObject::from_int(0).bits() as i64;
     let bits = val as u64;
     inc_ref_bits(_py, bits);
     match chan.sender.try_send(val) {
-        Ok(_) => 0,
+        Ok(_) => ok_bits,
         Err(TrySendError::Full(_)) => {
             let _release = GilReleaseGuard::new();
             match chan.sender.send(val) {
-                Ok(_) => 0,
+                Ok(_) => ok_bits,
                 Err(_) => {
                     dec_ref_bits(_py, bits);
                     raise_exception::<i64>(_py, "RuntimeError", "channel send failed")
@@ -220,11 +206,11 @@ pub extern "C" fn molt_chan_new(capacity_bits: u64) -> ChanHandle {
 #[no_mangle]
 /// # Safety
 /// Caller must ensure `chan_handle` is a valid channel pointer.
-pub unsafe extern "C" fn molt_chan_drop(chan_handle: ChanHandle) {
+pub unsafe extern "C" fn molt_chan_drop(chan_handle: ChanHandle) -> u64 {
     crate::with_gil_entry!(_py, {
         let chan_ptr = chan_ptr_from_handle(chan_handle);
         if chan_ptr.is_null() {
-            return;
+            return MoltObject::none().bits();
         }
         let chan = Box::from_raw(chan_ptr as *mut MoltChannel);
         while let Ok(val) = chan.receiver.try_recv() {
@@ -232,6 +218,7 @@ pub unsafe extern "C" fn molt_chan_drop(chan_handle: ChanHandle) {
         }
         chan_release_ptr(chan_ptr);
         drop(chan);
+        MoltObject::none().bits()
     })
 }
 
@@ -318,6 +305,193 @@ fn bytes_channel(capacity: usize) -> (Sender<Vec<u8>>, Receiver<Vec<u8>>) {
     } else {
         bounded(capacity)
     }
+}
+
+enum ReaderPull {
+    Pending,
+    Eof,
+    Data,
+}
+
+unsafe fn stream_reader_pull(
+    _py: &PyToken<'_>,
+    reader: &mut MoltStreamReader,
+) -> Result<ReaderPull, u64> {
+    if reader.eof {
+        return Ok(ReaderPull::Eof);
+    }
+    let pending = pending_bits_i64() as u64;
+    let recv_bits = molt_stream_recv(reader.stream_bits) as u64;
+    if recv_bits == pending {
+        return Ok(ReaderPull::Pending);
+    }
+    let recv_obj = obj_from_bits(recv_bits);
+    if recv_obj.is_none() {
+        reader.eof = true;
+        return Ok(ReaderPull::Eof);
+    }
+    let data = match send_data_from_bits(recv_bits) {
+        Ok(SendData::Borrowed(ptr, len)) => {
+            unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec()
+        }
+        Ok(SendData::Owned(vec)) => vec,
+        Err(msg) => return Err(raise_exception::<u64>(_py, "TypeError", &msg)),
+    };
+    if data.is_empty() {
+        return Ok(ReaderPull::Data);
+    }
+    reader.buffer.extend_from_slice(&data);
+    Ok(ReaderPull::Data)
+}
+
+fn stream_reader_take(_py: &PyToken<'_>, reader: &mut MoltStreamReader, count: usize) -> u64 {
+    let n = count.min(reader.buffer.len());
+    let ptr = alloc_bytes(_py, &reader.buffer[..n]);
+    if ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    reader.buffer.drain(..n);
+    MoltObject::from_ptr(ptr).bits()
+}
+
+#[no_mangle]
+/// # Safety
+/// Caller must pass a valid stream handle from `molt_stream_new`/`molt_stream_clone`.
+pub unsafe extern "C" fn molt_stream_reader_new(stream_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let stream_ptr = ptr_from_bits(stream_bits);
+        if stream_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let cloned_bits = molt_stream_clone(stream_bits);
+        if obj_from_bits(cloned_bits).is_none() {
+            return MoltObject::none().bits();
+        }
+        let reader = Box::new(MoltStreamReader {
+            stream_bits: cloned_bits,
+            buffer: Vec::new(),
+            eof: false,
+        });
+        bits_from_ptr(Box::into_raw(reader) as *mut u8)
+    })
+}
+
+#[no_mangle]
+/// # Safety
+/// Caller must pass a valid stream reader handle from `molt_stream_reader_new`.
+pub unsafe extern "C" fn molt_stream_reader_drop(reader_bits: u64) {
+    crate::with_gil_entry!(_py, {
+        let reader_ptr = ptr_from_bits(reader_bits);
+        if reader_ptr.is_null() {
+            return;
+        }
+        let reader = Box::from_raw(reader_ptr as *mut MoltStreamReader);
+        molt_stream_drop(reader.stream_bits);
+    })
+}
+
+#[no_mangle]
+/// # Safety
+/// Caller must pass a valid stream reader handle from `molt_stream_reader_new`.
+pub unsafe extern "C" fn molt_stream_reader_at_eof(reader_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let reader_ptr = ptr_from_bits(reader_bits);
+        if reader_ptr.is_null() {
+            return MoltObject::from_bool(true).bits();
+        }
+        let reader = &*(reader_ptr as *mut MoltStreamReader);
+        MoltObject::from_bool(reader.eof && reader.buffer.is_empty()).bits()
+    })
+}
+
+#[no_mangle]
+/// # Safety
+/// Caller must pass a valid stream reader handle from `molt_stream_reader_new`.
+pub unsafe extern "C" fn molt_stream_reader_read(reader_bits: u64, n_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let reader_ptr = ptr_from_bits(reader_bits);
+        if reader_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let reader = &mut *(reader_ptr as *mut MoltStreamReader);
+        let n = to_i64(obj_from_bits(n_bits)).unwrap_or(-1);
+        if n == 0 {
+            let ptr = alloc_bytes(_py, &[]);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(ptr).bits();
+        }
+        if n < 0 {
+            loop {
+                if reader.eof {
+                    return stream_reader_take(_py, reader, reader.buffer.len());
+                }
+                match stream_reader_pull(_py, reader) {
+                    Ok(ReaderPull::Pending) => return pending_bits_i64() as u64,
+                    Ok(ReaderPull::Eof) | Ok(ReaderPull::Data) => {}
+                    Err(bits) => return bits,
+                }
+            }
+        }
+        if !reader.buffer.is_empty() {
+            return stream_reader_take(_py, reader, n as usize);
+        }
+        if reader.eof {
+            let ptr = alloc_bytes(_py, &[]);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(ptr).bits();
+        }
+        loop {
+            match stream_reader_pull(_py, reader) {
+                Ok(ReaderPull::Pending) => return pending_bits_i64() as u64,
+                Ok(ReaderPull::Eof) => {
+                    if reader.buffer.is_empty() {
+                        let ptr = alloc_bytes(_py, &[]);
+                        if ptr.is_null() {
+                            return MoltObject::none().bits();
+                        }
+                        return MoltObject::from_ptr(ptr).bits();
+                    }
+                    return stream_reader_take(_py, reader, n as usize);
+                }
+                Ok(ReaderPull::Data) => {
+                    if !reader.buffer.is_empty() {
+                        return stream_reader_take(_py, reader, n as usize);
+                    }
+                }
+                Err(bits) => return bits,
+            }
+        }
+    })
+}
+
+#[no_mangle]
+/// # Safety
+/// Caller must pass a valid stream reader handle from `molt_stream_reader_new`.
+pub unsafe extern "C" fn molt_stream_reader_readline(reader_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let reader_ptr = ptr_from_bits(reader_bits);
+        if reader_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let reader = &mut *(reader_ptr as *mut MoltStreamReader);
+        loop {
+            if let Some(idx) = reader.buffer.iter().position(|&b| b == b'\n') {
+                return stream_reader_take(_py, reader, idx + 1);
+            }
+            if reader.eof {
+                return stream_reader_take(_py, reader, reader.buffer.len());
+            }
+            match stream_reader_pull(_py, reader) {
+                Ok(ReaderPull::Pending) => return pending_bits_i64() as u64,
+                Ok(ReaderPull::Eof) | Ok(ReaderPull::Data) => {}
+                Err(bits) => return bits,
+            }
+        }
+    })
 }
 
 #[no_mangle]
@@ -1156,9 +1330,8 @@ pub extern "C" fn molt_ws_connect_obj(url_bits: u64) -> u64 {
             }
         };
         let mut handle: u64 = 0;
-        let rc = unsafe {
-            molt_ws_connect(url.as_ptr(), url.len() as u64, &mut handle as *mut u64)
-        };
+        let rc =
+            unsafe { molt_ws_connect(url.as_ptr(), url.len() as u64, &mut handle as *mut u64) };
         if rc != 0 || handle == 0 {
             return raise_exception::<_>(_py, "RuntimeError", "molt_ws_connect failed");
         }

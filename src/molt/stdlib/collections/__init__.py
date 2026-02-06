@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 try:
     from typing import TYPE_CHECKING
 except Exception:
@@ -16,6 +17,7 @@ else:
 
     def cast(_tp, value):
         return value
+
 
 import collections.abc as abc
 import keyword as _keyword
@@ -34,6 +36,7 @@ _MOLT_CLASS_NEW = _require_intrinsic("molt_class_new", globals())
 _MOLT_CLASS_SET_BASE = _require_intrinsic("molt_class_set_base", globals())
 _MOLT_CLASS_APPLY_SET_NAME = _require_intrinsic("molt_class_apply_set_name", globals())
 
+
 class _DequeIter:
     def __init__(self, deq: "deque") -> None:
         self._data = deq._data
@@ -48,6 +51,7 @@ class _DequeIter:
         value = self._data[self._index]
         self._index += 1
         return value
+
 
 class deque:
     _iter_class = _DequeIter
@@ -205,6 +209,7 @@ class deque:
 
     def __reversed__(self) -> Iterator[Any]:
         return reversed(self._data)
+
 
 def namedtuple(
     typename: Any,
@@ -382,6 +387,7 @@ def namedtuple(
     cls = type.__new__(type, typename, (tuple,), namespace)
     type.__init__(cls, typename, (tuple,), namespace)
     return cls
+
 
 class Counter(dict):
     def __init__(
@@ -659,6 +665,7 @@ class Counter(dict):
             dict.__setitem__(self, key, value)
         return self
 
+
 class defaultdict(dict):
     def __init__(self, default_factory=None, *args: Any, **kwargs: Any) -> None:
         self.default_factory = default_factory
@@ -718,6 +725,7 @@ class defaultdict(dict):
     def __repr__(self) -> str:
         return f"defaultdict({self.default_factory!r}, {dict(self)!r})"
 
+
 class _CounterElementsIter:
     def __init__(self, counter: Counter) -> None:
         items: list[tuple[Any, int]] = []
@@ -768,6 +776,7 @@ class _CounterElementsIter:
             self._index += 1
         raise StopIteration
 
+
 class _CounterItemsIter:
     def __init__(self, counter: Counter) -> None:
         items: list[tuple[Any, int]] = []
@@ -785,6 +794,7 @@ class _CounterItemsIter:
         item = self._items[self._index]
         self._index += 1
         return item
+
 
 class _CounterItemsView:
     def __init__(self, counter: Counter) -> None:

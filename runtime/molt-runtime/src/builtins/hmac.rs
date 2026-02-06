@@ -73,7 +73,11 @@ fn build_hmac_handle(
 ) -> Result<HmacHandle, u64> {
     let mut inner = build_hash_handle(_py, name, options_bits)?;
     if inner.is_xof {
-        return Err(raise_exception::<u64>(_py, "ValueError", "no reason supplied"));
+        return Err(raise_exception::<u64>(
+            _py,
+            "ValueError",
+            "no reason supplied",
+        ));
     }
     let mut outer = build_hash_handle(_py, name, options_bits)?;
     let digest_size = inner.digest_size;
@@ -169,9 +173,7 @@ pub extern "C" fn molt_hmac_digest(handle_bits: u64) -> u64 {
         };
         let inner_digest = match handle.inner.clone().finalize_bytes(None) {
             Ok(bytes) => bytes,
-            Err(_) => {
-                return raise_exception::<u64>(_py, "ValueError", "no reason supplied")
-            }
+            Err(_) => return raise_exception::<u64>(_py, "ValueError", "no reason supplied"),
         };
         let mut outer = handle.outer.clone();
         outer.update(&inner_digest);

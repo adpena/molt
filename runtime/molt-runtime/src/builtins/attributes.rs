@@ -257,6 +257,20 @@ pub(crate) unsafe fn type_attr_lookup_ptr(
         }
     }
     if let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits)) {
+        if name == "__init_subclass__"
+            && matches!(
+                std::env::var("MOLT_TRACE_INIT_SUBCLASS").ok().as_deref(),
+                Some("1")
+            )
+        {
+            let builtins = builtin_classes(_py);
+            eprintln!(
+                "molt init_subclass lookup class_bits=0x{:x} builtins.object=0x{:x} is_builtin={}",
+                class_bits,
+                builtins.object,
+                is_builtin_class_bits(_py, class_bits),
+            );
+        }
         if name == "__class__" {
             let builtins = builtin_classes(_py);
             let class_bits = object_class_bits(obj_ptr);
@@ -461,7 +475,22 @@ pub(crate) unsafe fn type_attr_lookup_ptr(
         }
         if is_builtin_class_bits(_py, class_bits) {
             if let Some(func_bits) = builtin_class_method_bits(_py, class_bits, name.as_str()) {
+                if name == "__init_subclass__"
+                    && matches!(
+                        std::env::var("MOLT_TRACE_INIT_SUBCLASS").ok().as_deref(),
+                        Some("1")
+                    )
+                {
+                    eprintln!("molt init_subclass builtin bits=0x{:x}", func_bits);
+                }
                 return descriptor_bind(_py, func_bits, obj_ptr, None);
+            } else if name == "__init_subclass__"
+                && matches!(
+                    std::env::var("MOLT_TRACE_INIT_SUBCLASS").ok().as_deref(),
+                    Some("1")
+                )
+            {
+                eprintln!("molt init_subclass builtin missing");
             }
         }
     }
@@ -1469,6 +1498,25 @@ pub(crate) unsafe fn attr_lookup_ptr(
                     if let Some(val) = dict_get_in_place(_py, dict_ptr, attr_bits) {
                         inc_ref_bits(_py, val);
                         return Some(val);
+                    }
+                }
+            }
+        }
+        // Fall through to the function type for descriptor-backed attributes
+        // such as function.__get__ and function.__repr__.
+        let class_bits = type_of_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
+        if class_bits != 0 {
+            if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
+                if object_type_id(class_ptr) == TYPE_ID_TYPE {
+                    if let Some(val_bits) = class_attr_lookup_raw_mro(_py, class_ptr, attr_bits) {
+                        if let Some(bound) =
+                            descriptor_bind(_py, val_bits, class_ptr, Some(obj_ptr))
+                        {
+                            return Some(bound);
+                        }
+                        if exception_pending(_py) {
+                            return None;
+                        }
                     }
                 }
             }
@@ -4228,6 +4276,20 @@ pub extern "C" fn molt_get_attr_name_default(
             }
             if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
                 if let Some(val) = attr_lookup_ptr(_py, obj_ptr, name_bits) {
+                    if matches!(
+                        std::env::var("MOLT_TRACE_INIT_SUBCLASS").ok().as_deref(),
+                        Some("1")
+                    ) && string_obj_to_owned(obj_from_bits(name_bits)).as_deref()
+                        == Some("__init_subclass__")
+                    {
+                        let val_obj = obj_from_bits(val);
+                        eprintln!(
+                            "molt init_subclass found val_bits=0x{:x} none={} ptr={}",
+                            val,
+                            val_obj.is_none(),
+                            val_obj.as_ptr().is_some(),
+                        );
+                    }
                     return val;
                 }
                 if exception_pending(_py) {
@@ -4242,6 +4304,27 @@ pub extern "C" fn molt_get_attr_name_default(
                     let _ = molt_raise(exc_bits);
                     dec_ref_bits(_py, exc_bits);
                     return MoltObject::none().bits();
+                }
+                if matches!(
+                    std::env::var("MOLT_TRACE_INIT_SUBCLASS").ok().as_deref(),
+                    Some("1")
+                ) && string_obj_to_owned(obj_from_bits(name_bits)).as_deref()
+                    == Some("__init_subclass__")
+                {
+                    let type_id = object_type_id(obj_ptr);
+                    let class_bits = if type_id == TYPE_ID_TYPE {
+                        MoltObject::from_ptr(obj_ptr).bits()
+                    } else {
+                        object_class_bits(obj_ptr)
+                    };
+                    eprintln!(
+                        "molt init_subclass default obj_bits=0x{:x} type_id={} class_bits=0x{:x} default_bits=0x{:x} default_is_none={}",
+                        MoltObject::from_ptr(obj_ptr).bits(),
+                        type_id,
+                        class_bits,
+                        default_bits,
+                        obj_from_bits(default_bits).is_none(),
+                    );
                 }
                 inc_ref_bits(_py, default_bits);
                 return default_bits;

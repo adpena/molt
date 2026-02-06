@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-__all__ = ["Repr", "repr", "recursive_repr"]
+import builtins
+from itertools import islice
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-
 _require_intrinsic("molt_stdlib_probe", globals())
 
-import builtins
-from itertools import islice
+__all__ = ["Repr", "repr", "recursive_repr"]
 
 try:
     from _thread import get_ident as _get_ident
@@ -42,9 +41,9 @@ def recursive_repr(fillvalue="..."):
         wrapper.__doc__ = getattr(user_function, "__doc__")
         wrapper.__name__ = getattr(user_function, "__name__")
         wrapper.__qualname__ = getattr(user_function, "__qualname__")
-        wrapper.__annotate__ = getattr(user_function, "__annotate__", None)
+        setattr(wrapper, "__annotate__", getattr(user_function, "__annotate__", None))
         wrapper.__type_params__ = getattr(user_function, "__type_params__", ())
-        wrapper.__wrapped__ = user_function
+        setattr(wrapper, "__wrapped__", user_function)
         return wrapper
 
     return decorating_function

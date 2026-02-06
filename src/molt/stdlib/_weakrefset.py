@@ -5,8 +5,9 @@ from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 
+from weakref import WeakSet
+
 _require_intrinsic("molt_stdlib_probe", globals())
 
-from weakref import WeakSet
 
 __all__ = ["WeakSet"]

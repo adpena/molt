@@ -12,9 +12,7 @@ fn debug_field_bounds_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
         matches!(
-            std::env::var("MOLT_DEBUG_FIELD_BOUNDS")
-                .ok()
-                .as_deref(),
+            std::env::var("MOLT_DEBUG_FIELD_BOUNDS").ok().as_deref(),
             Some("1")
         )
     })
@@ -40,11 +38,7 @@ pub(crate) unsafe fn object_field_get_ptr_raw(
     if debug_field_bounds_enabled() {
         let payload = object_payload_size(obj_ptr);
         if offset.saturating_add(std::mem::size_of::<u64>()) > payload {
-            return raise_exception::<_>(
-                _py,
-                "RuntimeError",
-                "object field offset out of range",
-            );
+            return raise_exception::<_>(_py, "RuntimeError", "object field offset out of range");
         }
     }
     let slot = obj_ptr.add(offset) as *const u64;
@@ -67,11 +61,7 @@ pub(crate) unsafe fn object_field_set_ptr_raw(
     if debug_field_bounds_enabled() {
         let payload = object_payload_size(obj_ptr);
         if offset.saturating_add(std::mem::size_of::<u64>()) > payload {
-            return raise_exception::<_>(
-                _py,
-                "RuntimeError",
-                "object field offset out of range",
-            );
+            return raise_exception::<_>(_py, "RuntimeError", "object field offset out of range");
         }
     }
     profile_hit(_py, &STRUCT_FIELD_STORE_COUNT);

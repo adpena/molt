@@ -1,2 +1,1 @@
-import logging
 print("ok")
