@@ -26,6 +26,8 @@ jobs:
         run: uv run ruff check .
       - name: Stdlib intrinsics lint
         run: uv run python tools/check_stdlib_intrinsics.py
+      - name: Core lane lowering gate
+        run: uv run python tools/check_core_lane_lowering.py
       - name: Type check
         run: uv run ty check src
       - name: Verified subset manifest

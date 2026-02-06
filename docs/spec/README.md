@@ -43,6 +43,7 @@ Long-form topic docs live under `docs/spec/areas/`.
 ## Compatibility And Contracts
 - 0014 Type Coverage Matrix: `docs/spec/areas/compat/0014_TYPE_COVERAGE_MATRIX.md`
 - 0015 Stdlib Compatibility Matrix: `docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md`
+- 0016 Stdlib Intrinsics Audit: `docs/spec/areas/compat/0016_STDLIB_INTRINSICS_AUDIT.md`
 - 0016 Args Kwargs: `docs/spec/areas/compat/0016_ARGS_KWARGS.md`
 - 0016 Verified Subset Contract: `docs/spec/areas/compat/0016_VERIFIED_SUBSET_CONTRACT.md`
 - 0018 Molt Package ABI: `docs/spec/areas/compat/0018_MOLT_PACKAGE_ABI.md`
@@ -50,6 +51,7 @@ Long-form topic docs live under `docs/spec/areas/`.
 - 0023 Semantic Behavior Matrix: `docs/spec/areas/compat/0023_SEMANTIC_BEHAVIOR_MATRIX.md`
 - 0024 Asyncio Coverage Matrix: `docs/spec/areas/compat/0024_ASYNCIO_COVERAGE_MATRIX.md`
 - 0025 Core Language PEP Coverage: `docs/spec/areas/compat/0025_CORE_LANGUAGE_PEP_COVERAGE.md`
+- 0026 Rust Lowering Program: `docs/spec/areas/compat/0026_RUST_LOWERING_PROGRAM.md`
 - 0210 CPython Bridge PyO3: `docs/spec/areas/compat/0210_CPYTHON_BRIDGE_PYO3.md`
 - 0211 Compatibility And Fallback Contract: `docs/spec/areas/compat/0211_COMPATIBILITY_AND_FALLBACK_CONTRACT.md`
 - 0212 C API Symbol Matrix: `docs/spec/areas/compat/0212_C_API_SYMBOL_MATRIX.md`

@@ -47,6 +47,9 @@
 - **Safety bound:** decorators or typing helpers that mutate globals/types at runtime require explicit opt-in and Tier 1 guards.
 
 ## 3. Compatibility Matrix
+Program sequencing for full Rust lowering (core first, then stdlib) is tracked
+in `docs/spec/areas/compat/0026_RUST_LOWERING_PROGRAM.md`.
+
 | Module | Tier | Status | Priority | Milestone | Owner | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | builtins | Core | Partial | P0 | SL1 | runtime/frontend | Importable module binds supported builtins (including function objects for allowlisted builtins); missing names raise `AttributeError`. |

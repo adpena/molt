@@ -180,7 +180,6 @@ class StackSummary:
             while tb is not None:
                 frames.append(_frame_summary_from_tb(tb))
                 tb = getattr(tb, "tb_next", None)
-            frames.reverse()
             if limit is not None:
                 frames = frames[:limit]
         return cls(frames)

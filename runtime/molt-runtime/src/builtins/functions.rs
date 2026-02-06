@@ -210,11 +210,7 @@ pub extern "C" fn molt_email_message_set(
     crate::with_gil_entry!(_py, {
         let message_ptr = ptr_from_bits(message_bits);
         if message_ptr.is_null() {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "email message handle is invalid",
-            );
+            return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
         }
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "header name must be str");
@@ -233,11 +229,7 @@ pub extern "C" fn molt_email_message_items(message_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let message_ptr = ptr_from_bits(message_bits);
         if message_ptr.is_null() {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "email message handle is invalid",
-            );
+            return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
         }
         let message = unsafe { &*(message_ptr as *mut MoltEmailMessage) };
         let mut pair_bits: Vec<u64> = Vec::with_capacity(message.headers.len());

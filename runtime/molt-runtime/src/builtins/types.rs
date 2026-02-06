@@ -8,22 +8,21 @@ use crate::{
     alloc_generic_alias, alloc_instance_for_class, alloc_list, alloc_property_obj,
     alloc_staticmethod_obj, alloc_string, alloc_super_obj, alloc_tuple, apply_class_slots_layout,
     attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, builtin_classes, builtin_type_bits,
-    call_callable0, call_callable1, call_callable2, class_bases_bits, class_bases_vec,
-    class_bump_layout_version, class_dict_bits, class_layout_version_bits, class_mro_bits,
-    class_mro_vec, class_name_for_error, class_set_bases_bits, class_set_layout_version_bits,
-    class_set_mro_bits, class_set_qualname_bits, dataclass_set_class_raw, dec_ref_bits,
-    dict_del_in_place, dict_get_in_place, dict_order, dict_set_in_place, dict_update_apply,
-    dict_update_set_in_place, exception_pending, header_from_obj_ptr, inc_ref_bits,
-    init_atomic_bits, instance_dict_bits, intern_static_name, is_builtin_class_bits, is_truthy,
-    isinstance_runtime, issubclass_bits, issubclass_runtime, maybe_ptr_from_bits, missing_bits,
-    molt_alloc, molt_call_bind, molt_callargs_new, molt_callargs_push_kw, molt_callargs_push_pos,
-    molt_contains, molt_dict_get, molt_eq, molt_getattr_builtin, molt_index, molt_iter,
-    molt_iter_next, molt_len, molt_object_setattr, molt_repr_from_obj, obj_from_bits,
-    object_class_bits, object_set_class_bits, object_type_id, property_del_bits, property_get_bits,
-    property_set_bits, raise_exception, raise_not_iterable, runtime_state, seq_vec_ref,
-    string_obj_to_owned, to_i64, tuple_from_iter_bits, type_name, type_of_bits, PyToken,
-    HEADER_FLAG_SKIP_CLASS_DECREF, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_PROPERTY,
-    TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE,
+    call_callable0, call_callable2, class_bases_bits, class_bases_vec, class_bump_layout_version,
+    class_dict_bits, class_layout_version_bits, class_mro_bits, class_mro_vec,
+    class_name_for_error, class_set_bases_bits, class_set_layout_version_bits, class_set_mro_bits,
+    class_set_qualname_bits, dataclass_set_class_raw, dec_ref_bits, dict_del_in_place,
+    dict_get_in_place, dict_order, dict_set_in_place, dict_update_apply, dict_update_set_in_place,
+    exception_pending, header_from_obj_ptr, inc_ref_bits, init_atomic_bits, instance_dict_bits,
+    intern_static_name, is_builtin_class_bits, is_truthy, isinstance_runtime, issubclass_bits,
+    issubclass_runtime, maybe_ptr_from_bits, missing_bits, molt_alloc, molt_call_bind,
+    molt_callargs_new, molt_callargs_push_kw, molt_callargs_push_pos, molt_contains, molt_dict_get,
+    molt_eq, molt_getattr_builtin, molt_index, molt_iter, molt_iter_next, molt_len,
+    molt_object_setattr, molt_repr_from_obj, obj_from_bits, object_class_bits,
+    object_set_class_bits, object_type_id, property_del_bits, property_get_bits, property_set_bits,
+    raise_exception, raise_not_iterable, runtime_state, seq_vec_ref, string_obj_to_owned, to_i64,
+    tuple_from_iter_bits, type_name, type_of_bits, PyToken, HEADER_FLAG_SKIP_CLASS_DECREF,
+    TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_PROPERTY, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE,
 };
 
 #[no_mangle]
@@ -856,6 +855,45 @@ pub extern "C" fn molt_generic_alias_new(origin_bits: u64, args_bits: u64) -> u6
         } else {
             MoltObject::from_ptr(ptr).bits()
         }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_typing_type_param(typevar_ctor_bits: u64, name_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let name_obj = obj_from_bits(name_bits);
+        let Some(name_ptr) = name_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "type parameter name must be str");
+        };
+        unsafe {
+            if object_type_id(name_ptr) != TYPE_ID_STRING {
+                return raise_exception::<_>(_py, "TypeError", "type parameter name must be str");
+            }
+        }
+        let builder_bits = molt_callargs_new(1, 0);
+        if builder_bits == 0 {
+            return MoltObject::none().bits();
+        }
+        unsafe {
+            let _ = molt_callargs_push_pos(builder_bits, name_bits);
+        }
+        let typevar_bits = molt_call_bind(typevar_ctor_bits, builder_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let Some(flag_name_bits) = attr_name_bits_from_bytes(_py, b"_pep695") else {
+            return MoltObject::none().bits();
+        };
+        let _ = molt_object_setattr(
+            typevar_bits,
+            flag_name_bits,
+            MoltObject::from_bool(true).bits(),
+        );
+        dec_ref_bits(_py, flag_name_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        typevar_bits
     })
 }
 

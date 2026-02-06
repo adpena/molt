@@ -556,7 +556,10 @@ enum SocketReaderPull {
     Data,
 }
 
-unsafe fn socket_reader_pull(_py: &PyToken<'_>, reader: &mut MoltSocketReader) -> Result<SocketReaderPull, u64> {
+unsafe fn socket_reader_pull(
+    _py: &PyToken<'_>,
+    reader: &mut MoltSocketReader,
+) -> Result<SocketReaderPull, u64> {
     if reader.eof {
         return Ok(SocketReaderPull::Eof);
     }
@@ -564,7 +567,11 @@ unsafe fn socket_reader_pull(_py: &PyToken<'_>, reader: &mut MoltSocketReader) -
     {
         let socket_ptr = socket_ptr_from_bits_or_fd(reader.socket_bits);
         if socket_ptr.is_null() {
-            return Err(raise_exception::<u64>(_py, "TypeError", "invalid socket handle"));
+            return Err(raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "invalid socket handle",
+            ));
         }
         let mut buf = vec![0u8; 4096];
         let res = with_socket_mut(socket_ptr, |inner| {
@@ -618,7 +625,9 @@ unsafe fn socket_reader_pull(_py: &PyToken<'_>, reader: &mut MoltSocketReader) -
             Err(msg) => return Err(raise_exception::<u64>(_py, "TypeError", &msg)),
         };
         let mut buf = vec![0u8; 4096];
-        let rc = unsafe { crate::molt_socket_recv_host(handle, buf.as_mut_ptr() as u32, buf.len() as u32, 0) };
+        let rc = unsafe {
+            crate::molt_socket_recv_host(handle, buf.as_mut_ptr() as u32, buf.len() as u32, 0)
+        };
         if rc >= 0 {
             let n = rc as usize;
             if n == 0 {
