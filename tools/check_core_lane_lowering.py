@@ -216,8 +216,7 @@ def main() -> int:
         action="append",
         default=[],
         help=(
-            "Allowed audit status (repeatable). Default is "
-            "`intrinsic-backed` only."
+            "Allowed audit status (repeatable). Default is " "`intrinsic-backed` only."
         ),
     )
     args = parser.parse_args()

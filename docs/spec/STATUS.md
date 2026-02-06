@@ -66,6 +66,7 @@ README/ROADMAP in sync.
 - Intrinsics audit is enforced by `tools/check_stdlib_intrinsics.py` (generated doc + lint), including `intrinsic-backed` / `intrinsic-partial` / `probe-only` / `python-only` status tracking.
 - Core compiled-surface gate is enforced by `tools/check_core_lane_lowering.py`: modules imported (transitively) by `tests/differential/core/TESTS.txt` must be `intrinsic-backed` only.
 - Execution program for complete Rust lowering is tracked in `docs/spec/areas/compat/0026_RUST_LOWERING_PROGRAM.md` (core blockers first, then socket -> threading -> asyncio, then full stdlib sweep).
+- Implemented: `__future__` and `keyword` module data/queries are now sourced from Rust intrinsics (`molt_future_features`, `molt_keyword_lists`, `molt_keyword_iskeyword`, `molt_keyword_issoftkeyword`), removing probe-only status.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): remove `typing` fallback ABC scaffolding and lower protocol/ABC bootstrap helpers into Rust intrinsics-only paths.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): remove host-builtins probing in `builtins` shim and source descriptor/builtin surfaces from runtime intrinsics only.
 - `enumerate` builtin returns an iterator over `(index, value)` with optional `start`.

@@ -10,6 +10,7 @@
 
 ## Audit (Generated)
 ### Intrinsic-backed modules (lowering complete)
+- `__future__`
 - `_intrinsics`
 - `codecs`
 - `collections`
@@ -17,10 +18,13 @@
 - `heapq`
 - `hmac`
 - `io`
+- `itertools`
+- `keyword`
 - `logging`
 - `molt_db`
 - `multiprocessing`
 - `multiprocessing.spawn`
+- `operator`
 - `os`
 - `selectors`
 - `shlex`
@@ -48,7 +52,6 @@
 - `zipfile`
 
 ### Probe-only modules (thin wrappers + policy gate only)
-- `__future__`
 - `_abc`
 - `_collections_abc`
 - `_weakrefset`
@@ -68,7 +71,6 @@
 - `importlib.machinery`
 - `importlib.util`
 - `json`
-- `keyword`
 - `linecache`
 - `molt.stdlib`
 - `pprint`
@@ -101,9 +103,7 @@
 - `importlib.metadata`
 - `importlib.resources`
 - `ipaddress`
-- `itertools`
 - `locale`
-- `operator`
 - `pathlib`
 - `pickle`
 - `pkgutil`
