@@ -2,7 +2,14 @@
 
 import socket
 import tempfile
-from pathlib import Path
+
+
+class _PathLike:
+    def __init__(self, path: str):
+        self._path = path
+
+    def __fspath__(self) -> str:
+        return self._path
 
 if not hasattr(socket, "AF_UNIX"):
     print("no_unix")
@@ -28,7 +35,7 @@ else:
         b.close()
 
     with tempfile.TemporaryDirectory() as tmp:
-        path = Path(tmp) / "sock"
+        path = _PathLike(tmp + "/sock")
         srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         srv.bind(path)
         print(isinstance(srv.getsockname(), str))
