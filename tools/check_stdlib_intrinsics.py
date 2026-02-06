@@ -1,19 +1,29 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
+import ast
 import io
 import re
 import tokenize
+from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = ROOT / "src" / "molt" / "stdlib"
+MANIFEST = ROOT / "runtime" / "molt-runtime" / "src" / "intrinsics" / "manifest.pyi"
+AUDIT_DOC = (
+    ROOT / "docs" / "spec" / "areas" / "compat" / "0016_STDLIB_INTRINSICS_AUDIT.md"
+)
 
 TEXT_TOKENS = (
     "load_intrinsic",
     "require_intrinsic",
+    "require_optional_intrinsic",
     "_intrinsic_load",
     "_require_intrinsic",
+    "_intrinsics_require",
+    "_intrinsic_require",
 )
 
 INTRINSICS_IMPORT_RE = re.compile(
@@ -30,6 +40,53 @@ FORBIDDEN_MOLT_INTRINSICS_RE = re.compile(
     r"^\s*from\s+molt\.intrinsics\s+import\b",
     re.MULTILINE,
 )
+
+INTRINSIC_NAME_RE = re.compile(r"['\"](molt_[a-zA-Z0-9_]+)['\"]")
+MANIFEST_INTRINSIC_RE = re.compile(r"^def\s+(molt_[a-zA-Z0-9_]+)\(")
+
+PROBE_INTRINSIC = "molt_stdlib_probe"
+STATUS_INTRINSIC = "intrinsic-backed"
+STATUS_PROBE_ONLY = "probe-only"
+STATUS_PYTHON_ONLY = "python-only"
+
+BOOTSTRAP_MODULES = {
+    "__future__",
+    "_abc",
+    "_collections_abc",
+    "_weakrefset",
+    "abc",
+    "collections.abc",
+    "copy",
+    "copyreg",
+    "dataclasses",
+    "keyword",
+    "linecache",
+    "re",
+    "reprlib",
+    "types",
+    "typing",
+    "warnings",
+    "weakref",
+}
+INTRINSIC_CALL_NAMES = {
+    "load_intrinsic",
+    "require_intrinsic",
+    "require_optional_intrinsic",
+    "_load_intrinsic",
+    "_intrinsic_load",
+    "_intrinsics_require",
+    "_intrinsic_require",
+    "_require_intrinsic",
+    "_require_callable_intrinsic",
+}
+
+
+@dataclass(frozen=True)
+class ModuleAudit:
+    module: str
+    path: Path
+    intrinsic_names: tuple[str, ...]
+    status: str
 
 
 def _code_text(text: str) -> str:
@@ -48,7 +105,47 @@ def _code_text(text: str) -> str:
     return " ".join(parts)
 
 
-def _scan_file(path: Path) -> list[str]:
+def _module_name(path: Path) -> str:
+    rel = path.relative_to(STDLIB_ROOT)
+    if rel.name == "__init__.py":
+        if len(rel.parts) == 1:
+            return "molt.stdlib"
+        return ".".join(rel.parts[:-1])
+    return ".".join((*rel.parts[:-1], rel.stem))
+
+
+def _call_name(node: ast.expr) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _extract_intrinsic_names(text: str) -> tuple[str, ...]:
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return tuple(sorted(set(INTRINSIC_NAME_RE.findall(text))))
+
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        call_name = _call_name(node.func)
+        if call_name not in INTRINSIC_CALL_NAMES:
+            continue
+        if not node.args:
+            continue
+        first = node.args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            value = first.value
+            if value.startswith("molt_"):
+                names.add(value)
+    return tuple(sorted(names))
+
+
+def _scan_file(path: Path) -> tuple[list[str], tuple[str, ...], str]:
     text = path.read_text(encoding="utf-8")
     code_text = _code_text(text)
     errors: list[str] = []
@@ -72,21 +169,114 @@ def _scan_file(path: Path) -> list[str]:
         ):
             errors.append("Intrinsic loader usage requires importing from _intrinsics.")
 
-    return errors
+    intrinsic_names = _extract_intrinsic_names(text)
+    if is_registry_file:
+        status = STATUS_INTRINSIC
+    elif not intrinsic_names:
+        status = STATUS_PYTHON_ONLY
+    elif set(intrinsic_names) == {PROBE_INTRINSIC}:
+        status = STATUS_PROBE_ONLY
+    else:
+        status = STATUS_INTRINSIC
+
+    return errors, intrinsic_names, status
+
+
+def _load_manifest_intrinsics() -> set[str]:
+    if not MANIFEST.exists():
+        raise RuntimeError(f"intrinsics manifest missing: {MANIFEST}")
+    out: set[str] = set()
+    for line in MANIFEST.read_text(encoding="utf-8").splitlines():
+        match = MANIFEST_INTRINSIC_RE.match(line.strip())
+        if match:
+            out.add(match.group(1))
+    return out
+
+
+def _build_audit_doc(audits: list[ModuleAudit]) -> str:
+    intrinsic = sorted(a.module for a in audits if a.status == STATUS_INTRINSIC)
+    probe_only = sorted(a.module for a in audits if a.status == STATUS_PROBE_ONLY)
+    python_only = sorted(a.module for a in audits if a.status == STATUS_PYTHON_ONLY)
+
+    lines = [
+        "# Stdlib Intrinsics Audit",
+        "**Spec ID:** 0016",
+        "**Status:** Draft (enforcement + audit)",
+        "**Owner:** stdlib + runtime",
+        "",
+        "## Policy",
+        "- Compiled binaries must not execute Python stdlib implementations.",
+        "- Every stdlib module must be backed by Rust intrinsics (Python files are allowed only as thin, intrinsic-forwarding wrappers).",
+        "- Modules without intrinsic usage are forbidden in compiled builds and must raise immediately until fully lowered.",
+        "",
+        "## Audit (Generated)",
+        "### Intrinsic-backed modules",
+    ]
+    lines.extend(f"- `{name}`" for name in intrinsic)
+    lines.extend(["", "### Probe-only modules (thin wrappers + policy gate only)"])
+    lines.extend(f"- `{name}`" for name in probe_only)
+    lines.extend(["", "### Python-only modules (intrinsic missing)"])
+    lines.extend(f"- `{name}`" for name in python_only)
+    lines.extend(
+        [
+            "",
+            "## Bootstrap Gate",
+            "- Required modules: "
+            + ", ".join(f"`{name}`" for name in sorted(BOOTSTRAP_MODULES)),
+            "- Gate rule: bootstrap modules must not be `python-only`.",
+            "",
+            "## TODO",
+            "- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P0, status:missing): replace Python-only stdlib modules with Rust intrinsics and remove Python implementations; see the audit lists above.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Stdlib intrinsics lint + audit gate")
+    parser.add_argument(
+        "--update-doc",
+        action="store_true",
+        help=(
+            "Rewrite docs/spec/areas/compat/0016_STDLIB_INTRINSICS_AUDIT.md "
+            "with generated audit output."
+        ),
+    )
+    args = parser.parse_args()
+
     if not STDLIB_ROOT.is_dir():
         print(f"stdlib root missing: {STDLIB_ROOT}")
         return 1
 
+    manifest_intrinsics = _load_manifest_intrinsics()
     failures: list[tuple[Path, list[str]]] = []
+    missing_intrinsics: list[tuple[str, str]] = []
+    audits: list[ModuleAudit] = []
+
     for path in sorted(STDLIB_ROOT.rglob("*.py")):
         if path.name.startswith("."):
             continue
-        errors = _scan_file(path)
+        errors, intrinsic_names, status = _scan_file(path)
         if errors:
             failures.append((path, errors))
+        for name in intrinsic_names:
+            if name not in manifest_intrinsics:
+                missing_intrinsics.append((str(path.relative_to(ROOT)), name))
+        audits.append(
+            ModuleAudit(
+                module=_module_name(path),
+                path=path,
+                intrinsic_names=intrinsic_names,
+                status=status,
+            )
+        )
+
+    bootstrap_failures = [
+        audit.module
+        for audit in audits
+        if audit.module in BOOTSTRAP_MODULES and audit.status == STATUS_PYTHON_ONLY
+    ]
 
     if failures:
         print("stdlib intrinsics lint failed:")
@@ -96,6 +286,33 @@ def main() -> int:
             for msg in errors:
                 print(f"  {msg}")
         return 1
+
+    if missing_intrinsics:
+        print("stdlib intrinsics lint failed: unknown intrinsic names")
+        for rel, name in sorted(set(missing_intrinsics)):
+            print(f"- {rel}: `{name}` is not present in {MANIFEST.relative_to(ROOT)}")
+        return 1
+
+    if bootstrap_failures:
+        print("stdlib intrinsics lint failed: bootstrap modules cannot be python-only")
+        for module in sorted(set(bootstrap_failures)):
+            print(f"- {module}")
+        return 1
+
+    generated_doc = _build_audit_doc(audits)
+    if args.update_doc:
+        AUDIT_DOC.write_text(generated_doc, encoding="utf-8")
+    else:
+        if not AUDIT_DOC.exists():
+            print(f"stdlib intrinsic audit doc missing: {AUDIT_DOC.relative_to(ROOT)}")
+            return 1
+        existing = AUDIT_DOC.read_text(encoding="utf-8")
+        if existing != generated_doc:
+            print(
+                "stdlib intrinsic audit doc is out of date. "
+                "Run: python3 tools/check_stdlib_intrinsics.py --update-doc"
+            )
+            return 1
 
     print("stdlib intrinsics lint: ok")
     return 0

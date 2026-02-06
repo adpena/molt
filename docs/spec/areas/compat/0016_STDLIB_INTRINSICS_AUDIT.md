@@ -8,7 +8,7 @@
 - Every stdlib module must be backed by Rust intrinsics (Python files are allowed only as thin, intrinsic-forwarding wrappers).
 - Modules without intrinsic usage are forbidden in compiled builds and must raise immediately until fully lowered.
 
-## Audit (2026-02-05)
+## Audit (Generated)
 ### Intrinsic-backed modules
 - `_intrinsics`
 - `asyncio`
@@ -17,6 +17,7 @@
 - `collections`
 - `concurrent.futures`
 - `decimal`
+- `email.message`
 - `errno`
 - `hashlib`
 - `heapq`
@@ -29,73 +30,85 @@
 - `multiprocessing`
 - `multiprocessing.spawn`
 - `os`
+- `re`
+- `runpy`
 - `select`
 - `selectors`
+- `shlex`
 - `socket`
 - `struct`
 - `sys`
 - `threading`
 - `time`
+- `types`
+- `weakref`
 - `zipfile`
 
-### Python-only modules (intrinsic missing)
+### Probe-only modules (thin wrappers + policy gate only)
 - `__future__`
 - `_abc`
-- `_asyncio`
-- `_bz2`
 - `_collections_abc`
-- `_weakref`
 - `_weakrefset`
 - `abc`
-- `ast`
 - `base64`
 - `bisect`
 - `collections.abc`
-- `compileall`
-- `concurrent`
-- `contextlib`
 - `contextvars`
 - `copy`
 - `copyreg`
+- `dataclasses`
+- `fnmatch`
+- `gc`
+- `http.client`
+- `http.server`
+- `importlib`
+- `importlib.machinery`
+- `importlib.util`
+- `json`
+- `keyword`
+- `linecache`
+- `molt.stdlib`
+- `pprint`
+- `random`
+- `reprlib`
+- `socketserver`
+- `string`
+- `tempfile`
+- `traceback`
+- `typing`
+- `unittest`
+- `warnings`
+
+### Python-only modules (intrinsic missing)
+- `_asyncio`
+- `_bz2`
+- `_weakref`
+- `ast`
+- `compileall`
+- `concurrent`
+- `contextlib`
 - `csv`
 - `ctypes`
-- `dataclasses`
 - `doctest`
 - `encodings`
 - `encodings.aliases`
 - `enum`
-- `fnmatch`
 - `functools`
-- `gc`
 - `gettext`
 - `glob`
-- `importlib`
-- `importlib.machinery`
 - `importlib.metadata`
 - `importlib.resources`
-- `importlib.util`
 - `ipaddress`
 - `itertools`
-- `json`
-- `keyword`
-- `linecache`
 - `locale`
-- `molt.stdlib`
 - `operator`
 - `pathlib`
 - `pickle`
 - `pkgutil`
-- `pprint`
 - `py_compile`
-- `random`
-- `re`
-- `reprlib`
-- `shlex`
 - `shutil`
 - `signal`
 - `stat`
-- `string`
-- `tempfile`
 - `test`
 - `test.import_helper`
 - `test.list_tests`
@@ -107,16 +120,14 @@
 - `test.tokenizedata.badsyntax_pep3120`
 - `test.warnings_helper`
 - `textwrap`
-- `traceback`
-- `types`
-- `typing`
-- `unittest`
 - `urllib`
 - `urllib.parse`
 - `uuid`
-- `warnings`
-- `weakref`
 - `zipimport`
+
+## Bootstrap Gate
+- Required modules: `__future__`, `_abc`, `_collections_abc`, `_weakrefset`, `abc`, `collections.abc`, `copy`, `copyreg`, `dataclasses`, `keyword`, `linecache`, `re`, `reprlib`, `types`, `typing`, `warnings`, `weakref`
+- Gate rule: bootstrap modules must not be `python-only`.
 
 ## TODO
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P0, status:missing): replace Python-only stdlib modules with Rust intrinsics and remove Python implementations; see the audit lists above.

@@ -14,30 +14,109 @@ fn str_codec_arg(_py: &PyToken<'_>, bits: u64, arg_name: &str) -> Option<String>
     Some(text)
 }
 
+unsafe fn max_slot_end_from_offsets_dict(_py: &PyToken<'_>, offsets_ptr: *mut u8) -> usize {
+    if object_type_id(offsets_ptr) != TYPE_ID_DICT {
+        return 0;
+    }
+    let mut max_end = 0usize;
+    let entries = dict_order(offsets_ptr).clone();
+    for pair in entries.chunks(2) {
+        if pair.len() != 2 {
+            continue;
+        }
+        if let Some(offset) = obj_from_bits(pair[1]).as_int() {
+            if offset >= 0 {
+                let end = (offset as usize).saturating_add(std::mem::size_of::<u64>());
+                if end > max_end {
+                    max_end = end;
+                }
+            }
+        }
+    }
+    max_end
+}
+
+unsafe fn max_slot_end_from_mro_offsets(
+    _py: &PyToken<'_>,
+    class_ptr: *mut u8,
+    fields_name_bits: u64,
+) -> usize {
+    let Some(offsets_bits) = class_attr_lookup_raw_mro(_py, class_ptr, fields_name_bits) else {
+        return 0;
+    };
+    let Some(offsets_ptr) = obj_from_bits(offsets_bits).as_ptr() else {
+        return 0;
+    };
+    if object_type_id(offsets_ptr) != TYPE_ID_DICT {
+        return 0;
+    }
+    max_slot_end_from_offsets_dict(_py, offsets_ptr)
+}
+
 unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
+    let class_bits = MoltObject::from_ptr(class_ptr).bits();
+    let builtins = builtin_classes(_py);
+    let reserved_tail = if issubclass_bits(class_bits, builtins.dict) {
+        2 * std::mem::size_of::<u64>()
+    } else {
+        std::mem::size_of::<u64>()
+    };
+    let fields_name_bits = intern_static_name(
+        _py,
+        &runtime_state(_py).interned.field_offsets_name,
+        b"__molt_field_offsets__",
+    );
     let size_name_bits = intern_static_name(
         _py,
         &runtime_state(_py).interned.molt_layout_size,
         b"__molt_layout_size__",
     );
+    let class_dict_ptr = obj_from_bits(class_dict_bits(class_ptr)).as_ptr();
     let mut size = 0usize;
-    if let Some(size_bits) = class_attr_lookup_raw_mro(_py, class_ptr, size_name_bits) {
-        if let Some(val) = obj_from_bits(size_bits).as_int() {
-            if val > 0 {
-                size = val as usize;
+    let mut has_own_layout = false;
+    if let Some(class_dict_ptr) = class_dict_ptr {
+        if object_type_id(class_dict_ptr) == TYPE_ID_DICT {
+            if let Some(size_bits) = dict_get_in_place(_py, class_dict_ptr, size_name_bits) {
+                if let Some(val) = obj_from_bits(size_bits).as_int() {
+                    if val > 0 {
+                        has_own_layout = true;
+                        size = val as usize;
+                    }
+                }
             }
         }
     }
-    if size == 0 {
-        size = 8;
+    if let Some(size_bits) = class_attr_lookup_raw_mro(_py, class_ptr, size_name_bits) {
+        if let Some(val) = obj_from_bits(size_bits).as_int() {
+            if val > 0 {
+                size = size.max(val as usize);
+            }
+        }
     }
-    let class_bits = MoltObject::from_ptr(class_ptr).bits();
-    let builtins = builtin_classes(_py);
+    let needs_recompute = !has_own_layout || size < reserved_tail;
+    if needs_recompute {
+        let max_end = max_slot_end_from_mro_offsets(_py, class_ptr, fields_name_bits);
+        if max_end != 0 {
+            size = size.max(max_end.saturating_add(reserved_tail));
+        }
+    }
+    if size == 0 {
+        size = reserved_tail.max(std::mem::size_of::<u64>());
+    }
     if issubclass_bits(class_bits, builtins.int) && size < 16 {
         size = 16;
     }
     if issubclass_bits(class_bits, builtins.dict) && size < 16 {
         size = 16;
+    }
+    if needs_recompute {
+        if let Some(class_dict_ptr) = class_dict_ptr {
+            if object_type_id(class_dict_ptr) == TYPE_ID_DICT {
+                let size_bits = MoltObject::from_int(size as i64).bits();
+                dict_set_in_place(_py, class_dict_ptr, size_name_bits, size_bits);
+                class_bump_layout_version(class_ptr);
+            }
+        }
     }
     size
 }
