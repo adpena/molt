@@ -38,8 +38,6 @@ __all__ = [
     "TracebackException",
 ]
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): implement full FrameSummary/TracebackException fields and rich formatting per PEP 657.
-
 _CHAIN_CAUSE = (
     "The above exception was the direct cause of the following exception:\n\n"
 )
@@ -149,6 +147,26 @@ def _infer_col_offsets(line: str) -> tuple[int, int]:
     return col, end
 
 
+def _format_caret_line(line: str, colno: int, end_colno: int) -> str:
+    if not line:
+        return ""
+    if colno < 0:
+        return ""
+    text_len = len(line)
+    if text_len <= 0:
+        return ""
+    if end_colno < colno:
+        end_colno = colno
+    if colno > text_len:
+        colno = text_len
+    if end_colno > text_len:
+        end_colno = text_len
+    width = end_colno - colno
+    if width <= 0:
+        width = 1
+    return "    " + (" " * colno) + ("^" * width) + "\n"
+
+
 class FrameSummary:
     def __init__(
         self,
@@ -225,6 +243,9 @@ class StackSummary:
             )
             if frame.line:
                 lines.append(f"    {frame.line}\n")
+                caret = _format_caret_line(frame.line, frame.colno, frame.end_colno)
+                if caret:
+                    lines.append(caret)
         return lines
 
 
@@ -274,6 +295,20 @@ def _frame_summary_from_tb(tb: Any) -> FrameSummary:
 def _frame_summary_from_entry(entry: Any) -> FrameSummary | None:
     if isinstance(entry, FrameSummary):
         return entry
+    if isinstance(entry, (tuple, list)) and len(entry) >= 7:
+        filename, lineno = entry[0], entry[1]
+        end_lineno, colno, end_colno = entry[2], entry[3], entry[4]
+        name, line = entry[5], entry[6]
+        text = "" if line is None else str(line)
+        return FrameSummary(
+            filename=str(filename),
+            lineno=int(lineno),
+            end_lineno=int(end_lineno),
+            colno=int(colno),
+            end_colno=int(end_colno),
+            name=str(name),
+            line=text,
+        )
     if isinstance(entry, (tuple, list)) and len(entry) >= 4:
         filename, lineno, name, line = entry[0], entry[1], entry[2], entry[3]
         text = "" if line is None else str(line)

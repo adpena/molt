@@ -1,4 +1,4 @@
-"""Capability-gated pathlib stubs for Molt."""
+"""Capability-gated pathlib implementation for Molt."""
 
 from __future__ import annotations
 
@@ -8,13 +8,13 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 from molt import capabilities
 from molt.stdlib import os as _os
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): close remaining pathlib CPython parity edges (glob semantics, Windows drive/anchor/path flavor behavior, and full PurePath surface).
 _MOLT_PATH_JOIN = _require_intrinsic("molt_path_join", globals())
 _MOLT_PATH_ISABS = _require_intrinsic("molt_path_isabs", globals())
 _MOLT_PATH_DIRNAME = _require_intrinsic("molt_path_dirname", globals())
 _MOLT_PATH_SPLITEXT = _require_intrinsic("molt_path_splitext", globals())
 _MOLT_PATH_ABSPATH = _require_intrinsic("molt_path_abspath", globals())
 _MOLT_PATH_PARTS = _require_intrinsic("molt_path_parts", globals())
+_MOLT_PATH_SPLITROOT = _require_intrinsic("molt_path_splitroot", globals())
 _MOLT_PATH_PARENTS = _require_intrinsic("molt_path_parents", globals())
 _MOLT_PATH_RELATIVE_TO = _require_intrinsic("molt_path_relative_to", globals())
 _MOLT_PATH_WITH_NAME = _require_intrinsic("molt_path_with_name", globals())
@@ -23,6 +23,8 @@ _MOLT_PATH_EXPANDUSER = _require_intrinsic("molt_path_expanduser", globals())
 _MOLT_PATH_MATCH = _require_intrinsic("molt_path_match", globals())
 _MOLT_PATH_GLOB = _require_intrinsic("molt_path_glob", globals())
 _MOLT_PATH_EXISTS = _require_intrinsic("molt_path_exists", globals())
+_MOLT_PATH_ISDIR = _require_intrinsic("molt_path_isdir", globals())
+_MOLT_PATH_ISFILE = _require_intrinsic("molt_path_isfile", globals())
 _MOLT_PATH_LISTDIR = _require_intrinsic("molt_path_listdir", globals())
 _MOLT_PATH_MKDIR = _require_intrinsic("molt_path_mkdir", globals())
 _MOLT_PATH_UNLINK = _require_intrinsic("molt_path_unlink", globals())
@@ -45,6 +47,14 @@ class Path:
                 )
             self._path = fspath
 
+    @classmethod
+    def cwd(cls) -> Path:
+        return cls(_os.getcwd())
+
+    @classmethod
+    def home(cls) -> Path:
+        return cls("~").expanduser()
+
     def _coerce_part(self, value: str | Path) -> str:
         if isinstance(value, Path):
             return value._path
@@ -62,14 +72,31 @@ class Path:
     def __str__(self) -> str:
         return self._path
 
+    def __bytes__(self) -> bytes:
+        return bytes(self._path, "utf-8")
+
     def __repr__(self) -> str:
         return f"Path({self._path!r})"
+
+    def __hash__(self) -> int:
+        return hash(tuple(self._parts()))
 
     def as_posix(self) -> str:
         return self._path.replace(_os.sep, "/")
 
+    def as_uri(self) -> str:
+        if not self.is_absolute():
+            raise ValueError("relative path can't be expressed as a file URI")
+        path = self.as_posix()
+        if not path.startswith("/"):
+            path = "/" + path
+        return "file://" + path
+
     def is_absolute(self) -> bool:
         return bool(_MOLT_PATH_ISABS(self._path))
+
+    def absolute(self) -> Path:
+        return self._wrap(_MOLT_PATH_ABSPATH(self._path))
 
     def expanduser(self) -> Path:
         return self._wrap(_MOLT_PATH_EXPANDUSER(self._path))
@@ -88,9 +115,36 @@ class Path:
             parts.append(item)
         return parts
 
+    def _splitroot(self) -> tuple[str, str, str]:
+        raw = _MOLT_PATH_SPLITROOT(self._path)
+        if (
+            not isinstance(raw, (tuple, list))
+            or len(raw) != 3
+            or not isinstance(raw[0], str)
+            or not isinstance(raw[1], str)
+            or not isinstance(raw[2], str)
+        ):
+            raise RuntimeError("path splitroot intrinsic returned invalid value")
+        return str(raw[0]), str(raw[1]), str(raw[2])
+
     @property
     def parts(self) -> tuple[str, ...]:
         return tuple(self._parts())
+
+    @property
+    def drive(self) -> str:
+        drive, _root, _tail = self._splitroot()
+        return drive
+
+    @property
+    def root(self) -> str:
+        _drive, root, _tail = self._splitroot()
+        return root
+
+    @property
+    def anchor(self) -> str:
+        drive, root, _tail = self._splitroot()
+        return drive + root
 
     def _wrap(self, path: str) -> Path:
         return Path(path)
@@ -166,6 +220,14 @@ class Path:
             return False
         return bool(result)
 
+    def is_dir(self) -> bool:
+        capabilities.require("fs.read")
+        return bool(_MOLT_PATH_ISDIR(self._path))
+
+    def is_file(self) -> bool:
+        capabilities.require("fs.read")
+        return bool(_MOLT_PATH_ISFILE(self._path))
+
     def unlink(self) -> None:
         capabilities.require("fs.write")
         _MOLT_PATH_UNLINK(self._path)
@@ -182,9 +244,17 @@ class Path:
 
     def glob(self, pattern: str) -> Iterator[Path]:
         capabilities.require("fs.read")
-        names = _MOLT_PATH_GLOB(self._path, pattern)
+        names = _MOLT_PATH_GLOB(self._path, str(pattern))
         for name in names:
             yield self.joinpath(name)
+
+    def rglob(self, pattern: str) -> Iterator[Path]:
+        pat = str(pattern)
+        if pat == "**" or pat.startswith("**" + _os.sep):
+            full = pat
+        else:
+            full = "**" + _os.sep + pat
+        yield from self.glob(full)
 
     def mkdir(
         self,
@@ -193,6 +263,7 @@ class Path:
         exist_ok: bool = False,
     ) -> None:
         capabilities.require("fs.write")
+
         def _is_dir(path: str) -> bool:
             try:
                 _MOLT_PATH_LISTDIR(path)
@@ -344,6 +415,13 @@ class Path:
                 base += part
         return self._wrap(_MOLT_PATH_RELATIVE_TO(self._path, base))
 
+    def is_relative_to(self, *other: str) -> bool:
+        try:
+            self.relative_to(*other)
+            return True
+        except Exception:
+            return False
+
     def match(self, pattern: str) -> bool:
         return bool(_MOLT_PATH_MATCH(self._path, str(pattern)))
 
@@ -353,6 +431,13 @@ class Path:
     def with_suffix(self, suffix: str) -> Path:
         return self._wrap(_MOLT_PATH_WITH_SUFFIX(self._path, suffix))
 
+    def with_stem(self, stem: str) -> Path:
+        stem = str(stem)
+        if not stem:
+            raise ValueError(f"{self._path!r} has an empty name")
+        return self.with_name(stem + self.suffix)
+
 
 PurePosixPath = Path
+PureWindowsPath = Path
 PurePath = Path

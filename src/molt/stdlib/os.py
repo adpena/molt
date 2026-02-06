@@ -140,6 +140,12 @@ def _require_cap(name: str) -> None:
     return None
 
 
+def _require_callable_intrinsic(value: Any, name: str):
+    if not callable(value):
+        raise RuntimeError(f"intrinsic unavailable: {name}")
+    return value
+
+
 def _expect_str(value: Any, intrinsic: str) -> str:
     if not isinstance(value, str):
         raise RuntimeError(f"os {intrinsic} intrinsic returned invalid value")
@@ -493,7 +499,7 @@ class _Path:
     @staticmethod
     def exists(path: Any) -> bool:
         _require_cap("fs.read")
-        intrinsic = _require_intrinsic("_molt_path_exists", _MOLT_PATH_EXISTS)
+        intrinsic = _require_callable_intrinsic(_MOLT_PATH_EXISTS, "molt_path_exists")
         res = intrinsic(path)
         if res is None:
             return False
@@ -502,7 +508,7 @@ class _Path:
     @staticmethod
     def isdir(path: Any) -> bool:
         _require_cap("fs.read")
-        intrinsic = _require_intrinsic("_molt_path_listdir", _MOLT_PATH_LISTDIR)
+        intrinsic = _require_callable_intrinsic(_MOLT_PATH_LISTDIR, "molt_path_listdir")
         try:
             intrinsic(path)
             return True
@@ -512,7 +518,7 @@ class _Path:
     @staticmethod
     def isfile(path: Any) -> bool:
         _require_cap("fs.read")
-        intrinsic = _require_intrinsic("_molt_path_listdir", _MOLT_PATH_LISTDIR)
+        intrinsic = _require_callable_intrinsic(_MOLT_PATH_LISTDIR, "molt_path_listdir")
         try:
             intrinsic(path)
             return False
@@ -524,13 +530,13 @@ class _Path:
     @staticmethod
     def unlink(path: Any) -> None:
         _require_cap("fs.write")
-        intrinsic = _require_intrinsic("_molt_path_unlink", _MOLT_PATH_UNLINK)
+        intrinsic = _require_callable_intrinsic(_MOLT_PATH_UNLINK, "molt_path_unlink")
         intrinsic(path)
 
     @staticmethod
     def rmdir(path: Any) -> None:
         _require_cap("fs.write")
-        intrinsic = _require_intrinsic("_molt_path_rmdir", _MOLT_PATH_RMDIR)
+        intrinsic = _require_callable_intrinsic(_MOLT_PATH_RMDIR, "molt_path_rmdir")
         intrinsic(path)
 
 
@@ -539,7 +545,7 @@ path = _Path()
 
 def listdir(path: Any = ".") -> list[str]:
     _require_cap("fs.read")
-    intrinsic = _require_intrinsic("_molt_path_listdir", _MOLT_PATH_LISTDIR)
+    intrinsic = _require_callable_intrinsic(_MOLT_PATH_LISTDIR, "molt_path_listdir")
     res = intrinsic(path)
     if isinstance(res, list):
         return res
@@ -550,19 +556,19 @@ environ = _Environ()
 
 
 def getpid() -> int:
-    intrinsic = _require_intrinsic("_molt_getpid", _MOLT_GETPID)
+    intrinsic = _require_callable_intrinsic(_MOLT_GETPID, "molt_getpid")
     return int(intrinsic())
 
 
 def urandom(n: Any) -> bytes:
     _require_cap("rand")
-    intrinsic = _require_intrinsic("_molt_os_urandom", _MOLT_OS_URANDOM)
+    intrinsic = _require_callable_intrinsic(_MOLT_OS_URANDOM, "molt_os_urandom")
     return intrinsic(n)
 
 
 def getcwd() -> str:
     _require_cap("fs.read")
-    intrinsic = _require_intrinsic("_molt_getcwd", _MOLT_GETCWD)
+    intrinsic = _require_callable_intrinsic(_MOLT_GETCWD, "molt_getcwd")
     return intrinsic()
 
 
@@ -585,13 +591,13 @@ def rmdir(path: Any) -> None:
 
 def mkdir(path: Any, mode: int = 0o777) -> None:
     _require_cap("fs.write")
-    intrinsic = _require_intrinsic("_molt_path_mkdir", _MOLT_PATH_MKDIR)
+    intrinsic = _require_callable_intrinsic(_MOLT_PATH_MKDIR, "molt_path_mkdir")
     intrinsic(path)
 
 
 def chmod(path: Any, mode: int) -> None:
     _require_cap("fs.write")
-    intrinsic = _require_intrinsic("_molt_path_chmod", _MOLT_PATH_CHMOD)
+    intrinsic = _require_callable_intrinsic(_MOLT_PATH_CHMOD, "molt_path_chmod")
     intrinsic(path, mode)
 
 
@@ -624,20 +630,24 @@ def makedirs(name: Any, mode: int = 0o777, exist_ok: bool = False) -> None:
 
 
 def close(fd: int) -> None:
-    intrinsic = _require_intrinsic("_molt_os_close", _MOLT_OS_CLOSE)
+    intrinsic = _require_callable_intrinsic(_MOLT_OS_CLOSE, "molt_os_close")
     intrinsic(fd)
 
 
 def dup(fd: int) -> int:
-    intrinsic = _require_intrinsic("_molt_os_dup", _MOLT_OS_DUP)
+    intrinsic = _require_callable_intrinsic(_MOLT_OS_DUP, "molt_os_dup")
     return int(intrinsic(fd))
 
 
 def get_inheritable(fd: int) -> bool:
-    intrinsic = _require_intrinsic("_molt_os_get_inheritable", _MOLT_OS_GET_INHERITABLE)
+    intrinsic = _require_callable_intrinsic(
+        _MOLT_OS_GET_INHERITABLE, "molt_os_get_inheritable"
+    )
     return bool(intrinsic(fd))
 
 
 def set_inheritable(fd: int, inheritable: bool) -> None:
-    intrinsic = _require_intrinsic("_molt_os_set_inheritable", _MOLT_OS_SET_INHERITABLE)
+    intrinsic = _require_callable_intrinsic(
+        _MOLT_OS_SET_INHERITABLE, "molt_os_set_inheritable"
+    )
     intrinsic(fd, bool(inheritable))

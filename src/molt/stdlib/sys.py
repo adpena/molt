@@ -113,19 +113,18 @@ if not isinstance(raw_argv, (list, tuple)):
 argv = list(cast("Iterable[object]", raw_argv))
 
 _exe_val = _MOLT_SYS_EXECUTABLE()
-executable = _exe_val if isinstance(_exe_val, str) else (argv[0] if argv else "")
+if not isinstance(_exe_val, str):
+    raise RuntimeError("molt_sys_executable returned invalid value")
+executable = _exe_val
 
 
-def _resolve_platform(
-    _getter: object = _MOLT_SYS_PLATFORM,
-    _resolver: object = _require_intrinsic,
-) -> str:
-    if callable(_getter):
-        value = _getter()
-    else:
-        # Re-resolve if the cached intrinsic was shadowed during bootstrap.
-        value = _as_callable(_resolver("molt_sys_platform", globals()))()
-    return value if isinstance(value, str) else "molt"
+def _resolve_platform(_getter: object = _MOLT_SYS_PLATFORM) -> str:
+    if not callable(_getter):
+        raise RuntimeError("molt_sys_platform intrinsic unavailable")
+    value = _getter()
+    if not isinstance(value, str):
+        raise RuntimeError("molt_sys_platform returned invalid value")
+    return value
 
 
 def exit(code: object = None) -> None:
@@ -188,52 +187,10 @@ _append_module_roots(path)
 _append_cwd_path(path)
 
 
-class _NullIO:
-    def __init__(self, readable: bool, writable: bool) -> None:
-        self._readable = readable
-        self._writable = writable
-        self.encoding = "utf-8"
-
-    def readable(self) -> bool:
-        return self._readable
-
-    def writable(self) -> bool:
-        return self._writable
-
-    def read(self, _size: int | None = None) -> str:
-        return ""
-
-    def readline(self, _size: int | None = None) -> str:
-        return ""
-
-    def write(self, data: str | bytes | bytearray) -> int:
-        try:
-            return len(data)
-        except Exception:
-            return 0
-
-    def writelines(self, lines: Iterable[str | bytes | bytearray]) -> None:
-        for line in lines:
-            self.write(line)
-
-    def flush(self) -> None:
-        return None
-
-    def isatty(self) -> bool:
-        return False
-
-    def fileno(self) -> int:
-        raise OSError("invalid file descriptor")
-
-    def close(self) -> None:
-        return None
-
-
 class _LazyStdio:
     def __init__(self, intrinsic: object, readable: bool, writable: bool) -> None:
         self._intrinsic = intrinsic
-        self._readable = readable
-        self._writable = writable
+        del readable, writable
         self._handle: object | None = None
 
     def _resolve(self) -> object:
@@ -241,10 +198,12 @@ class _LazyStdio:
             intrinsic = self._intrinsic
             if isinstance(intrinsic, str):
                 intrinsic = _require_intrinsic(intrinsic)
-            if callable(intrinsic):
-                self._handle = intrinsic()
-            else:
-                self._handle = _NullIO(self._readable, self._writable)
+            if not callable(intrinsic):
+                raise RuntimeError("sys stdio intrinsic unavailable")
+            handle = intrinsic()
+            if handle is None:
+                raise RuntimeError("sys stdio intrinsic returned invalid value")
+            self._handle = handle
         return self._handle
 
     def __getattr__(self, name: str) -> object:
