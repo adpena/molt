@@ -1461,6 +1461,10 @@ fn path_match_simple_pattern(name: &str, pat: &str) -> bool {
 }
 
 fn path_match_text(path: &str, pattern: &str, sep: char) -> bool {
+    #[cfg(windows)]
+    let pattern = pattern.replace('/', "\\");
+    #[cfg(not(windows))]
+    let pattern = pattern.to_string();
     let absolute = pattern.starts_with(sep);
     if absolute && !path.starts_with(sep) {
         return false;
@@ -1468,7 +1472,7 @@ fn path_match_text(path: &str, pattern: &str, sep: char) -> bool {
     let pat = if absolute {
         pattern.trim_start_matches(sep)
     } else {
-        pattern
+        pattern.as_str()
     };
     let path_trimmed = if absolute {
         path.trim_start_matches(sep)
@@ -1485,10 +1489,98 @@ fn path_match_text(path: &str, pattern: &str, sep: char) -> bool {
         }
         return path_match_simple_pattern(&name, pat);
     }
-    if pat == "**/*.txt" {
-        return path_trimmed.ends_with(".txt") && path_trimmed.contains(sep);
+
+    fn split_components<'a>(text: &'a str, sep: char) -> Vec<&'a str> {
+        text.split(sep)
+            .filter(|part| !part.is_empty() && *part != ".")
+            .collect()
     }
-    path_trimmed == pat
+
+    fn match_components(path_parts: &[&str], pat_parts: &[&str]) -> bool {
+        fn inner(path_parts: &[&str], pat_parts: &[&str], pi: usize, pj: usize) -> bool {
+            if pj >= pat_parts.len() {
+                return pi >= path_parts.len();
+            }
+            let pat = pat_parts[pj];
+            if pat == "**" {
+                if inner(path_parts, pat_parts, pi, pj + 1) {
+                    return true;
+                }
+                return pi < path_parts.len() && inner(path_parts, pat_parts, pi + 1, pj);
+            }
+            if pi >= path_parts.len() {
+                return false;
+            }
+            path_match_simple_pattern(path_parts[pi], pat)
+                && inner(path_parts, pat_parts, pi + 1, pj + 1)
+        }
+        inner(path_parts, pat_parts, 0, 0)
+    }
+
+    let pat_parts = split_components(pat, sep);
+    let path_parts = split_components(path_trimmed, sep);
+    if absolute {
+        return match_components(&path_parts, &pat_parts);
+    }
+    for start in 0..=path_parts.len() {
+        if match_components(&path_parts[start..], &pat_parts) {
+            return true;
+        }
+    }
+    false
+}
+
+fn path_splitroot_text(path: &str, sep: char) -> (String, String, String) {
+    #[cfg(windows)]
+    {
+        let text = path.replace('/', "\\");
+        if text.is_empty() {
+            return (String::new(), String::new(), String::new());
+        }
+        let mut drive = String::new();
+        let mut root = String::new();
+        let mut rest = text.as_str();
+        if rest.starts_with("\\\\") {
+            let unc = &rest[2..];
+            let mut parts = unc.split('\\');
+            let server = parts.next().unwrap_or_default();
+            let share = parts.next().unwrap_or_default();
+            if !server.is_empty() && !share.is_empty() {
+                drive = format!("\\\\{server}\\{share}");
+                let consumed = 2 + server.len() + 1 + share.len();
+                rest = &rest[consumed..];
+            }
+        } else {
+            let bytes = rest.as_bytes();
+            if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+                drive = rest[..2].to_string();
+                rest = &rest[2..];
+            }
+        }
+        if rest.starts_with('\\') {
+            root = sep.to_string();
+            rest = rest.trim_start_matches('\\');
+        }
+        return (drive, root, rest.to_string());
+    }
+    #[cfg(not(windows))]
+    {
+        if path.is_empty() {
+            return (String::new(), String::new(), String::new());
+        }
+        if path.starts_with("//") && !path.starts_with("///") {
+            let tail = path.trim_start_matches('/').to_string();
+            return (String::new(), "//".to_string(), tail);
+        }
+        if path.starts_with(sep) {
+            return (
+                String::new(),
+                sep.to_string(),
+                path.trim_start_matches(sep).to_string(),
+            );
+        }
+        (String::new(), String::new(), path.to_string())
+    }
 }
 
 fn open_arg_path(_py: &PyToken<'_>, file_bits: u64) -> Result<(std::path::PathBuf, u64), String> {
@@ -2613,6 +2705,36 @@ pub extern "C" fn molt_path_exists(path_bits: u64) -> u64 {
 }
 
 #[no_mangle]
+pub extern "C" fn molt_path_isdir(path_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "fs.read") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+        }
+        let path = match path_from_bits(_py, path_bits) {
+            Ok(path) => path,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let is_dir = std::fs::metadata(path).map(|meta| meta.is_dir()).unwrap_or(false);
+        MoltObject::from_bool(is_dir).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_path_isfile(path_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "fs.read") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+        }
+        let path = match path_from_bits(_py, path_bits) {
+            Ok(path) => path,
+            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+        };
+        let is_file = std::fs::metadata(path).map(|meta| meta.is_file()).unwrap_or(false);
+        MoltObject::from_bool(is_file).bits()
+    })
+}
+
+#[no_mangle]
 pub extern "C" fn molt_path_listdir(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.read") {
@@ -2927,6 +3049,45 @@ pub extern "C" fn molt_path_parts(path_bits: u64) -> u64 {
 }
 
 #[no_mangle]
+pub extern "C" fn molt_path_splitroot(path_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let sep = path_sep_char();
+        let path = match path_string_from_bits(_py, path_bits) {
+            Ok(path) => path,
+            Err(bits) => return bits,
+        };
+        let (drive, root, tail) = path_splitroot_text(&path, sep);
+        let drive_ptr = alloc_string(_py, drive.as_bytes());
+        if drive_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let root_ptr = alloc_string(_py, root.as_bytes());
+        if root_ptr.is_null() {
+            dec_ref_bits(_py, MoltObject::from_ptr(drive_ptr).bits());
+            return MoltObject::none().bits();
+        }
+        let tail_ptr = alloc_string(_py, tail.as_bytes());
+        if tail_ptr.is_null() {
+            dec_ref_bits(_py, MoltObject::from_ptr(drive_ptr).bits());
+            dec_ref_bits(_py, MoltObject::from_ptr(root_ptr).bits());
+            return MoltObject::none().bits();
+        }
+        let drive_bits = MoltObject::from_ptr(drive_ptr).bits();
+        let root_bits = MoltObject::from_ptr(root_ptr).bits();
+        let tail_bits = MoltObject::from_ptr(tail_ptr).bits();
+        let tuple_ptr = alloc_tuple(_py, &[drive_bits, root_bits, tail_bits]);
+        dec_ref_bits(_py, drive_bits);
+        dec_ref_bits(_py, root_bits);
+        dec_ref_bits(_py, tail_bits);
+        if tuple_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(tuple_ptr).bits()
+        }
+    })
+}
+
+#[no_mangle]
 pub extern "C" fn molt_path_parents(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let sep = path_sep_char();
@@ -3173,10 +3334,71 @@ pub extern "C" fn molt_path_glob(path_bits: u64, pattern_bits: u64) -> u64 {
             Ok(pattern) => pattern,
             Err(bits) => return bits,
         };
-        let mut out_bits: Vec<u64> = Vec::new();
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(err) => {
+        let sep = path_sep_char();
+        #[cfg(windows)]
+        let pattern = pattern.replace('/', "\\");
+
+        fn split_components(text: &str, sep: char) -> Vec<String> {
+            text.split(sep)
+                .filter(|part| !part.is_empty() && *part != ".")
+                .map(ToOwned::to_owned)
+                .collect()
+        }
+
+        fn glob_walk(
+            dir: &std::path::Path,
+            rel_parts: &mut Vec<String>,
+            pat_parts: &[String],
+            pi: usize,
+            sep: char,
+            out: &mut Vec<String>,
+        ) -> std::io::Result<()> {
+            let sep_s = sep.to_string();
+            if pi >= pat_parts.len() {
+                if !rel_parts.is_empty() {
+                    out.push(rel_parts.join(&sep_s));
+                }
+                return Ok(());
+            }
+            let pat = &pat_parts[pi];
+            if pat == "**" {
+                glob_walk(dir, rel_parts, pat_parts, pi + 1, sep, out)?;
+                for entry in std::fs::read_dir(dir)? {
+                    let entry = entry?;
+                    let file_type = entry.file_type()?;
+                    if !file_type.is_dir() {
+                        continue;
+                    }
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    rel_parts.push(name);
+                    glob_walk(&entry.path(), rel_parts, pat_parts, pi, sep, out)?;
+                    rel_parts.pop();
+                }
+                return Ok(());
+            }
+            for entry in std::fs::read_dir(dir)? {
+                let entry = entry?;
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if !path_match_simple_pattern(&name, pat) {
+                    continue;
+                }
+                let file_type = entry.file_type()?;
+                rel_parts.push(name);
+                if pi + 1 >= pat_parts.len() {
+                    out.push(rel_parts.join(&sep_s));
+                } else if file_type.is_dir() {
+                    glob_walk(&entry.path(), rel_parts, pat_parts, pi + 1, sep, out)?;
+                }
+                rel_parts.pop();
+            }
+            Ok(())
+        }
+
+        let pat_parts = split_components(&pattern, sep);
+        let mut matches: Vec<String> = Vec::new();
+        if !pat_parts.is_empty() {
+            let mut rel_parts: Vec<String> = Vec::new();
+            if let Err(err) = glob_walk(&dir, &mut rel_parts, &pat_parts, 0, sep, &mut matches) {
                 let msg = err.to_string();
                 return match err.kind() {
                     ErrorKind::NotFound => raise_exception::<_>(_py, "FileNotFoundError", &msg),
@@ -3189,16 +3411,10 @@ pub extern "C" fn molt_path_glob(path_bits: u64, pattern_bits: u64) -> u64 {
                     _ => raise_exception::<_>(_py, "OSError", &msg),
                 };
             }
-        };
-        for entry in entries {
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(err) => return raise_exception::<_>(_py, "OSError", &err.to_string()),
-            };
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if !path_match_simple_pattern(&name, &pattern) {
-                continue;
-            }
+        }
+
+        let mut out_bits: Vec<u64> = Vec::with_capacity(matches.len());
+        for name in matches {
             let ptr = alloc_string(_py, name.as_bytes());
             if ptr.is_null() {
                 for bits in out_bits {

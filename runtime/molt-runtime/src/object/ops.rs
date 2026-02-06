@@ -8104,6 +8104,21 @@ fn traceback_source_line_native(_py: &PyToken<'_>, filename: &str, lineno: i64) 
     String::new()
 }
 
+fn traceback_infer_column_offsets(line: &str) -> (i64, i64) {
+    if line.is_empty() {
+        return (0, 0);
+    }
+    let stripped = line.trim_start();
+    let indent = line.chars().count().saturating_sub(stripped.chars().count()) as i64;
+    let col = if stripped.starts_with("return ") {
+        indent + "return ".chars().count() as i64
+    } else {
+        indent
+    };
+    let end = line.chars().count() as i64;
+    (col, end.max(col))
+}
+
 fn traceback_format_exception_only_line(
     _py: &PyToken<'_>,
     exc_type_bits: u64,
@@ -8239,6 +8254,8 @@ pub extern "C" fn molt_traceback_extract_tb(tb_bits: u64, limit_bits: u64) -> u6
         let mut tuples: Vec<u64> = Vec::new();
         for (filename, lineno, name) in traceback_frames(_py, tb_bits, limit) {
             let line_text = traceback_source_line_native(_py, &filename, lineno);
+            let (colno, end_colno) = traceback_infer_column_offsets(&line_text);
+            let end_lineno = lineno;
             let filename_ptr = alloc_string(_py, filename.as_bytes());
             if filename_ptr.is_null() {
                 for bits in tuples {
@@ -8265,10 +8282,27 @@ pub extern "C" fn molt_traceback_extract_tb(tb_bits: u64, limit_bits: u64) -> u6
             }
             let filename_bits = MoltObject::from_ptr(filename_ptr).bits();
             let lineno_bits = MoltObject::from_int(lineno).bits();
+            let end_lineno_bits = MoltObject::from_int(end_lineno).bits();
+            let colno_bits = MoltObject::from_int(colno).bits();
+            let end_colno_bits = MoltObject::from_int(end_colno).bits();
             let name_bits = MoltObject::from_ptr(name_ptr).bits();
             let line_bits = MoltObject::from_ptr(line_ptr).bits();
-            let tuple_ptr = alloc_tuple(_py, &[filename_bits, lineno_bits, name_bits, line_bits]);
+            let tuple_ptr = alloc_tuple(
+                _py,
+                &[
+                    filename_bits,
+                    lineno_bits,
+                    end_lineno_bits,
+                    colno_bits,
+                    end_colno_bits,
+                    name_bits,
+                    line_bits,
+                ],
+            );
             dec_ref_bits(_py, filename_bits);
+            dec_ref_bits(_py, end_lineno_bits);
+            dec_ref_bits(_py, colno_bits);
+            dec_ref_bits(_py, end_colno_bits);
             dec_ref_bits(_py, name_bits);
             dec_ref_bits(_py, line_bits);
             if tuple_ptr.is_null() {

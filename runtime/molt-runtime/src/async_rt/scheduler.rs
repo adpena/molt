@@ -950,11 +950,13 @@ pub(crate) fn sleep_worker(queue: Arc<SleepQueue>) {
 }
 
 pub(crate) fn monotonic_now_secs(_py: &PyToken<'_>) -> f64 {
-    runtime_state(_py)
+    let nanos = runtime_state(_py)
         .start_time
         .get_or_init(Instant::now)
         .elapsed()
-        .as_secs_f64()
+        .as_nanos()
+        .max(1);
+    nanos as f64 / 1_000_000_000.0
 }
 
 pub(crate) fn monotonic_now_nanos(_py: &PyToken<'_>) -> u128 {
@@ -963,6 +965,7 @@ pub(crate) fn monotonic_now_nanos(_py: &PyToken<'_>) -> u128 {
         .get_or_init(Instant::now)
         .elapsed()
         .as_nanos()
+        .max(1)
 }
 
 pub(crate) fn instant_from_monotonic_secs(_py: &PyToken<'_>, secs: f64) -> Instant {

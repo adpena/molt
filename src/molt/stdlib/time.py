@@ -59,8 +59,6 @@ __all__ = [
     "tzname",
 ]
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): implement full time module surface (timezone, tzname) + deterministic clock policy.
-
 if TYPE_CHECKING:
 
     def _molt_time_monotonic() -> float:

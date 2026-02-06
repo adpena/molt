@@ -7,6 +7,7 @@ import io
 import json
 import re
 import tokenize
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -168,6 +169,53 @@ def _module_name(path: Path) -> str:
     return ".".join((*rel.parts[:-1], rel.stem))
 
 
+def _canonical_module(name: str, known: set[str]) -> str | None:
+    if name in known:
+        return name
+    root = name.split(".", 1)[0]
+    if root in known:
+        return root
+    return None
+
+
+def _module_package_parts(module: str, path: Path) -> list[str]:
+    if module == "molt.stdlib":
+        return []
+    parts = module.split(".")
+    if path.name == "__init__.py":
+        return parts
+    return parts[:-1]
+
+
+def _resolve_from_target(
+    *,
+    current_module: str,
+    current_path: Path,
+    level: int,
+    module: str | None,
+    name: str | None,
+) -> str | None:
+    package_parts = _module_package_parts(current_module, current_path)
+    if level <= 0:
+        if module is None:
+            return name
+        if name is None:
+            return module
+        return f"{module}.{name}"
+    if level > len(package_parts) + 1:
+        return None
+    anchor = package_parts[: len(package_parts) - level + 1]
+    suffix: list[str] = []
+    if module:
+        suffix.extend(module.split("."))
+    if name:
+        suffix.append(name)
+    parts = anchor + suffix
+    if not parts:
+        return None
+    return ".".join(parts)
+
+
 def _call_name(node: ast.expr) -> str | None:
     if isinstance(node, ast.Name):
         return node.id
@@ -197,6 +245,150 @@ def _extract_intrinsic_names(text: str) -> tuple[str, ...]:
             if value.startswith("molt_"):
                 names.add(value)
     return tuple(sorted(names))
+
+
+def _imports_from_ast(
+    *,
+    tree: ast.AST,
+    current_module: str,
+    current_path: Path,
+    known_modules: set[str],
+) -> set[str]:
+    out: set[str] = set()
+
+    def _static_bool(expr: ast.expr) -> bool | None:
+        if isinstance(expr, ast.Constant) and isinstance(expr.value, bool):
+            return expr.value
+        if isinstance(expr, ast.Name) and expr.id == "TYPE_CHECKING":
+            return False
+        if isinstance(expr, ast.Attribute) and expr.attr == "TYPE_CHECKING":
+            return False
+        if isinstance(expr, ast.UnaryOp) and isinstance(expr.op, ast.Not):
+            val = _static_bool(expr.operand)
+            return None if val is None else not val
+        if isinstance(expr, ast.BoolOp):
+            values = [_static_bool(value) for value in expr.values]
+            if isinstance(expr.op, ast.And):
+                if any(value is False for value in values):
+                    return False
+                if all(value is True for value in values):
+                    return True
+                return None
+            if isinstance(expr.op, ast.Or):
+                if any(value is True for value in values):
+                    return True
+                if all(value is False for value in values):
+                    return False
+                return None
+        return None
+
+    def _collect_stmt_list(statements: list[ast.stmt]) -> None:
+        for stmt in statements:
+            if isinstance(stmt, ast.Import):
+                for alias in stmt.names:
+                    resolved = _canonical_module(alias.name, known_modules)
+                    if resolved:
+                        out.add(resolved)
+                continue
+            if isinstance(stmt, ast.ImportFrom):
+                module_name = _resolve_from_target(
+                    current_module=current_module,
+                    current_path=current_path,
+                    level=stmt.level,
+                    module=stmt.module,
+                    name=None,
+                )
+                if module_name:
+                    resolved = _canonical_module(module_name, known_modules)
+                    if resolved:
+                        out.add(resolved)
+                for alias in stmt.names:
+                    if alias.name == "*":
+                        continue
+                    target = _resolve_from_target(
+                        current_module=current_module,
+                        current_path=current_path,
+                        level=stmt.level,
+                        module=stmt.module,
+                        name=alias.name,
+                    )
+                    if not target:
+                        continue
+                    resolved = _canonical_module(target, known_modules)
+                    if resolved:
+                        out.add(resolved)
+                continue
+            if isinstance(stmt, ast.If):
+                truth = _static_bool(stmt.test)
+                if truth is True:
+                    _collect_stmt_list(stmt.body)
+                elif truth is False:
+                    _collect_stmt_list(stmt.orelse)
+                else:
+                    _collect_stmt_list(stmt.body)
+                    _collect_stmt_list(stmt.orelse)
+                continue
+            if isinstance(stmt, ast.Try):
+                _collect_stmt_list(stmt.body)
+                for handler in stmt.handlers:
+                    _collect_stmt_list(handler.body)
+                _collect_stmt_list(stmt.orelse)
+                _collect_stmt_list(stmt.finalbody)
+                continue
+            if isinstance(
+                stmt,
+                (
+                    ast.FunctionDef,
+                    ast.AsyncFunctionDef,
+                    ast.ClassDef,
+                ),
+            ):
+                continue
+            child_bodies: list[list[ast.stmt]] = []
+            for field_name in ("body", "orelse", "finalbody"):
+                child = getattr(stmt, field_name, None)
+                if (
+                    isinstance(child, list)
+                    and child
+                    and all(isinstance(item, ast.stmt) for item in child)
+                ):
+                    child_bodies.append(child)
+            for child_body in child_bodies:
+                _collect_stmt_list(child_body)
+
+    if isinstance(tree, ast.Module):
+        _collect_stmt_list(tree.body)
+    return out
+
+
+def _build_stdlib_dep_graph(
+    modules: dict[str, ModuleAudit],
+) -> dict[str, set[str]]:
+    known_modules = set(modules)
+    deps: dict[str, set[str]] = {}
+    for module, audit in modules.items():
+        tree = ast.parse(audit.path.read_text(encoding="utf-8"), filename=str(audit.path))
+        deps[module] = _imports_from_ast(
+            tree=tree,
+            current_module=module,
+            current_path=audit.path,
+            known_modules=known_modules,
+        )
+    return deps
+
+
+def _closure(seeds: set[str], deps: dict[str, set[str]]) -> set[str]:
+    seen: set[str] = set()
+    queue: deque[str] = deque(sorted(seeds))
+    while queue:
+        module = queue.popleft()
+        if module in seen:
+            continue
+        seen.add(module)
+        for dep in sorted(deps.get(module, ())):
+            if dep not in seen:
+                queue.append(dep)
+    return seen
 
 
 def _scan_file(path: Path) -> tuple[list[str], tuple[str, ...], str, bool]:
@@ -374,6 +566,20 @@ def main() -> int:
         for audit in audits
         if audit.module in BOOTSTRAP_MODULES and audit.status == STATUS_PYTHON_ONLY
     ]
+    modules_by_name = {audit.module: audit for audit in audits}
+    dep_graph = _build_stdlib_dep_graph(modules_by_name)
+    python_only_modules = {
+        audit.module for audit in audits if audit.status == STATUS_PYTHON_ONLY
+    }
+    dependency_violations: list[tuple[str, str, tuple[str, ...]]] = []
+    for audit in sorted(audits, key=lambda item: item.module):
+        if audit.status == STATUS_PYTHON_ONLY:
+            continue
+        imported_closure = _closure({audit.module}, dep_graph)
+        imported_closure.discard(audit.module)
+        bad = tuple(sorted(imported_closure & python_only_modules))
+        if bad:
+            dependency_violations.append((audit.module, audit.status, bad))
 
     if failures:
         print("stdlib intrinsics lint failed:")
@@ -394,6 +600,16 @@ def main() -> int:
         print("stdlib intrinsics lint failed: bootstrap modules cannot be python-only")
         for module in sorted(set(bootstrap_failures)):
             print(f"- {module}")
+        return 1
+
+    if dependency_violations:
+        print(
+            "stdlib intrinsics lint failed: non-python-only modules cannot depend "
+            "on python-only stdlib modules"
+        )
+        for module, status, bad in dependency_violations:
+            joined = ", ".join(f"`{name}`" for name in bad)
+            print(f"- {module} ({status}) depends on {joined}")
         return 1
 
     generated_doc = _build_audit_doc(audits)

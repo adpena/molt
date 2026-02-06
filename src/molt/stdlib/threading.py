@@ -134,8 +134,12 @@ else:
         "ExceptHookArgs",
         "excepthook",
         "settrace",
+        "gettrace",
         "setprofile",
+        "getprofile",
         "stack_size",
+        "currentThread",
+        "activeCount",
     ]
 
     _thread_spawn = _require_callable(_MOLT_THREAD_SPAWN, "molt_thread_spawn")
@@ -162,8 +166,6 @@ else:
     _rlock_release = _require_callable(_MOLT_RLOCK_RELEASE, "molt_rlock_release")
     _rlock_locked = _require_callable(_MOLT_RLOCK_LOCKED, "molt_rlock_locked")
     _rlock_drop = _require_callable(_MOLT_RLOCK_DROP, "molt_rlock_drop")
-
-    # TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): threading parity with shared-memory semantics + full primitives.
 
     _TAG_NONE = 0x00
     _TAG_FALSE = 0x01
@@ -241,9 +243,15 @@ else:
         global _TRACE_HOOK
         _TRACE_HOOK = func
 
+    def gettrace() -> Callable[[Any, str, Any], Any] | None:
+        return _TRACE_HOOK
+
     def setprofile(func: Callable[[Any, str, Any], Any] | None) -> None:
         global _PROFILE_HOOK
         _PROFILE_HOOK = func
+
+    def getprofile() -> Callable[[Any, str, Any], Any] | None:
+        return _PROFILE_HOOK
 
     def stack_size(size: int | None = None) -> int:
         global _STACK_SIZE
@@ -928,6 +936,8 @@ else:
                     return False
                 _thread_sleep(min(remaining, 0.001))
 
+        isSet = is_set
+
     class Semaphore:
         def __init__(self, value: int = 1) -> None:
             if value < 0:
@@ -976,6 +986,14 @@ else:
             with self._cond:
                 self._value += n
                 self._cond.notify(n)
+
+        def __enter__(self) -> Semaphore:
+            self.acquire()
+            return self
+
+        def __exit__(self, _exc_type: Any, _exc: Any, _tb: Any) -> bool:
+            self.release()
+            return False
 
     class BoundedSemaphore(Semaphore):
         def __init__(self, value: int = 1) -> None:
@@ -1280,6 +1298,7 @@ else:
                 ) from exc
             if timeout_val < 0.0:
                 raise ValueError("timeout value must be a non-negative number")
+            _check_timeout_max(timeout_val)
             _thread_join(self._handle, timeout_val)
 
         def run(self) -> None:
@@ -1396,6 +1415,9 @@ else:
 
     def active_count() -> int:
         return len(enumerate())
+
+    currentThread = current_thread
+    activeCount = active_count
 
     TIMEOUT_MAX = 9223372036.0
 
