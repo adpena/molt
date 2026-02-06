@@ -105,8 +105,6 @@ _MOLT_SYS_STDERR = _as_callable(_require_intrinsic("molt_sys_stderr", globals())
 _MOLT_ENV_GET = _as_callable(_require_intrinsic("molt_env_get", globals()))
 _MOLT_PATH_DIRNAME = _as_callable(_require_intrinsic("molt_path_dirname", globals()))
 
-if _MOLT_GETARGV is None:
-    raise RuntimeError("molt_getargv intrinsic missing")
 raw_argv = _MOLT_GETARGV()
 if raw_argv is None:
     raise RuntimeError("molt_getargv returned None")
