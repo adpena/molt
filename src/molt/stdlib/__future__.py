@@ -51,21 +51,9 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_stdlib_probe", globals())
-
-
-all_feature_names = [
-    "nested_scopes",
-    "generators",
-    "division",
-    "absolute_import",
-    "with_statement",
-    "print_function",
-    "unicode_literals",
-    "barry_as_FLUFL",
-    "generator_stop",
-    "annotations",
-]
+_future_features = _require_intrinsic("molt_future_features", globals())
+_feature_rows = list(_future_features())
+all_feature_names = [str(name) for name, *_ in _feature_rows]
 
 __all__ = ["all_feature_names"] + all_feature_names
 
@@ -73,16 +61,17 @@ __all__ = ["all_feature_names"] + all_feature_names
 # code.h and used by compile.h, so that an editor search will find them here.
 # However, they're not exported in __all__, because they don't really belong to
 # this module.
-CO_NESTED = 0x0010  # nested_scopes
-CO_GENERATOR_ALLOWED = 0  # generators (obsolete, was 0x1000)
-CO_FUTURE_DIVISION = 0x20000  # division
-CO_FUTURE_ABSOLUTE_IMPORT = 0x40000  # perform absolute imports by default
-CO_FUTURE_WITH_STATEMENT = 0x80000  # with statement
-CO_FUTURE_PRINT_FUNCTION = 0x100000  # print function
-CO_FUTURE_UNICODE_LITERALS = 0x200000  # unicode string literals
-CO_FUTURE_BARRY_AS_BDFL = 0x400000
-CO_FUTURE_GENERATOR_STOP = 0x800000  # StopIteration becomes RuntimeError in generators
-CO_FUTURE_ANNOTATIONS = 0x1000000  # annotations become strings at runtime
+_feature_flags = {str(name): int(flag) for name, _, _, flag in _feature_rows}
+CO_NESTED = _feature_flags["nested_scopes"]  # nested_scopes
+CO_GENERATOR_ALLOWED = _feature_flags["generators"]  # generators (obsolete)
+CO_FUTURE_DIVISION = _feature_flags["division"]  # division
+CO_FUTURE_ABSOLUTE_IMPORT = _feature_flags["absolute_import"]
+CO_FUTURE_WITH_STATEMENT = _feature_flags["with_statement"]
+CO_FUTURE_PRINT_FUNCTION = _feature_flags["print_function"]
+CO_FUTURE_UNICODE_LITERALS = _feature_flags["unicode_literals"]
+CO_FUTURE_BARRY_AS_BDFL = _feature_flags["barry_as_FLUFL"]
+CO_FUTURE_GENERATOR_STOP = _feature_flags["generator_stop"]
+CO_FUTURE_ANNOTATIONS = _feature_flags["annotations"]
 
 
 class _Feature:
@@ -110,52 +99,9 @@ class _Feature:
         return "_Feature" + repr((self.optional, self.mandatory, self.compiler_flag))
 
 
-nested_scopes = _Feature((2, 1, 0, "beta", 1), (2, 2, 0, "alpha", 0), CO_NESTED)
+for _name, _optional, _mandatory, _compiler_flag in _feature_rows:
+    globals()[str(_name)] = _Feature(_optional, _mandatory, int(_compiler_flag))
 
-generators = _Feature(
-    (2, 2, 0, "alpha", 1), (2, 3, 0, "final", 0), CO_GENERATOR_ALLOWED
-)
-
-division = _Feature((2, 2, 0, "alpha", 2), (3, 0, 0, "alpha", 0), CO_FUTURE_DIVISION)
-
-absolute_import = _Feature(
-    (2, 5, 0, "alpha", 1),
-    (3, 0, 0, "alpha", 0),
-    CO_FUTURE_ABSOLUTE_IMPORT,
-)
-
-with_statement = _Feature(
-    (2, 5, 0, "alpha", 1),
-    (2, 6, 0, "alpha", 0),
-    CO_FUTURE_WITH_STATEMENT,
-)
-
-print_function = _Feature(
-    (2, 6, 0, "alpha", 2),
-    (3, 0, 0, "alpha", 0),
-    CO_FUTURE_PRINT_FUNCTION,
-)
-
-unicode_literals = _Feature(
-    (2, 6, 0, "alpha", 2),
-    (3, 0, 0, "alpha", 0),
-    CO_FUTURE_UNICODE_LITERALS,
-)
-
-barry_as_FLUFL = _Feature(
-    (3, 1, 0, "alpha", 2),
-    (4, 0, 0, "alpha", 0),
-    CO_FUTURE_BARRY_AS_BDFL,
-)
-
-generator_stop = _Feature(
-    (3, 5, 0, "beta", 1),
-    (3, 7, 0, "alpha", 0),
-    CO_FUTURE_GENERATOR_STOP,
-)
-
-annotations = _Feature(  # type: ignore[assignment]
-    (3, 7, 0, "beta", 1),
-    None,
-    CO_FUTURE_ANNOTATIONS,
-)
+del _feature_flags
+del _feature_rows
+del _future_features

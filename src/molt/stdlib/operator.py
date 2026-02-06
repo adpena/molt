@@ -29,18 +29,13 @@ __all__ = [
     "mul",
 ]
 
-
-def _as_callable(name: str):
-    return _require_intrinsic(name, globals())
-
-
-_MOLT_ADD = _as_callable("molt_operator_add")
-_MOLT_MUL = _as_callable("molt_operator_mul")
-_MOLT_EQ = _as_callable("molt_operator_eq")
-_MOLT_INDEX = _as_callable("molt_operator_index")
-_MOLT_ITEMGETTER = _as_callable("molt_operator_itemgetter")
-_MOLT_ATTRGETTER = _as_callable("molt_operator_attrgetter")
-_MOLT_METHODCALLER = _as_callable("molt_operator_methodcaller")
+_MOLT_ADD = _require_intrinsic("molt_operator_add", globals())
+_MOLT_MUL = _require_intrinsic("molt_operator_mul", globals())
+_MOLT_EQ = _require_intrinsic("molt_operator_eq", globals())
+_MOLT_INDEX = _require_intrinsic("molt_operator_index", globals())
+_MOLT_ITEMGETTER = _require_intrinsic("molt_operator_itemgetter", globals())
+_MOLT_ATTRGETTER = _require_intrinsic("molt_operator_attrgetter", globals())
+_MOLT_METHODCALLER = _require_intrinsic("molt_operator_methodcaller", globals())
 
 
 def add(a: Any, b: Any) -> Any:

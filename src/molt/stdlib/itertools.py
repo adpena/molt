@@ -31,25 +31,22 @@ __all__ = [
 
 T = TypeVar("T")
 
-
-def _as_callable(name: str):
-    return _require_intrinsic(name, globals())
-
-
-_MOLT_KWD_MARK = _as_callable("molt_itertools_kwd_mark")
-_MOLT_CHAIN = _as_callable("molt_itertools_chain")
-_MOLT_CHAIN_FROM_ITERABLE = _as_callable("molt_itertools_chain_from_iterable")
-_MOLT_ISLICE = _as_callable("molt_itertools_islice")
-_MOLT_REPEAT = _as_callable("molt_itertools_repeat")
-_MOLT_COUNT = _as_callable("molt_itertools_count")
-_MOLT_CYCLE = _as_callable("molt_itertools_cycle")
-_MOLT_ACCUMULATE = _as_callable("molt_itertools_accumulate")
-_MOLT_PAIRWISE = _as_callable("molt_itertools_pairwise")
-_MOLT_PRODUCT = _as_callable("molt_itertools_product")
-_MOLT_PERMUTATIONS = _as_callable("molt_itertools_permutations")
-_MOLT_COMBINATIONS = _as_callable("molt_itertools_combinations")
-_MOLT_GROUPBY = _as_callable("molt_itertools_groupby")
-_MOLT_TEE = _as_callable("molt_itertools_tee")
+_MOLT_KWD_MARK = _require_intrinsic("molt_itertools_kwd_mark", globals())
+_MOLT_CHAIN = _require_intrinsic("molt_itertools_chain", globals())
+_MOLT_CHAIN_FROM_ITERABLE = _require_intrinsic(
+    "molt_itertools_chain_from_iterable", globals()
+)
+_MOLT_ISLICE = _require_intrinsic("molt_itertools_islice", globals())
+_MOLT_REPEAT = _require_intrinsic("molt_itertools_repeat", globals())
+_MOLT_COUNT = _require_intrinsic("molt_itertools_count", globals())
+_MOLT_CYCLE = _require_intrinsic("molt_itertools_cycle", globals())
+_MOLT_ACCUMULATE = _require_intrinsic("molt_itertools_accumulate", globals())
+_MOLT_PAIRWISE = _require_intrinsic("molt_itertools_pairwise", globals())
+_MOLT_PRODUCT = _require_intrinsic("molt_itertools_product", globals())
+_MOLT_PERMUTATIONS = _require_intrinsic("molt_itertools_permutations", globals())
+_MOLT_COMBINATIONS = _require_intrinsic("molt_itertools_combinations", globals())
+_MOLT_GROUPBY = _require_intrinsic("molt_itertools_groupby", globals())
+_MOLT_TEE = _require_intrinsic("molt_itertools_tee", globals())
 
 _MISSING = _MOLT_KWD_MARK()
 

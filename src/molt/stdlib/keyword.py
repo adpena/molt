@@ -4,69 +4,20 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_stdlib_probe", globals())
-
-
-try:
-    from typing import TYPE_CHECKING
-except Exception:
-    TYPE_CHECKING = False
-
-if TYPE_CHECKING:
-    from typing import Any
-else:
-    Any = object()
+_keyword_lists = _require_intrinsic("molt_keyword_lists", globals())
+_is_keyword_intrinsic = _require_intrinsic("molt_keyword_iskeyword", globals())
+_is_soft_keyword_intrinsic = _require_intrinsic(
+    "molt_keyword_issoftkeyword", globals()
+)
 
 __all__ = ["kwlist", "softkwlist", "iskeyword", "issoftkeyword"]
 
-kwlist = [
-    "False",
-    "None",
-    "True",
-    "and",
-    "as",
-    "assert",
-    "async",
-    "await",
-    "break",
-    "class",
-    "continue",
-    "def",
-    "del",
-    "elif",
-    "else",
-    "except",
-    "finally",
-    "for",
-    "from",
-    "global",
-    "if",
-    "import",
-    "in",
-    "is",
-    "lambda",
-    "nonlocal",
-    "not",
-    "or",
-    "pass",
-    "raise",
-    "return",
-    "try",
-    "while",
-    "with",
-    "yield",
-]
-
-softkwlist = ["_", "case", "match", "type"]
+kwlist, softkwlist = _keyword_lists()
 
 
-def iskeyword(value: Any) -> bool:
-    if not isinstance(value, str):
-        return False
-    return value in kwlist
+def iskeyword(value) -> bool:
+    return bool(_is_keyword_intrinsic(value))
 
 
-def issoftkeyword(value: Any) -> bool:
-    if not isinstance(value, str):
-        return False
-    return value in softkwlist
+def issoftkeyword(value) -> bool:
+    return bool(_is_soft_keyword_intrinsic(value))
