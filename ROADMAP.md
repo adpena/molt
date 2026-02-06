@@ -239,5 +239,5 @@ Sign-off criteria:
 - Step 3 (Stdlib essentials): advance `docs/spec/areas/compat/0015_STDLIB_COMPATIBILITY_MATRIX.md` for `functools`, `itertools`, `operator`, `collections`, `contextlib`, `inspect`, `typing`, `dataclasses`, `enum`, `re`, and `datetime` to Partial with tests.
 - Step 4 (Async/runtime): production-ready asyncio loop/task APIs, contextvars, cancellation injection, and long-running workload hardening.
 - Step 5 (I/O + web/DB): capability-gated `os`, `sys`, `pathlib`, `logging`, `time`, `selectors`, `socket`, `ssl`; ASGI/WSGI surface, HTTP parsing, and DB client + pooling/transactions (start sqlite3 + minimal async driver), plus deterministic template rendering.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): complete `pathlib` lowering by moving fs-mutating/directory traversal methods (`exists`, `iterdir`, `mkdir`/`makedirs`, `unlink`, `rmdir`) to direct Rust intrinsics and close remaining glob parity edges.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): close remaining `pathlib` parity gaps (glob edge cases, Windows drive/anchor/path flavor semantics, and broader PurePath/PurePosixPath API surface).
 - Cross-framework note: DB IPC payloads and adapters must remain framework-agnostic to support Django/Flask/FastAPI.

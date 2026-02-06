@@ -8,7 +8,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 from molt import capabilities
 from molt.stdlib import os as _os
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): finish full pathlib lowering for fs-mutating and directory traversal methods (`exists`, `iterdir`, `mkdir`, `unlink`, `rmdir`) and close remaining CPython parity edges in glob semantics.
+# TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): close remaining pathlib CPython parity edges (glob semantics, Windows drive/anchor/path flavor behavior, and full PurePath surface).
 _MOLT_PATH_JOIN = _require_intrinsic("molt_path_join", globals())
 _MOLT_PATH_ISABS = _require_intrinsic("molt_path_isabs", globals())
 _MOLT_PATH_DIRNAME = _require_intrinsic("molt_path_dirname", globals())
@@ -22,6 +22,11 @@ _MOLT_PATH_WITH_SUFFIX = _require_intrinsic("molt_path_with_suffix", globals())
 _MOLT_PATH_EXPANDUSER = _require_intrinsic("molt_path_expanduser", globals())
 _MOLT_PATH_MATCH = _require_intrinsic("molt_path_match", globals())
 _MOLT_PATH_GLOB = _require_intrinsic("molt_path_glob", globals())
+_MOLT_PATH_EXISTS = _require_intrinsic("molt_path_exists", globals())
+_MOLT_PATH_LISTDIR = _require_intrinsic("molt_path_listdir", globals())
+_MOLT_PATH_MKDIR = _require_intrinsic("molt_path_mkdir", globals())
+_MOLT_PATH_UNLINK = _require_intrinsic("molt_path_unlink", globals())
+_MOLT_PATH_RMDIR = _require_intrinsic("molt_path_rmdir", globals())
 _MOLT_FILE_OPEN_EX = _require_intrinsic("molt_file_open_ex", globals())
 
 
@@ -155,14 +160,24 @@ class Path:
             return handle.write(data)
 
     def exists(self) -> bool:
-        return _os.path.exists(self._path)
+        capabilities.require("fs.read")
+        result = _MOLT_PATH_EXISTS(self._path)
+        if result is None:
+            return False
+        return bool(result)
 
     def unlink(self) -> None:
-        _os.path.unlink(self._path)
+        capabilities.require("fs.write")
+        _MOLT_PATH_UNLINK(self._path)
 
     def iterdir(self) -> Iterator[Path]:
         capabilities.require("fs.read")
-        for name in _os.listdir(self._path):
+        names = _MOLT_PATH_LISTDIR(self._path)
+        if not isinstance(names, list):
+            raise RuntimeError("path listdir intrinsic returned invalid value")
+        for name in names:
+            if not isinstance(name, str):
+                raise RuntimeError("path listdir intrinsic returned invalid value")
             yield self.joinpath(name)
 
     def glob(self, pattern: str) -> Iterator[Path]:
@@ -177,18 +192,48 @@ class Path:
         parents: bool = False,
         exist_ok: bool = False,
     ) -> None:
+        capabilities.require("fs.write")
+        def _is_dir(path: str) -> bool:
+            try:
+                _MOLT_PATH_LISTDIR(path)
+                return True
+            except Exception:
+                return False
+
         if parents:
-            _os.makedirs(self._path, mode=mode, exist_ok=exist_ok)
+            path = self._path
+            if not path:
+                return
+            parts: list[str] = []
+            for part in path.split(_os.sep):
+                if not part:
+                    if not parts:
+                        parts.append(_os.sep)
+                    continue
+                parts.append(part)
+                current = parts[0]
+                for extra in parts[1:]:
+                    current = _MOLT_PATH_JOIN(current, extra)
+                if _MOLT_PATH_EXISTS(current):
+                    continue
+                try:
+                    _MOLT_PATH_MKDIR(current)
+                except FileExistsError:
+                    if not exist_ok:
+                        raise
+            if not exist_ok and not _MOLT_PATH_EXISTS(path):
+                raise FileNotFoundError(path)
             return
         try:
-            _os.mkdir(self._path, mode)
+            _MOLT_PATH_MKDIR(self._path)
         except FileExistsError:
-            if exist_ok and _os.path.isdir(self._path):
+            if exist_ok and _is_dir(self._path):
                 return
             raise
 
     def rmdir(self) -> None:
-        _os.rmdir(self._path)
+        capabilities.require("fs.write")
+        _MOLT_PATH_RMDIR(self._path)
 
     @property
     def name(self) -> str:

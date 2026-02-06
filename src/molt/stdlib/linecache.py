@@ -7,9 +7,15 @@ that name.
 
 from __future__ import annotations
 
+import sys
+
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_stdlib_probe", globals())
+_MOLT_FILE_OPEN_EX = _require_intrinsic("molt_file_open_ex", globals())
+_MOLT_PATH_EXISTS = _require_intrinsic("molt_path_exists", globals())
+_MOLT_PATH_ISABS = _require_intrinsic("molt_path_isabs", globals())
+_MOLT_PATH_JOIN = _require_intrinsic("molt_path_join", globals())
 
 
 __all__ = ["getline", "clearcache", "checkcache", "lazycache"]
@@ -114,23 +120,11 @@ def checkcache(filename: str | None = None) -> None:
         if len(entry) == 1:
             # lazy cache entry, leave it lazy.
             continue
-        size, mtime, _lines, fullname = entry
-        if mtime is None:
-            continue  # no-op for files loaded via a __loader__
-        try:
-            # This import can fail if the interpreter is shutting down
-            import os
-        except ImportError:
-            return
-        stat_fn = getattr(os, "stat", None)
-        if stat_fn is None:
-            return
-        try:
-            stat = stat_fn(fullname)
-        except (OSError, ValueError):
+        _size, _mtime, _lines, fullname = entry
+        if not isinstance(fullname, str):
             cache.pop(entry_name, None)
             continue
-        if size != stat.st_size or mtime != stat.st_mtime:
+        if not bool(_MOLT_PATH_EXISTS(fullname)):
             cache.pop(entry_name, None)
 
 
@@ -138,19 +132,6 @@ def updatecache(filename: str, module_globals: dict | None = None) -> list[str]:
     """Update a cache entry and return its list of lines.
     If something's wrong, print a message, discard the cache entry,
     and return an empty list."""
-
-    # These imports are not at top level because linecache is in the critical
-    # path of the interpreter startup and importing os and sys take a lot of time
-    # and slows down the startup sequence.
-    try:
-        import os
-        import sys
-    except ImportError:
-        # These import can fail if the interpreter is shutting down
-        return []
-    stat_fn = getattr(os, "stat", None)
-    if stat_fn is None:
-        return _updatecache_no_stat(filename, module_globals, os, sys)
 
     if filename in cache:
         if len(cache[filename]) != 1:
@@ -169,11 +150,8 @@ def updatecache(filename: str, module_globals: dict | None = None) -> list[str]:
     else:
         fullname = filename
 
-    try:
-        stat = stat_fn(fullname)
-    except OSError:
-        basename = filename
-
+    result = _try_open_source(fullname)
+    if result is None:
         # Realise a lazy loader based lookup if there is one
         # otherwise try to lookup right now.
         if lazycache(filename, module_globals):
@@ -194,89 +172,17 @@ def updatecache(filename: str, module_globals: dict | None = None) -> list[str]:
                 )
                 return cache[filename][2]
 
+    if result is None:
         # Try looking through the module search path, which is only useful
         # when handling a relative filename.
-        if os.path.isabs(filename):
+        if bool(_MOLT_PATH_ISABS(filename)):
             return []
-
         for dirname in sys.path:
-            try:
-                fullname = os.path.join(dirname, basename)
-            except (TypeError, AttributeError):
-                # Not sufficiently string-like to do anything useful with.
+            if not isinstance(dirname, str):
                 continue
             try:
-                stat = stat_fn(fullname)
-                break
-            except (OSError, ValueError):
-                pass
-        else:
-            return []
-    except ValueError:  # may be raised by os.stat()
-        return []
-
-    try:
-        handle = _open_source(fullname)
-        try:
-            lines = handle.readlines()
-        finally:
-            try:
-                handle.close()
+                candidate = _MOLT_PATH_JOIN(dirname, filename)
             except Exception:
-                pass
-    except (OSError, FileNotFoundError, UnicodeDecodeError, SyntaxError, LookupError):
-        return []
-
-    if not lines:
-        lines = ["\n"]
-    elif not lines[-1].endswith("\n"):
-        lines[-1] += "\n"
-    size, mtime = stat.st_size, stat.st_mtime
-    cache[filename] = size, mtime, lines, fullname
-    return lines
-
-
-def _updatecache_no_stat(
-    filename: str,
-    module_globals: dict | None,
-    os_module,
-    sys_module,
-) -> list[str]:
-    if _source_unavailable(filename):
-        return []
-
-    if filename.startswith("<frozen "):
-        if module_globals is None:
-            return []
-        fullname = module_globals.get("__file__")
-        if fullname is None:
-            return []
-    else:
-        fullname = filename
-
-    result = _try_open_source(fullname)
-    if result is None:
-        if lazycache(filename, module_globals):
-            try:
-                data = cache[filename][0]()
-            except (ImportError, OSError):
-                data = None
-            if data is not None:
-                cache[filename] = (
-                    len(data),
-                    None,
-                    [line + "\n" for line in data.splitlines()],
-                    fullname,
-                )
-                return cache[filename][2]
-
-    if result is None:
-        if os_module.path.isabs(filename):
-            return []
-        for dirname in sys_module.path:
-            try:
-                candidate = os_module.path.join(dirname, filename)
-            except (TypeError, AttributeError):
                 continue
             result = _try_open_source(candidate)
             if result is not None:
@@ -287,6 +193,7 @@ def _updatecache_no_stat(
         return []
 
     _path, lines = result
+
     if not lines:
         lines = ["\n"]
     elif not lines[-1].endswith("\n"):
@@ -296,12 +203,7 @@ def _updatecache_no_stat(
 
 
 def _try_open_source(path: str):
-    try:
-        import os
-
-        if not os.path.exists(path):
-            return None
-    except Exception:
+    if not bool(_MOLT_PATH_EXISTS(path)):
         return None
     try:
         handle = _open_source(path)
@@ -465,10 +367,30 @@ def _detect_encoding(readline, filename: str | None) -> tuple[str, list[bytes]]:
 
 def _open_source(filename: str):
     # Keep linecache intrinsic-only by avoiding tokenize's tempfile dependency.
-    return _open_with_fallback(filename)
-
-
-def _open_with_fallback(filename: str):
-    with open(filename, "rb") as buffer:
+    buffer = _MOLT_FILE_OPEN_EX(
+        filename,
+        "rb",
+        -1,
+        None,
+        None,
+        None,
+        True,
+        None,
+    )
+    try:
         encoding, _lines = _detect_encoding(buffer.readline, filename)
-    return open(filename, "r", encoding=encoding)
+    finally:
+        try:
+            buffer.close()
+        except Exception:
+            pass
+    return _MOLT_FILE_OPEN_EX(
+        filename,
+        "r",
+        -1,
+        encoding,
+        None,
+        None,
+        True,
+        None,
+    )

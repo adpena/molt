@@ -10,9 +10,9 @@
 
 ## Progress Summary (Generated)
 - Total audited modules: `110`
-- `intrinsic-backed`: `21`
+- `intrinsic-backed`: `22`
 - `intrinsic-partial`: `19`
-- `probe-only`: `29`
+- `probe-only`: `28`
 - `python-only`: `41`
 
 ## Priority Lowering Queue (Generated)
@@ -72,6 +72,7 @@
 - `io`
 - `itertools`
 - `keyword`
+- `linecache`
 - `logging`
 - `molt_db`
 - `multiprocessing`
@@ -124,7 +125,6 @@
 - `importlib.machinery`
 - `importlib.util`
 - `json`
-- `linecache`
 - `molt.stdlib`
 - `pprint`
 - `random`
