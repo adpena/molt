@@ -1,0 +1,21 @@
+import socket
+
+left, right = socket.socketpair()
+rf = right.makefile("rb")
+left.sendall(b"abc\ndef\n")
+print(rf.readline(2))
+print(rf.readline(3))
+print(rf.readline())
+rf.close()
+left.close()
+right.close()
+
+left_t, right_t = socket.socketpair()
+tf = right_t.makefile("r", encoding="utf-8")
+left_t.sendall("xy\nz\n".encode("utf-8"))
+print(repr(tf.readline(1)))
+print(repr(tf.readline(2)))
+print(repr(tf.readline()))
+tf.close()
+left_t.close()
+right_t.close()

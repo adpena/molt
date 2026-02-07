@@ -78,8 +78,12 @@ __all__ = [
     "resolve_bases",
 ]
 
-# TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): finish
-# types helpers parity (descriptor classes, class helpers).
+# Runtime-backed parity notes:
+# - class helper APIs (`get_original_bases`, `prepare_class`, `resolve_bases`, `new_class`)
+#   lower to Rust intrinsics and raise on missing intrinsic support.
+# - `DynamicClassAttribute` descriptor behavior (clone/getter/setter/deleter and
+#   argument validation/error mapping) is implemented in the runtime descriptor path.
+# Remaining stdlib `types` gaps are tracked in STATUS/ROADMAP.
 
 
 def _bootstrap() -> None:

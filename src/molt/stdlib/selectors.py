@@ -2,24 +2,22 @@
 
 from __future__ import annotations
 
-from abc import ABCMeta, abstractmethod
-from collections.abc import Mapping
-import molt.concurrency as _molt_concurrency
-import sys as _sys
-import time as _time
-
+import math
+import select
 from _intrinsics import require_intrinsic as _require_intrinsic
+
+
+# Keep selectors in the intrinsic-backed lane: runtime-owned backends are
+# provided by select.py and these intrinsics enforce that contract at import.
+_MOLT_SELECTOR_NEW = _require_intrinsic("molt_select_selector_new", globals())
+_MOLT_SELECTOR_POLL = _require_intrinsic("molt_select_selector_poll", globals())
 
 
 EVENT_READ = 1 << 0
 EVENT_WRITE = 1 << 1
 
-_molt_io_wait_new = _require_intrinsic("molt_io_wait_new")
-_molt_block_on = _require_intrinsic("molt_block_on")
-
 
 def _fileobj_to_fd(fileobj):
-    """Return a file descriptor from a file object."""
     if isinstance(fileobj, int):
         fd = fileobj
     else:
@@ -33,26 +31,7 @@ def _fileobj_to_fd(fileobj):
     return fd
 
 
-def _fileobj_to_handle(fileobj):
-    if isinstance(fileobj, int):
-        return fileobj
-    if hasattr(fileobj, "fileno"):
-        fileno = fileobj.fileno
-        try:
-            fd = int(fileno() if callable(fileno) else fileno)
-        except (AttributeError, TypeError, ValueError):
-            raise ValueError(f"Invalid file object: {fileobj!r}") from None
-        if fd < 0:
-            raise ValueError(f"Invalid file descriptor: {fd}")
-        return fd
-    if hasattr(fileobj, "_handle"):
-        return getattr(fileobj, "_handle")
-    raise ValueError("fileobj must be a socket or file descriptor")
-
-
 class SelectorKey:
-    """SelectorKey(fileobj, fd, events, data)."""
-
     __slots__ = ("fileobj", "fd", "events", "data")
 
     def __init__(self, fileobj, fd, events, data) -> None:
@@ -78,17 +57,8 @@ class SelectorKey:
     def __getitem__(self, idx):
         return (self.fileobj, self.fd, self.events, self.data)[idx]
 
-    def __repr__(self) -> str:
-        return (
-            "SelectorKey("
-            f"fileobj={self.fileobj!r}, fd={self.fd!r}, "
-            f"events={self.events!r}, data={self.data!r})"
-        )
 
-
-class _SelectorMapping(Mapping):
-    """Mapping of file objects to selector keys."""
-
+class _SelectorMapping:
     def __init__(self, selector: "_BaseSelectorImpl") -> None:
         self._selector = selector
 
@@ -110,14 +80,10 @@ class _SelectorMapping(Mapping):
         return iter(self._selector._fd_to_key)
 
 
-class BaseSelector(metaclass=ABCMeta):
-    """Selector abstract base class."""
-
-    @abstractmethod
+class BaseSelector:
     def register(self, fileobj, events, data=None):
         raise NotImplementedError
 
-    @abstractmethod
     def unregister(self, fileobj):
         raise NotImplementedError
 
@@ -125,7 +91,6 @@ class BaseSelector(metaclass=ABCMeta):
         self.unregister(fileobj)
         return self.register(fileobj, events, data)
 
-    @abstractmethod
     def select(self, timeout=None):
         raise NotImplementedError
 
@@ -141,7 +106,6 @@ class BaseSelector(metaclass=ABCMeta):
         except KeyError:
             raise KeyError(f"{fileobj!r} is not registered") from None
 
-    @abstractmethod
     def get_map(self):
         raise NotImplementedError
 
@@ -153,8 +117,6 @@ class BaseSelector(metaclass=ABCMeta):
 
 
 class _BaseSelectorImpl(BaseSelector):
-    """Base selector implementation."""
-
     def __init__(self) -> None:
         self._fd_to_key: dict[int, SelectorKey] = {}
         self._map: _SelectorMapping | None = _SelectorMapping(self)
@@ -171,12 +133,9 @@ class _BaseSelectorImpl(BaseSelector):
     def register(self, fileobj, events, data=None):
         if (not events) or (events & ~(EVENT_READ | EVENT_WRITE)):
             raise ValueError(f"Invalid events: {events!r}")
-
         key = SelectorKey(fileobj, self._fileobj_lookup(fileobj), events, data)
-
         if key.fd in self._fd_to_key:
             raise KeyError(f"{fileobj!r} (FD {key.fd}) is already registered")
-
         self._fd_to_key[key.fd] = key
         return key
 
@@ -208,114 +167,296 @@ class _BaseSelectorImpl(BaseSelector):
         return self._map
 
 
-class _MoltSelectorImpl(_BaseSelectorImpl):
+class SelectSelector(_BaseSelectorImpl):
+    def __init__(self) -> None:
+        super().__init__()
+        self._readers: set[int] = set()
+        self._writers: set[int] = set()
+
     def register(self, fileobj, events, data=None):
-        if _molt_io_wait_new is not None:
-            _fileobj_to_handle(fileobj)
-        return super().register(fileobj, events, data)
+        key = super().register(fileobj, events, data)
+        if events & EVENT_READ:
+            self._readers.add(key.fd)
+        if events & EVENT_WRITE:
+            self._writers.add(key.fd)
+        return key
+
+    def unregister(self, fileobj):
+        key = super().unregister(fileobj)
+        self._readers.discard(key.fd)
+        self._writers.discard(key.fd)
+        return key
 
     def select(self, timeout=None):
-        if not self._fd_to_key:
+        timeout = None if timeout is None else max(float(timeout), 0.0)
+        ready: list[tuple[SelectorKey, int]] = []
+        try:
+            readers, writers, _ = select.select(
+                list(self._readers),
+                list(self._writers),
+                [],
+                timeout,
+            )
+        except InterruptedError:
+            return ready
+        reader_set = frozenset(readers)
+        writer_set = frozenset(writers)
+        fd_to_key_get = self._fd_to_key.get
+        for fd in reader_set | writer_set:
+            key = fd_to_key_get(fd)
+            if key:
+                events = (EVENT_READ if fd in reader_set else 0) | (
+                    EVENT_WRITE if fd in writer_set else 0
+                )
+                ready.append((key, events & key.events))
+        return ready
+
+
+class _PollLikeSelector(_BaseSelectorImpl):
+    _selector_cls = None
+    _EVENT_READ = None
+    _EVENT_WRITE = None
+
+    def __init__(self):
+        super().__init__()
+        # Access via the class to avoid descriptor binding when the backend
+        # constructor is a Python function object (e.g. select.poll shim).
+        selector_cls = type(self)._selector_cls
+        if selector_cls is None:
+            raise RuntimeError("poll-like selector backend unavailable")
+        self._selector = selector_cls()
+
+    def register(self, fileobj, events, data=None):
+        key = super().register(fileobj, events, data)
+        backend_events = (self._EVENT_READ if (events & EVENT_READ) else 0) | (
+            self._EVENT_WRITE if (events & EVENT_WRITE) else 0
+        )
+        try:
+            self._selector.register(key.fd, backend_events)
+        except Exception:
+            super().unregister(fileobj)
+            raise
+        return key
+
+    def unregister(self, fileobj):
+        key = super().unregister(fileobj)
+        try:
+            self._selector.unregister(key.fd)
+        except OSError:
+            pass
+        return key
+
+    def modify(self, fileobj, events, data=None):
+        try:
+            key = self._fd_to_key[self._fileobj_lookup(fileobj)]
+        except KeyError:
+            raise KeyError(f"{fileobj!r} is not registered") from None
+        changed = False
+        if events != key.events:
+            backend_events = (self._EVENT_READ if (events & EVENT_READ) else 0) | (
+                self._EVENT_WRITE if (events & EVENT_WRITE) else 0
+            )
+            self._selector.modify(key.fd, backend_events)
+            changed = True
+        if data != key.data:
+            changed = True
+        if changed:
+            key = key._replace(events=events, data=data)
+            self._fd_to_key[key.fd] = key
+        return key
+
+    def select(self, timeout=None):
+        if timeout is None:
+            poll_timeout = None
+        elif timeout <= 0:
+            poll_timeout = 0
+        else:
+            poll_timeout = math.ceil(float(timeout) * 1e3)
+        ready: list[tuple[SelectorKey, int]] = []
+        try:
+            fd_event_list = self._selector.poll(poll_timeout)
+        except InterruptedError:
+            return ready
+        fd_to_key_get = self._fd_to_key.get
+        for fd, event in fd_event_list:
+            key = fd_to_key_get(fd)
+            if key:
+                events = (EVENT_READ if (event & self._EVENT_READ) else 0) | (
+                    EVENT_WRITE if (event & self._EVENT_WRITE) else 0
+                )
+                ready.append((key, events & key.events))
+        return ready
+
+    def close(self):
+        close_fn = getattr(self._selector, "close", None)
+        if close_fn is not None:
+            close_fn()
+        super().close()
+
+
+if hasattr(select, "poll"):
+
+    class PollSelector(_PollLikeSelector):
+        _selector_cls = select.poll
+        _EVENT_READ = select.POLLIN
+        _EVENT_WRITE = select.POLLOUT
+
+
+if hasattr(select, "epoll"):
+
+    class EpollSelector(_PollLikeSelector):
+        _selector_cls = select.epoll
+        _EVENT_READ = select.EPOLLIN
+        _EVENT_WRITE = select.EPOLLOUT
+
+        def fileno(self):
+            return self._selector.fileno()
+
+        def select(self, timeout=None):
             if timeout is None:
-                return []
-            if timeout > 0:
-                _time.sleep(timeout)
-            return []
-        io_wait = _molt_io_wait_new
-        block_on = _molt_block_on
-
-        def _timeout_from_select(value):
-            if value is None:
-                return None
-            if value <= 0:
-                return 0.0
-            return float(value)
-
-        async def _wait_ready():
-            wait_timeout = _timeout_from_select(timeout)
-            chan = _molt_concurrency.channel()
-            futures: list[tuple[SelectorKey, object]] = []
-
-            async def _wait_one(key: SelectorKey, fut: object) -> None:
-                try:
-                    mask = int(await fut)
-                except TimeoutError:
-                    mask = 0
-                try:
-                    await chan.send_async((key, mask))
-                except Exception:
-                    pass
-
-            for key in self._fd_to_key.values():
-                handle = _fileobj_to_handle(key.fileobj)
-                fut = io_wait(handle, key.events, wait_timeout)
-                futures.append((key, fut))
-                _molt_concurrency.spawn(_wait_one(key, fut))
-
+                epoll_timeout = -1.0
+            elif timeout <= 0:
+                epoll_timeout = 0.0
+            else:
+                epoll_timeout = math.ceil(float(timeout) * 1e3) * 1e-3
+            max_events = len(self._fd_to_key) or 1
             ready: list[tuple[SelectorKey, int]] = []
-            if not futures:
-                return ready
-
-            key, mask = await chan.recv_async()
-            if mask:
-                ready.append((key, mask & key.events))
-
-            while True:
-                ok, payload = chan.try_recv()
-                if not ok:
-                    break
-                more_key, more_mask = payload
-                if more_mask:
-                    ready.append((more_key, more_mask & more_key.events))
-
-            for _key, fut in futures:
-                cancel = getattr(fut, "cancel", None)
-                if callable(cancel):
-                    try:
-                        cancel()
-                    except Exception:
-                        pass
             try:
-                chan.close()
-            except Exception:
-                pass
+                fd_event_list = self._selector.poll(epoll_timeout)
+            except InterruptedError:
+                return ready
+            if len(fd_event_list) > max_events:
+                fd_event_list = fd_event_list[:max_events]
+            fd_to_key_get = self._fd_to_key.get
+            for fd, event in fd_event_list:
+                key = fd_to_key_get(fd)
+                if key:
+                    events = (EVENT_READ if (event & self._EVENT_READ) else 0) | (
+                        EVENT_WRITE if (event & self._EVENT_WRITE) else 0
+                    )
+                    ready.append((key, events & key.events))
             return ready
 
-        return block_on(_wait_ready())
+
+if hasattr(select, "devpoll"):
+
+    class DevpollSelector(_PollLikeSelector):
+        _selector_cls = select.devpoll
+        _EVENT_READ = select.POLLIN
+        _EVENT_WRITE = select.POLLOUT
+
+        def fileno(self):
+            return self._selector.fileno()
 
 
-class SelectSelector(_MoltSelectorImpl):
-    """Select-based selector."""
+if hasattr(select, "kqueue") and hasattr(select, "kevent"):
+
+    class KqueueSelector(_BaseSelectorImpl):
+        def __init__(self):
+            super().__init__()
+            self._selector = select.kqueue()
+            self._max_events = 0
+
+        def fileno(self):
+            return self._selector.fileno()
+
+        def register(self, fileobj, events, data=None):
+            key = super().register(fileobj, events, data)
+            try:
+                if events & EVENT_READ:
+                    kev = select.kevent(
+                        key.fd,
+                        select.KQ_FILTER_READ,
+                        select.KQ_EV_ADD,
+                    )
+                    self._selector.control([kev], 0, 0)
+                    self._max_events += 1
+                if events & EVENT_WRITE:
+                    kev = select.kevent(
+                        key.fd,
+                        select.KQ_FILTER_WRITE,
+                        select.KQ_EV_ADD,
+                    )
+                    self._selector.control([kev], 0, 0)
+                    self._max_events += 1
+            except Exception:
+                super().unregister(fileobj)
+                raise
+            return key
+
+        def unregister(self, fileobj):
+            key = super().unregister(fileobj)
+            if key.events & EVENT_READ:
+                kev = select.kevent(
+                    key.fd,
+                    select.KQ_FILTER_READ,
+                    select.KQ_EV_DELETE,
+                )
+                self._max_events -= 1
+                try:
+                    self._selector.control([kev], 0, 0)
+                except OSError:
+                    pass
+            if key.events & EVENT_WRITE:
+                kev = select.kevent(
+                    key.fd,
+                    select.KQ_FILTER_WRITE,
+                    select.KQ_EV_DELETE,
+                )
+                self._max_events -= 1
+                try:
+                    self._selector.control([kev], 0, 0)
+                except OSError:
+                    pass
+            return key
+
+        def select(self, timeout=None):
+            timeout = None if timeout is None else max(float(timeout), 0.0)
+            max_events = self._max_events or 1
+            ready: list[tuple[SelectorKey, int]] = []
+            try:
+                kev_list = self._selector.control(None, max_events, timeout)
+            except InterruptedError:
+                return ready
+            fd_to_key_get = self._fd_to_key.get
+            for kev in kev_list:
+                fd = int(kev.ident)
+                key = fd_to_key_get(fd)
+                if not key:
+                    continue
+                events = (
+                    EVENT_READ if int(kev.filter) == select.KQ_FILTER_READ else 0
+                ) | (EVENT_WRITE if int(kev.filter) == select.KQ_FILTER_WRITE else 0)
+                ready.append((key, events & key.events))
+            return ready
+
+        def close(self):
+            self._selector.close()
+            super().close()
 
 
-_IS_LINUX = _sys.platform.startswith("linux")
-_IS_WIN = _sys.platform == "win32"
-_HAS_KQUEUE = not _IS_LINUX and not _IS_WIN
-_HAS_POLL = not _IS_WIN
-
-if _HAS_POLL:
-
-    class PollSelector(_MoltSelectorImpl):
-        """Poll-based selector."""
-
-
-if _IS_LINUX:
-
-    class EpollSelector(_MoltSelectorImpl):
-        """Epoll-based selector."""
+def _can_use(method: str) -> bool:
+    selector_ctor = getattr(select, method, None)
+    if selector_ctor is None:
+        return False
+    try:
+        selector_obj = selector_ctor()
+        if method == "poll":
+            selector_obj.poll(0)
+        else:
+            selector_obj.close()
+        return True
+    except OSError:
+        return False
 
 
-if _HAS_KQUEUE:
-
-    class KqueueSelector(_MoltSelectorImpl):
-        """Kqueue-based selector."""
-
-
-if _HAS_KQUEUE:
+if _can_use("kqueue"):
     DefaultSelector = KqueueSelector
-elif _IS_LINUX:
+elif _can_use("epoll"):
     DefaultSelector = EpollSelector
-elif _HAS_POLL:
+elif _can_use("devpoll"):
+    DefaultSelector = DevpollSelector
+elif _can_use("poll"):
     DefaultSelector = PollSelector
 else:
     DefaultSelector = SelectSelector

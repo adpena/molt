@@ -1,6 +1,6 @@
 # STATUS (Canonical)
 
-Last updated: 2026-02-06
+Last updated: 2026-02-07
 
 This document is the source of truth for Molt's current capabilities and
 limitations. Update this file whenever behavior or scope changes, and keep
@@ -76,7 +76,7 @@ README/ROADMAP in sync.
 - Builtin function objects for allowlisted builtins (`any`, `all`, `abs`, `ascii`, `bin`, `oct`, `hex`, `chr`, `ord`, `divmod`, `hash`, `callable`, `repr`, `format`, `getattr`, `hasattr`, `round`, `iter`, `next`, `anext`, `print`, `super`, `sum`, `min`, `max`, `sorted`, `map`, `filter`, `zip`, `reversed`).
 - `sorted()` enforces keyword-only `key`/`reverse` arguments (CPython parity).
 - Builtin reductions: `sum`, `min`, `max` with key/default support across core ordering types.
-- TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:partial): dynamic execution builtins: `compile` performs global/nonlocal checks and returns a stub code object; `eval`/`exec` and full compile (sandbox + codegen) remain missing; regrtest `test_future_stmt` depends on full `compile`.
+- TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:partial): dynamic execution builtins: `compile` now performs Rust parser-backed syntax/scope validation for `exec`/`eval`/`single` modes and returns a runtime code object, but `eval`/`exec` and full compile codegen/sandboxing remain missing; regrtest `test_future_stmt` still depends on full `compile`.
 - Differential parity probes for dynamic execution (`eval`/`exec`) are tracked in `tests/differential/planned/exec_*` and `tests/differential/planned/eval_*` and are **expected to fail** until sandboxed dynamic execution lands.
 - `print` supports keyword arguments (`sep`, `end`, `file`, `flush`) with CPython-style type errors; `file=None` uses `sys.stdout`.
 - Lexicographic ordering for `str`/`bytes`/`bytearray`/`list`/`tuple` (cross-type ordering raises `TypeError`).
@@ -107,7 +107,7 @@ README/ROADMAP in sync.
 - Stdlib `compileall` supports filesystem `compile_file`/`compile_dir`/`compile_path` with `fs.read` gating (no pyc emission).
 - Stdlib `py_compile` supports `compile` with `fs.read`/`fs.write` gating (writes empty placeholder .pyc only).
 - Stdlib `enum` provides minimal `Enum`/`IntEnum`/`Flag`/`IntFlag` support with `auto`, name/value accessors, and member maps.
-- Stdlib `traceback` supports `format_exc`/`format_tb`/`format_list`/`format_stack`/`print_exception`/`print_list`/`print_stack`, `extract_tb`/`extract_stack`, `StackSummary` extraction, and basic `__cause__`/`__context__` chain formatting; full parity pending.
+- Stdlib `traceback` supports `format_exc`/`format_tb`/`format_list`/`format_stack`/`print_exception`/`print_list`/`print_stack`, `extract_tb`/`extract_stack`, `StackSummary` extraction, and runtime-lowered exception-chain formatting via `molt_traceback_format_exception`; extract/list frame shaping is routed through `molt_traceback_payload`, and `TracebackException.from_exception` now consumes runtime-owned exception components (`molt_traceback_exception_components`) for frame/cause/context shaping. Full parity pending.
 - Stdlib `abc` provides minimal `ABCMeta`/`ABC` and `abstractmethod` with instantiation guards.
 - Stdlib `reprlib` provides `Repr`, `repr`, and `recursive_repr` parity.
 - C3 MRO + multiple inheritance for attribute lookup, `super()` resolution, and descriptor precedence for
@@ -139,9 +139,7 @@ README/ROADMAP in sync.
   (TODO(semantics, owner:frontend, milestone:TC2, priority:P1, status:partial): honor `__new__` overrides for non-exception classes.)
 - Strings: `str.isdigit` now follows Unicode digit properties (ASCII + superscripts + non-ASCII digit sets).
 - Dataclasses: compile-time lowering covers init/repr/eq/order/unsafe_hash/frozen/slots/match_args/kw_only,
-  field flags, InitVar/ClassVar/KW_ONLY, __match_args__, and stdlib helpers.
-  (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:missing): implement make_dataclass
-  once dynamic class construction is allowed by the runtime contract.)
+  field flags, InitVar/ClassVar/KW_ONLY, __match_args__, stdlib helpers, and `make_dataclass`.
   (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): support dataclass inheritance
   from non-dataclass bases without breaking layout guarantees.)
 - Call binding: allowlisted stdlib modules now permit dynamic calls (keyword/variadic via `CALL_BIND`);
@@ -155,7 +153,7 @@ README/ROADMAP in sync.
 - Implemented: f-string conversion flags (`!r`, `!s`, `!a`) are supported in format placeholders, including nested format specs and debug expressions.
 - Async generators (`async def` with `yield`) are not supported.
   (TODO(async-runtime, owner:frontend, milestone:TC2, priority:P1, status:missing): implement async generator lowering and runtime parity.)
-- `contextlib` parity is partial: `contextmanager`/`ContextDecorator` + `ExitStack`/`AsyncExitStack`, `suppress`, and `redirect_stdout`/`redirect_stderr` are supported; gaps remain for `aclosing`/`AbstractContextManager` and full parity.
+- `contextlib` parity is partial: `contextmanager`/`ContextDecorator` + `ExitStack`/`AsyncExitStack`, `asynccontextmanager`/`aclosing`, `suppress`, and `redirect_stdout`/`redirect_stderr` are supported via runtime-owned intrinsics, including intrinsic-backed `ExitStack.callback` + `ExitStack.enter_context`; gaps remain for `AbstractContextManager` and full edge-case parity.
   (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): finish contextlib parity.)
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): finish abc registry + cache invalidation parity.
 - Implemented: iterator/view helper types now map to concrete builtin classes so `collections.abc` imports and registrations work without fallback/guards.
@@ -177,9 +175,10 @@ README/ROADMAP in sync.
   OSError/Warning trees, ExceptionGroup MRO).
   (TODO(introspection, owner:runtime, milestone:TC2, priority:P1, status:partial): expand frame objects to full CPython parity fields.)
   (TODO(semantics, owner:runtime, milestone:TC2, priority:P1, status:partial): exception `__init__` + subclass attribute parity (ExceptionGroup tree).)
-- Code objects: `__code__` exposes `co_filename`/`co_name`/`co_firstlineno`, with `co_varnames` and
-  arg counts (`co_argcount`/`co_posonlyargcount`/`co_kwonlyargcount`) populated; `co_linetable` remains minimal.
-  (TODO(introspection, owner:runtime, milestone:TC2, priority:P2, status:partial): expand remaining code object fields + linetable parity.)
+- Code objects: `__code__` exposes `co_filename`/`co_name`/`co_firstlineno`, `co_varnames`, arg counts
+  (`co_argcount`/`co_posonlyargcount`/`co_kwonlyargcount`), `co_linetable`, `co_freevars`, `co_cellvars`,
+  and baseline `co_flags` (`CO_OPTIMIZED|CO_NEWLOCALS`) for intrinsic-created code objects.
+  (TODO(introspection, owner:runtime, milestone:TC2, priority:P2, status:partial): complete closure/generator/coroutine-specific `co_flags` and free/cellvar parity.)
 - Runtime lifecycle: `molt_runtime_init()`/`molt_runtime_shutdown()` manage a `RuntimeState` that owns caches, pools, and async registries; TLS guard drains per-thread caches on thread exit, scheduler/sleep workers join on shutdown, and freed TYPE_ID_OBJECT headers return to the object pool with fallback deallocation for non-pooled types.
 - Tooling: `molt clean --cargo-target` removes Cargo `target/` build artifacts when requested.
 - Process-based concurrency is partial: spawn-based `multiprocessing` (Process/Pool/Queue/Pipe/SharedValue/SharedArray) is capability-gated and supports `maxtasksperchild`; `fork`/`forkserver` map to spawn semantics (no true fork yet). `subprocess` and `concurrent.futures` remain pending.
@@ -189,6 +188,11 @@ README/ROADMAP in sync.
   (TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P2, status:partial): decode argv via filesystem encoding + surrogateescape once Molt strings can represent surrogate escapes.)
 - `sys.executable` now honors `MOLT_SYS_EXECUTABLE` when set (the diff harness pins it to the host Python to avoid recursive `-c` subprocess spawns); otherwise it falls back to the compiled argv[0].
 - `sys.modules` mirrors the runtime module cache for compiled code; `sys._getframe` is available in compiled runtimes with partial frame objects (see introspection TODOs).
+- `sys.path` bootstrap/environment policy is runtime-owned via intrinsic payload (`molt_sys_bootstrap_payload`) with deterministic fields for
+  `PYTHONPATH`/`MOLT_MODULE_ROOTS`/`VIRTUAL_ENV` site-packages/`PWD`/stdlib-root/include-cwd policy (including pre-split path lists); stdlib wrappers consume that payload
+  directly and do not read host env in Python shims.
+- `runpy.run_path` path coercion/abspath/is-file probing is runtime-lowered via `molt_runpy_resolve_path` (bootstrap-PWD aware), and
+  execution is intrinsic-backed via `molt_runpy_run_path` (restricted assignment/docstring evaluator; no host fallback).
 - `globals()` can be referenced as a first-class callable (module-bound) and returns the defining module globals; `locals()`/`vars()`/`dir()` remain lowered as direct calls,
   and no-arg callable parity for these builtins is still limited.
   (TODO(introspection, owner:frontend, milestone:TC2, priority:P2, status:partial): implement `globals`/`locals`/`vars`/`dir` builtins with correct scope semantics + callable parity.)
@@ -200,7 +204,17 @@ README/ROADMAP in sync.
   meta_path/path_hooks/namespace packages remain unsupported.
   (TODO(import-system, owner:stdlib, milestone:TC3, priority:P2, status:partial): meta_path/path_hooks + namespace packages + extension loaders.)
 - Entry modules execute under `__main__` while remaining importable under their real module name (distinct module objects).
-- Module metadata: compiled modules set `__file__`/`__package__`/`__spec__` (ModuleSpec + filesystem loader) and package `__path__`.
+- Module metadata: compiled modules set `__file__`/`__package__`/`__spec__` (ModuleSpec + filesystem loader) and package `__path__`; `importlib.machinery.SourceFileLoader`
+  package/module shaping and source decode payload now lower through runtime intrinsics (`molt_importlib_source_loader_payload`,
+  `molt_importlib_source_exec_payload`), file reads lower via `molt_importlib_read_file`, and source execution remains intrinsic-lowered
+  via `molt_importlib_exec_restricted_source` (restricted evaluator, no host fallback). `importlib.util` filesystem discovery/cache-path +
+  `spec_from_file_location` package shaping now lower through `molt_importlib_find_spec_payload`,
+  `molt_importlib_bootstrap_payload`, `molt_importlib_cache_from_source`, and `molt_importlib_spec_from_file_location_payload`.
+  `importlib.resources` package root/namespace resolution and traversable stat/listdir payloads are runtime-lowered via
+  `molt_importlib_resources_package_payload` and `molt_importlib_resources_path_payload`; direct resources text/binary reads lower through
+  `molt_importlib_read_file`. `importlib.metadata` dist-info scan + metadata parsing lower through
+  `molt_importlib_bootstrap_payload`, `molt_importlib_metadata_dist_paths`, `molt_importlib_metadata_entry_points_payload`, and
+  `molt_importlib_metadata_payload` (including `Requires-Dist`/`Provides-Extra`/`Requires-Python` payload fields).
   TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib.machinery loader parity (namespace/extension/zip).
 - Imports: module-level `from x import *` honors `__all__` (with strict name checks) and otherwise skips underscore-prefixed names.
 - TODO(import-system, owner:stdlib, milestone:TC3, priority:P1, status:partial): project-root builds (namespace packages + PYTHONPATH roots supported; remaining: package discovery hardening, `__init__` edge cases, deterministic dependency graph caching).
@@ -262,6 +276,36 @@ README/ROADMAP in sync.
   registration (sleep queue + block_on integration); `asyncio.gather` and
   `asyncio.Event` are supported for core patterns; `asyncio.wait_for` now
   supports timeout + cancellation propagation across task boundaries.
+- Implemented: TaskGroup + Runner cancellation fanout now routes through
+  intrinsic batch cancellation (`molt_asyncio_cancel_pending`) and intrinsic
+  gather orchestration, reducing Python-side cancellation loops in shutdown and
+  error paths.
+- Implemented: asyncio synchronization hot paths now lower waiter fanout/removal
+  through Rust intrinsics (`molt_asyncio_waiters_notify`,
+  `molt_asyncio_waiters_notify_exception`,
+  `molt_asyncio_waiters_remove`, `molt_asyncio_barrier_release`), covering
+  lock/condition/semaphore/barrier/queue wake paths and cancellation cleanup
+  loops.
+- Implemented: asyncio task/future transfer and event-waiter teardown now route
+  through Rust intrinsics (`molt_asyncio_future_transfer`,
+  `molt_asyncio_event_waiters_cleanup`), removing Python callback-orchestration
+  loops from `Task.__await__`, `wrap_future`, and token cleanup paths.
+- Implemented: asyncio task registry + event-waiter token maps are now runtime-owned
+  (`molt_asyncio_task_registry_set`/`get`/`current`/`pop`/`move`/`values`,
+  `molt_asyncio_event_waiters_register`/`unregister`/`cleanup_token`), removing
+  Python-owned `_TASKS` / `_EVENT_WAITERS` bookkeeping and making loop/task hot
+  paths intrinsic-only.
+- Implemented: TaskGroup done-callback error fanout and ready-queue drain now
+  lower through Rust intrinsics (`molt_asyncio_taskgroup_on_task_done`,
+  `molt_asyncio_ready_queue_drain`), removing Python-side task scan loops and
+  event-loop ready-batch copy/clear churn in hot paths.
+- Implemented: asyncio coroutine predicates now route through inspect intrinsics
+  (`molt_inspect_iscoroutine`, `molt_inspect_iscoroutinefunction`) instead of
+  Python inspect dispatch.
+- Implemented: asyncio running/event-loop state now routes through runtime
+  intrinsics (`molt_asyncio_running_loop_get`/`set`,
+  `molt_asyncio_event_loop_get`/`set`,
+  `molt_asyncio_event_loop_policy_get`/`set`) rather than Python globals.
 - TODO(compiler, owner:compiler, milestone:TC2, priority:P0, status:partial): fix async lowering/back-end verifier for `asyncio.gather` poll paths (dominance issues) and wasm stack-balance errors; async protocol parity tests currently fail.
 - Implemented: generator/async poll trampolines are task-aware (generator/coroutine/asyncgen) so wasm no longer relies on arity overrides.
 - TODO(perf, owner:compiler, milestone:TC2, priority:P2, status:planned): optimize wasm trampolines with bulk payload initialization and shared helpers to cut code size and call overhead.
@@ -289,9 +333,22 @@ README/ROADMAP in sync.
   are not `Send`/`Sync` unless explicitly documented otherwise.
 - Cross-thread sharing of live Python objects is unsupported by default; serialize or
   freeze data before crossing threads.
-- `threading.Thread` defaults to isolated runtimes with serialized targets/args; when the
-  `thread.shared` capability is enabled, threads share module globals but still use
-  serialized targets/args (no arbitrary object passing yet).
+- `threading.Thread` uses the shared-runtime intrinsic spawn path by default
+  (`molt_thread_spawn_shared`) and lifecycle/identity is tracked in the runtime
+  thread registry intrinsics.
+- `threading` bootstrap hook semantics (`settrace`, `setprofile`, `excepthook`)
+  remain thin Python wrappers around intrinsic-backed thread lifecycle (no
+  CPython fallback lane in compiled execution).
+- `threading` timeout shaping now matches CPython negative-timeout behavior for
+  `Thread.join`, `Condition.wait`, `Event.wait`, and `Semaphore.acquire` (with
+  non-blocking semaphore timeout argument errors preserved).
+- `threading.stack_size` is now runtime-owned via Rust intrinsics
+  (`molt_thread_stack_size_get`/`molt_thread_stack_size_set`), and thread spawn
+  paths consume the configured runtime stack size.
+- `threading.RLock` ownership/recursion save+restore state is now runtime-owned
+  via Rust intrinsics (`molt_rlock_is_owned`,
+  `molt_rlock_release_save`, `molt_rlock_acquire_restore`), removing Python-side
+  owner/count bookkeeping from compiled execution paths.
 - Handle table and pointer registry may use internal locks; lock ordering rules
   are defined in `docs/spec/areas/runtime/0026_CONCURRENCY_AND_GIL.md`.
 - TODO(runtime, owner:runtime, milestone:RT2, priority:P1, status:planned): define
@@ -313,46 +370,51 @@ README/ROADMAP in sync.
 - Partial shims: `warnings`, `traceback`, `types`, `inspect`, `ast`, `ctypes`, `urllib.parse`, `fnmatch` (`*`/`?`
   + bracket class/range matching; literal `[]`/`[[]`/`[]]` escapes (no backslash
   quoting)), `copy`, `string`, `struct`, `typing`, `sys`, `os`, `pathlib`,
-  `tempfile`, `gc`, `weakref`, `random` (Random API + MT parity: `seed`/`getstate`/`setstate`, `randrange`/`randint`/`shuffle`, `choice`/`choices`/`sample`, `randbytes`, `SystemRandom` via `os.urandom`, plus distributions: `uniform`, `triangular`, `normalvariate`, `gauss`, `lognormvariate`, `expovariate`, `vonmisesvariate`, `gammavariate`, `betavariate`, `paretovariate`, `weibullvariate`, `binomialvariate`), `time` (`monotonic`, `perf_counter`, `process_time`, `sleep`, `get_clock_info`, `time`/`time_ns` gated by `time.wall`, plus `localtime`/`gmtime`/`strftime` + `struct_time` + `asctime`/`ctime` + `timezone`/`tzname`), `json` (loads/dumps with parse hooks, indent, separators, allow_nan, `JSONEncoder`/`JSONDecoder`, `JSONDecodeError` details), `base64` (b16/b32/b32hex/b64/b85/a85/z85 encode/decode + urlsafe + legacy helpers), `hashlib`/`hmac` (Rust intrinsics for guaranteed algorithms + `pbkdf2_hmac`/`scrypt`; unsupported algorithms raise), `pickle` (protocol 0 only),
-  `socket` (runtime-backed, capability-gated; advanced options + wasm parity pending), `select` (selectors-backed for sockets only),
-  `selectors` (io_wait-backed readiness), `asyncio`, `contextvars`, `contextlib`, `threading`, `zipfile`, `zipimport`,
+  `tempfile`, `gc`, `weakref`, `random` (Random API + MT parity: `seed`/`getstate`/`setstate`, `randrange`/`randint`/`shuffle`, `choice`/`choices`/`sample`, `randbytes`, `SystemRandom` via `os.urandom`, plus distributions: `uniform`, `triangular`, `normalvariate`, `gauss`, `lognormvariate`, `expovariate`, `vonmisesvariate`, `gammavariate`, `betavariate`, `paretovariate`, `weibullvariate`, `binomialvariate`), `time` (`monotonic`, `perf_counter`, `process_time`, `sleep`, `get_clock_info`, `time`/`time_ns` gated by `time.wall`, plus `localtime`/`gmtime`/`strftime` + `struct_time` + `asctime`/`ctime` + `timezone`/`daylight`/`altzone`/`tzname` + `mktime`), `json` (loads/dumps with parse hooks, indent, separators, allow_nan, `JSONEncoder`/`JSONDecoder`, `JSONDecodeError` details), `base64` (b16/b32/b32hex/b64/b85/a85/z85 encode/decode + urlsafe + legacy helpers), `hashlib`/`hmac` (Rust intrinsics for guaranteed algorithms + `pbkdf2_hmac`/`scrypt`; unsupported algorithms raise), `pickle` (protocol 0 only),
+  `socket` (runtime-backed, capability-gated; fd duplication/fromfd/inheritable plus socket-file reader read/readline paths route via Rust intrinsics, `dup` now clones via runtime socket-handle intrinsic, and default-timeout validation is CPython-shaped; advanced options + wasm parity pending), `select` (`select.select` + `poll`/`epoll`/`kqueue`/`devpoll` objects now intrinsic-backed via runtime selector registries),
+  `selectors` (CPython-shaped backend classes now route through intrinsic-backed `select` objects rather than Python async fan-out), `asyncio`, `contextvars`, `contextlib`, `threading`, `zipfile`, `zipimport`,
   `functools`, `itertools`, `operator`, `bisect`, `heapq`, `collections`.
   Supported shims: `keyword` (`kwlist`/`softkwlist`, `iskeyword`, `issoftkeyword`), `pprint` (PrettyPrinter/pformat/pprint parity).
   (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): advance partial shims to parity per matrix.)
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): expand zipfile/zipimport with bytecode caching + broader archive support.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): close parity gaps for `ast`, `ctypes`, and `urllib.parse` per matrix coverage.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): complete socket/select/selectors parity (poll/epoll/select objects, fd inheritance, error mapping, cancellation) and align with asyncio adapters.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): complete socket/select/selectors parity (OS-specific flags, fd inheritance, error mapping, cancellation) and align with asyncio adapters.
+- Implemented: wasm/non-Unix socket host ABI now carries ancillary payload buffers and recvmsg `msg_flags` for `socket.sendmsg`/`socket.recvmsg`/`socket.recvmsg_into`; runtime no longer hardcodes `msg_flags=0` in wasm paths.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): complete `socket.sendmsg`/`socket.recvmsg`/`socket.recvmsg_into` cross-platform ancillary parity (`cmsghdr`, `CMSG_*`, control message decode/encode); wasm-managed stream peer paths now transport ancillary payloads (for example `socketpair`), while unsupported non-Unix routes still return `EOPNOTSUPP` for non-empty ancillary control messages.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): threading parity with shared-memory semantics + full primitives.
+- Implemented: `os.read`/`os.write` are now Rust-intrinsic-backed (`molt_os_read`/`molt_os_write`) and validated with differential coverage (`os_read_write_basic.py`, `os_read_write_errors.py`) in intrinsic-only compiled runs.
+- Implemented: threading basic differential lane (`tests/differential/basic/threading_*.py`) is green (`24/24`) under intrinsic-only compiled runs with RSS profiling enabled.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): unittest/test/doctest stubs exist for regrtest (support: captured_output/captured_stdout/captured_stderr, check_syntax_error, findfile, run_with_tz, warnings_helper utilities: check_warnings/check_no_warnings/check_no_resource_warning/check_syntax_warning/ignore_warnings/import_deprecated/save_restore_warnings_filters/WarningsRecorder, cpython_only, requires, swap_attr/swap_item, import_helper basics: import_module/import_fresh_module/make_legacy_pyc/ready_to_import/frozen_modules/multi_interp_extensions_check/DirsOnSysPath/isolated_modules/modules_setup/modules_cleanup, os_helper basics: temp_dir/temp_cwd/unlink/rmtree/rmdir/make_bad_fd/can_symlink/skip_unless_symlink + TESTFN constants); doctest is blocked on eval/exec/compile gating and full unittest parity is pending.
-- Implemented: os.environ mapping methods + backend parity (str-only keys/values, update/pop/setdefault/copy).
+- Implemented: `os.environ` mapping methods are runtime-intrinsic-backed (`molt_env_snapshot`/`molt_env_set`/`molt_env_unset`) with str-only key/value checks; `os.putenv`/`os.unsetenv` are lowered to dedicated runtime intrinsics (`molt_env_putenv`/`molt_env_unsetenv`) and keep CPython-style separation from `os.environ`/`os.getenv`.
 - Implemented: uuid module parity (UUID accessors, `uuid1`/`uuid3`/`uuid4`/`uuid5`, namespaces, SafeUUID).
 - Implemented: collections.abc parity (ABC registration, structural checks, mixins).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): `json` shim parity (runtime fast-path parser + performance tuning).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): expand hashlib/hmac coverage for optional OpenSSL algorithms (sha512_224/sha512_256, ripemd160, md4) and add parity tests for advanced digestmod usage.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): `gc` module exposes only minimal toggles/collect; wire to runtime cycle collector and implement full API.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): `weakref.finalize` atexit registry pending until atexit hooks are available.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): `_abc` cache helpers parity (registry, caches, invalidation).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): tighten `weakref.finalize` shutdown-order parity (including `atexit` edge cases) against CPython.
+- Implemented: `abc.update_abstractmethods` now lowers through Rust intrinsic `molt_abc_update_abstractmethods` (no Python-side abstract-method scanning loop in `abc.py`).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): close `_abc` edge-case cache/version parity.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): replace placeholder iterator/view types (`object`/`type`) so ABC registration doesn't need guards.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:planned): `_py_abc` fallback parity for ABC registry/caches.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): `_asyncio` shim uses pure-Python loop helpers; C-accelerated parity pending.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): `_asyncio` shim now uses intrinsic-backed running-loop hooks; broader C-accelerated parity remains pending.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): asyncio submodule parity (events/tasks/streams/etc) beyond import-only allowlisting.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): `_bz2` compression backend parity for `bz2`.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): expand `random` distribution test vectors and edge-case coverage.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): `struct` intrinsics cover full format table (including half-float) with endianness + alignment and aligned error messages; remaining gaps: buffer protocol beyond bytes/bytearray and deterministic layout policy.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): expand `time` module surface (altzone/daylight + timegm/mktime) + deterministic clock policy.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P2, status:partial): `struct` intrinsics cover the CPython 3.12 format table (including half-float) with endianness + alignment and C-contiguous memoryview chain handling for pack/unpack/pack_into/unpack_from; remaining gaps are exact CPython diagnostic-text parity on selected edge cases.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): expand `time` module surface (`timegm`) + deterministic clock policy.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): expand locale parity beyond deterministic runtime shim semantics (`setlocale` catalog coverage, category handling, and host-locale compatibility).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): implement gettext translation catalog/domain parity (filesystem-backed `.mo` loading and locale/domain selection).
 - TODO(wasm-parity, owner:runtime, milestone:RT2, priority:P1, status:partial): wire local timezone + locale data for `time.localtime`/`time.strftime` on wasm hosts.
 - TODO(stdlib-compat, owner:runtime, milestone:TC1, priority:P2, status:partial): codec error handlers (surrogateescape/surrogatepass/namereplace/etc) pending; blocked on surrogate-capable string representation.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): `codecs` module parity (incremental/stream codecs + full encodings import hooks + error-handler registration); base encode/decode intrinsics plus registry/lookup and minimal encodings/aliases are present.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): `pickle` protocol 1+ and broader type coverage (bytes/bytearray, memo cycles).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): `math` shim covers constants, predicates, `trunc`/`floor`/`ceil`, `fabs`/`copysign`/`fmod`/`modf`, `frexp`/`ldexp`, `isclose`, `prod`/`fsum`, `gcd`/`lcm`, `factorial`/`comb`/`perm`, `degrees`/`radians`, `hypot`, and `sqrt`; Rust intrinsics cover predicates (`isfinite`/`isinf`/`isnan`), `sqrt`, `trunc`/`floor`/`ceil`, `fabs`/`copysign`, `fmod`/`modf`/`frexp`/`ldexp`, `isclose`, `prod`/`fsum`, `gcd`/`lcm`, `factorial`/`comb`/`perm`, `degrees`/`radians`, `hypot`/`dist`, `isqrt`/`nextafter`/`ulp`, `tan`/`asin`/`atan`/`atan2`, `sinh`/`cosh`/`tanh`, `asinh`/`acosh`/`atanh`, `log`/`log2`/`log10`/`log1p`, `exp`/`expm1`, `fma`/`remainder`, and `gamma`/`lgamma`/`erf`/`erfc`; remaining: determinism policy.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): finish remaining `types` shims (CapsuleType + any missing helper/descriptor types).
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:missing): implement `types.new_class`, `types.prepare_class`, `types.resolve_bases`, and `types.get_original_bases`, plus a dedicated `DynamicClassAttribute` descriptor.
-- Import-only stubs: `collections.abc`, `_collections_abc`, `_abc`, `_py_abc`, `_asyncio`, `_bz2`.
+- Import-only stubs: `collections.abc`, `_collections_abc`, `_asyncio`, `_bz2`.
   (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): implement core collections.abc surfaces.)
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib meta_path/namespace/extension loader parity.
 - Implemented: relative import resolution now honors `__package__`/`__spec__` metadata (including `__main__`) and namespace packages, with CPython-matching errors for missing or over-deep parents.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib.resources loader/namespace/zip resource readers.
-- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib.metadata full parsing + dependency/entry point semantics.
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib.resources loader-backed and zip resource reader parity (namespace path discovery is intrinsic-lowered).
+- TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): importlib.metadata dependency/advanced metadata semantics beyond intrinsic payload parsing.
 - Planned import-only stubs: `html`, `html.parser`, `http.cookies`, `http.client`, `http.server`,
   `ipaddress`, `mimetypes`, `socketserver`, `wsgiref`, `xml`, `email.policy`, `email.message`, `email.parser`,
   `email.utils`, `email.header`, `urllib.request`, `urllib.error`, `urllib.robotparser`,

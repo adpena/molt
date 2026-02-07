@@ -102,8 +102,9 @@ _MOLT_SYS_PLATFORM = _as_callable(_require_intrinsic("molt_sys_platform", global
 _MOLT_SYS_STDIN = _as_callable(_require_intrinsic("molt_sys_stdin", globals()))
 _MOLT_SYS_STDOUT = _as_callable(_require_intrinsic("molt_sys_stdout", globals()))
 _MOLT_SYS_STDERR = _as_callable(_require_intrinsic("molt_sys_stderr", globals()))
-_MOLT_ENV_GET = _as_callable(_require_intrinsic("molt_env_get", globals()))
-_MOLT_PATH_DIRNAME = _as_callable(_require_intrinsic("molt_path_dirname", globals()))
+_MOLT_SYS_BOOTSTRAP_PAYLOAD = _as_callable(
+    _require_intrinsic("molt_sys_bootstrap_payload", globals())
+)
 
 raw_argv = _MOLT_GETARGV()
 if raw_argv is None:
@@ -134,57 +135,91 @@ def exit(code: object = None) -> None:
 platform = _resolve_platform()
 version = _MOLT_SYS_VERSION()
 version_info = cast(tuple[object, ...], _MOLT_SYS_VERSION_INFO())
-path = []
-raw_path = _MOLT_ENV_GET("PYTHONPATH", "")
-if isinstance(raw_path, str) and raw_path:
-    sep = ";" if platform.startswith("win") else ":"
-    path = [part for part in raw_path.split(sep) if part]
+path: list[str] = []
 
 
-def _path_dirname(value: str) -> str:
-    value = _MOLT_PATH_DIRNAME(value)
+def _bootstrap_module_file() -> str | None:
+    value = globals().get("__file__")
+    if isinstance(value, str):
+        return value
+    return None
+
+
+def _bootstrap_str_list(
+    payload: dict[object, object], key: str, intrinsic_name: str
+) -> list[str]:
+    value = payload.get(key)
+    if not isinstance(value, (list, tuple)):
+        raise RuntimeError(f"{intrinsic_name} returned invalid value")
+    out: list[str] = []
+    for entry in value:
+        if not isinstance(entry, str):
+            raise RuntimeError(f"{intrinsic_name} returned invalid value")
+        out.append(entry)
+    return out
+
+
+def _bootstrap_str(payload: dict[object, object], key: str, intrinsic_name: str) -> str:
+    value = payload.get(key)
     if not isinstance(value, str):
-        raise RuntimeError("path dirname intrinsic returned invalid value")
+        raise RuntimeError(f"{intrinsic_name} returned invalid value")
     return value
 
 
-def _append_stdlib_path(paths: list[str]) -> None:
-    file_path = globals().get("__file__")
-    if isinstance(file_path, str) and file_path:
-        stdlib_root = _path_dirname(file_path)
-        if stdlib_root and stdlib_root not in paths:
-            paths.append(stdlib_root)
+def _bootstrap_str_or_none(
+    payload: dict[object, object], key: str, intrinsic_name: str
+) -> str | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise RuntimeError(f"{intrinsic_name} returned invalid value")
+    return value
 
 
-def _read_env_flag(name: str) -> str:
-    value = _MOLT_ENV_GET(name, "")
-    return str(value) if value is not None else ""
+def _bootstrap_bool(
+    payload: dict[object, object], key: str, intrinsic_name: str
+) -> bool:
+    value = payload.get(key)
+    if not isinstance(value, bool):
+        raise RuntimeError(f"{intrinsic_name} returned invalid value")
+    return value
 
 
-def _append_module_roots(paths: list[str]) -> None:
-    raw = _read_env_flag("MOLT_MODULE_ROOTS")
-    if not raw:
-        return
-    sep = ";" if platform.startswith("win") else ":"
-    for entry in raw.split(sep):
-        if entry and entry not in paths:
-            paths.append(entry)
+_BOOTSTRAP_MODULE_FILE = _bootstrap_module_file()
+_bootstrap_payload_value = _MOLT_SYS_BOOTSTRAP_PAYLOAD(_BOOTSTRAP_MODULE_FILE)
+if not isinstance(_bootstrap_payload_value, dict):
+    raise RuntimeError("molt_sys_bootstrap_payload returned invalid value")
 
-
-def _append_cwd_path(paths: list[str]) -> None:
-    dev_trusted = _read_env_flag("MOLT_DEV_TRUSTED").strip().lower()
-    if dev_trusted in {"0", "false", "no"}:
-        return
-    pwd = _read_env_flag("PWD")
-    if pwd and pwd not in paths:
-        paths.append(pwd)
-    if "" not in paths:
-        paths.insert(0, "")
-
-
-_append_stdlib_path(path)
-_append_module_roots(path)
-_append_cwd_path(path)
+path = _bootstrap_str_list(
+    _bootstrap_payload_value, "path", "molt_sys_bootstrap_payload"
+)
+_molt_bootstrap_pythonpath = tuple(
+    _bootstrap_str_list(
+        _bootstrap_payload_value, "pythonpath_entries", "molt_sys_bootstrap_payload"
+    )
+)
+_molt_bootstrap_module_roots = tuple(
+    _bootstrap_str_list(
+        _bootstrap_payload_value, "module_roots_entries", "molt_sys_bootstrap_payload"
+    )
+)
+_molt_bootstrap_venv_site_packages = tuple(
+    _bootstrap_str_list(
+        _bootstrap_payload_value,
+        "venv_site_packages_entries",
+        "molt_sys_bootstrap_payload",
+    )
+)
+_molt_bootstrap_pwd = _bootstrap_str(
+    _bootstrap_payload_value, "pwd", "molt_sys_bootstrap_payload"
+)
+_molt_bootstrap_include_cwd = _bootstrap_bool(
+    _bootstrap_payload_value, "include_cwd", "molt_sys_bootstrap_payload"
+)
+_molt_bootstrap_stdlib_root = _bootstrap_str_or_none(
+    _bootstrap_payload_value, "stdlib_root", "molt_sys_bootstrap_payload"
+)
 
 
 class _LazyStdio:
@@ -275,118 +310,8 @@ def exc_info() -> tuple[object, object, object]:
     return type(exc), exc, getattr(exc, "__traceback__", None)
 
 
-_FRAME_PATCHED_ATTR = "__molt_frame_patched__"
-
-
-def _frame_attr(frame: object, name: str) -> object | None:
-    try:
-        return getattr(frame, name)
-    except Exception:
-        return None
-
-
-def _resolve_frame_globals(frame: object) -> dict[str, object] | None:
-    val = _frame_attr(frame, "f_globals")
-    if isinstance(val, dict):
-        return cast(dict[str, object], val)
-    back = _frame_attr(frame, "f_back")
-    if back is not None:
-        back_globals = _resolve_frame_globals(back)
-        if isinstance(back_globals, dict):
-            return back_globals
-    code = _frame_attr(frame, "f_code")
-    filename = None
-    if code is not None:
-        try:
-            filename = getattr(code, "co_filename", None)
-        except Exception:
-            filename = None
-    if filename:
-        for mod in modules.values():
-            try:
-                mod_file = getattr(mod, "__file__", None)
-            except Exception:
-                continue
-            if mod_file == filename:
-                mod_dict = getattr(mod, "__dict__", None)
-                if isinstance(mod_dict, dict):
-                    return mod_dict
-    main_mod = modules.get("__main__")
-    if main_mod is not None:
-        main_dict = getattr(main_mod, "__dict__", None)
-        if isinstance(main_dict, dict):
-            return main_dict
-    return None
-
-
-def _resolve_frame_locals(
-    frame: object, globals_dict: dict[str, object] | None
-) -> dict[str, object]:
-    if isinstance(globals_dict, dict):
-        code = _frame_attr(frame, "f_code")
-        name = None
-        if code is not None:
-            try:
-                name = getattr(code, "co_name", None)
-            except Exception:
-                name = None
-        if name == "<module>":
-            return globals_dict
-    return {}
-
-
-def _patch_frame(frame: object | None, depth: int) -> object | None:
-    if frame is None:
-        return None
-    current = frame
-    current_depth = depth
-    seen: set[int] = set()
-    while current is not None:
-        obj_id = id(current)
-        if obj_id in seen:
-            break
-        seen.add(obj_id)
-        try:
-            if getattr(current, _FRAME_PATCHED_ATTR, False):
-                break
-            setattr(current, _FRAME_PATCHED_ATTR, True)
-        except Exception:
-            pass
-        back = _frame_attr(current, "f_back")
-        if back is None and _MOLT_GETFRAME is not None:
-            try:
-                back = _MOLT_GETFRAME(current_depth + 1)
-            except Exception:
-                back = None
-        if back is not None:
-            try:
-                setattr(current, "f_back", back)
-            except Exception:
-                pass
-        globals_dict = _resolve_frame_globals(current)
-        if isinstance(globals_dict, dict):
-            try:
-                setattr(current, "f_globals", globals_dict)
-            except Exception:
-                pass
-        locals_dict = _frame_attr(current, "f_locals")
-        if not isinstance(locals_dict, dict):
-            locals_dict = _resolve_frame_locals(current, globals_dict)
-            try:
-                setattr(current, "f_locals", locals_dict)
-            except Exception:
-                pass
-        current = back
-        current_depth += 1
-    return frame
-
-
 def _getframe(depth: int = 0) -> object | None:
-    try:
-        frame = _MOLT_GETFRAME(depth + 2)
-        return _patch_frame(frame, depth + 2)
-    except Exception:
-        return None
+    return _MOLT_GETFRAME(depth + 2)
 
 
 def getdefaultencoding() -> str:

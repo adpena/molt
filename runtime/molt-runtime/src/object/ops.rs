@@ -20,7 +20,7 @@ use std::ffi::CStr;
 use std::ffi::CString;
 use std::io::{BufRead, BufReader, Write};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use unicode_casefold::{Locale, UnicodeCaseFold, Variant};
 use unicode_ident::{is_xid_continue, is_xid_start};
 use wtf8::{CodePoint, Wtf8};
@@ -2761,6 +2761,13 @@ enum CompareBoolOutcome {
 }
 
 #[derive(Clone, Copy)]
+enum CompareValueOutcome {
+    Value(u64),
+    NotComparable,
+    Error,
+}
+
+#[derive(Clone, Copy)]
 enum CompareOp {
     Lt,
     Le,
@@ -2954,6 +2961,73 @@ fn rich_compare_bool(
     CompareBoolOutcome::NotComparable
 }
 
+fn rich_compare_value(
+    _py: &PyToken<'_>,
+    lhs: MoltObject,
+    rhs: MoltObject,
+    op_name_bits: u64,
+    reverse_name_bits: u64,
+) -> CompareValueOutcome {
+    let pending_before = exception_pending(_py);
+    let prev_exc_bits = if pending_before {
+        exception_last_bits_noinc(_py).unwrap_or(0)
+    } else {
+        0
+    };
+    let exception_changed = || {
+        if !exception_pending(_py) {
+            return false;
+        }
+        if !pending_before {
+            return true;
+        }
+        exception_last_bits_noinc(_py).unwrap_or(0) != prev_exc_bits
+    };
+    if let Some(outcome) = rich_compare_type_value(_py, lhs, rhs, op_name_bits, reverse_name_bits) {
+        return outcome;
+    }
+    unsafe {
+        if let Some(lhs_ptr) = lhs.as_ptr() {
+            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, lhs_ptr, op_name_bits) {
+                let res_bits = call_callable1(_py, call_bits, rhs.bits());
+                dec_ref_bits(_py, call_bits);
+                if exception_changed() {
+                    dec_ref_bits(_py, res_bits);
+                    return CompareValueOutcome::Error;
+                }
+                if is_not_implemented_bits(_py, res_bits) {
+                    dec_ref_bits(_py, res_bits);
+                } else {
+                    return CompareValueOutcome::Value(res_bits);
+                }
+            }
+            if exception_changed() {
+                return CompareValueOutcome::Error;
+            }
+        }
+        if let Some(rhs_ptr) = rhs.as_ptr() {
+            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, rhs_ptr, reverse_name_bits)
+            {
+                let res_bits = call_callable1(_py, call_bits, lhs.bits());
+                dec_ref_bits(_py, call_bits);
+                if exception_changed() {
+                    dec_ref_bits(_py, res_bits);
+                    return CompareValueOutcome::Error;
+                }
+                if is_not_implemented_bits(_py, res_bits) {
+                    dec_ref_bits(_py, res_bits);
+                } else {
+                    return CompareValueOutcome::Value(res_bits);
+                }
+            }
+            if exception_changed() {
+                return CompareValueOutcome::Error;
+            }
+        }
+    }
+    CompareValueOutcome::NotComparable
+}
+
 fn rich_compare_type_bool(
     _py: &PyToken<'_>,
     lhs: MoltObject,
@@ -2985,6 +3059,42 @@ fn rich_compare_type_bool(
         }
         if saw_type {
             return Some(CompareBoolOutcome::NotComparable);
+        }
+    }
+    None
+}
+
+fn rich_compare_type_value(
+    _py: &PyToken<'_>,
+    lhs: MoltObject,
+    rhs: MoltObject,
+    op_name_bits: u64,
+    reverse_name_bits: u64,
+) -> Option<CompareValueOutcome> {
+    unsafe {
+        let mut saw_type = false;
+        if let Some(lhs_ptr) = lhs.as_ptr() {
+            if object_type_id(lhs_ptr) == TYPE_ID_TYPE {
+                saw_type = true;
+                if let Some(outcome) =
+                    rich_compare_type_method_value(_py, lhs_ptr, rhs.bits(), op_name_bits)
+                {
+                    return Some(outcome);
+                }
+            }
+        }
+        if let Some(rhs_ptr) = rhs.as_ptr() {
+            if object_type_id(rhs_ptr) == TYPE_ID_TYPE {
+                saw_type = true;
+                if let Some(outcome) =
+                    rich_compare_type_method_value(_py, rhs_ptr, lhs.bits(), reverse_name_bits)
+                {
+                    return Some(outcome);
+                }
+            }
+        }
+        if saw_type {
+            return Some(CompareValueOutcome::NotComparable);
         }
     }
     None
@@ -3047,6 +3157,57 @@ unsafe fn rich_compare_type_method(
     })
 }
 
+unsafe fn rich_compare_type_method_value(
+    _py: &PyToken<'_>,
+    type_ptr: *mut u8,
+    other_bits: u64,
+    op_name_bits: u64,
+) -> Option<CompareValueOutcome> {
+    let pending_before = exception_pending(_py);
+    let prev_exc_bits = if pending_before {
+        exception_last_bits_noinc(_py).unwrap_or(0)
+    } else {
+        0
+    };
+    let exception_changed = || {
+        if !exception_pending(_py) {
+            return false;
+        }
+        if !pending_before {
+            return true;
+        }
+        exception_last_bits_noinc(_py).unwrap_or(0) != prev_exc_bits
+    };
+    let mut meta_bits = object_class_bits(type_ptr);
+    if meta_bits == 0 {
+        meta_bits = builtin_classes(_py).type_obj;
+    }
+    let meta_ptr = match obj_from_bits(meta_bits).as_ptr() {
+        Some(ptr) if object_type_id(ptr) == TYPE_ID_TYPE => ptr,
+        _ => return None,
+    };
+    let Some(method_bits) = class_attr_lookup_raw_mro(_py, meta_ptr, op_name_bits) else {
+        return None;
+    };
+    let Some(bound_bits) = descriptor_bind(_py, method_bits, meta_ptr, Some(type_ptr)) else {
+        if exception_changed() {
+            return Some(CompareValueOutcome::Error);
+        }
+        return None;
+    };
+    let res_bits = call_callable1(_py, bound_bits, other_bits);
+    dec_ref_bits(_py, bound_bits);
+    if exception_changed() {
+        dec_ref_bits(_py, res_bits);
+        return Some(CompareValueOutcome::Error);
+    }
+    if is_not_implemented_bits(_py, res_bits) {
+        dec_ref_bits(_py, res_bits);
+        return None;
+    }
+    Some(CompareValueOutcome::Value(res_bits))
+}
+
 fn rich_compare_order(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> CompareOutcome {
     let lt_name_bits = intern_static_name(_py, &runtime_state(_py).interned.lt_name, b"__lt__");
     let gt_name_bits = intern_static_name(_py, &runtime_state(_py).interned.gt_name, b"__gt__");
@@ -3085,11 +3246,10 @@ pub extern "C" fn molt_lt(a: u64, b: u64) -> u64 {
         }
         let lt_name_bits = intern_static_name(_py, &runtime_state(_py).interned.lt_name, b"__lt__");
         let gt_name_bits = intern_static_name(_py, &runtime_state(_py).interned.gt_name, b"__gt__");
-        match rich_compare_bool(_py, lhs, rhs, lt_name_bits, gt_name_bits) {
-            CompareBoolOutcome::True => MoltObject::from_bool(true).bits(),
-            CompareBoolOutcome::False => MoltObject::from_bool(false).bits(),
-            CompareBoolOutcome::Error => MoltObject::none().bits(),
-            CompareBoolOutcome::NotComparable => compare_type_error(_py, lhs, rhs, "<"),
+        match rich_compare_value(_py, lhs, rhs, lt_name_bits, gt_name_bits) {
+            CompareValueOutcome::Value(bits) => bits,
+            CompareValueOutcome::Error => MoltObject::none().bits(),
+            CompareValueOutcome::NotComparable => compare_type_error(_py, lhs, rhs, "<"),
         }
     })
 }
@@ -3107,11 +3267,10 @@ pub extern "C" fn molt_le(a: u64, b: u64) -> u64 {
         }
         let le_name_bits = intern_static_name(_py, &runtime_state(_py).interned.le_name, b"__le__");
         let ge_name_bits = intern_static_name(_py, &runtime_state(_py).interned.ge_name, b"__ge__");
-        match rich_compare_bool(_py, lhs, rhs, le_name_bits, ge_name_bits) {
-            CompareBoolOutcome::True => MoltObject::from_bool(true).bits(),
-            CompareBoolOutcome::False => MoltObject::from_bool(false).bits(),
-            CompareBoolOutcome::Error => MoltObject::none().bits(),
-            CompareBoolOutcome::NotComparable => compare_type_error(_py, lhs, rhs, "<="),
+        match rich_compare_value(_py, lhs, rhs, le_name_bits, ge_name_bits) {
+            CompareValueOutcome::Value(bits) => bits,
+            CompareValueOutcome::Error => MoltObject::none().bits(),
+            CompareValueOutcome::NotComparable => compare_type_error(_py, lhs, rhs, "<="),
         }
     })
 }
@@ -3129,11 +3288,10 @@ pub extern "C" fn molt_gt(a: u64, b: u64) -> u64 {
         }
         let gt_name_bits = intern_static_name(_py, &runtime_state(_py).interned.gt_name, b"__gt__");
         let lt_name_bits = intern_static_name(_py, &runtime_state(_py).interned.lt_name, b"__lt__");
-        match rich_compare_bool(_py, lhs, rhs, gt_name_bits, lt_name_bits) {
-            CompareBoolOutcome::True => MoltObject::from_bool(true).bits(),
-            CompareBoolOutcome::False => MoltObject::from_bool(false).bits(),
-            CompareBoolOutcome::Error => MoltObject::none().bits(),
-            CompareBoolOutcome::NotComparable => compare_type_error(_py, lhs, rhs, ">"),
+        match rich_compare_value(_py, lhs, rhs, gt_name_bits, lt_name_bits) {
+            CompareValueOutcome::Value(bits) => bits,
+            CompareValueOutcome::Error => MoltObject::none().bits(),
+            CompareValueOutcome::NotComparable => compare_type_error(_py, lhs, rhs, ">"),
         }
     })
 }
@@ -3151,11 +3309,10 @@ pub extern "C" fn molt_ge(a: u64, b: u64) -> u64 {
         }
         let ge_name_bits = intern_static_name(_py, &runtime_state(_py).interned.ge_name, b"__ge__");
         let le_name_bits = intern_static_name(_py, &runtime_state(_py).interned.le_name, b"__le__");
-        match rich_compare_bool(_py, lhs, rhs, ge_name_bits, le_name_bits) {
-            CompareBoolOutcome::True => MoltObject::from_bool(true).bits(),
-            CompareBoolOutcome::False => MoltObject::from_bool(false).bits(),
-            CompareBoolOutcome::Error => MoltObject::none().bits(),
-            CompareBoolOutcome::NotComparable => compare_type_error(_py, lhs, rhs, ">="),
+        match rich_compare_value(_py, lhs, rhs, ge_name_bits, le_name_bits) {
+            CompareValueOutcome::Value(bits) => bits,
+            CompareValueOutcome::Error => MoltObject::none().bits(),
+            CompareValueOutcome::NotComparable => compare_type_error(_py, lhs, rhs, ">="),
         }
     })
 }
@@ -3170,11 +3327,10 @@ pub extern "C" fn molt_eq(a: u64, b: u64) -> u64 {
             return MoltObject::from_bool(a == b).bits();
         }
         let eq_name_bits = intern_static_name(_py, &runtime_state(_py).interned.eq_name, b"__eq__");
-        match rich_compare_bool(_py, lhs, rhs, eq_name_bits, eq_name_bits) {
-            CompareBoolOutcome::True => return MoltObject::from_bool(true).bits(),
-            CompareBoolOutcome::False => return MoltObject::from_bool(false).bits(),
-            CompareBoolOutcome::Error => return MoltObject::none().bits(),
-            CompareBoolOutcome::NotComparable => {}
+        match rich_compare_value(_py, lhs, rhs, eq_name_bits, eq_name_bits) {
+            CompareValueOutcome::Value(bits) => return bits,
+            CompareValueOutcome::Error => return MoltObject::none().bits(),
+            CompareValueOutcome::NotComparable => {}
         }
         MoltObject::from_bool(obj_eq(_py, lhs, rhs)).bits()
     })
@@ -3186,79 +3342,28 @@ pub extern "C" fn molt_ne(a: u64, b: u64) -> u64 {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         let ne_name_bits = intern_static_name(_py, &runtime_state(_py).interned.ne_name, b"__ne__");
-        let default_ne_bits = builtin_func_bits(
-            _py,
-            &runtime_state(_py).method_cache.object_ne,
-            fn_addr!(molt_object_ne),
-            2,
-        );
-        if let Some(outcome) = rich_compare_type_bool(_py, lhs, rhs, ne_name_bits, ne_name_bits) {
-            return match outcome {
-                CompareBoolOutcome::True => MoltObject::from_bool(true).bits(),
-                CompareBoolOutcome::False => MoltObject::from_bool(false).bits(),
-                CompareBoolOutcome::Error => MoltObject::none().bits(),
-                CompareBoolOutcome::NotComparable => MoltObject::from_bool(a != b).bits(),
-            };
+        match rich_compare_value(_py, lhs, rhs, ne_name_bits, ne_name_bits) {
+            CompareValueOutcome::Value(bits) => return bits,
+            CompareValueOutcome::Error => return MoltObject::none().bits(),
+            CompareValueOutcome::NotComparable => {}
         }
-        let mut saw_explicit = false;
-        unsafe {
-            if let Some(lhs_ptr) = lhs.as_ptr() {
-                if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, lhs_ptr, ne_name_bits) {
-                    let is_default = call_bits == default_ne_bits;
-                    let res_bits = call_callable1(_py, call_bits, rhs.bits());
-                    dec_ref_bits(_py, call_bits);
-                    if exception_pending(_py) {
-                        dec_ref_bits(_py, res_bits);
-                        return MoltObject::none().bits();
-                    }
-                    if is_not_implemented_bits(_py, res_bits) {
-                        dec_ref_bits(_py, res_bits);
-                        if !is_default {
-                            saw_explicit = true;
-                        }
-                    } else {
-                        let truthy = is_truthy(_py, obj_from_bits(res_bits));
-                        dec_ref_bits(_py, res_bits);
-                        return MoltObject::from_bool(truthy).bits();
-                    }
-                }
-                if exception_pending(_py) {
+
+        let eq_name_bits = intern_static_name(_py, &runtime_state(_py).interned.eq_name, b"__eq__");
+        match rich_compare_value(_py, lhs, rhs, eq_name_bits, eq_name_bits) {
+            CompareValueOutcome::Value(bits) => {
+                let truthy = is_truthy(_py, obj_from_bits(bits));
+                let had_exc = exception_pending(_py);
+                dec_ref_bits(_py, bits);
+                if had_exc {
                     return MoltObject::none().bits();
                 }
+                return MoltObject::from_bool(!truthy).bits();
             }
-            if let Some(rhs_ptr) = rhs.as_ptr() {
-                if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, rhs_ptr, ne_name_bits) {
-                    let is_default = call_bits == default_ne_bits;
-                    let res_bits = call_callable1(_py, call_bits, lhs.bits());
-                    dec_ref_bits(_py, call_bits);
-                    if exception_pending(_py) {
-                        dec_ref_bits(_py, res_bits);
-                        return MoltObject::none().bits();
-                    }
-                    if is_not_implemented_bits(_py, res_bits) {
-                        dec_ref_bits(_py, res_bits);
-                        if !is_default {
-                            saw_explicit = true;
-                        }
-                    } else {
-                        let truthy = is_truthy(_py, obj_from_bits(res_bits));
-                        dec_ref_bits(_py, res_bits);
-                        return MoltObject::from_bool(truthy).bits();
-                    }
-                }
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-            }
+            CompareValueOutcome::Error => return MoltObject::none().bits(),
+            CompareValueOutcome::NotComparable => {}
         }
-        if saw_explicit {
-            return MoltObject::from_bool(a != b).bits();
-        }
-        let eq_bits = molt_eq(a, b);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        molt_not(eq_bits)
+
+        MoltObject::from_bool(a != b).bits()
     })
 }
 
@@ -6295,6 +6400,168 @@ pub extern "C" fn molt_pending() -> u64 {
     crate::with_gil_entry!(_py, { MoltObject::pending().bits() })
 }
 
+#[derive(Clone, Copy)]
+struct GcState {
+    enabled: bool,
+    thresholds: (i64, i64, i64),
+    debug_flags: i64,
+    count: (i64, i64, i64),
+}
+
+fn gc_state() -> &'static Mutex<GcState> {
+    static GC_STATE: OnceLock<Mutex<GcState>> = OnceLock::new();
+    GC_STATE.get_or_init(|| {
+        Mutex::new(GcState {
+            enabled: true,
+            thresholds: (0, 0, 0),
+            debug_flags: 0,
+            count: (0, 0, 0),
+        })
+    })
+}
+
+fn gc_int_arg(_py: &PyToken<'_>, bits: u64, label: &str) -> Result<i64, u64> {
+    if let Some(value) = to_i64(obj_from_bits(bits)) {
+        return Ok(value);
+    }
+    if let Some(big_ptr) = bigint_ptr_from_bits(bits) {
+        let big = unsafe { bigint_ref(big_ptr) };
+        let Some(value) = big.to_i64() else {
+            let msg = format!("{label} value out of range");
+            return Err(raise_exception::<_>(_py, "OverflowError", &msg));
+        };
+        return Ok(value);
+    }
+    let type_name = class_name_for_error(type_of_bits(_py, bits));
+    let msg = format!("'{type_name}' object cannot be interpreted as an integer");
+    Err(raise_exception::<_>(_py, "TypeError", &msg))
+}
+
+#[no_mangle]
+pub extern "C" fn molt_gc_collect(generation_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let generation = match gc_int_arg(_py, generation_bits, "generation") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        if generation < 0 {
+            return raise_exception::<_>(_py, "ValueError", "generation must be non-negative");
+        }
+        let collected = crate::object::weakref::weakref_collect_for_gc(_py) as i64;
+        let mut state = gc_state().lock().unwrap();
+        state.count = (0, 0, 0);
+        MoltObject::from_int(collected).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_gc_enable() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let mut state = gc_state().lock().unwrap();
+        state.enabled = true;
+        MoltObject::none().bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_gc_disable() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let mut state = gc_state().lock().unwrap();
+        state.enabled = false;
+        MoltObject::none().bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_gc_isenabled() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let state = gc_state().lock().unwrap();
+        MoltObject::from_bool(state.enabled).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_gc_set_threshold(th0_bits: u64, th1_bits: u64, th2_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let th0 = match gc_int_arg(_py, th0_bits, "threshold0") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let th1 = match gc_int_arg(_py, th1_bits, "threshold1") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let th2 = match gc_int_arg(_py, th2_bits, "threshold2") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let mut state = gc_state().lock().unwrap();
+        state.thresholds = (th0, th1, th2);
+        MoltObject::none().bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_gc_get_threshold() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let state = gc_state().lock().unwrap();
+        let (th0, th1, th2) = state.thresholds;
+        let th0_bits = MoltObject::from_int(th0).bits();
+        let th1_bits = MoltObject::from_int(th1).bits();
+        let th2_bits = MoltObject::from_int(th2).bits();
+        let tuple_ptr = alloc_tuple(_py, &[th0_bits, th1_bits, th2_bits]);
+        dec_ref_bits(_py, th0_bits);
+        dec_ref_bits(_py, th1_bits);
+        dec_ref_bits(_py, th2_bits);
+        if tuple_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(tuple_ptr).bits()
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_gc_set_debug(flags_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let flags = match gc_int_arg(_py, flags_bits, "flags") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let mut state = gc_state().lock().unwrap();
+        state.debug_flags = flags;
+        MoltObject::none().bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_gc_get_debug() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let state = gc_state().lock().unwrap();
+        MoltObject::from_int(state.debug_flags).bits()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_gc_get_count() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let state = gc_state().lock().unwrap();
+        let (c0, c1, c2) = state.count;
+        let c0_bits = MoltObject::from_int(c0).bits();
+        let c1_bits = MoltObject::from_int(c1).bits();
+        let c2_bits = MoltObject::from_int(c2).bits();
+        let tuple_ptr = alloc_tuple(_py, &[c0_bits, c1_bits, c2_bits]);
+        dec_ref_bits(_py, c0_bits);
+        dec_ref_bits(_py, c1_bits);
+        dec_ref_bits(_py, c2_bits);
+        if tuple_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(tuple_ptr).bits()
+        }
+    })
+}
+
 #[no_mangle]
 pub extern "C" fn molt_getrecursionlimit() -> u64 {
     crate::with_gil_entry!(_py, {
@@ -6355,7 +6622,7 @@ pub extern "C" fn molt_getargv() -> u64 {
         let args = runtime_state(_py).argv.lock().unwrap();
         let mut elems = Vec::with_capacity(args.len());
         for arg in args.iter() {
-            let ptr = alloc_string(_py, arg.as_bytes());
+            let ptr = alloc_string(_py, arg);
             if ptr.is_null() {
                 for bits in elems {
                     dec_ref_bits(_py, bits);
@@ -6661,7 +6928,7 @@ pub extern "C" fn molt_sys_version() -> u64 {
 pub extern "C" fn molt_sys_executable() -> u64 {
     crate::with_gil_entry!(_py, {
         let executable = match std::env::var("MOLT_SYS_EXECUTABLE") {
-            Ok(val) if !val.is_empty() => val,
+            Ok(val) if !val.is_empty() => val.into_bytes(),
             _ => runtime_state(_py)
                 .argv
                 .lock()
@@ -6670,7 +6937,7 @@ pub extern "C" fn molt_sys_executable() -> u64 {
                 .cloned()
                 .unwrap_or_default(),
         };
-        let ptr = alloc_string(_py, executable.as_bytes());
+        let ptr = alloc_string(_py, &executable);
         if ptr.is_null() {
             return MoltObject::none().bits();
         }
@@ -6688,14 +6955,13 @@ pub unsafe extern "C" fn molt_set_argv(argc: i32, argv: *const *const u8) {
             for idx in 0..argc {
                 let ptr = *argv.add(idx as usize);
                 if ptr.is_null() {
-                    args.push(String::new());
+                    args.push(Vec::new());
                     continue;
                 }
-                // TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P2, status:partial):
-                // decode argv using filesystem encoding + surrogateescape once Molt strings support
-                // surrogate escapes.
                 let bytes = CStr::from_ptr(ptr as *const i8).to_bytes();
-                args.push(String::from_utf8_lossy(bytes).into_owned());
+                let (decoded, _) = decode_bytes_text("utf-8", "surrogateescape", bytes)
+                    .expect("argv decode must succeed for utf-8+surrogateescape");
+                args.push(decoded);
             }
         }
         let trace_argv = matches!(std::env::var("MOLT_TRACE_ARGV").ok().as_deref(), Some("1"));
@@ -6717,7 +6983,7 @@ pub unsafe extern "C" fn molt_set_argv_utf16(argc: i32, argv: *const *const u16)
             for idx in 0..argc {
                 let ptr = *argv.add(idx as usize);
                 if ptr.is_null() {
-                    args.push(String::new());
+                    args.push(Vec::new());
                     continue;
                 }
                 let mut len = 0usize;
@@ -6725,9 +6991,14 @@ pub unsafe extern "C" fn molt_set_argv_utf16(argc: i32, argv: *const *const u16)
                     len += 1;
                 }
                 let slice = std::slice::from_raw_parts(ptr, len);
-                // TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P2, status:partial):
-                // preserve invalid UTF-16 data once Molt strings can represent surrogate escapes.
-                args.push(String::from_utf16_lossy(slice));
+                let mut raw = Vec::with_capacity(slice.len() * 2);
+                for &unit in slice {
+                    raw.push((unit & 0x00FF) as u8);
+                    raw.push((unit >> 8) as u8);
+                }
+                let (decoded, _) = decode_bytes_text("utf-16-le", "surrogatepass", &raw)
+                    .expect("argv decode must succeed for utf-16-le+surrogatepass");
+                args.push(decoded);
             }
         }
         *runtime_state(_py).argv.lock().unwrap() = args;
@@ -7019,6 +7290,61 @@ fn time_parts_from_epoch_utc(secs: i64) -> TimeParts {
         yday,
         isdst: 0,
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn timezone_west_wasm() -> Result<i64, String> {
+    let offset = unsafe { crate::molt_time_timezone_host() };
+    if offset == i64::MIN {
+        return Err("timezone unavailable".to_string());
+    }
+    Ok(offset)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn local_offset_west_wasm(secs: i64) -> Result<i64, String> {
+    let offset = unsafe { crate::molt_time_local_offset_host(secs) };
+    if offset == i64::MIN {
+        return Err("localtime failed".to_string());
+    }
+    Ok(offset)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn tzname_label_wasm(which: i32) -> Result<String, String> {
+    let mut buf = vec![0u8; 256];
+    let mut out_len: u32 = 0;
+    let status = unsafe {
+        crate::molt_time_tzname_host(
+            which,
+            buf.as_mut_ptr() as u32,
+            buf.len() as u32,
+            (&mut out_len as *mut u32) as u32,
+        )
+    };
+    if status != 0 {
+        return Err("tzname unavailable".to_string());
+    }
+    let out_len = usize::try_from(out_len).map_err(|_| "tzname unavailable".to_string())?;
+    if out_len > buf.len() {
+        return Err("tzname unavailable".to_string());
+    }
+    buf.truncate(out_len);
+    String::from_utf8(buf).map_err(|_| "tzname unavailable".to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn tzname_wasm() -> Result<(String, String), String> {
+    let std_name = tzname_label_wasm(0)?;
+    let dst_name = tzname_label_wasm(1)?;
+    Ok((std_name, dst_name))
+}
+
+fn current_epoch_secs_i64() -> Result<i64, String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "system time before epoch".to_string())?;
+    Ok(i64::try_from(now.as_secs()).unwrap_or(i64::MAX))
 }
 
 fn parse_time_seconds(_py: &PyToken<'_>, secs_bits: u64) -> Result<i64, u64> {
@@ -7600,13 +7926,17 @@ pub extern "C" fn molt_time_localtime(secs_bits: u64) -> u64 {
                 Err(msg) => return raise_exception::<_>(_py, "OSError", &msg),
             };
             let parts = time_parts_from_tm(&tm);
-            return time_parts_to_tuple(_py, parts);
+            time_parts_to_tuple(_py, parts)
         }
         #[cfg(target_arch = "wasm32")]
         {
-            // TODO(wasm-parity, owner:runtime, milestone:RT2, priority:P1, status:partial):
-            // implement local timezone offset and locale-aware names for localtime/strftime.
-            let parts = time_parts_from_epoch_utc(secs);
+            let offset_west = match local_offset_west_wasm(secs) {
+                Ok(value) => value,
+                Err(msg) => return raise_exception::<_>(_py, "OSError", &msg),
+            };
+            let mut parts = time_parts_from_epoch_utc(secs.saturating_sub(offset_west));
+            let std_offset_west = timezone_west_wasm().unwrap_or(offset_west);
+            parts.isdst = if offset_west != std_offset_west { 1 } else { 0 };
             return time_parts_to_tuple(_py, parts);
         }
     })
@@ -7634,7 +7964,7 @@ pub extern "C" fn molt_time_gmtime(secs_bits: u64) -> u64 {
                 Err(msg) => return raise_exception::<_>(_py, "OSError", &msg),
             };
             let parts = time_parts_from_tm(&tm);
-            return time_parts_to_tuple(_py, parts);
+            time_parts_to_tuple(_py, parts)
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -7656,7 +7986,7 @@ pub extern "C" fn molt_time_strftime(fmt_bits: u64, time_bits: u64) -> u64 {
             let msg = format!("strftime() format must be str, not {type_name}");
             return raise_exception::<_>(_py, "TypeError", &msg);
         };
-        if fmt.as_bytes().iter().any(|b| *b == 0) {
+        if fmt.as_bytes().contains(&0) {
             return raise_exception::<_>(_py, "ValueError", "embedded null character");
         }
         let parts = match parse_time_tuple(_py, time_bits) {
@@ -7742,7 +8072,7 @@ fn tzname_native() -> Result<(String, String), String> {
         }
         let std_name = CStr::from_ptr(std_ptr).to_string_lossy().into_owned();
         let dst_name = CStr::from_ptr(dst_ptr).to_string_lossy().into_owned();
-        return Ok((std_name, dst_name));
+        Ok((std_name, dst_name))
     }
     #[cfg(windows)]
     unsafe {
@@ -7787,7 +8117,7 @@ fn timezone_native() -> Result<i64, String> {
             static mut timezone: libc::c_long;
         }
         tzset();
-        return Ok(timezone as i64);
+        Ok(timezone)
     }
     #[cfg(windows)]
     unsafe {
@@ -7812,6 +8142,174 @@ fn timezone_native() -> Result<i64, String> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn daylight_native() -> Result<i64, String> {
+    #[cfg(unix)]
+    unsafe {
+        extern "C" {
+            fn tzset();
+            static mut daylight: libc::c_int;
+        }
+        tzset();
+        Ok(if daylight != 0 { 1 } else { 0 })
+    }
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Time::{
+            GetTimeZoneInformation, TIME_ZONE_ID_INVALID, TIME_ZONE_INFORMATION,
+        };
+        let mut info = TIME_ZONE_INFORMATION {
+            Bias: 0,
+            StandardName: [0u16; 32],
+            StandardDate: std::mem::zeroed(),
+            StandardBias: 0,
+            DaylightName: [0u16; 32],
+            DaylightDate: std::mem::zeroed(),
+            DaylightBias: 0,
+        };
+        let status = GetTimeZoneInformation(&mut info as *mut TIME_ZONE_INFORMATION);
+        if status == TIME_ZONE_ID_INVALID {
+            return Err("daylight unavailable".to_string());
+        }
+        return Ok(if info.DaylightDate.wMonth != 0 { 1 } else { 0 });
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn sample_offset_west_native(year: i32, month: i32, day: i32) -> Result<i64, String> {
+    let days = days_from_civil(year, month, day);
+    let secs = days.saturating_mul(86_400).saturating_add(12 * 3600);
+    offset_west_from_secs(secs)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn altzone_native() -> Result<i64, String> {
+    let std_offset = timezone_native()?;
+    if daylight_native()? == 0 {
+        return Ok(std_offset);
+    }
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Time::{
+            GetTimeZoneInformation, TIME_ZONE_ID_INVALID, TIME_ZONE_INFORMATION,
+        };
+        let mut info = TIME_ZONE_INFORMATION {
+            Bias: 0,
+            StandardName: [0u16; 32],
+            StandardDate: std::mem::zeroed(),
+            StandardBias: 0,
+            DaylightName: [0u16; 32],
+            DaylightDate: std::mem::zeroed(),
+            DaylightBias: 0,
+        };
+        let status = GetTimeZoneInformation(&mut info as *mut TIME_ZONE_INFORMATION);
+        if status == TIME_ZONE_ID_INVALID {
+            return Err("altzone unavailable".to_string());
+        }
+        let bias = info.Bias + info.DaylightBias;
+        return Ok((bias as i64) * 60);
+    }
+    #[cfg(unix)]
+    {
+        let now = current_epoch_secs_i64()?;
+        let local_tm = localtime_tm(now as libc::time_t)?;
+        let year = local_tm.tm_year + 1900;
+        let jan = sample_offset_west_native(year, 1, 1).unwrap_or(std_offset);
+        let jul = sample_offset_west_native(year, 7, 1).unwrap_or(std_offset);
+        if jan != std_offset && jul == std_offset {
+            return Ok(jan);
+        }
+        if jul != std_offset && jan == std_offset {
+            return Ok(jul);
+        }
+        if jan != jul {
+            return Ok(std::cmp::min(jan, jul));
+        }
+        Ok(jan)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn sample_offset_west_wasm(year: i32, month: i32, day: i32) -> Result<i64, String> {
+    let days = days_from_civil(year, month, day);
+    let secs = days.saturating_mul(86_400).saturating_add(12 * 3600);
+    local_offset_west_wasm(secs)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn daylight_wasm() -> Result<i64, String> {
+    let year = time_parts_from_epoch_utc(current_epoch_secs_i64()?).year;
+    let jan = sample_offset_west_wasm(year, 1, 1)?;
+    let jul = sample_offset_west_wasm(year, 7, 1)?;
+    Ok(if jan != jul { 1 } else { 0 })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn altzone_wasm() -> Result<i64, String> {
+    let std_offset = timezone_west_wasm()?;
+    if daylight_wasm()? == 0 {
+        return Ok(std_offset);
+    }
+    let year = time_parts_from_epoch_utc(current_epoch_secs_i64()?).year;
+    let jan = sample_offset_west_wasm(year, 1, 1).unwrap_or(std_offset);
+    let jul = sample_offset_west_wasm(year, 7, 1).unwrap_or(std_offset);
+    if jan != std_offset && jul == std_offset {
+        return Ok(jan);
+    }
+    if jul != std_offset && jan == std_offset {
+        return Ok(jul);
+    }
+    if jan != jul {
+        return Ok(std::cmp::min(jan, jul));
+    }
+    Ok(jan)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn mktime_native(parts: TimeParts) -> f64 {
+    let mut tm = unsafe { std::mem::zeroed::<libc::tm>() };
+    tm.tm_sec = parts.second;
+    tm.tm_min = parts.minute;
+    tm.tm_hour = parts.hour;
+    tm.tm_mday = parts.day;
+    tm.tm_mon = parts.month - 1;
+    tm.tm_year = parts.year - 1900;
+    tm.tm_wday = (parts.wday + 1).rem_euclid(7);
+    tm.tm_yday = parts.yday - 1;
+    tm.tm_isdst = parts.isdst;
+    let out = unsafe { libc::mktime(&mut tm as *mut libc::tm) };
+    out as f64
+}
+
+#[cfg(target_arch = "wasm32")]
+fn mktime_wasm(parts: TimeParts) -> Result<f64, String> {
+    let days = days_from_civil(parts.year, parts.month, parts.day);
+    let local_secs = days
+        .saturating_mul(86_400)
+        .saturating_add((parts.hour as i64).saturating_mul(3600))
+        .saturating_add((parts.minute as i64).saturating_mul(60))
+        .saturating_add(parts.second as i64);
+    let std_offset = timezone_west_wasm()?;
+    let utc_secs = if parts.isdst > 0 {
+        let dst_offset = altzone_wasm().unwrap_or(std_offset);
+        local_secs.saturating_add(dst_offset)
+    } else if parts.isdst == 0 {
+        local_secs.saturating_add(std_offset)
+    } else {
+        let mut guess = local_secs.saturating_add(std_offset);
+        for _ in 0..3 {
+            let offset = local_offset_west_wasm(guess).unwrap_or(std_offset);
+            let next = local_secs.saturating_add(offset);
+            if next == guess {
+                break;
+            }
+            guess = next;
+        }
+        guess
+    };
+    Ok(utc_secs as f64)
+}
+
 #[no_mangle]
 pub extern "C" fn molt_time_timezone() -> u64 {
     crate::with_gil_entry!(_py, {
@@ -7824,9 +8322,50 @@ pub extern "C" fn molt_time_timezone() -> u64 {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            // TODO(wasm-parity, owner:runtime, milestone:RT2, priority:P1, status:partial):
-            // wire local timezone offset from wasm hosts; defaulting to UTC.
-            MoltObject::from_int(0).bits()
+            match timezone_west_wasm() {
+                Ok(val) => MoltObject::from_int(val).bits(),
+                Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
+            }
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_time_daylight() -> u64 {
+    crate::with_gil_entry!(_py, {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            match daylight_native() {
+                Ok(val) => MoltObject::from_int(val).bits(),
+                Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            match daylight_wasm() {
+                Ok(val) => MoltObject::from_int(val).bits(),
+                Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
+            }
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_time_altzone() -> u64 {
+    crate::with_gil_entry!(_py, {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            match altzone_native() {
+                Ok(val) => MoltObject::from_int(val).bits(),
+                Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            match altzone_wasm() {
+                Ok(val) => MoltObject::from_int(val).bits(),
+                Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
+            }
         }
     })
 }
@@ -7862,13 +8401,15 @@ pub extern "C" fn molt_time_tzname() -> u64 {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            // TODO(wasm-parity, owner:runtime, milestone:RT2, priority:P1, status:partial):
-            // wire local timezone names from wasm hosts; defaulting to UTC.
-            let std_ptr = alloc_string(_py, b"UTC");
+            let (std_name, dst_name) = match tzname_wasm() {
+                Ok(res) => res,
+                Err(msg) => return raise_exception::<_>(_py, "OSError", &msg),
+            };
+            let std_ptr = alloc_string(_py, std_name.as_bytes());
             if std_ptr.is_null() {
                 return MoltObject::none().bits();
             }
-            let dst_ptr = alloc_string(_py, b"UTC");
+            let dst_ptr = alloc_string(_py, dst_name.as_bytes());
             if dst_ptr.is_null() {
                 dec_ref_bits(_py, MoltObject::from_ptr(std_ptr).bits());
                 return MoltObject::none().bits();
@@ -7903,6 +8444,27 @@ pub extern "C" fn molt_time_asctime(time_bits: u64) -> u64 {
             MoltObject::none().bits()
         } else {
             MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_time_mktime(time_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let parts = match parse_mktime_tuple(_py, time_bits) {
+            Ok(parts) => parts,
+            Err(bits) => return bits,
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            MoltObject::from_float(mktime_native(parts)).bits()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            match mktime_wasm(parts) {
+                Ok(out) => MoltObject::from_float(out).bits(),
+                Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
+            }
         }
     })
 }
@@ -8013,28 +8575,35 @@ fn traceback_frames(
         let Some(tb_ptr) = tb_obj.as_ptr() else {
             break;
         };
-        let (frame_bits, line, next_bits) = unsafe {
+        let (frame_bits, line, next_bits, had_tb_fields) = unsafe {
             let dict_bits = instance_dict_bits(tb_ptr);
             let mut frame_bits = MoltObject::none().bits();
             let mut line = 0i64;
             let mut next_bits = MoltObject::none().bits();
+            let mut had_tb_fields = false;
             if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
                 if object_type_id(dict_ptr) == TYPE_ID_DICT {
                     if let Some(bits) = dict_get_in_place(_py, dict_ptr, tb_frame_bits) {
                         frame_bits = bits;
+                        had_tb_fields = true;
                     }
                     if let Some(bits) = dict_get_in_place(_py, dict_ptr, tb_lineno_bits) {
                         if let Some(val) = to_i64(obj_from_bits(bits)) {
                             line = val;
                         }
+                        had_tb_fields = true;
                     }
                     if let Some(bits) = dict_get_in_place(_py, dict_ptr, tb_next_bits) {
                         next_bits = bits;
+                        had_tb_fields = true;
                     }
                 }
             }
-            (frame_bits, line, next_bits)
+            (frame_bits, line, next_bits, had_tb_fields)
         };
+        if !had_tb_fields {
+            break;
+        }
         let (filename, func_name, frame_line) = unsafe {
             let mut filename = "<unknown>".to_string();
             let mut func_name = "<module>".to_string();
@@ -8109,7 +8678,10 @@ fn traceback_infer_column_offsets(line: &str) -> (i64, i64) {
         return (0, 0);
     }
     let stripped = line.trim_start();
-    let indent = line.chars().count().saturating_sub(stripped.chars().count()) as i64;
+    let indent = line
+        .chars()
+        .count()
+        .saturating_sub(stripped.chars().count()) as i64;
     let col = if stripped.starts_with("return ") {
         indent + "return ".chars().count() as i64
     } else {
@@ -8117,6 +8689,39 @@ fn traceback_infer_column_offsets(line: &str) -> (i64, i64) {
     };
     let end = line.chars().count() as i64;
     (col, end.max(col))
+}
+
+fn traceback_format_caret_line_native(line: &str, mut colno: i64, mut end_colno: i64) -> String {
+    if line.is_empty() || colno < 0 {
+        return String::new();
+    }
+    let text_len = line.chars().count() as i64;
+    if text_len <= 0 {
+        return String::new();
+    }
+    if end_colno < colno {
+        end_colno = colno;
+    }
+    if colno > text_len {
+        colno = text_len;
+    }
+    if end_colno > text_len {
+        end_colno = text_len;
+    }
+    let mut width = end_colno - colno;
+    if width <= 0 {
+        width = 1;
+    }
+    let mut out = String::with_capacity((4 + colno + width + 1) as usize);
+    out.push_str("    ");
+    for _ in 0..colno {
+        out.push(' ');
+    }
+    for _ in 0..width {
+        out.push('^');
+    }
+    out.push('\n');
+    out
 }
 
 fn traceback_format_exception_only_line(
@@ -8179,6 +8784,151 @@ fn traceback_format_exception_only_line(
     }
 }
 
+fn traceback_exception_type_bits(_py: &PyToken<'_>, value_bits: u64) -> u64 {
+    if let Some(ptr) = obj_from_bits(value_bits).as_ptr() {
+        unsafe {
+            if object_type_id(ptr) == TYPE_ID_EXCEPTION {
+                return exception_class_bits(ptr);
+            }
+        }
+    }
+    if obj_from_bits(value_bits).is_none() {
+        MoltObject::none().bits()
+    } else {
+        type_of_bits(_py, value_bits)
+    }
+}
+
+fn traceback_exception_trace_bits(value_bits: u64) -> u64 {
+    if let Some(ptr) = obj_from_bits(value_bits).as_ptr() {
+        unsafe {
+            if object_type_id(ptr) == TYPE_ID_EXCEPTION {
+                return exception_trace_bits(ptr);
+            }
+        }
+    }
+    MoltObject::none().bits()
+}
+
+fn traceback_append_exception_single_lines(
+    _py: &PyToken<'_>,
+    exc_type_bits: u64,
+    value_bits: u64,
+    tb_bits: u64,
+    limit: Option<usize>,
+    out: &mut Vec<String>,
+) {
+    if !obj_from_bits(tb_bits).is_none() {
+        out.push("Traceback (most recent call last):\n".to_string());
+        let payload = traceback_payload_from_source(_py, tb_bits, limit);
+        out.extend(traceback_payload_to_formatted_lines(&payload));
+    }
+    out.push(traceback_format_exception_only_line(
+        _py,
+        exc_type_bits,
+        value_bits,
+    ));
+}
+
+fn traceback_append_exception_chain_lines(
+    _py: &PyToken<'_>,
+    exc_type_bits: u64,
+    value_bits: u64,
+    tb_bits: u64,
+    limit: Option<usize>,
+    chain: bool,
+    seen: &mut HashSet<u64>,
+    out: &mut Vec<String>,
+) {
+    if obj_from_bits(value_bits).is_none() || !chain {
+        traceback_append_exception_single_lines(
+            _py,
+            exc_type_bits,
+            value_bits,
+            tb_bits,
+            limit,
+            out,
+        );
+        return;
+    }
+    if seen.contains(&value_bits) {
+        traceback_append_exception_single_lines(
+            _py,
+            exc_type_bits,
+            value_bits,
+            tb_bits,
+            limit,
+            out,
+        );
+        return;
+    }
+    seen.insert(value_bits);
+    if let Some(ptr) = obj_from_bits(value_bits).as_ptr() {
+        unsafe {
+            if object_type_id(ptr) == TYPE_ID_EXCEPTION {
+                let cause_bits = exception_cause_bits(ptr);
+                if !obj_from_bits(cause_bits).is_none() {
+                    let cause_type_bits = traceback_exception_type_bits(_py, cause_bits);
+                    let cause_tb_bits = traceback_exception_trace_bits(cause_bits);
+                    traceback_append_exception_chain_lines(
+                        _py,
+                        cause_type_bits,
+                        cause_bits,
+                        cause_tb_bits,
+                        limit,
+                        chain,
+                        seen,
+                        out,
+                    );
+                    out.push(
+                        "The above exception was the direct cause of the following exception:\n\n"
+                            .to_string(),
+                    );
+                    traceback_append_exception_single_lines(
+                        _py,
+                        exc_type_bits,
+                        value_bits,
+                        tb_bits,
+                        limit,
+                        out,
+                    );
+                    return;
+                }
+                let context_bits = exception_context_bits(ptr);
+                let suppress_context = is_truthy(_py, obj_from_bits(exception_suppress_bits(ptr)));
+                if !suppress_context && !obj_from_bits(context_bits).is_none() {
+                    let context_type_bits = traceback_exception_type_bits(_py, context_bits);
+                    let context_tb_bits = traceback_exception_trace_bits(context_bits);
+                    traceback_append_exception_chain_lines(
+                        _py,
+                        context_type_bits,
+                        context_bits,
+                        context_tb_bits,
+                        limit,
+                        chain,
+                        seen,
+                        out,
+                    );
+                    out.push(
+                        "During handling of the above exception, another exception occurred:\n\n"
+                            .to_string(),
+                    );
+                    traceback_append_exception_single_lines(
+                        _py,
+                        exc_type_bits,
+                        value_bits,
+                        tb_bits,
+                        limit,
+                        out,
+                    );
+                    return;
+                }
+            }
+        }
+    }
+    traceback_append_exception_single_lines(_py, exc_type_bits, value_bits, tb_bits, limit, out);
+}
+
 fn traceback_lines_to_list(_py: &PyToken<'_>, lines: &[String]) -> u64 {
     let mut bits_vec: Vec<u64> = Vec::with_capacity(lines.len());
     for line in lines {
@@ -8202,6 +8952,564 @@ fn traceback_lines_to_list(_py: &PyToken<'_>, lines: &[String]) -> u64 {
     }
 }
 
+#[derive(Clone)]
+struct TracebackPayloadFrame {
+    filename: String,
+    lineno: i64,
+    end_lineno: i64,
+    colno: i64,
+    end_colno: i64,
+    name: String,
+    line: String,
+}
+
+fn traceback_split_molt_symbol(name: &str) -> (String, String) {
+    if let Some((module_hint, func)) = name.split_once("__") {
+        if !module_hint.is_empty() {
+            let func_name = if func.is_empty() { name } else { func };
+            return (format!("<molt:{module_hint}>"), func_name.to_string());
+        }
+    }
+    ("<molt>".to_string(), name.to_string())
+}
+
+fn traceback_payload_from_traceback(
+    _py: &PyToken<'_>,
+    source_bits: u64,
+    limit: Option<usize>,
+) -> Vec<TracebackPayloadFrame> {
+    let mut out: Vec<TracebackPayloadFrame> = Vec::new();
+    for (filename, lineno, name) in traceback_frames(_py, source_bits, limit) {
+        let line = traceback_source_line_native(_py, &filename, lineno);
+        let (colno, end_colno) = traceback_infer_column_offsets(&line);
+        out.push(TracebackPayloadFrame {
+            filename,
+            lineno,
+            end_lineno: lineno,
+            colno,
+            end_colno,
+            name,
+            line,
+        });
+    }
+    out
+}
+
+fn traceback_payload_from_frame_chain(
+    _py: &PyToken<'_>,
+    source_bits: u64,
+    limit: Option<usize>,
+) -> Vec<TracebackPayloadFrame> {
+    if obj_from_bits(source_bits).is_none() {
+        return Vec::new();
+    }
+    static F_BACK_NAME: AtomicU64 = AtomicU64::new(0);
+    let f_back_name = intern_static_name(_py, &F_BACK_NAME, b"f_back");
+    let f_code_name = intern_static_name(_py, &runtime_state(_py).interned.f_code_name, b"f_code");
+    let f_lineno_name =
+        intern_static_name(_py, &runtime_state(_py).interned.f_lineno_name, b"f_lineno");
+    let mut out: Vec<TracebackPayloadFrame> = Vec::new();
+    let mut current_bits = source_bits;
+    let mut depth = 0usize;
+    while !obj_from_bits(current_bits).is_none() {
+        if depth > 1024 {
+            break;
+        }
+        let Some(frame_ptr) = obj_from_bits(current_bits).as_ptr() else {
+            break;
+        };
+        let (code_bits, lineno, back_bits, had_frame_fields) = unsafe {
+            let dict_bits = instance_dict_bits(frame_ptr);
+            let mut code_bits = MoltObject::none().bits();
+            let mut lineno = 0i64;
+            let mut back_bits = MoltObject::none().bits();
+            let mut had_frame_fields = false;
+            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+                if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                    if let Some(bits) = dict_get_in_place(_py, dict_ptr, f_code_name) {
+                        code_bits = bits;
+                        had_frame_fields = true;
+                    }
+                    if let Some(bits) = dict_get_in_place(_py, dict_ptr, f_lineno_name) {
+                        if let Some(value) = to_i64(obj_from_bits(bits)) {
+                            lineno = value;
+                        }
+                        had_frame_fields = true;
+                    }
+                    if let Some(bits) = dict_get_in_place(_py, dict_ptr, f_back_name) {
+                        back_bits = bits;
+                        had_frame_fields = true;
+                    }
+                }
+            }
+            (code_bits, lineno, back_bits, had_frame_fields)
+        };
+        if !had_frame_fields {
+            break;
+        }
+
+        let mut filename = "<unknown>".to_string();
+        let mut name = "<module>".to_string();
+        if let Some(code_ptr) = obj_from_bits(code_bits).as_ptr() {
+            unsafe {
+                if object_type_id(code_ptr) == TYPE_ID_CODE {
+                    let filename_bits = code_filename_bits(code_ptr);
+                    if let Some(value) = string_obj_to_owned(obj_from_bits(filename_bits)) {
+                        filename = value;
+                    }
+                    let name_bits = code_name_bits(code_ptr);
+                    if let Some(value) = string_obj_to_owned(obj_from_bits(name_bits)) {
+                        if !value.is_empty() {
+                            name = value;
+                        }
+                    }
+                }
+            }
+        }
+        let line = traceback_source_line_native(_py, &filename, lineno);
+        let (colno, end_colno) = traceback_infer_column_offsets(&line);
+        out.push(TracebackPayloadFrame {
+            filename,
+            lineno,
+            end_lineno: lineno,
+            colno,
+            end_colno,
+            name,
+            line,
+        });
+        current_bits = back_bits;
+        depth += 1;
+    }
+    out.reverse();
+    if let Some(max) = limit {
+        if out.len() > max {
+            return out[out.len() - max..].to_vec();
+        }
+    }
+    out
+}
+
+fn traceback_payload_from_entry(
+    _py: &PyToken<'_>,
+    entry_bits: u64,
+) -> Option<TracebackPayloadFrame> {
+    if obj_from_bits(entry_bits).is_none() {
+        return None;
+    }
+    let entry_obj = obj_from_bits(entry_bits);
+    if let Some(entry_ptr) = entry_obj.as_ptr() {
+        unsafe {
+            let type_id = object_type_id(entry_ptr);
+            if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                let elems = seq_vec_ref(entry_ptr);
+                if elems.is_empty() {
+                    return None;
+                }
+                if elems.len() == 1 {
+                    return traceback_payload_from_entry(_py, elems[0]);
+                }
+                if elems.len() >= 7 {
+                    let filename = format_obj_str(_py, obj_from_bits(elems[0]));
+                    let lineno = to_i64(obj_from_bits(elems[1])).unwrap_or(0);
+                    let end_lineno = to_i64(obj_from_bits(elems[2])).unwrap_or(lineno);
+                    let colno = to_i64(obj_from_bits(elems[3])).unwrap_or(0);
+                    let end_colno = to_i64(obj_from_bits(elems[4])).unwrap_or(colno.max(0));
+                    let name = format_obj_str(_py, obj_from_bits(elems[5]));
+                    let line = if obj_from_bits(elems[6]).is_none() {
+                        String::new()
+                    } else {
+                        format_obj_str(_py, obj_from_bits(elems[6]))
+                    };
+                    return Some(TracebackPayloadFrame {
+                        filename,
+                        lineno,
+                        end_lineno,
+                        colno,
+                        end_colno,
+                        name,
+                        line,
+                    });
+                }
+                if elems.len() >= 4 {
+                    let filename = format_obj_str(_py, obj_from_bits(elems[0]));
+                    let lineno = to_i64(obj_from_bits(elems[1])).unwrap_or(0);
+                    let name = format_obj_str(_py, obj_from_bits(elems[2]));
+                    let line = if obj_from_bits(elems[3]).is_none() {
+                        String::new()
+                    } else {
+                        format_obj_str(_py, obj_from_bits(elems[3]))
+                    };
+                    let (colno, end_colno) = traceback_infer_column_offsets(&line);
+                    return Some(TracebackPayloadFrame {
+                        filename,
+                        lineno,
+                        end_lineno: lineno,
+                        colno,
+                        end_colno,
+                        name,
+                        line,
+                    });
+                }
+                if elems.len() >= 3 {
+                    let filename = format_obj_str(_py, obj_from_bits(elems[0]));
+                    let lineno = to_i64(obj_from_bits(elems[1])).unwrap_or(0);
+                    let name = format_obj_str(_py, obj_from_bits(elems[2]));
+                    let line = traceback_source_line_native(_py, &filename, lineno);
+                    let (colno, end_colno) = traceback_infer_column_offsets(&line);
+                    return Some(TracebackPayloadFrame {
+                        filename,
+                        lineno,
+                        end_lineno: lineno,
+                        colno,
+                        end_colno,
+                        name,
+                        line,
+                    });
+                }
+                if elems.len() == 2 {
+                    let first_obj = obj_from_bits(elems[0]);
+                    let second_obj = obj_from_bits(elems[1]);
+                    if let (Some(filename), Some(lineno)) =
+                        (string_obj_to_owned(first_obj), to_i64(second_obj))
+                    {
+                        return Some(TracebackPayloadFrame {
+                            filename,
+                            lineno,
+                            end_lineno: lineno,
+                            colno: 0,
+                            end_colno: 0,
+                            name: "<module>".to_string(),
+                            line: String::new(),
+                        });
+                    }
+                    if let (Some(lineno), Some(filename)) =
+                        (to_i64(first_obj), string_obj_to_owned(second_obj))
+                    {
+                        return Some(TracebackPayloadFrame {
+                            filename,
+                            lineno,
+                            end_lineno: lineno,
+                            colno: 0,
+                            end_colno: 0,
+                            name: "<module>".to_string(),
+                            line: String::new(),
+                        });
+                    }
+                    if let (Some(symbol), Some(_name)) = (
+                        string_obj_to_owned(first_obj),
+                        string_obj_to_owned(second_obj),
+                    ) {
+                        let (filename, name) = traceback_split_molt_symbol(&symbol);
+                        return Some(TracebackPayloadFrame {
+                            filename,
+                            lineno: 0,
+                            end_lineno: 0,
+                            colno: 0,
+                            end_colno: 0,
+                            name,
+                            line: String::new(),
+                        });
+                    }
+                }
+                return None;
+            }
+            if type_id == TYPE_ID_DICT {
+                static FILENAME_NAME: AtomicU64 = AtomicU64::new(0);
+                static LINENO_NAME: AtomicU64 = AtomicU64::new(0);
+                static NAME_NAME: AtomicU64 = AtomicU64::new(0);
+                static LINE_NAME: AtomicU64 = AtomicU64::new(0);
+                static END_LINENO_NAME: AtomicU64 = AtomicU64::new(0);
+                static COLNO_NAME: AtomicU64 = AtomicU64::new(0);
+                static END_COLNO_NAME: AtomicU64 = AtomicU64::new(0);
+                let filename_key = intern_static_name(_py, &FILENAME_NAME, b"filename");
+                let lineno_key = intern_static_name(_py, &LINENO_NAME, b"lineno");
+                let name_key = intern_static_name(_py, &NAME_NAME, b"name");
+                let line_key = intern_static_name(_py, &LINE_NAME, b"line");
+                let end_lineno_key = intern_static_name(_py, &END_LINENO_NAME, b"end_lineno");
+                let colno_key = intern_static_name(_py, &COLNO_NAME, b"colno");
+                let end_colno_key = intern_static_name(_py, &END_COLNO_NAME, b"end_colno");
+                let filename_bits = dict_get_in_place(_py, entry_ptr, filename_key)?;
+                let lineno_bits = dict_get_in_place(_py, entry_ptr, lineno_key)?;
+                let filename = format_obj_str(_py, obj_from_bits(filename_bits));
+                let lineno = to_i64(obj_from_bits(lineno_bits)).unwrap_or(0);
+                let name = dict_get_in_place(_py, entry_ptr, name_key)
+                    .map(|bits| format_obj_str(_py, obj_from_bits(bits)))
+                    .unwrap_or_else(|| "<module>".to_string());
+                let line = dict_get_in_place(_py, entry_ptr, line_key)
+                    .map(|bits| format_obj_str(_py, obj_from_bits(bits)))
+                    .unwrap_or_else(|| traceback_source_line_native(_py, &filename, lineno));
+                let (mut colno, mut end_colno) = traceback_infer_column_offsets(&line);
+                if let Some(value) = dict_get_in_place(_py, entry_ptr, colno_key)
+                    .and_then(|bits| to_i64(obj_from_bits(bits)))
+                {
+                    colno = value;
+                }
+                if let Some(value) = dict_get_in_place(_py, entry_ptr, end_colno_key)
+                    .and_then(|bits| to_i64(obj_from_bits(bits)))
+                {
+                    end_colno = value;
+                }
+                let end_lineno = dict_get_in_place(_py, entry_ptr, end_lineno_key)
+                    .and_then(|bits| to_i64(obj_from_bits(bits)))
+                    .unwrap_or(lineno);
+                return Some(TracebackPayloadFrame {
+                    filename,
+                    lineno,
+                    end_lineno,
+                    colno,
+                    end_colno,
+                    name,
+                    line,
+                });
+            }
+        }
+    }
+
+    if let Some(value) = string_obj_to_owned(entry_obj) {
+        let (filename, name) = traceback_split_molt_symbol(&value);
+        return Some(TracebackPayloadFrame {
+            filename,
+            lineno: 0,
+            end_lineno: 0,
+            colno: 0,
+            end_colno: 0,
+            name,
+            line: String::new(),
+        });
+    }
+
+    let mut from_tb = traceback_payload_from_traceback(_py, entry_bits, Some(1));
+    if let Some(frame) = from_tb.pop() {
+        return Some(frame);
+    }
+    let mut from_frame = traceback_payload_from_frame_chain(_py, entry_bits, Some(1));
+    from_frame.pop()
+}
+
+fn traceback_payload_from_entries(
+    _py: &PyToken<'_>,
+    source_bits: u64,
+    limit: Option<usize>,
+) -> Vec<TracebackPayloadFrame> {
+    let Some(source_ptr) = obj_from_bits(source_bits).as_ptr() else {
+        return Vec::new();
+    };
+    let type_id = unsafe { object_type_id(source_ptr) };
+    if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
+        return Vec::new();
+    }
+    let elems: Vec<u64> = unsafe { seq_vec_ref(source_ptr).to_vec() };
+    let mut out: Vec<TracebackPayloadFrame> = Vec::new();
+    for bits in elems {
+        if let Some(frame) = traceback_payload_from_entry(_py, bits) {
+            out.push(frame);
+            if let Some(max) = limit {
+                if out.len() >= max {
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
+fn traceback_payload_from_source(
+    _py: &PyToken<'_>,
+    source_bits: u64,
+    limit: Option<usize>,
+) -> Vec<TracebackPayloadFrame> {
+    if obj_from_bits(source_bits).is_none() {
+        return Vec::new();
+    }
+    let from_entries = traceback_payload_from_entries(_py, source_bits, limit);
+    if !from_entries.is_empty() {
+        return from_entries;
+    }
+    let from_tb = traceback_payload_from_traceback(_py, source_bits, limit);
+    if !from_tb.is_empty() {
+        return from_tb;
+    }
+    let from_frame = traceback_payload_from_frame_chain(_py, source_bits, limit);
+    if !from_frame.is_empty() {
+        return from_frame;
+    }
+    if let Some(frame) = traceback_payload_from_entry(_py, source_bits) {
+        return vec![frame];
+    }
+    Vec::new()
+}
+
+fn traceback_payload_to_list(_py: &PyToken<'_>, payload: &[TracebackPayloadFrame]) -> u64 {
+    let mut tuples: Vec<u64> = Vec::new();
+    for frame in payload {
+        let filename_ptr = alloc_string(_py, frame.filename.as_bytes());
+        if filename_ptr.is_null() {
+            for bits in tuples {
+                dec_ref_bits(_py, bits);
+            }
+            return MoltObject::none().bits();
+        }
+        let name_ptr = alloc_string(_py, frame.name.as_bytes());
+        if name_ptr.is_null() {
+            dec_ref_bits(_py, MoltObject::from_ptr(filename_ptr).bits());
+            for bits in tuples {
+                dec_ref_bits(_py, bits);
+            }
+            return MoltObject::none().bits();
+        }
+        let line_ptr = alloc_string(_py, frame.line.as_bytes());
+        if line_ptr.is_null() {
+            dec_ref_bits(_py, MoltObject::from_ptr(filename_ptr).bits());
+            dec_ref_bits(_py, MoltObject::from_ptr(name_ptr).bits());
+            for bits in tuples {
+                dec_ref_bits(_py, bits);
+            }
+            return MoltObject::none().bits();
+        }
+        let filename_bits = MoltObject::from_ptr(filename_ptr).bits();
+        let lineno_bits = MoltObject::from_int(frame.lineno).bits();
+        let end_lineno_bits = MoltObject::from_int(frame.end_lineno).bits();
+        let colno_bits = MoltObject::from_int(frame.colno).bits();
+        let end_colno_bits = MoltObject::from_int(frame.end_colno).bits();
+        let name_bits = MoltObject::from_ptr(name_ptr).bits();
+        let line_bits = MoltObject::from_ptr(line_ptr).bits();
+        let tuple_ptr = alloc_tuple(
+            _py,
+            &[
+                filename_bits,
+                lineno_bits,
+                end_lineno_bits,
+                colno_bits,
+                end_colno_bits,
+                name_bits,
+                line_bits,
+            ],
+        );
+        dec_ref_bits(_py, filename_bits);
+        dec_ref_bits(_py, end_lineno_bits);
+        dec_ref_bits(_py, colno_bits);
+        dec_ref_bits(_py, end_colno_bits);
+        dec_ref_bits(_py, name_bits);
+        dec_ref_bits(_py, line_bits);
+        if tuple_ptr.is_null() {
+            for bits in tuples {
+                dec_ref_bits(_py, bits);
+            }
+            return MoltObject::none().bits();
+        }
+        tuples.push(MoltObject::from_ptr(tuple_ptr).bits());
+    }
+    let list_ptr = alloc_list(_py, tuples.as_slice());
+    for bits in tuples {
+        dec_ref_bits(_py, bits);
+    }
+    if list_ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(list_ptr).bits()
+    }
+}
+
+fn traceback_payload_to_formatted_lines(payload: &[TracebackPayloadFrame]) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for frame in payload {
+        lines.push(format!(
+            "  File \"{}\", line {}, in {}\n",
+            frame.filename, frame.lineno, frame.name
+        ));
+        if !frame.line.is_empty() {
+            lines.push(format!("    {}\n", frame.line));
+            let caret =
+                traceback_format_caret_line_native(&frame.line, frame.colno, frame.end_colno);
+            if !caret.is_empty() {
+                lines.push(caret);
+            }
+        }
+    }
+    lines
+}
+
+fn traceback_exception_components_payload(
+    _py: &PyToken<'_>,
+    value_bits: u64,
+    limit: Option<usize>,
+) -> Result<u64, u64> {
+    let Some(value_ptr) = obj_from_bits(value_bits).as_ptr() else {
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "value must be an exception instance",
+        ));
+    };
+    unsafe {
+        if object_type_id(value_ptr) != TYPE_ID_EXCEPTION {
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "value must be an exception instance",
+            ));
+        }
+    }
+    let tb_bits = traceback_exception_trace_bits(value_bits);
+    let payload = traceback_payload_from_source(_py, tb_bits, limit);
+    let frames_bits = traceback_payload_to_list(_py, &payload);
+    if obj_from_bits(frames_bits).is_none() {
+        return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+    }
+    let (cause_bits, context_bits, suppress_context) = unsafe {
+        let cause = exception_cause_bits(value_ptr);
+        let context = exception_context_bits(value_ptr);
+        let suppress = is_truthy(_py, obj_from_bits(exception_suppress_bits(value_ptr)));
+        (cause, context, suppress)
+    };
+    if !obj_from_bits(cause_bits).is_none() {
+        inc_ref_bits(_py, cause_bits);
+    }
+    if !obj_from_bits(context_bits).is_none() {
+        inc_ref_bits(_py, context_bits);
+    }
+    let suppress_bits = MoltObject::from_bool(suppress_context).bits();
+    let tuple_ptr = alloc_tuple(_py, &[frames_bits, cause_bits, context_bits, suppress_bits]);
+    dec_ref_bits(_py, frames_bits);
+    if !obj_from_bits(cause_bits).is_none() {
+        dec_ref_bits(_py, cause_bits);
+    }
+    if !obj_from_bits(context_bits).is_none() {
+        dec_ref_bits(_py, context_bits);
+    }
+    if tuple_ptr.is_null() {
+        Err(raise_exception::<_>(_py, "MemoryError", "out of memory"))
+    } else {
+        Ok(MoltObject::from_ptr(tuple_ptr).bits())
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_traceback_payload(source_bits: u64, limit_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let limit = match traceback_limit_from_bits(_py, limit_bits) {
+            Ok(limit) => limit,
+            Err(bits) => return bits,
+        };
+        let payload = traceback_payload_from_source(_py, source_bits, limit);
+        traceback_payload_to_list(_py, &payload)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_traceback_exception_components(value_bits: u64, limit_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let limit = match traceback_limit_from_bits(_py, limit_bits) {
+            Ok(limit) => limit,
+            Err(bits) => return bits,
+        };
+        match traceback_exception_components_payload(_py, value_bits, limit) {
+            Ok(bits) => bits,
+            Err(err) => err,
+        }
+    })
+}
+
 #[no_mangle]
 pub extern "C" fn molt_traceback_source_line(filename_bits: u64, lineno_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -8222,10 +9530,96 @@ pub extern "C" fn molt_traceback_source_line(filename_bits: u64, lineno_bits: u6
 }
 
 #[no_mangle]
+pub extern "C" fn molt_traceback_infer_col_offsets(line_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(line) = string_obj_to_owned(obj_from_bits(line_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "line must be str");
+        };
+        let (colno, end_colno) = traceback_infer_column_offsets(&line);
+        let colno_bits = MoltObject::from_int(colno).bits();
+        let end_colno_bits = MoltObject::from_int(end_colno).bits();
+        let tuple_ptr = alloc_tuple(_py, &[colno_bits, end_colno_bits]);
+        dec_ref_bits(_py, colno_bits);
+        dec_ref_bits(_py, end_colno_bits);
+        if tuple_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(tuple_ptr).bits()
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_traceback_format_caret_line(
+    line_bits: u64,
+    colno_bits: u64,
+    end_colno_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(line) = string_obj_to_owned(obj_from_bits(line_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "line must be str");
+        };
+        let Some(colno) = to_i64(obj_from_bits(colno_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "colno must be int");
+        };
+        let Some(end_colno) = to_i64(obj_from_bits(end_colno_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "end_colno must be int");
+        };
+        let out = traceback_format_caret_line_native(&line, colno, end_colno);
+        let ptr = alloc_string(_py, out.as_bytes());
+        if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[no_mangle]
 pub extern "C" fn molt_traceback_format_exception_only(exc_type_bits: u64, value_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let line = traceback_format_exception_only_line(_py, exc_type_bits, value_bits);
         traceback_lines_to_list(_py, &[line])
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_traceback_format_exception(
+    exc_type_bits: u64,
+    value_bits: u64,
+    tb_bits: u64,
+    limit_bits: u64,
+    chain_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let limit = match traceback_limit_from_bits(_py, limit_bits) {
+            Ok(limit) => limit,
+            Err(bits) => return bits,
+        };
+        let chain = is_truthy(_py, obj_from_bits(chain_bits));
+        let effective_exc_type_bits = if obj_from_bits(exc_type_bits).is_none() {
+            traceback_exception_type_bits(_py, value_bits)
+        } else {
+            exc_type_bits
+        };
+        let effective_tb_bits = if obj_from_bits(tb_bits).is_none() {
+            traceback_exception_trace_bits(value_bits)
+        } else {
+            tb_bits
+        };
+        let mut seen: HashSet<u64> = HashSet::new();
+        let mut lines: Vec<String> = Vec::new();
+        traceback_append_exception_chain_lines(
+            _py,
+            effective_exc_type_bits,
+            value_bits,
+            effective_tb_bits,
+            limit,
+            chain,
+            &mut seen,
+            &mut lines,
+        );
+        traceback_lines_to_list(_py, &lines)
     })
 }
 
@@ -8240,6 +9634,19 @@ pub extern "C" fn molt_traceback_format_tb(tb_bits: u64, limit_bits: u64) -> u64
         for (filename, line, name) in traceback_frames(_py, tb_bits, limit) {
             lines.push(format!("  File \"{filename}\", line {line}, in {name}\n"));
         }
+        traceback_lines_to_list(_py, &lines)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_traceback_format_stack(source_bits: u64, limit_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let limit = match traceback_limit_from_bits(_py, limit_bits) {
+            Ok(limit) => limit,
+            Err(bits) => return bits,
+        };
+        let payload = traceback_payload_from_source(_py, source_bits, limit);
+        let lines = traceback_payload_to_formatted_lines(&payload);
         traceback_lines_to_list(_py, &lines)
     })
 }
@@ -12886,17 +14293,17 @@ fn push_wtf8_codepoint(out: &mut Vec<u8>, code: u32) {
     if code <= 0x7F {
         out.push(code as u8);
     } else if code <= 0x7FF {
-        out.push((0xC0 | ((code >> 6) as u8)) as u8);
-        out.push((0x80 | (code as u8 & 0x3F)) as u8);
+        out.push(0xC0 | ((code >> 6) as u8));
+        out.push(0x80 | (code as u8 & 0x3F));
     } else if code <= 0xFFFF {
-        out.push((0xE0 | ((code >> 12) as u8)) as u8);
-        out.push((0x80 | (((code >> 6) as u8) & 0x3F)) as u8);
-        out.push((0x80 | (code as u8 & 0x3F)) as u8);
+        out.push(0xE0 | ((code >> 12) as u8));
+        out.push(0x80 | (((code >> 6) as u8) & 0x3F));
+        out.push(0x80 | (code as u8 & 0x3F));
     } else {
-        out.push((0xF0 | ((code >> 18) as u8)) as u8);
-        out.push((0x80 | (((code >> 12) as u8) & 0x3F)) as u8);
-        out.push((0x80 | (((code >> 6) as u8) & 0x3F)) as u8);
-        out.push((0x80 | (code as u8 & 0x3F)) as u8);
+        out.push(0xF0 | ((code >> 18) as u8));
+        out.push(0x80 | (((code >> 12) as u8) & 0x3F));
+        out.push(0x80 | (((code >> 6) as u8) & 0x3F));
+        out.push(0x80 | (code as u8 & 0x3F));
     }
 }
 
@@ -15172,7 +16579,9 @@ fn bytes_hex_string(bytes: &[u8], sep: Option<&str>, bytes_per_sep: i64) -> Stri
             first_group = group;
         }
         for (idx, &b) in bytes.iter().enumerate() {
-            if idx == first_group || (idx > first_group && (idx - first_group) % group == 0) {
+            if idx == first_group
+                || (idx > first_group && (idx - first_group).is_multiple_of(group))
+            {
                 out.push_str(sep_str);
             }
             out.push(char::from(HEX[(b >> 4) as usize]));
@@ -15914,6 +17323,7 @@ fn push_u32(out: &mut Vec<u8>, val: u32, endian: Endian) {
     }
 }
 
+#[allow(dead_code)]
 fn encode_utf16(text: &str, endian: Endian, with_bom: bool) -> Vec<u8> {
     let mut out = Vec::with_capacity(text.len().saturating_mul(2) + if with_bom { 2 } else { 0 });
     if with_bom {
@@ -15925,6 +17335,7 @@ fn encode_utf16(text: &str, endian: Endian, with_bom: bool) -> Vec<u8> {
     out
 }
 
+#[allow(dead_code)]
 fn encode_utf32(text: &str, endian: Endian, with_bom: bool) -> Vec<u8> {
     let mut out = Vec::with_capacity(text.len().saturating_mul(4) + if with_bom { 4 } else { 0 });
     if with_bom {
@@ -15973,6 +17384,7 @@ pub(crate) fn encode_error_reason(encoding: &str, code: u32, limit: u32) -> Stri
     format!("ordinal not in range({limit})")
 }
 
+#[allow(dead_code)]
 fn push_backslash_bytes(out: &mut String, bytes: &[u8]) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     for &byte in bytes {
@@ -19634,7 +21046,7 @@ pub(crate) fn encode_string_with_errors(
                     Ok(std::mem::take(out))
                 }
                 "ignore" | "replace" | "backslashreplace" | "namereplace" | "xmlcharrefreplace" => {
-                    for (_idx, cp) in wtf8_from_bytes(bytes).code_points().enumerate() {
+                    for cp in wtf8_from_bytes(bytes).code_points() {
                         let code = cp.to_u32();
                         if is_surrogate(code) {
                             match handler {
@@ -20375,9 +21787,7 @@ fn decode_utf8_bytes_with_errors(bytes: &[u8], errors: &str) -> Result<Vec<u8>, 
             continue;
         }
         if first < 0xC0 {
-            if let Err(err) = decode_utf8_invalid_byte(errors, &mut out, idx, first) {
-                return Err(err);
-            }
+            decode_utf8_invalid_byte(errors, &mut out, idx, first)?;
             idx += 1;
             continue;
         }
@@ -20388,16 +21798,12 @@ fn decode_utf8_bytes_with_errors(bytes: &[u8], errors: &str) -> Result<Vec<u8>, 
         } else if first < 0xF8 {
             (3usize, 0x10000u32)
         } else {
-            if let Err(err) = decode_utf8_invalid_byte(errors, &mut out, idx, first) {
-                return Err(err);
-            }
+            decode_utf8_invalid_byte(errors, &mut out, idx, first)?;
             idx += 1;
             continue;
         };
         if idx + needed >= bytes.len() {
-            if let Err(err) = decode_utf8_invalid_byte(errors, &mut out, idx, first) {
-                return Err(err);
-            }
+            decode_utf8_invalid_byte(errors, &mut out, idx, first)?;
             idx += 1;
             continue;
         }
@@ -20412,16 +21818,12 @@ fn decode_utf8_bytes_with_errors(bytes: &[u8], errors: &str) -> Result<Vec<u8>, 
             code = (code << 6) | (byte & 0x3F) as u32;
         }
         if !ok || code < min_code || code > 0x10FFFF {
-            if let Err(err) = decode_utf8_invalid_byte(errors, &mut out, idx, first) {
-                return Err(err);
-            }
+            decode_utf8_invalid_byte(errors, &mut out, idx, first)?;
             idx += 1;
             continue;
         }
         if is_surrogate(code) && !allow_surrogates {
-            if let Err(err) = decode_utf8_invalid_byte(errors, &mut out, idx, first) {
-                return Err(err);
-            }
+            decode_utf8_invalid_byte(errors, &mut out, idx, first)?;
             idx += 1;
             continue;
         }
@@ -21214,9 +22616,6 @@ pub(crate) fn decode_bytes_text(
     }
 }
 
-// TODO(stdlib-compat, owner:runtime, milestone:TC1, priority:P2, status:partial): add
-// full codec error handlers (surrogateescape/backslashreplace/etc) once Molt strings
-// can represent surrogate code points.
 fn parse_codec_arg(
     _py: &PyToken<'_>,
     bits: u64,
@@ -27397,7 +28796,13 @@ fn heapq_lt(_py: &PyToken<'_>, a_bits: u64, b_bits: u64) -> Option<bool> {
     if exception_pending(_py) {
         return None;
     }
-    obj_from_bits(res_bits).as_bool()
+    let truthy = is_truthy(_py, obj_from_bits(res_bits));
+    let had_exc = exception_pending(_py);
+    dec_ref_bits(_py, res_bits);
+    if had_exc {
+        return None;
+    }
+    Some(truthy)
 }
 
 unsafe fn heapq_siftdown(
@@ -28610,6 +30015,7 @@ fn format_string_repr_bytes(bytes: &[u8]) -> String {
     out
 }
 
+#[allow(dead_code)]
 fn format_string_repr(s: &str) -> String {
     let use_double = s.contains('\'') && !s.contains('"');
     let quote = if use_double { '"' } else { '\'' };
@@ -30916,29 +32322,27 @@ unsafe fn hash_from_dunder(_py: &PyToken<'_>, obj: MoltObject, obj_ptr: *mut u8)
     let class_bits = type_of_bits(_py, obj.bits());
     let default_type_hashable = class_bits == builtin_classes(_py).type_obj;
     if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
-        if object_type_id(class_ptr) == TYPE_ID_TYPE {
-            if !default_type_hashable {
-                let dict_bits = class_dict_bits(class_ptr);
-                if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                    if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                        let hash_entry = dict_get_in_place(_py, dict_ptr, hash_name_bits);
-                        if exception_pending(_py) {
-                            return Some(0);
-                        }
-                        if let Some(hash_bits) = hash_entry {
-                            if obj_from_bits(hash_bits).is_none() {
-                                let name = type_name(_py, obj);
-                                let msg = format!("unhashable type: '{name}'");
-                                return Some(raise_exception::<i64>(_py, "TypeError", &msg));
-                            }
-                        } else if dict_get_in_place(_py, dict_ptr, eq_name_bits).is_some() {
+        if object_type_id(class_ptr) == TYPE_ID_TYPE && !default_type_hashable {
+            let dict_bits = class_dict_bits(class_ptr);
+            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+                if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                    let hash_entry = dict_get_in_place(_py, dict_ptr, hash_name_bits);
+                    if exception_pending(_py) {
+                        return Some(0);
+                    }
+                    if let Some(hash_bits) = hash_entry {
+                        if obj_from_bits(hash_bits).is_none() {
                             let name = type_name(_py, obj);
                             let msg = format!("unhashable type: '{name}'");
                             return Some(raise_exception::<i64>(_py, "TypeError", &msg));
                         }
-                        if exception_pending(_py) {
-                            return Some(0);
-                        }
+                    } else if dict_get_in_place(_py, dict_ptr, eq_name_bits).is_some() {
+                        let name = type_name(_py, obj);
+                        let msg = format!("unhashable type: '{name}'");
+                        return Some(raise_exception::<i64>(_py, "TypeError", &msg));
+                    }
+                    if exception_pending(_py) {
+                        return Some(0);
                     }
                 }
             }
@@ -31105,17 +32509,13 @@ pub(crate) fn dict_find_entry(
         match eq {
             Some(true) => return Some(entry_idx),
             Some(false) => {
-                if pending_before {
-                    if unsafe { string_bits_eq(entry_key, key_bits) } == Some(true) {
-                        return Some(entry_idx);
-                    }
+                if pending_before && unsafe { string_bits_eq(entry_key, key_bits) } == Some(true) {
+                    return Some(entry_idx);
                 }
             }
             None => {
-                if pending_before {
-                    if unsafe { string_bits_eq(entry_key, key_bits) } == Some(true) {
-                        return Some(entry_idx);
-                    }
+                if pending_before && unsafe { string_bits_eq(entry_key, key_bits) } == Some(true) {
+                    return Some(entry_idx);
                 }
                 return None;
             }

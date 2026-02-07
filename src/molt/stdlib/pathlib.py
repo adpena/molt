@@ -1,17 +1,32 @@
 """Capability-gated pathlib implementation for Molt."""
 
-from __future__ import annotations
+# TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial):
+# close remaining pathlib parity gaps (glob recursion edge cases, Windows
+# drive/anchor flavor details, and strict symlink-resolve semantics) by moving
+# the remaining path-shaping hot paths into Rust intrinsics.
 
-from collections.abc import Iterator
+from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 from molt import capabilities
 from molt.stdlib import os as _os
 
+TYPE_CHECKING = False
+if TYPE_CHECKING:
+    from typing import Iterator
+else:
+
+    class _TypingAlias:
+        __slots__ = ()
+
+        def __getitem__(self, _item):
+            return self
+
+    Iterator = _TypingAlias()
+
 _MOLT_PATH_JOIN = _require_intrinsic("molt_path_join", globals())
 _MOLT_PATH_ISABS = _require_intrinsic("molt_path_isabs", globals())
 _MOLT_PATH_DIRNAME = _require_intrinsic("molt_path_dirname", globals())
-_MOLT_PATH_SPLITEXT = _require_intrinsic("molt_path_splitext", globals())
 _MOLT_PATH_ABSPATH = _require_intrinsic("molt_path_abspath", globals())
 _MOLT_PATH_PARTS = _require_intrinsic("molt_path_parts", globals())
 _MOLT_PATH_SPLITROOT = _require_intrinsic("molt_path_splitroot", globals())
@@ -19,6 +34,8 @@ _MOLT_PATH_PARENTS = _require_intrinsic("molt_path_parents", globals())
 _MOLT_PATH_RELATIVE_TO = _require_intrinsic("molt_path_relative_to", globals())
 _MOLT_PATH_WITH_NAME = _require_intrinsic("molt_path_with_name", globals())
 _MOLT_PATH_WITH_SUFFIX = _require_intrinsic("molt_path_with_suffix", globals())
+_MOLT_PATH_WITH_STEM = _require_intrinsic("molt_path_with_stem", globals())
+_MOLT_PATH_IS_RELATIVE_TO = _require_intrinsic("molt_path_is_relative_to", globals())
 _MOLT_PATH_EXPANDUSER = _require_intrinsic("molt_path_expanduser", globals())
 _MOLT_PATH_MATCH = _require_intrinsic("molt_path_match", globals())
 _MOLT_PATH_GLOB = _require_intrinsic("molt_path_glob", globals())
@@ -29,7 +46,17 @@ _MOLT_PATH_LISTDIR = _require_intrinsic("molt_path_listdir", globals())
 _MOLT_PATH_MKDIR = _require_intrinsic("molt_path_mkdir", globals())
 _MOLT_PATH_UNLINK = _require_intrinsic("molt_path_unlink", globals())
 _MOLT_PATH_RMDIR = _require_intrinsic("molt_path_rmdir", globals())
+_MOLT_PATH_MAKEDIRS = _require_intrinsic("molt_path_makedirs", globals())
 _MOLT_FILE_OPEN_EX = _require_intrinsic("molt_file_open_ex", globals())
+_MOLT_PATH_JOIN_MANY = _require_intrinsic("molt_path_join_many", globals())
+_MOLT_PATH_NAME = _require_intrinsic("molt_path_name", globals())
+_MOLT_PATH_SUFFIX = _require_intrinsic("molt_path_suffix", globals())
+_MOLT_PATH_STEM = _require_intrinsic("molt_path_stem", globals())
+_MOLT_PATH_SUFFIXES = _require_intrinsic("molt_path_suffixes", globals())
+_MOLT_PATH_AS_URI = _require_intrinsic("molt_path_as_uri", globals())
+_MOLT_PATH_RELATIVE_TO_MANY = _require_intrinsic(
+    "molt_path_relative_to_many", globals()
+)
 
 
 class Path:
@@ -85,12 +112,10 @@ class Path:
         return self._path.replace(_os.sep, "/")
 
     def as_uri(self) -> str:
-        if not self.is_absolute():
-            raise ValueError("relative path can't be expressed as a file URI")
-        path = self.as_posix()
-        if not path.startswith("/"):
-            path = "/" + path
-        return "file://" + path
+        uri = _MOLT_PATH_AS_URI(self._path)
+        if not isinstance(uri, str):
+            raise RuntimeError("path as_uri intrinsic returned invalid value")
+        return uri
 
     def is_absolute(self) -> bool:
         return bool(_MOLT_PATH_ISABS(self._path))
@@ -150,10 +175,10 @@ class Path:
         return Path(path)
 
     def joinpath(self, *others: str) -> Path:
-        path = self._path
-        for part in others:
-            part = self._coerce_part(part)
-            path = _MOLT_PATH_JOIN(path, part)
+        parts = [self._coerce_part(part) for part in others]
+        path = _MOLT_PATH_JOIN_MANY(self._path, tuple(parts))
+        if not isinstance(path, str):
+            raise RuntimeError("path join_many intrinsic returned invalid value")
         return self._wrap(path)
 
     def __truediv__(self, key: str) -> Path:
@@ -263,42 +288,14 @@ class Path:
         exist_ok: bool = False,
     ) -> None:
         capabilities.require("fs.write")
-
-        def _is_dir(path: str) -> bool:
-            try:
-                _MOLT_PATH_LISTDIR(path)
-                return True
-            except Exception:
-                return False
-
+        del mode
         if parents:
-            path = self._path
-            if not path:
-                return
-            parts: list[str] = []
-            for part in path.split(_os.sep):
-                if not part:
-                    if not parts:
-                        parts.append(_os.sep)
-                    continue
-                parts.append(part)
-                current = parts[0]
-                for extra in parts[1:]:
-                    current = _MOLT_PATH_JOIN(current, extra)
-                if _MOLT_PATH_EXISTS(current):
-                    continue
-                try:
-                    _MOLT_PATH_MKDIR(current)
-                except FileExistsError:
-                    if not exist_ok:
-                        raise
-            if not exist_ok and not _MOLT_PATH_EXISTS(path):
-                raise FileNotFoundError(path)
+            _MOLT_PATH_MAKEDIRS(self._path, bool(exist_ok))
             return
         try:
             _MOLT_PATH_MKDIR(self._path)
         except FileExistsError:
-            if exist_ok and _is_dir(self._path):
+            if exist_ok and bool(_MOLT_PATH_ISDIR(self._path)):
                 return
             raise
 
@@ -308,53 +305,33 @@ class Path:
 
     @property
     def name(self) -> str:
-        parts = self._parts()
-        if not parts:
-            return ""
-        if parts == [_os.sep]:
-            return ""
-        return parts[-1]
+        name = _MOLT_PATH_NAME(self._path)
+        if not isinstance(name, str):
+            raise RuntimeError("path name intrinsic returned invalid value")
+        return name
 
     @property
     def suffix(self) -> str:
-        result = _MOLT_PATH_SPLITEXT(self._path)
-        if not isinstance(result, tuple) or len(result) != 2:
-            raise RuntimeError("path splitext intrinsic returned invalid value")
-        suffix = result[1]
+        suffix = _MOLT_PATH_SUFFIX(self._path)
         if not isinstance(suffix, str):
-            raise RuntimeError("path splitext intrinsic returned invalid value")
+            raise RuntimeError("path suffix intrinsic returned invalid value")
         return suffix
 
     @property
     def suffixes(self) -> list[str]:
-        name = self.name
-        if not name or name == ".":
-            return []
-        suffixes: list[str] = []
-        stem = name
-        while True:
-            result = _MOLT_PATH_SPLITEXT(stem)
-            if not isinstance(result, tuple) or len(result) != 2:
-                raise RuntimeError("path splitext intrinsic returned invalid value")
-            stem, suffix = result
-            if not isinstance(stem, str) or not isinstance(suffix, str):
-                raise RuntimeError("path splitext intrinsic returned invalid value")
-            if not suffix:
-                break
-            suffixes.insert(0, suffix)
+        suffixes = _MOLT_PATH_SUFFIXES(self._path)
+        if not isinstance(suffixes, list):
+            raise RuntimeError("path suffixes intrinsic returned invalid value")
+        for suffix in suffixes:
+            if not isinstance(suffix, str):
+                raise RuntimeError("path suffixes intrinsic returned invalid value")
         return suffixes
 
     @property
     def stem(self) -> str:
-        name = self.name
-        if not name or name == ".":
-            return ""
-        result = _MOLT_PATH_SPLITEXT(name)
-        if not isinstance(result, tuple) or len(result) != 2:
-            raise RuntimeError("path splitext intrinsic returned invalid value")
-        stem = result[0]
+        stem = _MOLT_PATH_STEM(self._path)
         if not isinstance(stem, str):
-            raise RuntimeError("path splitext intrinsic returned invalid value")
+            raise RuntimeError("path stem intrinsic returned invalid value")
         return stem
 
     @property
@@ -405,22 +382,25 @@ class Path:
                 "relative_to() missing 1 required positional argument: 'other'"
             )
         base = self._coerce_part(other[0])
-        for part in other[1:]:
-            part = self._coerce_part(part)
-            if part.startswith(_os.sep):
-                base = part
-            else:
-                if base and not base.endswith(_os.sep):
-                    base += _os.sep
-                base += part
-        return self._wrap(_MOLT_PATH_RELATIVE_TO(self._path, base))
+        if len(other) == 1:
+            rel = _MOLT_PATH_RELATIVE_TO(self._path, base)
+        else:
+            parts = [self._coerce_part(part) for part in other[1:]]
+            rel = _MOLT_PATH_RELATIVE_TO_MANY(self._path, base, tuple(parts))
+        if not isinstance(rel, str):
+            raise RuntimeError("path relative_to intrinsic returned invalid value")
+        return Path(str(rel))
 
     def is_relative_to(self, *other: str) -> bool:
-        try:
-            self.relative_to(*other)
-            return True
-        except Exception:
-            return False
+        if not other:
+            raise TypeError(
+                "is_relative_to() missing 1 required positional argument: 'other'"
+            )
+        base = self._coerce_part(other[0])
+        if len(other) == 1:
+            return bool(_MOLT_PATH_IS_RELATIVE_TO(self._path, base, None))
+        parts = [self._coerce_part(part) for part in other[1:]]
+        return bool(_MOLT_PATH_IS_RELATIVE_TO(self._path, base, tuple(parts)))
 
     def match(self, pattern: str) -> bool:
         return bool(_MOLT_PATH_MATCH(self._path, str(pattern)))
@@ -432,10 +412,7 @@ class Path:
         return self._wrap(_MOLT_PATH_WITH_SUFFIX(self._path, suffix))
 
     def with_stem(self, stem: str) -> Path:
-        stem = str(stem)
-        if not stem:
-            raise ValueError(f"{self._path!r} has an empty name")
-        return self.with_name(stem + self.suffix)
+        return self._wrap(_MOLT_PATH_WITH_STEM(self._path, stem))
 
 
 PurePosixPath = Path

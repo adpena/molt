@@ -4,13 +4,21 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-
-import copy
+import sys as _sys
 from reprlib import recursive_repr
 from types import MappingProxyType
-from typing import Callable, ClassVar, cast
+from typing import Any, Callable, ClassVar, cast
 
-_require_intrinsic("molt_stdlib_probe", globals())
+_MOLT_DATACLASSES_MAKE_DATACLASS = _require_intrinsic(
+    "molt_dataclasses_make_dataclass", globals()
+)
+_MOLT_DATACLASSES_IS_DATACLASS = _require_intrinsic(
+    "molt_dataclasses_is_dataclass", globals()
+)
+_MOLT_DATACLASSES_FIELDS = _require_intrinsic("molt_dataclasses_fields", globals())
+_MOLT_DATACLASSES_ASDICT = _require_intrinsic("molt_dataclasses_asdict", globals())
+_MOLT_DATACLASSES_ASTUPLE = _require_intrinsic("molt_dataclasses_astuple", globals())
+_MOLT_DATACLASSES_REPLACE = _require_intrinsic("molt_dataclasses_replace", globals())
 
 
 class _MISSING_TYPE:
@@ -555,11 +563,27 @@ def _molt_apply_dataclass(
     cls.__dataclass_fields__ = fields
     cls.__dataclass_params__ = params
 
-    if init and "__init__" not in cls.__dict__:
+    user_init_marker = cls.__dict__.get("__molt_dataclass_user_init__", MISSING)
+    from_make_dataclass = bool(cls.__dict__.get("__molt_make_dataclass__", False))
+    user_defined_init = False
+    if user_init_marker is not MISSING:
+        user_defined_init = bool(user_init_marker)
+    if init and from_make_dataclass:
+        if not user_defined_init:
+            cls.__init__ = _dataclass_init
+    elif init and (
+        "__init__" not in cls.__dict__
+        or cls.__dict__.get("__init__") is object.__init__
+    ):
         cls.__init__ = _dataclass_init
-    if repr and "__repr__" not in cls.__dict__:
+    if repr and (
+        "__repr__" not in cls.__dict__
+        or cls.__dict__.get("__repr__") is object.__repr__
+    ):
         cls.__repr__ = _dataclass_repr
-    if eq and "__eq__" not in cls.__dict__:
+    if eq and (
+        "__eq__" not in cls.__dict__ or cls.__dict__.get("__eq__") is object.__eq__
+    ):
         cls.__eq__ = _dataclass_eq
     if order:
         if "__lt__" not in cls.__dict__:
@@ -696,121 +720,125 @@ def dataclass(
 
 
 def is_dataclass(obj) -> bool:
-    if isinstance(obj, type):
-        return hasattr(obj, "__dataclass_fields__")
-    return hasattr(type(obj), "__dataclass_fields__")
+    return bool(_MOLT_DATACLASSES_IS_DATACLASS(obj))
 
 
 def fields(class_or_instance):
-    if not is_dataclass(class_or_instance):
-        raise TypeError("must be called with a dataclass type or instance")
-    cls = (
-        class_or_instance
-        if isinstance(class_or_instance, type)
-        else type(class_or_instance)
-    )
-    return tuple(
-        field_obj
-        for field_obj in cls.__dataclass_fields__.values()
-        if field_obj._field_type is _FIELD
-    )
+    return _MOLT_DATACLASSES_FIELDS(class_or_instance, _FIELD)
 
 
 def asdict(obj, *, dict_factory=dict):
-    if not is_dataclass(obj) or isinstance(obj, type):
-        raise TypeError("asdict() should be called on dataclass instances")
-
-    def _inner(value):
-        if is_dataclass(value):
-            items: list[tuple[object, object]] = []
-            for field_obj in fields(value):
-                items.append((field_obj.name, _inner(getattr(value, field_obj.name))))
-            return dict_factory(items)
-        if isinstance(value, list):
-            copied: list[object] = []
-            for item in value:
-                copied.append(_inner(item))
-            return type(value)(copied)
-        if isinstance(value, tuple):
-            copied = []
-            for item in value:
-                copied.append(_inner(item))
-            return type(value)(copied)
-        if isinstance(value, dict):
-            copied_items = []
-            for key, item_value in value.items():
-                copied_items.append((_inner(key), _inner(item_value)))
-            return type(value)(copied_items)
-        return copy.deepcopy(value)
-
-    return _inner(obj)
+    return _MOLT_DATACLASSES_ASDICT(obj, dict_factory, _FIELD)
 
 
 def astuple(obj, *, tuple_factory=tuple):
-    if not is_dataclass(obj) or isinstance(obj, type):
-        raise TypeError("astuple() should be called on dataclass instances")
-
-    def _inner(value):
-        if is_dataclass(value):
-            copied = []
-            for field_obj in fields(value):
-                copied.append(_inner(getattr(value, field_obj.name)))
-            return tuple_factory(copied)
-        if isinstance(value, list):
-            copied = []
-            for item in value:
-                copied.append(_inner(item))
-            return type(value)(copied)
-        if isinstance(value, tuple):
-            copied = []
-            for item in value:
-                copied.append(_inner(item))
-            return type(value)(copied)
-        if isinstance(value, dict):
-            copied_items = []
-            for key, item_value in value.items():
-                copied_items.append((_inner(key), _inner(item_value)))
-            return type(value)(copied_items)
-        return copy.deepcopy(value)
-
-    return _inner(obj)
+    return _MOLT_DATACLASSES_ASTUPLE(obj, tuple_factory, _FIELD)
 
 
 def replace(obj, **changes):
-    if not is_dataclass(obj) or isinstance(obj, type):
-        raise TypeError("replace() should be called on dataclass instances")
-    cls = obj.__class__
-    values: dict[str, object] = {}
-    for field_obj in cls.__dataclass_fields__.values():
-        if field_obj._field_type is _FIELD_INITVAR:
-            if field_obj.name in changes:
-                values[field_obj.name] = changes.pop(field_obj.name)
-            else:
-                raise TypeError(
-                    f"InitVar {field_obj.name!r} must be specified with replace()"
-                )
-            continue
-        if field_obj._field_type is not _FIELD:
-            continue
-        if not field_obj.init:
-            if field_obj.name in changes:
-                raise TypeError(
-                    f"field {field_obj.name} is declared with init=False, "
-                    "it cannot be specified with replace()"
-                )
-            continue
-        if field_obj.name in changes:
-            values[field_obj.name] = changes.pop(field_obj.name)
-        else:
-            values[field_obj.name] = getattr(obj, field_obj.name)
-    return cls(**values, **changes)
+    return _MOLT_DATACLASSES_REPLACE(obj, changes, _FIELD, _FIELD_INITVAR)
 
 
-def make_dataclass(*_args, **_kwargs):
-    # TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:missing): implement make_dataclass once dynamic class construction is allowed by the runtime contract.
-    raise NotImplementedError(
-        "make_dataclass is not supported in Molt (static-only dataclasses)"
+def _infer_caller_module_name() -> str:
+    frame = getattr(_sys, "_getframe", None)
+    if not callable(frame):
+        return "__main__"
+    try:
+        caller = frame(2)
+    except Exception:
+        return "__main__"
+    globals_obj = getattr(caller, "f_globals", None)
+    if isinstance(globals_obj, dict):
+        module_name = globals_obj.get("__name__")
+        if isinstance(module_name, str) and module_name:
+            return module_name
+    return "__main__"
+
+
+def make_dataclass(
+    cls_name: str,
+    fields,
+    *,
+    bases: tuple[type, ...] = (),
+    namespace: dict[str, object] | None = None,
+    init: bool = True,
+    repr: bool = True,
+    eq: bool = True,
+    order: bool = False,
+    unsafe_hash: bool = False,
+    frozen: bool = False,
+    match_args: bool = True,
+    kw_only: bool = False,
+    slots: bool = False,
+    weakref_slot: bool = False,
+    module: str | None = None,
+    decorator=dataclass,
+):
+    resolved_module = module if module is not None else _infer_caller_module_name()
+    prepared = _MOLT_DATACLASSES_MAKE_DATACLASS(
+        cls_name,
+        fields,
+        bases,
+        namespace,
+        resolved_module,
+        Any,
+        Field,
     )
+    if not isinstance(prepared, tuple) or len(prepared) != 2:
+        raise RuntimeError(
+            "dataclasses.make_dataclass intrinsic returned invalid state"
+        )
+    prepared_bases, body = prepared
+    if not isinstance(body, dict):
+        raise RuntimeError(
+            "dataclasses.make_dataclass intrinsic returned invalid namespace"
+        )
+    if not callable(decorator):
+        raise TypeError("decorator must be callable")
+
+    def exec_body(ns):
+        ns.update(body)
+
+    import types as _types
+
+    cls = _types.new_class(cls_name, prepared_bases, {}, exec_body)
+    if decorator is dataclass:
+        # Avoid keyword-binding drift in compiled paths by calling the
+        # internal worker positionally for the default dataclass decorator.
+        result = _molt_apply_dataclass(
+            cls,
+            init,
+            repr,
+            eq,
+            order,
+            unsafe_hash,
+            frozen,
+            match_args,
+            kw_only,
+            slots,
+            weakref_slot,
+        )
+    else:
+        result = decorator(
+            cls,
+            init=init,
+            repr=repr,
+            eq=eq,
+            order=order,
+            unsafe_hash=unsafe_hash,
+            frozen=frozen,
+            match_args=match_args,
+            kw_only=kw_only,
+            slots=slots,
+            weakref_slot=weakref_slot,
+        )
+    if isinstance(result, type):
+        user_defined_init = bool(
+            result.__dict__.get("__molt_dataclass_user_init__", False)
+        )
+        if init and not user_defined_init:
+            result.__init__ = _dataclass_init
+    return result
 
 
 __all__ = [

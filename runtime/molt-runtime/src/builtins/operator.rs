@@ -142,7 +142,7 @@ fn itemgetter_class(_py: &PyToken<'_>) -> u64 {
         "itemgetter",
         16,
         &ITEMGETTER_CALL,
-        crate::molt_operator_itemgetter_call as u64,
+        crate::molt_operator_itemgetter_call as usize as u64,
     )
 }
 
@@ -153,7 +153,7 @@ fn attrgetter_class(_py: &PyToken<'_>) -> u64 {
         "attrgetter",
         16,
         &ATTRGETTER_CALL,
-        crate::molt_operator_attrgetter_call as u64,
+        crate::molt_operator_attrgetter_call as usize as u64,
     )
 }
 
@@ -164,7 +164,7 @@ fn methodcaller_class(_py: &PyToken<'_>) -> u64 {
         "methodcaller",
         32,
         &METHODCALLER_CALL,
-        crate::molt_operator_methodcaller_call as u64,
+        crate::molt_operator_methodcaller_call as usize as u64,
     )
 }
 

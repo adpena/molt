@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
-
 from _intrinsics import require_intrinsic as _require_intrinsic
+
+TYPE_CHECKING = False
+if TYPE_CHECKING:
+    from typing import Any
+else:
+    Any = object
 
 
 _MOLT_TIME_MONOTONIC = _require_intrinsic("molt_time_monotonic", globals())
@@ -19,8 +23,11 @@ _MOLT_TIME_LOCALTIME = _require_intrinsic("molt_time_localtime", globals())
 _MOLT_TIME_GMTIME = _require_intrinsic("molt_time_gmtime", globals())
 _MOLT_TIME_STRFTIME = _require_intrinsic("molt_time_strftime", globals())
 _MOLT_TIME_TIMEZONE = _require_intrinsic("molt_time_timezone", globals())
+_MOLT_TIME_DAYLIGHT = _require_intrinsic("molt_time_daylight", globals())
+_MOLT_TIME_ALTZONE = _require_intrinsic("molt_time_altzone", globals())
 _MOLT_TIME_TZNAME = _require_intrinsic("molt_time_tzname", globals())
 _MOLT_TIME_ASCTIME = _require_intrinsic("molt_time_asctime", globals())
+_MOLT_TIME_MKTIME = _require_intrinsic("molt_time_mktime", globals())
 _MOLT_TIME_GET_CLOCK_INFO = _require_intrinsic("molt_time_get_clock_info", globals())
 _MOLT_ASYNC_SLEEP = _require_intrinsic("molt_async_sleep", globals())
 _MOLT_BLOCK_ON = _require_intrinsic("molt_block_on", globals())
@@ -56,7 +63,10 @@ __all__ = [
     "gmtime",
     "strftime",
     "timezone",
+    "daylight",
+    "altzone",
     "tzname",
+    "mktime",
 ]
 
 if TYPE_CHECKING:
@@ -253,7 +263,23 @@ def _init_tzname() -> tuple[str, str]:
     return (str(left), str(right))
 
 
+def _init_daylight() -> int:
+    try:
+        return int(_MOLT_TIME_DAYLIGHT())
+    except Exception as exc:
+        raise RuntimeError("time daylight intrinsic failed") from exc
+
+
+def _init_altzone() -> int:
+    try:
+        return int(_MOLT_TIME_ALTZONE())
+    except Exception as exc:
+        raise RuntimeError("time altzone intrinsic failed") from exc
+
+
 timezone = _init_timezone()
+daylight = _init_daylight()
+altzone = _init_altzone()
 tzname = _init_tzname()
 
 
@@ -382,3 +408,10 @@ def ctime(secs: float | None = None) -> str:
     if secs is None:
         return asctime()
     return asctime(localtime(secs))
+
+
+def mktime(t: Any) -> float:
+    tuple_val = _coerce_time_tuple(t)
+    if len(tuple_val) != 9:
+        raise TypeError("mktime(): illegal time tuple argument")
+    return float(_MOLT_TIME_MKTIME(tuple(tuple_val)))

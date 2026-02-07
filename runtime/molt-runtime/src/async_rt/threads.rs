@@ -3,6 +3,8 @@ use crate::PyToken;
 use crate::*;
 
 #[cfg(not(target_arch = "wasm32"))]
+use crate::concurrency::isolates::configured_thread_stack_size;
+#[cfg(not(target_arch = "wasm32"))]
 use crossbeam_channel::{unbounded, Receiver, Sender};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
@@ -75,7 +77,15 @@ impl ThreadPool {
         self.worker_count.store(count, AtomicOrdering::Release);
         for _ in 0..count {
             let rx = self.receiver.clone();
-            let handle = thread::spawn(move || thread_worker(rx));
+            let handle = if let Some(stack_size) = configured_thread_stack_size() {
+                let rx_builder = rx.clone();
+                thread::Builder::new()
+                    .stack_size(stack_size)
+                    .spawn(move || thread_worker(rx_builder))
+                    .unwrap_or_else(|_| thread::spawn(move || thread_worker(rx)))
+            } else {
+                thread::spawn(move || thread_worker(rx))
+            };
             handles.push(handle);
         }
     }

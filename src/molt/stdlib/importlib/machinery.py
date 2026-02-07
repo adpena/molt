@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-# Delay intrinsic probing until the module namespace is fully initialized to
-# avoid circular import hazards during bootstrap.
+from _intrinsics import require_intrinsic as _require_intrinsic
 
 
 class MoltLoader:
@@ -60,38 +59,36 @@ class SourceFileLoader:
         return self.path
 
     def get_data(self, path: str) -> bytes:
-        from molt import capabilities
-
-        if not capabilities.trusted():
-            capabilities.require("fs.read")
-        with open(path, "rb") as handle:
-            return handle.read()
+        payload = _MOLT_IMPORTLIB_READ_FILE(path)
+        if not isinstance(payload, bytes):
+            raise RuntimeError("invalid importlib read payload: bytes expected")
+        return payload
 
     def create_module(self, _spec: ModuleSpec):
         return None
 
     def exec_module(self, module) -> None:
-        from molt import capabilities
-        import os
         import sys
 
-        if not capabilities.trusted():
-            capabilities.require("fs.read")
         path = self.path
-        data = self.get_data(path)
-        try:
-            source = data.decode("utf-8", errors="surrogateescape")
-        except Exception:
-            source = data.decode("utf-8", errors="replace")
         spec = getattr(module, "__spec__", None)
-        is_package = False
-        if (
+        spec_has_locations = (
             spec is not None
             and getattr(spec, "submodule_search_locations", None) is not None
-        ):
-            is_package = True
-        elif os.path.basename(path) == "__init__.py":
-            is_package = True
+        )
+        payload = _source_exec_payload(module.__name__, path, bool(spec_has_locations))
+        source = payload["source"]
+        is_package = payload["is_package"]
+        module_package = payload["module_package"]
+        package_root = payload["package_root"]
+        if not isinstance(source, str):
+            raise RuntimeError("invalid importlib source exec payload: source")
+        if not isinstance(is_package, bool):
+            raise RuntimeError("invalid importlib source exec payload: is_package")
+        if not isinstance(module_package, str):
+            raise RuntimeError("invalid importlib source exec payload: module_package")
+        if package_root is not None and not isinstance(package_root, str):
+            raise RuntimeError("invalid importlib source exec payload: package_root")
         if spec is None:
             spec = ModuleSpec(
                 module.__name__,
@@ -104,103 +101,46 @@ class SourceFileLoader:
             module.__loader__ = self
         module.__file__ = path
         module.__cached__ = None
+        module.__package__ = module_package
         if is_package:
-            pkg_root = os.path.dirname(path)
-            module.__package__ = module.__name__
-            module.__path__ = [pkg_root]
+            if not isinstance(package_root, str):
+                raise RuntimeError(
+                    "invalid importlib source loader payload: package_root"
+                )
+            module.__path__ = [package_root]
             if spec.submodule_search_locations is None:
-                spec.submodule_search_locations = [pkg_root]
-        else:
-            module.__package__ = module.__name__.rpartition(".")[0]
+                spec.submodule_search_locations = [package_root]
         sys.modules[module.__name__] = module
-        _exec_restricted(module, source, path)
+        result = _MOLT_IMPORTLIB_EXEC_RESTRICTED_SOURCE(module.__dict__, source, path)
+        if result is not None:
+            raise RuntimeError(
+                "invalid importlib source execution intrinsic result: expected None"
+            )
+        cleared = _MOLT_EXCEPTION_CLEAR()
+        if cleared is not None:
+            raise RuntimeError(
+                "invalid exception clear intrinsic result: expected None"
+            )
 
 
-def _parse_literal(text: str):
-    def _is_digits(value: str) -> bool:
-        if not value:
-            return False
-        for ch in value:
-            if ch < "0" or ch > "9":
-                return False
-        return True
+def _source_exec_payload(
+    module_name: str, path: str, spec_is_package: bool
+) -> dict[str, object]:
+    payload = _MOLT_IMPORTLIB_SOURCE_EXEC_PAYLOAD(module_name, path, spec_is_package)
+    if not isinstance(payload, dict):
+        raise RuntimeError("invalid importlib source exec payload: dict expected")
+    return payload
 
-    if text in {"None", "True", "False"}:
-        return None if text == "None" else text == "True"
-    if text.startswith(("+", "-")) and _is_digits(text[1:]):
-        return int(text)
-    if _is_digits(text):
-        return int(text)
-    if any(ch in text for ch in (".", "e", "E")):
-        try:
-            return float(text)
-        except Exception:
-            pass
-    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
-        inner = text[1:-1]
-        inner = inner.replace("\\\\", "\\")
-        inner = inner.replace("\\n", "\n")
-        inner = inner.replace("\\t", "\t")
-        inner = inner.replace("\\r", "\r")
-        if text[0] == "'":
-            inner = inner.replace("\\'", "'")
-        if text[0] == '"':
-            inner = inner.replace('\\"', '"')
-        return inner
-    return _MISSING
-
-
-def _exec_restricted(module, source: str, filename: str) -> None:
-    # TODO(semantics, owner:runtime, milestone:SL3, priority:P1, status:partial): replace restricted module exec with full code-object execution once eval/exec are supported.
-    namespace = module.__dict__
-    lines = source.splitlines()
-    idx = 0
-    saw_stmt = False
-    while idx < len(lines):
-        raw = lines[idx]
-        idx += 1
-        stripped = raw.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if not saw_stmt and (stripped.startswith('"""') or stripped.startswith("'''")):
-            quote = stripped[:3]
-            if stripped.endswith(quote) and len(stripped) > 6:
-                namespace["__doc__"] = stripped[3:-3]
-                saw_stmt = True
-                continue
-            doc_lines = [stripped[3:]]
-            while idx < len(lines):
-                chunk = lines[idx]
-                idx += 1
-                end = chunk.find(quote)
-                if end != -1:
-                    doc_lines.append(chunk[:end])
-                    break
-                doc_lines.append(chunk)
-            namespace["__doc__"] = "\n".join(doc_lines)
-            saw_stmt = True
-            continue
-        saw_stmt = True
-        if stripped == "pass":
-            continue
-        if "=" not in stripped or "==" in stripped or "!=" in stripped:
-            raise NotImplementedError(f"unsupported module statement in {filename}")
-        left, right = stripped.split("=", 1)
-        target = left.strip()
-        if not target.isidentifier():
-            raise NotImplementedError(f"unsupported assignment target in {filename}")
-        value = _parse_literal(right.strip())
-        if value is _MISSING:
-            raise NotImplementedError(f"unsupported assignment in {filename}")
-        namespace[target] = value
-
-
-from _intrinsics import require_intrinsic as _require_intrinsic
 
 _require_intrinsic("molt_stdlib_probe", globals())
-
-
-_MISSING = object()
+_MOLT_IMPORTLIB_SOURCE_EXEC_PAYLOAD = _require_intrinsic(
+    "molt_importlib_source_exec_payload", globals()
+)
+_MOLT_IMPORTLIB_READ_FILE = _require_intrinsic("molt_importlib_read_file", globals())
+_MOLT_IMPORTLIB_EXEC_RESTRICTED_SOURCE = _require_intrinsic(
+    "molt_importlib_exec_restricted_source", globals()
+)
+_MOLT_EXCEPTION_CLEAR = _require_intrinsic("molt_exception_clear", globals())
 
 
 __all__ = ["ModuleSpec", "MOLT_LOADER", "MoltLoader", "SourceFileLoader"]

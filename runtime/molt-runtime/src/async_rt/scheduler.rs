@@ -13,24 +13,27 @@ use crate::object::ops::string_obj_to_owned;
 use crate::object::{dec_ref_ptr, inc_ref_ptr};
 use crate::state::clear_worker_thread_state;
 use crate::{
-    anext_default_poll_fn_addr, async_sleep_poll_fn_addr, asyncgen_poll_fn_addr, call_poll_fn,
-    class_name_for_error, code_filename_bits, code_name_bits, context_stack_unwind, dec_ref_bits,
-    exception_context_align_depth, exception_context_fallback_pop, exception_context_fallback_push,
-    exception_handler_active, exception_kind_bits, exception_pending, exception_stack_baseline_get,
+    alloc_list, alloc_string, alloc_tuple, anext_default_poll_fn_addr, async_sleep_poll_fn_addr,
+    asyncgen_poll_fn_addr, bits_from_ptr, call_callable0, call_poll_fn, class_name_for_error,
+    code_filename_bits, code_name_bits, context_stack_unwind, dec_ref_bits, dict_clear_in_place,
+    dict_del_in_place, dict_get_in_place, dict_set_in_place, exception_context_align_depth,
+    exception_context_fallback_pop, exception_context_fallback_push, exception_handler_active,
+    exception_kind_bits, exception_pending, exception_stack_baseline_get,
     exception_stack_baseline_set, exception_stack_depth, exception_stack_set_depth,
     format_exception_with_traceback, generator_raise_active, handle_system_exit,
-    header_from_obj_ptr, inc_ref_bits, io_wait_poll_fn_addr, maybe_ptr_from_bits,
-    molt_exception_last, obj_from_bits, object_class_bits, object_type_id, pending_bits_i64,
-    process_poll_fn_addr, profile_hit, promise_poll_fn_addr, ptr_from_bits, raise_exception,
-    record_exception, resolve_task_ptr, runtime_state, set_task_raise_active,
-    task_exception_baseline_store, task_exception_baseline_take, task_exception_depth_store,
-    task_exception_depth_take, task_exception_handler_stack_store,
-    task_exception_handler_stack_take, task_exception_stack_store, task_exception_stack_take,
-    task_raise_active, thread_poll_fn_addr, to_i64, with_gil, GilGuard, GilReleaseGuard,
-    MoltHeader, MoltObject, PtrSlot, ACTIVE_EXCEPTION_STACK, ASYNC_PENDING_COUNT, ASYNC_POLL_COUNT,
-    ASYNC_SLEEP_REGISTER_COUNT, ASYNC_WAKEUP_COUNT, EXCEPTION_STACK, GIL_DEPTH,
-    HEADER_FLAG_BLOCK_ON, HEADER_FLAG_SPAWN_RETAIN, HEADER_FLAG_TASK_DONE, HEADER_FLAG_TASK_QUEUED,
-    HEADER_FLAG_TASK_RUNNING, HEADER_FLAG_TASK_WAKE_PENDING,
+    header_from_obj_ptr, inc_ref_bits, io_wait_poll_fn_addr, is_missing_bits, is_truthy,
+    maybe_ptr_from_bits, missing_bits, molt_exception_last, molt_getattr_builtin, obj_from_bits,
+    object_class_bits, object_type_id, pending_bits_i64, process_poll_fn_addr, profile_hit,
+    promise_poll_fn_addr, ptr_from_bits, raise_exception, record_exception, resolve_task_ptr,
+    runtime_state, seq_vec_ref, set_task_raise_active, task_exception_baseline_store,
+    task_exception_baseline_take, task_exception_depth_store, task_exception_depth_take,
+    task_exception_handler_stack_store, task_exception_handler_stack_take,
+    task_exception_stack_store, task_exception_stack_take, task_raise_active, thread_poll_fn_addr,
+    to_i64, with_gil, GilGuard, GilReleaseGuard, MoltHeader, MoltObject, PtrSlot,
+    ACTIVE_EXCEPTION_STACK, ASYNC_PENDING_COUNT, ASYNC_POLL_COUNT, ASYNC_SLEEP_REGISTER_COUNT,
+    ASYNC_WAKEUP_COUNT, EXCEPTION_STACK, GIL_DEPTH, HEADER_FLAG_BLOCK_ON, HEADER_FLAG_SPAWN_RETAIN,
+    HEADER_FLAG_TASK_DONE, HEADER_FLAG_TASK_QUEUED, HEADER_FLAG_TASK_RUNNING,
+    HEADER_FLAG_TASK_WAKE_PENDING, TYPE_ID_DICT, TYPE_ID_LIST, TYPE_ID_TUPLE,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -125,7 +128,7 @@ pub(crate) fn task_exception_stacks(
 
 pub(crate) fn task_exception_handler_stacks(
     _py: &PyToken<'_>,
-) -> &'static Mutex<HashMap<PtrSlot, Vec<u8>>> {
+) -> &'static Mutex<HashMap<PtrSlot, Vec<usize>>> {
     &runtime_state(_py).task_exception_handler_stacks
 }
 
@@ -143,6 +146,732 @@ pub(crate) fn asyncgen_registry(_py: &PyToken<'_>) -> &'static Mutex<HashSet<Ptr
 
 pub(crate) fn fn_ptr_code_map(_py: &PyToken<'_>) -> &'static Mutex<HashMap<u64, u64>> {
     &runtime_state(_py).fn_ptr_code
+}
+
+pub(crate) fn asyncio_running_loop_map(_py: &PyToken<'_>) -> &'static Mutex<HashMap<u64, u64>> {
+    &runtime_state(_py).asyncio_running_loops
+}
+
+pub(crate) fn asyncio_event_loop_map(_py: &PyToken<'_>) -> &'static Mutex<HashMap<u64, u64>> {
+    &runtime_state(_py).asyncio_event_loops
+}
+
+pub(crate) fn asyncio_task_map(_py: &PyToken<'_>) -> &'static Mutex<HashMap<u64, u64>> {
+    &runtime_state(_py).asyncio_tasks
+}
+
+pub(crate) fn asyncio_event_waiters_map(
+    _py: &PyToken<'_>,
+) -> &'static Mutex<HashMap<u64, Vec<u64>>> {
+    &runtime_state(_py).asyncio_event_waiters
+}
+
+fn asyncio_parse_token_id(_py: &PyToken<'_>, token_bits: u64) -> Result<u64, u64> {
+    let Some(token_id) = to_i64(obj_from_bits(token_bits)) else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "token_id must be int",
+        ));
+    };
+    if token_id < 0 {
+        return Err(raise_exception::<u64>(
+            _py,
+            "ValueError",
+            "token_id must be >= 0",
+        ));
+    }
+    Ok(token_id as u64)
+}
+
+fn asyncio_running_loop_get_impl(_py: &PyToken<'_>) -> u64 {
+    let tid = crate::concurrency::current_thread_id();
+    let guard = asyncio_running_loop_map(_py).lock().unwrap();
+    let Some(bits) = guard.get(&tid).copied() else {
+        return MoltObject::none().bits();
+    };
+    if bits != 0 && !obj_from_bits(bits).is_none() {
+        inc_ref_bits(_py, bits);
+    }
+    bits
+}
+
+fn asyncio_running_loop_set_impl(_py: &PyToken<'_>, loop_bits: u64) -> u64 {
+    let tid = crate::concurrency::current_thread_id();
+    let mut guard = asyncio_running_loop_map(_py).lock().unwrap();
+    if obj_from_bits(loop_bits).is_none() {
+        if let Some(old_bits) = guard.remove(&tid) {
+            if old_bits != 0 && !obj_from_bits(old_bits).is_none() {
+                dec_ref_bits(_py, old_bits);
+            }
+        }
+        return MoltObject::none().bits();
+    }
+
+    let old_bits = guard.insert(tid, loop_bits);
+    if old_bits != Some(loop_bits) {
+        inc_ref_bits(_py, loop_bits);
+        if let Some(old_bits) = old_bits {
+            if old_bits != 0 && !obj_from_bits(old_bits).is_none() {
+                dec_ref_bits(_py, old_bits);
+            }
+        }
+    }
+    MoltObject::none().bits()
+}
+
+fn asyncio_event_loop_get_impl(_py: &PyToken<'_>) -> u64 {
+    let tid = crate::concurrency::current_thread_id();
+    let guard = asyncio_event_loop_map(_py).lock().unwrap();
+    let Some(bits) = guard.get(&tid).copied() else {
+        return MoltObject::none().bits();
+    };
+    if bits != 0 && !obj_from_bits(bits).is_none() {
+        inc_ref_bits(_py, bits);
+    }
+    bits
+}
+
+fn asyncio_event_loop_set_impl(_py: &PyToken<'_>, loop_bits: u64) -> u64 {
+    let tid = crate::concurrency::current_thread_id();
+    let mut guard = asyncio_event_loop_map(_py).lock().unwrap();
+    if obj_from_bits(loop_bits).is_none() {
+        if let Some(old_bits) = guard.remove(&tid) {
+            if old_bits != 0 && !obj_from_bits(old_bits).is_none() {
+                dec_ref_bits(_py, old_bits);
+            }
+        }
+        return MoltObject::none().bits();
+    }
+
+    let old_bits = guard.insert(tid, loop_bits);
+    if old_bits != Some(loop_bits) {
+        inc_ref_bits(_py, loop_bits);
+        if let Some(old_bits) = old_bits {
+            if old_bits != 0 && !obj_from_bits(old_bits).is_none() {
+                dec_ref_bits(_py, old_bits);
+            }
+        }
+    }
+    MoltObject::none().bits()
+}
+
+fn asyncio_event_loop_policy_get_impl(_py: &PyToken<'_>) -> u64 {
+    let bits = *runtime_state(_py).asyncio_event_loop_policy.lock().unwrap();
+    if bits != 0 && !obj_from_bits(bits).is_none() {
+        inc_ref_bits(_py, bits);
+    }
+    bits
+}
+
+fn asyncio_event_loop_policy_set_impl(_py: &PyToken<'_>, policy_bits: u64) -> u64 {
+    let mut guard = runtime_state(_py).asyncio_event_loop_policy.lock().unwrap();
+    let old_bits = *guard;
+    *guard = policy_bits;
+    if policy_bits != 0 && !obj_from_bits(policy_bits).is_none() {
+        inc_ref_bits(_py, policy_bits);
+    }
+    if old_bits != 0 && !obj_from_bits(old_bits).is_none() {
+        dec_ref_bits(_py, old_bits);
+    }
+    MoltObject::none().bits()
+}
+
+fn asyncio_task_registry_set_impl(_py: &PyToken<'_>, token_bits: u64, task_bits: u64) -> u64 {
+    let token_id = match asyncio_parse_token_id(_py, token_bits) {
+        Ok(id) => id,
+        Err(bits) => return bits,
+    };
+    let mut guard = asyncio_task_map(_py).lock().unwrap();
+    if obj_from_bits(task_bits).is_none() {
+        if let Some(old_bits) = guard.remove(&token_id) {
+            if old_bits != 0 && !obj_from_bits(old_bits).is_none() {
+                dec_ref_bits(_py, old_bits);
+            }
+        }
+        return MoltObject::none().bits();
+    }
+    let old_bits = guard.insert(token_id, task_bits);
+    if old_bits != Some(task_bits) {
+        inc_ref_bits(_py, task_bits);
+        if let Some(old_bits) = old_bits {
+            if old_bits != 0 && !obj_from_bits(old_bits).is_none() {
+                dec_ref_bits(_py, old_bits);
+            }
+        }
+    }
+    MoltObject::none().bits()
+}
+
+fn asyncio_task_registry_get_impl(_py: &PyToken<'_>, token_bits: u64) -> u64 {
+    let token_id = match asyncio_parse_token_id(_py, token_bits) {
+        Ok(id) => id,
+        Err(bits) => return bits,
+    };
+    let guard = asyncio_task_map(_py).lock().unwrap();
+    let Some(bits) = guard.get(&token_id).copied() else {
+        return MoltObject::none().bits();
+    };
+    if bits != 0 && !obj_from_bits(bits).is_none() {
+        inc_ref_bits(_py, bits);
+    }
+    bits
+}
+
+fn asyncio_task_registry_contains_impl(_py: &PyToken<'_>, token_bits: u64) -> u64 {
+    let token_id = match asyncio_parse_token_id(_py, token_bits) {
+        Ok(id) => id,
+        Err(bits) => return bits,
+    };
+    let guard = asyncio_task_map(_py).lock().unwrap();
+    MoltObject::from_bool(guard.contains_key(&token_id)).bits()
+}
+
+fn asyncio_task_registry_current_impl(_py: &PyToken<'_>) -> u64 {
+    let token_id = current_token_id();
+    {
+        let guard = asyncio_task_map(_py).lock().unwrap();
+        if let Some(bits) = guard.get(&token_id).copied() {
+            if bits != 0 && !obj_from_bits(bits).is_none() {
+                inc_ref_bits(_py, bits);
+            }
+            return bits;
+        }
+    }
+    let task_ptr = current_task_ptr();
+    if task_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    let task_bits = MoltObject::from_ptr(task_ptr).bits();
+    inc_ref_bits(_py, task_bits);
+    task_bits
+}
+
+fn asyncio_task_registry_current_for_loop_impl(_py: &PyToken<'_>, loop_bits: u64) -> u64 {
+    let task_bits = asyncio_task_registry_current_impl(_py);
+    if obj_from_bits(task_bits).is_none() || obj_from_bits(loop_bits).is_none() {
+        return task_bits;
+    }
+    let loop_name_ptr = alloc_string(_py, b"_loop");
+    if loop_name_ptr.is_null() {
+        dec_ref_bits(_py, task_bits);
+        return MoltObject::none().bits();
+    }
+    let loop_name_bits = MoltObject::from_ptr(loop_name_ptr).bits();
+    let missing = missing_bits(_py);
+    let loop_attr_bits = molt_getattr_builtin(task_bits, loop_name_bits, missing);
+    dec_ref_bits(_py, loop_name_bits);
+    if exception_pending(_py) {
+        dec_ref_bits(_py, task_bits);
+        return MoltObject::none().bits();
+    }
+    let matches = !is_missing_bits(_py, loop_attr_bits) && loop_attr_bits == loop_bits;
+    if !obj_from_bits(loop_attr_bits).is_none() {
+        dec_ref_bits(_py, loop_attr_bits);
+    }
+    if matches {
+        task_bits
+    } else {
+        dec_ref_bits(_py, task_bits);
+        MoltObject::none().bits()
+    }
+}
+
+fn asyncio_task_registry_pop_impl(_py: &PyToken<'_>, token_bits: u64) -> u64 {
+    let token_id = match asyncio_parse_token_id(_py, token_bits) {
+        Ok(id) => id,
+        Err(bits) => return bits,
+    };
+    let mut guard = asyncio_task_map(_py).lock().unwrap();
+    guard
+        .remove(&token_id)
+        .unwrap_or_else(|| MoltObject::none().bits())
+}
+
+fn asyncio_task_registry_move_impl(
+    _py: &PyToken<'_>,
+    old_token_bits: u64,
+    new_token_bits: u64,
+) -> u64 {
+    let old_token = match asyncio_parse_token_id(_py, old_token_bits) {
+        Ok(id) => id,
+        Err(bits) => return bits,
+    };
+    let new_token = match asyncio_parse_token_id(_py, new_token_bits) {
+        Ok(id) => id,
+        Err(bits) => return bits,
+    };
+    if old_token == new_token {
+        return MoltObject::from_bool(false).bits();
+    }
+    let mut guard = asyncio_task_map(_py).lock().unwrap();
+    let Some(old_bits) = guard.remove(&old_token) else {
+        return MoltObject::from_bool(false).bits();
+    };
+    if let Some(replaced_bits) = guard.insert(new_token, old_bits) {
+        if replaced_bits != 0 && !obj_from_bits(replaced_bits).is_none() {
+            dec_ref_bits(_py, replaced_bits);
+        }
+    }
+    MoltObject::from_bool(true).bits()
+}
+
+fn asyncio_task_registry_values_impl(_py: &PyToken<'_>) -> u64 {
+    let guard = asyncio_task_map(_py).lock().unwrap();
+    let values = guard.values().copied().collect::<Vec<_>>();
+    drop(guard);
+    let ptr = alloc_list(_py, values.as_slice());
+    if ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    bits_from_ptr(ptr)
+}
+
+fn asyncio_event_waiters_register_impl(
+    _py: &PyToken<'_>,
+    token_bits: u64,
+    waiter_bits: u64,
+) -> u64 {
+    let token_id = match asyncio_parse_token_id(_py, token_bits) {
+        Ok(id) => id,
+        Err(bits) => return bits,
+    };
+    if obj_from_bits(waiter_bits).is_none() {
+        return MoltObject::none().bits();
+    }
+    let mut guard = asyncio_event_waiters_map(_py).lock().unwrap();
+    let waiters = guard.entry(token_id).or_default();
+    waiters.push(waiter_bits);
+    inc_ref_bits(_py, waiter_bits);
+    MoltObject::none().bits()
+}
+
+fn asyncio_event_waiters_unregister_impl(
+    _py: &PyToken<'_>,
+    token_bits: u64,
+    waiter_bits: u64,
+) -> u64 {
+    let token_id = match asyncio_parse_token_id(_py, token_bits) {
+        Ok(id) => id,
+        Err(bits) => return bits,
+    };
+    let mut guard = asyncio_event_waiters_map(_py).lock().unwrap();
+    let Some(waiters) = guard.get_mut(&token_id) else {
+        return MoltObject::from_bool(false).bits();
+    };
+    let Some(idx) = waiters.iter().position(|bits| *bits == waiter_bits) else {
+        return MoltObject::from_bool(false).bits();
+    };
+    let removed = waiters.remove(idx);
+    if removed != 0 && !obj_from_bits(removed).is_none() {
+        dec_ref_bits(_py, removed);
+    }
+    if waiters.is_empty() {
+        guard.remove(&token_id);
+    }
+    MoltObject::from_bool(true).bits()
+}
+
+fn asyncio_event_waiters_cleanup_token_impl(_py: &PyToken<'_>, token_bits: u64) -> u64 {
+    let token_id = match asyncio_parse_token_id(_py, token_bits) {
+        Ok(id) => id,
+        Err(bits) => return bits,
+    };
+    let mut guard = asyncio_event_waiters_map(_py).lock().unwrap();
+    let Some(waiters) = guard.remove(&token_id) else {
+        return MoltObject::from_int(0).bits();
+    };
+    drop(guard);
+    let list_ptr = alloc_list(_py, waiters.as_slice());
+    if list_ptr.is_null() {
+        for bits in waiters {
+            if bits != 0 && !obj_from_bits(bits).is_none() {
+                dec_ref_bits(_py, bits);
+            }
+        }
+        return MoltObject::none().bits();
+    }
+    let list_bits = bits_from_ptr(list_ptr);
+    let out_bits = unsafe { crate::molt_asyncio_event_waiters_cleanup(list_bits) };
+    dec_ref_bits(_py, list_bits);
+    for bits in waiters {
+        if bits != 0 && !obj_from_bits(bits).is_none() {
+            dec_ref_bits(_py, bits);
+        }
+    }
+    out_bits
+}
+
+fn asyncio_child_watcher_dict_ptr(_py: &PyToken<'_>, callbacks_bits: u64) -> Result<*mut u8, u64> {
+    let Some(ptr) = obj_from_bits(callbacks_bits).as_ptr() else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "child watcher callbacks must be dict",
+        ));
+    };
+    if unsafe { object_type_id(ptr) } != TYPE_ID_DICT {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "child watcher callbacks must be dict",
+        ));
+    }
+    Ok(ptr)
+}
+
+fn asyncio_child_watcher_pid(_py: &PyToken<'_>, pid_bits: u64) -> Result<i64, u64> {
+    let Some(pid) = to_i64(obj_from_bits(pid_bits)) else {
+        return Err(raise_exception::<u64>(_py, "TypeError", "pid must be int"));
+    };
+    Ok(pid)
+}
+
+fn asyncio_child_watcher_args_tuple_bits(_py: &PyToken<'_>, args_bits: u64) -> Result<u64, u64> {
+    let args_obj = obj_from_bits(args_bits);
+    let Some(args_ptr) = args_obj.as_ptr() else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "args must be tuple or list",
+        ));
+    };
+    let type_id = unsafe { object_type_id(args_ptr) };
+    if type_id == TYPE_ID_TUPLE {
+        inc_ref_bits(_py, args_bits);
+        return Ok(args_bits);
+    }
+    if type_id == TYPE_ID_LIST {
+        let elems = unsafe { seq_vec_ref(args_ptr) };
+        let tuple_ptr = alloc_tuple(_py, elems.as_slice());
+        if tuple_ptr.is_null() {
+            return Ok(MoltObject::none().bits());
+        }
+        return Ok(bits_from_ptr(tuple_ptr));
+    }
+    Err(raise_exception::<u64>(
+        _py,
+        "TypeError",
+        "args must be tuple or list",
+    ))
+}
+
+fn asyncio_child_watcher_add_impl(
+    _py: &PyToken<'_>,
+    callbacks_bits: u64,
+    pid_bits: u64,
+    callback_bits: u64,
+    args_bits: u64,
+) -> u64 {
+    let callbacks_ptr = match asyncio_child_watcher_dict_ptr(_py, callbacks_bits) {
+        Ok(ptr) => ptr,
+        Err(bits) => return bits,
+    };
+    let pid = match asyncio_child_watcher_pid(_py, pid_bits) {
+        Ok(pid) => pid,
+        Err(bits) => return bits,
+    };
+    let args_tuple_bits = match asyncio_child_watcher_args_tuple_bits(_py, args_bits) {
+        Ok(bits) => bits,
+        Err(bits) => return bits,
+    };
+    let pid_key_bits = MoltObject::from_int(pid).bits();
+    let entry_ptr = alloc_tuple(_py, &[callback_bits, args_tuple_bits]);
+    if entry_ptr.is_null() {
+        dec_ref_bits(_py, args_tuple_bits);
+        return MoltObject::none().bits();
+    }
+    let entry_bits = bits_from_ptr(entry_ptr);
+    unsafe {
+        dict_set_in_place(_py, callbacks_ptr, pid_key_bits, entry_bits);
+    }
+    dec_ref_bits(_py, pid_key_bits);
+    dec_ref_bits(_py, entry_bits);
+    dec_ref_bits(_py, args_tuple_bits);
+    MoltObject::none().bits()
+}
+
+fn asyncio_child_watcher_remove_impl(_py: &PyToken<'_>, callbacks_bits: u64, pid_bits: u64) -> u64 {
+    let callbacks_ptr = match asyncio_child_watcher_dict_ptr(_py, callbacks_bits) {
+        Ok(ptr) => ptr,
+        Err(bits) => return bits,
+    };
+    let pid = match asyncio_child_watcher_pid(_py, pid_bits) {
+        Ok(pid) => pid,
+        Err(bits) => return bits,
+    };
+    let pid_key_bits = MoltObject::from_int(pid).bits();
+    let removed = unsafe { dict_del_in_place(_py, callbacks_ptr, pid_key_bits) };
+    dec_ref_bits(_py, pid_key_bits);
+    MoltObject::from_bool(removed).bits()
+}
+
+fn asyncio_child_watcher_clear_impl(_py: &PyToken<'_>, callbacks_bits: u64) -> u64 {
+    let callbacks_ptr = match asyncio_child_watcher_dict_ptr(_py, callbacks_bits) {
+        Ok(ptr) => ptr,
+        Err(bits) => return bits,
+    };
+    unsafe {
+        dict_clear_in_place(_py, callbacks_ptr);
+    }
+    MoltObject::none().bits()
+}
+
+fn asyncio_child_watcher_pop_impl(_py: &PyToken<'_>, callbacks_bits: u64, pid_bits: u64) -> u64 {
+    let callbacks_ptr = match asyncio_child_watcher_dict_ptr(_py, callbacks_bits) {
+        Ok(ptr) => ptr,
+        Err(bits) => return bits,
+    };
+    let pid = match asyncio_child_watcher_pid(_py, pid_bits) {
+        Ok(pid) => pid,
+        Err(bits) => return bits,
+    };
+    let pid_key_bits = MoltObject::from_int(pid).bits();
+    let entry_bits = unsafe { dict_get_in_place(_py, callbacks_ptr, pid_key_bits) };
+    let out_bits = if let Some(bits) = entry_bits {
+        inc_ref_bits(_py, bits);
+        unsafe {
+            dict_del_in_place(_py, callbacks_ptr, pid_key_bits);
+        }
+        bits
+    } else {
+        MoltObject::none().bits()
+    };
+    dec_ref_bits(_py, pid_key_bits);
+    out_bits
+}
+
+fn asyncio_task_registry_live_impl(_py: &PyToken<'_>, loop_bits: u64) -> u64 {
+    let target_loop = if obj_from_bits(loop_bits).is_none() {
+        None
+    } else {
+        Some(loop_bits)
+    };
+    let values: Vec<u64> = {
+        let guard = asyncio_task_map(_py).lock().unwrap();
+        guard.values().copied().collect()
+    };
+    let done_name_ptr = alloc_string(_py, b"done");
+    if done_name_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    let done_name_bits = MoltObject::from_ptr(done_name_ptr).bits();
+    let loop_name_ptr = alloc_string(_py, b"_loop");
+    if loop_name_ptr.is_null() {
+        dec_ref_bits(_py, done_name_bits);
+        return MoltObject::none().bits();
+    }
+    let loop_name_bits = MoltObject::from_ptr(loop_name_ptr).bits();
+    let missing = missing_bits(_py);
+    let mut out_bits: Vec<u64> = Vec::new();
+
+    for task_bits in values {
+        if task_bits == 0 || obj_from_bits(task_bits).is_none() {
+            continue;
+        }
+        if let Some(loop_filter) = target_loop {
+            let loop_attr_bits = molt_getattr_builtin(task_bits, loop_name_bits, missing);
+            if exception_pending(_py) {
+                for bits in out_bits {
+                    dec_ref_bits(_py, bits);
+                }
+                dec_ref_bits(_py, done_name_bits);
+                dec_ref_bits(_py, loop_name_bits);
+                return MoltObject::none().bits();
+            }
+            let matches = !is_missing_bits(_py, loop_attr_bits) && loop_attr_bits == loop_filter;
+            if !obj_from_bits(loop_attr_bits).is_none() {
+                dec_ref_bits(_py, loop_attr_bits);
+            }
+            if !matches {
+                continue;
+            }
+        }
+        let done_method_bits = molt_getattr_builtin(task_bits, done_name_bits, missing);
+        if exception_pending(_py) {
+            for bits in out_bits {
+                dec_ref_bits(_py, bits);
+            }
+            dec_ref_bits(_py, done_name_bits);
+            dec_ref_bits(_py, loop_name_bits);
+            return MoltObject::none().bits();
+        }
+        if is_missing_bits(_py, done_method_bits) {
+            if !obj_from_bits(done_method_bits).is_none() {
+                dec_ref_bits(_py, done_method_bits);
+            }
+            continue;
+        }
+        let done_bits = unsafe { call_callable0(_py, done_method_bits) };
+        dec_ref_bits(_py, done_method_bits);
+        if exception_pending(_py) {
+            for bits in out_bits {
+                dec_ref_bits(_py, bits);
+            }
+            dec_ref_bits(_py, done_name_bits);
+            dec_ref_bits(_py, loop_name_bits);
+            return MoltObject::none().bits();
+        }
+        let is_done = is_truthy(_py, obj_from_bits(done_bits));
+        if !obj_from_bits(done_bits).is_none() {
+            dec_ref_bits(_py, done_bits);
+        }
+        if !is_done {
+            inc_ref_bits(_py, task_bits);
+            out_bits.push(task_bits);
+        }
+    }
+
+    dec_ref_bits(_py, done_name_bits);
+    dec_ref_bits(_py, loop_name_bits);
+    let list_ptr = alloc_list(_py, out_bits.as_slice());
+    for bits in out_bits {
+        dec_ref_bits(_py, bits);
+    }
+    if list_ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        bits_from_ptr(list_ptr)
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn molt_asyncio_running_loop_get() -> u64 {
+    crate::with_gil_entry!(_py, { asyncio_running_loop_get_impl(_py) })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_asyncio_running_loop_set(loop_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { asyncio_running_loop_set_impl(_py, loop_bits) })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_asyncio_event_loop_get() -> u64 {
+    crate::with_gil_entry!(_py, { asyncio_event_loop_get_impl(_py) })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_asyncio_event_loop_set(loop_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { asyncio_event_loop_set_impl(_py, loop_bits) })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_asyncio_event_loop_policy_get() -> u64 {
+    crate::with_gil_entry!(_py, { asyncio_event_loop_policy_get_impl(_py) })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_asyncio_event_loop_policy_set(policy_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        asyncio_event_loop_policy_set_impl(_py, policy_bits)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_asyncio_task_registry_set(token_bits: u64, task_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        asyncio_task_registry_set_impl(_py, token_bits, task_bits)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_asyncio_task_registry_get(token_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { asyncio_task_registry_get_impl(_py, token_bits) })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_asyncio_task_registry_contains(token_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        asyncio_task_registry_contains_impl(_py, token_bits)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_asyncio_task_registry_current() -> u64 {
+    crate::with_gil_entry!(_py, { asyncio_task_registry_current_impl(_py) })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_asyncio_task_registry_current_for_loop(loop_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        asyncio_task_registry_current_for_loop_impl(_py, loop_bits)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_asyncio_task_registry_pop(token_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { asyncio_task_registry_pop_impl(_py, token_bits) })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_asyncio_task_registry_move(old_token_bits: u64, new_token_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        asyncio_task_registry_move_impl(_py, old_token_bits, new_token_bits)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_asyncio_task_registry_values() -> u64 {
+    crate::with_gil_entry!(_py, { asyncio_task_registry_values_impl(_py) })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_asyncio_event_waiters_register(token_bits: u64, waiter_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        asyncio_event_waiters_register_impl(_py, token_bits, waiter_bits)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_asyncio_event_waiters_unregister(token_bits: u64, waiter_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        asyncio_event_waiters_unregister_impl(_py, token_bits, waiter_bits)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_asyncio_event_waiters_cleanup_token(token_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        asyncio_event_waiters_cleanup_token_impl(_py, token_bits)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_asyncio_child_watcher_add(
+    callbacks_bits: u64,
+    pid_bits: u64,
+    callback_bits: u64,
+    args_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        asyncio_child_watcher_add_impl(_py, callbacks_bits, pid_bits, callback_bits, args_bits)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_asyncio_child_watcher_remove(callbacks_bits: u64, pid_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        asyncio_child_watcher_remove_impl(_py, callbacks_bits, pid_bits)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_asyncio_child_watcher_clear(callbacks_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        asyncio_child_watcher_clear_impl(_py, callbacks_bits)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_asyncio_child_watcher_pop(callbacks_bits: u64, pid_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        asyncio_child_watcher_pop_impl(_py, callbacks_bits, pid_bits)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn molt_asyncio_task_registry_live(loop_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { asyncio_task_registry_live_impl(_py, loop_bits) })
 }
 
 pub(crate) fn fn_ptr_code_set(_py: &PyToken<'_>, fn_ptr: u64, code_bits: u64) {

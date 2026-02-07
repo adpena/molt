@@ -1,11 +1,9 @@
-"""Pickle registry helpers for Molt."""
+"""Intrinsic-backed pickle registry helpers."""
 
 from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 from collections.abc import Callable
-
-_require_intrinsic("molt_stdlib_probe", globals())
 
 
 __all__ = [
@@ -17,76 +15,68 @@ __all__ = [
     "clear_extension_cache",
 ]
 
-dispatch_table: dict[type, Callable[[object], object]] = {}
-_extension_registry: dict[tuple[str, str], int] = {}
-_inverted_registry: dict[int, tuple[str, str]] = {}
-_extension_cache: dict[int, object] = {}
-_constructor_registry: set[Callable[..., object]] = set()
+_MOLT_COPYREG_BOOTSTRAP = _require_intrinsic("molt_copyreg_bootstrap", globals())
+_MOLT_COPYREG_PICKLE = _require_intrinsic("molt_copyreg_pickle", globals())
+_MOLT_COPYREG_CONSTRUCTOR = _require_intrinsic("molt_copyreg_constructor", globals())
+_MOLT_COPYREG_ADD_EXTENSION = _require_intrinsic(
+    "molt_copyreg_add_extension", globals()
+)
+_MOLT_COPYREG_REMOVE_EXTENSION = _require_intrinsic(
+    "molt_copyreg_remove_extension", globals()
+)
+_MOLT_COPYREG_CLEAR_EXTENSION_CACHE = _require_intrinsic(
+    "molt_copyreg_clear_extension_cache", globals()
+)
+
+_state = _MOLT_COPYREG_BOOTSTRAP()
+if not isinstance(_state, (tuple, list)) or len(_state) != 5:
+    raise RuntimeError("copyreg bootstrap intrinsic returned invalid state")
+
+dispatch_table = _state[0]
+_extension_registry = _state[1]
+_inverted_registry = _state[2]
+_extension_cache = _state[3]
+_constructor_registry = _state[4]
+if not isinstance(dispatch_table, dict):
+    raise RuntimeError("copyreg bootstrap intrinsic returned invalid dispatch table")
+if not isinstance(_extension_registry, dict):
+    raise RuntimeError(
+        "copyreg bootstrap intrinsic returned invalid extension registry"
+    )
+if not isinstance(_inverted_registry, dict):
+    raise RuntimeError("copyreg bootstrap intrinsic returned invalid inverted registry")
+if not isinstance(_extension_cache, dict):
+    raise RuntimeError("copyreg bootstrap intrinsic returned invalid extension cache")
+if not isinstance(_constructor_registry, set):
+    raise RuntimeError(
+        "copyreg bootstrap intrinsic returned invalid constructor registry"
+    )
 
 
 def pickle(
     cls: type,
-    reducer: Callable[[object], object] | None,
+    reducer: Callable[[object], object],
     constructor_func: Callable[..., object] | None = None,
 ) -> None:
-    if not isinstance(cls, type):
-        raise TypeError("pickle() argument 1 must be a type")
-    if reducer is None:
-        dispatch_table.pop(cls, None)
-    elif callable(reducer):
-        dispatch_table[cls] = reducer
-    else:
-        raise TypeError("pickle() argument 2 must be callable or None")
-    if constructor_func is not None:
-        constructor(constructor_func)
+    _MOLT_COPYREG_PICKLE(cls, reducer, constructor_func)
+    return None
 
 
-def constructor(func: Callable[..., object]) -> Callable[..., object]:
-    if not callable(func):
-        raise TypeError("constructor() argument must be callable")
-    _constructor_registry.add(func)
-    return func
-
-
-def _validate_extension_args(
-    module: object, name: object, code: object
-) -> tuple[str, str, int]:
-    if not isinstance(module, str) or not module:
-        raise ValueError("extension module name must be a non-empty string")
-    if not isinstance(name, str) or not name:
-        raise ValueError("extension name must be a non-empty string")
-    if not isinstance(code, int):
-        raise TypeError("extension code must be an int")
-    if code <= 0:
-        raise ValueError("extension code must be positive")
-    return module, name, code
+def constructor(func: Callable[..., object]) -> None:
+    _MOLT_COPYREG_CONSTRUCTOR(func)
+    return None
 
 
 def add_extension(module: str, name: str, code: int) -> None:
-    module, name, code = _validate_extension_args(module, name, code)
-    key = (module, name)
-    existing = _extension_registry.get(key)
-    if existing is not None and existing != code:
-        raise ValueError("extension already registered with a different code")
-    existing_key = _inverted_registry.get(code)
-    if existing_key is not None and existing_key != key:
-        raise ValueError("extension code already in use")
-    _extension_registry[key] = code
-    _inverted_registry[code] = key
+    _MOLT_COPYREG_ADD_EXTENSION(module, name, code)
+    return None
 
 
 def remove_extension(module: str, name: str, code: int) -> None:
-    module, name, code = _validate_extension_args(module, name, code)
-    key = (module, name)
-    existing = _extension_registry.get(key)
-    if existing is None:
-        raise ValueError("extension not registered")
-    if existing != code:
-        raise ValueError("extension code mismatch")
-    _extension_registry.pop(key, None)
-    _inverted_registry.pop(code, None)
-    _extension_cache.pop(code, None)
+    _MOLT_COPYREG_REMOVE_EXTENSION(module, name, code)
+    return None
 
 
 def clear_extension_cache() -> None:
-    _extension_cache.clear()
+    _MOLT_COPYREG_CLEAR_EXTENSION_CACHE()
+    return None

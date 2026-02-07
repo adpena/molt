@@ -3,7 +3,6 @@ use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
 use std::ptr;
 
-use libc;
 use molt_obj_model::MoltObject;
 
 use crate::object::ops::{format_obj_str, is_truthy, string_obj_to_owned};

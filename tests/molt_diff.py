@@ -224,6 +224,16 @@ def _diff_tmp_root() -> Path:
     return root
 
 
+def _diff_cargo_target_root() -> Path:
+    raw = os.environ.get("MOLT_DIFF_CARGO_TARGET_DIR", "").strip()
+    if raw:
+        root = Path(raw).expanduser()
+    else:
+        root = _diff_root() / "target"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def _diff_keep_artifacts() -> bool:
     raw = os.environ.get("MOLT_DIFF_KEEP", "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
@@ -674,6 +684,8 @@ def run_cpython(file_path, python_exe=sys.executable):
     python_exe = _resolve_python_exe(python_exe)
     _apply_memory_limit()
     env = os.environ.copy()
+    # Keep CPython baseline path resolution aligned with the Molt build/run env.
+    env["PYTHONPATH"] = "src"
     env["PYTHONHASHSEED"] = "0"
     env.update(_collect_env_overrides(file_path))
     bootstrap = "import runpy, sys; runpy.run_path(sys.argv[1], run_name='__main__')"
@@ -728,6 +740,7 @@ def _run_molt(file_path: str, *, build_only: bool) -> tuple[str | None, str, int
     env["TMPDIR"] = str(tmp_root)
     env["TEMP"] = str(tmp_root)
     env["TMP"] = str(tmp_root)
+    env.setdefault("CARGO_TARGET_DIR", str(_diff_cargo_target_root()))
     if "MOLT_TRUSTED" not in env and _diff_trusted_default():
         env["MOLT_TRUSTED"] = "1"
     env.update(_collect_env_overrides(file_path))
@@ -1054,6 +1067,7 @@ def run_diff(
         jobs = _default_jobs() if len(test_files) > 1 else 1
     run_id = _diff_run_id()
     os.environ["MOLT_DIFF_RUN_ID"] = run_id
+    os.environ.setdefault("CARGO_TARGET_DIR", str(_diff_cargo_target_root()))
     test_files = _order_test_files(test_files, jobs)
     if warm_cache:
         shared_cache = os.environ.get("MOLT_CACHE")
@@ -1206,6 +1220,7 @@ def run_diff(
             "mem_limit_bytes": _memory_limit_bytes(),
             "mem_per_job_gb": _parse_float_env("MOLT_DIFF_MEM_PER_JOB_GB") or 2.0,
             "order": os.environ.get("MOLT_DIFF_ORDER", "auto"),
+            "cargo_target_dir": os.environ.get("CARGO_TARGET_DIR", ""),
             "warm_cache": warm_cache,
             "retry_oom": retry_oom,
         },

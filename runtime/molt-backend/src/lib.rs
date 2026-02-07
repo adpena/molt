@@ -6582,7 +6582,7 @@ impl SimpleBackend {
                         *task_closure_sizes.get(func_name).unwrap_or(&0)
                     };
                     let mut func_sig = self.module.make_signature();
-                    if func_name.ends_with("_poll") {
+                    if kind != TrampolineKind::Plain {
                         func_sig.params.push(AbiParam::new(types::I64));
                     } else {
                         for _ in 0..arity {
@@ -6652,7 +6652,7 @@ impl SimpleBackend {
                     let closure_bits =
                         *var_get(&mut builder, &vars, closure_name).expect("closure arg not found");
                     let mut func_sig = self.module.make_signature();
-                    if func_name.ends_with("_poll") {
+                    if kind != TrampolineKind::Plain {
                         func_sig.params.push(AbiParam::new(types::I64));
                     } else {
                         func_sig.params.push(AbiParam::new(types::I64));

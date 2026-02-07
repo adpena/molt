@@ -72,6 +72,7 @@ extern "C" fn context_null_exit(_payload_bits: u64, _exc_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, { MoltObject::from_bool(false).bits() })
 }
 
+#[allow(dead_code)]
 extern "C" fn context_closing_enter(payload_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         inc_ref_bits(_py, payload_bits);
@@ -79,6 +80,7 @@ extern "C" fn context_closing_enter(payload_bits: u64) -> u64 {
     })
 }
 
+#[allow(dead_code)]
 extern "C" fn context_closing_exit(payload_bits: u64, _exc_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         close_payload(_py, payload_bits);
@@ -405,14 +407,6 @@ pub extern "C" fn molt_context_null(payload_bits: u64) -> u64 {
 
 #[no_mangle]
 pub extern "C" fn molt_context_closing(payload_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let enter_fn = context_closing_enter as *const ();
-        let exit_fn = context_closing_exit as *const ();
-        let ptr = alloc_context_manager(_py, enter_fn, exit_fn, payload_bits);
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        }
-    })
+    // Keep legacy lowering wired to contextlib semantics.
+    crate::molt_contextlib_closing(payload_bits)
 }

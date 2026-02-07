@@ -6,7 +6,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterator
 import warnings as _warnings
 
 _require_intrinsic("molt_stdlib_probe", globals())
@@ -63,7 +63,7 @@ UNICODE = 32
 VERBOSE = 64
 
 A = ASCII
-I = IGNORECASE
+I = IGNORECASE  # noqa: E741
 L = LOCALE
 M = MULTILINE
 S = DOTALL

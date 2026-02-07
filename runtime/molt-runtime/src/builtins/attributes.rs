@@ -290,6 +290,9 @@ unsafe fn classed_attr_lookup_without_dict_inner(
             class_attr_lookup(_py, class_ptr, class_ptr, Some(obj_ptr), getattr_bits)
         {
             let res_bits = call_callable1(_py, call_bits, attr_bits);
+            if exception_pending(_py) {
+                return None;
+            }
             return Some(res_bits);
         }
     }
@@ -1063,7 +1066,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                                 if !is_typing_param(_py, arg_bits) {
                                     continue;
                                 }
-                                if params.iter().any(|&existing| existing == arg_bits) {
+                                if params.contains(&arg_bits) {
                                     continue;
                                 }
                                 params.push(arg_bits);
@@ -1616,8 +1619,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
         return None;
     }
     if type_id == TYPE_ID_CODE {
-        // TODO(introspection, owner:runtime, milestone:TC2, priority:P2, status:partial):
-        // fill out remaining code object fields (co_linetable, co_freevars, co_cellvars, flags).
+        // Keep basic CPython-compatible code metadata available for inspect/types consumers.
         let name = string_obj_to_owned(obj_from_bits(attr_bits))?;
         match name.as_str() {
             "co_filename" => {
@@ -1653,6 +1655,13 @@ pub(crate) unsafe fn attr_lookup_ptr(
                 }
                 return Some(MoltObject::from_ptr(tuple_ptr).bits());
             }
+            "co_freevars" | "co_cellvars" => {
+                let tuple_ptr = alloc_tuple(_py, &[]);
+                if tuple_ptr.is_null() {
+                    return Some(MoltObject::none().bits());
+                }
+                return Some(MoltObject::from_ptr(tuple_ptr).bits());
+            }
             "co_argcount" => {
                 return Some(MoltObject::from_int(code_argcount(obj_ptr) as i64).bits());
             }
@@ -1671,8 +1680,14 @@ pub(crate) unsafe fn attr_lookup_ptr(
                 }
                 return Some(MoltObject::from_int(0).bits());
             }
+            "co_flags" => {
+                // Baseline CPython 3.12 flags for regular function code objects:
+                // CO_OPTIMIZED | CO_NEWLOCALS.
+                return Some(MoltObject::from_int(0x01 | 0x02).bits());
+            }
             "co_positions" => {
-                let func_ptr = alloc_function_obj(_py, crate::molt_code_positions as u64, 1);
+                let func_ptr =
+                    alloc_function_obj(_py, crate::molt_code_positions as usize as u64, 1);
                 if func_ptr.is_null() {
                     return Some(MoltObject::none().bits());
                 }
@@ -1909,6 +1924,9 @@ pub(crate) unsafe fn attr_lookup_ptr(
                                 getattr_bits,
                             ) {
                                 let res_bits = call_callable1(_py, call_bits, attr_bits);
+                                if exception_pending(_py) {
+                                    return None;
+                                }
                                 return Some(res_bits);
                             }
                         }
@@ -2004,11 +2022,24 @@ pub(crate) unsafe fn attr_lookup_ptr(
                         &runtime_state(_py).interned.getattribute_name,
                         b"__getattribute__",
                     );
-                    if !obj_eq(
-                        _py,
-                        obj_from_bits(attr_bits),
-                        obj_from_bits(getattribute_bits),
-                    ) {
+                    let getattribute_raw =
+                        class_attr_lookup_raw_mro(_py, class_ptr, getattribute_bits);
+                    let default_getattribute_bits = object_method_bits(_py, "__getattribute__");
+                    let use_custom_getattribute =
+                        match (getattribute_raw, default_getattribute_bits) {
+                            (Some(raw_bits), Some(default_bits)) => {
+                                !obj_eq(_py, obj_from_bits(raw_bits), obj_from_bits(default_bits))
+                            }
+                            (Some(_), None) => true,
+                            (None, _) => false,
+                        };
+                    if use_custom_getattribute
+                        && !obj_eq(
+                            _py,
+                            obj_from_bits(attr_bits),
+                            obj_from_bits(getattribute_bits),
+                        )
+                    {
                         if let Some(call_bits) = class_attr_lookup(
                             _py,
                             class_ptr,
@@ -2228,6 +2259,9 @@ pub(crate) unsafe fn attr_lookup_ptr(
                             getattr_bits,
                         ) {
                             let res_bits = call_callable1(_py, call_bits, attr_bits);
+                            if exception_pending(_py) {
+                                return None;
+                            }
                             return Some(res_bits);
                         }
                     }
@@ -3848,6 +3882,7 @@ unsafe fn dataclass_setattr_inner(
     )
 }
 
+#[allow(dead_code)]
 pub(crate) unsafe fn dataclass_setattr_raw(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,
@@ -4100,6 +4135,7 @@ unsafe fn dataclass_delattr_inner(
     )
 }
 
+#[allow(dead_code)]
 pub(crate) unsafe fn dataclass_delattr_raw(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,
@@ -4374,8 +4410,17 @@ pub extern "C" fn molt_get_attr_name_default(
             return raise_attr_name_type_error(_py, name_bits);
         };
         if exception_pending(_py) {
-            inc_ref_bits(_py, default_bits);
-            return default_bits;
+            let exc_bits = molt_exception_last();
+            if exception_is_attribute_error(_py, exc_bits) {
+                clear_exception(_py);
+                dec_ref_bits(_py, exc_bits);
+                inc_ref_bits(_py, default_bits);
+                return default_bits;
+            }
+            clear_exception(_py);
+            let _ = molt_raise(exc_bits);
+            dec_ref_bits(_py, exc_bits);
+            return MoltObject::none().bits();
         }
         unsafe {
             if object_type_id(name_ptr) != TYPE_ID_STRING {
@@ -4450,6 +4495,15 @@ pub extern "C" fn molt_has_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
             return raise_attr_name_type_error(_py, name_bits);
         };
         if exception_pending(_py) {
+            let exc_bits = molt_exception_last();
+            if exception_is_attribute_error(_py, exc_bits) {
+                clear_exception(_py);
+                dec_ref_bits(_py, exc_bits);
+                return MoltObject::from_bool(false).bits();
+            }
+            clear_exception(_py);
+            let _ = molt_raise(exc_bits);
+            dec_ref_bits(_py, exc_bits);
             return MoltObject::from_bool(false).bits();
         }
         unsafe {

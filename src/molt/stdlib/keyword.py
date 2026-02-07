@@ -6,9 +6,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 _keyword_lists = _require_intrinsic("molt_keyword_lists", globals())
 _is_keyword_intrinsic = _require_intrinsic("molt_keyword_iskeyword", globals())
-_is_soft_keyword_intrinsic = _require_intrinsic(
-    "molt_keyword_issoftkeyword", globals()
-)
+_is_soft_keyword_intrinsic = _require_intrinsic("molt_keyword_issoftkeyword", globals())
 
 __all__ = ["kwlist", "softkwlist", "iskeyword", "issoftkeyword"]
 

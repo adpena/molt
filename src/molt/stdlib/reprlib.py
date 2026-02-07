@@ -7,16 +7,10 @@ from itertools import islice
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_stdlib_probe", globals())
+_MOLT_REPRLIB_CAP_HAS = _require_intrinsic("molt_capabilities_has", globals())
+_MOLT_THREAD_CURRENT_IDENT = _require_intrinsic("molt_thread_current_ident", globals())
 
 __all__ = ["Repr", "repr", "recursive_repr"]
-
-try:
-    from _thread import get_ident as _get_ident
-except Exception:
-
-    def _get_ident() -> int:
-        return 0
 
 
 def recursive_repr(fillvalue="..."):
@@ -26,7 +20,7 @@ def recursive_repr(fillvalue="..."):
         repr_running = set()
 
         def wrapper(self):
-            key = id(self), _get_ident()
+            key = id(self), int(_MOLT_THREAD_CURRENT_IDENT())
             if key in repr_running:
                 return fillvalue
             repr_running.add(key)

@@ -37,20 +37,23 @@ def _iter_defs(text: str) -> list[str]:
     defs: list[str] = []
     buf: list[str] = []
     in_def = False
+    paren_depth = 0
     for raw in lines:
         line = raw.strip()
         if not in_def:
             if line.startswith("def "):
                 in_def = True
                 buf = [line]
-                if line.endswith("..."):
+                paren_depth = line.count("(") - line.count(")")
+                if paren_depth <= 0 and line.endswith("..."):
                     defs.append(" ".join(buf))
                     in_def = False
             continue
         if not line:
             continue
         buf.append(line)
-        if line.endswith("..."):
+        paren_depth += line.count("(") - line.count(")")
+        if paren_depth <= 0 and line.endswith("..."):
             defs.append(" ".join(buf))
             in_def = False
     if in_def:

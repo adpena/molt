@@ -115,6 +115,7 @@ stdlib:
   abc:
     tests:
       - tests/differential/basic/abc_basic.py
+      - tests/differential/basic/abc_update_abstractmethods_intrinsic.py
   ast:
     tests:
       - tests/differential/basic/ast_basic.py
@@ -130,9 +131,14 @@ stdlib:
       - tests/differential/basic/bytes_translate_maketrans.py
   contextlib:
     tests:
+      - tests/differential/basic/contextlib_aclosing.py
+      - tests/differential/basic/context_return_unwind_scope.py
+      - tests/differential/basic/contextlib_closing_failures.py
       - tests/differential/basic/contextlib_contextmanager_basic.py
       - tests/differential/basic/contextlib_exitstack.py
       - tests/differential/basic/contextlib_asynccontextmanager.py
+      - tests/differential/basic/contextlib_async_failures.py
+      - tests/differential/basic/contextlib_intrinsics_lowered.py
       - tests/differential/basic/test_support_captured_output.py
   contextvars:
     tests:
@@ -172,7 +178,7 @@ stdlib:
       - tests/differential/planned/gc_cycle_collector.py
   gettext:
     tests:
-      - tests/differential/planned/gettext_basic.py
+      - tests/differential/basic/gettext_basic.py
   glob:
     tests:
       - tests/differential/planned/glob_basic.py
@@ -207,7 +213,7 @@ stdlib:
       - tests/differential/basic/json_parse_hooks.py
   locale:
     tests:
-      - tests/differential/planned/locale_basic.py
+      - tests/differential/basic/locale_basic.py
   pickle:
     tests:
       - tests/differential/basic/pickle_basic.py
@@ -232,10 +238,12 @@ stdlib:
   select:
     tests:
       - tests/differential/basic/select_basic.py
-      - tests/differential/planned/select_poll_basic.py
+      - tests/differential/basic/select_backend_objects.py
+      - tests/differential/basic/select_poll_basic.py
   selectors:
     tests:
       - tests/differential/basic/selectors_basic.py
+      - tests/differential/basic/selectors_backend_classes.py
       - tests/differential/basic/selectors_error_cases.py
       - tests/differential/basic/selectors_fileobj_fileno_error.py
       - tests/differential/basic/selectors_key_data.py
@@ -274,7 +282,10 @@ stdlib:
   struct:
     tests:
       - tests/differential/basic/struct_basic.py
+      - tests/differential/basic/struct_errors_basic.py
       - tests/differential/basic/struct_layout_mutation.py
+      - tests/differential/basic/struct_memoryview_nested.py
+      - tests/differential/basic/struct_offsets_basic.py
       - tests/differential/basic/struct_pack_into_basic.py
   subprocess:
     tests:
@@ -728,6 +739,7 @@ stdlib:
   traceback:
     tests:
       - tests/differential/basic/traceback_chain.py
+      - tests/differential/basic/traceback_extract_tb_payload.py
       - tests/differential/basic/traceback_exception_object.py
       - tests/differential/basic/traceback_print_helpers.py
   warnings:
@@ -744,6 +756,15 @@ stdlib:
       - tests/differential/basic/test_support_import_helper_basic.py
   importlib:
     tests:
+      - tests/differential/basic/importlib_find_spec_path_intrinsic.py
+      - tests/differential/basic/importlib_metadata_dist_paths_intrinsic.py
+      - tests/differential/basic/importlib_metadata_payload_intrinsic.py
+      - tests/differential/basic/importlib_resources_open_intrinsic.py
+      - tests/differential/basic/importlib_resources_namespace_paths_intrinsic.py
+      - tests/differential/basic/importlib_resources_traversable_payload_intrinsic.py
+      - tests/differential/basic/importlib_sourcefileloader_get_data_intrinsic.py
+      - tests/differential/basic/importlib_sourcefileloader_resolution.py
+      - tests/differential/basic/importlib_spec_from_file_location_payload.py
       - tests/differential/planned/importlib_import_module_basic.py
       - tests/differential/planned/importlib_util_spec_module.py
       - tests/differential/planned/importlib_util_exec_module.py

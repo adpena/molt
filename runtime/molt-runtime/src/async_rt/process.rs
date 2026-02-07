@@ -73,7 +73,7 @@ fn stdio_from_fd(fd: i32) -> Option<Stdio> {
             return None;
         }
         let file = unsafe { std::fs::File::from_raw_fd(duped) };
-        return Some(Stdio::from(file));
+        Some(Stdio::from(file))
     }
     #[cfg(windows)]
     {

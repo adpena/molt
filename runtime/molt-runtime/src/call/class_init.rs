@@ -128,10 +128,8 @@ unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
         || size < reserved_tail
         || !own_has_offsets
         || size < max_end.saturating_add(reserved_tail);
-    if needs_recompute {
-        if max_end != 0 {
-            size = size.max(max_end.saturating_add(reserved_tail));
-        }
+    if needs_recompute && max_end != 0 {
+        size = size.max(max_end.saturating_add(reserved_tail));
     }
     if size == 0 {
         size = reserved_tail.max(std::mem::size_of::<u64>());
@@ -266,6 +264,18 @@ pub(crate) unsafe fn call_class_init_with_args(
             return raise_exception::<_>(_py, "TypeError", "ellipsis takes no arguments");
         }
         return ellipsis_bits(_py);
+    }
+    let abstract_name_bits = intern_static_name(
+        _py,
+        &runtime_state(_py).interned.abstractmethods_name,
+        b"__abstractmethods__",
+    );
+    if let Some(abstract_bits) = class_attr_lookup_raw_mro(_py, class_ptr, abstract_name_bits) {
+        if !obj_from_bits(abstract_bits).is_none() && is_truthy(_py, obj_from_bits(abstract_bits)) {
+            let class_name = class_name_for_error(class_bits);
+            let msg = format!("Can't instantiate abstract class {class_name}");
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        }
     }
     if issubclass_bits(class_bits, builtins.base_exception) {
         let new_name_bits =

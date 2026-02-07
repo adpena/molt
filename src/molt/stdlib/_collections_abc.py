@@ -47,7 +47,7 @@ def cast(_tp, value):  # type: ignore[override]
     return value
 
 
-_require_intrinsic("molt_stdlib_probe", globals())
+_MOLT_ABC_BOOTSTRAP = _require_intrinsic("molt_abc_bootstrap", globals())
 
 
 GenericAlias = type(list[int])
@@ -103,65 +103,77 @@ __name__ = "collections.abc"
 # Note:  in other implementations, these types might not be distinct
 # and they may have their own implementation specific types that
 # are not included on this list.
-bytes_iterator = type(iter(b""))
-bytearray_iterator = type(iter(bytearray()))
-# callable_iterator = ???
-dict_keyiterator = type(iter({}.keys()))
-dict_valueiterator = type(iter({}.values()))
-dict_itemiterator = type(iter({}.items()))
-list_iterator = type(iter([]))
-list_reverseiterator = type(iter(reversed([])))
-range_iterator = type(iter(range(0)))
-longrange_iterator = type(iter(range(1 << 1000)))
-set_iterator = type(iter(set()))
-str_iterator = type(iter(""))
-tuple_iterator = type(iter(()))
-zip_iterator = type(iter(zip()))
-## views ##
-dict_keys = type({}.keys())
-dict_values = type({}.values())
-dict_items = type({}.items())
-## misc ##
-mappingproxy = type(type.__dict__)
+_MOLT_COLLECTIONS_ABC_RUNTIME_TYPES = _require_intrinsic(
+    "molt_collections_abc_runtime_types", globals()
+)
+_RUNTIME_TYPE_NAMES = (
+    "bytes_iterator",
+    "bytearray_iterator",
+    "dict_keyiterator",
+    "dict_valueiterator",
+    "dict_itemiterator",
+    "list_iterator",
+    "list_reverseiterator",
+    "range_iterator",
+    "longrange_iterator",
+    "set_iterator",
+    "str_iterator",
+    "tuple_iterator",
+    "zip_iterator",
+    "dict_keys",
+    "dict_values",
+    "dict_items",
+    "mappingproxy",
+    "framelocalsproxy",
+    "generator",
+    "coroutine",
+    "async_generator",
+)
+_runtime_type_payload = _MOLT_COLLECTIONS_ABC_RUNTIME_TYPES()
+if not isinstance(_runtime_type_payload, dict):
+    raise RuntimeError(
+        "collections.abc lowering expected dict payload from "
+        "molt_collections_abc_runtime_types"
+    )
+_missing_runtime_type_names = [
+    _name for _name in _RUNTIME_TYPE_NAMES if _name not in _runtime_type_payload
+]
+if _missing_runtime_type_names:
+    raise RuntimeError(
+        "collections.abc lowering payload missing required types: "
+        + ", ".join(_missing_runtime_type_names)
+    )
+bytes_iterator = cast(type[Any], _runtime_type_payload["bytes_iterator"])
+bytearray_iterator = cast(type[Any], _runtime_type_payload["bytearray_iterator"])
+dict_keyiterator = cast(type[Any], _runtime_type_payload["dict_keyiterator"])
+dict_valueiterator = cast(type[Any], _runtime_type_payload["dict_valueiterator"])
+dict_itemiterator = cast(type[Any], _runtime_type_payload["dict_itemiterator"])
+list_iterator = cast(type[Any], _runtime_type_payload["list_iterator"])
+list_reverseiterator = cast(type[Any], _runtime_type_payload["list_reverseiterator"])
+range_iterator = cast(type[Any], _runtime_type_payload["range_iterator"])
+longrange_iterator = cast(type[Any], _runtime_type_payload["longrange_iterator"])
+set_iterator = cast(type[Any], _runtime_type_payload["set_iterator"])
+str_iterator = cast(type[Any], _runtime_type_payload["str_iterator"])
+tuple_iterator = cast(type[Any], _runtime_type_payload["tuple_iterator"])
+zip_iterator = cast(type[Any], _runtime_type_payload["zip_iterator"])
+dict_keys = cast(type[Any], _runtime_type_payload["dict_keys"])
+dict_values = cast(type[Any], _runtime_type_payload["dict_values"])
+dict_items = cast(type[Any], _runtime_type_payload["dict_items"])
+mappingproxy = cast(type[Any], _runtime_type_payload["mappingproxy"])
+framelocalsproxy = cast(type[Any], _runtime_type_payload["framelocalsproxy"])
+generator = cast(type[Any], _runtime_type_payload["generator"])
+coroutine = cast(type[Any], _runtime_type_payload["coroutine"])
+async_generator = cast(type[Any], _runtime_type_payload["async_generator"])
 
-
-def _get_framelocalsproxy():
-    getframe = getattr(sys, "_getframe", None)
-    if getframe is None:
-        raise AttributeError("sys._getframe unavailable")
-    frame = getframe()
-    if frame is None:
-        raise RuntimeError("sys._getframe returned None")
-    return type(frame.f_locals)
-
-
-try:
-    framelocalsproxy = _get_framelocalsproxy()
-except Exception:
-    framelocalsproxy = dict
-del _get_framelocalsproxy
-generator = type((lambda: (yield))())
-
-
-## coroutine ##
-async def _coro():
-    pass
-
-
-_coro = _coro()
-coroutine = type(_coro)
-_coro.close()  # Prevent ResourceWarning
-del _coro
-
-
-## asynchronous generator ##
-async def _ag():
-    yield
-
-
-_ag = _ag()
-async_generator = type(_ag)
-del _ag
+for _name in _RUNTIME_TYPE_NAMES:
+    _value = _runtime_type_payload[_name]
+    if not isinstance(_value, type):
+        raise RuntimeError(
+            "collections.abc lowering payload entry " + repr(_name) + " must be a type"
+        )
+del _missing_runtime_type_names
+del _runtime_type_payload
+del _RUNTIME_TYPE_NAMES
 
 
 ### ONE-TRICK PONIES ###

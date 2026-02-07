@@ -4,19 +4,25 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-
 import sys
-from typing import Any
+
+Any = object
 
 _require_intrinsic("molt_stdlib_probe", globals())
-_MOLT_TRACEBACK_SOURCE_LINE = _require_intrinsic(
-    "molt_traceback_source_line", globals()
-)
+_MOLT_TRACEBACK_PAYLOAD = _require_intrinsic("molt_traceback_payload", globals())
 _MOLT_TRACEBACK_FORMAT_EXCEPTION_ONLY = _require_intrinsic(
     "molt_traceback_format_exception_only", globals()
 )
+_MOLT_TRACEBACK_FORMAT_EXCEPTION = _require_intrinsic(
+    "molt_traceback_format_exception", globals()
+)
 _MOLT_TRACEBACK_FORMAT_TB = _require_intrinsic("molt_traceback_format_tb", globals())
-_MOLT_TRACEBACK_EXTRACT_TB = _require_intrinsic("molt_traceback_extract_tb", globals())
+_MOLT_TRACEBACK_FORMAT_STACK = _require_intrinsic(
+    "molt_traceback_format_stack", globals()
+)
+_MOLT_TRACEBACK_EXCEPTION_COMPONENTS = _require_intrinsic(
+    "molt_traceback_exception_components", globals()
+)
 
 
 __all__ = [
@@ -38,21 +44,6 @@ __all__ = [
     "TracebackException",
 ]
 
-_CHAIN_CAUSE = (
-    "The above exception was the direct cause of the following exception:\n\n"
-)
-_CHAIN_CONTEXT = (
-    "During handling of the above exception, another exception occurred:\n\n"
-)
-
-
-def _exc_name(exc_type: Any, value: Any) -> str:
-    if exc_type is None and value is not None:
-        exc_type = type(value)
-    if exc_type is None:
-        return "Exception"
-    return getattr(exc_type, "__name__", str(exc_type))
-
 
 def format_exception_only(exc_type: Any, value: Any) -> list[str]:
     lines = _MOLT_TRACEBACK_FORMAT_EXCEPTION_ONLY(exc_type, value)
@@ -63,108 +54,10 @@ def format_exception_only(exc_type: Any, value: Any) -> list[str]:
     return list(lines)
 
 
-def _split_molt_symbol(name: str) -> tuple[str, str]:
-    if "__" in name:
-        module_hint, func = name.split("__", 1)
-        if module_hint:
-            return f"<molt:{module_hint}>", func or name
-    return "<molt>", name
-
-
-def _extract_tb_info(entry: Any) -> tuple[str, int, str] | None:
-    frame = getattr(entry, "tb_frame", None)
-    lineno = getattr(entry, "tb_lineno", None)
-    if frame is not None and lineno is not None:
-        code = getattr(frame, "f_code", None)
-        filename = getattr(code, "co_filename", "<unknown>") if code else "<unknown>"
-        name = getattr(code, "co_name", "<module>") if code else "<module>"
-        return str(filename), int(lineno), str(name)
-    filename = getattr(entry, "filename", None)
-    lineno = getattr(entry, "lineno", None)
-    if filename is not None and lineno is not None:
-        name = getattr(entry, "name", "<module>")
-        return str(filename), int(lineno), str(name)
-    if isinstance(entry, dict):
-        if "filename" in entry and "lineno" in entry:
-            name = entry.get("name", "<module>")
-            return str(entry["filename"]), int(entry["lineno"]), str(name)
-    if isinstance(entry, (tuple, list)):
-        if not entry:
-            return None
-        if len(entry) == 1:
-            return _extract_tb_info(entry[0])
-        if len(entry) == 2:
-            first, second = entry
-            if isinstance(first, str) and isinstance(second, int):
-                return first, int(second), "<module>"
-            if isinstance(second, str) and isinstance(first, int):
-                return second, int(first), "<module>"
-            if isinstance(first, str) and isinstance(second, str):
-                filename, name = _split_molt_symbol(first)
-                return filename, 0, name
-        if len(entry) >= 3:
-            first, second, third = entry[0], entry[1], entry[2]
-            if isinstance(second, int):
-                return str(first), int(second), str(third)
-            if isinstance(third, int):
-                return str(second), int(third), str(first)
-    if isinstance(entry, str):
-        filename, name = _split_molt_symbol(entry)
-        return filename, 0, name
-    return None
-
-
-def _format_tb_entry(tb: Any) -> str:
-    info = _extract_tb_info(tb)
-    if info is None:
-        return "<traceback>\n"
-    filename, lineno, name = info
-    return f'  File "{filename}", line {lineno}, in {name}\n'
-
-
-def _get_source_line(filename: str, lineno: int) -> str:
-    if lineno <= 0:
-        return ""
-    try:
-        line = _MOLT_TRACEBACK_SOURCE_LINE(filename, int(lineno))
-    except Exception:
-        return ""
-    if not isinstance(line, str):
-        return ""
-    return line
-
-
-def _infer_col_offsets(line: str) -> tuple[int, int]:
-    if not line:
-        return 0, 0
-    stripped = line.lstrip()
-    indent = len(line) - len(stripped)
-    if stripped.startswith("return "):
-        col = indent + len("return ")
-    else:
-        col = indent
-    end = len(line)
-    return col, end
-
-
-def _format_caret_line(line: str, colno: int, end_colno: int) -> str:
-    if not line:
-        return ""
-    if colno < 0:
-        return ""
-    text_len = len(line)
-    if text_len <= 0:
-        return ""
-    if end_colno < colno:
-        end_colno = colno
-    if colno > text_len:
-        colno = text_len
-    if end_colno > text_len:
-        end_colno = text_len
-    width = end_colno - colno
-    if width <= 0:
-        width = 1
-    return "    " + (" " * colno) + ("^" * width) + "\n"
+def _validate_string_list(value: Any, label: str) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(line, str) for line in value):
+        raise RuntimeError(f"{label} returned invalid value")
+    return list(value)
 
 
 class FrameSummary:
@@ -188,43 +81,107 @@ class FrameSummary:
         self.line = line
 
 
+def _frame_payload_entries(frames: list[FrameSummary]) -> list[tuple[Any, ...]]:
+    return [
+        (
+            frame.filename,
+            frame.lineno,
+            frame.end_lineno,
+            frame.colno,
+            frame.end_colno,
+            frame.name,
+            frame.line,
+        )
+        for frame in frames
+    ]
+
+
+def _payload_to_frames(payload: Any, label: str) -> list[FrameSummary]:
+    if not isinstance(payload, list):
+        raise RuntimeError(f"{label} returned invalid value")
+    frames: list[FrameSummary] = []
+    for entry in payload:
+        if not isinstance(entry, (tuple, list)) or len(entry) < 7:
+            raise RuntimeError(f"{label} returned invalid value")
+        filename = str(entry[0])
+        lineno = int(entry[1])
+        end_lineno = int(entry[2])
+        colno = int(entry[3])
+        end_colno = int(entry[4])
+        name = str(entry[5])
+        line = "" if entry[6] is None else str(entry[6])
+        frames.append(
+            FrameSummary(
+                filename=filename,
+                lineno=lineno,
+                end_lineno=end_lineno,
+                colno=colno,
+                end_colno=end_colno,
+                name=name,
+                line=line,
+            )
+        )
+    return frames
+
+
+def _payload_frames(source: Any, limit: int | None) -> list[FrameSummary]:
+    payload = _MOLT_TRACEBACK_PAYLOAD(source, limit)
+    return _payload_to_frames(payload, "traceback payload intrinsic")
+
+
+def _exception_components_payload(
+    exc: BaseException, limit: int | None
+) -> tuple[list[Any], Any, Any, bool]:
+    payload = _MOLT_TRACEBACK_EXCEPTION_COMPONENTS(exc, limit)
+    if not isinstance(payload, (tuple, list)) or len(payload) != 4:
+        raise RuntimeError(
+            "traceback exception components intrinsic returned invalid value"
+        )
+    frames_payload = payload[0]
+    cause = payload[1]
+    context = payload[2]
+    suppress_context = payload[3]
+    if not isinstance(frames_payload, list):
+        raise RuntimeError(
+            "traceback exception components intrinsic returned invalid frames payload"
+        )
+    if cause is not None and not isinstance(cause, BaseException):
+        raise RuntimeError(
+            "traceback exception components intrinsic returned invalid cause payload"
+        )
+    if context is not None and not isinstance(context, BaseException):
+        raise RuntimeError(
+            "traceback exception components intrinsic returned invalid context payload"
+        )
+    if not isinstance(suppress_context, bool):
+        raise RuntimeError(
+            "traceback exception components intrinsic returned invalid suppress flag"
+        )
+    return frames_payload, cause, context, suppress_context
+
+
 class StackSummary:
-    def __init__(self, frames: list[FrameSummary]) -> None:
+    def __init__(
+        self,
+        frames: list[FrameSummary],
+        source: Any | None = None,
+        limit: int | None = None,
+    ) -> None:
         self._frames = list(frames)
+        self._source = (
+            source if source is not None else _frame_payload_entries(self._frames)
+        )
+        self._limit = limit
 
     @classmethod
-    def extract(cls, tb: Any, limit: int | None = None) -> "StackSummary":
-        frames: list[FrameSummary] = []
-        if isinstance(tb, (tuple, list)):
-            for entry in tb:
-                frame = _frame_summary_from_entry(entry)
-                if frame is not None:
-                    frames.append(frame)
-                if limit is not None and len(frames) >= limit:
-                    break
-        else:
-            extracted = _MOLT_TRACEBACK_EXTRACT_TB(tb, limit)
-            if isinstance(extracted, list):
-                for entry in extracted:
-                    frame = _frame_summary_from_entry(entry)
-                    if frame is not None:
-                        frames.append(frame)
-            else:
-                while tb is not None:
-                    frames.append(_frame_summary_from_tb(tb))
-                    tb = getattr(tb, "tb_next", None)
-                if limit is not None:
-                    frames = frames[:limit]
-        return cls(frames)
+    def extract(cls, source: Any, limit: int | None = None) -> "StackSummary":
+        return cls(_payload_frames(source, limit), source=source, limit=limit)
 
     @classmethod
     def from_list(cls, extracted_list: list[Any]) -> "StackSummary":
-        frames: list[FrameSummary] = []
-        for entry in extracted_list:
-            frame = _frame_summary_from_entry(entry)
-            if frame is not None:
-                frames.append(frame)
-        return cls(frames)
+        return cls(
+            _payload_frames(extracted_list, None), source=extracted_list, limit=None
+        )
 
     def __iter__(self):
         return iter(self._frames)
@@ -236,107 +193,8 @@ class StackSummary:
         return self._frames[index]
 
     def format(self) -> list[str]:
-        lines: list[str] = []
-        for frame in self._frames:
-            lines.append(
-                f'  File "{frame.filename}", line {frame.lineno}, in {frame.name}\n'
-            )
-            if frame.line:
-                lines.append(f"    {frame.line}\n")
-                caret = _format_caret_line(frame.line, frame.colno, frame.end_colno)
-                if caret:
-                    lines.append(caret)
-        return lines
-
-
-def _frame_summary_from_frame(frame: Any) -> FrameSummary:
-    code = getattr(frame, "f_code", None)
-    filename = getattr(code, "co_filename", "<unknown>") if code else "<unknown>"
-    name = getattr(code, "co_name", "<module>") if code else "<module>"
-    lineno = getattr(frame, "f_lineno", 0) or 0
-    line = _get_source_line(str(filename), int(lineno)) if lineno else ""
-    colno, end_colno = _infer_col_offsets(line)
-    return FrameSummary(
-        filename=str(filename),
-        lineno=int(lineno),
-        end_lineno=int(lineno),
-        colno=colno,
-        end_colno=end_colno,
-        name=str(name),
-        line=line,
-    )
-
-
-def _frame_summary_from_tb(tb: Any) -> FrameSummary:
-    frame = getattr(tb, "tb_frame", None)
-    lineno = getattr(tb, "tb_lineno", None)
-    if lineno is None:
-        lineno = 0
-    filename = "<unknown>"
-    name = "<module>"
-    if frame is not None:
-        code = getattr(frame, "f_code", None)
-        if code is not None:
-            filename = getattr(code, "co_filename", filename)
-            name = getattr(code, "co_name", name)
-    line = _get_source_line(str(filename), int(lineno)) if lineno else ""
-    colno, end_colno = _infer_col_offsets(line)
-    return FrameSummary(
-        filename=str(filename),
-        lineno=int(lineno),
-        end_lineno=int(lineno),
-        colno=colno,
-        end_colno=end_colno,
-        name=str(name),
-        line=line,
-    )
-
-
-def _frame_summary_from_entry(entry: Any) -> FrameSummary | None:
-    if isinstance(entry, FrameSummary):
-        return entry
-    if isinstance(entry, (tuple, list)) and len(entry) >= 7:
-        filename, lineno = entry[0], entry[1]
-        end_lineno, colno, end_colno = entry[2], entry[3], entry[4]
-        name, line = entry[5], entry[6]
-        text = "" if line is None else str(line)
-        return FrameSummary(
-            filename=str(filename),
-            lineno=int(lineno),
-            end_lineno=int(end_lineno),
-            colno=int(colno),
-            end_colno=int(end_colno),
-            name=str(name),
-            line=text,
-        )
-    if isinstance(entry, (tuple, list)) and len(entry) >= 4:
-        filename, lineno, name, line = entry[0], entry[1], entry[2], entry[3]
-        text = "" if line is None else str(line)
-        colno, end_colno = _infer_col_offsets(text)
-        return FrameSummary(
-            filename=str(filename),
-            lineno=int(lineno),
-            end_lineno=int(lineno),
-            colno=colno,
-            end_colno=end_colno,
-            name=str(name),
-            line=text,
-        )
-    info = _extract_tb_info(entry)
-    if info is None:
-        return None
-    filename, lineno, name = info
-    line = _get_source_line(filename, lineno) if lineno else ""
-    colno, end_colno = _infer_col_offsets(line)
-    return FrameSummary(
-        filename=str(filename),
-        lineno=int(lineno),
-        end_lineno=int(lineno),
-        colno=colno,
-        end_colno=end_colno,
-        name=str(name),
-        line=line,
-    )
+        lines = _MOLT_TRACEBACK_FORMAT_STACK(self._source, self._limit)
+        return _validate_string_list(lines, "traceback format stack intrinsic")
 
 
 class TracebackException:
@@ -364,145 +222,71 @@ class TracebackException:
             if key in seen:
                 return cls(current, StackSummary([]))
             seen.add(key)
-            tb = getattr(current, "__traceback__", None)
-            stack = StackSummary.extract(tb, limit)
+            frames_payload, cause, context, suppress_context = (
+                _exception_components_payload(current, limit)
+            )
+            stack = StackSummary(
+                _payload_to_frames(
+                    frames_payload, "traceback exception components intrinsic"
+                ),
+                source=frames_payload,
+                limit=None,
+            )
             current_exc = cls(current, stack)
-            cause = getattr(current, "__cause__", None)
             if cause is not None:
                 current_exc.__cause__ = _convert(cause)
-            context = getattr(current, "__context__", None)
             if context is not None:
                 current_exc.__context__ = _convert(context)
-            current_exc.__suppress_context__ = bool(
-                getattr(current, "__suppress_context__", False)
-            )
+            current_exc.__suppress_context__ = suppress_context
             return current_exc
 
         return _convert(exc)
 
     def format(self, *, chain: bool = True) -> list[str]:
-        seen: set[int] = set()
-
-        def _format_one(current: TracebackException) -> list[str]:
+        if self._exc is None:
             lines: list[str] = []
-            if len(current.stack):
+            if len(self.stack):
                 lines.append("Traceback (most recent call last):\n")
-                lines.extend(current.stack.format())
-            lines.extend(format_exception_only(current.exc_type, current._exc))
+                lines.extend(self.stack.format())
+            lines.extend(format_exception_only(self.exc_type, self._exc))
             return lines
-
-        def _format_chain(current: TracebackException) -> list[str]:
-            key = id(current)
-            if key in seen:
-                return _format_one(current)
-            seen.add(key)
-            lines: list[str] = []
-            if chain:
-                if current.__cause__ is not None:
-                    lines.extend(_format_chain(current.__cause__))
-                    lines.append(_CHAIN_CAUSE)
-                elif (
-                    current.__context__ is not None and not current.__suppress_context__
-                ):
-                    lines.extend(_format_chain(current.__context__))
-                    lines.append(_CHAIN_CONTEXT)
-            lines.extend(_format_one(current))
-            return lines
-
-        return _format_chain(self)
+        lines = _MOLT_TRACEBACK_FORMAT_EXCEPTION(
+            self.exc_type, self._exc, None, None, bool(chain)
+        )
+        return _validate_string_list(lines, "traceback format exception intrinsic")
 
 
 def format_tb(tb: Any, limit: int | None = None) -> list[str]:
     lines = _MOLT_TRACEBACK_FORMAT_TB(tb, limit)
-    if not isinstance(lines, list) or not all(isinstance(line, str) for line in lines):
-        raise RuntimeError("traceback format_tb intrinsic returned invalid value")
-    return list(lines)
+    return _validate_string_list(lines, "traceback format tb intrinsic")
 
 
 def extract_tb(tb: Any, limit: int | None = None) -> StackSummary:
-    extracted = _MOLT_TRACEBACK_EXTRACT_TB(tb, limit)
-    if not isinstance(extracted, list):
-        raise RuntimeError("traceback extract_tb intrinsic returned invalid value")
-    return StackSummary.from_list(extracted)
+    payload = _MOLT_TRACEBACK_PAYLOAD(tb, limit)
+    return StackSummary(
+        _payload_to_frames(payload, "traceback payload intrinsic"),
+        source=payload,
+        limit=None,
+    )
 
 
 def format_list(extracted_list: list[Any]) -> list[str]:
+    if isinstance(extracted_list, StackSummary):
+        return extracted_list.format()
     return StackSummary.from_list(extracted_list).format()
 
 
 def extract_stack(f: Any | None = None, limit: int | None = None) -> StackSummary:
     if f is None:
         getter = getattr(sys, "_getframe", None)
-        if getter is None:
-            return StackSummary([])
+        if not callable(getter):
+            raise RuntimeError("sys._getframe is unavailable")
         f = getter(1)
-    stack: list[FrameSummary] = []
-    while f is not None:
-        stack.append(_frame_summary_from_frame(f))
-        f = getattr(f, "f_back", None)
-    stack.reverse()
-    if limit is not None:
-        stack = stack[-limit:]
-    return StackSummary(stack)
+    return StackSummary.extract(f, limit)
 
 
 def format_stack(f: Any | None = None, limit: int | None = None) -> list[str]:
     return extract_stack(f, limit).format()
-
-
-def _format_exception_single(
-    exc_type: Any, value: Any, tb: Any, limit: int | None
-) -> list[str]:
-    lines: list[str] = []
-    if tb is not None:
-        lines.append("Traceback (most recent call last):\n")
-        lines.extend(format_tb(tb, limit))
-    lines.extend(format_exception_only(exc_type, value))
-    return lines
-
-
-def _format_exception_chain(
-    exc_type: Any,
-    value: Any,
-    tb: Any,
-    limit: int | None,
-    chain: bool,
-    seen: set[int],
-) -> list[str]:
-    if value is None or not chain:
-        return _format_exception_single(exc_type, value, tb, limit)
-    key = id(value)
-    if key in seen:
-        return _format_exception_single(exc_type, value, tb, limit)
-    seen.add(key)
-    cause = getattr(value, "__cause__", None)
-    if cause is not None:
-        lines = _format_exception_chain(
-            type(cause),
-            cause,
-            getattr(cause, "__traceback__", None),
-            limit,
-            chain,
-            seen,
-        )
-        lines.append(_CHAIN_CAUSE)
-        lines.extend(_format_exception_single(exc_type, value, tb, limit))
-        return lines
-    context = getattr(value, "__context__", None)
-    suppress = bool(getattr(value, "__suppress_context__", False))
-    if context is not None and not suppress:
-        lines = _format_exception_chain(
-            type(context),
-            context,
-            getattr(context, "__traceback__", None),
-            limit,
-            chain,
-            seen,
-        )
-        lines.append(_CHAIN_CONTEXT)
-        lines.extend(_format_exception_single(exc_type, value, tb, limit))
-        return lines
-    return _format_exception_single(exc_type, value, tb, limit)
 
 
 def format_exception(
@@ -512,7 +296,8 @@ def format_exception(
     limit: int | None = None,
     chain: bool = True,
 ) -> list[str]:
-    return _format_exception_chain(exc_type, value, tb, limit, chain, seen=set())
+    lines = _MOLT_TRACEBACK_FORMAT_EXCEPTION(exc_type, value, tb, limit, bool(chain))
+    return _validate_string_list(lines, "traceback format exception intrinsic")
 
 
 def print_exception(
@@ -543,7 +328,9 @@ def print_stack(
 ) -> None:
     if f is None:
         getter = getattr(sys, "_getframe", None)
-        f = getter().f_back if callable(getter) else None
+        if not callable(getter):
+            raise RuntimeError("sys._getframe is unavailable")
+        f = getter(1)
     out = "".join(format_stack(f, limit))
     if file is not None and hasattr(file, "write"):
         file.write(out)

@@ -8,10 +8,7 @@ from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 
-try:
-    from typing import TYPE_CHECKING
-except Exception:
-    TYPE_CHECKING = False
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from typing import Any, Callable

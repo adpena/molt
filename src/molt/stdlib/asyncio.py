@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import builtins as _builtins
 from collections import deque as _deque
 import heapq as _heapq
-import inspect as _inspect
+import logging as _logging
 import os as _os
 import sys as _sys
 import time as _time
@@ -167,7 +167,255 @@ if TYPE_CHECKING:
     def molt_future_cancel(_future: Any) -> None:
         raise NotImplementedError
 
+    def molt_asyncio_wait_for_new(_future: Any, _timeout: Any | None = None) -> Any:
+        raise NotImplementedError
+
+    def molt_asyncio_wait_new(
+        _tasks: Any, _timeout: Any | None = None, _return_when: int = 0
+    ) -> Any:
+        raise NotImplementedError
+
+    def molt_asyncio_gather_new(_tasks: Any, _return_exceptions: bool = False) -> Any:
+        raise NotImplementedError
+
+    def molt_asyncio_cancel_pending(_tasks: Any) -> int:
+        raise NotImplementedError
+
+    def molt_asyncio_ready_batch_run(_handles: Any) -> int:
+        raise NotImplementedError
+
+    def molt_asyncio_ready_queue_drain(_ready_lock: Any, _ready: Any) -> int:
+        raise NotImplementedError
+
+    def molt_asyncio_waiters_notify(
+        _waiters: Any, _count: int = 1, _result: Any = True
+    ) -> int:
+        raise NotImplementedError
+
+    def molt_asyncio_waiters_notify_exception(
+        _waiters: Any, _count: int = 1, _exc: Any = None
+    ) -> int:
+        raise NotImplementedError
+
+    def molt_asyncio_waiters_remove(_waiters: Any, _waiter: Any) -> bool:
+        raise NotImplementedError
+
+    def molt_asyncio_barrier_release(_waiters: Any) -> int:
+        raise NotImplementedError
+
+    def molt_asyncio_future_transfer(_source: Any, _target: Any) -> bool:
+        raise NotImplementedError
+
+    def molt_asyncio_event_waiters_cleanup(_waiters: Any) -> int:
+        raise NotImplementedError
+
+    def molt_asyncio_task_registry_set(_token_id: int, _task: Any | None) -> None:
+        raise NotImplementedError
+
+    def molt_asyncio_task_registry_get(_token_id: int) -> Any | None:
+        raise NotImplementedError
+
+    def molt_asyncio_task_registry_contains(_token_id: int) -> bool:
+        raise NotImplementedError
+
+    def molt_asyncio_task_registry_current() -> Any | None:
+        raise NotImplementedError
+
+    def molt_asyncio_task_registry_current_for_loop(
+        _loop: Any | None = None,
+    ) -> Any | None:
+        raise NotImplementedError
+
+    def molt_asyncio_task_registry_pop(_token_id: int) -> Any | None:
+        raise NotImplementedError
+
+    def molt_asyncio_task_registry_move(_old_token_id: int, _new_token_id: int) -> bool:
+        raise NotImplementedError
+
+    def molt_asyncio_task_registry_values() -> Any:
+        raise NotImplementedError
+
+    def molt_asyncio_task_registry_live(_loop: Any | None = None) -> Any:
+        raise NotImplementedError
+
+    def molt_asyncio_event_waiters_register(_token_id: int, _waiter: Any) -> None:
+        raise NotImplementedError
+
+    def molt_asyncio_event_waiters_unregister(_token_id: int, _waiter: Any) -> bool:
+        raise NotImplementedError
+
+    def molt_asyncio_event_waiters_cleanup_token(_token_id: int) -> int:
+        raise NotImplementedError
+
+    def molt_asyncio_child_watcher_add(
+        _callbacks: Any, _pid: int, _callback: Any, _args: tuple[Any, ...]
+    ) -> None:
+        raise NotImplementedError
+
+    def molt_asyncio_child_watcher_remove(_callbacks: Any, _pid: int) -> bool:
+        raise NotImplementedError
+
+    def molt_asyncio_child_watcher_clear(_callbacks: Any) -> None:
+        raise NotImplementedError
+
+    def molt_asyncio_child_watcher_pop(
+        _callbacks: Any, _pid: int
+    ) -> tuple[Any, tuple[Any, ...]] | None:
+        raise NotImplementedError
+
+    def molt_asyncio_running_loop_get() -> Any:
+        raise NotImplementedError
+
+    def molt_asyncio_running_loop_set(_loop: Any) -> None:
+        raise NotImplementedError
+
+    def molt_asyncio_event_loop_get() -> Any:
+        raise NotImplementedError
+
+    def molt_asyncio_event_loop_set(_loop: Any) -> None:
+        raise NotImplementedError
+
+    def molt_asyncio_event_loop_policy_get() -> Any:
+        raise NotImplementedError
+
+    def molt_asyncio_event_loop_policy_set(_policy: Any) -> None:
+        raise NotImplementedError
+
+    def molt_asyncio_taskgroup_on_task_done(
+        _tasks: Any, _errors: Any, _task: Any
+    ) -> bool:
+        raise NotImplementedError
+
+    def molt_asyncio_taskgroup_request_cancel(
+        _loop: Any | None, _cancel_callback: Any, _cancel_handle: Any | None = None
+    ) -> Any | None:
+        raise NotImplementedError
+
+    def molt_asyncio_task_cancel_apply(_future: Any, _msg: Any | None = None) -> bool:
+        raise NotImplementedError
+
+    def molt_asyncio_task_uncancel_apply(_future: Any) -> None:
+        raise NotImplementedError
+
+    def molt_asyncio_future_invoke_callbacks(_future: Any, _callbacks: Any) -> int:
+        raise NotImplementedError
+
+    def molt_asyncio_event_set_waiters(_waiters: Any, _result: Any = True) -> int:
+        raise NotImplementedError
+
+    def molt_asyncio_loop_enqueue_handle(
+        _loop: Any, _ready_lock: Any, _ready: Any, _handle: Any
+    ) -> int:
+        raise NotImplementedError
+
+    def molt_asyncio_timer_handle_new(
+        _handle: Any,
+        _delay: Any,
+        _loop: Any,
+        _scheduled: Any,
+        _ready_lock: Any,
+        _ready: Any,
+    ) -> Any:
+        raise NotImplementedError
+
+    def molt_asyncio_timer_schedule(
+        _handle: Any,
+        _delay: Any,
+        _loop: Any,
+        _scheduled: Any,
+        _ready_lock: Any,
+        _ready: Any,
+    ) -> Any:
+        raise NotImplementedError
+
+    def molt_asyncio_fd_watcher_new(
+        _registry: Any, _fileno: Any, _callback: Any, _args: Any, _events: Any
+    ) -> Any:
+        raise NotImplementedError
+
+    def molt_asyncio_fd_watcher_register(
+        _loop: Any,
+        _registry: Any,
+        _fileno: Any,
+        _callback: Any,
+        _args: Any,
+        _events: Any,
+    ) -> None:
+        raise NotImplementedError
+
+    def molt_asyncio_server_accept_loop_new(
+        _sock: Any,
+        _callback: Any,
+        _loop: Any,
+        _reader_ctor: Any,
+        _writer_ctor: Any,
+        _closed_probe: Any,
+    ) -> Any:
+        raise NotImplementedError
+
+    def molt_asyncio_ready_runner_new(_loop: Any, _ready_lock: Any, _ready: Any) -> Any:
+        raise NotImplementedError
+
+    def molt_asyncio_stream_reader_read_new(_reader: Any, _n: int = -1) -> Any:
+        raise NotImplementedError
+
+    def molt_asyncio_stream_reader_readline_new(_reader: Any) -> Any:
+        raise NotImplementedError
+
+    def molt_asyncio_stream_send_all_new(_stream: Any, _data: Any) -> Any:
+        raise NotImplementedError
+
+    def molt_asyncio_stream_buffer_snapshot(_buffer: Any) -> Any:
+        raise NotImplementedError
+
+    def molt_asyncio_stream_buffer_consume(_buffer: Any, _count: int) -> int:
+        raise NotImplementedError
+
+    def molt_asyncio_socket_reader_read_new(
+        _reader: Any, _n: int = -1, _fd: int = -1
+    ) -> Any:
+        raise NotImplementedError
+
+    def molt_asyncio_socket_reader_readline_new(_reader: Any, _fd: int = -1) -> Any:
+        raise NotImplementedError
+
+    def molt_asyncio_sock_recv_new(_sock: Any, _size: int, _fd: int) -> Any:
+        raise NotImplementedError
+
+    def molt_asyncio_sock_connect_new(_sock: Any, _address: Any, _fd: int) -> Any:
+        raise NotImplementedError
+
+    def molt_asyncio_sock_accept_new(_sock: Any, _fd: int) -> Any:
+        raise NotImplementedError
+
+    def molt_asyncio_sock_recv_into_new(
+        _sock: Any, _buf: Any, _nbytes: int, _fd: int
+    ) -> Any:
+        raise NotImplementedError
+
+    def molt_asyncio_sock_sendall_new(_sock: Any, _data: Any, _fd: int) -> Any:
+        raise NotImplementedError
+
+    def molt_asyncio_sock_recvfrom_new(_sock: Any, _size: int, _fd: int) -> Any:
+        raise NotImplementedError
+
+    def molt_asyncio_sock_recvfrom_into_new(
+        _sock: Any, _buf: Any, _nbytes: int, _fd: int
+    ) -> Any:
+        raise NotImplementedError
+
+    def molt_asyncio_sock_sendto_new(
+        _sock: Any, _data: Any, _addr: Any, _fd: int
+    ) -> Any:
+        raise NotImplementedError
+
     def molt_thread_submit(_func: Any, _args: Any, _kwargs: Any) -> Any:
+        raise NotImplementedError
+
+    def molt_inspect_iscoroutine(_obj: Any) -> bool:
+        raise NotImplementedError
+
+    def molt_inspect_iscoroutinefunction(_obj: Any) -> bool:
         raise NotImplementedError
 
 
@@ -239,11 +487,11 @@ def isfuture(obj: Any) -> bool:
 
 
 def iscoroutine(obj: Any) -> bool:
-    return _inspect.iscoroutine(obj)
+    return bool(_molt_inspect_iscoroutine(obj))
 
 
 def iscoroutinefunction(func: Any) -> bool:
-    return _inspect.iscoroutinefunction(func)
+    return bool(_molt_inspect_iscoroutinefunction(func))
 
 
 class Future:
@@ -258,11 +506,7 @@ class Future:
         if _EXPOSE_GRAPH:
             self._asyncio_awaited_by: set["Future"] | None = None
         self._callbacks: list[tuple[Callable[["Future"], Any], Any | None]] = []
-        self._molt_promise: Any | None = None
-        try:
-            self._molt_promise = molt_promise_new()
-        except Exception:
-            self._molt_promise = None
+        self._molt_promise: Any | None = molt_promise_new()
         if _DEBUG_ASYNCIO_PROMISE:
             _debug_write(
                 "asyncio_promise_new ok={ok} promise={promise}".format(
@@ -280,6 +524,13 @@ class Future:
                     typ=type(self).__name__, msg=msg
                 )
             )
+        promise = self._molt_promise
+        if msg is None:
+            _require_asyncio_intrinsic(molt_future_cancel, "future_cancel")(promise)
+        else:
+            _require_asyncio_intrinsic(_molt_future_cancel_msg, "future_cancel_msg")(
+                promise, msg
+            )
         self._cancelled = True
         self._exception = None
         self._cancel_message = None
@@ -290,14 +541,6 @@ class Future:
                 self._exception = CancelledError()
             self._cancel_message = msg
         self._done = True
-        if self._molt_promise is not None:
-            exc_obj: Any = self._exception
-            if exc_obj is None:
-                exc_obj = CancelledError
-            try:
-                molt_promise_set_exception(self._molt_promise, exc_obj)
-            except Exception:
-                pass
         self._invoke_callbacks()
         return True
 
@@ -358,11 +601,7 @@ class Future:
         self._result = result
         self._done = True
         if self._molt_promise is not None:
-            try:
-                molt_promise_set_result(self._molt_promise, result)
-            except Exception:
-                if _DEBUG_ASYNCIO_PROMISE:
-                    _debug_write("asyncio_promise_set_result_error")
+            molt_promise_set_result(self._molt_promise, result)
         self._invoke_callbacks()
 
     def set_exception(self, exception: BaseException) -> None:
@@ -373,21 +612,15 @@ class Future:
             self._cancelled = True
         self._done = True
         if self._molt_promise is not None:
-            try:
-                molt_promise_set_exception(self._molt_promise, exception)
-            except Exception:
-                if _DEBUG_ASYNCIO_PROMISE:
-                    _debug_write("asyncio_promise_set_exception_error")
+            molt_promise_set_exception(self._molt_promise, exception)
         self._invoke_callbacks()
 
     def _invoke_callbacks(self) -> None:
         callbacks = self._callbacks
         self._callbacks = []
-        idx = 0
-        while idx < len(callbacks):
-            fn, ctx = callbacks[idx]
-            self._run_callback(fn, ctx)
-            idx += 1
+        _require_asyncio_intrinsic(
+            molt_asyncio_future_invoke_callbacks, "asyncio_future_invoke_callbacks"
+        )(self, callbacks)
 
     def _run_callback(self, fn: Callable[["Future"], Any], context: Any | None) -> None:
         try:
@@ -407,17 +640,13 @@ class Future:
         async def _wrapped() -> Any:
             waiter = None
             if _EXPOSE_GRAPH:
-                waiter = _TASKS.get(_current_token_id())
+                waiter = _task_registry_current()
                 if isinstance(waiter, Future):
                     future_add_to_awaited_by(self, waiter)
             try:
-                if self._molt_promise is not None:
-                    if _DEBUG_ASYNCIO_PROMISE:
-                        _debug_write("asyncio_promise_await")
-                    return await self._molt_promise
                 if _DEBUG_ASYNCIO_PROMISE:
-                    _debug_write("asyncio_promise_fallback_wait")
-                return await self._wait()
+                    _debug_write("asyncio_promise_await")
+                return await self._molt_promise
             finally:
                 if _EXPOSE_GRAPH and isinstance(waiter, Future):
                     future_discard_from_awaited_by(self, waiter)
@@ -445,10 +674,6 @@ def future_discard_from_awaited_by(fut: Any, waiter: Any) -> None:
     if isinstance(fut, Future) and isinstance(waiter, Future):
         if fut._asyncio_awaited_by is not None:
             fut._asyncio_awaited_by.discard(waiter)
-
-
-_TASKS: dict[int, "Task"] = {}
-_EVENT_WAITERS: dict[int, list[Future]] = {}
 
 
 def _debug_gather_enabled() -> bool:
@@ -537,6 +762,154 @@ def _require_io_wait_new() -> Callable[..., Any]:
     return _molt_io_wait_new
 
 
+def _asyncio_cancel_pending_tasks(tasks: Any) -> int:
+    return int(
+        _require_asyncio_intrinsic(
+            molt_asyncio_cancel_pending, "asyncio_cancel_pending"
+        )(tasks)
+    )
+
+
+def _asyncio_waiters_notify(waiters: Any, count: int, result: Any) -> int:
+    return int(
+        _require_asyncio_intrinsic(
+            molt_asyncio_waiters_notify, "asyncio_waiters_notify"
+        )(waiters, count, result)
+    )
+
+
+def _asyncio_waiters_notify_exception(waiters: Any, count: int, exc: Any) -> int:
+    return int(
+        _require_asyncio_intrinsic(
+            molt_asyncio_waiters_notify_exception, "asyncio_waiters_notify_exception"
+        )(waiters, count, exc)
+    )
+
+
+def _asyncio_waiters_remove(waiters: Any, waiter: Any) -> bool:
+    return bool(
+        _require_asyncio_intrinsic(
+            molt_asyncio_waiters_remove, "asyncio_waiters_remove"
+        )(waiters, waiter)
+    )
+
+
+def _asyncio_barrier_release(waiters: Any) -> int:
+    return int(
+        _require_asyncio_intrinsic(
+            molt_asyncio_barrier_release, "asyncio_barrier_release"
+        )(waiters)
+    )
+
+
+def _asyncio_future_transfer(source: Any, target: Any) -> bool:
+    return bool(
+        _require_asyncio_intrinsic(
+            molt_asyncio_future_transfer, "asyncio_future_transfer"
+        )(source, target)
+    )
+
+
+def _asyncio_event_waiters_cleanup(waiters: Any) -> int:
+    return int(
+        _require_asyncio_intrinsic(
+            molt_asyncio_event_waiters_cleanup, "asyncio_event_waiters_cleanup"
+        )(waiters)
+    )
+
+
+def _task_registry_set(token_id: int, task: Any | None) -> None:
+    _require_asyncio_intrinsic(
+        molt_asyncio_task_registry_set, "asyncio_task_registry_set"
+    )(token_id, task)
+
+
+def _task_registry_get(token_id: int) -> Any | None:
+    return _require_asyncio_intrinsic(
+        molt_asyncio_task_registry_get, "asyncio_task_registry_get"
+    )(token_id)
+
+
+def _task_registry_contains(token_id: int) -> bool:
+    return bool(
+        _require_asyncio_intrinsic(
+            molt_asyncio_task_registry_contains, "asyncio_task_registry_contains"
+        )(token_id)
+    )
+
+
+def _task_registry_current() -> Any | None:
+    return _require_asyncio_intrinsic(
+        molt_asyncio_task_registry_current, "asyncio_task_registry_current"
+    )()
+
+
+def _task_registry_current_for_loop(loop: Any | None = None) -> Any | None:
+    return _require_asyncio_intrinsic(
+        molt_asyncio_task_registry_current_for_loop,
+        "asyncio_task_registry_current_for_loop",
+    )(loop)
+
+
+def _task_registry_pop(token_id: int) -> Any | None:
+    return _require_asyncio_intrinsic(
+        molt_asyncio_task_registry_pop, "asyncio_task_registry_pop"
+    )(token_id)
+
+
+def _task_registry_move(old_token_id: int, new_token_id: int) -> bool:
+    return bool(
+        _require_asyncio_intrinsic(
+            molt_asyncio_task_registry_move, "asyncio_task_registry_move"
+        )(old_token_id, new_token_id)
+    )
+
+
+def _task_registry_values() -> Any:
+    return _require_asyncio_intrinsic(
+        molt_asyncio_task_registry_values, "asyncio_task_registry_values"
+    )()
+
+
+def _event_waiters_register(token_id: int, waiter: Any) -> None:
+    _require_asyncio_intrinsic(
+        molt_asyncio_event_waiters_register, "asyncio_event_waiters_register"
+    )(token_id, waiter)
+
+
+def _event_waiters_unregister(token_id: int, waiter: Any) -> bool:
+    return bool(
+        _require_asyncio_intrinsic(
+            molt_asyncio_event_waiters_unregister, "asyncio_event_waiters_unregister"
+        )(token_id, waiter)
+    )
+
+
+def _event_waiters_cleanup_token(token_id: int) -> int:
+    return int(
+        _require_asyncio_intrinsic(
+            molt_asyncio_event_waiters_cleanup_token,
+            "asyncio_event_waiters_cleanup_token",
+        )(token_id)
+    )
+
+
+def _asyncio_ready_queue_drain(ready_lock: Any, ready: Any) -> int:
+    return int(
+        _require_asyncio_intrinsic(
+            molt_asyncio_ready_queue_drain, "asyncio_ready_queue_drain"
+        )(ready_lock, ready)
+    )
+
+
+def _asyncio_taskgroup_on_task_done(tasks: Any, errors: Any, task: Any) -> bool:
+    return bool(
+        _require_asyncio_intrinsic(
+            molt_asyncio_taskgroup_on_task_done, "asyncio_taskgroup_on_task_done"
+        )(tasks, errors, task)
+    )
+
+
 async def _async_yield_once() -> None:
     fut = molt_async_sleep(0.0, None)
     await fut
@@ -565,6 +938,184 @@ molt_task_register_token_owned = _intrinsic_require(
     "molt_task_register_token_owned", globals()
 )
 molt_future_cancel = _intrinsic_require("molt_future_cancel", globals())
+molt_asyncio_wait_for_new = _intrinsic_require("molt_asyncio_wait_for_new", globals())
+molt_asyncio_wait_new = _intrinsic_require("molt_asyncio_wait_new", globals())
+molt_asyncio_gather_new = _intrinsic_require("molt_asyncio_gather_new", globals())
+molt_asyncio_cancel_pending = _intrinsic_require(
+    "molt_asyncio_cancel_pending", globals()
+)
+molt_asyncio_ready_batch_run = _intrinsic_require(
+    "molt_asyncio_ready_batch_run", globals()
+)
+molt_asyncio_ready_queue_drain = _intrinsic_require(
+    "molt_asyncio_ready_queue_drain", globals()
+)
+molt_asyncio_waiters_notify = _intrinsic_require(
+    "molt_asyncio_waiters_notify", globals()
+)
+molt_asyncio_waiters_notify_exception = _intrinsic_require(
+    "molt_asyncio_waiters_notify_exception", globals()
+)
+molt_asyncio_waiters_remove = _intrinsic_require(
+    "molt_asyncio_waiters_remove", globals()
+)
+molt_asyncio_barrier_release = _intrinsic_require(
+    "molt_asyncio_barrier_release", globals()
+)
+molt_asyncio_future_transfer = _intrinsic_require(
+    "molt_asyncio_future_transfer", globals()
+)
+molt_asyncio_event_waiters_cleanup = _intrinsic_require(
+    "molt_asyncio_event_waiters_cleanup", globals()
+)
+molt_asyncio_task_registry_set = _intrinsic_require(
+    "molt_asyncio_task_registry_set", globals()
+)
+molt_asyncio_task_registry_get = _intrinsic_require(
+    "molt_asyncio_task_registry_get", globals()
+)
+molt_asyncio_task_registry_contains = _intrinsic_require(
+    "molt_asyncio_task_registry_contains", globals()
+)
+molt_asyncio_task_registry_current = _intrinsic_require(
+    "molt_asyncio_task_registry_current", globals()
+)
+molt_asyncio_task_registry_current_for_loop = _intrinsic_require(
+    "molt_asyncio_task_registry_current_for_loop", globals()
+)
+molt_asyncio_task_registry_pop = _intrinsic_require(
+    "molt_asyncio_task_registry_pop", globals()
+)
+molt_asyncio_task_registry_move = _intrinsic_require(
+    "molt_asyncio_task_registry_move", globals()
+)
+molt_asyncio_task_registry_values = _intrinsic_require(
+    "molt_asyncio_task_registry_values", globals()
+)
+molt_asyncio_task_registry_live = _intrinsic_require(
+    "molt_asyncio_task_registry_live", globals()
+)
+molt_asyncio_event_waiters_register = _intrinsic_require(
+    "molt_asyncio_event_waiters_register", globals()
+)
+molt_asyncio_event_waiters_unregister = _intrinsic_require(
+    "molt_asyncio_event_waiters_unregister", globals()
+)
+molt_asyncio_event_waiters_cleanup_token = _intrinsic_require(
+    "molt_asyncio_event_waiters_cleanup_token", globals()
+)
+molt_asyncio_child_watcher_add = _intrinsic_require(
+    "molt_asyncio_child_watcher_add", globals()
+)
+molt_asyncio_child_watcher_remove = _intrinsic_require(
+    "molt_asyncio_child_watcher_remove", globals()
+)
+molt_asyncio_child_watcher_clear = _intrinsic_require(
+    "molt_asyncio_child_watcher_clear", globals()
+)
+molt_asyncio_child_watcher_pop = _intrinsic_require(
+    "molt_asyncio_child_watcher_pop", globals()
+)
+molt_asyncio_running_loop_get = _intrinsic_require(
+    "molt_asyncio_running_loop_get", globals()
+)
+molt_asyncio_running_loop_set = _intrinsic_require(
+    "molt_asyncio_running_loop_set", globals()
+)
+molt_asyncio_event_loop_get = _intrinsic_require(
+    "molt_asyncio_event_loop_get", globals()
+)
+molt_asyncio_event_loop_set = _intrinsic_require(
+    "molt_asyncio_event_loop_set", globals()
+)
+molt_asyncio_event_loop_policy_get = _intrinsic_require(
+    "molt_asyncio_event_loop_policy_get", globals()
+)
+molt_asyncio_event_loop_policy_set = _intrinsic_require(
+    "molt_asyncio_event_loop_policy_set", globals()
+)
+molt_asyncio_taskgroup_on_task_done = _intrinsic_require(
+    "molt_asyncio_taskgroup_on_task_done", globals()
+)
+molt_asyncio_taskgroup_request_cancel = _intrinsic_require(
+    "molt_asyncio_taskgroup_request_cancel", globals()
+)
+molt_asyncio_task_cancel_apply = _intrinsic_require(
+    "molt_asyncio_task_cancel_apply", globals()
+)
+molt_asyncio_task_uncancel_apply = _intrinsic_require(
+    "molt_asyncio_task_uncancel_apply", globals()
+)
+molt_asyncio_future_invoke_callbacks = _intrinsic_require(
+    "molt_asyncio_future_invoke_callbacks", globals()
+)
+molt_asyncio_event_set_waiters = _intrinsic_require(
+    "molt_asyncio_event_set_waiters", globals()
+)
+molt_asyncio_loop_enqueue_handle = _intrinsic_require(
+    "molt_asyncio_loop_enqueue_handle", globals()
+)
+molt_asyncio_timer_handle_new = _intrinsic_require(
+    "molt_asyncio_timer_handle_new", globals()
+)
+molt_asyncio_timer_schedule = _intrinsic_require(
+    "molt_asyncio_timer_schedule", globals()
+)
+molt_asyncio_fd_watcher_new = _intrinsic_require(
+    "molt_asyncio_fd_watcher_new", globals()
+)
+molt_asyncio_fd_watcher_register = _intrinsic_require(
+    "molt_asyncio_fd_watcher_register", globals()
+)
+molt_asyncio_server_accept_loop_new = _intrinsic_require(
+    "molt_asyncio_server_accept_loop_new", globals()
+)
+molt_asyncio_ready_runner_new = _intrinsic_require(
+    "molt_asyncio_ready_runner_new", globals()
+)
+molt_asyncio_stream_reader_read_new = _intrinsic_require(
+    "molt_asyncio_stream_reader_read_new", globals()
+)
+molt_asyncio_stream_reader_readline_new = _intrinsic_require(
+    "molt_asyncio_stream_reader_readline_new", globals()
+)
+molt_asyncio_stream_send_all_new = _intrinsic_require(
+    "molt_asyncio_stream_send_all_new", globals()
+)
+molt_asyncio_stream_buffer_snapshot = _intrinsic_require(
+    "molt_asyncio_stream_buffer_snapshot", globals()
+)
+molt_asyncio_stream_buffer_consume = _intrinsic_require(
+    "molt_asyncio_stream_buffer_consume", globals()
+)
+molt_asyncio_socket_reader_read_new = _intrinsic_require(
+    "molt_asyncio_socket_reader_read_new", globals()
+)
+molt_asyncio_socket_reader_readline_new = _intrinsic_require(
+    "molt_asyncio_socket_reader_readline_new", globals()
+)
+molt_asyncio_sock_recv_new = _intrinsic_require("molt_asyncio_sock_recv_new", globals())
+molt_asyncio_sock_connect_new = _intrinsic_require(
+    "molt_asyncio_sock_connect_new", globals()
+)
+molt_asyncio_sock_accept_new = _intrinsic_require(
+    "molt_asyncio_sock_accept_new", globals()
+)
+molt_asyncio_sock_recv_into_new = _intrinsic_require(
+    "molt_asyncio_sock_recv_into_new", globals()
+)
+molt_asyncio_sock_sendall_new = _intrinsic_require(
+    "molt_asyncio_sock_sendall_new", globals()
+)
+molt_asyncio_sock_recvfrom_new = _intrinsic_require(
+    "molt_asyncio_sock_recvfrom_new", globals()
+)
+molt_asyncio_sock_recvfrom_into_new = _intrinsic_require(
+    "molt_asyncio_sock_recvfrom_into_new", globals()
+)
+molt_asyncio_sock_sendto_new = _intrinsic_require(
+    "molt_asyncio_sock_sendto_new", globals()
+)
 molt_thread_submit = _intrinsic_require("molt_thread_submit", globals())
 
 _molt_module_new = _intrinsic_require("molt_module_new", globals())
@@ -602,6 +1153,10 @@ _molt_socket_reader_readline = _intrinsic_require(
 )
 _molt_socket_reader_at_eof = _intrinsic_require("molt_socket_reader_at_eof", globals())
 _molt_socket_reader_drop = _intrinsic_require("molt_socket_reader_drop", globals())
+_molt_inspect_iscoroutine = _intrinsic_require("molt_inspect_iscoroutine", globals())
+_molt_inspect_iscoroutinefunction = _intrinsic_require(
+    "molt_inspect_iscoroutinefunction", globals()
+)
 
 _PENDING_SENTINEL: Any | None = None
 
@@ -784,41 +1339,15 @@ def _future_exception(task: Any) -> BaseException | None:
 
 
 def _register_event_waiter(token_id: int, fut: Future) -> None:
-    waiters = _EVENT_WAITERS.get(token_id)
-    if waiters is None:
-        _EVENT_WAITERS[token_id] = [fut]
-    else:
-        waiters.append(fut)
+    _event_waiters_register(token_id, fut)
 
 
 def _unregister_event_waiter(token_id: int, fut: Future) -> None:
-    waiters = _EVENT_WAITERS.get(token_id)
-    if not waiters:
-        return None
-    idx = 0
-    while idx < len(waiters):
-        if waiters[idx] is fut:
-            del waiters[idx]
-            break
-        idx += 1
-    if not waiters:
-        _EVENT_WAITERS.pop(token_id, None)
+    _event_waiters_unregister(token_id, fut)
 
 
 def _cleanup_event_waiters_for_token(token_id: int) -> None:
-    waiters = _EVENT_WAITERS.pop(token_id, [])
-    idx = 0
-    while idx < len(waiters):
-        fut = waiters[idx]
-        event = getattr(fut, "_molt_event_owner", None)
-        if event is not None:
-            jdx = 0
-            while jdx < len(event._waiters):
-                if event._waiters[jdx] is fut:
-                    del event._waiters[jdx]
-                    break
-                jdx += 1
-        idx += 1
+    _event_waiters_cleanup_token(token_id)
 
 
 _TASK_COUNTER = 0
@@ -871,7 +1400,7 @@ class Task(Future):
             self._token.token_id(),
             context,
         )
-        _TASKS[self._token.token_id()] = self
+        _task_registry_set(self._token.token_id(), self)
         self._runner_spawned = _spawn_runner
         token_id = self._token.token_id()
         try:
@@ -899,10 +1428,11 @@ class Task(Future):
         new_id = token.token_id()
         if new_id == old_id:
             return
-        if _TASKS.get(old_id) is self:
-            _TASKS.pop(old_id, None)
+        if _task_registry_get(old_id) is self:
+            _task_registry_move(old_id, new_id)
+        else:
+            _task_registry_set(new_id, self)
         self._token = token
-        _TASKS[new_id] = self
         try:
             _contextvars._set_context_for_token(  # type: ignore[unresolved-attribute]
                 new_id, self._context
@@ -932,13 +1462,9 @@ class Task(Future):
                 )
             )
         self._token.cancel()
-        try:
-            if msg is not None and _molt_future_cancel_msg is not None:
-                _molt_future_cancel_msg(self._coro, msg)
-            else:
-                molt_future_cancel(self._coro)  # type: ignore[name-defined]
-        except Exception:
-            pass
+        _require_asyncio_intrinsic(
+            molt_asyncio_task_cancel_apply, "asyncio_task_cancel_apply"
+        )(self._coro, msg)
         return True
 
     def get_coro(self) -> Any:
@@ -968,11 +1494,9 @@ class Task(Future):
         self._cancel_requested -= 1
         if self._cancel_requested == 0:
             self._cancel_message = None
-            try:
-                if _molt_future_cancel_clear is not None:
-                    _molt_future_cancel_clear(self._coro)
-            except Exception:
-                pass
+            _require_asyncio_intrinsic(
+                molt_asyncio_task_uncancel_apply, "asyncio_task_uncancel_apply"
+            )(self._coro)
         return self._cancel_requested
 
     async def _runner(self, coro: Any | None = None) -> None:
@@ -982,8 +1506,10 @@ class Task(Future):
         if coro is None:
             coro = getattr(self, "_coro")
         current_id = _current_token_id()
-        if current_id != self._token.token_id() and current_id not in _TASKS:
-            _TASKS[current_id] = self
+        if current_id != self._token.token_id() and not _task_registry_contains(
+            current_id
+        ):
+            _task_registry_set(current_id, self)
             extra_token_id = current_id
         if _DEBUG_TASKS:
             token_id = self._token.token_id()
@@ -1015,9 +1541,9 @@ class Task(Future):
             if not self._done:
                 self.set_exception(exc)
         _cleanup_event_waiters_for_token(self._token.token_id())
-        _TASKS.pop(self._token.token_id(), None)
+        _task_registry_pop(self._token.token_id())
         if extra_token_id is not None:
-            _TASKS.pop(extra_token_id, None)
+            _task_registry_pop(extra_token_id)
         _contextvars._clear_context_for_token(  # type: ignore[unresolved-attribute]
             self._token.token_id()
         )
@@ -1040,6 +1566,8 @@ class Task(Future):
             if waiter.done():
                 return
             try:
+                if _asyncio_future_transfer(done, waiter):
+                    return
                 if hasattr(done, "cancelled") and done.cancelled():
                     cancel_msg = getattr(done, "_cancel_message", None)
                     waiter.cancel(cancel_msg)
@@ -1071,14 +1599,9 @@ class Event:
         self._flag = True
         waiters = self._waiters
         self._waiters = []
-        idx = 0
-        while idx < len(waiters):
-            fut = waiters[idx]
-            token_id = getattr(fut, "_molt_event_token_id", None)
-            if isinstance(token_id, int):
-                _unregister_event_waiter(token_id, fut)
-            fut.set_result(True)
-            idx += 1
+        _require_asyncio_intrinsic(
+            molt_asyncio_event_set_waiters, "asyncio_event_set_waiters"
+        )(waiters, True)
         return None
 
     def clear(self) -> None:
@@ -1098,12 +1621,7 @@ class Event:
         except BaseException as exc:
             if _is_cancelled_exc(exc):
                 _unregister_event_waiter(token_id, fut)
-                idx = 0
-                while idx < len(self._waiters):
-                    if self._waiters[idx] is fut:
-                        del self._waiters[idx]
-                        break
-                    idx += 1
+                _asyncio_waiters_remove(self._waiters, fut)
             raise
 
 
@@ -1125,10 +1643,7 @@ class Lock:
             await fut
         except BaseException as exc:
             if _is_cancelled_exc(exc):
-                try:
-                    self._waiters.remove(fut)
-                except ValueError:
-                    pass
+                _asyncio_waiters_remove(self._waiters, fut)
             raise
         self._locked = True
         return True
@@ -1137,9 +1652,7 @@ class Lock:
         if not self._locked:
             raise RuntimeError("Lock is not acquired")
         if self._waiters:
-            fut = self._waiters.popleft()
-            if not fut.done():
-                fut.set_result(True)
+            _asyncio_waiters_notify(self._waiters, 1, True)
         else:
             self._locked = False
 
@@ -1182,10 +1695,7 @@ class Condition:
             await fut
         except BaseException as exc:
             if _is_cancelled_exc(exc):
-                try:
-                    self._waiters.remove(fut)
-                except ValueError:
-                    pass
+                _asyncio_waiters_remove(self._waiters, fut)
             raise
         finally:
             await self.acquire()
@@ -1201,11 +1711,7 @@ class Condition:
     def notify(self, n: int = 1) -> None:
         if not self.locked():
             raise RuntimeError("Condition lock is not acquired")
-        count = min(n, len(self._waiters))
-        for _ in range(count):
-            fut = self._waiters.popleft()
-            if not fut.done():
-                fut.set_result(True)
+        _asyncio_waiters_notify(self._waiters, n, True)
 
     def notify_all(self) -> None:
         self.notify(len(self._waiters))
@@ -1231,18 +1737,13 @@ class Semaphore:
             await fut
         except BaseException as exc:
             if _is_cancelled_exc(exc):
-                try:
-                    self._waiters.remove(fut)
-                except ValueError:
-                    pass
+                _asyncio_waiters_remove(self._waiters, fut)
             raise
         return True
 
     def release(self) -> None:
         if self._waiters:
-            fut = self._waiters.popleft()
-            if not fut.done():
-                fut.set_result(True)
+            _asyncio_waiters_notify(self._waiters, 1, True)
         else:
             self._value += 1
 
@@ -1274,20 +1775,13 @@ class Barrier:
         self._waiters.append(fut)
         self._count += 1
         if self._count == self._parties:
-            waiters = self._waiters
-            self._waiters = []
             self._count = 0
-            for idx, waiter in enumerate(waiters):
-                if not waiter.done():
-                    waiter.set_result(idx)
+            _asyncio_barrier_release(self._waiters)
         try:
             return await fut
         except BaseException as exc:
             if _is_cancelled_exc(exc):
-                try:
-                    self._waiters.remove(fut)
-                except ValueError:
-                    pass
+                _asyncio_waiters_remove(self._waiters, fut)
             raise
 
     @property
@@ -1338,60 +1832,30 @@ class TaskGroup:
         return task
 
     def _on_task_done(self, task: Future) -> None:
-        if isinstance(task, Task):
-            if task not in self._tasks:
-                return
-            self._tasks.discard(task)
-        try:
-            exc = task.exception()
-        except CancelledError:
-            return
-        except BaseException as err:
-            self._errors.append(err)
-            self._collect_done_errors()
+        if _asyncio_taskgroup_on_task_done(self._tasks, self._errors, task):
             self._request_cancel()
-            return
-        if exc is not None and not _is_cancelled_exc(exc):
-            self._errors.append(exc)
-            self._collect_done_errors()
-            self._request_cancel()
-
-    def _collect_done_errors(self) -> None:
-        for task in list(self._tasks):
-            if not task.done():
-                continue
-            self._tasks.discard(task)
-            try:
-                exc = task.exception()
-            except CancelledError:
-                continue
-            except BaseException as err:
-                self._errors.append(err)
-                continue
-            if exc is not None and not _is_cancelled_exc(exc):
-                self._errors.append(exc)
 
     def _request_cancel(self) -> None:
-        loop = self._loop
-        if loop is None:
-            self._cancel_all()
-            return
-        if self._cancel_handle is not None:
-            return
-        self._cancel_handle = loop.call_soon(self._cancel_all)
+        self._cancel_handle = _require_asyncio_intrinsic(
+            molt_asyncio_taskgroup_request_cancel, "asyncio_taskgroup_request_cancel"
+        )(self._loop, self._cancel_all, self._cancel_handle)
 
     async def _wait_tasks(self) -> None:
-        for task in list(self._tasks):
-            try:
-                await task
-            except BaseException:
-                pass
+        if not self._tasks:
+            return
+        waiter = _require_asyncio_intrinsic(
+            molt_asyncio_gather_new, "asyncio_gather_new"
+        )(list(self._tasks), True)
+        try:
+            await waiter
+        except BaseException:
+            pass
 
     def _cancel_all(self) -> None:
         self._cancel_handle = None
-        for task in list(self._tasks):
-            if not task.done():
-                task.cancel()
+        if not self._tasks:
+            return
+        _asyncio_cancel_pending_tasks(self._tasks)
 
 
 class _Timeout:
@@ -1475,12 +1939,19 @@ class StreamReader:
 
     async def _read_raw(self, n: int) -> bytes:
         while True:
-            res = _require_asyncio_intrinsic(
-                _molt_socket_reader_read, "socket_reader_read"
-            )(self._reader, n)
-            if _is_pending(res):
+            try:
+                res = await _require_asyncio_intrinsic(
+                    molt_asyncio_socket_reader_read_new,
+                    "asyncio_socket_reader_read_new",
+                )(self._reader, n, self._fd)
+            except (BlockingIOError, InterruptedError):
                 await self._wait_readable()
                 continue
+            except OSError as exc:
+                if exc.errno in (_errno.EAGAIN, _errno.EWOULDBLOCK):
+                    await self._wait_readable()
+                    continue
+                raise
             if isinstance(res, (bytes, bytearray, memoryview)):
                 self._eof = bool(
                     _require_asyncio_intrinsic(
@@ -1555,12 +2026,19 @@ class StreamReader:
             except IncompleteReadError as exc:
                 return exc.partial
         while True:
-            res = _require_asyncio_intrinsic(
-                _molt_socket_reader_readline, "socket_reader_readline"
-            )(self._reader)
-            if _is_pending(res):
+            try:
+                res = await _require_asyncio_intrinsic(
+                    molt_asyncio_socket_reader_readline_new,
+                    "asyncio_socket_reader_readline_new",
+                )(self._reader, self._fd)
+            except (BlockingIOError, InterruptedError):
                 await self._wait_readable()
                 continue
+            except OSError as exc:
+                if exc.errno in (_errno.EAGAIN, _errno.EWOULDBLOCK):
+                    await self._wait_readable()
+                    continue
+                raise
             if isinstance(res, (bytes, bytearray, memoryview)):
                 self._eof = bool(
                     _require_asyncio_intrinsic(
@@ -1605,21 +2083,19 @@ class StreamWriter:
         return None
 
     async def drain(self) -> None:
-        _require_io_wait_new()
+        if not self._buffer:
+            return None
+        loop = get_running_loop()
         while self._buffer:
-            try:
-                sent = self._sock.send(self._buffer)
-                if sent <= 0:
-                    await _io_wait(self._fd, 2)
-                    continue
-                del self._buffer[:sent]
-            except (BlockingIOError, InterruptedError):
-                await _io_wait(self._fd, 2)
-            except OSError as exc:
-                if exc.errno in (_errno.EAGAIN, _errno.EWOULDBLOCK):
-                    await _io_wait(self._fd, 2)
-                    continue
-                raise
+            chunk = _require_asyncio_intrinsic(
+                molt_asyncio_stream_buffer_snapshot, "asyncio_stream_buffer_snapshot"
+            )(self._buffer)
+            if not chunk:
+                return None
+            await loop.sock_sendall(self._sock, chunk)
+            _require_asyncio_intrinsic(
+                molt_asyncio_stream_buffer_consume, "asyncio_stream_buffer_consume"
+            )(self._buffer, len(chunk))
 
     def write_eof(self) -> None:
         try:
@@ -1676,41 +2152,21 @@ class Server(AbstractServer):
             self._accept_loop(), name=None, context=None
         )
 
+    def _molt_is_closed(self) -> bool:
+        return self._closed
+
     async def _accept_loop(self) -> None:
-        while not self._closed:
-            try:
-                conn, _addr = self._sock.accept()
-            except (BlockingIOError, InterruptedError):
-                _require_io_wait_new()
-                await _io_wait(self._sock.fileno(), 1)
-                continue
-            except OSError as exc:
-                if exc.errno in (_errno.EAGAIN, _errno.EWOULDBLOCK):
-                    _require_io_wait_new()
-                    await _io_wait(self._sock.fileno(), 1)
-                    continue
-                raise
-            except BaseException as exc:
-                if _is_cancelled_exc(exc):
-                    break
-                if self._closed:
-                    break
-                continue
-            try:
-                conn.setblocking(False)
-            except Exception:
-                pass
-            reader = StreamReader(conn)
-            writer = StreamWriter(conn)
-            try:
-                get_running_loop().create_task(
-                    self._callback(reader, writer), name=None, context=None
-                )
-            except Exception:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
+        loop = get_running_loop()
+        await _require_asyncio_intrinsic(
+            molt_asyncio_server_accept_loop_new, "asyncio_server_accept_loop_new"
+        )(
+            self._sock,
+            self._callback,
+            loop,
+            StreamReader,
+            StreamWriter,
+            self._molt_is_closed,
+        )
 
     def close(self) -> None:
         if self._closed:
@@ -1747,28 +2203,21 @@ class ProcessStreamReader:
         )
 
     async def read(self, n: int = -1) -> bytes:
-        while True:
-            res = _require_asyncio_intrinsic(
-                _molt_stream_reader_read, "stream_reader_read"
-            )(self._reader, n)
-            if _is_pending(res):
-                await sleep(0.0)
-                continue
-            if isinstance(res, (bytes, bytearray, memoryview)):
-                return bytes(res)
-            raise TypeError("process stream reader returned non-bytes")
+        res = await _require_asyncio_intrinsic(
+            molt_asyncio_stream_reader_read_new, "asyncio_stream_reader_read_new"
+        )(self._reader, n)
+        if isinstance(res, (bytes, bytearray, memoryview)):
+            return bytes(res)
+        raise TypeError("process stream reader returned non-bytes")
 
     async def readline(self) -> bytes:
-        while True:
-            res = _require_asyncio_intrinsic(
-                _molt_stream_reader_readline, "stream_reader_readline"
-            )(self._reader)
-            if _is_pending(res):
-                await sleep(0.0)
-                continue
-            if isinstance(res, (bytes, bytearray, memoryview)):
-                return bytes(res)
-            raise TypeError("process stream reader returned non-bytes")
+        res = await _require_asyncio_intrinsic(
+            molt_asyncio_stream_reader_readline_new,
+            "asyncio_stream_reader_readline_new",
+        )(self._reader)
+        if isinstance(res, (bytes, bytearray, memoryview)):
+            return bytes(res)
+        raise TypeError("process stream reader returned non-bytes")
 
     async def readexactly(self, n: int) -> bytes:
         if n <= 0:
@@ -1809,13 +2258,17 @@ class ProcessStreamWriter:
 
     async def drain(self) -> None:
         while self._buffer:
-            res = _require_asyncio_intrinsic(_molt_stream_send_obj, "stream_send_obj")(
-                self._handle, bytes(self._buffer)
-            )
-            if _is_pending(res) or not isinstance(res, int) or res != 0:
-                await sleep(0.0)
-                continue
-            self._buffer.clear()
+            chunk = _require_asyncio_intrinsic(
+                molt_asyncio_stream_buffer_snapshot, "asyncio_stream_buffer_snapshot"
+            )(self._buffer)
+            if not chunk:
+                return None
+            await _require_asyncio_intrinsic(
+                molt_asyncio_stream_send_all_new, "asyncio_stream_send_all_new"
+            )(self._handle, chunk)
+            _require_asyncio_intrinsic(
+                molt_asyncio_stream_buffer_consume, "asyncio_stream_buffer_consume"
+            )(self._buffer, len(chunk))
 
     def write_eof(self) -> None:
         self.close()
@@ -2268,27 +2721,16 @@ class _EventLoop(AbstractEventLoop):
     def _ensure_ready_runner(self) -> None:
         if self._ready_task is not None and not self._ready_task.done():
             return
-        self._ready_task = self.create_task(self._ready_loop(), name=None, context=None)
+        runner = _require_asyncio_intrinsic(
+            molt_asyncio_ready_runner_new, "asyncio_ready_runner_new"
+        )(self, self._ready_lock, self._ready)
+        self._ready_task = self.create_task(runner, name=None, context=None)
 
     async def _ready_loop(self) -> None:
-        while not self._closed:
-            while True:
-                with self._ready_lock:
-                    if not self._ready:
-                        handle = None
-                    else:
-                        handle = self._ready.popleft()
-                if handle is None:
-                    break
-                if handle.cancelled():
-                    continue
-                handle._run()
-            try:
-                await sleep(0.0)
-            except BaseException as exc:
-                if _is_cancelled_exc(exc):
-                    return
-                raise
+        runner = _require_asyncio_intrinsic(
+            molt_asyncio_ready_runner_new, "asyncio_ready_runner_new"
+        )(self, self._ready_lock, self._ready)
+        await runner
 
     def call_soon(
         self, callback: Callable[..., Any], /, *args: Any, context: Any | None = None
@@ -2301,10 +2743,9 @@ class _EventLoop(AbstractEventLoop):
             except Exception:
                 context = None
         handle = Handle(callback, args, self, context)
-        with self._ready_lock:
-            self._ready.append(handle)
-        if self._running:
-            self._ensure_ready_runner()
+        _require_asyncio_intrinsic(
+            molt_asyncio_loop_enqueue_handle, "asyncio_loop_enqueue_handle"
+        )(self, self._ready_lock, self._ready, handle)
         return handle
 
     def call_soon_threadsafe(
@@ -2330,20 +2771,18 @@ class _EventLoop(AbstractEventLoop):
             return self.call_at(self.time(), callback, *args, context=context)
         when = self.time() + float(delay)
         handle = TimerHandle(when, callback, args, self, context)
-        self._scheduled.add(handle)
-
-        async def _timer() -> None:
-            await molt_async_sleep(delay, None)
-            if handle.cancelled():
-                self._scheduled.discard(handle)
-                return
-            self._scheduled.discard(handle)
-            with self._ready_lock:
-                self._ready.append(handle)
-            if self._running:
-                self._ensure_ready_runner()
-
-        handle._timer_task = self.create_task(_timer(), name=None, context=None)
+        timer_task = _require_asyncio_intrinsic(
+            molt_asyncio_timer_schedule, "asyncio_timer_schedule"
+        )(
+            handle,
+            delay,
+            self,
+            self._scheduled,
+            self._ready_lock,
+            self._ready,
+        )
+        if timer_task is not None:
+            handle._timer_task = timer_task
         return handle
 
     def call_at(
@@ -2356,26 +2795,18 @@ class _EventLoop(AbstractEventLoop):
     ) -> TimerHandle:
         delay = max(0.0, float(when) - self.time())
         handle = TimerHandle(float(when), callback, args, self, context)
-        if delay <= 0:
-            with self._ready_lock:
-                self._ready.append(handle)
-            if self._running:
-                self._ensure_ready_runner()
-            return handle
-        self._scheduled.add(handle)
-
-        async def _timer() -> None:
-            await molt_async_sleep(delay, None)
-            if handle.cancelled():
-                self._scheduled.discard(handle)
-                return
-            self._scheduled.discard(handle)
-            with self._ready_lock:
-                self._ready.append(handle)
-            if self._running:
-                self._ensure_ready_runner()
-
-        handle._timer_task = self.create_task(_timer(), name=None, context=None)
+        timer_task = _require_asyncio_intrinsic(
+            molt_asyncio_timer_schedule, "asyncio_timer_schedule"
+        )(
+            handle,
+            delay,
+            self,
+            self._scheduled,
+            self._ready_lock,
+            self._ready,
+        )
+        if timer_task is not None:
+            handle._timer_task = timer_task
         return handle
 
     def set_exception_handler(
@@ -2450,28 +2881,10 @@ class _EventLoop(AbstractEventLoop):
         return wrap_future(submitted, loop=self)
 
     def add_reader(self, fd: Any, callback: Any, *args: Any) -> None:
-        io_wait = _require_asyncio_intrinsic(_require_io_wait_new(), "io_wait_new")
         fileno = _fd_from_fileobj(fd)
-        if fileno in self._readers:
-            self.remove_reader(fileno)
-
-        async def _reader_loop() -> None:
-            while fileno in self._readers:
-                try:
-                    await io_wait(fileno, 1, None)
-                except BaseException as exc:
-                    if _is_cancelled_exc(exc):
-                        break
-                    return
-                if fileno not in self._readers:
-                    break
-                try:
-                    callback(*args)
-                except Exception:
-                    return
-
-        task = self.create_task(_reader_loop(), name=None, context=None)
-        self._readers[fileno] = (callback, args, task)
+        _require_asyncio_intrinsic(
+            molt_asyncio_fd_watcher_register, "asyncio_fd_watcher_register"
+        )(self, self._readers, fileno, callback, args, 1)
 
     def remove_reader(self, fd: Any) -> bool:
         fileno = _fd_from_fileobj(fd)
@@ -2486,104 +2899,60 @@ class _EventLoop(AbstractEventLoop):
         return True
 
     def add_writer(self, fd: Any, callback: Any, *args: Any) -> None:
-        io_wait = _require_asyncio_intrinsic(_require_io_wait_new(), "io_wait_new")
         fileno = _fd_from_fileobj(fd)
-        if fileno in self._writers:
-            self.remove_writer(fileno)
-
-        async def _writer_loop() -> None:
-            while fileno in self._writers:
-                try:
-                    await io_wait(fileno, 2, None)
-                except BaseException as exc:
-                    if _is_cancelled_exc(exc):
-                        break
-                    return
-                if fileno not in self._writers:
-                    break
-                try:
-                    callback(*args)
-                except Exception:
-                    return
-
-        task = self.create_task(_writer_loop(), name=None, context=None)
-        self._writers[fileno] = (callback, args, task)
+        _require_asyncio_intrinsic(
+            molt_asyncio_fd_watcher_register, "asyncio_fd_watcher_register"
+        )(self, self._writers, fileno, callback, args, 2)
 
     async def sock_recv(self, sock: Any, n: int) -> bytes:
-        _require_io_wait_new()
-        flags = getattr(_socket, "MSG_DONTWAIT", 0)
-        while True:
-            try:
-                return sock.recv(n, flags)
-            except (BlockingIOError, InterruptedError):
-                await _io_wait(sock.fileno(), 1)
-            except OSError as exc:
-                if exc.errno in (_errno.EAGAIN, _errno.EWOULDBLOCK):
-                    await _io_wait(sock.fileno(), 1)
-                    continue
-                raise
+        fut = _require_asyncio_intrinsic(
+            molt_asyncio_sock_recv_new, "asyncio_sock_recv_new"
+        )(sock, n, sock.fileno())
+        return await fut
 
     async def sock_recv_into(self, sock: Any, buf: Any) -> int:
-        _require_io_wait_new()
-        flags = getattr(_socket, "MSG_DONTWAIT", 0)
         nbytes = len(buf)
-        while True:
-            try:
-                return sock.recv_into(buf, nbytes, flags)
-            except (BlockingIOError, InterruptedError):
-                await _io_wait(sock.fileno(), 1)
-            except OSError as exc:
-                if exc.errno in (_errno.EAGAIN, _errno.EWOULDBLOCK):
-                    await _io_wait(sock.fileno(), 1)
-                    continue
-                raise
+        fut = _require_asyncio_intrinsic(
+            molt_asyncio_sock_recv_into_new, "asyncio_sock_recv_into_new"
+        )(sock, buf, nbytes, sock.fileno())
+        return await fut
 
     async def sock_sendall(self, sock: Any, data: bytes) -> None:
-        _require_io_wait_new()
-        view = memoryview(data)
-        total = 0
-        flags = getattr(_socket, "MSG_DONTWAIT", 0)
-        while total < len(view):
-            try:
-                sent = sock.send(view[total:], flags)
-                if sent <= 0:
-                    await _io_wait(sock.fileno(), 2)
-                    continue
-                total += sent
-            except (BlockingIOError, InterruptedError):
-                await _io_wait(sock.fileno(), 2)
-            except OSError as exc:
-                if exc.errno in (_errno.EAGAIN, _errno.EWOULDBLOCK):
-                    await _io_wait(sock.fileno(), 2)
-                    continue
-                raise
+        fut = _require_asyncio_intrinsic(
+            molt_asyncio_sock_sendall_new, "asyncio_sock_sendall_new"
+        )(sock, data, sock.fileno())
+        await fut
+
+    async def sock_recvfrom(self, sock: Any, bufsize: int) -> tuple[Any, Any]:
+        fut = _require_asyncio_intrinsic(
+            molt_asyncio_sock_recvfrom_new, "asyncio_sock_recvfrom_new"
+        )(sock, bufsize, sock.fileno())
+        return await fut
+
+    async def sock_recvfrom_into(self, sock: Any, buf: Any) -> tuple[int, Any]:
+        nbytes = len(buf)
+        fut = _require_asyncio_intrinsic(
+            molt_asyncio_sock_recvfrom_into_new, "asyncio_sock_recvfrom_into_new"
+        )(sock, buf, nbytes, sock.fileno())
+        return await fut
+
+    async def sock_sendto(self, sock: Any, data: bytes, addr: Any) -> int:
+        fut = _require_asyncio_intrinsic(
+            molt_asyncio_sock_sendto_new, "asyncio_sock_sendto_new"
+        )(sock, data, addr, sock.fileno())
+        return await fut
 
     async def sock_connect(self, sock: Any, address: Any) -> None:
-        _require_io_wait_new()
-        with _NonBlockingSocket(sock):
-            err = sock.connect_ex(address)
-        if err in (0,):
-            return None
-        if err not in (_errno.EINPROGRESS, _errno.EALREADY, _errno.EWOULDBLOCK):
-            raise OSError(err, "connect")
-        await _io_wait(sock.fileno(), 2)
-        with _NonBlockingSocket(sock):
-            err = sock.connect_ex(address)
-        if err != 0:
-            raise OSError(err, "connect")
+        fut = _require_asyncio_intrinsic(
+            molt_asyncio_sock_connect_new, "asyncio_sock_connect_new"
+        )(sock, address, sock.fileno())
+        await fut
 
     async def sock_accept(self, sock: Any) -> tuple[Any, Any]:
-        _require_io_wait_new()
-        while True:
-            with _NonBlockingSocket(sock):
-                try:
-                    return sock.accept()
-                except (BlockingIOError, InterruptedError):
-                    pass
-                except OSError as exc:
-                    if exc.errno not in (_errno.EAGAIN, _errno.EWOULDBLOCK):
-                        raise
-            await _io_wait(sock.fileno(), 1)
+        fut = _require_asyncio_intrinsic(
+            molt_asyncio_sock_accept_new, "asyncio_sock_accept_new"
+        )(sock, sock.fileno())
+        return await fut
 
     def remove_writer(self, fd: Any) -> bool:
         fileno = _fd_from_fileobj(fd)
@@ -2602,9 +2971,8 @@ class _EventLoop(AbstractEventLoop):
             raise RuntimeError("Event loop is closed")
         if self._running:
             raise RuntimeError("Event loop is already running")
-        global _RUNNING_LOOP
-        prev = _RUNNING_LOOP
-        _RUNNING_LOOP = self
+        prev = _get_running_loop()
+        _set_running_loop(self)
         self._running = True
         self._stopping = False
         if self._ready:
@@ -2654,7 +3022,7 @@ class _EventLoop(AbstractEventLoop):
         finally:
             self._running = False
             self._stopping = False
-            _RUNNING_LOOP = prev
+            _set_running_loop(prev)
         _debug_exc_state("run_until_complete_return")
         return result
 
@@ -2687,14 +3055,14 @@ class AbstractEventLoopPolicy:
 
 class DefaultEventLoopPolicy(AbstractEventLoopPolicy):
     def get_event_loop(self) -> EventLoop:
-        global _EVENT_LOOP
-        if _EVENT_LOOP is None:
-            _EVENT_LOOP = _EventLoop()
-        return _EVENT_LOOP
+        loop = molt_asyncio_event_loop_get()
+        if loop is None:
+            loop = _EventLoop()
+            molt_asyncio_event_loop_set(loop)
+        return loop
 
     def set_event_loop(self, loop: EventLoop | None) -> None:
-        global _EVENT_LOOP
-        _EVENT_LOOP = loop
+        molt_asyncio_event_loop_set(loop)
 
     def new_event_loop(self) -> EventLoop:
         loop_cls = _EventLoop
@@ -2728,22 +3096,40 @@ class AbstractChildWatcher:
         self._loop = loop
 
     def add_child_handler(self, pid: int, callback: Any, *args: Any) -> None:
-        self._callbacks[int(pid)] = (callback, args)
+        _require_asyncio_intrinsic(
+            molt_asyncio_child_watcher_add, "asyncio_child_watcher_add"
+        )(self._callbacks, int(pid), callback, args)
 
     def remove_child_handler(self, pid: int) -> bool:
-        return self._callbacks.pop(int(pid), None) is not None
+        return bool(
+            _require_asyncio_intrinsic(
+                molt_asyncio_child_watcher_remove, "asyncio_child_watcher_remove"
+            )(self._callbacks, int(pid))
+        )
 
     def close(self) -> None:
-        self._callbacks.clear()
+        _require_asyncio_intrinsic(
+            molt_asyncio_child_watcher_clear, "asyncio_child_watcher_clear"
+        )(self._callbacks)
         self._loop = None
 
     def is_active(self) -> bool:
         return self._loop is not None
 
     def _notify_child_exit(self, pid: int, returncode: int) -> None:
-        entry = self._callbacks.pop(int(pid), None)
+        entry = _require_asyncio_intrinsic(
+            molt_asyncio_child_watcher_pop, "asyncio_child_watcher_pop"
+        )(self._callbacks, int(pid))
         if entry is None:
             return
+        if (
+            not isinstance(entry, (tuple, list))
+            or len(entry) != 2
+            or not isinstance(entry[1], (tuple, list))
+        ):
+            raise RuntimeError(
+                "asyncio child_watcher_pop intrinsic returned invalid value"
+            )
         callback, args = entry
         try:
             callback(int(pid), int(returncode), *args)
@@ -2843,18 +3229,12 @@ class SubprocessTransport(Transport):
     pass
 
 
-_EVENT_LOOP_POLICY: AbstractEventLoopPolicy = _default_event_loop_policy()
-_EVENT_LOOP: EventLoop | None = None
-_RUNNING_LOOP: EventLoop | None = None
-
-
 def _get_running_loop() -> EventLoop | None:
-    return _RUNNING_LOOP
+    return molt_asyncio_running_loop_get()
 
 
 def _set_running_loop(loop: EventLoop | None) -> None:
-    global _RUNNING_LOOP
-    _RUNNING_LOOP = loop
+    molt_asyncio_running_loop_set(loop)
 
 
 def get_running_loop() -> EventLoop:
@@ -2865,36 +3245,45 @@ def get_running_loop() -> EventLoop:
 
 
 def get_event_loop_policy() -> AbstractEventLoopPolicy:
-    return _EVENT_LOOP_POLICY
+    policy = molt_asyncio_event_loop_policy_get()
+    if policy is None:
+        policy = _default_event_loop_policy()
+        molt_asyncio_event_loop_policy_set(policy)
+    return policy
 
 
 def set_event_loop_policy(policy: AbstractEventLoopPolicy | None) -> None:
-    global _EVENT_LOOP_POLICY
     if policy is None:
         policy = _default_event_loop_policy()
-    _EVENT_LOOP_POLICY = policy
+    molt_asyncio_event_loop_policy_set(policy)
 
 
 def get_event_loop() -> EventLoop:
-    return _EVENT_LOOP_POLICY.get_event_loop()
+    return get_event_loop_policy().get_event_loop()
 
 
 def set_event_loop(loop: EventLoop | None) -> None:
-    _EVENT_LOOP_POLICY.set_event_loop(loop)
+    get_event_loop_policy().set_event_loop(loop)
 
 
 def new_event_loop() -> EventLoop:
-    return _EVENT_LOOP_POLICY.new_event_loop()
+    return get_event_loop_policy().new_event_loop()
 
 
 def _cancel_all_tasks(loop: EventLoop) -> None:
-    tasks = [task for task in all_tasks(loop) if not task.done()]
+    try:
+        live_tasks = all_tasks(loop)
+    except BaseException:
+        return
+    tasks = [task for task in live_tasks if not task.done()]
     if not tasks:
         return
-    for task in tasks:
-        task.cancel()
+    _asyncio_cancel_pending_tasks(tasks)
     try:
-        loop.run_until_complete(gather(*tasks, return_exceptions=True))
+        waiter = _require_asyncio_intrinsic(
+            molt_asyncio_gather_new, "asyncio_gather_new"
+        )(tasks, True)
+        loop.run_until_complete(waiter)
     except BaseException:
         pass
 
@@ -2953,7 +3342,7 @@ class Runner:
 
 
 def run(awaitable: Any) -> Any:
-    if _RUNNING_LOOP is not None:
+    if _get_running_loop() is not None:
         raise RuntimeError("asyncio.run() cannot be called from a running event loop")
     runner = Runner()
     exc: BaseException | None = None
@@ -2977,21 +3366,11 @@ def run(awaitable: Any) -> Any:
 
 async def sleep(delay: float = 0.0, result: Any | None = None) -> Any:
     if delay <= 0:
-        await _async_yield_once()
-        return result
-    loop = get_running_loop()
-    fut = loop.create_future()
-
-    def _wake() -> None:
-        if not fut.done():
-            fut.set_result(result)
-
-    handle = loop.call_later(delay, _wake)
-    try:
-        return await fut
-    finally:
-        if not fut.done():
-            handle.cancel()
+        delay = 0.0
+    else:
+        delay = float(delay)
+    fut = _require_asyncio_intrinsic(molt_async_sleep, "async_sleep")(delay, result)
+    return await fut
 
 
 async def open_connection(
@@ -3004,20 +3383,12 @@ async def open_connection(
     if ssl is not None:
         # TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:missing): implement asyncio SSL transport support.
         raise NotImplementedError("ssl not supported")
-    _require_io_wait_new()
     sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
     if local_addr is not None:
         sock.bind(local_addr)
-    with _NonBlockingSocket(sock):
-        err = sock.connect_ex((host, port))
-    if err not in (0, _errno.EINPROGRESS, _errno.EALREADY, _errno.EWOULDBLOCK):
-        raise OSError(err, "connect")
-    if err != 0:
-        await _io_wait(sock.fileno(), 2)
-        with _NonBlockingSocket(sock):
-            err = sock.connect_ex((host, port))
-        if err != 0:
-            raise OSError(err, "connect")
+    sock.setblocking(False)
+    loop = get_running_loop()
+    await loop.sock_connect(sock, (host, port))
     reader = StreamReader(sock)
     writer = StreamWriter(sock)
     return reader, writer
@@ -3034,20 +3405,12 @@ async def open_unix_connection(
     if ssl is not None:
         # TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:missing): implement asyncio SSL transport support for unix sockets.
         raise NotImplementedError("ssl not supported")
-    _require_io_wait_new()
     sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
     if local_addr is not None:
         sock.bind(local_addr)
-    with _NonBlockingSocket(sock):
-        err = sock.connect_ex(path)
-    if err not in (0, _errno.EINPROGRESS, _errno.EALREADY, _errno.EWOULDBLOCK):
-        raise OSError(err, "connect")
-    if err != 0:
-        await _io_wait(sock.fileno(), 2)
-        with _NonBlockingSocket(sock):
-            err = sock.connect_ex(path)
-        if err != 0:
-            raise OSError(err, "connect")
+    sock.setblocking(False)
+    loop = get_running_loop()
+    await loop.sock_connect(sock, path)
     reader = StreamReader(sock)
     writer = StreamWriter(sock)
     return reader, writer
@@ -3282,35 +3645,39 @@ def wrap_future(fut: Any, *, loop: EventLoop | None = None) -> Future:
             loop = get_event_loop()
     proxy = Future()
 
-    def _transfer() -> None:
+    def _transfer(done_obj: Any) -> None:
         try:
-            if hasattr(fut, "cancelled") and fut.cancelled():
+            if _asyncio_future_transfer(done_obj, proxy):
+                return
+            if hasattr(done_obj, "cancelled") and done_obj.cancelled():
                 proxy.cancel()
                 return
-            if hasattr(fut, "exception"):
-                exc = fut.exception()
+            if hasattr(done_obj, "exception"):
+                exc = done_obj.exception()
                 if exc is not None:
                     proxy.set_exception(exc)
                     return
-            if hasattr(fut, "result"):
-                proxy.set_result(fut.result())
+            if hasattr(done_obj, "result"):
+                proxy.set_result(done_obj.result())
                 return
         except BaseException as exc:
-            proxy.set_exception(exc)
+            if not proxy.done():
+                proxy.set_exception(exc)
             return
-        proxy.set_result(None)
+        if not proxy.done():
+            proxy.set_result(None)
 
-    def _schedule_transfer() -> None:
+    def _schedule_transfer(done_obj: Any) -> None:
         try:
-            loop.call_soon_threadsafe(_transfer)
+            loop.call_soon_threadsafe(_transfer, done_obj)
         except BaseException:
-            _transfer()
+            _transfer(done_obj)
 
     try:
         if hasattr(fut, "add_done_callback"):
-            fut.add_done_callback(lambda _fut: _schedule_transfer())
+            fut.add_done_callback(_schedule_transfer)
         else:
-            _schedule_transfer()
+            _schedule_transfer(fut)
     except BaseException as exc:
         proxy.set_exception(exc)
     return proxy
@@ -3319,23 +3686,31 @@ def wrap_future(fut: Any, *, loop: EventLoop | None = None) -> Future:
 def current_task(loop: EventLoop | None = None) -> Task | None:
     if loop is None:
         loop = get_running_loop()
-    task = _TASKS.get(_current_token_id())
-    if (
-        loop is not None
-        and task is not None
-        and getattr(task, "_loop", None) is not loop
-    ):
+    task = _task_registry_current_for_loop(loop)
+    if task is None:
         return None
-    return task
+    return task if isinstance(task, Task) else None
 
 
 def all_tasks(loop: EventLoop | None = None) -> set[Task]:
-    tasks = {
-        task for task in _TASKS.values() if isinstance(task, Task) and not task.done()
-    }
     if loop is None:
         loop = get_running_loop()
-    return {task for task in tasks if getattr(task, "_loop", None) is loop}
+    task_values = _require_asyncio_intrinsic(
+        molt_asyncio_task_registry_live, "asyncio_task_registry_live"
+    )(loop)
+    if not isinstance(task_values, (list, tuple, set, frozenset)):
+        try:
+            task_values = tuple(task_values)
+        except TypeError:
+            task_values = ()
+    tasks: set[Task] = set()
+    for task in task_values:
+        try:
+            if isinstance(task, Task):
+                tasks.add(task)
+        except Exception:
+            continue
+    return tasks
 
 
 @dataclass(frozen=True, slots=True)
@@ -3523,122 +3898,24 @@ async def wait(
         raise ValueError("asyncio.wait() requires at least one awaitable")
     if return_when not in (ALL_COMPLETED, FIRST_COMPLETED, FIRST_EXCEPTION):
         raise ValueError("Invalid return_when value")
-    done: set[Future] = set()
-    pending: set[Future] = set(tasks)
-
-    def update_done() -> bool:
-        triggered = False
-        for task in list(pending):
-            if _future_done(task):
-                pending.remove(task)
-                done.add(task)
-                if return_when is FIRST_COMPLETED:
-                    triggered = True
-                elif return_when is FIRST_EXCEPTION:
-                    if _future_cancelled(task) or _future_exception(task) is not None:
-                        triggered = True
-        return triggered
-
-    if timeout is None:
-        while pending:
-            if update_done():
-                break
-            await sleep(0.0)
-        return done, pending
-
-    timeout_val = float(timeout)
-    if timeout_val <= 0.0:
-        if pending:
-            loop = get_running_loop()
-            waiter = loop.create_future()
-
-            def _wake() -> None:
-                if not waiter.done():
-                    waiter.set_result(None)
-
-            def _on_done(_task: Future) -> None:
-                _wake()
-
-            for task in list(pending):
-                try:
-                    task.add_done_callback(_on_done)  # type: ignore[union-attr]
-                except Exception:
-                    pass
-            loop.call_later(_WAIT_TIMEOUT_EPS, _wake)
-            await waiter
-        update_done()
-        return done, pending
-
-    timer = ensure_future(sleep(timeout_val))
-    try:
-        while pending:
-            if timer.done():
-                break
-            if update_done():
-                break
-            await sleep(0.0)
-    finally:
-        timer.cancel()
-    return done, pending
+    if return_when is ALL_COMPLETED:
+        return_code = 0
+    elif return_when is FIRST_COMPLETED:
+        return_code = 1
+    else:
+        return_code = 2
+    waiter = _require_asyncio_intrinsic(molt_asyncio_wait_new, "asyncio_wait_new")(
+        tasks, timeout, return_code
+    )
+    return await waiter
 
 
 async def wait_for(awaitable: Any, timeout: float | None) -> Any:
-    async def _cancel_and_wait(fut: Future, *, force_timeout: bool = False) -> Any:
-        fut.cancel()
-        while not fut.done():
-            await sleep(0.0)
-        if fut.cancelled():
-            raise TimeoutError
-        if force_timeout:
-            raise TimeoutError
-        return fut.result()
-
-    if timeout is None:
-        fut = ensure_future(awaitable)
-        return await fut
     fut = ensure_future(awaitable)
-    if fut.done():
-        return fut.result()
-    timeout_val = float(timeout)
-    if timeout_val <= 0.0:
-        if _DEBUG_WAIT_FOR:
-            _debug_write("wait_for_debug: immediate timeout")
-        await sleep(0.0)
-        return await _cancel_and_wait(fut, force_timeout=True)
-    timer = ensure_future(sleep(timeout_val))
-    debug_loops = 0
-    try:
-        while True:
-            if fut.done():
-                timer.cancel()
-                if _DEBUG_WAIT_FOR:
-                    _debug_write(
-                        "wait_for_debug: target done cancelled={}".format(
-                            fut.cancelled()
-                        )
-                    )
-                return fut.result()
-            if timer.done():
-                if _DEBUG_WAIT_FOR:
-                    _debug_write("wait_for_debug: timer done, cancel target")
-                timer.cancel()
-                return await _cancel_and_wait(fut)
-            if _DEBUG_WAIT_FOR:
-                debug_loops += 1
-                if debug_loops % 1000 == 0:
-                    _debug_write(
-                        "wait_for_debug loops={loops} fut_done={fut_done} timer_done={timer_done}".format(
-                            loops=debug_loops,
-                            fut_done=fut.done(),
-                            timer_done=timer.done(),
-                        )
-                    )
-            await sleep(0.0)
-    except BaseException as exc:
-        if _is_cancelled_exc(exc):
-            fut.cancel()
-            timer.cancel()
-        raise
+    waiter = _require_asyncio_intrinsic(
+        molt_asyncio_wait_for_new, "asyncio_wait_for_new"
+    )(fut, timeout)
+    return await waiter
 
 
 def timeout(delay: float | None) -> _Timeout:
@@ -3656,32 +3933,10 @@ async def gather(*aws: Any, return_exceptions: bool = False) -> list[Any]:
     if not aws:
         return []
     tasks = [ensure_future(aw) for aw in aws]
-    index = {task: idx for idx, task in enumerate(tasks)}
-    results: list[Any] = [None] * len(tasks)
-    pending: set[Future] = set(tasks)
-    try:
-        while pending:
-            done, pending = await wait(pending, return_when=FIRST_COMPLETED)
-            for task in done:
-                idx = index[task]
-                if _future_cancelled(task):
-                    exc = CancelledError()
-                else:
-                    exc = _future_exception(task)
-                if exc is not None:
-                    if return_exceptions:
-                        results[idx] = exc
-                        continue
-                    for remaining in pending:
-                        remaining.cancel()
-                    raise exc
-                results[idx] = task.result()
-    except BaseException as exc:
-        if _is_cancelled_exc(exc):
-            for task in tasks:
-                task.cancel()
-        raise
-    return results
+    waiter = _require_asyncio_intrinsic(molt_asyncio_gather_new, "asyncio_gather_new")(
+        tasks, return_exceptions
+    )
+    return await waiter
 
 
 async def _wait_one(queue: "Queue", timeout: float | None) -> Any:
@@ -3764,10 +4019,7 @@ class Queue:
                 await fut
             except BaseException as exc:
                 if _is_cancelled_exc(exc):
-                    try:
-                        self._putters.remove(fut)
-                    except ValueError:
-                        pass
+                    _asyncio_waiters_remove(self._putters, fut)
                 raise
             if self._shutdown:
                 raise _QueueShutDown
@@ -3785,9 +4037,7 @@ class Queue:
         if self._finished.is_set():
             self._finished.clear()
         if self._getters:
-            getter = self._getters.popleft()
-            if not getter.done():
-                getter.set_result(item)
+            _asyncio_waiters_notify(self._getters, 1, item)
         else:
             self._put(item)
 
@@ -3805,10 +4055,7 @@ class Queue:
             return await fut
         except BaseException as exc:
             if _is_cancelled_exc(exc):
-                try:
-                    self._getters.remove(fut)
-                except ValueError:
-                    pass
+                _asyncio_waiters_remove(self._getters, fut)
             raise
 
     def get_nowait(self) -> Any:
@@ -3821,9 +4068,7 @@ class Queue:
     def _get_nowait(self) -> Any:
         item = self._get()
         if self._putters:
-            putter = self._putters.popleft()
-            if not putter.done():
-                putter.set_result(True)
+            _asyncio_waiters_notify(self._putters, 1, True)
         return item
 
     def _get(self) -> Any:
@@ -3843,14 +4088,14 @@ class Queue:
 
         def shutdown(self) -> None:
             self._shutdown = True
-            while self._getters:
-                getter = self._getters.popleft()
-                if not getter.done():
-                    getter.set_exception(_QueueShutDown())
-            while self._putters:
-                putter = self._putters.popleft()
-                if not putter.done():
-                    putter.set_exception(_QueueShutDown())
+            if self._getters:
+                _asyncio_waiters_notify_exception(
+                    self._getters, len(self._getters), _QueueShutDown()
+                )
+            if self._putters:
+                _asyncio_waiters_notify_exception(
+                    self._putters, len(self._putters), _QueueShutDown()
+                )
 
 
 class PriorityQueue(Queue):
@@ -4029,34 +4274,7 @@ def _queues_attrs() -> dict[str, Any]:
 
 
 def _make_log_module() -> _types.ModuleType:
-    class _NoopLogger:
-        def log(self, *args: Any, **kwargs: Any) -> None:
-            return None
-
-        def debug(self, *args: Any, **kwargs: Any) -> None:
-            return None
-
-        def info(self, *args: Any, **kwargs: Any) -> None:
-            return None
-
-        def warning(self, *args: Any, **kwargs: Any) -> None:
-            return None
-
-        def error(self, *args: Any, **kwargs: Any) -> None:
-            return None
-
-        def exception(self, *args: Any, **kwargs: Any) -> None:
-            return None
-
-        def critical(self, *args: Any, **kwargs: Any) -> None:
-            return None
-
-    try:
-        import logging as _logging
-
-        logger = _logging.getLogger("asyncio")
-    except Exception:
-        logger = _NoopLogger()
+    logger = _logging.getLogger("asyncio")
     return _module(
         "asyncio.log",
         {
